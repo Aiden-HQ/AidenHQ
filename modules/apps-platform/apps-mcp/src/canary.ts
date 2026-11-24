@@ -122,9 +122,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // canary must never send its text as a chat message. A field's own wording wins; the fallback is a page with exactly one
     // textbox under a feedback-named control (the link walk below finds a feedback page first).
     const FEEDBACK = /feedback|intake|suggest|what would you|tell us/i;
-    const feedbackField = (refs) => Object.entries(refs).find(([, v]) => v.role === "textbox" && FEEDBACK.test([v.name, v.description].filter(Boolean).join(" ")))?.[0]
-      || (Object.values(refs).filter((v) => v.role === "textbox").length === 1 && Object.values(refs).some((v) => v.role === "button" && FEEDBACK.test(v.name || ""))
-        ? Object.entries(refs).find(([, v]) => v.role === "textbox")?.[0] : undefined);
+    // Only a field whose own wording is about feedback. A page's lone textbox is not enough: a profile page with one
+    // display-name box and a "Feedback" button that opens a dialog elsewhere would otherwise have the test text typed into the
+    // profile and its Save clicked, changing real data before the canary ever reaches the intake.
+    const feedbackField = (refs) => Object.entries(refs).find(([, v]) => v.role === "textbox" && FEEDBACK.test([v.name, v.description].filter(Boolean).join(" ")))?.[0];
     let refs = await tree(), box = feedbackField(refs);
     for (let i = 0; i < 3 && !box; i++) {
       const link = Object.entries(refs).find(([, v]) => v.role === "link" && FEEDBACK.test(v.name || ""))?.[0];
@@ -138,8 +139,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     await ab("fill", "@" + box, r.text);
     // The button is the one in the form that owns the filled field, never "the first submit-like button on the page" (a header
     // search form or a "Send message" button would otherwise be sent instead). The filled field is focused, so its own form is
-    // the one to send. A real submit control only: an explicit button or input[type=submit], or the form's only button
-    // when that one is worded like sending. A "Discard draft" type=button beside an implicit submit is never clicked, and when
+    // the one to send. A real submit control only: one worded like sending, or the form's only button when it is. A "Discard draft" type=button beside an implicit submit is never clicked, and when
     // nothing in the field's own form can be identified the canary stops rather than guessing.
     const formSubmit = await within(ab("eval", "(() => {" +
       "const a = document.activeElement, f = a && a.closest && a.closest('form');" +
@@ -152,7 +152,9 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       // Never guess between several explicit controls: two submit buttons with different actions (Preview, Save) are a form
       // whose send nobody can name, so the canary stops instead of clicking the first one and submitting the wrong thing.
       "const named = explicit.filter((x) => sendish.test(word(x)));" +
-      "const b = named.length === 1 ? named[0] : named.length === 0 && explicit.length === 1 ? explicit[0] : els.length === 1 && sendish.test(word(els[0])) ? els[0] : null;" +
+      // One send-named control, or the form's only button when it is worded as sending. A lone "Preview feedback" is not
+      // that: a two-step form's real send is on the next screen, and clicking Preview would send nothing.
+      "const b = named.length === 1 ? named[0] : named.length === 0 && els.length === 1 && sendish.test(word(els[0])) ? els[0] : null;" +
       "if (!b) return '';" +
       "b.setAttribute('data-aidenhq-canary-submit', '1');" +
       "return b.tagName + ':' + word(b).trim().slice(0, 60);" +

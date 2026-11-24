@@ -15,7 +15,7 @@
 import { createServer, request as httpRequest, type IncomingMessage, type OutgoingHttpHeaders, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { readFileSync } from "node:fs";
-import { IDENTITY_HEADER, hostOf, mint, sameOrigin, signerFor, subOf, upstreamHeaders, type GateConfig, type IdentityClaims, type IdentityToken, type VerifiedEmail } from "./gate.ts";
+import { IDENTITY_HEADER, hostOf, mint, sameOrigin, signerFor, testSubOf, upstreamHeaders, type GateConfig, type IdentityClaims, type IdentityToken, type VerifiedEmail } from "./gate.ts";
 
 /** The listener's own host suffix: an origin Chrome treats as secure over plain http, and one the front door never names. */
 export const CANARY_BASE = "canary.localhost";
@@ -163,7 +163,7 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     let token: IdentityToken;
     try {
       const iat = Math.floor(Date.now() / 1000);
-      const claims: IdentityClaims = { iss: "aidenhq-gate", aud: app, sub: subOf(who.email), kind: "person", email: who.email, name: "AidenHQ test user", role: "member", idp: "test", iat, exp: iat + IDENTITY_TTL_S };
+      const claims: IdentityClaims = { iss: "aidenhq-gate", aud: app, sub: testSubOf(who.email), kind: "person", email: who.email, name: "AidenHQ test user", role: "member", idp: "test", iat, exp: iat + IDENTITY_TTL_S };
       token = mint(signerFor(c.identity_key_file)(), claims);
     } catch (e) {
       log({ msg: "can't sign a test identity", app, err: String((e as Error).message) });
@@ -296,7 +296,7 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     let token: IdentityToken;
     try {
       const iat = Math.floor(Date.now() / 1000);
-      const claims: IdentityClaims = { iss: "aidenhq-gate", aud: t.app, sub: subOf(who.email), kind: "person", email: who.email, name: "AidenHQ test user", role: "member", idp: "test", iat, exp: iat + IDENTITY_TTL_S };
+      const claims: IdentityClaims = { iss: "aidenhq-gate", aud: t.app, sub: testSubOf(who.email), kind: "person", email: who.email, name: "AidenHQ test user", role: "member", idp: "test", iat, exp: iat + IDENTITY_TTL_S };
       token = mint(signerFor(c.identity_key_file)(), claims);
     } catch (e) {
       log({ msg: "can't sign a test identity", app: t.app, err: String((e as Error).message) });

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { createGate } from "../gate.ts";
 import { createIdentity } from "../../starter/aidenhq-identity.mjs";
 import { CANARY_BASE, CANARY_COOKIE, createTestListener, createTestListenerReconciler, testListenerOn } from "../test-listener.ts";
+import { subOf } from "../gate.ts";
 import { ensureIdentityKeys } from "../../../../scripts/identity.ts";
 
 const secrets = mkdtempSync(join(tmpdir(), "test-listener-"));
@@ -224,6 +225,10 @@ test("a live test session serves the page as a member of its one app; the page's
   // The app verifies it exactly as its own middleware does: the gate's key, this app only, a person, a member.
   const who = createIdentity({ app: "roadmap", keysFile: join(secrets, "identity", "keys.json") }).identify({ method: "GET", url: "/intake", headers: { "x-aidenhq-identity": appSeen.at(-1)!.identity } });
   assert.deepEqual([who.role, who.email, who.kind], ["member", EMAIL, "person"]);
+  // Its subject is its own namespace, never the one a real person with that email would get: an app keying records by
+  // subject can never hand the canary someone else's.
+  assert.match(who.sub, /^u_[A-Za-z0-9_-]{22}$/);
+  assert.notEqual(who.sub, subOf(EMAIL));
   assert.throws(() => createIdentity({ app: "other", keysFile: join(secrets, "identity", "keys.json") }).identify({ method: "GET", url: "/intake", headers: { "x-aidenhq-identity": appSeen.at(-1)!.identity } }), /not for this app/);
   // The page's own POST /.aidenhq/notify reaches the kernel's app-feedback handler and answers 204, never the app.
   const before = appSeen.length;

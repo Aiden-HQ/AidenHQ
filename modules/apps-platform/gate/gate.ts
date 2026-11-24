@@ -179,6 +179,13 @@ const IDENTITY_TTL_S = 300;
 
 /** A person's stable, opaque id: the same under every sign-in method, from the email that method verified. */
 export const subOf = (email: VerifiedEmail) => `u_${createHash("sha256").update(`aidenhq-user:${email.trim().toLowerCase()}`).digest("base64url").slice(0, 22)}`;
+/**
+ * The test user's subject: its own namespace, never `subOf`'s. A person with no Better Auth account (Access or header-JWT
+ * mode, or an app's default role) can hold any email, so an email alone would give the canary that person's own subject and
+ * the app could serve their records. The `u_` form stays (every app's own verifier requires it); the hash's namespace is the
+ * test user's alone, so no real person's `subOf(email)` can ever equal it.
+ */
+export const testSubOf = (email: VerifiedEmail) => `u_${createHash("sha256").update(`aidenhq-test-user:${email.trim().toLowerCase()}`).digest("base64url").slice(0, 22)}`;
 
 /** The gate's signing key (identity_key_file, Ed25519 PKCS#8), re-read when the file changes; its kid as scripts/identity.ts computes it. */
 export function signingKey(file: string): () => Signer {

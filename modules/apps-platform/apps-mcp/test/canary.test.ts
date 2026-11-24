@@ -146,9 +146,13 @@ describe("app_page_canary", () => {
     expect(script).toContain("named.length === 1 ? named[0]");
     // A "Preview feedback" button is not a send: the form's subject word is not part of what names its submit.
     expect(script).toContain('const sendish = /send|submit|share|post|save|publish/i;');
+    // Nor is a lone "Preview feedback" a send: the form's real send may be on the next screen.
+    expect(script).toContain("named.length === 0 && els.length === 1 && sendish.test(word(els[0]))");
     // The landing page's own feedback link is followed even when it has a search box: a feedback field is what ends the walk.
     expect(script).toContain("for (let i = 0; i < 3 && !box; i++)");
     expect(script).toContain("box = feedbackField(refs)");
+    // A page's lone textbox is not the feedback form: only a field worded as feedback is filled.
+    expect(script).toContain("v.role === \"textbox\" && FEEDBACK.test([v.name, v.description]");
     // Evidence starts at the click: a POST a fill triggered is never read as the submission's intake.
     expect(script.indexOf("const submittedAt = Date.now();")).toBeLessThan(script.indexOf('await ab("click", "[data-aidenhq-canary-submit]")'));
     // The handoff's code and state never come back in a URL or an error the tool returns.

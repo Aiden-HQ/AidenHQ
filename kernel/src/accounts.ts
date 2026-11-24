@@ -753,6 +753,8 @@ export async function openAccounts(o: AccountsOptions) {
     async newLink(by: Account, id: string): Promise<{ url: string | null }> {
       const a = await find(id);
       if (a.owner) throw new AccountError(403, "only ops/setup.sh --reset makes the owner a new link");
+      // The test user has no credential: a password link would make one and an ordinary session beside the minted test one.
+      if (testSessions.isTestAccount(a.email)) throw new AccountError(403, "the test user isn't an account to manage");
       log.info({ account: id, by: by.id }, "account link re-issued");
       return { url: linkFor(a, await mintLink(id)) };
     },
