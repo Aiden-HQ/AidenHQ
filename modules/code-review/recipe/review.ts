@@ -65,7 +65,7 @@ export interface Spec {
   /** deepsec's records from earlier runs: the input's sha256 (its file is /aidenhq-out/deepsec_data), empty for none. */
   deepsec_data?: string;
   /** A repo review's area ({ id, name, files: { folder: [names] } }) and the plan's areas as data ({ areas }): JSON text, {} for none. */
-  area?: string; area_map?: string;
+  area?: string; area_map?: string; unseen?: string;
 }
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -108,6 +108,25 @@ export function areaOf(text: string | undefined) {
   const paths = files.flatMap(([d, names]) => (Array.isArray(names) ? names.map((n) => (d ? `${d}/${String(n)}` : String(n))) : []));
   if (!paths.length || paths.some((p) => p.startsWith("/") || p.split("/").some((x) => !x || x === "." || x === ".." || x === ".git"))) throw new Error("the area's files aren't paths in the repo");
   return { name: String(j.name ?? j.id ?? "an area").slice(0, 80), paths };
+}
+
+/** What a rerun's area check reads first (spec.unseen, ordered): the area's files changed since they were last reviewed, then those never reviewed. The rest of the area stays in the checkout as context. */
+export function readFirst(raw: string | undefined): { files: string[]; changed: number; more: number } | undefined {
+  let u: { files?: unknown; changed?: unknown; more?: unknown };
+  try { u = JSON.parse(raw || "{}"); } catch { return undefined; }
+  const files = Array.isArray(u.files) ? u.files.filter((f): f is string => typeof f === "string") : [];
+  if (!files.length) return undefined;
+  return { files, changed: Number.isInteger(u.changed) ? Math.min(Number(u.changed), files.length) : 0, more: Number.isInteger(u.more) ? Number(u.more) : 0 };
+}
+
+/** The files with a rerun's unseen ones first (the engines that submit files in turn under one deadline reach them before the rest). */
+export function priority(files: string[], raw: string | undefined) {
+  let u: { files?: unknown } = {};
+  try { u = JSON.parse(raw || "{}"); } catch { /* none */ }
+  // In the order given (changed first, then never reviewed), not the file list's.
+  const have = new Set(files), first = [...new Set(Array.isArray(u.files) ? u.files.filter((p): p is string => typeof p === "string" && have.has(p)) : [])];
+  const head = new Set(first);
+  return first.length ? [...first, ...files.filter((p) => !head.has(p))] : files;
 }
 
 /** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. `paths`: the only
@@ -353,7 +372,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     return !!p && p.path === f.path && RANK[p.severity] <= RANK[f.severity] && (f.severity !== "important" || !combo.mandatory || p.gating);
   };
 
-  const instructions = brief({ root: ws, guides, checks, focus: cap(spec.focus, 2000), intent: tree ? "" : cap(spec.intent, 2000), excluded, incremental: !full, addressed, reported: previous,
+  const instructions = brief({ root: ws, guides, checks, focus: cap(spec.focus, 2000), readFirst: tree ? readFirst(spec.unseen) : undefined, intent: tree ? "" : cap(spec.intent, 2000), excluded, incremental: !full, addressed, reported: previous,
     ...(area ? { area: { name: area.name, files: reviewed.length } } : {}), ...(tree && spec.area_map && spec.area_map !== "{}" ? { areaMap: spec.area_map } : {}) });
   const scratch = mkdtempSync(join(out, "home", "review-"));
   const minutes = Number(process.env.REVIEW_MINUTES || 20);
@@ -460,7 +479,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const finderMinutes = combo.engine === "deepsec" ? Math.max(1, CHECK_MINUTES - RESERVE_MINUTES - (Date.now() - started) / 60_000) : minutes;
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
-  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes: finderMinutes, scratch, own: true, files: reviewed, left: [...out_], ...engineSpec })
+  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes: finderMinutes, scratch, own: true, files: priority(reviewed, tree ? spec.unseen : undefined), left: [...out_], ...engineSpec })
     .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }))));
   // A finder's answer counts only with its findings list (no list is no answer, never a clean one).
   const good = answers.map((a) => { const j = a.read ? answer(a.message) : undefined; return j && Array.isArray(j.findings) ? j : undefined; });

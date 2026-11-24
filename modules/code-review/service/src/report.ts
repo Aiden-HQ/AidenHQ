@@ -2,20 +2,22 @@
 // code from the batch's stored reviews, never by a model. Findings stay stored per option observation; display() groups the same
 // lens, file and overlapping lines for the reader only. A per-area option's runs (one per area of the batch's plan) are rolled up as
 // one option: its areas done, the files it confirmed reading over every area's (a failed area's count too), its failed or partial
-// areas and its cost summed; a skill that reports no reads is said as unverified coverage. Repo-derived text (titles, evidence, fix briefs: a model's or a tool's
+// areas and its cost summed; a skill that reports no reads is said as unverified coverage. An area skipped as unchanged since an option's
+// last review (an incremental repo review) is no gap: it is said as unchanged, and the open findings of that last review stay in the report, marked carried over. Repo-derived text (titles, evidence, fix briefs: a model's or a tool's
 // words about the repo's code) is flattened to plain lines, and evidence and the fix prompt go in fences it can't close.
 import type { Finding, Review } from "./seams.ts";
 
 /** Primer's limit is 80,000 characters; the report keeps under it with room for its header. */
 export const REPORT_MAX = 78_000;
 export type Verdict = "blocked" | "concerns" | "incomplete" | "clean";
-export type Shown = Finding & { option: string; lens: string };
+export type Shown = Finding & { option: string; lens: string; /** the commit of the earlier review this finding is carried over from */ carried?: string };
 /** `areas`: a per-area option's areas done of its areas; `none`: an option with nothing to review (a stack no area has), no gap. */
-export type Coverage = { ran: string[]; failed: { id: string; why: string }[]; skipped: { id: string; why: string }[]; partial: { id: string; why: string }[]; none: { id: string; why: string }[]; areas: Record<string, { done: number; total: number }> };
+export type Coverage = { ran: string[]; failed: { id: string; why: string }[]; skipped: { id: string; why: string }[]; partial: { id: string; why: string }[]; none: { id: string; why: string }[]; unchanged: { id: string; why: string }[]; areas: Record<string, { done: number; total: number; unchanged?: string }> };
 /** One run of a repo review as the report reads it: its option (the tools run: `tools`, with its tool options), its lens, its end
  * and its review; `area`, a per-area run's (its name and file count); `plan`, the batch's area plan run (its cost only); `none`, a
- * skip with nothing to review. */
-export type ReportRun = { option: string; options?: string[]; lens: string | null; status: string; why: string | null; cost_usd: number; review: (Review & { coverage_note?: string }) | null; area?: { name: string; files: number } | null; plan?: true; none?: true };
+ * skip with nothing to review; `unchanged`, a run skipped because its files are unchanged since the option's last review of them (that review's commit and
+ * time, and its findings in those files). */
+export type ReportRun = { option: string; options?: string[]; lens: string | null; status: string; why: string | null; cost_usd: number; review: (Review & { coverage_note?: string }) | null; area?: { name: string; files: number } | null; plan?: true; none?: true; unchanged?: { sha: string; at: string; findings: Finding[] } };
 /** The batch's area plan as the report shows it. */
 export type ReportPlan = { planned_by: string; note: string | null; eligible: number; lines: number; areas: { name: string; count: number; lines: number; tags: string[] }[] };
 export type ReportBatch = { repo: string; sha: string; created: string; runs: ReportRun[]; lensOf: (option: string) => string; plan?: ReportPlan | null };
@@ -34,7 +36,7 @@ export function verdict({ findings, coverage }: { findings: Pick<Shown, "severit
 /** Every option's end: ran, failed (a tool the tools run reports failed too), skipped, or ran with partial coverage. A per-area
  * option is one entry: ran when any area did, its failed areas partial, its files confirmed read summed over every area. */
 export function coverageOf(runs: ReportRun[]): Coverage {
-  const c: Coverage = { ran: [], failed: [], skipped: [], partial: [], none: [], areas: {} };
+  const c: Coverage = { ran: [], failed: [], skipped: [], partial: [], none: [], unchanged: [], areas: {} };
   const groups = new Map<string, ReportRun[]>();
   for (const r of runs) if (!r.plan) groups.set(r.option, [...(groups.get(r.option) ?? []), r]);
   const confirmed = (id: string, rs: ReportRun[], areas: string) => {
@@ -46,7 +48,12 @@ export function coverageOf(runs: ReportRun[]): Coverage {
     if (!read && done.some((r) => r.review!.coverage_note)) c.partial.push({ id, why: `coverage unverified: it reports no reads (${eligible} eligible files${areas})` });
     else if (read < eligible) c.partial.push({ id, why: `${read} of ${eligible} eligible files confirmed read${areas}` });
   };
-  for (const [id, rs] of groups) {
+  for (const [id, all] of groups) {
+    // Areas unchanged since the option's last review are no gap and no new work: said as such (the newest of those reviews).
+    const same = all.filter((r) => r.unchanged), rs = all.filter((r) => !r.unchanged);
+    const since = same.length ? same.map((r) => r.unchanged!).reduce((a, x) => (x.at > a.at ? x : a)) : undefined;
+    const sinceWords = since ? `unchanged since ${since.sha.slice(0, 7)} (${since.at.slice(0, 10)})` : "";
+    if (!rs.length) { c.unchanged.push({ id, why: `${sinceWords}; ${same.reduce((n, r) => n + r.unchanged!.findings.length, 0)} open findings of that review carried over` }); continue; }
     if (rs.length === 1 && !rs[0]!.area) {
       const r = rs[0]!;
       const ids = r.options ?? [r.option];
@@ -62,7 +69,7 @@ export function coverageOf(runs: ReportRun[]): Coverage {
       confirmed(id, rs, "");
     } else {
       const done = rs.filter((r) => r.status === "done" && r.review);
-      c.areas[id] = { done: done.length, total: rs.length };
+      c.areas[id] = { done: done.length, total: rs.length, ...(same.length ? { unchanged: `${same.length} unchanged since ${since!.sha.slice(0, 7)} (${since!.at.slice(0, 10)})` } : {}) };
       if (!done.length) { c.failed.push({ id, why: `no area finished (${rs[0]!.why ?? rs[0]!.status})` }); continue; }
       c.ran.push(id);
       const bad = rs.filter((r) => !(r.status === "done" && r.review));
@@ -80,21 +87,22 @@ export function coverageOf(runs: ReportRun[]): Coverage {
 
 /** The batch's findings, each tagged with the option that found it and its lens. */
 export function findingsOf(b: Pick<ReportBatch, "runs" | "lensOf">): Shown[] {
-  return b.runs.flatMap((r) => (r.status === "done" && r.review ? r.review.findings : []).map((f) => {
+  return b.runs.flatMap((r) => (r.status === "done" && r.review ? r.review.findings : r.unchanged ? r.unchanged.findings : []).map((f) => {
     const option = f.option ?? r.option;
-    return { ...f, option, lens: f.lens ?? r.lens ?? b.lensOf(option) };
+    return { ...f, option, lens: f.lens ?? r.lens ?? b.lensOf(option), ...(r.unchanged ? { carried: String((f as { from?: unknown }).from ?? r.unchanged.sha).slice(0, 7) } : {}) };
   }));
 }
 
 /** For display only: findings in the same lens and file, of one severity and title, whose lines overlap are one entry, keeping every option that found it. */
 export function display(findings: Shown[]) {
-  type Group = { lens: string; path: string; line: number; end: number; severity: Finding["severity"]; items: Shown[]; options: string[] };
+  type Group = { lens: string; path: string; line: number; end: number; severity: Finding["severity"]; items: Shown[]; options: string[]; carried?: string };
   const groups: Group[] = [];
   for (const f of [...findings].sort((a, b) => a.lens.localeCompare(b.lens) || a.path.localeCompare(b.path) || a.line - b.line)) {
     const end = Math.max(f.line, f.end_line ?? f.line);
     const g = groups.find((x) => x.lens === f.lens && x.path === f.path && x.severity === f.severity && x.items[0]!.title.toLowerCase() === f.title.toLowerCase() && f.line <= x.end && end >= x.line);
-    if (!g) { groups.push({ lens: f.lens, path: f.path, line: f.line, end, severity: f.severity, items: [f], options: [f.option] }); continue; }
-    g.items.push(f);
+    if (!g) { groups.push({ lens: f.lens, path: f.path, line: f.line, end, severity: f.severity, items: [f], options: [f.option], carried: f.carried }); continue; }
+    // A finding some option found afresh is no longer only carried over, and its words are the current ones.
+    if (!f.carried && g.carried) { g.items.unshift(f); g.carried = undefined; } else g.items.push(f);
     g.end = Math.max(g.end, end);
     if (!g.options.includes(f.option)) g.options.push(f.option);
   }
@@ -121,13 +129,13 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
   // From every finding, whatever the size cut below leaves out of the document: a trimmed report never softens its verdict.
   const v = verdict({ findings, coverage });
   const groups = display(findings);
-  const counts = { important: 0, nit: 0, pre_existing: 0 } as Record<string, number>;
-  for (const g of groups) counts[g.severity]!++;
+  const counts = { important: 0, nit: 0, pre_existing: 0, carried: 0 } as Record<string, number>;
+  for (const g of groups) { counts[g.severity]!++; if (g.carried) counts.carried!++; }
   const cost = b.runs.reduce((n, r) => n + r.cost_usd, 0);
   const entry = (g: (typeof groups)[number]) => {
     const f = g.items[0]!;
     const lines = g.end > g.line ? `${g.line}-${g.end}` : `${g.line}`;
-    return [`#### ${flat(f.title, 200)}`, `${g.severity} · \`${plain(g.path, 300).replace(/`/g, "'")}:${lines}\` · found by ${g.options.map((o) => flat(o, 80)).join(", ")}`, "",
+    return [`#### ${flat(f.title, 200)}`, `${g.severity} · \`${plain(g.path, 300).replace(/`/g, "'")}:${lines}\` · found by ${g.options.map((o) => flat(o, 80)).join(", ")}${g.carried ? ` · carried over from the review of ${g.carried} (its area is unchanged)` : ""}`, "",
       ...(f.why ? [flat(f.why, 1500), ""] : []), ...(f.evidence ? [fence(String(f.evidence).slice(0, 1500)), ""] : []), ...(f.fix_brief ? [`Fix: ${flat(f.fix_brief, 1000)}`, ""] : [])].join("\n");
   };
   const texts = groups.map(entry);
@@ -143,7 +151,7 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
   };
   const build = () => {
     const out = [`# Repo review: ${b.repo}`, "", `Commit \`${b.sha}\` · ${b.created.slice(0, 10)} · ${usd(cost)} spent`, "", `## Verdict`, "", HEADLINE[v], "",
-      `${counts.important} important · ${counts.nit} nits · ${counts.pre_existing} pre-existing`, "", "## Findings by lens", ""];
+      `${counts.important} important · ${counts.nit} nits · ${counts.pre_existing} pre-existing${counts.carried ? ` (${counts.carried} carried over from earlier reviews of unchanged areas, still open)` : ""}`, "", "## Findings by lens", ""];
     const lenses = [...new Set(groups.map((g) => g.lens))].sort((a, z) => (LENS_ORDER.indexOf(a) + 1 || 99) - (LENS_ORDER.indexOf(z) + 1 || 99));
     if (!groups.length) out.push("No findings.", "");
     for (const lens of lenses) {
@@ -153,10 +161,11 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
     const left = Object.entries(dropped).filter(([, n]) => n).map(([s, n]) => `${n} ${s === "nit" ? "nits" : s === "pre_existing" ? "pre-existing findings" : "important findings"}`);
     if (left.length) out.push(`_Not shown, to keep the report within Primer's size: ${left.join(", ")}. Every finding is on this review's page on the board, under each option._`, "");
     out.push("## Coverage", "");
-    for (const id of coverage.ran) out.push(`- ${flat(id, 80)}: ran${coverage.areas[id] ? ` (${coverage.areas[id]!.done} of ${coverage.areas[id]!.total} areas)` : ""}`);
+    for (const id of coverage.ran) out.push(`- ${flat(id, 80)}: ran${coverage.areas[id] ? ` (${coverage.areas[id]!.done} of ${coverage.areas[id]!.total} areas${coverage.areas[id]!.unchanged ? ` reviewed, ${coverage.areas[id]!.unchanged}` : ""})` : ""}`);
     for (const f of coverage.failed) out.push(`- ${flat(f.id, 80)}: **failed**: ${flat(f.why, 400)}`);
     for (const f of coverage.skipped) out.push(`- ${flat(f.id, 80)}: skipped: ${flat(f.why, 300)}`);
     for (const f of coverage.partial) out.push(`- ${flat(f.id, 80)}: partial: ${flat(f.why, 300)}`);
+    for (const f of coverage.unchanged) out.push(`- ${flat(f.id, 80)}: not reviewed again: ${flat(f.why, 300)}`);
     for (const f of coverage.none) out.push(`- ${flat(f.id, 80)}: ${flat(f.why, 300)}`);
     if (b.plan) {
       const p = b.plan;
