@@ -212,11 +212,14 @@ test("a skill that reviewed only part of the code keeps its findings, and the re
   const said = (...s: { ran: boolean; partial?: boolean; why?: string }[]) => JSON.stringify({ findings: [finding], stale_guidance: [], skills: s.map((x, i) => ({ skill: `/p:${["one", "two"][i]}`, ...x })) });
   const r = { message: "", read: true };
   // The live case (2026-11-23): one skill, a sampled pass of its own workflow.
-  const one = skillOutcome({ ...r, message: said({ ran: true, partial: true, why: "Partial: sampled trust-boundary review only" }) }, ["/security-audit"]);
+  const one = skillOutcome({ ...r, message: said({ ran: true, partial: true, why: "Partial: sampled trust-boundary review only" }) }, ["/p:one"]);
   assert.equal(one.cause, undefined);
   assert.equal(one.read, true);
   assert.match(String(one.message), /"a.ts"/, "its findings are kept");
-  assert.match(String(one.incomplete), /reviewed only part of the code \(\/security-audit: Partial: sampled trust-boundary review only\)/);
+  assert.match(String(one.incomplete), /reviewed only part of the code \(\/p:one: Partial: sampled trust-boundary review only\)/);
+  // A statement is the skill's own: a repeated or misordered one says nothing of the other (the engines then ask again).
+  const twice = JSON.stringify({ findings: [], skills: [{ skill: "/p:one", ran: true, partial: false }, { skill: "/p:one", ran: true, partial: false }] });
+  assert.match(String(skillOutcome({ ...r, message: twice }, ["/p:one", "/p:two"]).cause), /didn't say/);
   // A partial skill and one that didn't run: both gaps named.
   const mixed = skillOutcome({ ...r, message: said({ ran: true, partial: true, why: "a few files only" }, { ran: false, why: "it found no change" }) }, ["/p:one", "/p:two"]);
   assert.equal(mixed.read, true);
