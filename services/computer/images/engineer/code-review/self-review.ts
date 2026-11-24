@@ -68,10 +68,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const at = `branch ${branch} base ${from.slice(0, 12)} (${incremental ? "since the last review" : "merge base"}) head ${head.slice(0, 12)}`;
   if (git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")) return { out: [`self-review: ${at}: incomplete: uncommitted changes (commit them first; the review reads the committed head)`], code: 2 };
   if (from === head) { remember(INCOMPLETE); return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 }; }
-  if (last.base === base && last.head === head && last.open !== undefined && last.open !== INCOMPLETE)
-    return { out: [`self-review: ${at}: already reviewed at this head, ${last.open ? `${last.open} important finding${last.open === 1 ? "" : "s"} open` : "clean"}: publish it`], code: last.open ? 1 : 0 };
   if (runs >= REVIEWS) {
-    remember(last.open ?? INCOMPLETE);
+    remember(INCOMPLETE); // a record of this head for aidenhq publish, not a review
     return { out: [`self-review: ${at}: not reviewed: this branch had its ${REVIEWS} reviews; publish this head and list in the PR body any finding still open`], code: 0 };
   }
 
