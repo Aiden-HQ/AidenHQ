@@ -87,8 +87,16 @@ export type Identity = {
   /** Each write as it was answered: a refusal (its words) or a success (undefined), so its owner sees when it stops working. */
   wrote?(refusal?: string): void;
 };
-/** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
-type CallOpts = { background?: boolean; accept?: string; as?: Identity; etag?: string };
+  /** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
+type CallOpts = {
+  background?: boolean; accept?: string; as?: Identity; etag?: string;
+  /** The latest this call may spend waiting out a rate limit (a read) or waiting out a quota before its write is retried.
+   * Past it the call refuses at once as a typed rate_limited need instead of sleeping until the reset, which is what a
+   * background scan wants for work it can defer to its next pass. On a read it bounds the wait, not the request: a read that
+   * starts at the deadline still gets its own attempt timeout. A write that cannot see its attempt through inside it fails
+   * (a write must never land after its caller was told it failed). */
+  deadline?: number;
+};
 
 export interface GitHubAccess {
   connected(): boolean;
@@ -234,15 +242,17 @@ export function createAccess(o: {
 
   /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout).
    * A background call sleeps on the reserve and on a refusal alike, but only where a write can still see its attempt through
-   * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. */
-  async function admit(p: Pace, resource: string, background: boolean, deadline?: number): Promise<void> {
+   * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. A read's `deadline` bounds
+   * the wait itself (`read`), never the attempt: a read that starts just before it still gets its own fetch timeout. */
+  async function admit(p: Pace, resource: string, background: boolean, deadline?: number, read = false): Promise<void> {
     for (;;) {
       const t = now();
       const r = p.rates.get(resource);
       const low = r && r.limit > 0 && r.remaining < r.limit * reserve && r.reset > t ? r.reset : 0;
       const until = Math.max(p.blockedUntil > t ? p.blockedUntil : 0, background ? low : 0);
       if (!until) return;
-      if (!background || (deadline !== undefined && !fits(deadline, until))) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
+      const canWait = read ? deadline === undefined || until <= deadline : fits(deadline, until);
+      if (!background || (deadline !== undefined && !canWait)) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
       await sleep(until - t);
     }
   }
@@ -314,14 +324,15 @@ export function createAccess(o: {
     fail({ cause: "write_busy" });
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string) {
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number) {
     const p = paceOf(as);
-    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, undefined, as, false, etag);
+    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, readDeadline, as, false, etag);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
-    // the patience it always had and waits a limit out, inside the queue like every other write.
-    const deadline = background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS;
+    // the patience it always had and waits a limit out, inside the queue like every other write — unless its caller gave one
+    // (a recovery write that must not hold the scan), which bounds that wait the same way a tool's budget does.
+    const deadline = readDeadline ?? (background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS);
     return queued(p, deadline, () => paced(p, deadline, () => attempt(p, method, path, body, resource, background, accept, deadline, as)));
   }
 
@@ -378,12 +389,15 @@ export function createAccess(o: {
   async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string): Promise<{ status: number; body: any; headers: Headers }> {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
-    await admit(p, resource, background, deadline);
+    // A read's `deadline` bounds only its rate-limit wait (admit): the attempt that follows has its own timeout, and a read
+    // creates nothing, so nothing lands after a caller was told it failed.
+    const read = !createsContent(method, path, body);
+    await admit(p, resource, background, deadline, read);
     const t = as ? await as.token(retried) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();
     // Never a fetch once the write's budget has run out: nothing lands after the caller was told it failed.
-    if (deadline !== undefined && !fits(deadline)) noBudget(p);
+    if (!read && deadline !== undefined && !fits(deadline)) noBudget(p);
     const res = await fetchImpl(`${API}${path}`, {
       method,
       signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
@@ -431,7 +445,7 @@ export function createAccess(o: {
     connected,
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag),
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline),
     graphql: async (query, variables, opts = {}) => {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
       const body = res.body;

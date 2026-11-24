@@ -135,7 +135,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204 } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -147,18 +147,58 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   });
   t.after(() => kernel.s.close());
   let open = [];
-  const api = async (method, path, body) => {
+  const reran = new Set(); // job ids this head's re-run was asked for: GitHub posts their next attempt
+  const jobProbeOpts = []; // the opts of each Actions job read: a probe must carry a deadline
+  const headRunsOpts = []; // the opts of each REST check-runs listing: the recovery paths' first read carries one too
+  const api = async (method, path, body, opts) => {
     gh.push(`${method} ${path}${body?.update_method ? ` ${body.update_method}` : ""}`);
+    if (method === "GET" && /^\/repos\/acme\/app\/actions\/jobs\/\d+$/.test(path)) jobProbeOpts.push(opts ?? {});
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: mainBefore?.() ?? "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    // REST check runs for a head, as GitHub lists them: the full Actions job id is carried in details_url.
+    const headRuns = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/);
+    if (headRuns) {
+      headRunsOpts.push(opts ?? {});
+      const refused = listingStatus?.();
+      if (refused) return { status: refused, body: {} };
+      const thrown = listingThrow?.();
+      if (thrown) throw thrown;
+      // The tests that need REST and the rollup to disagree (an old wedged run the rollup no longer lists) name the runs.
+      if (restRuns) { const runs = restRuns(headRuns[1]); return { status: 200, body: { total_count: runs.length, check_runs: runs } }; }
+      const head = open.find((p) => p.headRefOid === headRuns[1]);
+      const nodes = head?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+      const runs = nodes.filter((n) => n.__typename === "CheckRun").map((n) => ({ id: n.databaseId, node_id: n.id, name: n.name, status: String(n.status ?? "").toLowerCase(), app: { slug: "github-actions" }, started_at: n.startedAt, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/${n.checkSuite?.workflowRun?.databaseId ?? 500}/job/${n.databaseId}` }));
+      return { status: 200, body: { total_count: runs.length, check_runs: runs } };
+    }
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
-    if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
+    if (method === "POST" && /^\/repos\/acme\/app\/actions\/jobs\/\d+\/rerun$/.test(path)) {
+      const status = jobRerun();
+      if (status < 300) reran.add(Number(path.split("/").at(-2)));
+      return { status, body: {} };
+    }
+    if (path.startsWith("/repos/acme/app/actions/jobs/")) {
+      // `jobRead` lets a test make this read throw (a timeout, a quota refusal) or answer a status (a deleted run's 404).
+      const failure = jobRead();
+      if (failure) { if (typeof failure === "number") return { status: failure, body: {} }; throw failure; }
+      const id = Number(path.split("/").at(-1));
+      const holder = open.find((p) => (p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).some((n) => n.databaseId === id));
+      // A job that replaced a re-run original (77 seen as 78) is its next attempt: the mock treats job 78 as the rerun of 77.
+      const nextAttempt = id === 78 ? 2 : 1;
+      // REST's `run_id` is the real workflow-run id (the rollup's databaseId is 32-bit); the rig's suites are run 500/600.
+      const suite = holder?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes?.find((n) => n.databaseId === id)?.checkSuite;
+      const runId = gigRun?.(id) ?? (suite?.workflowRun?.databaseId ?? (id >= 90 ? 600 : 500));
+      return { status: 200, body: { steps, status: "completed", started_at: new Date(Date.now() - 11 * 60_000).toISOString(), completed_at: new Date(Date.now() - 10 * 60_000).toISOString(), head_sha: holder?.headRefOid, check_run_url: `https://api.github.com/repos/acme/app/check-runs/${id}`, run_attempt: nextAttempt, run_id: runId, ...job } };
+    }
     if (path.endsWith("/update-branch")) {
       const m = updateByMethod?.[body?.update_method];
       if (m?.throw) throw new Error(`The operation was aborted due to timeout`);
       return { status: m?.status ?? update, body: m?.body ?? updateBody ?? (update === 422 ? { message: "merge conflict between base and head" } : {}) };
     }
     if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
-    if (method === "POST" && path.endsWith("/rerun-failed-jobs")) return { status: rerun(), body: {} };
+    if (method === "POST" && path.endsWith("/rerun-failed-jobs")) {
+      const r = rerun();
+      if (r?.throw) throw r.throw; // a POST that never gets an answer (a timeout, a quota refusal)
+      return { status: r, body: {} };
+    }
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
   };
@@ -166,7 +206,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, merges, watch, cacheDir, agentPr, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
+  return { woke, gh, merges, watch, cacheDir, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -213,6 +253,111 @@ test("red checks whose job never started are re-run once at the head, with no wa
   assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 1);
   assert.equal(c.woke.length, 0);
 });
+
+// A check run GitHub left in_progress while its Actions job finished: the job is re-run at its source, once per head, so
+// GitHub reposts the check run the merge gate reads. These use check run 77 (redChecks' databaseId) with its job completed.
+const stuckChecks = (databaseId = 77) => ({ state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: `CR_${databaseId}`, databaseId, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } }] } });
+const stuckPr = (n, databaseId = 77, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: stuckChecks(databaseId) } }] }, ...o });
+
+
+test("a check run still in_progress after its job completed is re-run once at that head, and a healthy PR asks for none", async (t) => {
+  const c = await rig(t);
+  c.set([c.agentPr(40, stuckPr(40))]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length, 1, "re-run once at the head, not again next tick");
+  const healthy = await rig(t);
+  healthy.set([healthy.agentPr(41)]);
+  await healthy.watch.tick(); await healthy.watch.tick();
+  assert.ok(!healthy.gh.some((g) => g.endsWith("/rerun")), "a completed check run asks for nothing");
+  // A job that finished seconds ago is inside the grace period: a fresh check run can lag, so nothing is re-run yet.
+  const fresh = await rig(t, { job: { completed_at: new Date(Date.now() - 30_000).toISOString() } });
+  fresh.set([fresh.agentPr(42, stuckPr(42))]);
+  await fresh.watch.tick();
+  assert.ok(!fresh.gh.includes("POST /repos/acme/app/actions/jobs/77/rerun"), "a job inside the grace period is waited for");
+});
+
+test("a wedged check run's job re-run GitHub refused is asked again after its backoff, not recorded as handled", async (t) => {
+  const c = await rig(t, { jobRerun: () => 502 });
+  c.set([c.agentPr(43, stuckPr(43))]);
+  await c.watch.tick();
+  const key = "acme/app:h43:77";
+  const asks = () => c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length;
+  assert.equal(asks(), 1);
+  const db = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"));
+  assert.match(String(db["acme/app"].reran[key]), /^retry:/, "a refusal is not recorded as a re-run");
+  await c.watch.tick();
+  assert.equal(asks(), 1, "inside the backoff nothing is asked again");
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { ...db["acme/app"], reran: { [key]: `retry:${new Date(Date.now() - 60_000).toISOString()}` } } }));
+  await c.watch.tick();
+  assert.equal(asks(), 2, "past the backoff it is asked again instead of staying unhandled");
+});
+
+test("a check run still wedged 20 minutes after its re-run wakes its task once at that head, not again", async (t) => {
+  const c = await rig(t);
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  c.set([c.agentPr(44, stuckPr(44))]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h44:500:image-changes": { at: asked, accepted: true, job: 77 } } } }));
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.length, 1, "told once at this head");
+  assert.equal(c.woke[0].task, "ACME-44");
+  assert.match(c.woke[0].text, /still `in_progress` at `h44`.*merge gate is held by it/);
+  assert.doesNotMatch(c.woke[0].text, /image-changes/, "the workflow's check name never enters the wake");
+  // A head the re-run was just asked at waits for the interval: nothing is reported yet.
+  const fresh = await rig(t);
+  fresh.set([fresh.agentPr(45, stuckPr(45))]);
+  await fresh.watch.tick(); await fresh.watch.tick();
+  assert.equal(fresh.woke.length, 0, "inside the interval nothing is reported");
+});
+
+test("a refused re-run is reported after the interval, and a check job still running is not reported", async (t) => {
+  // A refused re-run keeps the first ask's clock, so the check is reported rather than retried unseen.
+  const c = await rig(t, { jobRerun: () => 502 });
+  c.set([c.agentPr(46, stuckPr(46))]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h46:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false, job: 77 } } } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1);
+  assert.match(c.woke[0].text, /the request to re-run the job was refused/);
+  // A replacement job still queued or running is not stuck: nothing is reported for it.
+  const running = await rig(t, { job: { status: "in_progress", completed_at: null } });
+  running.set([running.agentPr(49, stuckPr(49))]);
+  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h49:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true, job: 77 } } } }));
+  await running.watch.tick();
+  assert.equal(running.woke.length, 0, "a re-run still running is not a stuck check");
+});
+
+test("an Actions read that throws does not stop another PR's merge", async (t) => {
+  let open = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const x of req) body += x;
+    if (req.url === "/v1/wakes") return res.writeHead(200).end("{}");
+    if (req.url === "/v1/merges") { merges.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ filed: { id: "r1", tier: 0, state: "claimed" } })); }
+    res.writeHead(200).end(JSON.stringify({ status: "in_progress", records: [] }));
+  });
+  t.after(() => kernel.s.close());
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const merges = [];
+  const gh = async (method, path) => {
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    const head = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/)?.[1];
+    if (head) {
+      const nodes = open.find((p) => p.headRefOid === head)?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+      const runs = nodes.map((n) => ({ id: n.databaseId, node_id: n.id, name: n.name, status: String(n.status ?? "").toLowerCase(), app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${n.databaseId}` }));
+      return { status: 200, body: { total_count: runs.length, check_runs: runs } };
+    }
+    if (path.startsWith("/repos/acme/app/actions/jobs/")) throw new Error("The operation was aborted due to timeout");
+    return { status: 200, body: {} };
+  };
+  const real = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
+  t.after(() => real.stop());
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/47", { task: "ACME-47", branch: "b47" });
+  open = [pr(47, { author: { __typename: "Bot", login: "aidenhq" } }), pr(48, { ...stuckPr(48, 77), number: 48, url: "https://github.com/acme/app/pull/48", headRefOid: "h48", headRefName: "b48", author: { __typename: "Bot", login: "aidenhq" } })];
+  await real.tick();
+  const rows = JSON.parse(readFileSync(join(cacheDir, "pr-watch.json"), "utf8"))["acme/app"];
+  assert.match(String(rows.reran?.["acme/app:h48:77"]), /^retry:/, "the unanswered read backs off instead of being lost");
+  assert.deepEqual(merges.map((m) => m.number), [47], "the PR after it still reached its merge");
+});
+
 
 test("a check re-run GitHub refused is asked again rather than recorded as handled", async (t) => {
   const c = await rig(t, { steps: [], rerun: () => 502 });
@@ -621,4 +766,498 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   text = `code review: ${"y".repeat(5000)}`;
   await changing.watch.tick();
   assert.ok(changing.woke[2].text.length <= 2000 && /code_review_resolve.*posted for you\. Nothing else\.$/s.test(changing.woke[2].text), "long findings are cut, never the instructions");
+});
+
+// The rollup's CheckRun `id` is the check run's GraphQL node id; REST's `node_id` is the same value. A wedged check is the
+// merge's when the rollup shows that very check run pending, never a newer check run that merely shares its display name.
+test("a wedged check is matched to the rollup by node id, so a same-named newer check does not wake the task", async (t) => {
+  const rollup = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_new", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, {
+    // REST still lists the old run as unfinished; the rollup now holds the newer one under the same display name.
+    restRuns: (head) => [{ id: 77, node_id: "CR_old", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/77` }],
+  });
+  c.set([c.agentPr(50, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h50:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h50:77": asked },
+  } }));
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.filter((w) => /merge gate is held/.test(w.text)).length, 0, "the newer check run is not the wedged one");
+  assert.equal(c.woke.length, 0);
+});
+
+test("a red named check beats a wedged pending one: no wake claims the merge gate is held", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, {
+    restRuns: () => [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/77` }],
+  });
+  c.set([c.agentPr(51, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h51:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h51:77": asked },
+  } }));
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.filter((w) => /merge gate is held/.test(w.text)).length, 0, "a red head is the red-head rules' to wake, not the wedge report's");
+  // The failure is still actionable while another check is pending, so the task hears about it, without the leave-it-alone advice.
+  assert.equal(c.woke.length, 1, "the mixed red/wedged head wakes once about the failure");
+  assert.match(c.woke[0].text, /checks failed at/);
+  assert.doesNotMatch(c.woke[0].text, /Leave the head alone/);
+});
+
+test("two PRs at one head share one accepted re-run ask", async (t) => {
+  // PR 52 asks for job 77's re-run and GitHub takes it; GitHub then posts the replacement as job 78 (attempt 2), still
+  // wedged. PR 53 at the same head must see the shared ask, not re-run the replacement again.
+  let replacement = false;
+  const c = await rig(t, {
+    restRuns: (head) => {
+      const id = replacement ? 78 : 77;
+      return [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${id}` }];
+    },
+  });
+  c.set([c.agentPr(52, { ...stuckPr(52, 77), headRefOid: "h70" }), c.agentPr(53, { ...stuckPr(53, 77), headRefOid: "h70" })]);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length, 1, "one ask for the head, not one per PR");
+  replacement = true;
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/78/rerun").length, 0, "the replacement job is not re-run by the second PR");
+});
+
+// PROBES_PER_PASS Actions job reads per PR on the recovery paths: later PRs are still scanned in the same tick.
+test("recovery probes are bounded per PR, so a PR with many unfinished checks does not hold the next PR's merge", async (t) => {
+  const many = (n) => ({ state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: n }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `job-${i + 1}`, status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } })) } });
+  const c = await rig(t);
+  // The first PR (oldest) has 12 unfinished checks; the second is green and must still have its merge filed this tick.
+  c.set([c.agentPr(54, { commits: { nodes: [{ commit: { statusCheckRollup: many(12) } }] }, headRefOid: "h54" }), c.agentPr(55)]);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10 - 2, "its budget less the failed-check reserve, then the rest wait for the next tick");
+  assert.equal(c.merges.length, 1, "the green PR's merge is still filed in the same pass");
+});
+
+// The budget is per PR: an older PR with many unfinished checks spends only its own probes, so a newer PR's recovery
+// still happens in the same pass instead of queueing behind it for many ticks.
+test("a probe budget spent on an older PR does not starve a newer PR's wedged check", async (t) => {
+  const many = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: 12 }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `old-${i + 1}`, status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } })) } };
+  const one = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: "CR_90", databaseId: 90, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 600 } } }] } };
+  const c = await rig(t, {
+    restRuns: (head) => head === "h60"
+      ? Array.from({ length: 12 }, (_, i) => ({ id: i + 1, node_id: `CR_${i + 1}`, name: `old-${i + 1}`, status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${i + 1}` }))
+      : [{ id: 90, node_id: "CR_90", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 600 }, details_url: `https://github.com/acme/app/actions/runs/600/job/90` }],
+  });
+  // Newest first, as GitHub's query returns them: 60 is the older PR.
+  c.set([c.agentPr(61, { commits: { nodes: [{ commit: { statusCheckRollup: one } }] }, headRefOid: "h61" }), c.agentPr(60, { commits: { nodes: [{ commit: { statusCheckRollup: many } }] }, headRefOid: "h60" })]);
+  await c.watch.tick();
+  const probesFor = (re) => c.gh.filter((g) => re.test(g)).length;
+  assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/([0-9]|10|11|12)$/), 10 - 2, "the older PR stops at its own budget");
+  assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/90$/), 1, "the newer PR still gets its own probe this pass");
+  assert.ok(c.gh.includes("GET /repos/acme/app/actions/jobs/90"), "the newer PR's check is probed in the same pass");
+});
+
+// A head with more failed jobs than one budget covers: the next pass finishes judging and asks for the re-run, rather than
+// reading the same first slice again or waking the task for a job that only looks red.
+test("a never-started check whose job the budget could not read is judged on the next pass, then re-run", async (t) => {
+  const fails = (count) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: count }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `job-${i + 1}`, status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } })) } });
+  const c = await rig(t, {
+    steps: [],
+    restRuns: () => Array.from({ length: 11 }, (_, i) => ({ id: i + 1, node_id: `CR_${i + 1}`, name: `job-${i + 1}`, status: "completed", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${i + 1}` })),
+  });
+  c.set([c.agentPr(62, { commits: { nodes: [{ commit: { statusCheckRollup: fails(11) } }] }, headRefOid: "h62" })]);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10, "the first pass reads ten");
+  assert.equal(c.woke.length, 0, "an unprobed job never looks like a judged one: no red-head wake");
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 0);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 11, "the next pass reads only the one left");
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 1, "all eleven judged: the re-run is asked");
+  assert.equal(c.woke.length, 0);
+});
+
+// 06e6998984655358: the re-run is posted to the job's own REST run_id, never the rollup's 32-bit workflowRun.databaseId.
+test("a never-started re-run is posted to the job's REST run id, not the rollup's truncated one", async (t) => {
+  const c = await rig(t, { steps: [], gigRun: () => 3000000000 });
+  // The rollup's databaseId (500) is what the old code would have used; 3000000000 does not fit a 32-bit Int.
+  c.set([c.agentPr(63, redPr(63))]);
+  await c.watch.tick();
+  assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/3000000000/rerun-failed-jobs"), "the job's REST run id is the re-run's target");
+  assert.ok(!c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "the rollup's databaseId is never the target");
+});
+
+// c0dde13015a83897: a probe that throws is that PR's problem, not the repo pass's: another PR is still scanned.
+test("a throttled or timed-out job read in neverStarted does not skip the repo's other PRs", async (t) => {
+  let fail = true;
+  const c = await rig(t, { steps: [], jobRead: () => (fail ? Object.assign(new Error("The operation was aborted due to timeout"), { cause: "timeout" }) : undefined) });
+  c.set([c.agentPr(64, { ...redPr(64), headRefOid: "h64" }), c.agentPr(65)]);
+  await c.watch.tick();
+  assert.equal(c.woke.filter((w) => /pull\/64/.test(w.text ?? "")).length, 0, "the unread head is not woken for a failure it may not have");
+  assert.equal(c.merges.length, 1, "the second PR's green merge is still filed in the same pass");
+  fail = false;
+  await c.watch.tick();
+  assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "the next pass reads the job and asks the re-run");
+});
+
+// c06746a536b273f8: a probe carries a deadline, so the quota wait is bounded instead of stalling the pass.
+test("a recovery probe bounds its rate-limit wait, so a quota window cannot hold the pass", async (t) => {
+  const c = await rig(t);
+  c.set([c.agentPr(66, stuckPr(66))]);
+  await c.watch.tick();
+  assert.ok(c.jobProbeOpts.length >= 1, "the job was read");
+  for (const o of c.jobProbeOpts) assert.equal(typeof o.deadline, "number", "every probe carries a deadline the client stops waiting at");
+});
+
+// 335094309b3b3ef9: a draft is refused by the gate before any check is read, so no "the gate is held" wake, and the
+// once-per-head report is not spent: marking it ready later still reports.
+test("a draft PR gets no held-merge wake, and a ready one does", async (t) => {
+  const c = await rig(t);
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  c.set([c.agentPr(67, { ...stuckPr(67), isDraft: true })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h67:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h67:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "the gate refuses a draft before it reads a check: nothing to report as holding it");
+  c.set([c.agentPr(67, { ...stuckPr(67), isDraft: false })]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "marked ready, the same wedge now holds the merge and is reported");
+  assert.match(c.woke[0].text, /merge gate is held by it/);
+});
+
+// f31048674ac8c6c3: a failed check beside a wedged one is actionable, so the wake names the failure instead of "leave it alone".
+test("a red check beside a wedged one wakes the task about the failure, not with leave-it-alone advice", async (t) => {
+  const rollup = (red) => ({ state: red ? "FAILURE" : "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    ...(red ? [{ __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } }] : []),
+  ] } });
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, { restRuns: () => [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" }] });
+  c.set([c.agentPr(68, { commits: { nodes: [{ commit: { statusCheckRollup: rollup(true) } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h68:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h68:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the mixed state wakes the task");
+  assert.match(c.woke[0].text, /checks failed at/, "the actionable failure is named");
+  assert.doesNotMatch(c.woke[0].text, /Leave the head alone/, "not the leave-it-alone advice");
+  assert.doesNotMatch(c.woke[0].text, /unit/, "the check's name never enters the wake");
+});
+
+// self-review: the REST check-runs listing is the recovery paths' first read, so it carries the same read deadline as a probe.
+test("the recovery check-runs listing bounds its rate-limit wait like a job probe", async (t) => {
+  const c = await rig(t);
+  c.set([c.agentPr(69, stuckPr(69))]);
+  await c.watch.tick();
+  assert.ok(c.headRunsOpts.length >= 1, "the head's check runs were listed");
+  for (const o of c.headRunsOpts) assert.equal(typeof o.deadline, "number", "every recovery listing carries a read deadline");
+});
+
+// self-review: changes requested fails the gate before any check is read, so no wake claims a wedged check holds the merge.
+test("a head with changes requested gets no held-merge wake for its wedged check", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t);
+  c.set([c.agentPr(70, { ...stuckPr(70), reviewDecision: "CHANGES_REQUESTED" })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h70:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h70:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "the gate refuses the review state first: the wedge is not what holds the merge");
+  const latest = await rig(t);
+  latest.set([latest.agentPr(71, { ...stuckPr(71), latestOpinionatedReviews: { nodes: [{ state: "CHANGES_REQUESTED" }] } })]);
+  writeFileSync(join(latest.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h71:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h71:77": asked },
+  } }));
+  await latest.watch.tick();
+  assert.equal(latest.woke.length, 0, "the opinionated reviews' state counts too, exactly as merge-gate reads it");
+});
+
+// self-review: a red check whose job never started is the environment's: re-run it, never wake the task to push.
+test("a never-started red beside a wedged check is re-run, not woken as a fix-and-publish", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  // The red job 78 has no steps: it never started, so the environment owns it (the rig's default `steps` is empty for that job).
+  const c = await rig(t, { steps: [] });
+  c.set([c.agentPr(72, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h72:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h72:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "a never-started red is the environment's: the re-run is its fix, not a push");
+  assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "its failed jobs are re-run instead");
+});
+
+// self-review: a wedge that only went to the log must not consume the head's once-only failure wake.
+test("a log-only wedge report does not suppress a later red head's wake at the same head", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t);
+  // First the wedge is logged (a draft, so the gate holds nothing and no red check exists): the log-only path stamps its marker.
+  c.set([c.agentPr(73, { ...stuckPr(73), isDraft: true })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h73:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h73:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "nothing to wake for a wedge that holds no required check");
+  // Same head, now with a red check beside the wedge: the failure is actionable and must still be told.
+  const redPlusWedge = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  c.set([c.agentPr(73, { isDraft: false, commits: { nodes: [{ commit: { statusCheckRollup: redPlusWedge } }] } })]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the log-only line never stood in for telling the task about a failure");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a re-run request that throws is that head's backoff, not the repo scan's end: a later green PR still merges.
+test("a never-started re-run whose POST throws does not skip the repo's other PRs", async (t) => {
+  const c = await rig(t, { steps: [], rerun: () => ({ throw: Object.assign(new Error("The operation was aborted due to timeout"), { cause: "timeout" }) }) });
+  c.set([c.agentPr(74, { ...redPr(74), headRefOid: "h74" }), c.agentPr(75)]);
+  await c.watch.tick();
+  assert.equal(c.merges.length, 1, "the second, green PR's merge is still filed in the same pass");
+  const saved = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"))["acme/app"];
+  assert.match(saved.reran["https://github.com/acme/app/pull/74:h74"], /^retry:/, "the failed request backs off rather than counting as handled");
+});
+
+// self-review: a conflicting head is the rebase rules' to move, so the wedge report never tells its task to leave it alone.
+test("a conflicting head gets no leave-it-alone wedge wake", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t);
+  c.set([c.agentPr(76, { ...stuckPr(76), mergeStateStatus: "DIRTY" })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h76:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h76:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(!c.woke.some((w) => /Leave the head alone/.test(w.text ?? "")), "a conflicted head has a move to make: never leave-it-alone");
+});
+
+// self-review: an unreadable check-runs listing leaves the classification pending, so no red-head wake for a failure CI may
+// never have run. The next tick reads it and re-runs the job.
+test("a failed listing defers the red-head wake instead of fixing a failure CI may not have run", async (t) => {
+  let broken = true;
+  const c = await rig(t, { steps: [], restRuns: () => { if (broken) throw new Error("The operation was aborted due to timeout"); return [{ id: 77, node_id: `CR_77`, name: "test", status: "completed", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" }]; } });
+  c.set([c.agentPr(77, redPr(77))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "an unread list is not proof the failure is the code's");
+  broken = false;
+  await c.watch.tick();
+  assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "the next pass judges it and re-runs the never-started job");
+  assert.equal(c.woke.length, 0, "still no wake: the job never started");
+});
+
+// self-review: a draft's mixed state is not told to publish, and marking it ready still wakes its task for the failure.
+test("a draft with a red and a wedged check is not told to publish, and its ready head still is", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, { steps: [{ name: "Build" }] });
+  c.set([c.agentPr(79, { isDraft: true, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h79:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h79:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "a draft is not told to publish");
+  c.set([c.agentPr(79, { isDraft: false, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "marked ready, the failure is told once: its report was not spent on the draft");
+});
+
+// self-review: a job that is permanently gone (404) is not deferred forever: the red-head rules report the failure.
+test("a deleted job's 404 does not defer the red-head wake on every tick", async (t) => {
+  const c = await rig(t, { jobRead: () => 404 });
+  c.set([c.agentPr(80, redPr(80))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent 404 is not this rule's: the failure is reported");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a cancelled task's PR is closed, never woken for its checks' state first.
+test("a cancelled task's wedged PR is not woken before it is closed", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, { taskStatus: "cancelled" });
+  c.set([c.agentPr(81, stuckPr(81))]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h81:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h81:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "a cancelled task has nobody to wake; its PR is closed instead");
+  assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/81"), "the PR is closed as the lifecycle rule says");
+});
+
+// self-review: a credential that cannot read Actions (403) is permanent too, so the failure is still reported.
+test("an Actions permission refusal (403) still reports the red head", async (t) => {
+  const c = await rig(t, { jobRead: () => 403 });
+  c.set([c.agentPr(82, redPr(82))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent permission refusal is not this rule's: the failure is reported");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a permanent check-runs listing refusal (403) is not this rule's, so a real red head is still reported.
+test("a permanent check-runs listing refusal still reports the red head", async (t) => {
+  const c = await rig(t, { listingStatus: () => 403 });
+  c.set([c.agentPr(83, redPr(83))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent refusal does not defer the failure forever");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a head behind main is the update rule's, so the mixed-state wake does not send its task to publish it.
+test("a behind head with a red and a wedged check is not told to publish", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, { steps: [{ name: "Build" }] });
+  c.set([c.agentPr(84, { mergeStateStatus: "BEHIND", commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h84:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h84:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(!c.woke.some((w) => /Fix the failure on the PR's branch/.test(w.text ?? "")), "the update rule owns a behind head");
+});
+
+// self-review: the client answers a 404 as a typed "unreachable" need, not a status: a deleted job must not defer forever.
+test("a typed unreachable need on a deleted job's read reports the red head", async (t) => {
+  const c = await rig(t, { jobRead: () => Object.assign(new Error("acme/app isn't reachable with your GitHub account"), { need: { cause: "unreachable", repo: "acme/app" } }) });
+  c.set([c.agentPr(85, redPr(85))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a job gone for good is not this rule's: the failure is reported");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a wedged REST check the head's rollup no longer shows does not make the mixed-state report fire.
+test("a stale REST wedged check absent from the rollup does not wake a red head", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_90", databaseId: 90, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  // REST lists an old check (77) that the rollup no longer has; the head's own check is 90.
+  const c = await rig(t, { steps: [{ name: "Build" }], restRuns: () => [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" }] });
+  c.set([c.agentPr(86, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h86:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h86:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(!c.woke.some((w) => /Fix the failure on the PR's branch/.test(w.text ?? "")), "a stale wedged check is not this head's");
+});
+
+// self-review: a listing the client refuses as a typed need (404) is permanent too, so the red head is reported.
+test("a typed unreachable need on the check-runs listing still reports the red head", async (t) => {
+  const c = await rig(t, { listingThrow: () => Object.assign(new Error("acme/app isn't reachable"), { need: { cause: "unreachable", repo: "acme/app" } }) });
+  c.set([c.agentPr(87, redPr(87))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent listing refusal does not defer the failure forever");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// fd7e47a6502ae698: a credential without Actions read (a typed `scope` refusal) is as permanent as a 404: report the red head.
+test("an Actions scope refusal does not defer the red-head wake", async (t) => {
+  const c = await rig(t, { jobRead: () => Object.assign(new Error("acme/app needs a scope this sign-in has not granted"), { need: { cause: "scope", scope: "repo" } }) });
+  c.set([c.agentPr(88, redPr(88))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent scope refusal is not this rule's: the failure is reported");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// f860612ff95e4e6a: a later attempt is a replacement only of the workflow run that was re-run, never of a same-named sibling.
+test("a same-named job on another workflow run is not taken as the re-run's replacement", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  // The ledger's ask was for job 77 of run 500; REST now lists a different job, 78, on attempt 2 of run 600. It merely shares
+  // the suite and display name, so it is a job of its own and must get its own ask.
+  const c = await rig(t, { gigRun: () => 600, job: { run_attempt: 2 },
+    restRuns: () => [{ id: 78, node_id: "CR_78", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/600/job/78" }] });
+  c.set([c.agentPr(89, stuckPr(89, 78))]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h89:500:image-changes": { at: asked, accepted: true, job: 77, run: 500 } },
+    reran: { "acme/app:h89:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(c.gh.includes("POST /repos/acme/app/actions/jobs/78/rerun"), "another run's job is its own check and gets its own ask");
+});
+
+// e72fb15673cc76c4: only a check the head's rollup still shows is re-run; a REST check the rollup replaced is left alone.
+test("a wedged REST check the rollup no longer shows is never re-run", async (t) => {
+  const c = await rig(t, { restRuns: () => [
+    { id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" },
+  ] });
+  // The head's rollup carries a *new* check run (CR_NEW) for the same job number: REST's 77 (CR_77) is the replaced one.
+  const rollup = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: "CR_NEW", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } }] } };
+  c.set([c.agentPr(90, { ...stuckPr(90, 77), commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  await c.watch.tick();
+  assert.ok(!c.gh.some((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun"), "an obsolete check's job is not re-run");
+});
+
+// self-review: a typed `scope` refusal on the listing is permanent, exactly as the job probe treats it.
+test("an Actions scope refusal on the check-runs listing still reports the red head", async (t) => {
+  const c = await rig(t, { listingThrow: () => Object.assign(new Error("no Checks read"), { need: { cause: "scope", scope: "repo" } }) });
+  c.set([c.agentPr(91, redPr(91))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent scope refusal does not defer the failure forever");
+});
+
+// self-review: a PR the lifecycle rule is about to close as superseded spends no CI and wakes nobody.
+test("a superseded PR's wedged check is neither re-run nor reported", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t);
+  // Both PRs belong to one task: 93 is the newer branch it published, so 92 is superseded.
+  notePrTask(c.cacheDir, "https://github.com/acme/app/pull/93", { task: "ACME-92", branch: "b93" });
+  c.set([c.agentPr(92, stuckPr(92)), pr(93, { author: { __typename: "Bot", login: "aidenhq" } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h92:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h92:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/92"), "the older PR is closed as superseded");
+  assert.equal(c.woke.filter((w) => /pull\/92/.test(w.text ?? "")).length, 0, "a PR about to be closed is not woken for its checks");
+  assert.ok(!c.gh.some((g) => g.startsWith("POST /repos/acme/app/actions/jobs/")), "no recovery run is spent on it");
+});
+
+// self-review: a re-run the credential can never be allowed to send is not retried forever: the red-head rules report the head.
+test("a permanent refusal to re-run a never-started job still reports the red head", async (t) => {
+  const c = await rig(t, { steps: [], rerun: () => ({ throw: Object.assign(new Error("no Actions write"), { need: { cause: "scope", scope: "repo" } }) }) });
+  c.set([c.agentPr(94, redPr(94))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the refusal is permanent, so the failure is reported rather than retried forever");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a run GitHub already took a re-run for is not asked again when another run at the head was refused.
+test("an accepted re-run is remembered per run, so a refused sibling run's retry never re-posts it", async (t) => {
+  const c = await rig(t, { steps: [], gigRun: (id) => (id === 77 ? 500 : 600), rerun: () => 502 });
+  const twoRuns = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "a", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "b", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 600 } } },
+  ] } };
+  c.set([c.agentPr(95, { commits: { nodes: [{ commit: { statusCheckRollup: twoRuns } }] } })]);
+  await c.watch.tick();
+  const posts = (run) => c.gh.filter((g) => g === `POST /repos/acme/app/actions/runs/${run}/rerun-failed-jobs`).length;
+  assert.deepEqual([posts(500), posts(600)], [1, 1], "the first pass asks each run once");
+  // 500 was accepted; 600 was refused, so only 600 is retried after its backoff.
+  const db = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"));
+  db["acme/app"].reranRuns = { "acme/app:h95:500": new Date().toISOString() };
+  db["acme/app"].reran = { "https://github.com/acme/app/pull/95:h95": `retry:${new Date(Date.now() - 60_000).toISOString()}` };
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify(db));
+  await c.watch.tick();
+  assert.deepEqual([posts(500), posts(600)], [1, 2], "the accepted run is never posted again; the refused one is retried");
 });
