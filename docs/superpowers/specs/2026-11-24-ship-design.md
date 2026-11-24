@@ -340,7 +340,10 @@ blocker>".
 - **Checks:** it judges only the checks the target branch's rules require. No required checks means green, confirmed from the
   rules, not inferred from missing evidence. The rollup, reviews and changed files are paginated.
 - **Rules:** it reads the actual target branch's rules (`GET /repos/{r}/rules/branches/{b}` plus classic protection).
-- **Base branch:** a PR whose base isn't the default branch is reported as "unsupported base", never as failed.
+- **Base branch:** a PR whose base is another open PR's head branch (a stack) waits on that PR ("waiting on #A"). Once A
+  merges, ship retargets it onto the default branch (github's `retarget`; GitHub does it itself only when A's branch is deleted)
+  and it takes the normal path: the repair merges the base in, then checks, review and merge. Down a chain too. Any other
+  non-default base waits as "unsupported base", never failed.
 - **Waits:** `BLOCKED` with a review requirement is a wait. `DIRTY`/`BEHIND` on a ship PR return `repair`.
 
 **The path.** `mergePath()` picks it from the rules.
@@ -435,8 +438,6 @@ The ported pr-watch tests also run.
 
 Cut to keep ship simple **(owner: handle the common path, fix rare cases when they show up)**. Each one surfaces as a
 `hold`, a refused write or an error in the report, never silently:
-- **Stacks and other non-default bases.** Not retargeted or merged. They report "unsupported base" until a person retargets
-  them.
 - **A merge-rate limit per repo.** `paused` is the only kill switch.
 - **Dequeuing.** Ship never removes a PR from the merge queue. A pause or hold stops new actions, and anything already queued
   finishes in the queue.

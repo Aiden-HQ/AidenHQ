@@ -9,7 +9,7 @@ import { discovered } from "./actions.ts";
 import { withFooter } from "./aidenhq-sdk/attribution.ts";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
-import { handBack, intake, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
+import { handBack, intake, recordTask, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
 import { retryReport, round, tell, type Decision, type RoundDeps } from "./rounds.ts";
 import { canApprove, judge, type ChangedFile, type Judged, type Verdict } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
@@ -26,7 +26,7 @@ export type AdoptedOptions = {
   /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
    * whether the branch merges through a merge queue, the required checks red on the PR's latest merge_group run, and whether an
    * approval of the head is all it waits on. */
-  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json } }): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
+  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
   /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
   effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
@@ -142,6 +142,21 @@ export function adoptedPass(o: AdoptedOptions) {
     o.log("task's PR closed", { pr: view.url, task, branchDeleted: !!d && d.status < 300 });
     return true;
   };
+  /**
+   * The PR this one stood on has left the open list: merged, this PR goes onto the default branch (github's `retarget`, once per
+   * head; GitHub does it itself only when the merged branch is deleted). True when it was asked this pass.
+   */
+  const retargeted = async (a: Kept, view: PrView, to: string): Promise<boolean> => {
+    if (a.retarget?.head === view.head) return false;
+    const under = await o.gh("GET", `/repos/${view.repo}/pulls/${a.stack!.number}`);
+    if (under.status >= 300 || !under.body?.merged_at) return false;
+    const holder = a.task || a.holder ? undefined : await recordTask(o.kernel, view, a);
+    if (holder) a = { ...a, holder };
+    const r = await o.kernel.call("POST", "/v1/writes", { kind: "github.retarget", task: a.task ?? a.holder, args: { repo: view.repo, number: view.number, head: view.head, generation: a.generation, base: view.base, to } });
+    o.state.put({ ...a, retarget: { head: view.head, record: String(r.id) }, did: [...(a.did ?? []), `retargeted onto \`${to}\`: #${a.stack!.number} merged`] } as Kept);
+    o.log("stacked PR retargeted", { pr: view.url, from: view.base, to });
+    return true;
+  };
   return {
     /** A new pass: roles are read again. */
     begin() { roles.clear(); },
@@ -150,7 +165,7 @@ export function adoptedPass(o: AdoptedOptions) {
      * `ctx.newer`: a newer open PR of that same task; `ctx.recover`: its CI recoveries (ci-recover.ts), run once its task's
      * lifecycle has kept it (a PR about to be closed or left for a successor spends no CI).
      */
-    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number]), ctx: { opener?: string; newer?: string; recover?: () => Promise<Recovery> } = {}) {
+    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number]), ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery> } = {}) {
       const view = viewOf(repo, main.name, pr);
       // The task as the kernel keeps it, read once a pass: its id names the adoption's task, its state the PR's lifecycle.
       const work = ctx.opener ? await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(ctx.opener)}`).catch((e: Error) => (o.log("task read failed", { pr: view.url, err: String(e.message).slice(0, 200) }), undefined)) : undefined;
@@ -171,7 +186,11 @@ export function adoptedPass(o: AdoptedOptions) {
       // A stalled hold is round()'s to clear on a new head; any other hold, or a pause, only retries a report that failed.
       const resumes = a.hold?.kind === "stalled" && !!a.counters && a.counters.head !== view.head;
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
-      const v = await o.decision(repo, pr.number, view.head, { pr, main });
+      // A stack: it waits on the PR whose branch is its base (decide says so); once that PR merged, it is retargeted onto the
+      // default branch and then takes the normal path (the base merged in by the repair, checks, review, merge). Down a chain too.
+      if (ctx.stackedOn && (a.stack?.number !== ctx.stackedOn.number || a.stack.branch !== view.base)) { a = { ...a, stack: { number: ctx.stackedOn.number, branch: view.base } }; o.state.put(a); }
+      if (!ctx.stackedOn && a.stack && a.stack.branch === view.base && view.base !== main.name && await retargeted(a, view, main.name)) return;
+      const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}) });
       // Red checks whose jobs never started are being re-run (ci-recover.ts): no fix is asked for a failure CI never ran.
       if (v.do === "fix_ci" && recovery?.envRed) Object.assign(v, { do: "wait", why: "re-running required checks whose jobs never started" });
       // A check run still pending well after its job finished and was re-run: no push fixes it, so its owner is told once per head.

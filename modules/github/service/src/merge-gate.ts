@@ -138,7 +138,7 @@ export type Action = "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "
  * - `required`: the check names the target branch's rules require (requiredChecks): only those are judged, and none required is green;
  * - `checks`: every check on the head, every page.
  */
-export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; required: string[]; checks: NamedCheck[] };
+export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; required: string[]; checks: NamedCheck[]; /** The open PR whose head branch this PR's base is (a stack): it waits on that PR. */ stackedOn?: number };
 
 /**
  * The one readiness rule: what to do with one PR from `data` (PR_QUERY's answer, withGate applied) and its bound `head`.
@@ -146,8 +146,8 @@ export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict;
  * "merge" merges.ts still asks code review's gate; only our own repos (agents org, product) and maintained ones reach it, so
  * the record is the review. With `ship` (an adopted PR) it never fails what a round can move: a conflict is a repair, red is a
  * fix, a missing review is a wait; it judges only the required checks, needs code review's pass where code review gates the
- * repo, and an approval on the head only where GitHub asks for one. A PR on a non-default base waits for ship (unsupported, said
- * each pass, never stored). The design review is advisory: it never holds a merge.
+ * repo, and an approval on the head only where GitHub asks for one. A PR on a non-default base waits for ship, said each pass and
+ * never stored: on the PR whose branch it stands on (a stack, which ship retargets once that PR merges), else as unsupported. The design review is advisory: it never holds a merge.
  */
 export function decide(data: Json, head: string, ship?: ShipContext): { do: Action; why?: string } {
   const pr = data?.repository?.pullRequest;
@@ -155,7 +155,7 @@ export function decide(data: Json, head: string, ship?: ShipContext): { do: Acti
   if (pr.state === "MERGED") return pr.headRefOid === head ? { do: "done", why: "already merged" } : { do: "fail", why: `merged by someone else at \`${String(pr.headRefOid).slice(0, 12)}\`, not the approved head` };
   if (pr.state !== "OPEN") return { do: "fail", why: "closed" };
   const def = data.repository.defaultBranchRef?.name;
-  if (!def || pr.baseRefName !== def) return ship ? { do: "wait", why: `non-default base unsupported (\`${pr.baseRefName}\`)` } : { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch \`${def}\`: retarget it and ask for its merge again` };
+  if (!def || pr.baseRefName !== def) return ship ? { do: "wait", why: ship.stackedOn ? `waiting on #${ship.stackedOn}` : `non-default base unsupported (\`${pr.baseRefName}\`)` } : { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch \`${def}\`: retarget it and ask for its merge again` };
   if (pr.headRefOid !== head) return { do: "fail", why: `its head moved since the merge was approved (now \`${String(pr.headRefOid).slice(0, 12)}\`): for an agent's PR the queue files its merge again at the new head once its checks are green, so there is nothing to do; any other PR needs a new merge request` };
   const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r: Json) => r.state);
   if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: ship ? "fix_review" : "fail", why: "changes are requested on it" };

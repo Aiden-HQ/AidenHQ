@@ -20,12 +20,12 @@ import { decide } from "../../github/service/src/merge-gate.ts";
 const prTasks = (dir) => join(dir, "pr-tasks.json");
 const notePrTask = (dir, url, v) => writeFileSync(prTasks(dir), JSON.stringify({ ...(existsSync(prTasks(dir)) ? JSON.parse(readFileSync(prTasks(dir), "utf8")) : {}), [url.toLowerCase()]: v }));
 /** github's decision from ship's list node (merges.ts decision), every named check required, code review's verdict as given. */
-const decisionOf = (reviewGate) => async (repo, number, head, { pr, main }) => {
+const decisionOf = (reviewGate) => async (repo, number, head, { pr, main, stackedOn }) => {
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   const checks = namedChecks(rollup);
   const data = { repository: { defaultBranchRef: { name: main.name }, pullRequest: { ...pr, state: "OPEN", baseRefName: pr.baseRefName ?? main.name, reviews: { nodes: [] }, baseRef: { compare: { behindBy: 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } } } } };
   const g = reviewGate ? await reviewGate(repo, number, head) : undefined;
-  const v = decide(data, head, { queue: false, approve: false, verdict: g, required: checks.map((c) => c.name), checks });
+  const v = decide(data, head, { queue: false, approve: false, verdict: g, required: checks.map((c) => c.name), checks, ...(stackedOn ? { stackedOn } : {}) });
   return { ...v, failing: checks.filter((c) => !c.ok && !c.pending).map((c) => c.name), dirty: pr.mergeStateStatus === "DIRTY", ...(g && g.findingsKey ? { findingsKey: g.findingsKey } : {}) };
 };
 /** Task-owned adoptions whose heads were first seen at `at` (a done task's PR closes once its head is half an hour old). */
@@ -1132,4 +1132,43 @@ test("an accepted re-run is remembered per run, so a refused sibling run's retry
   writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify(db));
   await c.watch.tick();
   assert.deepEqual([posts(500), posts(600)], [1, 2], "the accepted run is never posted again; the refused one is retried");
+});
+
+test("a stack A←B: B waits on #A; once A merges, B is retargeted onto main and then merged", async (t) => {
+  let open = [];
+  const writes = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/writes") { writes.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: `w${writes.length}`, state: "claimed" })); }
+    if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify({ state: "claimed" }));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
+  });
+  t.after(() => kernel.s.close());
+  const gh = async (method, path) => {
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path === "/repos/acme/app/pulls/1") return { status: 200, body: { state: "closed", merged_at: "2026-11-25T10:00:00Z", html_url: "https://github.com/acme/app/pull/1", head: { sha: "h1" }, base: { ref: "main" }, user: { login: "aidenhq", type: "Bot" } } };
+    return { status: 200, body: {} };
+  };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
+  t.after(() => watch.stop());
+  const agent = { author: { __typename: "Bot", login: "aidenhq" } };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/1", { task: "ACME-1", branch: "bA" });
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/2", { task: "ACME-2", branch: "bB" });
+  const A = pr(1, { ...agent, headRefName: "bA" }), B = pr(2, { ...agent, headRefName: "bB", baseRefName: "bA" });
+  const of = (kind, n) => writes.filter((w) => w.kind === kind && (w.args.number ?? w.args.prs?.[0]?.number) === n);
+
+  open = [B, A];
+  await watch.tick();
+  assert.equal(of("github.merge", 1).length, 1, "A, on main, merges");
+  assert.equal(writes.filter((w) => (w.args.number ?? w.args.prs?.[0]?.number) === 2).length, 0, "B waits on #1");
+  open = [B]; // A merged
+  await watch.tick();
+  assert.deepEqual(of("github.retarget", 2).map((w) => [w.task, w.args.base, w.args.to, w.args.head]), [["ACME-2", "bA", "main", "h2"]], "B goes onto main once");
+  await watch.tick();
+  assert.equal(of("github.retarget", 2).length, 1, "once per head");
+  open = [{ ...B, baseRefName: "main" }]; // retargeted
+  await watch.tick();
+  assert.deepEqual(of("github.merge", 2).map((w) => w.args.prs[0].base), ["main"], "then the normal path: merged into main");
 });

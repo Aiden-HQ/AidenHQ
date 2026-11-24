@@ -1,0 +1,43 @@
+{
+  "title": "github.retarget: this adopted PR, stacked on another PR's branch (`base`) that has merged, onto the default branch (`to`), only at exactly this head.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo",
+    "number",
+    "head",
+    "generation",
+    "base",
+    "to"
+  ],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "pattern": "^[\\w.-]+/[\\w.-]+$"
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[\\w./-]+$"
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[\\w./-]+$"
+    }
+  }
+}
