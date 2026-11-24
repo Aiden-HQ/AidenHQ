@@ -31,6 +31,9 @@ function store(o: { now?: () => number; testUser?: () => { email: string; apps: 
     },
     deleteSession: async (id) => { deleted.push(id); db.prepare("DELETE FROM session WHERE id = ?").run(id); },
     cookie: (token) => `${token}.sig`,
+    // The store's stand-in for Better Auth's signature: `<token>.sig` is the only signed form, any other suffix isn't.
+    verifyCookie: (value) => { const p = String(value ?? "").split("."); return p.length === 2 && p[0] && p[1] === "sig" ? p[0] : undefined; },
+    sessionLive: async (id) => db.prepare("SELECT 1 FROM session WHERE id = ?").get(id) !== undefined,
     testAccount: async (email) => ({ id: "user_test", email }),
     testUser: o.testUser ?? (() => ({ email: EMAIL, apps: [APP] })),
     appHost: (app) => (app === APP ? HOST : undefined),
@@ -137,6 +140,21 @@ test("check: only a live session for this host and app; expiry, revocation, a cl
   assert.ok(st.deleted.includes(m.id));
 });
 
+test("check reads the cookie Better Auth would: an unsigned value, or a session row that is gone, is no session", async () => {
+  const st = store();
+  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
+  assert.equal((await st.s.check({ cookie, host: HOST }))?.app, APP);
+  // The token half is a real minted token, but the cookie's signature is not: an unsigned or forged cookie never counts.
+  const token = cookie.split(".")[0]!;
+  for (const forged of [token, `${token}.other`, `${token}.sig.evil`]) assert.equal(await st.s.check({ cookie: forged, host: HOST }), null, forged);
+  // Better Auth's own row disappearing (a revoke outside this store) ends it here too, with an audit row.
+  assert.equal(st.db.prepare("SELECT 1 FROM session WHERE id = ?").get(m.id) !== undefined, true);
+  st.db.prepare("DELETE FROM session WHERE id = ?").run(m.id);
+  assert.equal(await st.s.check({ cookie, host: HOST }), null);
+  assert.ok(st.s.auditRows().some((r) => r.event === "test_session_revoked" && r.session_id === m.id && r.reason === "session-gone"));
+});
+
 test("revoke ends the session now (the tool's after-run call), and the sweep ends every session on a closed task", async () => {
   const st = store();
   const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
@@ -234,6 +252,8 @@ test("a test account is never adopted: an existing account's email is refused", 
     createSession: async () => ({ id: "x", token: "t", expiresAt: new Date().toISOString() }),
     deleteSession: async () => {},
     cookie: (t) => t,
+    verifyCookie: (v) => String(v ?? ""),
+    sessionLive: async () => true,
     testAccount: async () => { throw new Error("that email is already an account"); },
     testUser: () => ({ email: "owner@example.com", apps: [APP] }),
     appHost: () => HOST,

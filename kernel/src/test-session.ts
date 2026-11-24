@@ -27,6 +27,10 @@ export type TestSessionsDeps = {
   deleteSession: (sessionId: string) => Promise<void>;
   /** The signed cookie value Better Auth reads for a session token. */
   cookie: (token: string) => string;
+  /** The session token inside a signed cookie, or undefined when its signature doesn't verify (Better Auth's own check). */
+  verifyCookie: (value: string) => string | undefined;
+  /** Whether Better Auth's own session row is still there and live (a revoke outside this store ends the session too). */
+  sessionLive: (sessionId: string) => Promise<boolean>;
   /** The test account's Better Auth user id, made on first use (never an existing account, never an admin). */
   testAccount: (email: string) => Promise<{ id: string; email: string }>;
   /** settings.edge.test_user, re-read on use: absent means the capability is inert. */
@@ -174,10 +178,18 @@ export function createTestSessions(d: TestSessionsDeps) {
      * plus a closed task or a removed setting ending it here. Never an anonymous or front-door answer.
      */
     async check(input: { cookie: string; host: string }): Promise<{ email: string; app: string; expires: string; role: "member" } | null> {
-      const token = String(input.cookie ?? "").split(".")[0] ?? "";
+      // The cookie is the listener's own, but its signature is Better Auth's: an unsigned or altered value is no session,
+      // exactly as the admin listener would read it. Only then is the token looked up in this store.
+      const token = d.verifyCookie(String(input.cookie ?? ""));
       if (!token) return null;
       const r = d.db.prepare("SELECT id, agent_key, agent_id, task, identifier, app, host, email, expires, revoked FROM test_session WHERE token_hash = ?").get(sha(token)) as Row | undefined;
       if (!r || !live(r)) return null;
+      // Better Auth's own row can be gone (a revoke, an admin action, its own expiry) while this store's row isn't: that is a
+      // dead session, whatever the cookie says.
+      if (!(await d.sessionLive(r.id).catch(() => false))) {
+        await end(r.id, "session-gone");
+        return null;
+      }
       // A live session presented under another app's host is a different refusal from no session at all: the listener answers
       // 404 (there is no page there for this session) rather than 401 (which would tell it to sign in again).
       if (r.host !== String(input.host ?? "").toLowerCase()) throw new TestSessionError(409, "that session is for another app");

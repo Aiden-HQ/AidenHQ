@@ -22,6 +22,8 @@ function sessions(get: () => { email: string; apps: string[] } | undefined, assi
     createSession: async () => ({ id: `s-${Math.random()}`, token: `t-${Math.random()}`, expiresAt: new Date(Date.now() + 900_000).toISOString() }),
     deleteSession: async () => {},
     cookie: (t: string) => `${t}.sig`,
+    verifyCookie: (v: string) => String(v ?? "").replace(/\.sig$/, ""),
+    sessionLive: async () => true,
     testAccount: async (email: string) => ({ id: "u", email }),
     testUser: get,
     appHost: (app: string) => (app === APP ? "roadmap.example.com" : undefined),

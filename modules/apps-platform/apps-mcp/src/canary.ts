@@ -115,46 +115,47 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // wording works as long as the control is a real form control. The page may open on a landing page and link to its
     // feedback form (the starter's does): follow its own link, exactly as a person would, and let its JavaScript render.
     const tree = async () => (await within(ab("snapshot", "-i"), 6000, {})).refs || {};
-    let refs = await tree();
-    for (let i = 0; i < 3 && !Object.values(refs).some((v) => v.role === "textbox"); i++) {
-      const link = Object.entries(refs).find(([, v]) => v.role === "link" && /feedback|intake|suggest|idea|comment/i.test(v.name || ""))?.[0];
+    // The feedback form, unambiguously: a field whose own wording is about feedback. A settings page's display-name box, or a
+    // header search box, is not one. The page may instead link to its form: follow its own feedback link (never any textbox),
+    // and only stop once a feedback field is actually on the page.
+    const FEEDBACK = /feedback|intake|suggest|idea|comment|message|what would you|tell us/i;
+    const feedbackField = (refs) => Object.entries(refs).find(([, v]) => v.role === "textbox" && FEEDBACK.test([v.name, v.description].filter(Boolean).join(" ")))?.[0]
+      || (Object.values(refs).filter((v) => v.role === "textbox").length === 1 && Object.values(refs).some((v) => v.role === "button" && FEEDBACK.test(v.name || ""))
+        ? Object.entries(refs).find(([, v]) => v.role === "textbox")?.[0] : undefined);
+    let refs = await tree(), box = feedbackField(refs);
+    for (let i = 0; i < 3 && !box; i++) {
+      const link = Object.entries(refs).find(([, v]) => v.role === "link" && FEEDBACK.test(v.name || ""))?.[0];
       if (!link) break;
       await within(ab("click", "@" + link), 8000, null);
       await new Promise((ok) => setTimeout(ok, 1200));
       refs = await tree();
+      box = feedbackField(refs);
     }
-    // The feedback form, unambiguously: a field whose own wording is about feedback, beside a button that sends it. A
-    // settings page's display-name box and "Save" button is not one, and the canary never types into it.
-    const FEEDBACK = /feedback|intake|suggest|idea|comment|message|what would you|tell us/i;
-    const box = Object.entries(refs).find(([, v]) => v.role === "textbox" && FEEDBACK.test([v.name, v.description].filter(Boolean).join(" ")))?.[0]
-      || (Object.values(refs).filter((v) => v.role === "textbox").length === 1 && Object.values(refs).some((v) => v.role === "button" && FEEDBACK.test(v.name || ""))
-        ? Object.entries(refs).find(([, v]) => v.role === "textbox")?.[0] : undefined);
     if (!box) return out({ error: "no feedback field on the page", finalUrl: scrub(landed), pageTitle: title });
-    // Nothing was submitted yet: evidence is only what this action causes.
-    const submittedAt = Date.now();
     await ab("fill", "@" + box, r.text);
     // The button is the one in the form that owns the filled field, never "the first submit-like button on the page" (a header
-    // search form would otherwise be submitted instead). The filled field is focused, so its own form is the one to send.
-    // A real submit control only: an explicit submit button, or the form's only button when that one is worded like sending.
-    // A "Discard draft" type=button beside an implicit submit is never clicked.
+    // search form or a "Send message" button would otherwise be sent instead). The filled field is focused, so its own form is
+    // the one to send. A real submit control only: an explicit button or input[type=submit], or the form's only button
+    // when that one is worded like sending. A "Discard draft" type=button beside an implicit submit is never clicked, and when
+    // nothing in the field's own form can be identified the canary stops rather than guessing.
     const formSubmit = await within(ab("eval", "(() => {" +
       "const a = document.activeElement, f = a && a.closest && a.closest('form');" +
       "if (!f) return '';" +
-      "const buttons = [...f.querySelectorAll('button')];" +
-      "const explicit = buttons.filter((b) => (b.type || 'submit') === 'submit');" +
+      "const els = [...f.querySelectorAll('button, input[type=submit], input[type=image]')];" +
+      "const explicit = els.filter((b) => (b.tagName === 'INPUT' ? /^(submit|image)$/i.test(b.type) : (b.type || 'submit') === 'submit'));" +
+      "const word = (b) => (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '';" +
       "const sendish = /send|submit|share|post|feedback/i;" +
-      "const b = explicit.find((x) => sendish.test(x.textContent || '')) || explicit[0] || (buttons.length === 1 && sendish.test(buttons[0].textContent || '') ? buttons[0] : null);" +
+      "const b = explicit.find((x) => sendish.test(word(x))) || explicit[0] || (els.length === 1 && sendish.test(word(els[0])) ? els[0] : null);" +
       "if (!b) return '';" +
       "b.setAttribute('data-aidenhq-canary-submit', '1');" +
-      "return b.tagName + ':' + (b.textContent || '').trim().slice(0, 60);" +
+      "return b.tagName + ':' + word(b).trim().slice(0, 60);" +
       "})()"), 4000, {});
     const own = String(formSubmit.result ?? "");
-    if (own) await ab("click", "[data-aidenhq-canary-submit]");
-    else {
-      const button = Object.entries(refs).find(([, v]) => v.role === "button" && /send|submit|share|post|feedback/i.test(v.name || ""))?.[0];
-      if (button) await ab("click", "@" + button);
-      else await ab("press", "Enter");
-    }
+    if (!own) return out({ error: "no submit control in the feedback form (not sending anything else)", finalUrl: scrub(landed), pageTitle: title });
+    // Nothing was submitted yet: evidence starts at the click, so a validation POST a fill triggered is never read as the
+    // submission's intake.
+    const submittedAt = Date.now();
+    await ab("click", "[data-aidenhq-canary-submit]");
     // The page's own notify (and its intake call) happen in its click handler: wait for them, bounded, from the submission.
     const notifyOf = () => NET.find((n) => n.at >= submittedAt && n.method === "POST" && new URL(n.url).origin === listener && new URL(n.url).pathname === "/.aidenhq/notify");
     let notify = notifyOf();

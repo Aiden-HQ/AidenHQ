@@ -286,6 +286,15 @@ export async function openAccounts(o: AccountsOptions) {
       if (row) await ctx.internalAdapter.deleteSession(row.token);
     },
     cookie: (token) => `${token}.${createHmac("sha256", ctx.secret).update(token).digest("base64")}`,
+    // The listener's cookie is Better Auth's own signed form: only a signature this secret produced names a token.
+    verifyCookie: (value) => {
+      const [token, sig] = String(value ?? "").split(".");
+      if (!token || !sig) return undefined;
+      const want = createHmac("sha256", ctx.secret).update(token).digest("base64");
+      const a = Buffer.from(sig), b = Buffer.from(want);
+      return a.length === b.length && timingSafeEqual(a, b) ? token : undefined;
+    },
+    sessionLive: (id) => liveSession(id),
     testAccount: async (email) => {
       // First use makes it: no password, no invite, no mailbox, and never an account that already exists (an existing row is
       // refused rather than adopted, so the test user can never be the owner or an admin).
