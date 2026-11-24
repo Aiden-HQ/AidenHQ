@@ -33,6 +33,8 @@ import { decide } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 type Json = any;
+/** A GitHub status the credential can never get past (no permission, the resource is gone): retrying cannot help. */
+const permanentRefusal = (status: number) => [401, 403, 404].includes(status);
 /** GitHub as the owner (git-auth.ts Gh): every call here is background work. */
 type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number }) => Promise<{ status: number; body: any }>;
 export type PrWatchOptions = {
@@ -223,7 +225,7 @@ export function startPrWatch(o: PrWatchOptions) {
     }
     /** The head's latest check runs from REST, every page: `runs` and whether GitHub's own `total_count` was all read (a
      * partly read list never stands in for the head's). Null when the read itself failed. */
-    async function latestRuns(head: string): Promise<{ runs: Json[]; complete: boolean } | null> {
+    async function latestRuns(head: string): Promise<{ runs: Json[]; complete: boolean } | null | "permanent"> {
       const runs: Json[] = [];
       let total = 0;
       try {
@@ -231,6 +233,9 @@ export function startPrWatch(o: PrWatchOptions) {
           // The listing is the recovery paths' first read, so it carries the same read deadline as a job probe: waiting out the
           // owner's quota here would hold this serial scan (every later PR's merge) just as a probe would.
           const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${head}/check-runs?filter=latest&per_page=100&page=${page}`, undefined, { deadline: Date.now() + PROBE_DEADLINE_MS });
+          // A permanent refusal (no Checks permission, the head is gone) can never clear: not this rule's, so the red-head rules
+          // decide. A transient refusal (a 5xx, a quota) is unjudged: the next tick reads it again.
+          if (permanentRefusal(listed.status)) return "permanent";
           if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) return null;
           runs.push(...listed.body.check_runs);
           total = Number(listed.body.total_count ?? 0);
@@ -269,6 +274,7 @@ export function startPrWatch(o: PrWatchOptions) {
       if (!red.length || rollup?.contexts?.pageInfo?.hasNextPage) return false;
       const own = red.filter((n: Json) => n.name !== GATE_CHECK); // the aggregate only rolls the others up
       const listed = await latestRuns(pr.headRefOid);
+      if (listed === "permanent") return false; // the credential can never list them: not this rule's, so the red-head rules report
       if (!listed || !listed.complete) return "unknown"; // an unread list cannot say a job never started: the next tick judges it
       const unstarted: Json[] = [];
       const checks = own.length ? own : red;
@@ -362,7 +368,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const rollup = rollupOf(pr);
       if (!rollup?.contexts?.pageInfo?.hasNextPage && (rollup?.contexts?.nodes ?? []).every((n: Json) => n.__typename !== "CheckRun" || n.status === "COMPLETED")) return [];
       const listed = await latestRuns(head);
-      if (!listed) { log("wedged check runs' read failed", { pr: pr.url, head }); return []; }
+      if (!listed || listed === "permanent") { log("wedged check runs' read failed", { pr: pr.url, head }); return []; }
       const { runs } = listed;
       if (!listed.complete) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length });
       const out: { at: number; accepted: boolean; name: string; nodeId: string | undefined; key: string }[] = [];
@@ -774,7 +780,9 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (taskLive && optional.length && redNow.length && !pr.isDraft && pr.mergeable === "MERGEABLE") {
+      } else if (taskLive && optional.length && redNow.length && !pr.isDraft && pr.mergeable === "MERGEABLE" && pr.mergeStateStatus !== "BEHIND") {
+        // A head behind main is the update rule's (GitHub updates the branch below), so it is not told to publish a head that is
+        // about to be replaced: only a head this watcher will not move is the task's to fix.
         // The same eligibility the red-head path requires: a draft (or a head the watcher cannot merge) is not told to publish,
         // and its once-per-head report stays unspent, so marking it ready still wakes its task for the failure.
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no

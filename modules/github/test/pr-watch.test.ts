@@ -135,7 +135,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -158,6 +158,8 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     const headRuns = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/);
     if (headRuns) {
       headRunsOpts.push(opts ?? {});
+      const refused = listingStatus?.();
+      if (refused) return { status: refused, body: {} };
       // The tests that need REST and the rollup to disagree (an old wedged run the rollup no longer lists) name the runs.
       if (restRuns) { const runs = restRuns(headRuns[1]); return { status: 200, body: { total_count: runs.length, check_runs: runs } }; }
       const head = open.find((p) => p.headRefOid === headRuns[1]);
@@ -1103,4 +1105,30 @@ test("an Actions permission refusal (403) still reports the red head", async (t)
   await c.watch.tick();
   assert.equal(c.woke.length, 1, "a permanent permission refusal is not this rule's: the failure is reported");
   assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a permanent check-runs listing refusal (403) is not this rule's, so a real red head is still reported.
+test("a permanent check-runs listing refusal still reports the red head", async (t) => {
+  const c = await rig(t, { listingStatus: () => 403 });
+  c.set([c.agentPr(83, redPr(83))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent refusal does not defer the failure forever");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a head behind main is the update rule's, so the mixed-state wake does not send its task to publish it.
+test("a behind head with a red and a wedged check is not told to publish", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, { steps: [{ name: "Build" }] });
+  c.set([c.agentPr(84, { mergeStateStatus: "BEHIND", commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h84:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h84:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(!c.woke.some((w) => /Fix the failure on the PR's branch/.test(w.text ?? "")), "the update rule owns a behind head");
 });
