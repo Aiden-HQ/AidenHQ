@@ -1276,3 +1276,21 @@ test("a task deleted in Paperclip, confirmed by two misses, is no longer a ref t
   const m = w.db.prepare("SELECT status, identifier, title FROM task_facts_seen WHERE task = 't1'").get();
   assert.deepEqual({ ...m }, { status: "cancelled", identifier: null, title: null });
 });
+
+test("a full page of unread comments is not a complete read: the next scan goes on from the cursor at once", async () => {
+  const w = world();
+  w.issue("t1", { status: "in_progress" });
+  w.comment("t1", "c-first", { authorAgentId: AGENT });
+  await w.wakes.poll(); // the cursor is at c-first
+  w.tick();
+  for (let i = 0; i < 501; i++) w.comment("t1", `c${String(i).padStart(3, "0")}`, { authorUserId: "u1" });
+  // Paperclip serves at most 500 past the cursor: the fake is given exactly that page first.
+  const all = w.comments.t1;
+  w.comments.t1 = all.slice(0, 501);
+  await w.wakes.poll();
+  w.comments.t1 = all;
+  w.calls.length = 0;
+  await w.wakes.poll();
+  assert.ok(w.calls.includes("GET /api/issues/t1/comments"), "read again with no change to the task");
+  assert.ok(w.rows("t1").includes("comment:c500 open"));
+});

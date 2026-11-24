@@ -360,6 +360,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`control plane GET comments → ${r.status}`);
       all = (r.json as Comment[]).slice().sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
     }
+    // A full page past the cursor may have more behind it: the cursor moves, but the stamp isn't marked read, so the next scan
+    // goes on from there at once.
+    const drained = read && !(prev?.comment && all.length >= 500);
     // First sight: only what came after the dispatcher joined or the agent's last word on the task.
     const boundary = prev ? 0 : Math.max(since(agent, joined), ...all.filter((c) => c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")).map((c) => ms(c.createdAt)));
     // Every untagged comment read is a fact (version = its id): the owner's say, an agent's. A comment the kernel wrote carries a
@@ -509,7 +512,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
     const rowStatus = deferred ? String(prev?.status ?? seen?.status ?? "") : status, mem = memory(seen, rowStatus, issue);
     q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, blocked_names, blocked_deleted, blocked_exists, polled, seen_stamp, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = excluded.blocked, blocked_names = excluded.blocked_names, blocked_deleted = excluded.blocked_deleted, blocked_exists = excluded.blocked_exists, polled = 1, seen_stamp = COALESCE(excluded.seen_stamp, seen_stamp), read_at = COALESCE(excluded.read_at, read_at)")
-      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, rowStatus, newest, mem.blocked, mem.names, mem.deleted, mem.exists, read ? stamp : null, read ? now() : null);
+      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, rowStatus, newest, mem.blocked, mem.names, mem.deleted, mem.exists, read ? (drained ? stamp : "") : null, read ? now() : null);
   }
 
   /**
@@ -862,7 +865,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   async function listing(company: string, signal?: AbortSignal): Promise<Set<string> | undefined> {
     const ids = new Set<string>();
     let afterId: string | undefined;
-    for (let page = 0; page < PAGES; page++) {
+    // To the end: the open, blocked and parked tasks are a bounded set, and "gone" needs all of them.
+    for (;;) {
       if (signal?.aborted) return undefined;
       const query = new URLSearchParams({ status: `${OPEN},blocked,backlog`, limit: String(PAGE), sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) });
       const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
@@ -875,7 +879,6 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (rows.length < PAGE) { q("UPDATE wake_cursor SET full_at = ? WHERE company = ?").run(now(), company); return ids; }
       afterId = rows.at(-1)!.id;
     }
-    return undefined;
   }
   /** The mirror's row for a task, as the poll scans it. */
   const mirrored = (raw: string | null) => { try { const i = raw ? (JSON.parse(raw) as Issue) : undefined; return i?.id ? i : undefined; } catch { return undefined; } };
@@ -942,16 +945,18 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         } catch (e) { log("wake poll failed", { agent, err: (e as Error).message }); }
       }
       let listed: Set<string> | undefined = new Set<string>();
-      let fullPass = false;
-      for (const company of new Set(companies.values())) {
+      const all = [...new Set(companies.values())];
+      for (const company of all) {
         if (signal?.aborted) return;
         try { await changes(company, joined, signal); } catch (e) { log("wake changes failed", { company, err: (e as Error).message }); }
-        if (now() - cursorOf(company).full_at >= FULL_MS) {
-          fullPass = true;
-          const ids = await listing(company, signal).catch((e: Error) => (log("wake reconcile failed", { company, err: e.message }), undefined));
-          if (ids && listed) for (const id of ids) listed.add(id);
-          else listed = undefined;
-        }
+      }
+      // Every company is listed whole together, so "gone" is judged against all of them at once (the fact log names no company).
+      const fullPass = all.some((c) => now() - cursorOf(c).full_at >= FULL_MS);
+      if (fullPass) for (const company of all) {
+        if (signal?.aborted) return;
+        const ids = await listing(company, signal).catch((e: Error) => (log("wake reconcile failed", { company, err: e.message }), undefined));
+        if (ids && listed) for (const id of ids) listed.add(id);
+        else listed = undefined;
       }
       // Every open or blocked task of a polled agent, and every task whose own wait is armed (parked in backlog: a lost comment
       // event would leave an answer unread until the timed wake), from the mirror the lists just refreshed.

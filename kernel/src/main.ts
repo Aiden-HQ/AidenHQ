@@ -541,8 +541,9 @@ const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir,
     const seen = wakes.mirror(task)?.status;
     if (seen && !["done", "cancelled"].includes(seen)) return false;
     const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(task)}`);
-    // A 404 on a task the mirror already records closed (closed, or confirmed gone by two misses) is gone; any other 404 is unknown.
-    return r.status === 404 ? (seen ? true : undefined) : r.status === 200 ? ["done", "cancelled"].includes(String((r.json as { status?: string }).status)) : undefined;
+    // A 404 on a task the mirror records closed (closed, or confirmed gone by two misses) is gone; one it has no status for keeps
+    // just its own folder (false, not unknown: one such task never stops the rest of the pass).
+    return r.status === 404 ? Boolean(seen) : r.status === 200 ? ["done", "cancelled"].includes(String((r.json as { status?: string }).status)) : undefined;
   },
   engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
 let diskSweeping = false;
