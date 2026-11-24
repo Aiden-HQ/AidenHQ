@@ -31,8 +31,11 @@
 // A restart doesn't lose a check whose box is running: the box's run is detached (as an agent job's is), its handle is on the row
 // (`follow`: the box, and where the check is in its steps), and a draining kernel stops following it (detach) while it runs on.
 // Once the old kernel has exited, the new one follows it again from the row (recover) and finishes it as the old one would have:
-// its result, receipt and cost, its model token's spend by the same run key. A check whose box is gone (no exit status and not
-// running), that hadn't reached its box, or whose recipe has changed since is lost: no receipt; asking again runs it again, and
+// its result, receipt and cost, its model token's spend by the same run key. A code recipe's run is followed even when a deploy
+// changed its recipe since: the box already holds the files it launched with, and the receipt binds the hash it started under.
+// Only while what decides its verdict (result, keep, model) is unchanged. A check whose box is gone (no exit status and not
+// running), that hadn't reached its box, or any other run whose recipe has changed since (a judged run's next pass would run new
+// files under the old hash) is lost: no receipt; asking again runs it again, and
 // the lost run doesn't use up a try.
 // Each run attempt (the row's start time `at`) has its own folder and lands its end only while the row is still that attempt's;
 // a re-run asked meanwhile supersedes it.
@@ -142,7 +145,10 @@ export interface CheckBox {
   follow(run: BoxRun, signal: AbortSignal): Promise<BoxOut | "gone" | "detached">;
 }
 /** Where a check is when its box runs: a code recipe's spend before this attempt, or a judged run's pass and its cases. */
-type Step = { prior: number } | { n: 1 | 2; names: string[]; added: string[]; first?: { passed: number; total: number } };
+type Step = { prior: number; contract?: string } | { n: 1 | 2; names: string[]; added: string[]; first?: { passed: number; total: number } };
+/** What decides a code recipe's verdict at its end (codeEnded, keepOut): an adopted run whose recipe a deploy changed is finished
+ * only while this is unchanged, so its receipt never signs it by rules it didn't run under. */
+const contractOf = (r: Recipe) => JSON.stringify([Boolean(r.result), Boolean(r.keep), Boolean(r.model)]);
 /** A run that a draining kernel stopped following (the next one does), or whose box is gone (lost). */
 class Detached extends Error {}
 class Gone extends Error {}
@@ -508,7 +514,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     // on the row before it runs: a run a restart loses still has its spend counted (recover).
     const mint = r.model ? () => { token = modelToken(`${run}:${id}`, { ttlMs: (r.timeout_min + 10) * 60_000 }); minted(runKey(token)); return token; } : undefined;
     const env = r.model ? checkEnv("model", { gatewayUrl }) : checkEnv(r.result ? "result" : "plain");
-    const step = { prior };
+    const step = { prior, contract: contractOf(r) };
     const o = await launched(await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head }, mint, inputs), step);
     return codeEnded(r, dir, o, token ? runKey(token) : undefined, step);
   }
@@ -687,6 +693,12 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     }
   }
 
+  /** The running row of this spec under another recipe hash (a code run recover() adopted after a deploy changed its recipe). */
+  const sameSpec = (spec: Record<string, string>) => JSON.stringify(Object.keys(spec).sort().map((k) => [k, spec[k]]));
+  const adoptedRun = (module: string, repo: string, head: string, run: string, spec: Record<string, string>, hash: string) =>
+    (db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash != ? AND state = 'running'").all(module, repo.toLowerCase(), head, run, hash) as Record<string, any>[])
+      .find((r) => sameSpec(JSON.parse(r.spec)) === sameSpec(spec));
+
   const own = (module: string, id: string) => {
     const r = row(id);
     if (!r || r.module !== module) throw new CheckError(404, "no-check", `no check ${id}`);
@@ -702,6 +714,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) throw new CheckError(400, "bad-request", `send {repo: owner/name, head: <commit sha>, run: ${Object.keys(recipes()).join("|") || "(no module declares one)"}, spec}`);
       const spec = checkSpec(run, recipe, b.spec);
       const hash = specHash(spec, recipe);
+      // A run of this very spec still running under an earlier recipe (one recover() adopted across a deploy) is the check: an
+      // ask joins it, never a second box run beside it.
+      const running = adoptedRun(module, repo, head, run, spec, hash);
+      if (running) return view(running);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
       // A check that couldn't run (error, lost) runs again when asked again; a result recipe that ended without its result runs
       // again only after a provider error or crash (not a timeout): spend is the gateway's limits', never a tries count.
@@ -720,18 +736,22 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     },
     /**
      * After a restart, once the previous kernel has exited (main.ts afterPrevious): its runs whose boxes run on are followed
-     * again here, from their row, to their end. One that hadn't reached its box, or whose recipe has changed since, is lost: no
-     * receipt (fail closed); asking again runs it again, and the lost run doesn't count as a try. Settles when the runs it
-     * follows have ended.
+     * again here, from their row, to their end: a code recipe's run under the hash it started with even when a deploy changed
+     * its recipe since (its box already holds the files it launched with), while what decides its verdict is the same. One that
+     * hadn't reached its box, or any other run whose recipe has changed since (a judged run's next pass would run the new files),
+     * is lost: no receipt (fail closed); asking again runs it
+     * again, and the lost run doesn't count as a try. Settles when the runs it follows have ended.
      */
     recover() {
       const adopting: Promise<void>[] = [];
       for (const r of db.prepare("SELECT id, at, run, spec, hash, run_key, cost_usd, follow FROM checks WHERE state = 'running'").all() as { id: string; at: number; run: string; spec: string; hash: string; run_key: string | null; cost_usd: number | null; follow: string | null }[]) {
         if (mine.has(r.id)) continue;
         const recipe = recipes()[r.run];
-        if (r.follow && recipe && specHash(JSON.parse(r.spec), recipe) === r.hash) {
-          log("adopted a running check", { check: r.id, run: r.run });
-          adopting.push(execute(r.id, recipe, JSON.parse(r.follow)));
+        const follow = r.follow ? (JSON.parse(r.follow) as { box: BoxRun; step: Step }) : undefined;
+        const code = follow !== undefined && recipe !== undefined && !("n" in follow.step) && !recipe.judged && follow.step.contract === contractOf(recipe);
+        if (follow && recipe && (code || specHash(JSON.parse(r.spec), recipe) === r.hash)) {
+          log("adopted a running check", { check: r.id, run: r.run, ...(specHash(JSON.parse(r.spec), recipe) === r.hash ? {} : { recipe: "changed since it started" }) });
+          adopting.push(execute(r.id, recipe, follow));
           continue;
         }
         // What its model token spent counts in the check's cost, as a finished run's does.
@@ -751,8 +771,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) return undefined;
       // A spec that doesn't fit the recipe (a change with no base, say) is no check at all: this is a read, so it answers
       // "none" rather than throwing at a sweep that only wanted to know what is green.
-      let hash: string;
-      try { hash = specHash(checkSpec(run, recipe, b.spec), recipe); } catch { return undefined; }
+      let hash: string, spec: Record<string, string>;
+      try { spec = checkSpec(run, recipe, b.spec); hash = specHash(spec, recipe); } catch { return undefined; }
+      const running = adoptedRun(module, repo, head, run, spec, hash);
+      if (running) return view(running);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
       return had && ["running", "done", "error", "lost"].includes(had.state) ? view(had) : undefined;
     },

@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 import { mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { MODEL_BODY_MAX } from "../../kernel/src/gateway/token.ts";
+
+export { MODEL_BODY_MAX };
 
 /** The longest run a check may ask for (minutes): the launcher's /check limit and the module compiler's timeout_min ceiling. */
 export const MAX_CHECK_MIN = 180;
@@ -281,31 +284,78 @@ export function checkoutDest(repo: unknown) {
  */
 export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -xz --no-same-owner -C "$1" && find "$1" -name .aidenhq -type d -prune -exec rm -rf {} +';
 
+/** How long a box's model call waits for a model gateway that isn't listening (a kernel restart: the old one has closed its
+ * listener and the next one hasn't bound it yet, a minute or more under load). */
+export const GATEWAY_WAIT_MS = 2 * 60_000;
+/** The most model-request bytes the launcher holds at once across every box's calls (each is held until its answer starts, to
+ * be sent again while the gateway restarts); a call past it is answered 503, which the engines retry. */
+export const MODEL_HELD_MAX = 256 * 1024 * 1024;
+let heldBytes = 0;
+
 /**
  * A box's model call, passed on to the model gateway (kernel/src/gateway) with the job token as its credential: the gateway
  * names the job from it, counts what OpenRouter billed and refuses past a spend cap. Its answer (a stream, or a 402
  * cap_reached) goes back to the box as it is. The OpenRouter key is never here.
+ * A refused connection is tried again every `retryMs` for up to `waitMs`: the request never reached the gateway, so nothing was
+ * sent upstream or billed, and the box's call (a check's review, an agent's turn) survives a kernel restart instead of failing.
+ * The request body is read whole first (at most MODEL_BODY_MAX: a larger one is refused 413), so it can be sent again.
  */
-export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse, url: string, token: string) {
+export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse, url: string, token: string, { waitMs = GATEWAY_WAIT_MS, retryMs = 1000, heldMax = MODEL_HELD_MAX }: { waitMs?: number; retryMs?: number; heldMax?: number } = {}) {
   return new Promise<void>((resolve) => {
     const u = new URL(url);
     // anthropic-version and anthropic-beta go on for the Anthropic format (the gateway keeps only the betas it allows).
     const anthropic = Object.fromEntries((["anthropic-version", "anthropic-beta"] as const).filter((h) => typeof req.headers[h] === "string").map((h) => [h, req.headers[h] as string]));
-    const headers = { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${token}`, ...anthropic };
-    const up = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (ur) => {
-      res.writeHead(ur.statusCode ?? 502, ur.headers);
-      ur.pipe(res);
-      ur.on("end", resolve);
-      ur.on("error", () => { res.destroy(); resolve(); });
+    const chunks: Buffer[] = [];
+    let size = 0, mine = 0, refused: 413 | 503 | undefined;
+    let up: http.ClientRequest | undefined, hungUp = false, body: Buffer | undefined;
+    // This call's share of the launcher-wide hold, given back once its body isn't needed (an answer came, or it ended).
+    const release = () => { body = undefined; chunks.length = 0; heldBytes -= mine; mine = 0; };
+    const done = () => { release(); resolve(); };
+    const send = (until: number) => {
+      if (hungUp || !body) return done();
+      const headers = { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${token}`, "content-length": String(body.length), ...anthropic };
+      up = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (ur) => {
+        release();
+        res.writeHead(ur.statusCode ?? 502, ur.headers);
+        ur.pipe(res);
+        ur.on("end", done);
+        ur.on("error", () => { res.destroy(); done(); });
+      });
+      up.on("error", (e: NodeJS.ErrnoException) => {
+        if (hungUp) return done();
+        if (e.code === "ECONNREFUSED" && Date.now() < until) return void setTimeout(() => send(until), retryMs);
+        if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 502, type: "gateway_unreachable", message: `the model gateway is unreachable (${e.message})` } }));
+        else res.destroy();
+        done();
+      });
+      up.end(body);
+    };
+    // The box hung up: drop our leg too (the gateway still reads OpenRouter's answer to the end and records it), and stop waiting.
+    res.on("close", () => { if (!res.writableFinished) { hungUp = true; up?.destroy(); } done(); });
+    // Past this request's limit (413) or the launcher-wide hold (503) the rest is read and dropped, and the call is answered at
+    // its end; nothing more is held.
+    req.on("data", (c: Buffer) => {
+      if (refused) return;
+      size += c.length;
+      refused = size > MODEL_BODY_MAX ? 413 : heldBytes + c.length > heldMax ? 503 : undefined;
+      if (refused) return void release();
+      heldBytes += c.length;
+      mine += c.length;
+      chunks.push(c);
     });
-    up.on("error", (e) => {
-      if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 502, type: "gateway_unreachable", message: `the model gateway is unreachable (${e.message})` } }));
-      else res.destroy();
-      resolve();
+    req.on("error", () => { res.destroy(); done(); });
+    req.on("end", () => {
+      if (!refused) {
+        body = Buffer.concat(chunks);
+        chunks.length = 0;
+        return send(Date.now() + waitMs);
+      }
+      const error = refused === 413
+        ? { code: 413, type: "request_too_large", message: `a model request is at most ${MODEL_BODY_MAX} bytes` }
+        : { code: 503, type: "launcher_busy", message: "the computer launcher holds as many model requests as it may while the model gateway restarts; try again shortly" };
+      res.writeHead(refused, { "content-type": "application/json" }).end(JSON.stringify({ error }));
+      done();
     });
-    // The box hung up: drop our leg too (the gateway still reads OpenRouter's answer to the end and records it).
-    res.on("close", () => { if (!res.writableFinished) up.destroy(); resolve(); });
-    req.pipe(up);
   });
 }
 

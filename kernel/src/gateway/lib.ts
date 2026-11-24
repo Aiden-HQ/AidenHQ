@@ -53,7 +53,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
 import { createPrices, type Price } from "./prices.ts";
-import { verifyToken } from "./token.ts";
+import { MODEL_BODY_MAX, verifyToken } from "./token.ts";
 
 type Brand<T, B extends string> = T & { readonly __brand: B };
 /** A run key: the sha256 of the caller's own credential (or the board aside's day key). The ledger keys on it. */
@@ -95,7 +95,7 @@ type Log = (msg: string, fields?: Record<string, unknown>) => void;
 
 const SYSTEM: { source: string } & Record<string, string> = { reviewer: "AI reviewer", grader: "Grader", source: "Source writers" };
 const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions|messages|embeddings)$/;
-const MAX_BODY = 32 * 1024 * 1024;
+const MAX_BODY = MODEL_BODY_MAX;
 /** The Anthropic-format body fields a call may carry (what Claude Code sends); any other is dropped before it goes upstream. */
 const MESSAGE_FIELDS = new Set(["model", "messages", "system", "tools", "tool_choice", "metadata", "max_tokens", "thinking", "context_management", "output_config", "stream", "stop_sequences", "temperature", "top_p", "top_k", "provider"]);
 /** The anthropic-beta values passed upstream (Claude Code's; none changes the price); any other is dropped. */

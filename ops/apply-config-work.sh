@@ -853,6 +853,27 @@ kernelRestart() {
   mkdir -p "$(dirname "$2")" && printf '%s\n%s\n' "$1" "$(kernelInvocation)" > "$2"
 }
 
+# Restarts the computer launcher and waits (at most a minute) until the next one answers on both its listeners, the control
+# address and the boxes' model address. A draining launcher may still answer for a moment, so an answer counts only from the
+# new unit's launcher: every answer names its process (x-aidenhq-launcher-pid), whose parent is the unit's main process
+# (ops/run-draining.sh).
+launcherRestart() {
+  systemctl --user restart aidenhq-computers || return 1
+  local main url pid ok until=$(( $(date +%s) + 60 ))
+  while [ "$(date +%s)" -lt "$until" ]; do
+    main="$(systemctl --user show -p MainPID --value aidenhq-computers 2>/dev/null)"
+    ok=1
+    for url in "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}/" "${AIDENHQ_LAUNCHER_GATEWAY_URL:-http://10.231.2.1:8200}/"; do
+      [ "$ok" = 1 ] || break
+      pid="$(curl -s -o /dev/null -D - -m 2 -X POST "$url" | tr -d '\r' | sed -n 's/^x-aidenhq-launcher-pid: *//Ip')"
+      if [ -z "$pid" ] || [ -z "$main" ] || [ "$main" = 0 ] || [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" != "$main" ]; then ok=0; fi
+    done
+    [ "$ok" = 1 ] && return 0
+    sleep 1
+  done
+  echo "the computer launcher isn't answering yet; the kernel restarts anyway" >&2
+}
+
 # Whether the kernel running now is the code of hash $1, started by this mechanism: both what it loaded and systemd's
 # invocation must be the ones the marker recorded.
 kernelCurrent() {
@@ -916,6 +937,18 @@ switchOver() {
   # The closure's content hash (kernelInputs), so a file whose content moved counts even when HEAD's diff cannot be read
   # (a re-apply of a generation, an unreachable `before`). A host that predates it restarts on its first apply, and the
   # hand-over and revert paths above keep a marker from a product whose script predates it from skipping that restart.
+  # The computer launcher: restarted only when its code or its unit changed (it drains: calls in flight finish in the old one).
+  # Before the kernel restarts, and listening before that, so a box's model call that meets the kernel's restart gap is held by
+  # a launcher that waits for the next gateway (services/computer/lib.ts forwardModel), never answered 502 by the old one.
+  # Setup installed the unit once, so a changed unit (its ExecStart path) reaches the host here.
+  local cu="$HOME/.config/systemd/user/aidenhq-computers.service"
+  if systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null && ! cmp -s ops/units/aidenhq-computers.service "$cu"; then
+    cp ops/units/aidenhq-computers.service "$cu" && systemctl --user daemon-reload && launcherRestart \
+      && echo "computer launcher unit updated, launcher restarted"
+  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/computer/launcher.ts services/computer/lib.ts kernel/src/gateway/token.ts \
+     && systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null; then
+    launcherRestart && echo "computer launcher restarted"
+  fi
   local kcode="$data/kernel-code" ksha
   ksha="$(kernelInputs | git hash-object --stdin)"
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
@@ -973,16 +1006,6 @@ switchOver() {
     systemctl --user daemon-reload
     systemctl --user enable --quiet aidenhq-apply-recover
     echo "apply recovery unit installed/updated"
-  fi
-  # The computer launcher holds live run tokens in memory: restart it only when its code or its unit changed (running computers
-  # get new tokens next run). Setup installed the unit once, so a changed unit (its ExecStart path) reaches the host here.
-  local cu="$HOME/.config/systemd/user/aidenhq-computers.service"
-  if systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null && ! cmp -s ops/units/aidenhq-computers.service "$cu"; then
-    cp ops/units/aidenhq-computers.service "$cu" && systemctl --user daemon-reload && systemctl --user restart aidenhq-computers \
-      && echo "computer launcher unit updated, launcher restarted"
-  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/computer/launcher.ts services/computer/lib.ts \
-     && systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null; then
-    systemctl --user restart aidenhq-computers && echo "computer launcher restarted"
   fi
   # The nightly off-host backup (ops/backup-offsite.sh): its timer is installed while the instance sets backup_repository,
   # and removed once it doesn't.
