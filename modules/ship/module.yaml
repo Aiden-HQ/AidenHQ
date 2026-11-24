@@ -9,10 +9,14 @@ license: MIT
 requires:
   - github # the covered repos' reads and the effects ship files (later releases)
 roles:
-  # kernel.settings: the config tool's settings changes (writers below).
-  requests: [ kernel.settings ]
+  # kernel.settings: the config tool's settings changes (writers below). kernel.tasks and kernel.wake: a hand-off's one Engineer
+  # task (module-task source ship:<repo>/<n>:<generation>) and its wakes (handoff.ts, rounds.ts).
+  requests: [ kernel.settings, kernel.tasks, kernel.wake ]
   declares:
     - { id: ship-admin, description: "Reads ship's settings and changes one repo's entry (ship_config, ship_configure) when the owner asks in words; a change that loosens anything is the owner's." }
+# The report: one comment per adopted PR, edited in place (report.ts), on the repos ship covers.
+codehost:
+  comment: { repos: [ "@agents/*", "@product", "@maintained" ] }
 settings:
   # The per-repo ship settings: { defaults: cautious | full | { preset, …fields }, repos: { owner/name: cautious | full | { preset?,
   # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command },

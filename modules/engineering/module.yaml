@@ -15,8 +15,8 @@ agents:
   engineer:
     department: engineering
     # Its skills, every one listed (design-system, app UI, comes from the apps platform). The dependabot and forks skills are
-    # the routines' and the Dependabot tasks' how-to.
-    skills: [ apps-platform.design-system, engineering.aidenhq-product, engineering.build-app, engineering.dependabot, engineering.fleet-change, engineering.forks, engineering.publish, engineering.supply-chain, engineering.write-code ]
+    # the routines' and the Dependabot tasks' how-to; ship (the ship module's, dropped while it is off) is a ship task's.
+    skills: [ apps-platform.design-system, engineering.aidenhq-product, engineering.build-app, engineering.dependabot, engineering.fleet-change, engineering.forks, engineering.publish, engineering.supply-chain, engineering.write-code, ship.ship ]
     # platform-engineer: settings changes, access proposals, Dependabot tasks and pin bumps are filed to the agent holding it,
     # and it may push any branch (the code host's "Platform line": the kernel's record of who asked, never the args).
     roles: [ platform-engineer ]

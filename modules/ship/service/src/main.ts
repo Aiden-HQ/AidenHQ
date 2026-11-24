@@ -7,6 +7,8 @@ import { configTools } from "./config-tool.ts";
 import { createMcp, serveMcp } from "./mcp.ts";
 import { scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
+import { generationOf } from "./handoff.ts";
+import { isModule } from "./module-caller.ts";
 
 const env = process.env;
 const file = (p: string | undefined) => { try { return p ? readFileSync(p, "utf8").trim() : ""; } catch { return ""; } };
@@ -31,5 +33,12 @@ const mcp = serveMcp(createMcp(configTools({
 
 createServer(async (req, res) => {
   if (await mcp(req, res)) return;
+  // github's check before each adopted-PR write: the adoption's generation, hold and task, to the github module's token only.
+  if (req.method === "GET" && req.url?.startsWith("/v1/generation?")) {
+    const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "github");
+    if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end();
+    const q = new URL(req.url, "http://x").searchParams;
+    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(generationOf(state, raw().paused === true, q.get("repo") ?? "", Number(q.get("pr")))));
+  }
   res.writeHead(req.url === "/healthz" ? 200 : 404).end();
 }).listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101 }));

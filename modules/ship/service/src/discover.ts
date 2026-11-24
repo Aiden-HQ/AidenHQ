@@ -1,0 +1,98 @@
+// Zero-config discovery for the deterministic repair (spec §3 "Generated files"): which paths are generated and which command
+// regenerates them, read from the target branch's own files (never the PR's). Pure: the caller hands it the files it read.
+//   globs:     `.gitattributes` `linguist-generated`, the known lockfiles, and files whose header says "Code generated … DO NOT EDIT"
+//   commands:  per package dir, the first of: a CI job that checks generated code is up to date, a Makefile `generate` target,
+//              a package.json `generate` script, `go:generate` directives (go generate ./...)
+//   ambiguous: what discovery couldn't settle (the Engineer proposes the command with ship_configure; the setting wins from then on)
+export const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
+
+export type Discovered = { globs: string[]; commands: { dir: string; cmd: string }[]; ambiguous: string[] };
+
+const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
+const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+const HEADER = /Code generated .* DO NOT EDIT/;
+// A CI job that checks generated code (its id or name): "generated code up to date", "check-generated", "codegen", …
+const GEN_JOB = /generat|codegen/i;
+const GEN_RUN = /\b(make\s+(generate|gen|codegen)\b|(npm|pnpm|yarn)\s+(run\s+)?(generate|gen|codegen)\b|go\s+generate\b|buf\s+generate\b)/;
+
+/** `files`: path → text, from the target branch (`.gitattributes`, `.github/workflows/*`, Makefiles, package.json, go files, …). */
+export function discover(files: Record<string, string>): Discovered {
+  const globs = new Set<string>();
+  const ambiguous: string[] = [];
+  for (const [path, text] of Object.entries(files)) {
+    if (base(path) === ".gitattributes") {
+      const at = dirOf(path);
+      for (const line of text.split("\n")) {
+        const [pattern, ...attrs] = line.trim().split(/\s+/);
+        if (!pattern || pattern.startsWith("#")) continue;
+        if (!attrs.some((a) => a === "linguist-generated" || a === "linguist-generated=true")) continue;
+        const p = pattern.replace(/^\//, "");
+        globs.add(at === "." ? (pattern.startsWith("/") || p.includes("/") ? p : `**/${p}`) : `${at}/${p}`);
+      }
+    }
+    if (HEADER.test(text.split("\n", 5).join("\n"))) globs.add(path);
+  }
+  for (const l of LOCKFILES) globs.add(`**/${l}`);
+
+  const byDir = new Map<string, string>();
+  const put = (dir: string, cmd: string) => { if (!byDir.has(dir)) byDir.set(dir, cmd); };
+  // 1. CI: the run lines of a job that checks generated code (the repo's own word for how to regenerate).
+  for (const [path, text] of Object.entries(files)) {
+    if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)) continue;
+    for (const job of jobsOf(text)) {
+      if (!GEN_JOB.test(job.id) && !GEN_JOB.test(job.name)) continue;
+      const runs = job.runs.filter((r) => GEN_RUN.test(r));
+      if (runs.length === 1) put(job.dir, runs[0]!.match(GEN_RUN)![0]);
+      else if (runs.length > 1) ambiguous.push(`${path}: job ${job.id} runs ${runs.length} generate commands`);
+    }
+  }
+  // 2. Build files, per package dir.
+  for (const [path, text] of Object.entries(files)) {
+    const dir = dirOf(path);
+    if (/^(GNU)?[Mm]akefile$/.test(base(path)) && /^generate\s*:/m.test(text)) put(dir, "make generate");
+    if (base(path) === "package.json") { try { if (JSON.parse(text)?.scripts?.generate) put(dir, "npm run generate"); } catch {} }
+  }
+  for (const [path, text] of Object.entries(files)) {
+    if (!path.endsWith(".go") || !/^\/\/go:generate /m.test(text)) continue;
+    // The Go module the directive sits in: the nearest go.mod above it.
+    let dir = dirOf(path);
+    while (dir !== "." && !(`${dir}/go.mod` in files)) dir = dirOf(dir);
+    put(dir, "go generate ./...");
+  }
+  return { globs: [...globs], commands: [...byDir].map(([dir, cmd]) => ({ dir, cmd })), ambiguous };
+}
+
+/** A workflow's jobs, read just enough: each job's id, name, working directory and `run:` lines (one-line and block scalars). */
+function jobsOf(yaml: string) {
+  const jobs: { id: string; name: string; dir: string; runs: string[] }[] = [];
+  const lines = yaml.split("\n");
+  let inJobs = false, jobIndent = -1, cur: (typeof jobs)[number] | undefined, block: { indent: number } | undefined;
+  for (const raw of lines) {
+    const indent = raw.length - raw.trimStart().length;
+    const line = raw.trim();
+    if (block) {
+      if (line && indent > block.indent) { cur?.runs.push(line); continue; }
+      if (!line) continue;
+      block = undefined;
+    }
+    if (/^jobs:\s*$/.test(raw)) { inJobs = true; continue; }
+    if (!inJobs || !line || line.startsWith("#")) continue;
+    if (indent === 0) { inJobs = false; continue; }
+    if (jobIndent < 0 || indent === jobIndent) {
+      const m = /^([\w-]+):\s*$/.exec(line);
+      if (m) { jobIndent = indent; cur = { id: m[1]!, name: "", dir: ".", runs: [] }; jobs.push(cur); continue; }
+    }
+    if (!cur) continue;
+    const name = /^name:\s*["']?(.+?)["']?\s*$/.exec(line);
+    if (name && !cur.name && indent === jobIndent + 2) cur.name = name[1]!;
+    const wd = /^working-directory:\s*["']?(.+?)["']?\s*$/.exec(line);
+    if (wd) cur.dir = wd[1]!.replace(/^\.\//, "").replace(/\/$/, "") || ".";
+    const run = /^(?:-\s+)?run:\s*(.*)$/.exec(line);
+    if (run) {
+      if (/^[|>][-+]?$/.test(run[1]!.trim())) block = { indent };
+      else cur.runs.push(run[1]!.trim());
+    }
+  }
+  return jobs;
+}
+

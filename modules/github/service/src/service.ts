@@ -596,10 +596,11 @@ export function createService(o: Options) {
   }
 
   /**
-   * A push onto an adopted PR's branch (ship): the PR is read again here (a Tier 0 push runs right after its plan, with no
-   * revalidation), and the push carries a lease on the head the write expects, so a contributor's push in between wins and
-   * this one is refused (ship-head-moved), never forced over it. The commit is not noted as the runner's own head: the branch
-   * holds the contributor's commits, so its merge stays the AI reviewer's (foreign-head tiering, plan.ts).
+   * A push onto an adopted PR's branch (ship), written through GitHub's API as the App (so GitHub signs the commits): the PR is
+   * read again here (a Tier 0 push runs right after its plan, with no revalidation), each commit from `expected` to the branch's
+   * commit is created as blobs, a tree and a commit, and the ref is moved by a fast-forward update from `expected` (force: false).
+   * A contributor's push in between makes that update fail (ship-head-moved), never overwritten. The commit is not noted as the
+   * runner's own head: the branch holds the contributor's commits, so its merge stays the AI reviewer's (foreign-head tiering).
    */
   async function pushOnto(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     const b = a.only[0];
@@ -614,16 +615,73 @@ export function createService(o: Options) {
     const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
+    // The App writes the commits: GitHub signs what an App creates through the API. A fork needs the App's access there too.
+    const app = await o.reviewer?.(into);
+    if (!app) return { ok: false, text: `ship-no-app: ${url}: commits to an adopted PR are written as the GitHub App, which isn't installed on ${into}: nothing was pushed.` };
+    const made = await apiCommits(app.rest, into, dir, String(a.expected), String(b.sha));
+    if ("refused" in made) return { ok: false, text: `${made.refused.startsWith("ship-") ? "" : "GitHub refused the commit: "}${made.refused} (${url}): nothing was pushed.` };
+    const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${b.branch.split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
+    // Not a fast-forward from `expected`: someone pushed after the read above.
+    if (r.status === 422 || r.status === 409) return { ok: false, text: `ship-head-moved: ${url} moved while writing (the update from \`${String(a.expected).slice(0, 12)}\` isn't a fast-forward any more): nothing was pushed; read it again.` };
+    if (r.status >= 300) return { ok: false, text: `GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+    flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, app.login, undefined, a.workspace);
+    flow.checksStarted(s.slug, Number(a.pr.number), made.sha, undefined, a.workspace);
+    return { ok: true, text: `Wrote ${url} \`${b.branch}\` from \`${String(a.expected).slice(0, 12)}\` to \`${made.sha.slice(0, 12)}\` as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made.sha}`] };
+  }
+
+  /**
+   * The commits from `from` to `to` (first-parent order) created on GitHub through the API: per commit, the blobs GitHub may not
+   * have (a path's blob that no other parent has at that path), a tree on the new first parent's, and a commit with the same
+   * message and other parents (a merge of the base keeps the base commit). Each tree must come out as git's own, or nothing is
+   * written. Answers the last commit's sha on GitHub (the API's commits carry the App's identity, so it differs from `to`).
+   */
+  async function apiCommits(rest: Gh, repo: string, dir: string, from: string, to: string): Promise<{ sha: string } | { refused: string }> {
+    if (!(await git(dir, ["merge-base", "--is-ancestor", from, to]).then(() => true, () => false))) return { refused: `ship-scope: \`${to.slice(0, 12)}\` doesn't build on the PR's head \`${from.slice(0, 12)}\`` };
+    const list = (await git(dir, ["rev-list", "--reverse", "--first-parent", `${from}..${to}`])).split("\n").filter(Boolean);
+    if (!list.length || list.length > 20) return { refused: `ship-scope: ${list.length} commits to write (1 to 20)` };
+    const post = async (path: string, body: unknown) => {
+      const r = await rest("POST", `/repos/${repo}/git/${path}`, body);
+      if (r.status >= 300) throw Object.assign(new Error(`${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
+      return r.body;
+    };
+    let parent = from;
     try {
-      await push(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${a.expected}`, remote(into), `${b.sha}:refs/heads/${b.branch}`]);
+      for (const c of list) {
+        const [, first, ...others] = (await git(dir, ["rev-list", "--parents", "-n", "1", c])).split(" ");
+        // Entries changed against the first parent; a path another parent has unchanged is already on GitHub (a base merge's files).
+        const diff = (p: string) => git(dir, ["diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", p!, c]).then((out) => {
+          const f = out.split("\0"), m = new Map<string, { mode: string; sha: string }>();
+          for (let i = 0; i + 1 < f.length; i += 2) { const [, mode, , sha] = f[i]!.split(" "); m.set(f[i + 1]!, { mode: mode!, sha: sha! }); }
+          return m;
+        });
+        const changed = await diff(first!);
+        const elsewhere = await Promise.all(others.map(diff));
+        const tree: { path: string; mode: string; type: string; sha: string | null }[] = [];
+        let uploads = 0;
+        for (const [path, e] of changed) {
+          if (/^0+$/.test(e.sha)) { tree.push({ path, mode: "100644", type: "blob", sha: null }); continue; }
+          const type = e.mode === "160000" ? "commit" : "blob";
+          const onGithub = type === "commit" || elsewhere.some((m) => !m.has(path));
+          if (!onGithub) {
+            if (++uploads > MAX_FILES) return { refused: `ship-scope: more than ${MAX_FILES} new files in one commit` };
+            const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", e.sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
+            const blob = await post("blobs", { content: content.toString("base64"), encoding: "base64" });
+            if (blob.sha !== e.sha) return { refused: `GitHub stored ${path} as ${String(blob.sha).slice(0, 12)}, not ${e.sha.slice(0, 12)}` };
+          }
+          tree.push({ path, mode: e.mode, type, sha: e.sha });
+        }
+        const want = await git(dir, ["rev-parse", `${c}^{tree}`]);
+        const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
+        if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        const message = await git(dir, ["log", "-1", "--format=%B", c]);
+        const made = await post("commits", { message, tree: want, parents: [parent, ...others] });
+        parent = String(made.sha);
+      }
     } catch (e) {
-      // The lease: someone pushed after the read above. Git's own words ("stale info", "rejected") are the refusal.
-      if (/stale info|\[rejected\]|failed to push/i.test(String((e as Error).message ?? e))) return { ok: false, text: `ship-head-moved: ${url} moved while pushing (the lease on \`${String(a.expected).slice(0, 12)}\` refused it): nothing was pushed; read it again.` };
+      if ((e as { refused?: boolean }).refused) return { refused: String((e as Error).message) };
       throw e;
     }
-    flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
-    flow.checksStarted(s.slug, Number(a.pr.number), b.sha, undefined, a.workspace);
-    return { ok: true, text: `Pushed ${url} \`${b.branch}\` from \`${String(a.expected).slice(0, 12)}\` to \`${b.sha.slice(0, 12)}\`.`, objects: [`github:${s.slug.toLowerCase()}@${b.sha}`] };
+    return { sha: parent };
   }
 
   /**
