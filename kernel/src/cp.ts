@@ -162,7 +162,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
       if (roles.includes(SETTLE)) {
         // A log task never reaches here: a status or patch write on one is refused above, naming itself.
-        const blocked = child ? "only its holder or the agent that made it adds a child under it"
+        const blocked = child ? "only its holder or the agent that made it adds a child under it, or a part assigned to you"
           : isRoutineRun(t) && !t.assigneeAgentId ? "it has no agent to hold it"
           : t.createdByUserId ? "it is the owner's own task"
           : "no agent made it";
