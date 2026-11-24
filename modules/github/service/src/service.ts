@@ -1268,6 +1268,11 @@ export function createService(o: Options) {
     ship: o.ship,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
     taskStatus: async (task) => String(((await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`)) as { status?: unknown })?.status ?? "") || null,
+    // A task's id from its identifier: the kernel's work read resolves it by its jobs, which carry the id.
+    taskIdOf: async (identifier) => {
+      const r = await kernel("GET", `/v1/work?task=${encodeURIComponent(identifier)}`) as { jobs?: { task?: unknown }[] };
+      return String(r?.jobs?.[0]?.task ?? "") || undefined;
+    },
     // A queue persisted before it kept the task's identifier: the record itself has it (kernel work read).
     identifierOf: async (record) => {
       // A record that is gone (404) has no identifier to find; any other failure is transient (the kernel restarting), and the

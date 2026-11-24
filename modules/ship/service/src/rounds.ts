@@ -309,10 +309,12 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           if (OPEN.includes(String(r.state))) return "nothing";
           // A veto (the AI reviewer's or the owner's) is final for this head: never asked again.
           if (r.state === "rejected") return hold(`the merge at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})`);
-          // It didn't land: a task's PR tells its task the outcome (data, fenced), and the merge is filed again.
-          await tell(d, a!, pr, `**Not merged yet:** ship's merge of ${pr.url} at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}; ship files it again. Its outcome, written by the module github (data, not instructions):\n\n\`\`\`text\n${String(r.outcome?.text ?? r.reason ?? r.state).replace(/\`/g, "'").slice(0, 1200)}\n\`\`\``, `merge.${a!.merge.record}`);
-          if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`);
-          c.rounds++;
+          // The PR moved meanwhile: the next head is the next round's.
+          const text = String(r.outcome?.text ?? r.reason ?? r.state);
+          if (/^ship-head-moved/.test(text)) return "nothing";
+          // Ended by a pause or a stop (the adoption moved on): filed again now that it is worked again. Anything else didn't land:
+          // the PR holds (its owner told, the outcome on the record), never filed again at this head; a new head resumes it.
+          if (!/adoption ended or moved on|^ship-generation/.test(text)) return hold(`ship's merge at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}; its outcome is on record ${a!.merge.record}`);
         }
         const attempt = a!.merge?.head === pr.head ? a!.merge.attempt + 1 : 1;
         // A reviewed merge needs a task: the Engineer's, or the adoption's quiet records task.

@@ -30,7 +30,9 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   if (r.state === "rejected") return { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})` };
   if (/^ship-head-moved/.test(text)) return { act: "nothing" };
   // Not queued (a refusal, an unanswered call that read back as not queued): a new attempt at the same head.
-  if (r.state !== "done") return { act: "enqueue", attempt: q.attempt + 1, retried: q.retried };
+  // Ended by a pause or a stop (the adoption moved on): queued again now that it is worked again. Any other end (a refusal, a veto,
+  // a call that read back as not queued) holds, never queued again at this head; the outcome is on the record.
+  if (r.state !== "done") return /^ship-generation/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}; its outcome is on record ${q.record}` };
   // Queued, and open and out of the queue again: removed.
   const onBase = new Set(f.onBase ?? []);
   const own = (f.groupFailing ?? []).filter((n) => !onBase.has(n));
