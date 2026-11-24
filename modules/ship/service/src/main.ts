@@ -15,7 +15,8 @@ const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const kernel = new Proxy({} as ReturnType<typeof kernelClient>, { get: (_, k) => (kernelClient(kernelUrl, file(env.SHIP_TOKEN_FILE)) as Record<string | symbol, unknown>)[k] });
 
 const json = (v: string | undefined) => { try { return JSON.parse(v || "null"); } catch { return null; } };
-const raw = () => { const v = json(env.SHIP_SETTINGS); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
+// The ship setting with the kill switch (its own setting, ship_paused, so a repo proposal never carries it) folded in.
+const raw = () => { const v = json(env.SHIP_SETTINGS); return { ...(v && typeof v === "object" && !Array.isArray(v) ? v : {}), paused: env.SHIP_PAUSED === "true" }; };
 const scope = () => scopeFrom(env);
 const maintainerRepos = (): unknown[] => { const t = String(env.SHIP_MAINTAINER_REPOS ?? "").trim(); const v = t.startsWith("[") ? json(t) : t.split(",").map((x) => x.trim()).filter(Boolean); return Array.isArray(v) ? v : []; };
 const codeReview = () => { const v = json(env.SHIP_CODE_REVIEW); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };

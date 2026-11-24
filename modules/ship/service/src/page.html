@@ -93,7 +93,7 @@
     e.preventDefault();
     const repo = $("newrepo").value.trim();
     if (!repo) return;
-    try { proposed(await tool("ship_configure", { repo, change: "cautious" })); pending = { repos: {}, paused: undefined }; render(); } catch (err) { say(err.message, true); }
+    try { proposed(await tool("ship_configure", { repo, add: true })); pending = { repos: {}, paused: undefined }; render(); } catch (err) { say(err.message, true); }
   });
   start("ship", load);
 </script>

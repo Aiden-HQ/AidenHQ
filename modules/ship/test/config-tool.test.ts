@@ -45,11 +45,14 @@ test("ship_configure for the owner returns the settings change and files nothing
   const owner = { agent: "", roles: [], kind: "owner" };
   const loosened = (await tool.run({ repo: "a/b", change: { approve: "all" } }, owner)) as any;
   assert.deepEqual(loosened._aidenhq.settings_change.map((c: any) => [c.key, c.value.repos["a/b"].approve]), [["ship", "all"]]);
-  const added = (await tool.run({ repo: "x/y", change: "cautious" }, owner)) as any;
+  const added = (await tool.run({ repo: "x/y", add: true }, owner)) as any;
   assert.deepEqual(added._aidenhq.settings_change.map((c: any) => c.key), ["maintainer_repos", "code_review", "ship"]);
   assert.deepEqual(added._aidenhq.settings_change[0].value, ["a/b", { repo: "x/y", issues: false }]);
   assert.deepEqual(filed, []);
-  await assert.rejects(tool.run({ repo: "x/y", change: "cautious" }, { agent: "x", roles: ["ship-admin"], assertion: "jwt" }), /owner's/);
+  await assert.rejects(tool.run({ repo: "x/y", add: true }, { agent: "x", roles: ["ship-admin"], assertion: "jwt" }), /owner's/);
+  await assert.rejects(tool.run({ repo: "x/y", change: "cautious" }, owner), /isn't covered yet/);
+  // Add repo on a repo that already has an entry never resets it.
+  await assert.rejects(tool.run({ repo: "a/b", add: true }, owner), /already on ship/);
 });
 
 test("removing a listed repo is one change across maintainer_repos, code_review and ship, and the owner's", async () => {
@@ -62,6 +65,31 @@ test("removing a listed repo is one change across maintainer_repos, code_review 
 test("ship_configure merges several edits (a repo's fields, another repo, the pause) into one proposal", async () => {
   const tool = configTools({ raw: () => ({ repos: { "a/b": "cautious" } }), scope: () => ({ fleet: [], listed: ["a/b", "c/d"] }), state: state(), maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
   const r = (await tool.run({ edits: { repos: { "a/b": { preset: "full", approve: "safe" }, "c/d": { merge: "off" } }, paused: true } }, { agent: "", roles: [], kind: "owner" })) as any;
-  const v = r._aidenhq.settings_change[0].value;
-  assert.deepEqual([v.repos["a/b"], v.repos["c/d"], v.paused], [{ preset: "full", approve: "safe" }, { merge: "off" }, true]);
+  const [ship, pause] = r._aidenhq.settings_change;
+  assert.deepEqual([ship.key, ship.value.repos["a/b"], ship.value.repos["c/d"], "paused" in ship.value, pause], ["ship", { preset: "full", approve: "safe" }, { merge: "off" }, false, { kind: "setting", key: "ship_paused", value: true }]);
+});
+
+test("the pause is its own setting and works whatever the entries hold; an orphan entry blocks nothing but itself", async () => {
+  // a/gone left the Maintainer (outside the scope) and its entry is a typo'd preset: the pause, another repo's edit and the orphan's removal still go.
+  const raw = { repos: { "a/b": "cautious", "a/gone": "cautios" } };
+  const tool = configTools({ raw: () => raw, scope: () => scope, state: state(), maintainerRepos: () => ["a/b"], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
+  const owner = { agent: "", roles: [], kind: "owner" };
+  const paused = (await tool.run({ paused: true }, owner)) as any;
+  assert.deepEqual(paused._aidenhq.settings_change, [{ kind: "setting", key: "ship_paused", value: true }]);
+  const edit = (await tool.run({ repo: "a/b", change: { merge: "off" } }, owner)) as any;
+  assert.deepEqual(edit._aidenhq.settings_change.map((c: any) => [c.key, "paused" in c.value]), [["ship", false]]);
+  const gone = (await tool.run({ repo: "a/gone", remove: true }, owner)) as any;
+  assert.deepEqual(gone._aidenhq.settings_change[0].value.repos, { "a/b": "cautious" });
+  // Edits to the orphan itself still fail, and an agent can pause but not resume.
+  await assert.rejects(tool.run({ repo: "a/gone", change: "full" }, owner), /isn't a repo ship covers|isn't covered/);
+  const agent = { agent: "x", roles: ["ship-admin"], assertion: "jwt" };
+  const resume = configTools({ raw: () => ({ ...raw, paused: true }), scope: () => scope, state: state(), maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
+  await assert.rejects(resume.run({ paused: false }, agent), /paused/);
+  // Whatever state this service last saw: an agent never resumes.
+  const stale = configTools({ raw: () => raw, scope: () => scope, state: state(), maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
+  await assert.rejects(stale.run({ paused: false }, agent), /paused/);
+  // Add repo on a repo the Maintainer already lists adds only its ship entry (no second maintainer_repos entry).
+  const listed = configTools({ raw: () => ({ repos: {} }), scope: () => scope, state: state(), maintainerRepos: () => [{ repo: "a/b", issues: true }], codeReview: () => ({ repos: [{ repo: "a/b" }] }), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
+  const added = (await listed.run({ repo: "A/B", add: true }, owner)) as any;
+  assert.deepEqual(added._aidenhq.settings_change.map((c: any) => c.key), ["ship"]);
 });

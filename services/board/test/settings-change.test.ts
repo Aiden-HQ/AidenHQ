@@ -24,7 +24,7 @@ writeFileSync(
     routines: { digest: { title: "Digest" } },
   }),
 );
-writeFileSync(join(dir, "modules.json"), JSON.stringify([{ name: "glean", enabled: true, settings: { glean_mcp_url: { default: "", type: "url", host: "*.glean.com" } } }, { name: "core", enabled: true, settings: { grading: { default: "on", values: ["on", "off"] }, ignore_repos: { default: [], pattern: "^[\\w.-]+/[\\w.-]+$" } } }]));
+writeFileSync(join(dir, "modules.json"), JSON.stringify([{ name: "github", enabled: true, settings: { maintainer_repos: { default: [], entry: "repo", pattern: "^[\\w.-]+/[\\w.-]+$" } } }, { name: "glean", enabled: true, settings: { glean_mcp_url: { default: "", type: "url", host: "*.glean.com" } } }, { name: "core", enabled: true, settings: { grading: { default: "on", values: ["on", "off"] }, ignore_repos: { default: [], pattern: "^[\\w.-]+/[\\w.-]+$" } } }]));
 process.env.BOARD_PAPERCLIP_CONFIG = join(dir, "paperclip.yaml");
 process.env.BOARD_MODULES_FILE = join(dir, "modules.json");
 writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: { pe: { key: "fleet-engineer", roles: ["platform-engineer"], tools: {} } } }));
@@ -73,8 +73,9 @@ describe("POST /api/settings/change", () => {
     expect((await post({ changes: [{ kind: "agent", agent: "fleet-engineer", field: "heartbeat", value: 4 }] })).status).toBe(400);
     // An empty entry in a list fails the setting's pattern the same way compile checks it (`[]` empties the list).
     expect(await post({ changes: [{ kind: "setting", key: "ignore_repos", value: ["acme/probe", ""] }] })).toMatchObject({ status: 400, body: { error: expect.stringContaining("must match") } });
-    // A setting holding entries would lose them to a flat list: instance.yaml only.
-    expect(await post({ changes: [{ kind: "setting", key: "maintainer_repos", value: ["acme/product"] }] })).toMatchObject({ status: 400, body: { error: expect.stringContaining("instance.yaml") } });
+    // A list of entries keeps its maps: a bare name over one would drop its fields, and an entry must be a repo.
+    expect(await post({ changes: [{ kind: "setting", key: "maintainer_repos", value: ["acme/product"] }] })).toMatchObject({ status: 400, body: { error: expect.stringContaining("keep them") } });
+    expect((await post({ changes: [{ kind: "setting", key: "maintainer_repos", value: [{ repo: "acme/product" }, { repo: "not a repo" }] }] })).status).toBe(400);
     expect(created).toHaveLength(0);
   });
 

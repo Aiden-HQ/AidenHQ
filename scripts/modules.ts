@@ -308,7 +308,7 @@ export const defaultComputersMax = (totalBytes = totalmem()) => Math.min(64, Mat
 /** A module's settings for the board: default, allowed values, required, pattern, when, and the comment above each key as its `doc`. */
 function settingDefs(file: string, def: Obj) {
   const docs = settingDocs(file);
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.entry ? { entry: String(d.entry) } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**
