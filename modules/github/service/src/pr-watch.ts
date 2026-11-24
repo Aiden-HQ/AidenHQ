@@ -92,7 +92,7 @@ const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { number url title createdAt isDraft mergeable mergeStateStatus isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first: 30) { nodes { state } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
   }
 }`;
@@ -223,7 +223,9 @@ export function startPrWatch(o: PrWatchOptions) {
       let total = 0;
       try {
         for (let page = 1; page <= 5; page++) {
-          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${head}/check-runs?filter=latest&per_page=100&page=${page}`);
+          // The listing is the recovery paths' first read, so it carries the same read deadline as a job probe: waiting out the
+          // owner's quota here would hold this serial scan (every later PR's merge) just as a probe would.
+          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${head}/check-runs?filter=latest&per_page=100&page=${page}`, undefined, { deadline: Date.now() + PROBE_DEADLINE_MS });
           if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) return null;
           runs.push(...listed.body.check_runs);
           total = Number(listed.body.total_count ?? 0);
@@ -640,6 +642,11 @@ export function startPrWatch(o: PrWatchOptions) {
       const url = pr.url.toLowerCase();
       probes = 0; // a PR's recovery probes never spend another PR's: one busy head cannot starve the rest
       const opener = opened[url];
+      // `neverStarted`'s answer for this head, asked once a pass: it spends Actions reads and re-runs jobs, so the mixed-state
+      // report below and the red-head rules further down share one call rather than each probing the same jobs.
+      let envRed: boolean | undefined;
+      // Only an agent's own PR is re-run (an outside author's failure is nobody's here), so only its head is probed for it.
+      const redsAreEnvironment = async () => (envRed ??= pr.mergeable === "MERGEABLE" && !!opener && opener.branch === pr.headRefName ? await neverStarted(pr) : false);
       // Flow: CI on any PR's head, once per head: begun at its first check run's start, over once its named checks have all
       // finished (at the last one's end). The task is the agent's that opened it, if one did.
       state.checked ??= {};
@@ -683,8 +690,10 @@ export function startPrWatch(o: PrWatchOptions) {
             headRefOid: pr.headRefOid, baseRefName: pr.baseRefName ?? main.name, isCrossRepository: pr.isCrossRepository,
             commits: { nodes: [{ commit: { statusCheckRollup: rollupOf(pr) } }] },
             // The watcher's rollup has no base ref: an empty branch is not "behind", so a green check set is "mergeable" here.
+            // The review state is the PR's own, as the gate reads it: a head with changes requested is refused for that, before
+            // any check, so the wedged report must not tell its task a pending check is what holds the merge.
             baseRef: { compare: { behindBy: 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } },
-            latestOpinionatedReviews: { nodes: [] },
+            latestOpinionatedReviews: { nodes: pr.latestOpinionatedReviews?.nodes ?? [] },
           },
         },
       }, pr.headRefOid);
@@ -709,9 +718,10 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (optional.length && redNow.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
+      } else if (optional.length && redNow.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid && !(await redsAreEnvironment())) {
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no
-        // other rule wakes for it while a named check is still pending. Tell the task the failure once at this head.
+        // other rule wakes for it while a named check is still pending. Tell the task the failure once at this head. A red whose
+        // job never started is the environment's (`redsAreEnvironment`): re-running it is the fix, never a push, so no wake.
         const w = opener && opener.branch === pr.headRefName
           ? await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\` while another check is still \`in_progress\`; \`gh pr checks ${pr.url}\` lists them. Fix the failure on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says. Nothing else.`)
           : "sent";
@@ -784,7 +794,7 @@ export function startPrWatch(o: PrWatchOptions) {
         continue;
       }
       // Red checks whose jobs never started are the environment's: re-run once at this head, never a rebase or a wake.
-      if (pr.mergeable === "MERGEABLE" && await neverStarted(pr)) continue;
+      if (pr.mergeable === "MERGEABLE" && await redsAreEnvironment()) continue;
       const why = rebaseReason(pr, main.rollup);
       if (why === "conflict" || why === "red") {
         const key = `${url}:${main.oid}`;

@@ -149,6 +149,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   let open = [];
   const reran = new Set(); // job ids this head's re-run was asked for: GitHub posts their next attempt
   const jobProbeOpts = []; // the opts of each Actions job read: a probe must carry a deadline
+  const headRunsOpts = []; // the opts of each REST check-runs listing: the recovery paths' first read carries one too
   const api = async (method, path, body, opts) => {
     gh.push(`${method} ${path}${body?.update_method ? ` ${body.update_method}` : ""}`);
     if (method === "GET" && /^\/repos\/acme\/app\/actions\/jobs\/\d+$/.test(path)) jobProbeOpts.push(opts ?? {});
@@ -156,6 +157,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     // REST check runs for a head, as GitHub lists them: the full Actions job id is carried in details_url.
     const headRuns = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/);
     if (headRuns) {
+      headRunsOpts.push(opts ?? {});
       // The tests that need REST and the rollup to disagree (an old wedged run the rollup no longer lists) name the runs.
       if (restRuns) { const runs = restRuns(headRuns[1]); return { status: 200, body: { total_count: runs.length, check_runs: runs } }; }
       const head = open.find((p) => p.headRefOid === headRuns[1]);
@@ -196,7 +198,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, merges, watch, cacheDir, agentPr, jobProbeOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
+  return { woke, gh, merges, watch, cacheDir, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -936,4 +938,53 @@ test("a red check beside a wedged one wakes the task about the failure, not with
   assert.match(c.woke[0].text, /checks failed at/, "the actionable failure is named");
   assert.doesNotMatch(c.woke[0].text, /Leave the head alone/, "not the leave-it-alone advice");
   assert.doesNotMatch(c.woke[0].text, /unit/, "the check's name never enters the wake");
+});
+
+// self-review: the REST check-runs listing is the recovery paths' first read, so it carries the same read deadline as a probe.
+test("the recovery check-runs listing bounds its rate-limit wait like a job probe", async (t) => {
+  const c = await rig(t);
+  c.set([c.agentPr(69, stuckPr(69))]);
+  await c.watch.tick();
+  assert.ok(c.headRunsOpts.length >= 1, "the head's check runs were listed");
+  for (const o of c.headRunsOpts) assert.equal(typeof o.deadline, "number", "every recovery listing carries a read deadline");
+});
+
+// self-review: changes requested fails the gate before any check is read, so no wake claims a wedged check holds the merge.
+test("a head with changes requested gets no held-merge wake for its wedged check", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t);
+  c.set([c.agentPr(70, { ...stuckPr(70), reviewDecision: "CHANGES_REQUESTED" })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h70:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h70:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "the gate refuses the review state first: the wedge is not what holds the merge");
+  const latest = await rig(t);
+  latest.set([latest.agentPr(71, { ...stuckPr(71), latestOpinionatedReviews: { nodes: [{ state: "CHANGES_REQUESTED" }] } })]);
+  writeFileSync(join(latest.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h71:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h71:77": asked },
+  } }));
+  await latest.watch.tick();
+  assert.equal(latest.woke.length, 0, "the opinionated reviews' state counts too, exactly as merge-gate reads it");
+});
+
+// self-review: a red check whose job never started is the environment's: re-run it, never wake the task to push.
+test("a never-started red beside a wedged check is re-run, not woken as a fix-and-publish", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  // The red job 78 has no steps: it never started, so the environment owns it (the rig's default `steps` is empty for that job).
+  const c = await rig(t, { steps: [] });
+  c.set([c.agentPr(72, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h72:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h72:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "a never-started red is the environment's: the re-run is its fix, not a push");
+  assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "its failed jobs are re-run instead");
 });

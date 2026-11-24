@@ -299,6 +299,45 @@ it("a read issued while a write is blocked still returns without waiting", async
   await write;
 });
 
+it("a read whose deadline is shorter than an attempt still sends: the deadline bounds the quota wait, not the request", async () => {
+  let clock = 1_000_000;
+  const sent: string[] = [];
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async (u) => {
+      sent.push(new URL(String(u)).pathname);
+      return answer(200, { steps: [] });
+    },
+  });
+  // Five seconds of budget: far less than the 30 s an attempt may take, and still enough to send at once.
+  const r = await access.rest("GET", "/repos/acme/api/actions/jobs/1", undefined, { background: true, deadline: clock + 5_000 });
+  expect(r.status).toBe(200);
+  expect(sent).toEqual(["/repos/acme/api/actions/jobs/1"]);
+});
+
+it("a read that would sleep out a quota window past its deadline refuses at once", async () => {
+  let clock = 1_000_000;
+  let calls = 0;
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async () => {
+      calls++;
+      return answer(200, { steps: [], rate: {} }, { "x-ratelimit-remaining": "0", "x-ratelimit-limit": "5000", "x-ratelimit-reset": String(Math.floor(clock / 1000) + 600), "x-ratelimit-resource": "core" });
+    },
+  });
+  await access.rest("GET", "/repos/acme/api");
+  const start = clock;
+  const err = await access.rest("GET", "/repos/acme/api/actions/jobs/1", undefined, { background: true, deadline: clock + 5_000 }).catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need.cause).toBe("rate_limited");
+  expect(clock).toBe(start);
+  expect(calls).toBe(1);
+});
+
 it("a write still queued at its deadline fails by that deadline, not when the queue head finishes, and sends nothing", async () => {
   const time = fakeTime();
   let release!: () => void;

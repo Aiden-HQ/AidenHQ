@@ -87,11 +87,12 @@ export type Identity = {
   /** Each write as it was answered: a refusal (its words) or a success (undefined), so its owner sees when it stops working. */
   wrote?(refusal?: string): void;
 };
-/** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
+  /** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
 type CallOpts = {
   background?: boolean; accept?: string; as?: Identity; etag?: string;
-  /** Reads only: the latest this call may spend waiting out a rate limit. Past it GitHub's limit refuses at once (a typed
-   * rate_limited need) instead of sleeping until the reset, which is what a background scan wants for a read it can retry. */
+  /** Reads only: the latest this call may spend waiting out a rate limit. Past it the wait refuses at once as a typed
+   * rate_limited need instead of sleeping until the reset, which is what a background scan wants for a read it can retry.
+   * It bounds the wait, not the request: a read that starts at the deadline still gets its own attempt timeout. */
   deadline?: number;
 };
 
@@ -239,15 +240,17 @@ export function createAccess(o: {
 
   /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout).
    * A background call sleeps on the reserve and on a refusal alike, but only where a write can still see its attempt through
-   * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. */
-  async function admit(p: Pace, resource: string, background: boolean, deadline?: number): Promise<void> {
+   * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. A read's `deadline` bounds
+   * the wait itself (`read`), never the attempt: a read that starts just before it still gets its own fetch timeout. */
+  async function admit(p: Pace, resource: string, background: boolean, deadline?: number, read = false): Promise<void> {
     for (;;) {
       const t = now();
       const r = p.rates.get(resource);
       const low = r && r.limit > 0 && r.remaining < r.limit * reserve && r.reset > t ? r.reset : 0;
       const until = Math.max(p.blockedUntil > t ? p.blockedUntil : 0, background ? low : 0);
       if (!until) return;
-      if (!background || (deadline !== undefined && !fits(deadline, until))) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
+      const canWait = read ? deadline === undefined || until <= deadline : fits(deadline, until);
+      if (!background || (deadline !== undefined && !canWait)) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
       await sleep(until - t);
     }
   }
@@ -383,12 +386,15 @@ export function createAccess(o: {
   async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string): Promise<{ status: number; body: any; headers: Headers }> {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
-    await admit(p, resource, background, deadline);
+    // A read's `deadline` bounds only its rate-limit wait (admit): the attempt that follows has its own timeout, and a read
+    // creates nothing, so nothing lands after a caller was told it failed.
+    const read = !createsContent(method, path, body);
+    await admit(p, resource, background, deadline, read);
     const t = as ? await as.token(retried) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();
     // Never a fetch once the write's budget has run out: nothing lands after the caller was told it failed.
-    if (deadline !== undefined && !fits(deadline)) noBudget(p);
+    if (!read && deadline !== undefined && !fits(deadline)) noBudget(p);
     const res = await fetchImpl(`${API}${path}`, {
       method,
       signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
