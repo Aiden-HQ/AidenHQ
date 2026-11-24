@@ -960,7 +960,7 @@ export function startLoop(o: LoopOptions) {
       }
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
         // The repo's Auto-merge off (`merge: off`): ship files no merge and asks for none; the agent's own `aidenhq merge` still works.
-        if (o.settings(repo)?.merge !== "ready") { state.greened[url] = pr.headRefOid; save(); continue; }
+        if (o.settings(repo)?.merge !== "ready") continue; // nothing recorded: turning it on again files this head
         // The task's only open PR, green at the head its approved PR record pushed: the kernel files its merge, as its agent.
         const only = open.filter((p) => !superseded.has(p.url.toLowerCase()) && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName).length === 1;
         const asked = only ? await fileMerge(pr, opener.task, work) : "wake";
