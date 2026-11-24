@@ -1340,7 +1340,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
   /** An active routine's next scheduled run: the soonest of its enabled triggers (a paused one has none). */
-  const nextRunOf = (r: { status: string; triggers?: { enabled?: boolean; nextRunAt?: string | null }[] }) => (r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? undefined : undefined);
+  const nextRunOf = (r: { status: string; triggers?: { enabled?: boolean; nextRunAt?: string | null }[] }) => (r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled !== false).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? undefined : undefined);
 
   async function settingsData() {
     const [pending, live] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => [])]);

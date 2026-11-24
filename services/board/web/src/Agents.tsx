@@ -60,7 +60,7 @@ function byDepartment(agents: RosterAgent[]): { dept: Department; members: Roste
 function workingFirst(agents: RosterAgent[]): RosterAgent[] {
   const byId = new Map(agents.map((a) => [a.id, a]));
   const byKey = new Map(agents.flatMap((a) => (a.key ? [[a.key, a] as const] : [])));
-  const hot = new Set(agents.filter((a) => a.state === "working").map((a) => a.id));
+  const hot = new Set(agents.filter((a) => a.state === "working" || a.running > 0).map((a) => a.id));
   // Each working agent warms every agent above it: its team record and whom it reports to.
   for (const a of [...hot].map((id) => byId.get(id)!)) {
     const seen = new Set<string>();
