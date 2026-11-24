@@ -8,8 +8,12 @@ export const row = (task: string, o: Partial<StateRow> = {}): StateRow => ({
 const needs = (r: StateRow, p: (a: StateRow["attention"][number]) => boolean) => r.attention.some(p);
 
 /** `mirror`: the kernel's issue mirror rows (GET /v1/tasks/issues) the test sets. */
-export function fakeStates(rows: StateRow[] = [], mirror: IssueRow[] = []): TaskStates & { rows: StateRow[]; mirror: IssueRow[]; reads: StateQuery[] } {
+export function fakeStates(rows: StateRow[] = [], mirror: IssueRow[] = []): TaskStates & { rows: StateRow[]; mirror: IssueRow[]; reads: StateQuery[]; claims: string[]; claim: "ok" | "stale" | "taken" } {
   const me = {
+    claims: [] as string[],
+    claim: "ok" as "ok" | "stale" | "taken",
+    async claimAnswer(task: string, since: string) { me.claims.push(`claim ${task} ${since}`); return me.claim; },
+    async releaseAnswer(task: string, since: string) { me.claims.push(`release ${task} ${since}`); },
     rows,
     mirror,
     async issues(ids: string[]) { return me.mirror.filter((r) => ids.includes(r.id) || ids.includes(r.identifier ?? "")); },

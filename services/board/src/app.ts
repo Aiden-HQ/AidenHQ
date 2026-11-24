@@ -890,7 +890,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const st = states.get(k.id)!;
         const q = askedQuestions(await pc.comments(k.id).catch(() => [] as Comment[]), k.assigneeAgentId);
         const question = st.question ?? "";
-        return { id: q?.id ?? `wait:${k.id}`, at: q?.at ?? st.since, text: q?.text ?? question, questions: q?.questions ?? [{ question, options: [] }], identifier: k.identifier, agent: ctx.agents.find((a) => a.id === k.assigneeAgentId)?.name ?? "Agent" };
+        return { id: q?.id ?? `wait:${k.id}`, at: q?.at ?? st.since, text: q?.text ?? question, questions: q?.questions ?? [{ question, options: [] }], waitSince: st.wait_since ?? "", identifier: k.identifier, agent: ctx.agents.find((a) => a.id === k.assigneeAgentId)?.name ?? "Agent" };
       }),
     );
   }
@@ -1773,10 +1773,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const [read, open] = await Promise.all([taskStates.read({ open: true }), pc.openIssues()]);
         const byId = new Map(open.map((i) => [i.id, i]));
         const rows = await shownRows(read.tasks.filter((r) => r.attention.length && byId.has(r.task)));
-        const items = rows.map((state) => {
+        // Oldest owner obligation first (the attention entry's own start); a row with an open owner question carries it and its options.
+        const since = (r: ShownState) => (r.attention.find((a) => a.who === "owner") ?? r.attention[0]!).since;
+        const items = await Promise.all(rows.sort((a, b) => since(a).localeCompare(since(b))).map(async (state) => {
           const i = byId.get(state.task)!;
-          return { identifier: i.identifier, title: i.title, agent: ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You", state };
-        });
+          const q = waitsForAnswer(state) && state.wait_since ? askedQuestions(await pc.comments(i.id).catch(() => [] as Comment[]), i.assigneeAgentId) : undefined;
+          const ask = waitsForAnswer(state) && state.wait_since ? { question: state.question ?? "", questions: q?.questions ?? [{ question: state.question ?? "", options: [] }], waitSince: state.wait_since } : undefined;
+          return { identifier: i.identifier, title: i.title, agent: ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You", state, ...(ask ? { ask } : {}) };
+        }));
         // The counts come from the rows the list shows.
         const has = (r: ShownState, f: (a: ShownState["attention"][number]) => boolean) => r.attention.some(f);
         const counts = {
@@ -2192,6 +2196,28 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
         return { ...(await view(posted?.id ?? parts[0]?.message)), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
+      },
+    },
+    {
+      // The owner's answer to a task's open question, bound to the wait it answers: claimed once at the kernel (the board and Telegram
+      // share the claim), posted to this task only (no @mention routing), the claim released if the post fails.
+      method: "POST",
+      path: /^\/api\/issues\/([^/]+)\/answer$/,
+      handle: async (m, body) => {
+        const ref = dec(m[1]!);
+        if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
+        const { body: text, wait_since: waitSince } = parse(z.object({ body: z.string().trim().min(1).max(30_000), wait_since: z.string().min(1) }).strict(), body);
+        const issue = await pc.issue(ref);
+        const claimed = await taskStates.claimAnswer(issue.id, waitSince);
+        if (claimed !== "ok") throw new HttpError(409, "Already answered, or the question changed.");
+        try {
+          const posted = await pc.addComment(issue.id, displayText(text), true);
+          log.info({ issue: issue.identifier }, "question answered");
+          return { identifier: issue.identifier, message: posted.id };
+        } catch (err) {
+          await taskStates.releaseAnswer(issue.id, waitSince).catch((e: Error) => log.warn({ err: e.message, issue: issue.identifier }, "couldn't release an answer claim"));
+          throw err;
+        }
       },
     },
     {

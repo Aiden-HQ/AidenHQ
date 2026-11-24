@@ -15,6 +15,10 @@ export type TaskStates = {
   read(q: StateQuery): Promise<StateRead>;
   /** The kernel's issue mirror (GET /v1/tasks/issues): identifier, title, status and parent by id or identifier, ≤ MAX_IDS. */
   issues(ids: string[]): Promise<IssueRow[]>;
+  /** The kernel's once-per-wait claim on an owner's answer (POST /v1/answers/claim): "stale" when that wait is no longer the open one, "taken" when someone answered it. */
+  claimAnswer(task: string, waitSince: string): Promise<"ok" | "stale" | "taken">;
+  /** Give the claim back after a failed post, so the owner can answer again. */
+  releaseAnswer(task: string, waitSince: string): Promise<void>;
 };
 
 /** The most ids one read takes (the kernel refuses more). */
@@ -29,9 +33,20 @@ export function kernelStates(k: { url: string; token: string }): TaskStates {
     if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
     return res.json() as Promise<T>;
   };
+  const post = (path: string, body: unknown) => fetch(`${k.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
   const get = (query: string) => kernel<StateRead>(`/v1/tasks/state?${query}`);
   let open: { at: number; read: Promise<StateRead> } | undefined;
   return {
+    claimAnswer: async (task, waitSince) => {
+      const res = await post("/v1/answers/claim", { task, wait_since: waitSince });
+      if (res.ok) return "ok";
+      if (res.status === 409) return ((await res.json()) as { error: "stale" | "taken" }).error;
+      throw new Error(`the kernel answered ${res.status}`);
+    },
+    releaseAnswer: async (task, waitSince) => {
+      const res = await post("/v1/answers/release", { task, wait_since: waitSince });
+      if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
+    },
     issues: async (ids) => (ids.length ? (await kernel<{ issues: IssueRow[] }>(`/v1/tasks/issues?ids=${[...new Set(ids)].map(encodeURIComponent).join(",")}`)).issues : []),
     read: (q) => {
       if (!q.open) return get(`ids=${(q.ids ?? []).map(encodeURIComponent).join(",")}`);
@@ -47,7 +62,7 @@ export function kernelStates(k: { url: string; token: string }): TaskStates {
 }
 
 /** Without a kernel (a test, an unconfigured board) no task has a state. */
-export const noStates: TaskStates = { issues: async () => [], read: async () => ({ as_of: new Date().toISOString(), tasks: [], counts: { needs_you: 0, failed: 0, unexplained_idle: 0 } }) };
+export const noStates: TaskStates = { claimAnswer: async () => "stale", releaseAnswer: async () => {}, issues: async () => [], read: async () => ({ as_of: new Date().toISOString(), tasks: [], counts: { needs_you: 0, failed: 0, unexplained_idle: 0 } }) };
 
 /** Every id's row (batches of MAX_IDS, side by side); a task the kernel has no facts for has none. */
 export async function statesOf(states: TaskStates, ids: string[]): Promise<Map<string, StateRow>> {
