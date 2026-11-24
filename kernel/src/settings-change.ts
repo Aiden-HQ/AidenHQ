@@ -46,8 +46,9 @@ type Sources = {
   compiled: Dict;
   catalog: Dict[];
   self?: { key: string; roles: string[] };
-  /** The module other than library that ships a skill named `name` in the instance tree (a disabled module counts). */
-  skillModule?: (name: string) => string | undefined;
+  /** The module other than library that ships a skill named `name` in the module trees (a disabled module counts), and
+   * whether that module is the instance's own (a local module, whose file is in the instance repo). */
+  skillModule?: (name: string) => { module: string; local: boolean } | undefined;
 };
 /** The kinds an agent files about itself (self_change). */
 export const SELF_KINDS = ["rules", "skill", "skills", "routine_def", "profile"];
@@ -192,9 +193,9 @@ export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }
       // folder (sandbox.ts copySkills), so the library write never reaches it. The compiled catalog covers the enabled modules
       // of any marketplace; skillModule reads the product's and the instance's module trees, so a disabled module refuses too.
       const name = String(c.name);
-      const owners = Object.keys(compiled?.skills ?? {}).map((id) => id.split(".")).filter(([m, n]) => m !== "library" && n === name).map(([m]) => m!);
-      const module = owners.sort()[0] ?? skillModule?.(name);
-      if (module) refuse(`skill ${name} is module ${module}'s: modules/${module}/skills/${name}/SKILL.md is a module skill, and module skills change through an Engineer PR on the product repo (a self_change writes library skills only)`);
+      const owner = Object.keys(compiled?.skills ?? {}).map((id) => id.split(".")).find(([m, n]) => m !== "library" && n === name)?.[0];
+      const found = owner ? { module: owner, local: catalog.some((m) => m.name === owner && m.tier === "local") } : skillModule?.(name);
+      if (found) refuse(`skill ${name} is module ${found.module}'s: modules/${found.module}/skills/${name}/SKILL.md is a module skill, and ${found.local ? "a local module's skills change through an Engineer PR on the instance repo" : "module skills change through an Engineer PR on the product repo"} (a self_change writes library skills only)`);
       text(c.text, RULES_MAX);
       return;
     }
@@ -569,7 +570,7 @@ export function createSettingsChanges(d: SettingsDeps) {
     try {
       await d.tree(base, dir);
       const compiled = (() => { try { return compileTree(d.product, dir); } catch (e) { return refuse(`the instance doesn't compile at ${base.slice(0, 12)}: ${(e as Error).message}`); } })();
-      const skillModule = moduleSkillOwner([join(d.product, "modules"), join(dir, "modules")]);
+      const skillModule = moduleSkillOwner([{ dir: join(d.product, "modules"), local: false }, { dir: join(dir, "modules"), local: true }]);
       const src: Sources = { compiled: compiled.paperclip, catalog: compiled.catalog, self: { key, roles: requester.roles }, skillModule };
       for (const ch of changes) checkTyped(ch, src);
       const typed = (changes as Change[]).map((ch) => (ch.kind === "routine_def" ? { ...ch, agent: key } : ch));
@@ -622,8 +623,15 @@ export function createSettingsChanges(d: SettingsDeps) {
 }
 
 /** The module other than library whose tree ships `name` as a skill (`modules/<module>/skills/<name>/SKILL.md`), if any. */
-function moduleSkillOwner(roots: string[]): (name: string) => string | undefined {
-  return (name) => roots.flatMap((root) => (existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== "library" && existsSync(join(root, e.name, "skills", name, "SKILL.md"))).map((e) => e.name) : [])).sort()[0];
+function moduleSkillOwner(roots: { dir: string; local: boolean }[]): (name: string) => { module: string; local: boolean } | undefined {
+  return (name) => {
+    for (const { dir, local } of roots) {
+      if (!existsSync(dir)) continue;
+      const module = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== "library" && existsSync(join(dir, e.name, "skills", name, "SKILL.md"))).map((e) => e.name).sort()[0];
+      if (module) return { module, local };
+    }
+    return undefined;
+  };
 }
 
 /**

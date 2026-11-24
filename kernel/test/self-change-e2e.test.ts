@@ -36,6 +36,7 @@ function instanceRepo() {
   write("modules/acme/module.yaml", YAML.stringify({ name: "acme", description: "Acme's agents.", agents: { "review-chaser": agent("Review Chaser"), daily: agent("Daily") } }));
   write("modules/acme/agents/review-chaser/AGENTS.md", "# Review Chaser\n\nYou chase reviews.\n");
   write("modules/acme/agents/daily/AGENTS.md", "# Daily\n\nYou write the daily note.\n");
+  write("modules/acme/skills/chase-notes/SKILL.md", "---\nname: chase-notes\ndescription: The acme way to chase notes.\n---\n\nChase them on Tuesdays.\n");
   write("modules/library/module.yaml", YAML.stringify({ name: "library", description: "The agents' own skills and routines.", routines: { "review-chaser-sweep": { title: "Aiden's sweep", agent: "chief-of-staff", description: "Sweep, then close this task.", schedules: [{ cron: "0 9 * * *", label: "morning" }] } } }));
   git(src, "init", "-q");
   git(src, "add", "-A");
@@ -137,6 +138,14 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
     assert.match(r.body.error.message, /module skills change through an Engineer PR on the product repo/);
     assert.deepEqual(branches(), beforeModule);
     assert.equal(applies().length, 2);
+  }
+
+  // A local module's skill is in the instance repo, and the refusal says so rather than sending the agent to the product repo.
+  {
+    const r = await self("chaser", [{ kind: "skill", name: "chase-notes", text: "---\nname: chase-notes\ndescription: The acme way to chase notes.\n---\n\nChase them on Fridays.\n" }]);
+    assert.ok(r.status >= 400, "a local module's skill name was accepted as a library skill");
+    assert.match(r.body.error.message, /modules\/acme\/skills\/chase-notes\/SKILL\.md/);
+    assert.match(r.body.error.message, /a local module's skills change through an Engineer PR on the instance repo/);
   }
 
   // The same library skill text, on a main that already holds it, changes nothing: no new branch and no new apply record.
