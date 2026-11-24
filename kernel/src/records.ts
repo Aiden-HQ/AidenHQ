@@ -263,6 +263,8 @@ export function openRecords(file: string, now = () => new Date()) {
     /** Records filed or decided since then (tier 1 and 2), oldest first, without their heavy columns (the daily digest, the work reads). */
     since(at: string): RecRow[] {
       // Two index searches: filed since, and decided since but filed before (so no record is read twice), merged oldest first.
+      // Stored times are UTC ISO strings, compared as text: a cutoff in another offset or form is normalised to that first.
+      if (!Number.isNaN(Date.parse(at))) at = new Date(at).toISOString();
       const q = (where: string) => db.prepare(`SELECT ${LIGHT} FROM records WHERE ${where} AND tier > 0 ORDER BY created_at`);
       const filed = rows(q("created_at > ?").all(at)), decided = rows(q("decided_at > ? AND +created_at <= ?").all(at, at));
       return [...filed, ...decided].sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0)) as RecRow[];

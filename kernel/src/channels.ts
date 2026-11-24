@@ -192,7 +192,7 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
       const st = records.shownState(r);
       if (st === "review" || st === "owner") return "still waiting for you";
       if (st === "approved" || st === "claimed") return "approved, running";
-      return st === "done" ? "approved, applied" : st === "failed" ? "approved, failed" : st === "unknown" ? "approved, no outcome reported" : st === "cancelled" && r.decided_by ? "expired" : st;
+      return st === "done" ? "approved, applied" : st === "failed" ? "approved, failed" : st === "unknown" ? "approved, no outcome reported" : st === "cancelled" && r.outcome?.text.startsWith("expired") ? "expired" : st;
     };
     const recent = records.since(new Date(t.getTime() - 86_400_000).toISOString());
     const lines = records.cardLines(recent.filter((r) => r.tier === 2).map((r) => r.id));
