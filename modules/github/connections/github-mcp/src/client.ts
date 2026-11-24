@@ -227,7 +227,8 @@ export function createAccess(o: {
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string; at?: number }>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
-  const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
+  const expired = () => { const e = o.auth.status().state === "expired"; if (e) recheck(); return e; }; // whoever marked it (this client or the MCP proxy)
+  const connected = () => o.auth.signedIn() && !expired();
 
   /** An org's GraphQL answer came back with no errors: the restriction is lifted, so the card's warning and the kernel's row go. */
   const orgOk = (org: string) => {
@@ -254,7 +255,7 @@ export function createAccess(o: {
 
   async function token(): Promise<string> {
     if (!o.auth.signedIn()) fail({ cause: "not_connected" });
-    if (o.auth.status().state === "expired") fail({ cause: "expired" });
+    if (expired()) fail({ cause: "expired" });
     const t = String((await o.auth.headers()).authorization ?? "").replace(/^Bearer\s+/i, "");
     if (!t) fail({ cause: "not_connected" });
     return t;

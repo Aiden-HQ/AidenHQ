@@ -94,6 +94,17 @@ it("an expired mark is rechecked each minute and clears once the token works aga
   expect(access.connected()).toBe(true);
 });
 
+it("a sign-in the MCP proxy marked expired is rechecked too", async () => {
+  const time = fakeTime();
+  const a = auth();
+  a.mark("expired");
+  const access = createAccess({ auth: a, now: time.now, timer: time.timer, sleep: time.sleep, fetchImpl: async () => answer(200, { login: "owner" }) });
+  expect(access.connected()).toBe(false);
+  await time.sleep(60_000);
+  await new Promise((r) => setTimeout(r, 0));
+  expect(access.connected()).toBe(true);
+});
+
 it("rate_limited and write_busy stay plain errors with their codes", () => {
   const busy = needResult(new GitHubNeed({ cause: "write_busy" }));
   expect(busy.isError).toBe(true);
