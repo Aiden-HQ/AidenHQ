@@ -11,6 +11,45 @@ export type Part = "basic" | "advanced";
 export const MANIFESTS: Record<Part, unknown> = manifests;
 const hash = (m: unknown) => createHash("sha256").update(JSON.stringify(m)).digest("hex").slice(0, 16);
 
+const isMap = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+
+/** Slack's limits on the two names a create gives the app: the bot display name builds the @handle (cut to 21), the app name is at most 35. */
+export const BOT_NAME_MAX = 21;
+export const APP_NAME_MAX = 35;
+
+/**
+ * The instance's slug for a Slack app's name: lowercased, anything outside `a-z0-9-` becomes `-`, no leading or trailing `-`.
+ * `instance_name` (a DNS label) is preferred; `owner_name` (always set) is the fallback.
+ */
+export function slugOf(name: string | undefined): string {
+  return String(name ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * The manifest for a new app: ours with the instance's own names, so several AidenHQ bots in one workspace don't all want
+ * `@AidenHQ` (Slack fixes the @handle at the first install; renaming later changes only the label). The update path keeps the
+ * app's own display_information (onto) and Slack won't change a handle after install, so the name is set only here.
+ */
+export function named(manifest: unknown, slug: string): unknown {
+  if (!isMap(manifest)) return manifest;
+  // A name with no a-z0-9 left (an owner name in another script, no instance name) keeps the manifest's own labels.
+  if (!slug) return manifest;
+  // Cut the slug, not the finished name, and drop a separator the cut left at the end: `AidenHQ (<slug>)` keeps its closing
+  // parenthesis and the handle keeps its prefix. The bot display name is what Slack builds the @handle from (21 at most).
+  const appSlug = slug.slice(0, APP_NAME_MAX - "AidenHQ ()".length).replace(/-+$/, "");
+  const botSlug = slug.slice(0, BOT_NAME_MAX - "aidenhq-".length).replace(/[-_.]+$/, "");
+  const app = `AidenHQ (${appSlug})`;
+  const bot = `aidenhq-${botSlug}`;
+  return {
+    ...manifest,
+    display_information: isMap(manifest.display_information) ? { ...manifest.display_information, name: app } : { name: app },
+    features: isMap(manifest.features) ? { ...manifest.features, bot_user: isMap(manifest.features.bot_user) ? { ...manifest.features.bot_user, display_name: bot } : manifest.features.bot_user } : manifest.features,
+  };
+}
+
 export const CONFIG_TOKEN = /^xoxe\.xoxp-[A-Za-z0-9-]{20,400}$/;
 const APP_ID = /^A[A-Z0-9]{6,20}$/;
 
@@ -24,7 +63,6 @@ const WORDS: Record<string, string> = {
   ratelimited: "Slack is busy. Try again in a minute.",
 };
 
-const isMap = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 /**
  * Our manifest added onto the app's own: maps merge, lists keep the app's entries and add ours (a slash command by its name),
  * a value ours sets wins, and the app's display information (its name, description, colour) stays as the owner has it.
@@ -85,7 +123,9 @@ export function apps(store: Store, fetchImpl: typeof fetch = fetch) {
         await call("apps.manifest.update", input.token, { app_id: id, manifest: JSON.stringify(onto(current, manifest)) });
       }
       else {
-        const r = await call("apps.manifest.create", input.token, { manifest: JSON.stringify(manifest) });
+        // A new app is named after this instance: Slack fixes its @handle at this first install, so it must be distinct now.
+        const created = named(manifest, slugOf(process.env.INSTANCE_NAME || process.env.OWNER_NAME));
+        const r = await call("apps.manifest.create", input.token, { manifest: JSON.stringify(created) });
         id = String(r.app_id ?? "");
         clientId = typeof r.credentials?.client_id === "string" ? r.credentials.client_id : undefined;
         if (!APP_ID.test(id) || !clientId) throw new AppError(502, "Slack made the app but its answer was incomplete. Open api.slack.com/apps, find the new AidenHQ app and copy its Client ID.");

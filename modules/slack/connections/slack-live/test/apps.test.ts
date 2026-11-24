@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { apps, MANIFESTS } from "../src/apps.js";
+import { expect, it, vi } from "vitest";
+import { apps, MANIFESTS, named, slugOf } from "../src/apps.js";
 import { openStore } from "../src/store.js";
 
 // Built at run time, so no secret scanner takes a test value for a real token.
@@ -7,7 +7,9 @@ import { openStore } from "../src/store.js";
 const OWNERS = { display_information: { name: "My Slack helper" }, oauth_config: { redirect_urls: ["https://example.com/cb"], scopes: { user: ["chat:write", "search:read.public"] } }, settings: { socket_mode_enabled: false } };
 const TOKEN = ["xoxe", `xoxp-test-${"a".repeat(24)}`].join(".");
 
-it("makes the app from a pasted config token, then updates it to the bot manifest; the token is never kept", async () => {
+it("makes the app from a pasted config token, named after the instance, then updates it to the bot manifest; the token is never kept", async () => {
+  vi.stubEnv("INSTANCE_NAME", "");
+  vi.stubEnv("OWNER_NAME", "Mudit");
   const calls: { method: string; auth: string; body: Record<string, string> }[] = [];
   const slack = (async (url: string, init: RequestInit) => {
     const method = url.split("/api/")[1]!;
@@ -22,7 +24,12 @@ it("makes the app from a pasted config token, then updates it to the bot manifes
   // Sign-in only: a new app from the basic manifest; its public client id comes back, its secret never does.
   const made = await a.apply({ token: TOKEN, part: "basic" });
   expect(made).toEqual({ app_id: "A0123ABCD", part: "basic", current: true, url: "https://api.slack.com/apps/A0123ABCD", secrets: { slack_client_id: "111.222" } });
-  expect(calls[0]).toEqual({ method: "apps.manifest.create", auth: `Bearer ${TOKEN}`, body: { manifest: JSON.stringify(MANIFESTS.basic) } });
+  // A new app takes the instance's name (INSTANCE_NAME unset here, so the owner's): the @handle Slack fixes at first install
+  // is per instance, and the app name says which one it is.
+  const created = JSON.parse(calls[0]!.body.manifest!);
+  expect(created.display_information.name).toBe("AidenHQ (mudit)");
+  expect(MANIFESTS.basic).toMatchObject({ display_information: { name: "AidenHQ" } });
+  expect(JSON.stringify(MANIFESTS.basic)).not.toBe(calls[0]!.body.manifest);
 
   // Adding the bot later: the same app, updated to the advanced manifest.
   const updated = await a.apply({ token: TOKEN, part: "advanced", app_id: "A0123ABCD" });
@@ -35,6 +42,7 @@ it("makes the app from a pasted config token, then updates it to the bot manifes
   expect(sent.oauth_config.redirect_urls).toEqual(["https://example.com/cb", "http://localhost:3121/slack/callback"]);
   expect(sent.oauth_config.scopes.user).toContain("chat:write");
   expect(sent.settings.socket_mode_enabled).toBe(true);
+  // The update keeps the app's own display_information and our manifest's fixed bot name: Slack won't change a handle after install.
   expect(sent.features.bot_user.display_name).toBe("AidenHQ (AI)");
   expect(JSON.stringify(store.listKv(""))).not.toMatch(/xoxe|shh/);
 
@@ -43,4 +51,64 @@ it("makes the app from a pasted config token, then updates it to the bot manifes
   await expect(apps(store, refuse).apply({ token: TOKEN, part: "advanced" })).rejects.toThrow(/expired/);
   await expect(a.apply({ token: "xoxb-nope", part: "basic" })).rejects.toThrow(/Configuration Token/);
   expect(calls).toHaveLength(3);
+});
+
+it("names two instances' apps differently, so their @handles don't collide", () => {
+  const acme = named(MANIFESTS.advanced, slugOf("Acme Inc."));
+  const other = named(MANIFESTS.advanced, slugOf("Globex"));
+  const name = (m: unknown) => (m as { features: { bot_user: { display_name: string } } }).features.bot_user.display_name;
+  const app = (m: unknown) => (m as { display_information: { name: string } }).display_information.name;
+  expect(name(acme)).toBe("aidenhq-acme-inc");
+  expect(name(other)).toBe("aidenhq-globex");
+  expect(name(acme)).not.toBe(name(other));
+  expect(app(acme)).toBe("AidenHQ (acme-inc)");
+  expect(app(other)).toBe("AidenHQ (globex)");
+  expect(app(acme)).not.toBe(app(other));
+  // The rest of the manifest is ours, untouched (the source of truth at slack-app-manifest.yml).
+  expect((acme as { settings: unknown }).settings).toEqual((MANIFESTS.advanced as { settings: unknown }).settings);
+  expect((acme as { oauth_config: unknown }).oauth_config).toEqual((MANIFESTS.advanced as { oauth_config: unknown }).oauth_config);
+});
+
+it("slugs an instance name: lowers it, turns anything outside a-z0-9- into -, and trims the ends", () => {
+  expect(slugOf("Acme Inc.")).toBe("acme-inc");
+  expect(slugOf("  Acme / HQ  ")).toBe("acme-hq");
+  expect(slugOf("Acme_Inc (EU)")).toBe("acme-inc-eu");
+  expect(slugOf("aidenhq-alpha")).toBe("aidenhq-alpha");
+  expect(slugOf(undefined)).toBe("");
+  // Nothing left to name it with (an owner name in another script and no instance name): the manifest's own labels stay.
+  const m = named(MANIFESTS.advanced, slugOf("Пример")) as { display_information: { name: string } };
+  expect(m.display_information.name).toBe("AidenHQ");
+});
+
+it("cuts the bot name to Slack's 21 characters and the app name to 35, keeping both well formed", () => {
+  const long = "a".repeat(40);
+  const m = named(MANIFESTS.advanced, long) as { display_information: { name: string }; features: { bot_user: { display_name: string } } };
+  expect(m.features.bot_user.display_name).toBe(`aidenhq-${"a".repeat(13)}`);
+  expect(m.features.bot_user.display_name).toHaveLength(21);
+  expect(m.display_information.name).toBe(`AidenHQ (${"a".repeat(25)})`);
+  expect(m.display_information.name).toHaveLength(35);
+  // Allowed in a handle: a-z0-9-_. with no trailing separator, and it never ends on one after the cut.
+  expect(m.features.bot_user.display_name).toMatch(/^[a-z0-9-_.]+$/);
+  const trimmed = named(MANIFESTS.advanced, `${"a".repeat(12)}-`) as { features: { bot_user: { display_name: string } } };
+  expect(trimmed.features.bot_user.display_name).toBe(`aidenhq-${"a".repeat(12)}`);
+  expect(trimmed.features.bot_user.display_name).not.toMatch(/[-_.]$/);
+});
+
+it("still sends a create only the create path: an update never renames the app", async () => {
+  vi.stubEnv("INSTANCE_NAME", "acme");
+  const calls: { method: string; body: Record<string, string> }[] = [];
+  const slack = (async (url: string, init: RequestInit) => {
+    const method = url.split("/api/")[1]!;
+    calls.push({ method, body: JSON.parse(String(init.body)) });
+    if (method === "apps.manifest.export") return new Response(JSON.stringify({ ok: true, manifest: OWNERS }));
+    return new Response(JSON.stringify(method === "apps.manifest.create" ? { ok: true, app_id: "A0123ABCD", credentials: { client_id: "111.222" } } : { ok: true }));
+  }) as typeof fetch;
+  const a = apps(openStore(":memory:"), slack);
+  await a.apply({ token: TOKEN, part: "advanced" });
+  expect(JSON.parse(calls[0]!.body.manifest!).display_information.name).toBe("AidenHQ (acme)");
+  expect(JSON.parse(calls[0]!.body.manifest!).features.bot_user.display_name).toBe("aidenhq-acme");
+  await a.apply({ token: TOKEN, part: "advanced", app_id: "A0123ABCD" });
+  const sent = JSON.parse(calls[2]!.body.manifest!);
+  expect(sent.display_information.name).toBe("My Slack helper");
+  expect(sent.features.bot_user.display_name).toBe("AidenHQ (AI)");
 });

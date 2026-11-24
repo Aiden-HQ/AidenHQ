@@ -49,6 +49,7 @@ contributes:
         1. [Open your app's Install page]({app_url}/install-on-team), press **Install to Workspace** (or **Reinstall**), then **Allow**. A workspace admin may need to approve it.
         2. [Open OAuth & Permissions]({app_url}/oauth), copy the **Bot User OAuth Token** (it starts xoxb-) and paste it here.
         3. [Open Basic Information]({app_url}/general), scroll to **App-Level Tokens**, press **Generate Token and Scopes**, add the scope `connections:write`, press **Generate** and paste the token (it starts xapp-) here. Slack has no API that makes this token, so it is the one copy by hand.
+        4. The bot's `@handle` is fixed when the app is first installed: this app is named after this instance, so it won't collide with another AidenHQ bot in the same workspace. Renaming it later changes only the label, not the handle.
   # Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
   warehouse.sources:
     - schema: src_slack
@@ -205,6 +206,8 @@ services:
         SLACK_LIVE_DB: /data/slack-live.sqlite
         # Whose Slack words count and who gets paged is the paired owner (state in /data).
         SLACK_POST_CHANNELS: "${settings.slack_post_channels}"
+        INSTANCE_NAME: "${settings.instance_name}"
+        OWNER_NAME: "${settings.owner_name}"
         # The board's https address (this module's setup flows send the owner here): in-app `#/route` links in a message
         # resolve against it, since Slack cannot open a bare `#/` route.
         BOARD_LAN_URL: "${BOARD_LAN_URL:-}"
