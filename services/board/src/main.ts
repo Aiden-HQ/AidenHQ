@@ -7,6 +7,7 @@ import { appWatchTick, type Alert, type AppStatus } from "./app-watch.js";
 import { ownerAlert, startNotify } from "./notify.js";
 import { createGrading } from "./grading.js";
 import { createReviews } from "./reviews-client.js";
+import { createViewHost, pagePoints } from "./module-views.js";
 import { loadConfig } from "./config.js";
 import { pullUsage } from "./costs.js";
 import { McpAuth } from "./mcpauth.js";
@@ -82,7 +83,10 @@ const signIns = cfg.signIns.map(({ url, token, ...s }) => ({ ...s, auth: new Mcp
 const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl, log });
 // The code-review module's API, through the kernel (module.yaml providers.board).
 const reviews = createReviews({ kernel: cfg.gateway && { url: kernelUrl, token: cfg.gateway.token } });
-const common = { grading, reviews, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
+// Read on every use: an apply that adds, changes or removes a module's page rewrites the points file without restarting the board.
+const pointsFile = process.env.BOARD_POINTS_FILE ?? "/config/points/board.json";
+const views = createViewHost({ kernel: cfg.gateway && { url: kernelUrl, token: cfg.gateway.token }, pages: () => pagePoints(pointsFile) });
+const common = { grading, reviews, views, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));

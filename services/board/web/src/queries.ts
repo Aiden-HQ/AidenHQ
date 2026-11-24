@@ -29,6 +29,7 @@ export const QUERIES = {
   // Who may open each app (emails): memory only.
   appAccess: q("app-admins", accountsApi.appAdmins, false),
   modules: q("modules", api.modules),
+  pages: q("pages", api.pages),
   // What the owner decides on is never read back from the device: memory only, refetched on every visit.
   approvals: q("approvals", api.approvals, false),
   needsYou: q("needs-you", api.needsYou, false),
@@ -72,6 +73,7 @@ export const VIEW_CHUNKS = {
   modules: () => import("./Modules"),
   agentPage: () => import("./AgentPage"),
   modulePage: () => import("./ModulePage"),
+  moduleView: () => import("./ModuleView"),
   run: () => import("./Run"),
   design: () => import("./Design"),
   reviews: () => import("./Reviews"),

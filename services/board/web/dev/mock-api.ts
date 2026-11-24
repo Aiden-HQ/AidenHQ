@@ -5,7 +5,9 @@
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
 // ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
 // Slack setup page's state (nothing yet, sign-in only, an organisation's sign-in, sign-in and bot, a bot app that predates the manifest).
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { FRAME_CSP } from "../../src/module-views.ts";
 
 const port = Number(process.env.PORT ?? 3120);
 const now = Date.now();
@@ -125,6 +127,17 @@ let views = [
   { id: "00000000-0000-4000-8000-0000000000a1", name: "Needs review", rev: 1, spec: { layout: "work", groupBy: "none", filters: { label: ["l-review"] } } },
   { id: "00000000-0000-4000-8000-0000000000a2", name: "Engineering", rev: 1, spec: { layout: "work", groupBy: "none", filters: { agent: ["engineer", "aiden", "platform-engineer"], updated: "7d" } } },
 ];
+// A module's Fleet page (board.pages): the example view (web/dev/example-view.html) and its two tools, as the kernel would relay them.
+const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }];
+function pageRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
+  if (url.pathname === "/api/pages") return [200, { pages: mock.empty ? [] : PAGES }];
+  if (method === "POST" && url.pathname === "/api/pages/notes/save") return [200, { identifier: "WOR-901", record: "k-0000000000000901", tier: 2, state: "approved" }];
+  if (method !== "POST" || url.pathname !== "/api/pages/notes/call") return undefined;
+  if (body.name === "example_notes") return [200, { result: { content: [{ type: "text", text: "3 notes" }], structuredContent: { notes: [{ text: "Renewal call with Acme moved to Thursday", at: "2h ago" }, { text: "Invoices export shipped", at: "yesterday" }, { text: "Draft the Q1 offsite agenda", at: "3 days ago" }] } } }];
+  if (body.name === "example_configure") return [200, { result: { content: [{ type: "text", text: `Proposed keeping ${body.arguments?.limit} notes: save it above.` }], structuredContent: { _aidenhq: { settings_change: [{ kind: "setting", key: "example_limit", value: body.arguments?.limit }] } } } }];
+  return [403, { error: `${body.name} isn't one of this page's tools` }];
+}
+
 function viewRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
   const id = /^\/api\/views\/([0-9a-f-]{36})$/.exec(url.pathname)?.[1];
   if (url.pathname === "/api/views" && method === "GET") return [200, { views: mock.empty ? [] : views }];
@@ -476,10 +489,11 @@ createServer((req, res) => {
     const t = setInterval(() => res.write("event: ping\ndata: {}\n\n"), 20_000);
     return req.on("close", () => clearInterval(t));
   }
+  if (url.pathname === "/api/pages/notes/frame") return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(readFileSync(new URL("./example-view.html", import.meta.url)));
   let text = "";
   req.on("data", (c) => (text += c));
   req.on("end", () => {
-    const [status, body] = viewRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? route(req.method!, url);
+    const [status, body] = pageRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? viewRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? route(req.method!, url);
     setTimeout(() => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)), mock.slow);
   });
 }).listen(port, "127.0.0.1", () => console.log(`board mock API on :${port}`));
