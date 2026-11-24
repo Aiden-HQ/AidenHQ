@@ -32,7 +32,8 @@
 //                              (idle.ts): a work.waiting fact and a wake at `until`
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
 //                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row); with
-//                              to: "asker", on the task's open parent instead when it has one
+//                              to: "asker", on the task's open parent instead when it has one; with quiet: true, a note that wakes
+//                              nobody and is not anyone's words
 //   GET  /v1/wakes/pending?task=  (a module with role kernel.jobs) whether a wake for the task still waits to start a job
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
@@ -943,8 +944,11 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             // carries that key, so a producer's retry (its answer was lost) never wakes the task's agent twice.
             const id = typeof b.id === "string" && /^[\w.-]{1,80}$/.test(b.id) ? b.id : undefined;
             if (b.id !== undefined && !id) throw fail(400, "bad_request", "id is [A-Za-z0-9_.-]{1,80}");
+            // `quiet`: a note on the task, never a notice: it wakes nobody and is not anyone's words (the grading loop's failed-pass
+            // note, which its agent has nothing to act on). It carries the grader's own marker so the evidence read skips it.
+            const quiet = b.quiet === true;
             // `to: "asker"`: whoever asked for the task hears it, its open parent (asker.tell's open-parent path), else the task itself.
-            const said = async (on: string) => wakeNotice(owner, on, text, id === undefined ? undefined : `${id}@${on}`).catch((e: Error) => { throw fail(502, "upstream", e.message); });
+            const said = async (on: string) => wakeNotice(owner, on, text, id === undefined ? undefined : `${id}@${on}`, quiet).catch((e: Error) => { throw fail(502, "upstream", e.message); });
             if (b.to === "asker") {
               // A read that failed says nothing about the parent: retried (502), never read as "no parent" and posted on the task.
               const parent = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).then((i) => {

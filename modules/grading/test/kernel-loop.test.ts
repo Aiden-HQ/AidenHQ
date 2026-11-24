@@ -439,11 +439,18 @@ test("a grader that keeps failing keeps its hold, then closes the task done, ung
   assert.ok(notes.every((w) => /Grading failed; retrying/.test(w.text) && /OpenRouter 502/.test(w.text)), "the note names the grader's reason");
   assert.deepEqual(notes.map((w) => /the grader runs again in (\d+) minutes?/.exec(w.text)?.[1]), ["1", "5", "15", "60"], "and the retry ladder's wait");
   assert.equal(new Set(notes.map((w) => w.id)).size, 4, "each pass's note carries its own id, so a retried post lands once");
+  assert.ok(notes.every((w) => w.quiet === true), "the note wakes nobody: a failed pass has nothing for the agent to act on");
+  assert.ok(notes.every((w) => !w.text.includes("aidenhq:grader")), "the kernel writes the grader's marker itself; the note's text carries no escaped copy");
   // Each failed pass is a grade_retry wait on the task, as a rejected version is: one fact per pass, not one per subject version.
   const waits = facts.filter((f) => f.type === "work.waiting" && f.task === "t4" && f.data.reason === "grade_retry");
   assert.equal(waits.length, 4);
   assert.equal(new Set(waits.map((f) => f.subject)).size, 1, "all four waits are on the task's one subject");
   assert.equal(new Set(waits.map((f) => f.version)).size, 4, "and each pass has its own version, so the log keeps all four");
+  // Each wait is ended by the next pass's resumed fact on the same subject: a retrying task is not counted as waiting while it
+  // is being graded again.
+  const resumed = facts.filter((f) => f.type === "work.resumed" && f.task === "t4");
+  assert.equal(resumed.length, 4, "passes 2-5 each resume the wait the pass before them left");
+  assert.ok(waits.slice(0, 4).every((w, i) => resumed[i].version === w.version), "each resume names the wait it ends");
   assert.deepEqual(calls.resolve, ["ok"]);
   assert.equal(issue.status, "done");
   assert.equal(calls.wake.length, 5, "four failed-pass notes and one parent notice");
@@ -475,6 +482,7 @@ test("a grading-failed note is posted for the pass it reports, and dropped once 
   assert.equal(calls.wake.length, 1);
   assert.equal(calls.wake[0].task, "t9");
   assert.equal(calls.wake[0].id, "grade-retry-t9-1");
+  assert.equal(calls.wake[0].quiet, true, "posted as a quiet note, never a wake");
 });
 
 /**

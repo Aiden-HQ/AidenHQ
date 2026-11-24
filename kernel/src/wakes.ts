@@ -60,14 +60,18 @@ type TeamGrant = { key?: string; max_parallel?: number; team?: { name: string; m
  * thread is read first, so a notice filed again (a retry after the send's answer was lost) posts nothing when its comment is
  * already there. The plain `WAKE_NOTICE` tag stays whole beside it, so every reader of a wake notice is unaffected. Without an
  * id it posts every time, as the kernel's own notices (escalate, outcomes) always have.
+ *
+ * `quiet` posts a note, not a notice: it keeps the grader's own marker (`<!-- aidenhq:grader -->`, which the evidence read
+ * filters on) instead of the wake tag, so it wakes nobody and is never read as the task's own evidence or the owner's words.
+ * The grading loop's failed-pass note uses it: a task retrying on the grader ladder has nothing for its agent to act on.
  */
-export async function wakeNotice(owner: Api, task: string, text: string, id?: string): Promise<"posted" | "closed" | "missing" | "duplicate"> {
+export async function wakeNotice(owner: Api, task: string, text: string, id?: string, quiet = false): Promise<"posted" | "closed" | "missing" | "duplicate"> {
   const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
   // Only a 404 says the task is gone. Anything else (a 5xx, a timeout) says nothing about it, and `missing` would be read as "no
   // task" by the producer, whose fallback is the owner: a transient read would alert the owner over a task that is still there.
   if (issue.status === 404) return "missing";
   if (issue.status !== 200) throw Object.assign(new Error(`the control plane answered ${issue.status} reading the task`), { status: 502 });
-  const mark = id ? `<!-- aidenhq-wake-id:${id} -->` : "<!-- aidenhq-wake -->";
+  const mark = quiet ? (id ? `<!-- aidenhq-note-id:${id} -->` : "<!-- aidenhq-note -->") : id ? `<!-- aidenhq-wake-id:${id} -->` : "<!-- aidenhq-wake -->";
   if (id) {
     // Its own marker, read back from the task's thread: the control plane offers no comment idempotency key, so this is the only
     // way a second send of the same notice is known to be a second send. Read before the status is judged: a notice that already
@@ -80,7 +84,11 @@ export async function wakeNotice(owner: Api, task: string, text: string, id?: st
     if (list.some((c) => !c.deletedAt && String(c.body ?? "").includes(mark))) return "duplicate";
   }
   if (["done", "cancelled"].includes(issue.json.status)) return "closed";
-  const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body: `[wake] ${text}\n\n<!-- aidenhq-wake -->${id ? `\n${mark}` : ""}` });
+  // A quiet note carries neither the wake tag nor the `[wake]` label, and its two markers are written here (the caller's text is
+  // neutralized by the route, so a marker it typed itself could not survive): the grader marker keeps it out of the evidence a
+  // later pass reads, and the kernel's own job tag makes it wake nobody and never read as anyone's words.
+  const body = quiet ? `${text}\n\n<!-- aidenhq:grader -->\n${mark}\n<!-- aidenhq:job=kernel kind=grade-note -->` : `[wake] ${text}\n\n<!-- aidenhq-wake -->${id ? `\n${mark}` : ""}`;
+  const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body });
   if (c.status >= 300) throw Object.assign(new Error(`the control plane answered ${c.status}`), { status: 502 });
   return "posted";
 }
