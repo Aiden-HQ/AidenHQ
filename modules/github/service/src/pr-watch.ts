@@ -719,10 +719,12 @@ export function startPrWatch(o: PrWatchOptions) {
       const taskLive = work?.status !== "cancelled";
       // A check run still not completed while its Actions job has finished is re-run at its source (the job), for every same-repo
       // PR: GitHub's branch rules read the check run, so the merge gate cannot pass until GitHub reposts it.
-      const wedged = await wedgedAfterJob(pr);
+      // A cancelled task's PR is closed and its branch deleted below: starting a recovery run first would only spend CI on a
+      // change that is about to go, so neither recovery path runs for it.
+      const wedged = taskLive ? await wedgedAfterJob(pr) : [];
       // Any open PR whose title now passes but whose head still carries the title gate's red `policy`: clear it in place, before
       // the agent-only rules below (a wake would tell its task to fix a check no push can fix).
-      if (await clearPolicy(pr)) continue;
+      if (taskLive && await clearPolicy(pr)) continue;
       // A check run still not completed well after its re-run was first asked: GitHub's branch rules read the check run too, so
       // the merge gate is held by it and no push fixes it. A PR with no task here (an outside author's) has nobody to tell, so
       // it is logged instead. The check's name is PR-controlled text: it never enters the wake, which points at `gh pr checks`.
