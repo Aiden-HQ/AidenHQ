@@ -12,10 +12,10 @@ Three places judge how risky a PR is, each in its own way:
   `.github/code-review-critical` file and the `deep-review` label;
 - **code review** has one set of combos per repo, the same for a one-line typo fix and a change to the auth layer.
 
-The result is a cheap PR paying for a deep review, an auth change getting the same review as a typo, and three lists of
-"sensitive paths" that drift apart.
+So a cheap PR pays for a deep review, an auth change gets the same review as a typo, and three lists of "sensitive paths"
+drift apart.
 
-**Goal (owner).** Each PR gets one tier from cheap, deterministic facts. Code review picks its combos, models and rounds
+**Goal (owner).** Each PR head gets one tier from cheap, deterministic facts. Code review picks its combos, models and rounds
 by tier. Ship picks approve and merge by tier. CI picks its review depth by tier. One definition, one place to edit it.
 
 ## Fixed by the owner
@@ -30,76 +30,73 @@ by tier. Ship picks approve and merge by tier. CI picks its review depth by tier
 ## Non-goals
 
 - Per-tier lenses or catalog options (later).
-- Learning tiers from outcomes (reverts per tier come from ship's metrics later; the owner then edits the rules).
+- Label conditions (cut from the first release, §2). Learning tiers from outcomes (ship's revert metrics come later; the owner
+  then edits the rules).
 - Tiers for repo reviews (a whole tree at a commit). Tiers are about PRs.
 
 ## 1. Tiers
 
-There are four tiers, a fixed set:
+Four tiers, a fixed set:
 
 | Tier | Rank | Meaning |
 |---|---|---|
-| `skip` | 0 | No review at all. Reached only through a rule (the default: a writer's `no-review` label). |
+| `skip` | 0 | No review. Reached only through a rule the owner adds; the default rules never pick it. |
 | `trivial` | 1 | A small change by a member. One cheap review. |
 | `standard` | 2 | Everything else. |
 | `sensitive` | 3 | Sensitive paths, outsiders, big changes, critical repos. The strongest review. |
 
-The set is fixed, not user-defined. That keeps the Fleet pages, the CI mapping, ship's per-tier grid and the rank used for
-"most cautious" and loosening simple. A repo that wants fewer tiers points rules at fewer of them.
+The set is fixed, not user-defined: the Fleet pages, the CI mapping, ship's per-tier grid and the loosening rank stay
+simple. A repo that wants fewer tiers points its rules at fewer of them.
 
-The rank orders tiers by caution. **Most cautious** is `sensitive`. Wherever a tier is unknown, the reader uses `sensitive`.
-
-Naming: these are *risk tiers* and are always named (`trivial`). The kernel's write tiers are numbered (Tier 0, 1, 2) and
-stay a separate thing.
+Naming: these are *risk tiers* and are always named (`trivial`). The kernel's write tiers are numbered (Tier 0, 1, 2) and stay
+a separate thing.
 
 ## 2. Facts
 
-The classifier sees only these facts. Each is cheap, and each is computed from the PR's own change: GitHub's diff from the
-merge base to the head (`pulls/{n}/files`), never a push's delta. A base merge that leaves the PR's own change alone
-therefore yields the same facts.
+The classifier sees only these facts, each computed from the PR's own change: GitHub's PR files list (merge base to head),
+never a push's delta. A base merge that leaves the PR's own change alone yields the same facts, and so the same tier.
 
 | Fact | Value | Computed from |
 |---|---|---|
-| `lines` | Substantive lines changed: additions plus deletions over every file except generated files and lockfiles | The PR's files list. Generated files and lockfiles are recognised by the built-in lists from `recipe/scope.ts` (`GENERATED`, `LOCKS`), which move into the classifier as their one definition. Tests and docs count: AGENTS.md, SKILL.md and handbooks are instructions. |
+| `lines` | Substantive lines: additions plus deletions over every file except generated files and lockfiles | The files list. Generated files and lockfiles are the built-in lists now in `recipe/scope.ts` (`GENERATED`, `LOCKS`), which move into the classifier as their one definition. Tests and docs count: AGENTS.md, SKILL.md and handbooks are instructions. |
 | `files` | How many files count toward `lines` | Same list. |
-| `paths` | Every changed path, including a rename's old path and generated files | Same list. A rule's `paths` matches when any path matches any of its globs. |
-| `author` | `member`, `bot` or `outsider` | The PR's author: the instance's own GitHub App is `member`; any other `*[bot]` login is `bot`; GitHub's `author_association` `OWNER`, `MEMBER` or `COLLABORATOR` is `member`; anyone else is `outsider`. No extra API call: the PR read carries both fields. |
-| `labels` | The PR's labels | The PR read. A label that would *lower* the tier counts only when someone with write access added it (below). |
+| `paths` | Every changed path, a rename's old path and generated files included | Same list. |
+| `author` | `member`, `bot` or `outsider` | The PR read: the instance's own GitHub App is `member`; any other `*[bot]` login is `bot`; `author_association` `OWNER`, `MEMBER` or `COLLABORATOR` is `member`; anyone else is `outsider`. No extra call. |
 | `base` | The base branch name | The PR read. |
 | `repo_class` | `critical`, `standard` or `sandbox` | The repo's code review entry (default `standard`). |
 
-**Unreadable facts.** A files list that GitHub can't give whole (over 3,000 files, or a failed read) gives no facts. The
-PR is then `sensitive`, with the reason. This replaces `safe.ts`'s 300-file cap with GitHub's own limit for the files list.
+**A consistent snapshot.** The files list is read for one head and base: code review reads the PR (head, base, author,
+`changed_files`), reads every page of its files, then reads the PR again. If the head or base moved, or the pages hold fewer
+files than `changed_files`, the snapshot is dropped and the next poll tries again. Until a head has a snapshot it is
+**pending** (§5), never guessed. GitHub's files list stops at 3,000 files; a PR past that is classified `sensitive` with the
+reason "too many files to read".
 
-**Labels that lower a tier.** The classifier is run twice, with the labels and without them. If the labels lower the tier,
-code review reads the PR's label events (a new github internal read, the timeline call `labelEvents` already makes, without
-the maintained-repo restriction) and keeps only the labels whose latest `labeled` event is by a login with write access
-(code review's existing `permission()` check, the same rule as `aiden review` commands). Events by the instance's own App,
-or any other bot, never count: an agent can't skip its own review. It then classifies again with the trusted labels only.
-The timeline is read only in that case, so most PRs cost no extra call. A label that raises the tier always counts.
+**No labels in the first release.** The gap proposal had `labels` (a writer's `no-review` → skip, `deep-review` → sensitive).
+They are cut. A label that lowers the tier needs its provenance read from the timeline and checked against write access, CI
+can't check provenance at all, so code review and CI would disagree on the same PR, and a `deep-review` rule would keep the
+label the owner asked tiers to replace. Without labels every input is a fact about the code and the repo, and every consumer
+gets the same tier. A label condition can be added later in code review, served to the others through the verdict (§5). Break
+glass stays what it is today: a writer approves and merges by hand, or says `aiden review stop`.
 
 ## 3. Rules
 
-A repo's rules are an ordered list. The first rule whose conditions all hold names the tier. The last rule has no `when`
-and catches the rest.
+A repo's rules are an ordered list. The first rule whose conditions all hold names the tier. The last rule has no `when`.
 
 ```yaml
 rules:
   - { when: { repo_class: critical }, tier: sensitive }
   - { when: { repo_class: sandbox }, tier: trivial }
-  - { when: { labels: [no-review] }, tier: skip }
   - { when: { author: bot, only_paths: [<manifests>, <lockfiles>] }, tier: standard }
   - { when: { paths: [<sensitive>] }, tier: sensitive }
   - { when: { author: outsider }, tier: sensitive }
-  - { when: { labels: [deep-review] }, tier: sensitive }
   - { when: { lines_max: 0 }, tier: sensitive }
   - { when: { lines_min: 600 }, tier: sensitive }
   - { when: { author: member, lines_max: 10, files_max: 20 }, tier: trivial }
   - { tier: standard }
 ```
 
-**Conditions.** Each is a fact with a value; a rule's conditions all hold (AND). A list value is "any of": a glob list or a
-label list. There is no OR across facts and no NOT. Each fact may appear once in a rule.
+**Conditions.** A rule's conditions all hold (AND). A list value is "any of" a glob list, the only OR there is. No OR across
+facts, no NOT. Each fact appears at most once in a rule.
 
 | Condition | Holds when |
 |---|---|
@@ -108,33 +105,32 @@ label list. There is no OR across facts and no NOT. Each fact may appear once in
 | `paths: [globs]` | any changed path matches any glob |
 | `only_paths: [globs]` | every changed path matches some glob (and there is at least one) |
 | `author: member\|bot\|outsider` | the author is that kind |
-| `labels: [names]` | the PR has any of these labels (lowering ones only when trusted, §2) |
 | `base: [globs]` | the base branch matches any glob |
 | `repo_class: critical\|standard\|sandbox` | the repo's class is that |
 
-Globs are `node:path`'s `posix.matchesGlob`, matched case-sensitively against repo-relative paths.
+Globs are `posix.matchesGlob`, case-sensitive, on repo-relative paths. `repo_class` is only an input to the rules: what a
+class means is whatever the rules say about it.
 
-**Validation.** Every rule has a known `tier`, every condition is known and well typed, the last rule has no `when`, and no
-other rule lacks one. An invalid list refuses the repo's entry whole, with the message, as config.ts does today.
+**Validation.** Every rule names a known tier and only known, well-typed conditions; the last rule has no `when` and no other
+rule lacks one. An invalid list refuses the repo's entry whole with the message.
 
-**The default rules** (shown above) carry over what the three old lists meant:
+**The default rules** carry over what the three old lists meant:
 
 - `<sensitive>` merges the CI regex (`.github/**`, `**/Dockerfile*`, `**/package.json`, `**/AGENTS.md`,
   `**/AGENTS.override.md`, `**/CLAUDE.md`, `**/.codex/**`, `**/codex.toml`, and `**/*auth*`, `**/*secur*`, `**/*token*`,
-  `**/*session*`, `**/*permission*`, each as a file and as a folder) with ship's `safe.deny` (lockfiles, test and lint
-  config, `**/CODEOWNERS`, `**/migrations/**`, `**/*.tf`, `infra/**`, `**/.env*`, `**/config/**`, `**/docker-compose*`).
-- `<manifests>` and `<lockfiles>` are the manifest and lockfile names the classifier already knows (`package.json`,
-  `go.mod`, `Cargo.toml`, `pyproject.toml`; `LOCKS`).
-- `lines_max: 0` is a PR with no substantive line: it changes only generated files, lockfiles, binaries or renames. That is
-  ship's "generated files without their source" (decision 29) and most of CI's "a binary file is critical", in one fact.
-- `no-review` is the break glass: a writer's word that this PR needs no review. Bots and agents can't use it (§2).
+  `**/*session*`, `**/*permission*`, each as a file and a folder) with ship's `safe.deny` (lockfiles, test and lint config,
+  `**/CODEOWNERS`, `**/migrations/**`, `**/*.tf`, `infra/**`, `**/.env*`, `**/config/**`, `**/docker-compose*`).
+- `<manifests>` and `<lockfiles>` are the names the classifier already knows (`package.json`, `go.mod`, `Cargo.toml`,
+  `pyproject.toml`; `LOCKS`).
+- `lines_max: 0` is a PR with no substantive line: only generated files, lockfiles, binaries or renames. That is ship's
+  "generated files without their source" (decision 29) and most of CI's "a binary file is critical", in one fact.
 
 ## 4. Settings
 
-### Code review (the `code_review` setting)
+### Code review (`code_review`)
 
-A repo entry gains `repo_class`, `rules` and `by_tier`. They replace `on_open`, `on_push` and `push_rounds`, which move
-under each tier. `drafts`, `forks`, `ignore` and `max_nits` stay per repo.
+A repo entry gains `repo_class`, `rules` and `by_tier`. They replace `on_open`, `on_push` and `push_rounds`, which move under
+each tier. `drafts`, `forks`, `ignore` and `max_nits` stay per repo.
 
 ```yaml
 code_review:
@@ -142,13 +138,11 @@ code_review:
     - repo: acme/api
       repo_class: standard        # critical | standard | sandbox
       # rules: [...]              # omitted: the default rules
-      by_tier:                    # each tier omitted, or a field omitted, takes the preset's
-        sensitive: { on_push: [{ engine: codex-native, model: openai/gpt-6.2-sol, effort: medium, mandatory: true }] }
-      drafts: false
-      forks: manual
+      by_tier:                    # a tier or field omitted takes the preset's
+        sensitive: { push_rounds: 3 }
 ```
 
-**The preset** (what an omitted tier or field takes):
+**The preset:**
 
 | Tier | `on_open` | `on_push` | `push_rounds` |
 |---|---|---|---|
@@ -158,25 +152,27 @@ code_review:
 | `sensitive` | codex-native · `openai/gpt-6.2-sol` · medium, mandatory; claude-code · `anthropic/claude-sonnet-5.5` · medium, mandatory | codex-native · `openai/gpt-6.2-sol` · low, mandatory | 2 |
 
 `standard` is today's `REPO_DEFAULTS` with `mandatory` on. Mandatory is the preset's default because ship approves only on a
-verdict that covers the head, and a tier with no mandatory combo has none (§7). A repo that wants advice-only reviews turns
+review that covers the head, and a tier with no mandatory combo has none (§7). A repo that wants advice-only reviews turns
 `mandatory` off per combo, as today.
 
-**`rules` is whole.** A repo either omits it (the default rules) or gives the full list. Partial rule edits would need a
-merge semantics nobody can read; the Fleet page edits the full list (§10).
+**`rules` is whole**: omitted (the defaults) or the full list. **`by_tier` merges per field** over the preset. Validation per
+tier is today's per repo: at most four combos a moment, and a mandatory `on_push` combo needs a mandatory `on_open` one in the
+same tier.
 
-**`by_tier` merges per field** over the preset: `by_tier.sensitive.push_rounds: 3` changes only that.
+**One parser.** `config.ts`'s `readConfig()` resolves presets and validates; the compile (`scripts/modules.ts`) and the Fleet
+page's save call the same function (the compile imports it). The compile fails on an invalid entry or an old shape before it
+writes anything, and derives everything below from the resolved entries, never from raw combos.
 
-**Validation per tier** is today's per repo: at most four combos a moment, and a mandatory `on_push` combo needs a mandatory
-`on_open` one in the same tier.
+**Which repos are gated.** Two compiled lists replace today's one:
 
-**Gated, defined per tier.** Two compiled lists replace today's one (`scripts/modules.ts` `codeReviewGated`):
-
-- `GITHUB_REVIEW_GATED` (the merge queue asks code review's verdict): a repo where **any** tier has a mandatory combo.
-- `code_review_mandatory` (the kernel's `ai_review_code: unless_code_review_mandatory` skips the AI reviewer): a repo where
+- `GITHUB_REVIEW_GATED` (the merge queue asks code review's verdict): repos where **any** tier has a mandatory combo. It only
+  says whom to ask; the verdict says per head whether a review is required (`requires_review`, §6), and the merge executor
+  uses that bit to decide whether ship's approval is needed.
+- `code_review_mandatory` (the kernel's `ai_review_code: unless_code_review_mandatory` skips the AI reviewer): repos where
   **every tier but `skip`** has a mandatory combo. Otherwise a `standard` PR on a repo that gates only `sensitive` would pass
   neither the AI reviewer nor code review.
 
-### Ship (the `ship` setting)
+### Ship (`ship`)
 
 A repo entry, and `defaults`, gain `by_tier`. It replaces the repo-level `approve`, `merge` and `safe`.
 
@@ -188,159 +184,170 @@ ship:
 
 | Field | Values | Meaning |
 |---|---|---|
-| `by_tier.<tier>.approve` | `off`, `observe`, `on` | `observe`: the report says what ship would do. `on`: the App approves when the evidence holds (§7). `safe` and `all` are gone: the tier is the class. |
+| `by_tier.<tier>.approve` | `off`, `observe`, `on` | `observe`: the report says what ship would do. `on`: the App approves when the evidence holds (§7). `safe` and `all` are gone: the tier is the class. Not offered for `skip`, which has no review to approve on. |
 | `by_tier.<tier>.merge` | `off`, `ready` | `ready`: merge when every gate passes. |
+| `unwatched` | `{ merge: off\|ready }` | A repo code review doesn't watch has no tiers; this is its merge. |
 
 **Presets:**
 
-| Tier | `cautious` | `full` |
+| | `cautious` | `full` |
 |---|---|---|
-| `skip` | approve `off`, merge `ready` | approve `on`, merge `ready` |
+| `skip` | merge `ready` | merge `ready` |
 | `trivial` | approve `observe`, merge `ready` | approve `on`, merge `ready` |
 | `standard` | approve `observe`, merge `ready` | approve `on`, merge `ready` |
 | `sensitive` | approve `off`, merge `ready` | approve `on`, merge `ready` |
+| `unwatched` | merge `ready` | merge `ready` |
 
-`cautious` keeps today's `approve: observe` for everything that could be approved, so the bpn-api pilot runs as planned.
-`merge: ready` everywhere keeps pr-watch parity: today every fleet PR merges once its gates pass, and an unwatched fleet repo
-(no tier, so `sensitive`) still does. Turning on real approvals per tier is the owner's move (§9).
+`cautious` keeps today's `approve: observe`, so the bpn-api pilot runs as planned. `merge: ready` everywhere keeps pr-watch
+parity: today every fleet PR merges once its gates pass, watched or not. Turning on real approvals per tier is the owner's
+move (§9).
 
-## 5. Classification: when, where, and what is recorded
+## 5. Classification
 
-**Who classifies.** Code review, the one owner of the rules. The pure function `classify(facts, rules) → { tier, rule }` lives
-in `kernel/sdk/src/tiers.ts` with the fact helpers and the default rules, and `scripts/sync-shared.ts` copies it into code
-review's service (`src/aidenhq-sdk/tiers.ts`) and into the CI template (`.github/tiers.ts`, MIT like the rest of it).
+**Who.** Code review, the one owner of the rules. The pure function `classify(facts, rules) → { tier, rule }`, the fact
+helpers and the default rules live in `kernel/sdk/src/tiers.ts`; `scripts/sync-shared.ts` copies it into code review's
+service (`src/aidenhq-sdk/tiers.ts`) and the CI template (`.github/tiers.ts`, MIT like the rest of the template).
 
-**When.** Code review's poll already reads every open PR of a watched repo each tick (head, labels, author come in that
-read). It classifies a PR when its head, its label set or the repo's tier settings (a hash) changed since the last
-classification. A new head therefore always re-classifies, and so does a label added at the same head.
+**When.** Code review's poll already reads every open PR of a watched repo each tick. Its PR read gains `author_association`,
+`changed_files` and the base sha. It classifies a PR when its head, its base or the repo's resolved tier settings (a hash)
+changed since the last classification, then calls `trigger()`, so a head's first review already uses its tier.
 
-**Before any trigger.** The poll classifies first, then calls `trigger()`, so the first review of a head already uses its
-tier's combos. The files read is one paginated call per new head (GitHub's PR files list, up to 3,000 files).
+**Per head, no ratchet.** The tier is the current head's. A PR trimmed from sensitive to trivial is trivial; open important
+findings from earlier mandatory runs still gate whatever the tier (the engine already keeps them across heads).
 
-**The PR's tier ratchets up.** Each head has its own *head tier*. The PR's *tier* is the most cautious head tier it has had.
-A trimmed PR keeps the reviewers it already has, and their findings still gate. This is what keeps review simple: going up
-queues the higher tier's opening review once, and going down never queues anything. The exception that isn't one: `skip`
-is reached only before the PR's first review, since after that the PR's tier is already higher.
+**Stored** on the PR's row in code review's database: `tier`, `rule`, `facts`, `head`, `base`, `config`. Runs gain `tier` and
+`policy` (§6), so cost and findings per tier come out of the runs table. No flow fact in the first release: nothing reads one,
+and the verdict serves the tier.
 
-**Stored.** A `tiers` table in code review's database: `(repo, number, head, head_tier, tier, rule, facts, labels, config, at)`.
-Runs gain a `tier` column, so cost and findings per tier come out of the runs table for later analysis.
+**Served.** Code review's `GET /v1/verdict` (ship and the merge queue already call it) adds `tier`:
 
-**Recorded.** The flow fact `pr.tier` (declared in `modules/code-review/module.yaml` `facts:`), subject the PR, version
-`<head>:<tier>`, data `{ head, head_tier, tier, rule, facts }`. It is for the report, flow metrics and the Fleet Steward;
-nothing gates on reading it.
+- `{ state: "classified", tier, rule, why }` for the asked head;
+- `{ state: "pending" }` while that head has no snapshot yet (not polled, a moved snapshot, a failed read);
+- `{ state: "unwatched" }` when code review doesn't watch the repo.
 
-**Served.** Code review's `GET /v1/verdict` (ship and the merge queue already call it with their module tokens) adds
-`tier: { head, head_tier, tier, rule, why } | null`. `null` means this head isn't classified yet, or the repo isn't watched.
-Ship then treats the PR as `sensitive` for that pass. Ship never reads the fact store.
+Ship acts only on `classified` or `unwatched`. On `pending` it waits, whatever the step: approve, enqueue or merge. A
+pending head is never treated as some tier. Ship never reads the fact store.
 
 ## 6. Code review uses the tier
 
-**One small seam.** `tierCfg(repo, tier)` resolves a repo entry and a tier into today's `Repo` shape (`on_open`, `on_push`,
-`push_rounds`, plus the repo-level fields). `trigger()`, `missing()`, `gateRuns()`, `capped()`, `verdict()`, the `aiden
-review` command and #1687's `fresh()` take that instead of the repo entry. Everything else in the engine stays.
+**One seam.** `tierCfg(repo, tier)` resolves an entry and a tier into today's `Repo` shape (`on_open`, `on_push`,
+`push_rounds` plus the repo-level fields). `trigger()`, `missing()`, `gateRuns()`, `capped()`, `verdict()`, `aiden review` and
+#1687's `fresh()` take it instead of the entry.
 
-**Going up mid-life.** A trivial PR gets a push that makes it sensitive:
+**The review policy.** A tier's *policy* is a hash of its mandatory combos (engine, model, effort, moment). Each run records
+the policy it ran under, and so does each `covered` row (the column exists). A head counts as covered, for the verdict and
+for #1687's `evidence()`, only by runs and coverage under the head's current policy. So adding a mandatory model on the Fleet
+page, or a head moving to another tier, asks for a review under the new policy; old open important findings still gate.
 
-1. The poll classifies the new head; the PR's tier becomes `sensitive`.
-2. `missing()` already queues "a gated repo's open head missing a mandatory reviewer". It now compares against the PR's
-   tier: the head gets that tier's `on_open` batch as a full review of the PR (moment `open`), once.
-3. Later pushes get `sensitive`'s `on_push`, up to its `push_rounds` (counting the PR's push rounds so far, as today).
+**A tier change is its own branch**, ahead of the ordinary push trigger in `poll()`: when a new head's policy differs from the
+policy of the PR's last opening review, the head gets its tier's `on_open` batch with `full: true` (the whole PR from its
+merge base, never the last covered head), queued once per head and policy. Going down (sensitive to trivial) costs one cheap
+opening review; going up gets every opening reviewer of the higher tier over the whole PR. Later pushes get the tier's
+`on_push`, up to its `push_rounds`. `missing()` keeps its job of filling a head with no mandatory run.
 
-**The verdict per tier.** `verdict()` judges the head against its PR tier's mandatory combos:
+**The verdict per head.** `verdict()` judges the head against its tier's policy and adds `requires_review`:
 
-- A tier with mandatory combos: as today.
-- A tier with none (`skip`, or a tier set to advice only): no reviewer to wait on. The verdict is `pass` unless an important
-  finding from an earlier mandatory run is still open: those always gate.
-- `evidence()` (#1687) answers `kind: none` for such a head, so ship knows there is no review to approve on.
+- a tier with mandatory combos: as today, `requires_review: true`;
+- a tier with none (`skip`, or advice-only): `requires_review: false`, `pass` unless an important finding from an earlier
+  mandatory run is still open; `evidence()` answers `kind: none`;
+- a pending head: `wait` ("classifying"), `requires_review: true`.
 
-**Repos code review doesn't watch** get no tier. That is the same as today: no verdict, no gating.
+**Repos code review doesn't watch** get no tier and no verdict, as today.
 
 ## 7. Ship uses the tier
 
-- `judge()` reads `tier` from the verdict answer and the repo's `by_tier[tier]`. `approve: on` approves when the verdict
-  passes and covers the head (completed, or carried, as #1687 does). `observe` reports it. `off` says "tier `sensitive`:
-  approval is off". A tier with no mandatory review (`kind: none`) is never approved: "tier `skip` has no review to approve
-  on". No tier on the head: `sensitive`.
-- `merge` comes from `by_tier[tier].merge`; `decide` takes it instead of the repo-level field.
-- `safeClass`, its test/docs/manifest lists and the 300-file cap go. The report's "risk facts" line shows the tier, the rule
-  that matched and the facts.
-- **Carry-over.** A verdict carries to a later head when the PR's own change is the same (`carries()`, a base merge or only
-  generated paths regenerated) **and** the verdict's `tier` names the same tier at both heads. A base-merge-only head
-  re-classifies the same, because the facts come from the PR's own diff over its merge base. A regenerated lockfile can
-  change `paths` (and so the head tier); the PR's tier only ratchets, so the worst case is a higher tier, a fresh review
-  under its combos, and no carry.
-- `loosens()` gains per tier: `approve` raised (`off` < `observe` < `on`), `merge` raised (`off` < `ready`). The `safe.*`
-  checks go.
+- **Approval.** `judge()` reads the verdict's `tier` and the repo's `by_tier[tier].approve`. `on` approves when the verdict
+  passes and covers the head under its current policy (completed, or carried). `observe` reports it. `off` says "tier
+  `sensitive`: approval is off". `kind: none` is never approved. `pending` waits.
+- **Merge.** `decide` takes `by_tier[tier].merge` (or `unwatched.merge`) instead of the repo field, and reads the tier even
+  when the PR needs no approval. The merge executor (`merges.ts`) sets `ship.review` from the verdict's `requires_review`, not
+  from "the gate answered", so a skip-tier PR on a gated repo isn't held for an approval ship will never give.
+- **At the effect.** The executor's final call to ship before a merge or an enqueue (today it re-checks the adoption's
+  generation) also asks: is this head classified, and does its tier still allow `merge`? A label-free tier changes only with
+  the head or the settings, so this catches an owner turning `merge` off while a merge waits. Pending or unreachable is no.
+- **Carry-over.** A verdict carries to a later head when the PR's own change is the same (`carries()`: a base merge, or only
+  generated paths regenerated) **and** both heads have the same policy. A base-merge-only head re-classifies the same, because
+  the facts come from the PR's own diff over its merge base. A regenerated lockfile can change `paths` and so the tier; then
+  the policies differ and the new tier's opening review runs (§6). `carries()` keeps its completeness check on GitHub's
+  compare (300 files): an incomplete compare never carries, and ship asks for a fresh review.
+- **Deleted:** `safeClass` and its test, docs and manifest lists. The report's risk line shows the tier, the matched rule and
+  the facts.
+- **`loosens()`** gains per tier: `approve` raised (`off` < `observe` < `on`), `merge` raised (`off` < `ready`), and
+  `unwatched.merge`. The `safe.*` checks go.
 
 ## 8. CI uses the tier
 
-The CI template's reviewer runs in an app repo's Actions job. It can't call code review, and most app repos aren't watched by
-code review at all. So it classifies the PR itself with the same function and the same rules:
+The CI template's reviewer runs in an app repo's Actions job. Most app repos aren't watched by code review, and the job
+can't call code review. So it classifies the PR itself with the same function, the same rules and the same facts (no labels
+means nothing in the facts needs provenance):
 
-1. **Rules.** The gateway's `POST /ci/token` answer, which already carries the review model and effort from settings, adds
-   `tiers: { rules, repo_class, self }`: the repo's code review rules and class if it has an entry, else the default rules,
-   plus the instance App's bot login (so the fleet's own PRs are `member`). The compile writes the per-repo table next to
-   `ci_review_model`; the kernel only looks up `claims.repo` in it. Without the gateway (a repo using its own OpenRouter
-   secret) the template's copy of the default rules applies.
-2. **Facts.** The job already has the diff (`git diff --numstat` from the merge base) and the PR event (author, labels, base).
-3. **Labels in CI only raise.** CI can't tell who added a label, so it classifies with and without the labels and takes the
-   more cautious of the two. A `no-review` label therefore never skips CI's review; `deep-review` still raises it.
-4. **Depth by tier**, fixed in the template:
+1. **Rules first.** The job exchanges its OIDC token at `/ci/token` before anything else in the review step. The answer,
+   which already carries the review model and effort, adds `tiers: { rules, repo_class, self }`: the repo's code review rules
+   and class if it has an entry, else the default rules, plus the instance App's bot login (the fleet's own PRs are `member`).
+   The compile writes the per-repo table beside `ci_review_model`; the kernel only looks up `claims.repo`. Without the
+   gateway (a repo on its own OpenRouter secret), the template's copy of the default rules applies.
+2. **Refusal first.** The codex-config refusal (`.codex/`, `codex.toml`, `AGENTS.override.md`) runs on the whole PR's paths
+   before any tier shortcut, reuse or token failure, so a trivial or reused PR still gets it.
+3. **Classify the whole PR** (merge base to head: `git diff --numstat`, the event's author and base).
+4. **Then choose the range.** The prior-review step (`codegenie-prior.ts`) runs after classification and gets the tier and
+   effort. Its green status records the tier and effort it reviewed at; `reuse` or `delta` is allowed only when that status
+   names the same tier and an effort at least as high. Otherwise the review is full.
+5. **Depth by tier**, fixed in the template:
 
    | Tier | CI review |
    |---|---|
-   | `skip`, `trivial` | none (a full-PR run only; a delta review always runs, as today) |
+   | `skip`, `trivial` | none for a full-PR run; a delta still runs, as today |
    | `standard` | `ci_review_model`'s model and effort |
    | `sensitive` | the same model, one effort higher (what `deep-review` did) |
 
    The brief's "critical paths" line becomes one line naming the tier and the rule that matched.
-5. **Stays as is:** the reviewer-addressed text bump (one effort higher), the codex-config refusal, the package-lock summary
-   for the reviewer, and fail-open on no verdict.
+6. **Unchanged:** the reviewer-addressed text bump, the package-lock summary for the reviewer, fail-open on no verdict.
+   `.github/tiers.ts` joins the trusted files read from the base or default branch, never the PR (`codegenie-prior.ts`'s list).
 
 ## 9. Who edits, and loosening
 
-**Code review's settings.** The Reviewer Manager writes `code_review` through reviewed settings changes, and `code_review_
-configure` already sends combo, push-round and ignore changes to the owner. Rules now decide auto-merge, so these also go to
-the owner: any change to a repo's `rules` or `repo_class` (other than to `critical`), any combo or `push_rounds` change in
-`by_tier`, and turning a combo's `mandatory` off. Raising `push_rounds` or adding a combo is more spend; lowering them is less
-review. Both are the owner's, as today.
+**Code review's settings.** The Reviewer Manager writes `code_review` through reviewed settings changes, and
+`code_review_configure` already sends combo, push-round and ignore changes to the owner. Rules now decide auto-merge, so these
+go to the owner too: any change to `rules`, any change to `repo_class`, any change in `by_tier` (combos, `push_rounds`, a
+combo's `mandatory`).
 
-**Ship's settings.** `loosens()` per tier as above; adding a repo stays owner-only (decision 10).
+**Ship's settings.** `loosens()` per tier (§7); adding a repo stays owner-only (decision 10).
 
 **The Fleet pages save as the owner**, so their edits apply directly; the same validation runs.
 
 ## 10. Fleet pages
 
-**Fleet → Reviews** (code review's module view, #1688) owns the tier rules and the per-tier review. Per repo:
+**Fleet → Reviews** (code review's module view, #1688) owns the rules and per-tier review. Per repo:
 
-- **Repo class:** critical, standard or sandbox. Help: "Critical: every PR gets the strongest review and ship never
-  approves on its own. Sandbox: every PR is trivial."
+- **Repo class:** critical, standard or sandbox. Help: "An input to the tier rules below. With the default rules, critical
+  makes every PR sensitive and sandbox makes every PR trivial."
 - **Tier rules:** an ordered table, one row per rule: its conditions as chips and its tier. Add, remove, move up or down,
-  "Reset to default". The last row is fixed ("everything else") and only its tier is editable. Each condition has help in
-  plain words ("Lines: changed lines, not counting generated files and lockfiles").
-- **Review per tier:** four cards (Skip, Trivial, Standard, Sensitive), each with today's combo pickers for "When a PR
-  opens" and "On each push" and the number of push reviews. Skip's card says "no review" and has no pickers.
-- **Read-only:** each open PR's tier and the rule that matched, with its facts on hover.
+  "Reset to default". The last row is fixed ("everything else"); only its tier is editable. Each condition has plain-words help
+  ("Lines: changed lines, not counting generated files and lockfiles").
+- **Review per tier:** four cards (Skip, Trivial, Standard, Sensitive), each with today's combo pickers for "When a PR opens"
+  and "On each push" and the number of push reviews. Skip's card says "no review".
+- **Gating note** under the cards: which tiers' merges wait for code review (those with a mandatory combo), and that the AI
+  reviewer still checks agents' pushes unless every tier but Skip has one.
+- **Read-only:** each open PR's tier, the rule that matched and its facts, from the PR row.
 
-**Fleet → Ship** owns per-tier approve and merge. Per repo: on or off, the preset, and a four-row grid (tier × approve,
-merge). Help on each cell, for example: "Approve: on. When code review passes this PR's head, the App approves it." A note
-under the grid: "PRs on repos code review doesn't watch count as sensitive." Each adopted PR shows its tier and rule.
+**Fleet → Ship** owns per-tier approve and merge. Per repo: on or off, the preset, a grid of tier × approve and merge (Skip
+has merge only), and the unwatched merge for repos code review doesn't watch. Help on each cell, for example "Approve on: when
+code review passes this PR's head, the App approves it." Each adopted PR shows its tier and rule. The Ship page links to the
+Reviews page for the rules; neither page edits the other's settings.
 
-Neither page edits the other's settings. The Ship page links to the Reviews page for the rules.
-
-## 11. Migration: one shape, no shims
+## 11. Migration and cutover: one shape, no shims
 
 **Old shapes are refused with a message**, never read:
 
-- code review: a repo entry with `on_open`, `on_push` or `push_rounds` at its top level: "on_open, on_push and push_rounds
-  are per tier now: by_tier.<tier>.on_open … (see the Reviews page)".
-- ship: `approve`, `merge` or `safe` at a repo or `defaults` level: "approve and merge are per tier now:
-  by_tier.<tier>.approve / merge; safe is gone: the tier rules (code review) say what is small and safe". `approve: safe`
-  or `approve: all` get the same message.
+- code review: `on_open`, `on_push` or `push_rounds` at an entry's top level: "on_open, on_push and push_rounds are per tier
+  now: by_tier.<tier>.… (see the Reviews page)".
+- ship: `approve`, `merge` or `safe` at a repo or `defaults` level: "approve and merge are per tier now: by_tier.<tier>.approve
+  / merge; safe is gone: code review's tier rules say what is small and safe".
 
-**The instance updates in the same rollout.** The instance commit that bumps the product pin also converts `code_review`
-(the compile refuses the old shape, and the old product would ignore `by_tier` and drop the product repo's gate, so the two
-change together). Aiden-HQ/AidenHQ keeps its owner-settled combos verbatim, in every reviewed tier:
+**One cutover.** The lanes land as separate PRs, but the instance pins the product only after all three have merged: the
+compile refuses the old shape, the old product would ignore `by_tier` and drop the product repo's gate, and new tier rules
+next to the old ship and CI decisions would mean two policies at once. The instance commit that bumps the pin converts
+`code_review` in the same commit. Aiden-HQ/AidenHQ keeps its owner-settled combos verbatim in every reviewed tier:
 
 ```yaml
 code_review:
@@ -360,7 +367,7 @@ code_review:
         sensitive: *settled
       drafts: false
       forks: manual
-    # Its globs were .github/code-review-critical (read no more): CI classification only, no code review runs.
+    # Its globs were in .github/code-review-critical: CI classification only, no code review runs.
     - repo: aidenhq-alpha/roadmap-keeper
       rules:
         - { when: { paths: [src/identity.ts, src/aidenhq-identity.mjs, src/access.ts, src/domain/roadmap-service.ts,
@@ -368,90 +375,96 @@ code_review:
             src/store/types.ts, src/admin-routes.ts, web/src/pages/admin.tsx, src/agent-route-guard.ts, src/api/agent.ts,
             src/api/agent-read.ts, src/api/agent-writer.ts, "migrations/*", src/config.ts, app.json] }, tier: sensitive }
         # …then the default rules, written out
-      by_tier: { skip: {}, trivial: { on_open: [] }, standard: { on_open: [], on_push: [] }, sensitive: { on_open: [], on_push: [] } }
+      by_tier: { trivial: { on_open: [] }, standard: { on_open: [], on_push: [] }, sensitive: { on_open: [], on_push: [] } }
 ```
 
-So the product repo behaves exactly as today except that a writer's `no-review` label now skips its review. Whether
-trivial and sensitive should take cheaper and stronger combos there is the owner's call. The settings writer may expand the
-YAML anchor; that is fine. roadmap-keeper's `.github/code-review-critical` file is deleted by a PR in that repo.
-(`Dockerfile` and `.github/workflows/*` were in its file too and are in the default `<sensitive>` already.)
+The product repo then behaves exactly as today: every tier runs the settled reviews. Whether trivial and sensitive should
+take cheaper and stronger combos there is the owner's call. The settings writer may expand the YAML anchor; that is fine.
 
-Ship has no instance entry yet, so its presets carry the change. Existing PRs are classified on the first poll after the
-deploy; their earlier runs carry no tier and still gate as before.
+**roadmap-keeper** gets one PR in that repo, after the deploy: the new template workflow (which reads rules from the gateway)
+and the deletion of `.github/code-review-critical`, together, so its own paths are never uncovered. (`Dockerfile` and
+`.github/workflows/*` from its file are in the default `<sensitive>` already.)
+
+Ship has no instance entry yet; its presets carry the change. Open PRs are classified on the first poll after the deploy.
+Their earlier runs carry no policy, so each open PR on a gated repo gets one opening review under its tier's policy; their
+open important findings still gate. That is a one-time cost on the PRs open at the cutover.
 
 ## 12. Behaviour changes for the owner to confirm
 
-Each is deliberate. Each needs the owner's OK before the build drops it (standing rule).
+Each is deliberate and needs the owner's OK before the build drops it (standing rule).
 
 | Was | Now |
 |---|---|
-| CI skipped a PR under 20 lines with no critical path | CI skips `skip` and `trivial`: 10 lines or fewer and 20 files or fewer, by a member. PRs of 11 to 19 lines are now reviewed. |
-| CI: a critical path got a normal-effort review; only `deep-review` got the higher effort | A `sensitive` PR gets the higher effort, critical paths included. More spend on those PRs (cents each at the default model). |
-| CI: adding `deep-review` re-ran the review at once (the `labeled` trigger) | A label is read on the next run. The `labeled` trigger goes, so labelling no longer re-runs CI. |
+| `deep-review` label: CI one effort higher, at once (the `labeled` trigger) | Gone. A sensitive PR gets the higher effort by its facts. No label changes a tier in this release. |
+| CI skipped a PR under 20 lines with no critical path | CI skips `trivial`: 10 lines or fewer and 20 files or fewer, by a member. PRs of 11 to 19 lines are now reviewed. |
+| CI: a critical path got a normal-effort review | A `sensitive` PR gets the higher effort. More spend on those PRs (cents each at the default model). |
 | CI: any binary file made a PR critical | Only a PR with no substantive line (binary-only, generated-only) is `sensitive` by default. A binary next to code is judged by the code. |
 | CI: a package-lock.json change that adds or changes a package was critical | Any lockfile change is `sensitive` (a superset), except a bot's manifest-and-lockfile-only PR, which is `standard`. |
-| CI: an app's `.github/code-review-critical` file (from the default branch) | The repo's `rules` in its code review entry. One app has the file (roadmap-keeper), migrated above. |
-| Ship: `safe` was 1,200 substantive lines and 50 files, not counting tests and docs | The trivial line is 10 lines and 20 files; 600+ lines is sensitive; tests and docs count. |
+| CI: an app's `.github/code-review-critical` file | The repo's `rules` in its code review entry. One app has the file (roadmap-keeper), migrated above. |
+| Ship: `safe` was up to 1,200 substantive lines and 50 files, tests and docs not counted | Trivial is up to 10 lines and 20 files; 600+ lines is sensitive; tests and docs count. |
 | Ship: a lockfile changed without its manifest was out of the safe class | A PR with no substantive line is `sensitive`; a lockfile beside any code change is judged by the rest. |
-| Code review: newly watched repos got advice-only reviews (`mandatory: false`) | The preset's combos are mandatory, so newly watched repos are gated. Existing entries are explicit and unchanged. |
+| Code review: a newly watched repo got advice-only reviews | The preset's combos are mandatory, so a newly watched repo is gated. Existing entries are explicit and unchanged. |
 
 ## 13. What gets deleted
 
-- **code review:** repo-level `on_open`, `on_push`, `push_rounds` and `REPO_DEFAULTS` (now the per-tier preset) in
-  `config.ts`; `openOnly()`/`gated()` per repo (now per tier); the single gated list in `scripts/modules.ts`; the board's
-  moment pickers per repo in the Reviews view (now per tier); `GENERATED`/`LOCKS` in `recipe/scope.ts` (now the classifier's).
-- **ship:** `safe.ts`'s `safeClass`, `TESTS`, `DOCS`, `MANIFESTS`, `COMPARE_CAP`; `settings.ts`'s `approve`, `merge`, `safe`,
-  `APPROVE` values `safe` and `all`, their `CONTROLS` entries and `loosens()` lines; `review_rounds` if any copy of it is still
-  on main.
+- **code review:** entry-level `on_open`, `on_push`, `push_rounds` and `REPO_DEFAULTS` (now the per-tier preset) in
+  `config.ts`; `openOnly()`/`gated()` per entry (now per tier); `codeReviewGated()`'s raw-combo scan in `scripts/modules.ts`
+  (now the shared parser); the per-repo moment pickers in the Reviews view; `GENERATED`/`LOCKS` in `recipe/scope.ts` (now the
+  classifier's).
+- **ship:** `safe.ts`'s `safeClass`, `TESTS`, `DOCS`, `MANIFESTS` (`carries()` keeps its compare cap); `settings.ts`'s
+  `approve`, `merge`, `safe`, `APPROVE`'s `safe` and `all`, their `CONTROLS` and `loosens()` lines; `review_rounds` wherever
+  a copy of it is still on main.
 - **CI template** (`modules/ci/template`, and the synced `modules/code-review/recipe/code-review.ts`): the critical-path
-  regex and glob loop, `.github/code-review-critical`, `CRITICAL_GLOBS`, `DEEP` and the `deep` depth, the `labeled` trigger,
-  the under-20-line skip, the brief's `critical` input; the `deep-review` branches in `codegenie-prior.ts` and
-  `codegenie-gate.ts`; their cases in `scripts/test/ci-gate.test.ts`; the passage in `docs/operations.md` and `ci.yml`'s
-  header.
-- **settings:** `settings.ci_review_model`'s help line about "critical paths ... one effort higher" (reworded for tiers).
+  regex and glob loop, `.github/code-review-critical`, `CRITICAL_GLOBS`, `DEEP` and the `deep` depth, `PR_LABELS`, the
+  `labeled` trigger, the under-20-line skip, the brief's `critical` input; the `deep-review` branches in
+  `codegenie-prior.ts` and `codegenie-gate.ts`; their cases in `scripts/test/ci-gate.test.ts`; the passage in
+  `docs/operations.md`, `ci.yml`'s header and `ci_review_model`'s help line in `modules/ci/module.yaml`.
 
 ## 14. Build plan
 
-Three lanes, after #1687 and #1688 merge. Lane 1 lands first; lanes 2 and 3 build against this spec in parallel and merge
-after it.
+Three lanes, after #1687 and #1688 merge. They build in parallel against this spec; lane 1 merges first, and the instance pin
+moves once all three have merged (§11).
 
-**Lane 1: classifier and code review** (the biggest; one PR):
+**Lane 1: classifier and code review.**
 
-- `kernel/sdk/src/tiers.ts`: facts, rules validation, `classify()`, the default rules, `GENERATED`/`LOCKS`; synced to code
-  review and the CI template.
-- github internal reads for code review: the PR's files list (paginated) and its label events (no maintained-repo limit).
-- `config.ts`: the new entry shape, the per-tier preset, old-shape refusals, `tierCfg()`.
-- `engine.ts`: classify in `poll()` before `trigger()`, the `tiers` table and `runs.tier`, the ratchet, escalation through
-  `missing()`, the per-tier verdict, `tier` and `kind: none` on `/v1/verdict`, the `pr.tier` fact.
-- `scripts/modules.ts`: the two gated lists; `config-tool.ts`: the schema and the owner-approval list.
-- The Reviews view: repo class, rules table, per-tier cards, each PR's tier.
-- The instance commit (§11) with the pin bump.
-- Tests: one end-to-end per path (a trivial PR reviewed by trivial's combo; a push that escalates to sensitive and gets its
-  opening review; a writer's `no-review` skips and an App's doesn't), plus `classify()` on the default rules.
+- `kernel/sdk/src/tiers.ts`: facts, rule validation, `classify()`, default rules, `GENERATED`/`LOCKS`; synced to code review
+  and the CI template.
+- github's code-review read (`github-mcp/src/code-review-read.ts`): `author_association`, `changed_files`, the base sha, and
+  the PR's paginated files list.
+- `config.ts`: the new shape, the per-tier preset, old-shape refusals, `tierCfg()`; `scripts/modules.ts` uses its parser for
+  the two gated lists; `config-tool.ts`: the schema and the owner-approval list.
+- `engine.ts`: the snapshot and classification in `poll()`, the PR row's tier, `runs.tier` and `policy`, coverage by policy,
+  the tier-change branch with `full: true`, the per-head verdict with `tier` and `requires_review`, `evidence()`'s `kind: none`.
+- The Reviews view: repo class, the rules table, the per-tier cards, each PR's tier.
+- Tests: end to end, a trivial PR reviewed by trivial's combo; a reviewed trivial PR pushed into sensitive, where both
+  sensitive opening reviewers see the whole PR; a pending head that waits. Plus `classify()` on the default rules.
 
-**Lane 2: ship** (after lane 1's verdict shape):
+**Lane 2: ship.**
 
-- `settings.ts`: `by_tier`, the presets, refusals, `loosens()`; `safe.ts` trimmed to `carries()` and `judge()` reading the
-  tier; `decide`'s merge per tier; the report's tier line; the Ship page's grid.
-- Tests: `judge()` per tier, and the carry-over refused when the tier differs.
+- `settings.ts`: `by_tier`, `unwatched`, the presets, refusals, `loosens()`. `safe.ts` trimmed to `carries()` and `judge()`
+  reading the tier and policy; `decide`'s merge per tier; `merges.ts`'s `requires_review` and the final tier check before a
+  merge or enqueue; the report's tier line; the Ship page grid.
+- Tests: `judge()` per tier; a skip-tier PR on a gated repo with no GitHub approval rule merges; a carry refused when the
+  policy differs; a pending tier waits.
 
-**Lane 3: CI template** (after lane 1's `tiers.ts`):
+**Lane 3: CI template.**
 
-- `ci.yml` and `code-review.ts`: classify with `.github/tiers.ts`, depth by tier, deletions (§13).
-- The gateway's `/ci/token` answer and the compile's per-repo table.
-- `docs/operations.md`; roadmap-keeper's file removed by a PR there.
-- Tests: the existing `ci-gate.test.ts` cases rewritten for tiers (a trivial skip, a sensitive bump), no new suites.
+- `ci.yml`, `code-review.ts`, `codegenie-prior.ts`: token first, refusal first, classify with `.github/tiers.ts`, the range
+  after the tier, the tier in the green status, depth by tier, the deletions (§13).
+- The gateway's `/ci/token` answer and the compile's per-repo rules table.
+- `docs/operations.md`.
+- Tests: `ci-gate.test.ts` rewritten for tiers (a trivial skip; a sensitive bump; a trivial PR touching `.codex/` refused; a
+  reuse refused after the tier rose). No new suites.
+- After the deploy: roadmap-keeper's PR (§11).
 
-Each lane runs the local Codex review before pushing and gets a security review of its new path (labels lowering a tier, the
-CI rules table) before it switches on.
+Each lane runs the local Codex review before pushing and gets a security review of its new path (the CI rules table, the
+approval and merge decisions per tier) before it switches on.
 
 ## 15. Not handled (fails loudly or cautiously)
 
-- **Per-tier lenses, catalog options or `drafts`/`forks` per tier.** Repo-level, as today.
-- **Rules per base branch beyond `base` globs.** Ship supports only the default branch anyway.
+- **Labels** as a fact (§2). Added later in code review and served through the verdict if the owner wants them.
+- **Per-tier lenses, catalog options, `drafts` or `forks`.** Repo-level, as today.
 - **Case-insensitive globs.** The CI regex was case-insensitive (`auth` matched `Auth`); globs are not. The default list spells
   the common forms; a repo adds others.
-- **A label that both raises and lowers in one PR.** When labels lower the tier, only trusted labels count, raising ones
-  included if untrusted. It errs toward the trusted view.
+- **PRs over 3,000 files.** `sensitive`, with the reason.
 - **Re-classifying closed or merged PRs.** Their tier stays what it was.
-- **A settings change and the ratchet.** A loosened rule applies to new heads; a PR already at a higher tier stays there.
