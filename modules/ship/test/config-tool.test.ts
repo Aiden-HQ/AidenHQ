@@ -36,7 +36,8 @@ test("ship_status reads headline settings and holds for the Fleet page", async (
   s.put(adoption(2, { kind: "stalled", reason: "ci rounds" }));
   const tool = configTools({ raw: () => ({ repos: { "a/b": "full" } }), scope: () => scope, state: s, maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_status")!;
   const r = (await tool.run({}, { agent: "x", roles: [] })) as any;
-  assert.deepEqual([r.paused, r.repos, r.held.length], [false, [{ repo: "a/b", preset: "full", enabled: true, handoff: "all", approve: "all", merge: "ready", over: [] }], 1]);
+  const { settings, ...row } = r.repos[0];
+  assert.deepEqual([r.paused, row, r.held.length, settings.caps.usd, r.defaults.preset, r.defaults.settings.caps.usd], [false, { repo: "a/b", preset: "full", enabled: true, handoff: "all", approve: "all", merge: "ready", over: [] }, 1, null, "cautious", 5]);
 });
 
 test("ship_configure for the owner returns the settings change and files nothing; a new repo covers its three settings", async () => {
@@ -98,4 +99,13 @@ test("ship_status lists the fleet's named repos that inherit the defaults, and w
   const tool = configTools({ raw: () => ({ repos: { "a/b": { merge: "off" } } }), scope: () => ({ fleet: ["org/*", "org/product"], listed: ["a/b"] }), state: state(), maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_status")!;
   const r = (await tool.run({}, { agent: "x", roles: [] })) as any;
   assert.deepEqual(r.repos.map((x: any) => [x.repo, x.preset, x.enabled, x.over]), [["a/b", "cautious", true, ["merge"]], ["org/product", "cautious", true, []]]);
+});
+
+test("a cap edit and a reset make the right proposal: caps merge field by field, a reset drops the field so the preset applies", async () => {
+  const raw = { repos: { "a/b": { preset: "cautious", approve: "safe", caps: { usd: 1, rounds: 10 } } } };
+  const tool = configTools({ raw: () => raw, scope: () => scope, state: state(), maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
+  const r = (await tool.run({ edits: { repos: { "a/b": { caps: { usd: 2 }, reset: ["approve", "caps.rounds"] } } } }, { agent: "", roles: [], kind: "owner" })) as any;
+  assert.deepEqual(r._aidenhq.settings_change, [{ kind: "setting", key: "ship", value: { repos: { "a/b": { preset: "cautious", caps: { usd: 2 } } } } }]);
+  assert.match(r.changes[0], /caps, reset approve, caps\.rounds/);
+  assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { reset: ["preset"] }, scope }), /can't reset/);
 });

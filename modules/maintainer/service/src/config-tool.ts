@@ -7,6 +7,8 @@ import type { Tool } from "./mcp.ts";
 
 type Dict = Record<string, unknown>;
 export const DUTIES = ["issues", "features", "dependabot", "contributor_prs"] as const;
+/** The rest of an entry's fields; parseRepos checks their values (label, trusted roles, quiet days). */
+const OTHER = ["label", "trusted", "stale_days"] as const;
 
 /** maintainer_repos as the instance holds it: its entries, a bare "owner/name" or a map. */
 export function rawRepos(text: string): Dict[] {
@@ -26,10 +28,11 @@ export function applyRepoChange(list: Dict[], c: { duties?: Record<string, Dict>
     value = list.filter((_, i) => i !== at(c.remove!)); summary.push(`${c.remove}: removed from the Maintainer`);
   }
   for (const [repo, duties] of Object.entries(c.duties ?? {})) {
-    for (const [k, v] of Object.entries(duties)) if (!(DUTIES as readonly string[]).includes(k) || typeof v !== "boolean") throw new Error(`duties: ${DUTIES.join(", ")} each true or false`);
+    for (const [k, v] of Object.entries(duties)) if (!(OTHER as readonly string[]).includes(k) && (!(DUTIES as readonly string[]).includes(k) || typeof v !== "boolean")) throw new Error(`fields: ${DUTIES.join(", ")} each true or false, ${OTHER.join(", ")}`);
     if (at(repo) < 0) throw new Error(`${repo} isn't listed: add it from the Ship page`);
-    value = value.map((e) => (String(e.repo).toLowerCase() === repo.toLowerCase() ? { ...e, ...duties } : e));
-    summary.push(`${repo}: ${Object.entries(duties).map(([k, v]) => `${k} ${v ? "on" : "off"}`).join(", ")}`);
+    // null drops a field back to its default.
+    value = value.map((e) => { if (String(e.repo).toLowerCase() !== repo.toLowerCase()) return e; const m: Dict = { ...e, ...duties }; for (const k of OTHER) if (m[k] === null) delete m[k]; return m; });
+    summary.push(`${repo}: ${Object.entries(duties).map(([k, v]) => typeof v === "boolean" ? `${k} ${v ? "on" : "off"}` : v === null ? `${k} back to default` : `${k} ${JSON.stringify(v)}`).join(", ")}`);
   }
   if (!summary.length) throw new Error("say what to change: duties, or a repo to remove");
   parseRepos(JSON.stringify(value)); // the whole list checked as the github module will read it
@@ -41,13 +44,13 @@ export function configTools(d: { repos: () => string; ship: () => boolean; exter
   return [
     {
       name: "maintainer_config",
-      description: "What the Maintainer watches: each repo in maintainer_repos with its duties (issues, features, dependabot, contributor_prs), label, trusted roles and quiet days, and whether unlabelled issues are triaged (external_triage).",
+      description: "What the Maintainer watches: each repo in maintainer_repos with its duties (issues, features, dependabot, contributor_prs), label, trusted roles and quiet days (stale_days), and whether unlabelled issues are triaged (external_triage).",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async (_a, who) => { ownerOnly(who.kind); return { repos: parseRepos(d.repos()).map(({ owner: _o, name: _n, ...r }) => r), external_triage: d.externalTriage() }; },
     },
     {
       name: "maintainer_configure",
-      description: "Propose changes to the Maintainer's setup, as one typed settings change: { edits: { repos: { <repo>: { issues, features, dependabot, contributor_prs: true | false } }, external_triage?: true | false } }, or { remove: <repo> } (a repo Ship also covers is removed from the Ship page, which clears both). Only listed repos change: adding one is the Ship page's. The owner saves the change from the Fleet page.",
+      description: "Propose changes to the Maintainer's setup, as one typed settings change: { edits: { repos: { <repo>: { issues, features, dependabot, contributor_prs: true | false, label, trusted: [roles], stale_days } }, external_triage?: true | false } }, or { remove: <repo> } (a repo Ship also covers is removed from the Ship page, which clears both). Only listed repos change: adding one is the Ship page's. The owner saves the change from the Fleet page.",
       inputSchema: { type: "object", properties: { edits: { type: "object" }, remove: { type: "string" } }, additionalProperties: false },
       run: async (a, who) => {
         ownerOnly(who.kind);
