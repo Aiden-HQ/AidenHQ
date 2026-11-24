@@ -2,7 +2,8 @@
 // The `code-review` check's mode: what changed since this PR's last green code review, so a push or a rebase of a big PR
 // isn't reviewed whole again. Trusts only GitHub's own records of this workflow (a successful code-review job on an
 // earlier head, and the state status that same run set on it), never a PR comment.
-//   full:  review the whole PR (no trusted green review, a merge-base that moved, the deep-review label, or the guard)
+//   full:  review the whole PR (no trusted green review, a merge-base that moved, a green review at a lower tier or effort or another
+//          model (the PR's tier, model and effort are recorded with it), or the guard)
 //   delta: the old head is an ancestor and the merge-base is the same: review only old..new
 //   reuse: the patch is the same as the last green head's (a stacked rebase onto a base that only moved forward, a rewrite,
 //          or the same branch reopened as a new PR): pass on the old verdict, no model calls. Only when that run's PR
@@ -13,7 +14,8 @@
 // the last full review, review it whole again.
 //   node codegenie-prior.ts  ->  "<mode> <from sha or -> <deltas since full> <delta lines since full> <merge-base>"
 // Env: GITHUB_TOKEN (actions: read), GITHUB_REPOSITORY, HEAD_REF, BASE_REF, BASE_SHA, HEAD_SHA, DEFAULT_BRANCH,
-// PR_LABELS, GITHUB_API_URL. No dependencies; Node 22+.
+// REVIEW_TIER, REVIEW_MODEL and REVIEW_EFFORT (what this run would review at: codegenie-tier.ts, the gateway), GITHUB_API_URL.
+// No dependencies; Node 22+.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -24,18 +26,21 @@ const MAX_LINES = 2000;
 // agent's screenshots under .aidenhq/out/ (the workflow's image types; its json and txt reports count), and a binary file counts 20 (the workflow's rule).
 export const NOLOCK = [":(exclude,glob)**/package-lock.json", ...["png", "jpg", "jpeg", "webp", "gif"].map((t) => `:(exclude,glob).aidenhq/out/**/*.${t}`)];
 const FULL = { mode: "full", from: "", n: 0, lines: 0 };
-const CI_FILES = [".github/workflows/ci.yml", ".github/codegenie-gate.ts", ".github/codegenie-prior.ts", ".github/code-review.ts", ".github/review-tools.ts", ".github/code-review-rules.md"];
+const CI_FILES = [".github/workflows/ci.yml", ".github/codegenie-gate.ts", ".github/codegenie-prior.ts", ".github/code-review.ts", ".github/review-tools.ts", ".github/tiers.ts", ".github/codegenie-tier.ts"];
 // Files that shape the review but an app may not have: the same on both sides, absent included.
-const OPTIONAL_FILES = [".github/code-review-critical", ".github/code-review-checklist.json", ".github/review-checklist.ts"];
+const OPTIONAL_FILES = ["REVIEW.md", ".github/code-review-checklist.json", ".github/review-checklist.ts"];
 
 type Api = (path: string) => Promise<unknown>;
 interface Run { id: number; head_sha: string; head_branch?: string; head_repository?: { full_name?: string }; pull_requests?: { base?: { ref?: string } }[]; run_started_at: string; updated_at: string }
 interface Status { context: string; created_at?: string; state?: string; creator?: { login?: string }; target_url?: string; description?: string }
 export interface Decision { mode: string; from: string; n: number; lines: number; mb?: string }
-interface DecideInput { api: Api; git: (...args: string[]) => string; repo: string; headRef: string; baseRef: string; base: string; head: string; defaultRef: string; labels?: string; fetchCommit?: (sha: string) => void }
+/** What a review ran at: the PR's risk tier, the model and its effort. */
+export interface Ran { tier: string; model: string; effort: string }
+interface DecideInput extends Ran { api: Api; git: (...args: string[]) => string; repo: string; headRef: string; baseRef: string; base: string; head: string; defaultRef: string; fetchCommit?: (sha: string) => void }
+const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
 
 /** The PR's last green head before `head`, with the state its run recorded: { sha, n, lines, mb }, or undefined. */
-async function lastGreen(api: Api, { repo, headRef, baseRef, head }: { repo: string; headRef: string; baseRef: string; head: string }): Promise<{ sha: string; n: number; lines: number; mb: string } | undefined> {
+async function lastGreen(api: Api, { repo, headRef, baseRef, head }: { repo: string; headRef: string; baseRef: string; head: string }): Promise<({ sha: string; n: number; lines: number; mb: string } & Ran) | undefined> {
   const { workflow_runs: runs = [] } = (await api(`/repos/${repo}/actions/workflows/ci.yml/runs?event=pull_request&branch=${encodeURIComponent(headRef)}&per_page=50`)) as { workflow_runs?: Run[] };
   const red = new Set<string>(); // heads whose latest code review failed: an older green run on the same head no longer counts
   for (const run of runs) { // newest first
@@ -54,8 +59,8 @@ async function lastGreen(api: Api, { repo, headRef, baseRef, head }: { repo: str
     const t = Date.parse(s?.created_at!);
     const own = s?.state === "success" && s.creator?.login === "github-actions[bot]" && s.target_url?.endsWith(`/actions/runs/${run.id}`)
       && t >= Date.parse(run.run_started_at) && t <= Date.parse(run.updated_at);
-    const m = own && s!.description?.match(/^(full|delta|reuse) n=(\d+) lines=(\d+) mb=([0-9a-f]{40})$/);
-    return m ? { sha: run.head_sha, n: Number(m[2]), lines: Number(m[3]), mb: m[4]! } : undefined; // no state (yet): full
+    const m = own && s!.description?.match(/^(full|delta|reuse) n=(\d+) lines=(\d+) mb=([0-9a-f]{40}) tier=(\w+) model=(\S+) effort=(\w+)$/);
+    return m ? { sha: run.head_sha, n: Number(m[2]), lines: Number(m[3]), mb: m[4]!, tier: m[5]!, model: m[6]!, effort: m[7]! } : undefined; // no state (yet): full
   }
 }
 
@@ -64,13 +69,13 @@ async function lastGreen(api: Api, { repo, headRef, baseRef, head }: { repo: str
  * same one (a retargeted PR's merge-base moves). git(...args, { input }?) returns trimmed stdout and throws on a non-zero
  * exit.
  */
-export async function decide({ api, git, repo, headRef, baseRef, base, head, defaultRef, labels = "", fetchCommit = () => {} }: DecideInput): Promise<Decision> {
+export async function decide({ api, git, repo, headRef, baseRef, base, head, defaultRef, tier, model, effort, fetchCommit = () => {} }: DecideInput): Promise<Decision> {
   const mergeBase = (sha: string) => git("merge-base", base, sha);
   const mb = mergeBase(head);
   const full = { ...FULL, mb };
-  if (`,${labels},`.includes(",deep-review,")) return full;
   const last = await lastGreen(api, { repo, headRef, baseRef, head });
-  if (!last) return full;
+  // A verdict carries forward only from a review at the same tier and model and an effort at least as high.
+  if (!last || last.tier !== tier || last.model !== model || EFFORTS.indexOf(last.effort) < EFFORTS.indexOf(effort)) return full;
   const ok = (...a: string[]) => { try { git(...a); return true; } catch { return false; } };
   if (!ok("cat-file", "-e", `${last.sha}^{commit}`)) {
     fetchCommit(last.sha);
@@ -105,7 +110,7 @@ export async function decide({ api, git, repo, headRef, baseRef, base, head, def
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repo, HEAD_REF, BASE_REF, BASE_SHA, HEAD_SHA, PR_LABELS } = process.env;
+  const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repo, HEAD_REF, BASE_REF, BASE_SHA, HEAD_SHA, REVIEW_TIER, REVIEW_MODEL, REVIEW_EFFORT } = process.env;
   const apiUrl = process.env.GITHUB_API_URL || "https://api.github.com";
   const api: Api = async (path) => {
     const r = await fetch(`${apiUrl}${path}`, { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" } });
@@ -123,7 +128,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
     const { DEFAULT_BRANCH } = process.env;
     git("-c", `http.extraHeader=${auth}`, "fetch", "--no-tags", "origin", `+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}`);
-    r = await decide({ api, git, repo: repo!, headRef: HEAD_REF!, baseRef: BASE_REF!, base: BASE_SHA!, head: HEAD_SHA!, defaultRef: `origin/${DEFAULT_BRANCH}`, labels: PR_LABELS, fetchCommit });
+    r = await decide({ api, git, repo: repo!, headRef: HEAD_REF!, baseRef: BASE_REF!, base: BASE_SHA!, head: HEAD_SHA!, defaultRef: `origin/${DEFAULT_BRANCH}`, tier: REVIEW_TIER!, model: REVIEW_MODEL!, effort: REVIEW_EFFORT!, fetchCommit });
   } catch (err) {
     console.error(`::warning::Couldn't read this PR's last green code review (${(err as Error).message}): reviewing it whole.`);
   }
