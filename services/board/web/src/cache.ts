@@ -11,6 +11,8 @@ const PREFIX = "aidenhq.cache.";
 const ACCOUNT_KEY = `${PREFIX}account`;
 /** Per entry: a larger response just isn't persisted (memory still holds it). */
 const MAX_BYTES = 1_500_000;
+/** A response the server marked stale is asked for again after this. */
+const STALE_RETRY_MS = 2_000;
 
 interface Entry {
   data: unknown;
@@ -67,6 +69,8 @@ export function clearCache() {
   written.clear();
   inflight.clear();
   followUps.clear();
+  for (const r of staleRetries.values()) clearTimeout(r.timer);
+  staleRetries.clear();
   account = null;
   const s = storage();
   try {
@@ -154,6 +158,9 @@ export function load<T>(key: string, fetcher: () => Promise<T>, persist: Persist
     (data) => {
       if (inflight.get(key) !== p) return data;
       put(key, data, persist);
+      // The server showed its last good answer while it reads a fresh one (swr.ts `stale`): ask again in a moment.
+      if ((data as { stale?: unknown } | null)?.stale === true) retryStale(key, fetcher, persist);
+      else (clearTimeout(staleRetries.get(key)?.timer), staleRetries.delete(key));
       // The stored copy: unchanged parts keep their identity (share), so callers' memos hold.
       return mem.get(key)!.data as T;
     },
@@ -170,6 +177,19 @@ export function load<T>(key: string, fetcher: () => Promise<T>, persist: Persist
   return p;
 }
 
+/** One pending retry per key for a stale response, backing off while the answers stay stale. */
+const staleRetries = new Map<string, { timer: ReturnType<typeof setTimeout>; n: number }>();
+function retryStale(key: string, fetcher: () => Promise<unknown>, persist: Persist) {
+  const have = staleRetries.get(key);
+  if (have?.timer) return;
+  const n = have?.n ?? 0;
+  const timer = setTimeout(() => {
+    staleRetries.set(key, { timer: undefined as never, n: n + 1 });
+    load(key, fetcher, persist).catch(noop);
+  }, Math.min(STALE_RETRY_MS * 2 ** n, 16_000));
+  staleRetries.set(key, { timer, n });
+}
+
 /** Warm the cache (a hovered tab): ignores errors; skips a key fetched in the last 15 seconds. */
 export function prefetch(key: string, fetcher: () => Promise<unknown>, persist: Persist = true) {
   const e = mem.get(key);
@@ -177,7 +197,7 @@ export function prefetch(key: string, fetcher: () => Promise<unknown>, persist: 
   load(key, fetcher, persist).catch(() => {});
 }
 
-function subscribe(key: string, l: () => void) {
+export function subscribe(key: string, l: () => void) {
   if (!listeners.has(key)) listeners.set(key, new Set());
   listeners.get(key)!.add(l);
   return () => void listeners.get(key)?.delete(l);
@@ -223,5 +243,5 @@ export function useCached<T>(key: string, fetcher: () => Promise<T>, opts: { per
   // Stale: loaded before this view opened (an earlier visit, or storage), until a load that lands after.
   const opened = useRef({ key, at: Date.now() });
   if (opened.current.key !== key) opened.current = { key, at: Date.now() };
-  return { data: entry?.data, stale: !!entry && entry.at < opened.current.at, error: error.key === key ? error.text : "", reload };
+  return { data: entry?.data, stale: !!entry && (entry.at < opened.current.at || (entry.data as { stale?: unknown } | null)?.stale === true), error: error.key === key ? error.text : "", reload };
 }

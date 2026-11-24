@@ -126,8 +126,37 @@ export interface Listed {
   incomplete: boolean;
 }
 
+/** The closed issues the snapshot keeps: those updated in the last 48 hours (the board's Done window). */
+export const CLOSED_WINDOW_MS = 48 * 3_600_000;
+/** A read reaches the snapshot as it is for this long; then one incremental read (`changedSince`) brings it up to date. */
+const SNAP_FRESH_MS = 4_000;
+/** The full inventory is read again this often (an issue deleted in Paperclip leaves no change row). */
+const SNAP_FULL_MS = 5 * 60_000;
+/** An incremental read reaches back this far past the newest change seen, so a write that commits late isn't missed. */
+const SNAP_OVERLAP_MS = 5_000;
+/** `changedSince` returns at most this many rows: a full page may be a cut-short burst, so the snapshot is read in full. */
+const CHANGED_LIMIT = 200;
+const CLOSED = new Set(["done", "cancelled"]);
+
+/** The company's open issues and its recent closed ones, kept in memory and brought up to date from `changedSince`. */
+interface Snapshot {
+  open: Map<string, Issue>;
+  closed: Map<string, Issue>;
+  incomplete: { open: boolean; closed: boolean };
+  /** Every change before this (ms) is in the snapshot: where the next incremental read starts. */
+  through: number;
+  fullAt: number;
+  syncedAt: number;
+  /** The board's writes (Paperclip.writes) before the last sync began: a later write makes the next read look again at once. */
+  syncedWrites: number;
+}
+
 export class Paperclip {
   private cache = new Map<string, { at: number; value: Promise<unknown>; done: boolean }>();
+  private snap: Snapshot | undefined;
+  private syncing: Promise<void> | undefined;
+  /** Counts the board's writes, at their start and at their end (a read that began before either may not show the write). */
+  private writes = 0;
 
   private readonly client;
 
@@ -139,10 +168,11 @@ export class Paperclip {
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     // A write may change the open tasks: a read that starts after it never shares one already on its way.
     if (method !== "GET") {
-      this.cache.delete("open");
+      this.writes++;
       if (/\/routine/.test(path)) this.cache.delete("routines");
     }
-    return this.client.request<T>(method, path, body || undefined);
+    if (method === "GET") return this.client.request<T>(method, path, body || undefined);
+    return this.client.request<T>(method, path, body || undefined).finally(() => void this.writes++);
   }
 
   /**
@@ -188,15 +218,58 @@ export class Paperclip {
     return (await this.openListed()).issues;
   }
 
-  /** The open issues with whether LIST_BOUND cut them short (the board's inventory). */
-  openListed(): Promise<Listed> {
-    // The biggest read the board makes: requests made while one is on its way share it (never a finished one).
-    return this.cached("open", 0, () => this.paged(OPEN));
+  /**
+   * The open issues with whether LIST_BOUND cut them short (the board's inventory), from the snapshot. `strict`: a read that
+   * writes follow from; the snapshot is brought up to date just now, never taken as it was.
+   */
+  async openListed(strict = false): Promise<Listed> {
+    const s = await this.snapshot(strict);
+    return { issues: [...s.open.values()], incomplete: s.incomplete.open };
   }
 
-  /** Every closed issue (routine runs left out) updated after `since`, newest first, up to LIST_BOUND. */
-  closedListed(since: string): Promise<Listed> {
-    return this.paged("done,cancelled", since);
+  /** The closed issues (routine runs left out) updated after `since` (within the snapshot's 48 hours), newest first, up to LIST_BOUND. */
+  async closedListed(since: string, strict = false): Promise<Listed> {
+    if (Date.parse(since) < Date.now() - CLOSED_WINDOW_MS - SNAP_OVERLAP_MS) return this.paged("done,cancelled", since);
+    const s = await this.snapshot(strict);
+    const issues = [...s.closed.values()].filter((i) => i.updatedAt > since).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return { issues: issues.slice(0, LIST_BOUND), incomplete: s.incomplete.closed || issues.length > LIST_BOUND };
+  }
+
+  /**
+   * The snapshot, current to within SNAP_FRESH_MS and no later than the last write the board made: readers share one
+   * incremental read, and the full inventory is read again every SNAP_FULL_MS. A refresh that fails fails the read.
+   */
+  private async snapshot(strict: boolean): Promise<Snapshot> {
+    const s = this.snap;
+    // A read that writes follow from never takes the shortcut, nor joins a sync that began before it asked (a write may be in it).
+    if (strict) await this.syncing?.catch(() => {});
+    else if (s && s.syncedWrites === this.writes && Date.now() - s.syncedAt < SNAP_FRESH_MS && Date.now() - s.fullAt < SNAP_FULL_MS) return s;
+    this.syncing ??= this.sync().finally(() => (this.syncing = undefined));
+    // A failed refresh is the read's failure: the pages that can show their last good response (swr.ts) say so, and no write is
+    // validated against inventory that may have changed.
+    await this.syncing;
+    return this.snap!;
+  }
+
+  private async sync(): Promise<void> {
+    const old = this.snap;
+    const started = Date.now();
+    const writes = this.writes;
+    if (old && started - old.fullAt < SNAP_FULL_MS) {
+      // A burst past the page may have more behind it: read in full then.
+      if ((await this.changedSince(new Date(old.through).toISOString(), writes)).length < CHANGED_LIMIT) return;
+    }
+    const [open, closed] = await Promise.all([this.paged(OPEN), this.paged("done,cancelled", new Date(started - CLOSED_WINDOW_MS).toISOString())]);
+    this.snap = { open: new Map(open.issues.map((i) => [i.id, i])), closed: new Map(closed.issues.map((i) => [i.id, i])), incomplete: { open: open.incomplete, closed: closed.incomplete }, through: started - SNAP_OVERLAP_MS, fullAt: started, syncedAt: Date.now(), syncedWrites: writes };
+  }
+
+  /** Brings a change into the snapshot (never an older row over a newer one). */
+  private ingest(s: Snapshot, i: Issue) {
+    const have = s.open.get(i.id) ?? s.closed.get(i.id);
+    if (have && have.updatedAt > i.updatedAt) return;
+    s.open.delete(i.id);
+    s.closed.delete(i.id);
+    (CLOSED.has(i.status) ? s.closed : s.open).set(i.id, i);
   }
 
   /** The company's projects (Paperclip's own list); a reply not shaped `{id, name}[]` is an error, so the filter shows unavailable. */
@@ -216,8 +289,23 @@ export class Paperclip {
   }
 
   /** Every task (routine runs left out) updated after `since`, newest first: what the live watch (watch.ts) announces. */
-  changedSince(since: string): Promise<Issue[]> {
-    return this.list(`${OPEN},done,cancelled`, since, "200");
+  async changedSince(since: string, writes = this.writes): Promise<Issue[]> {
+    const asked = Date.now();
+    const rows = await this.list(`${OPEN},done,cancelled`, since, String(CHANGED_LIMIT));
+    // Every look at what changed also keeps the snapshot current (the live watch asks every few seconds).
+    const s = this.snap;
+    if (s) {
+      for (const i of rows) this.ingest(s, i);
+      const floor = new Date(Date.now() - CLOSED_WINDOW_MS).toISOString();
+      for (const [id, i] of s.closed) if (i.updatedAt < floor) s.closed.delete(id);
+      // It closes the gap when it began no later than the snapshot's own mark, unless a full page cut it short.
+      if (Date.parse(since) <= s.through && rows.length < CHANGED_LIMIT) {
+        s.through = Math.max(s.through, asked - SNAP_OVERLAP_MS);
+        s.syncedAt = Date.now();
+        s.syncedWrites = Math.max(s.syncedWrites, writes);
+      }
+    }
+    return rows;
   }
 
   /** A task's sub-tasks, open and closed. The list filter isn't trusted, so it's checked here too. */
