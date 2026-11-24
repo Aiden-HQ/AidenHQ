@@ -10,13 +10,17 @@ const APP = "roadmap-keeper";
 const ADMIN = "admin@example.com";
 const TEST_USER = "canary@example.test";
 
-function access() {
+function access(o: { otherDefault?: string } = {}) {
   const db = new DatabaseSync(":memory:");
   return createAppAccess({
     db,
-    gate: () => ({ password: false, apps: { [APP]: { host: "roadmap.example.com" } } }),
+    gate: () => ({ password: false, apps: {
+      [APP]: { host: "roadmap.example.com" },
+      ...(o.otherDefault ? { "other-app": { host: "other.example.com", defaultRole: o.otherDefault } } : {}),
+    } }),
     account: (email) => (email === ADMIN ? { role: "admin", disabled: false } : undefined),
     testMember: (app, email) => email === TEST_USER && app === APP,
+    testAccount: (email) => email === TEST_USER,
     exported: async () => {},
     log: { info: () => {}, warn: () => {} },
   });
@@ -34,4 +38,15 @@ test("an unrelated email's assignment still works", async () => {
   const a = access();
   await a.assign(ADMIN, APP, "person@example.com", "blocked");
   assert.equal(a.exportApps()[APP].roles["person@example.com"], "blocked");
+});
+
+// The test account is never an ordinary account: on an app settings.edge.test_user does not name it is blocked outright, so
+// an app's default (or a stored row) cannot hand it access, and the feedback handler refuses it there too.
+test("the test account is blocked on an app the setting does not name, whatever that app's default", () => {
+  const a = access({ otherDefault: "member" });
+  assert.equal(a.effectiveRole("other-app", TEST_USER), "blocked");
+  assert.equal(a.effectiveRole(APP, TEST_USER), "member");
+  assert.throws(() => a.notify("other-app", TEST_USER), (e: AccessError) => e.status === 403);
+  // An ordinary account on the same app still gets its default.
+  assert.equal(a.effectiveRole("other-app", "person@example.com"), "member");
 });

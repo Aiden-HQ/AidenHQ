@@ -37,7 +37,10 @@ fi
 # Our own nft table: an accept elsewhere never overrides a drop here. Input = anything addressed to the host itself; forward =
 # anywhere else. The one way in is the gate's test listener on the bridge gateway, and there is no way out at all: a signed-in
 # page's external request must not be able to carry anything off the host.
-nft -f - <<EOF
+#
+# A re-run may find the network already restored by Docker (a reboot), so a failed transaction must take it away: apps-mcp's
+# launch check only proves the bridge's shape, and a bridge whose rule never loaded is an unrestricted, signed-in network.
+if ! nft -f - <<EOF
 table inet $TABLE
 delete table inet $TABLE
 table inet $TABLE {
@@ -58,6 +61,13 @@ table inet $TABLE {
   }
 }
 EOF
+then
+  if docker network inspect "$NET" >/dev/null 2>&1; then
+    docker network rm "$NET" >/dev/null 2>&1 || echo "couldn't remove $NET after the rule failed (a canary browser may still be attached): it is unguarded, remove it" >&2
+  fi
+  echo "couldn't install the $TABLE rule: the network is gone, so nothing can launch a browser on it" >&2
+  exit 1
+fi
 
 # The network: created here, or (a re-run after a reboot) proved to be this one. A network that merely carries the right name is
 # not enough: the rule above matches a bridge name, so a bridge of another name, subnet or gateway (or with inter-container

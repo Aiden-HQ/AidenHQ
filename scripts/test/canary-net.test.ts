@@ -27,16 +27,16 @@ const standIn = (dir: string) => {
   esac
   return 0
 }
-nft() { printf 'nft %s\\n' "$*" >> "$LOG"; return 0; }
+nft() { printf 'nft %s\\n' "$*" >> "$LOG"; return "\${NFT_FAIL:-0}"; }
 `);
   return file;
 };
 
-const run = ({ exists = false, inspect = WANT, remove = false, rmFail = false } = {}) => {
+const run = ({ exists = false, inspect = WANT, remove = false, rmFail = false, nftFail = false } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), "canary-net-"));
   const log = join(dir, "calls.log");
   writeFileSync(log, "");
-  const env = { ...process.env, BASH_ENV: standIn(dir), LOG: log, EXISTS: exists ? "1" : "0", INSPECT: inspect, RM_FAIL: rmFail ? "1" : "0" };
+  const env = { ...process.env, BASH_ENV: standIn(dir), LOG: log, EXISTS: exists ? "1" : "0", INSPECT: inspect, RM_FAIL: rmFail ? "1" : "0", NFT_FAIL: nftFail ? "1" : "0" };
   const r = spawnSync("bash", [script, ...(remove ? ["--remove"] : [])], { encoding: "utf8", env });
   return { calls: readFileSync(log, "utf8").split("\n").filter(Boolean), out: r.stdout, err: r.stderr, status: r.status };
 };
@@ -79,4 +79,14 @@ test("canary-net: --remove takes the network away first, and a failed removal ke
   const stuck = run({ exists: true, remove: true, rmFail: true });
   assert.equal(stuck.status, 1);
   assert.equal(stuck.calls.filter((c) => c.startsWith("nft delete table")).length, 0); // the bridge stays guarded
+});
+
+// A reboot restores the network before this unit re-runs; if the rule cannot load then, the restored bridge is unguarded and a
+// signed-in browser launched on it could reach anywhere. The run must take the network away, never leave it to be adopted.
+test("canary-net: a failed rule takes the restored network away, so nothing launches unguarded", () => {
+  const r = run({ exists: true, nftFail: true });
+  assert.equal(r.status, 1, r.err);
+  assert.match(r.err, /couldn't install the aidenhq_canary rule/);
+  assert.ok(r.calls.some((c) => c.startsWith("docker network rm aidenhq-canary")), r.calls.join("\n"));
+  assert.equal(r.calls.filter((c) => c.startsWith("docker network create")).length, 0);
 });

@@ -252,6 +252,9 @@ export async function openAccounts(o: AccountsOptions) {
       const t = o.gate?.()?.test;
       return Boolean(t && t.email === email && t.apps.includes(app) && testSessions.isTestAccount(email));
     },
+    // Every account the kernel minted for the canary is blocked everywhere the setting does not name it, even after the
+    // setting is removed (the account row outlives it), so an app's default never hands it access.
+    testAccount: (email) => testSessions.isTestAccount(email),
     ...(o.manifest ? { manifest: o.manifest } : {}),
     exported: changed,
     ...(o.wake ? { wake: o.wake } : {}),
