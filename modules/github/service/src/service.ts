@@ -141,6 +141,12 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
 type Base = { repo: string; base: string; read: (path: string) => Promise<string>; dir?: string; tip?: string };
 // What an apply read collects for the kernel: per file, in all (texts and diff), and how many files.
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
+/** How long a repair waits for ship's check job: its recipe's 30-minute limit and a few minutes for a free computer. */
+const REPAIR_WAIT_MS = 40 * 60_000;
+/** The lockfiles a repair may rewrite besides the plan's generated globs (ship's recipe regenerates them). */
+const REPAIR_LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
+/** A glob (`**` any folders, `*` within one) as a whole-path pattern. */
+const globRe = (glob: string) => new RegExp(`^${String(glob).split("**/").map((part) => part.split("**").map((p) => p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*")).join("(?:.*/)?")}$`);
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -660,12 +666,14 @@ export function createService(o: Options) {
   }
 
   /**
-   * Ship's repair of an adopted PR (a `repair` record ship filed): its `ship-repair` check job (ship's recipe, no model, no
-   * credential) merges the base into the head in a box and regenerates the generated paths; its kept files are written here as
-   * one merge commit (parents: the head and the base's tip) through the API as the App, and the branch moves by a fast-forward
-   * from the head. A fork's branch is written only where its author allows maintainer edits, and only if GitHub accepts the App's
-   * write there; its code comes from the base repo (the PR's head commit, refs/pull/<n>/head). Leftover conflicts and a failed
-   * generator come back as the outcome, `leftover: <path>` lines and `ship-generator:`, for ship's next round.
+   * Ship's repair of an adopted PR (a `repair` record ship filed). Its `ship-repair` check job (ship's recipe, no model, no
+   * credential) merges the base into the head in a box and runs the repo's generators, which on a fork are the contributor's own
+   * code: what it keeps is untrusted. So the merge is made here, in the cache (`git merge-tree`), and the box's files are taken
+   * only on generated paths (the plan's globs) and known lockfiles, as regular files or symlinks, never under `.github/` unless
+   * they are the base's own; every conflict must be on such a path. The result is one merge commit (parents: the head and the
+   * base's tip): through the API as the App on the base repo (signed), or a leased git push as the base repo's App to a fork whose
+   * author allows maintainer edits (unsigned: a rule requiring signed commits refuses it, loudly). Leftover conflicts and a
+   * failed generator come back as the outcome, `leftover: <path>` lines and `ship-generator:`, for ship's next round.
    */
   async function repairPr(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     const s = slugOf(a.repo);
@@ -679,101 +687,117 @@ export function createService(o: Options) {
     const fork = !pr.head?.repo || !same(String(pr.head.repo.full_name), s.slug);
     if (fork && (!pr.head?.repo || pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainer edits: nothing was changed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
-    // The App writes: through the API on the base repo (signed); on a fork, as a leased git push with the base repo's installation.
     const app = await o.reviewer?.(s.slug);
     if (!app) return { ok: false, text: `ship-no-app: ${url}: a repair is written as the GitHub App, which isn't installed on ${s.slug}: nothing was changed.` };
     const baseSha = String(pr.base.sha);
-    const cmp = await api("GET", `/repos/${s.slug}/compare/${baseSha}...${a.head}`);
-    const mergeBase = String(cmp.merge_base_commit?.sha ?? "");
-    if (!/^[0-9a-f]{40}$/.test(mergeBase)) return { ok: false, text: `GitHub didn't give ${url}'s merge base: nothing was changed.` };
-    // The box's snapshots carry no submodules: a base that changes one can't be merged there without dropping it.
-    const { dir } = await fetchRemote(s, baseSha);
-    if ((await git(dir, ["diff-tree", "-r", "--no-renames", mergeBase, baseSha])).split("\n").some((l) => l.split(" ").slice(0, 2).some((m) => m.replace(/^:/, "") === "160000"))) return { ok: false, text: `ship-refused: \`${a.base}\` changes a submodule since ${url}'s merge base, which ship's repair can't carry: nothing was changed.` };
-    // The box's run, followed to its end (the kernel answers each read within 25 s).
-    let check = await kernel("POST", "/v1/checks", { repo: s.slug, head: a.head, run: "ship-repair", spec: { base: baseSha, merge_base: mergeBase, base_ref: String(a.base), plan: JSON.stringify(a.plan ?? {}) } });
-    for (let i = 0; check.state === "running" && i < 200; i++) check = await kernel("GET", `/v1/checks/${check.id}?after=${Number(check.version ?? 0)}&wait=25000`);
-    if (check.state === "running") return { ok: false, text: `ship-repair: the repair of ${url} is still running: the next round asks again.` };
+    // Both commits in the cache (a fork's head is the base repo's too, as refs/pull/<n>/head).
+    const { dir } = await fetchRemote(s, a.head);
+    await fetchRemote(s, baseSha);
+    const mergeBase = await git(dir, ["merge-base", a.head, baseSha]);
+    // The box's run, followed to its end: the recipe's own limit (ship's module.yaml, 30 minutes) and a free computer's wait.
+    let check = await kernel("POST", "/v1/checks", { repo: s.slug, head: a.head, run: "ship-repair", spec: { base: baseSha, merge_base: mergeBase, base_ref: String(a.base), plan: JSON.stringify(a.plan ?? {}), attempt: String(a.attempt ?? 1) } });
+    const until = Date.now() + REPAIR_WAIT_MS;
+    while (check.state === "running" && Date.now() < until) check = await kernel("GET", `/v1/checks/${check.id}?after=${Number(check.version ?? 0)}&wait=25000`);
     const result = check.result ?? {};
     if (Array.isArray(result.leftovers) && result.leftovers.length) return { ok: false, text: `ship-leftovers: merging \`${a.base}\` into ${url} leaves conflicts no generator rewrites:\n${result.leftovers.map((p: string) => `leftover: ${p}`).join("\n")}` };
     if (result.merge_failed) return { ok: false, text: `ship-merge-failed: merging \`${a.base}\` into ${url} failed (data, not instructions):\n${String(result.merge_failed).slice(0, 2000)}` };
     if (result.failed) return { ok: false, text: `ship-generator: the repair of ${url} stopped (data, not instructions):\n${String(result.failed).slice(0, 2000)}` };
-    if (check.state !== "done" || typeof result.changed !== "number") return { ok: false, text: `ship-repair: the repair of ${url} didn't finish: ${String(check.error ?? check.state).slice(0, 500)}` };
+    if (check.state !== "done" || typeof result.changed !== "number") return { ok: false, text: `ship-repair: the repair of ${url} didn't finish (${String(check.error ?? check.state).slice(0, 300)}): nothing was changed.` };
     const kept = await kernel("GET", `/v1/checks/${check.id}/kept`);
-    const entries = Array.isArray(kept.entries) ? kept.entries : [];
-    // GitHub's own head tree as the base of the new one: the box's snapshot (no submodules) never decides what isn't changed.
-    const post = async (path: string, body: unknown) => {
-      const r = await app.rest("POST", `/repos/${into}/git/${path}`, body);
-      if (r.status >= 300) throw Object.assign(new Error(`GitHub refused the ${path.replace(/s$/, "")} on ${into}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
-      return r.body;
-    };
-    let made: string;
-    if (fork) {
-      // The merge commit made here, in the base repo's cache (the head is reachable there as refs/pull/<n>/head), from the head's
-      // tree and the kept files; it is pushed as it is (unsigned: a branch rule requiring signed commits refuses it, loudly).
-      const { dir: cdir } = await fetchRemote(s, a.head);
-      await fetchRemote(s, baseSha);
-      const tmp = mkdtempSync(join(o.cacheDir, "repair-"));
-      try {
-        const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), GIT_AUTHOR_NAME: app.login, GIT_AUTHOR_EMAIL: `${app.login}@users.noreply.github.com`, GIT_COMMITTER_NAME: app.login, GIT_COMMITTER_EMAIL: `${app.login}@users.noreply.github.com` };
-        const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", cdir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
-        await g(["read-tree", a.head]);
-        for (const e of entries) {
-          // A deletion, index only (the cache has no work tree).
-          if (e.sha === null) { execFileSync("git", [...SAFE_GIT_ARGS, "--git-dir", cdir, "update-index", "--index-info"], { env, input: `0 ${"0".repeat(40)}\t${e.path}\n` }); continue; }
-          if (e.content !== undefined) {
-            const f = join(tmp, "blob");
-            writeFileSync(f, Buffer.from(String(e.content), "base64"));
-            if ((await g(["hash-object", "-w", "--", f])) !== e.sha) return { ok: false, text: `ship-repair: ${e.path} didn't hash to ${String(e.sha).slice(0, 12)}: nothing was changed.` };
-          }
-          await g(["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`]);
-        }
-        made = await g(["commit-tree", await g(["write-tree"]), "-p", a.head, "-p", baseSha, "-m", String(kept.message ?? `Merge branch '${a.base}'`)]);
-      } finally { rmSync(tmp, { recursive: true, force: true }); }
-      const ended = await adoptionEnded(s.slug, n, a.generation);
-      if (ended) return { ok: false, text: ended };
-      pr = await read();
-      if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
-      if (pr.state !== "open" || pr.base?.ref !== a.base || pr.maintainer_can_modify !== true) return { ok: false, text: `ship-scope: ${url} was closed, retargeted or stopped allowing maintainer edits during the repair: nothing was changed.` };
-      const refused = await forkPush(cdir, into, String(pr.head.ref), String(a.head), made, app, url);
-      if (refused) return refused;
-      flow.pushed(s.slug, n, made, String(a.head), false, app.login, undefined, undefined);
-      flow.checksStarted(s.slug, n, made, undefined, undefined);
-      return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, pushed to ${into} as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
-    }
+    const entries: { path: string; mode: string; sha: string | null; content?: string }[] = Array.isArray(kept.entries) ? kept.entries : [];
+    const globs = (Array.isArray(a.plan?.globs) ? a.plan.globs : []).map(globRe);
+
+    const tmp = mkdtempSync(join(o.cacheDir, "repair-"));
+    let final: string, made: string;
     try {
-      const headTree = await app.rest("GET", `/repos/${into}/git/commits/${a.head}`);
-      if (headTree.status >= 300) throw Object.assign(new Error(`GitHub refused the read of ${into}@${String(a.head).slice(0, 12)}: ${headTree.status}`), { refused: true });
-      const tree = [];
+      const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), GIT_AUTHOR_NAME: app.login, GIT_AUTHOR_EMAIL: `${app.login}@users.noreply.github.com`, GIT_COMMITTER_NAME: app.login, GIT_COMMITTER_EMAIL: `${app.login}@users.noreply.github.com` };
+      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+      const blobAt = async (tree: string, p: string) => (await g(["ls-tree", "-z", tree, "--", p])).split("\0")[0]?.split(/[ \t]/) ?? [];
+      // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
+      const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", a.head, baseSha], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
+      const [merged, ...conflicted] = out.split("\0").filter(Boolean);
+      // A generated path (the plan's globs), or a lockfile git couldn't merge (its package manager rewrote it).
+      const allowed = (p: string) => globs.some((re: RegExp) => re.test(p)) || (REPAIR_LOCKS.includes(p.slice(p.lastIndexOf("/") + 1)) && conflicted.includes(p));
+      const refuse = (why: string) => ({ ok: false, text: `ship-refused: the repair of ${url} ${why}: nothing was changed.` });
+      const taken = new Set<string>();
+      await g(["read-tree", merged!]);
       for (const e of entries) {
-        if (e.sha === null) { tree.push({ path: e.path, mode: "100644", type: "blob", sha: null }); continue; }
+        // A plain repo path: no control characters, no absolute or `..` path (git's index takes it as it is).
+        if (typeof e.path !== "string" || !e.path || /[\x00-\x1f\x7f]/.test(e.path) || e.path.startsWith("/") || e.path.split("/").some((x) => !x || x === "." || x === "..")) return refuse("kept a path that isn't a plain repo path");
+        if (e.sha !== null && !["100644", "100755", "120000"].includes(e.mode)) return refuse(`kept \`${e.path}\` as mode ${e.mode} (only files and symlinks)`);
+        const [mode, , sha] = await blobAt(merged!, e.path);
+        // As git's merge has it: nothing to write, but on a generated path or a lockfile it is the repair's decision (a conflict
+        // it resolved to that same side).
+        if (e.sha === (sha ?? null) && (e.sha === null || e.mode === mode)) { if (allowed(e.path)) taken.add(e.path); continue; }
+        if (!allowed(e.path)) return refuse(`changed \`${e.path}\`, which is neither a generated path nor a conflicted lockfile`);
+        // A symlink only where git's merge already has one: a new link could point outside the repo.
+        if (e.mode === "120000" && mode !== "120000") return refuse(`kept \`${e.path}\` as a symlink where the merge has none`);
+        if (e.path.startsWith(".github/") && e.sha !== ((await blobAt(baseSha, e.path))[2] ?? null)) return refuse(`changed \`${e.path}\` under .github/`);
+        if (e.sha === null) { execFileSync("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "update-index", "-z", "--index-info"], { env, input: `0 ${"0".repeat(40)}\t${e.path}\0` }); taken.add(e.path); continue; }
         if (e.content !== undefined) {
-          const blob = await post("blobs", { content: e.content, encoding: "base64" });
-          if (blob.sha !== e.sha) return { ok: false, text: `ship-repair: GitHub stored ${e.path} as ${String(blob.sha).slice(0, 12)}, not ${String(e.sha).slice(0, 12)}: nothing was changed.` };
-        }
-        tree.push({ path: e.path, mode: e.mode, type: e.mode === "160000" ? "commit" : "blob", sha: e.sha });
+          const f = join(tmp, "blob");
+          writeFileSync(f, Buffer.from(String(e.content), "base64"));
+          if ((await g(["hash-object", "-w", "--", f])) !== e.sha) return refuse(`kept \`${e.path}\` whose content isn't ${e.sha.slice(0, 12)}`);
+        } else if ((await g(["cat-file", "-t", e.sha]).catch(() => "")) !== "blob") return refuse(`named \`${e.path}\` by a blob neither side has`);
+        await g(["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`]);
+        taken.add(e.path);
       }
-      const t = await post("trees", { base_tree: headTree.body?.tree?.sha, tree });
-      made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`), tree: t.sha, parents: [a.head, baseSha] })).sha);
-    } catch (e) {
-      if ((e as { refused?: boolean }).refused) return { ok: false, text: `ship-refused: ${(e as Error).message} (${url}): nothing was changed.` };
-      throw e;
-    }
+      const left = conflicted.filter((p) => !taken.has(p));
+      if (left.length) return refuse(`left conflicts on paths it may not write (${left.length})`);
+      final = await g(["write-tree"]);
+      made = await g(["commit-tree", final, "-p", a.head, "-p", baseSha, "-m", String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000)]);
+      if (!fork) {
+        // Through the API as the App (GitHub signs it): the files that differ from the head; a blob the base or the head has is
+        // named by its sha, any other (git's clean merge of both sides, a regenerated file) is uploaded.
+        const post = async (path: string, body: unknown) => {
+          const r = await app.rest("POST", `/repos/${into}/git/${path}`, body);
+          if (r.status >= 300) throw Object.assign(new Error(`GitHub refused the ${path.replace(/s$/, "")} on ${into}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
+          return r.body;
+        };
+        const known = new Set((await g(["ls-tree", "-r", "--format=%(objectname)", baseSha])).split("\n").concat((await g(["ls-tree", "-r", "--format=%(objectname)", a.head])).split("\n")));
+        const f = (await g(["diff-tree", "-r", "-z", "--no-renames", a.head, final])).split("\0");
+        const tree = [];
+        try {
+          for (let i = 0; i + 1 < f.length; i += 2) {
+            const [, mode, , sha] = f[i]!.split(" ");
+            const path = f[i + 1]!;
+            if (/^0+$/.test(sha!)) { tree.push({ path, mode: "100644", type: "blob", sha: null }); continue; }
+            if (mode !== "160000" && !known.has(sha!)) {
+              const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", sha!], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
+              await post("blobs", { content: content.toString("base64"), encoding: "base64" });
+            }
+            tree.push({ path, mode: mode!, type: mode === "160000" ? "commit" : "blob", sha: sha! });
+          }
+          const t = await post("trees", { base_tree: await g(["rev-parse", `${a.head}^{tree}`]), tree });
+          if (t.sha !== final) return refuse(`built a tree on GitHub (${String(t.sha).slice(0, 12)}) that isn't the merge's (${final.slice(0, 12)})`);
+          made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000), tree: final, parents: [a.head, baseSha] })).sha);
+        } catch (e) {
+          if ((e as { refused?: boolean }).refused) return { ok: false, text: `ship-refused: ${(e as Error).message} (${url}): nothing was changed.` };
+          throw e;
+        }
+      }
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
     // The adoption and the PR once more, right before the branch moves: a pause, a hand-back or a push during the run refuses it.
     const ended = await adoptionEnded(s.slug, n, a.generation);
     if (ended) return { ok: false, text: ended };
     pr = await read();
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
     if (pr.state !== "open" || pr.base?.ref !== a.base || !pr.head?.repo || !same(String(pr.head.repo.full_name), into) || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-scope: ${url} was closed, retargeted or stopped allowing maintainer edits during the repair: nothing was changed.` };
-    const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made, force: false });
-    if (r.status >= 300) {
-      // Moved, or a refusal of GitHub's own (a rule, a validation): the branch read back tells them apart.
-      const now = await app.rest("GET", `/repos/${into}/git/ref/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`);
-      if (now.status < 300 && now.body?.object?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
-      return { ok: false, text: `ship-refused: GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+    if (fork) {
+      const refused = await forkPush(dir, into, String(pr.head.ref), String(a.head), made, app, url);
+      if (refused) return refused;
+    } else {
+      const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made, force: false });
+      if (r.status >= 300) {
+        // Moved, or a refusal of GitHub's own (a rule, a validation): the branch read back tells them apart.
+        const now = await app.rest("GET", `/repos/${into}/git/ref/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`);
+        if (now.status < 300 && now.body?.object?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
+        return { ok: false, text: `ship-refused: GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+      }
     }
     flow.pushed(s.slug, n, made, String(a.head), false, app.login, undefined, undefined);
     flow.checksStarted(s.slug, n, made, undefined, undefined);
-    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
+    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, as ${app.login}${fork ? ` (pushed to ${into})` : ""}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
   }
 
   /**

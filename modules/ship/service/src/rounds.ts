@@ -4,7 +4,7 @@
 // the repo's settings exclude, the PR goes on hold with the reason, its author assigned once, and the report says so.
 // The loop (loop.ts) calls round() after intake() for each adopted PR it read, with decide's answer and this pass's facts.
 import type { Discovered } from "./discover.ts";
-import { fileTask, type Kept, type PrView } from "./handoff.ts";
+import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
 import { renderReport, type Facts } from "./report.ts";
 import type { Judged } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
@@ -64,8 +64,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   if (pr.state === "merged" && v.do === "done") {
     if (a.counters?.lastRound !== `${pr.head}:done`) {
       // Closed before it is recorded: a close that failed is tried again next pass (an already-closed task answers ok).
-      if (a.task && a.trigger.kind !== "fleet") {
-        try { await d.kernel.call("POST", `/v1/tasks/${a.task}/close`, { status: "done", body: `${pr.url} is merged.` }); } catch (e) {
+      for (const t of tasksOf(a)) {
+        try { await d.kernel.call("POST", `/v1/tasks/${t}/close`, { status: "done", body: `${pr.url} is merged.` }); } catch (e) {
           d.log("task close failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
           return "nothing";
         }
@@ -99,8 +99,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const noEdits = "it needs a change on its fork's branch, and the fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\", rebase or fix it";
   const wake = async (kind: string, text: string) => {
     if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`);
-    // The kernel keeps 2,000 characters of a wake: a longer one (a very long repair plan) would reach the task cut.
-    if (text.length > 2000) return hold(`the ${kind} wake is ${text.length} characters (over 2,000): narrow the repo's \`generated\` setting`);
+    // The kernel keeps 2,000 characters of a wake.
+    text = text.slice(0, 2000);
     // The first job files the adoption's task (which starts the Engineer on it); later ones wake that same task.
     if (!a!.task) a = { ...a!, task: await fileTask(d.kernel, pr, a!.generation, text) };
     else if ((await d.kernel.call("POST", "/v1/wakes", { task: a!.task, text }))?.closed) {
@@ -169,12 +169,16 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
               push(),
             ].join("\n"));
           }
-          return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`);
+          // A run that didn't finish (nothing kept) is asked for once more at this head; anything else holds with its reason.
+          if (!/^ship-repair:/.test(text) || a!.repair.retried) return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`);
         }
+        const retry = a!.repair?.head === pr.head;
         const held = spend();
         if (held) return held;
-        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.repair", ...(a!.task ? { task: a!.task } : {}), args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, plan: repairPlan(s, f.discovered) } });
-        a = { ...a!, repair: { head: pr.head, record: String(r.id) }, did: [...(a!.did ?? []), `ran the repair (merge \`${pr.defaultBranch}\`, regenerate) at \`${pr.head.slice(0, 12)}\``] };
+        const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);
+        if (holder) a = { ...a!, holder };
+        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.repair", task: a!.task ?? a!.holder, args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, plan: repairPlan(s, f.discovered), ...(retry ? { attempt: 2 } : {}) } });
+        a = { ...a!, repair: { head: pr.head, record: String(r.id), ...(retry ? { retried: true } : {}) }, did: [...(a!.did ?? []), `ran the repair (merge \`${pr.defaultBranch}\`, regenerate) at \`${pr.head.slice(0, 12)}\``] };
         return "acted";
       }
       case "fix_ci": {
@@ -216,7 +220,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           c.rounds++;
         }
         const attempt = a!.merge?.head === pr.head ? a!.merge.attempt + 1 : 1;
-        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.merge", ...(a!.task ? { task: a!.task } : {}), args: { prs: [{ repo: pr.repo, number: pr.number, head: pr.head, base: pr.base }], generation: a!.generation, attempt } });
+        // A reviewed merge needs a task: the Engineer's, or the adoption's quiet records task.
+        const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);
+        if (holder) a = { ...a!, holder };
+        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.merge", task: a!.task ?? a!.holder, args: { prs: [{ repo: pr.repo, number: pr.number, head: pr.head, base: pr.base }], generation: a!.generation, attempt } });
         a = { ...a!, merge: { head: pr.head, attempt, record: String(r.id) }, did: [...(a!.did ?? []), `asked to merge at \`${pr.head.slice(0, 12)}\` (attempt ${attempt})`] };
         return "acted";
       }

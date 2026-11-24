@@ -17,7 +17,7 @@ import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type LiveRun, type Work } from "./runs.js";
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
-import { RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
+import { ROUTINE_PREFIX, RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, onMyDay, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
@@ -32,7 +32,7 @@ import { gradeShown, milestonesOf, runLineOf } from "./task-truth.js";
 import { searchView, type TaskSearch } from "./search.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
-import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
+import { connectionsView, readSources, readUpdates, settingsView, type Probe, type Wakes } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { CodeReviewSchema, CombosSchema, TreeRequestSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
@@ -1339,17 +1339,37 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   // ------------------------------------------------------------------ Settings (settings.ts)
 
   /** Setup's routine ids by key (grants.json `routine_keys`: Paperclip id -> compiled key); empty before the first apply. */
-  const routineKeys = (): Record<string, string> => { try { return JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")).routine_keys ?? {}; } catch { return {}; } };
+  const grantsTable = (): { routine_keys?: Record<string, string>; routine_events?: Record<string, Wakes> } => { try { return JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")); } catch { return {}; } };
+  const routineKeys = () => grantsTable().routine_keys ?? {};
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
+  /** An active routine's next scheduled run: the soonest of its enabled triggers (a paused one has none). */
+  const nextRunOf = (r: { status: string; triggers?: { enabled?: boolean; nextRunAt?: string | null }[] }) => (r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled !== false).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? undefined : undefined);
+
   async function settingsData() {
-    const [pending, live] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => [])]);
+    const [pending, live, agents] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => []), pc.agents().catch(() => [])]);
     // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
     const rows = new Map(live.filter((x) => x.status !== "archived").map((x) => [x.id, x]));
-    const byKey = Object.fromEntries(Object.entries(routineKeys()).flatMap(([id, k]) => (rows.has(id) ? [[k, { id, paused: rows.get(id)!.status === "paused" }]] : [])));
+    const { routine_keys = {}, routine_events = {} } = grantsTable();
+    // A routine's wake source comes from the applied subscriptions, so it shows even while Paperclip can't be asked.
+    const byKey = Object.fromEntries(Object.entries(routine_keys).flatMap(([id, k]) => {
+      const r = rows.get(id);
+      const ev = routine_events[id];
+      const next = r && nextRunOf(r);
+      return r || ev ? [[k, { ...(r ? { id, paused: r.status === "paused" } : {}), ...(next ? { next } : {}), ...(ev ? { wakes: { connection: ev.connection, resource: ev.resource, filter: ev.filter } } : {}) }]] : [];
+    }));
+    // Recurring tasks are routines the board made (recurring.ts): listed on the agent that runs them, beside its compiled routines.
+    const recurring = [...store.allRecurring().values()].flatMap((rec) => {
+      const r = rows.get(rec.routineId);
+      const agent = agents.find((x) => x.id === r?.assigneeAgentId)?.metadata?.setupKey?.toString().replace(/^aidenhq:/, "");
+      if (!r || !agent) return [];
+      const v = recurringView(rec, r);
+      return [{ agent, title: r.title, task: r.title.replace(ROUTINE_PREFIX, ""), summary: v.summary, paused: v.paused, zone: r.triggers?.find((t) => t.kind === "schedule" && t.label === "repeats")?.timezone ?? undefined, ...(v.nextRun ? { next: v.nextRun } : {}) }];
+    });
     return settingsView({
       ...readSources(settingsFiles()),
       live: byKey,
+      recurring,
       boardTimezone: opts.timezone,
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
@@ -1645,7 +1665,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         await setRoutinePaused(pc, t, ask.paused);
         log.info({ routine: t.title, paused: ask.paused }, ask.paused ? "routine paused" : "routine resumed");
         store.events.emit("fleet");
-        return { status: ask.paused ? "paused" : "active" };
+        const next = nextRunOf(await pc.routine(t.id).catch(() => t));
+        return { status: ask.paused ? "paused" : "active", ...(next ? { next } : {}) };
       },
     },
     {
