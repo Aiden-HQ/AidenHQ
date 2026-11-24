@@ -120,7 +120,7 @@ describe("app_page_canary", () => {
     expect(script).toContain("intakeAnswer ?? (intake.length === 1 ? intake[0] : null)");
     // Service workers are bypassed: the gate's own answer is what the canary sees, never a cached or synthesized one.
     expect(script).toContain("Network.setBypassServiceWorker");
-    expect(script).toContain('notify.synthetic ? "unknown"');
+    expect(script).toContain("notify && !notify.synthetic ? (notify.hop ?? notify.status) : null");
     // The intake is the POST whose reference the page shows, not any POST with an id.
     expect(script).toContain("shown.includes(String(v))");
     expect(script).toContain("intake.some((x) => x.status == null)");
