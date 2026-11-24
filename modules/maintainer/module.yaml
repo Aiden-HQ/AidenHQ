@@ -3,6 +3,11 @@ description: "Watches, triages and fixes the GitHub repos you list (setting main
 # The repo list is the github module's setting maintainer_repos (github-mcp reads it), so the Maintainer's tools need it.
 requires:
   - github
+  - board # contributes.board.pages
+contributes:
+  # The Fleet page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules").
+  board.pages:
+    - { id: maintainer, title: Maintainer, icon: shield, order: 20, connection: maintainer, view: "ui://maintainer/page", tools: [ maintainer_config, maintainer_configure ], settings: [ maintainer_repos, external_triage ] }
 roles:
   # product-issues (the chief of staff's): the Fleet Steward's product-bug reports, filed upstream as the owner.
   requests: [ product-issues, ship-admin?, kernel.tasks, kernel.facts ] # kernel.tasks: the issue watcher files a task per labelled or new issue; kernel.facts: its issue.triaged fact
@@ -75,6 +80,17 @@ routines:
     concurrency: skip_if_active
     schedules:
       - { cron: "0 8 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
+# The Fleet page's connection: the owner's reads and proposed changes to maintainer_repos (each repo's duties) and external_triage
+# (service/src/config-tool.ts). No agent holds it; the board's save files the change.
+connections:
+  maintainer:
+    setup: "Built in: nothing to connect."
+    url: http://maintainer-watcher:8102/mcp
+    auth: maintainer_service_key
+    returns: untrusted
+    tools:
+      read: [ maintainer_config ]
+      write: [ maintainer_configure ]
 # The issue watcher (service/src/watcher.ts): every maintainer_poll_minutes it asks github-mcp for the issues labelled (and
 # the new unlabelled ones) on each maintained repo and files one task per issue for the Maintainer (kernel.tasks: fixed text
 # naming the repo and number, never the issue's own words; filing the same issue twice is one task). github-mcp knows the
@@ -85,12 +101,16 @@ services:
     maintainer-watcher:
       build: ./service
       tmp: 16m
+      port: 8102 # the Fleet page's MCP connection
       egress: true # the kernel's listener is a host address
       join: [github] # github-mcp's issue read
       data: ["maintainer:/data"]
       env:
         MAINTAINER_STATE_FILE: /data/state.json
         MAINTAINER_TOKEN_FILE: ${secrets.maintainer_token}
+        MAINTAINER_SERVICE_KEY_FILE: ${secrets.maintainer_service_key}
+        MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        MAINTAINER_SHIP: "${settings.ship_enabled}" # set when Ship is on: it owns a listed repo's removal (its page clears all three entries)
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
         MAINTAINER_POLL_MINUTES: "${settings.maintainer_poll_minutes}"
         # Each new unlabelled issue's triage task (off with external_triage false).
@@ -98,4 +118,5 @@ services:
         MAINTAINER_TRIAGE_INVALID_PER_AUTHOR_DAY: "${settings.triage_invalid_per_author_day}"
 generated_secrets:
   - maintainer_token
+  - maintainer_service_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

@@ -140,6 +140,13 @@ export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }
       if (!def && !has(compiled?.settings, c.key)) refuse(`there is no setting ${c.key}`);
       // A setting its module declares `type: object` (settings.code_review) takes a whole map, bounded here; its module checks the shape.
       if (def?.type === "object") return void (isMap(c.value) || refuse(`${c.key} is a map`), boundedValue(c.key, c.value));
+      // A setting its module declares `entry:` (maintainer_repos) is a list of names or maps carrying that field: bounded like a map's value.
+      if (def?.entry) {
+        const name = (v: unknown) => (isMap(v) ? v[def.entry] : v);
+        const list = Array.isArray(c.value) ? c.value : refuse(`${c.key} is a list of entries`);
+        if (list.length > 50 || list.some((v) => typeof name(v) !== "string")) refuse(`${c.key}: at most 50 entries, each a name or a map with its ${def.entry}`);
+        return void boundedValue(c.key, c.value);
+      }
       const each = [c.value].flat();
       if ((Array.isArray(c.value) && c.value.length > 50) || each.some((v) => !["string", "number", "boolean"].includes(typeof v) || (typeof v === "string" && (v.length > 500 || !plain(v))))) refuse(`${c.key}: plain values only`);
       if (def?.values && each.some((v) => !def.values.includes(v))) refuse(`${c.key}: one of ${def.values.join(", ")}`);

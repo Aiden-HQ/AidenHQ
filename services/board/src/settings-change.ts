@@ -18,8 +18,8 @@ const MODEL = z.string().regex(/^[A-Za-z0-9~][\w./~:@-]{0,119}$/);
 const TEXT = (max: number) => z.string().max(max).regex(/^[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]*$/);
 const SCHEDULE = z.object({ cron: z.string().regex(/^[0-9*/,\- ]{9,100}$/), timezone: z.string().regex(/^[A-Za-z_]+(\/[A-Za-z0-9_+\-]+){0,2}$|^UTC$/).optional(), label: z.string().max(60).regex(/^[^\x00-\x1f\x7f$]*$/).optional() }).strict();
 export const ChangeSchema = z.discriminatedUnion("kind", [
-  // A setting a module declares `type: object` takes a whole map (settings.code_review); the module's own page checks its shape.
-  z.object({ kind: z.literal("setting"), key: KEY, value: z.union([SCALAR, z.array(z.union([z.string().max(200), z.number().finite()])).max(50), z.record(z.string(), z.unknown())]) }).strict(),
+  // A setting a module declares `type: object` takes a whole map (settings.code_review); one it declares `entry:` takes a list whose entries may be maps (maintainer_repos). checkChange holds each to its declaration.
+  z.object({ kind: z.literal("setting"), key: KEY, value: z.union([SCALAR, z.array(z.union([z.string().max(200), z.number().finite(), z.record(z.string(), z.unknown())])).max(50), z.record(z.string(), z.unknown())]) }).strict(),
   z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel"]), value: SCALAR }).strict(),
   // A module on or off (instance.yaml modules:; the owner's, Tier 2). On for a module of a configured marketplace installs it.
   z.object({ kind: z.literal("module"), name: NAME, on: z.boolean() }).strict(),
@@ -55,7 +55,7 @@ interface Catalog {
   pinned?: string;
   /** Listed in instance.yaml modules: (an enabled module that isn't chosen is on as a dependency). */
   chosen?: boolean;
-  settings?: Record<string, { default?: unknown; values?: unknown[]; type?: string; host?: string; pattern?: string }>;
+  settings?: Record<string, { default?: unknown; values?: unknown[]; type?: string; host?: string; pattern?: string; entry?: string }>;
 }
 
 export class ChangeRefused extends Error {}
@@ -112,6 +112,20 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
       return ch;
     }
     if (isPlainMap(ch.value)) throw new ChangeRefused(`${ch.key} isn't a map`);
+    if (def?.entry) {
+      // A list of entries (maintainer_repos): each a bare name or a map carrying its `entry` field, which `pattern` shapes.
+      if (!Array.isArray(ch.value)) throw new ChangeRefused(`${ch.key} is a list of entries`);
+      const problem = boundedProblem(ch.value);
+      if (problem) throw new ChangeRefused(`${ch.key}: ${problem}`);
+      const shape = def.pattern ? new RegExp(def.pattern) : undefined;
+      const name = (v: unknown) => (isPlainMap(v) ? v[def.entry!] : v);
+      if (ch.value.some((v) => typeof name(v) !== "string" || (shape && !shape.test(name(v) as string)))) throw new ChangeRefused(`${ch.key}: each entry is a name${def.pattern ? ` matching ${def.pattern}` : ""} or a map with its ${def.entry}`);
+      // An entry that is a map in the instance stays one: a bare name over it would drop its fields.
+      const kept = [current?.value, was].flat().filter(isPlainMap).map((m) => String(m[def.entry!]).toLowerCase());
+      const flattened = ch.value.find((v) => typeof v === "string" && kept.includes(v.toLowerCase()));
+      if (flattened) throw new ChangeRefused(`${ch.key}: ${String(flattened)} has settings of its own, keep them (send its map)`);
+      return ch;
+    }
     // A list of entries ({ repo, label, ... }) would be flattened by a value the page can send: it is edited in instance.yaml.
     if ([current?.value, was].flat().some((v) => v !== null && typeof v === "object")) throw new ChangeRefused(`${ch.key} holds entries: change it in instance.yaml`);
     if (was !== undefined && was !== null && kindOf(was) !== kindOf(ch.value)) throw new ChangeRefused(`${ch.key} is a ${kindOf(was)}`);
@@ -197,7 +211,7 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
 /** One sentence per change, for the task title and the page. */
 export function describe(ch: Change, compiled: Compiled | null): string {
   if (ch.kind === "setting" && isPlainMap(ch.value)) return `${ch.key} updated`;
-  if (ch.kind === "setting") return `${ch.key} → ${Array.isArray(ch.value) ? ch.value.join(", ") || "none" : ch.value === "" ? "not set" : String(ch.value)}`;
+  if (ch.kind === "setting") return `${ch.key} → ${Array.isArray(ch.value) ? ch.value.map((v) => (isPlainMap(v) ? String(v.repo ?? Object.values(v)[0]) : v)).join(", ") || "none" : ch.value === "" ? "not set" : String(ch.value)}`;
   if (ch.kind === "module") return `${ch.on ? "turn on" : "turn off"} the ${ch.name} module`;
   if (ch.kind === "pin") return ch.sha ? `pin the ${ch.name} module at ${ch.sha.slice(0, 12)}` : `the ${ch.name} module follows its marketplace`;
   if (ch.kind === "marketplace") return `${ch.op} the ${ch.name} marketplace${ch.source ? ` (${ch.source.repo})` : ""}${ch.sha ? ` at ${ch.sha.slice(0, 12)}` : ""}`;

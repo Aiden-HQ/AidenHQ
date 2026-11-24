@@ -1,0 +1,33 @@
+:root { color-scheme: light dark; font-family: var(--font-sans, system-ui, sans-serif); font-size: 13.5px; line-height: 1.45; color: var(--color-text-primary, CanvasText); background: transparent;
+  --line: var(--color-border-primary, GrayText); --soft: var(--color-text-secondary, GrayText); --accent: var(--color-ring-primary, Highlight); --r: var(--border-radius-md, 8px); }
+* { box-sizing: border-box; }
+body { margin: 0; display: grid; gap: 14px; }
+.card { border: 1px solid var(--line); border-radius: calc(var(--r) + 2px); background: var(--color-background-secondary, Canvas); overflow: hidden; }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.head b { font-size: 13.5px; font-weight: 600; }
+.head small, .soft { color: var(--soft); }
+.row { display: grid; gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); }
+.row.cols { border-top: 0; padding-top: 7px; padding-bottom: 7px; color: var(--soft); font-size: 12px; background: color-mix(in srgb, var(--line) 12%, transparent); }
+.row:not(.cols):hover { background: color-mix(in srgb, var(--line) 10%, transparent); }
+.row.unsaved { box-shadow: inset 2px 0 0 var(--accent); }
+.repo { font-weight: 560; overflow-wrap: anywhere; }
+.repo i { font-style: normal; font-weight: 400; color: var(--soft); margin-left: 6px; }
+select, input[type=text] { font: inherit; width: 100%; min-width: 0; padding: 4px 8px; height: 28px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; }
+select:focus-visible, input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button { font: inherit; height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; cursor: pointer; white-space: nowrap; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--color-text-inverse, HighlightText); }
+button:disabled { opacity: .5; cursor: default; }
+.sw { position: relative; width: 34px; height: 20px; padding: 0; border-radius: 6px; background: color-mix(in srgb, var(--line) 55%, transparent); border: 0; transition: background .16s; }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 4px; background: var(--color-background-primary, Canvas); box-shadow: 0 1px 2px rgb(0 0 0 / .3); transition: transform .16s; }
+.sw[aria-checked=true] { background: var(--accent); }
+.sw[aria-checked=true]::after { transform: translateX(14px); }
+.sw.unsaved { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+.add { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
+.add input { flex: 1; max-width: 320px; }
+.empty { padding: 14px; color: var(--soft); }
+.tag { display: inline-block; justify-self: start; padding: 0 6px; border-radius: 5px; border: 1px solid var(--line); font-size: 12px; color: var(--soft); }
+.note { padding: 8px 14px; border-top: 1px solid var(--line); color: var(--soft); }
+.note:empty { display: none; }
+.note.err { color: var(--color-text-danger, red); }
+.lab { display: none; color: var(--soft); font-size: 12px; }
+@media (max-width: 860px) { .row.cols { display: none; } .lab { display: block; margin-bottom: 2px; } }

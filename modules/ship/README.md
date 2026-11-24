@@ -6,7 +6,7 @@ Owns the lifecycle of every pull request on the repos it covers: the fleet's own
 repo) and every repo in `maintainer_repos`. This release holds the foundation: one `ship` setting with per-repo entries and
 two presets (`cautious`, the default, and `full`), every knob a per-repo setting with no floor in code (`null` caps are
 unlimited), and the adoption store. A fork's PR is ignored until a member hands it off (a member's label or `/ship` comment adopts it and starts its review through code review's existing ask). Rounds, repair, App approval and the merge arrive in later releases. The Fleet page
-(Fleet sidebar) edits the settings and shows status.
+(Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: per repo on or off, preset, which PRs to adopt (`handoff`), `approve` and `merge`, a global pause, and the holds. The module's settings are for the advanced options only.
 
 ## Connect
 
@@ -16,7 +16,7 @@ in the Fleet page, or ask Aiden.
 ## What agents get
 
 The `ship` connection. Read: `ship_config`. Write: `ship_configure`. Both need the `ship-admin` role (the Maintainer and Aiden
-hold it). A change that loosens anything (more hand-off, a higher or removed cap, wider approve) is the owner's, made from the
+hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page, as one change covering its `maintainer_repos`, `code_review` and `ship` entries. A change that loosens anything (more hand-off, a higher or removed cap, wider approve) is the owner's, made from the
 Fleet page.
 
 ## New installs
