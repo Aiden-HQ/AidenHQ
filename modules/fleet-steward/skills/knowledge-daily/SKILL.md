@@ -5,7 +5,7 @@ description: "Checks new notes and confirms obvious identity links. Use on a \"L
 
 # Knowledge daily pass
 
-Tools: `obsidian_*`, `knowledge_*`, `warehouse_query`, `person_identity_decide`, `handbook_list`/`handbook_read`,
+Tools: `obsidian_*`, `knowledge_*`, `apps.warehouse_query`, `person_identity_decide`, `handbook_list`/`handbook_read`,
 `task_*` (a rule fix for another agent goes to Aiden: `task_create` `assignee: chief-of-staff`). The one note write is `meeting_note_correct`; any other fix goes in the
 weekly report under "Needs a tool". Without the notes tools, skip step 1.
 
