@@ -1,1 +1,1 @@
-{ "plugins": [] }
+{ "plugins": ["@tarquinen/opencode-dcp@3.2.1", "opencode-pty@0.4.0"] }
