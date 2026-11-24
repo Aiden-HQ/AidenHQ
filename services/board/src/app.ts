@@ -53,7 +53,7 @@ import { createMcp, WRITE_TOOLS } from "./mcp.js";
 import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
-import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, lastWord, pickAgent, type Message } from "./chats.js";
+import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, lastWord, pickAgent, type Message, type Question } from "./chats.js";
 import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
 import type { StateRow } from "./aidenhq-sdk/task-state-types.js";
 import { addDays, nextWorkday, type Weekday } from "./dates.js";
@@ -883,6 +883,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   };
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
+  /** The structured choices only when every question is the one the open wait recorded (a later question can't borrow an older wait); else typed input. */
+  const boundQuestions = (q: ReturnType<typeof askedQuestions>, wait: string): Question[] =>
+    q && q.questions.every((x) => wait.includes(x.question)) ? q.questions : [{ question: wait, options: [] }];
   async function asksOf(chat: Issue, kids: Issue[], states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>) {
     const asking = kids.filter((k) => k.assigneeAgentId && handedOutBy(chat, k, ctx.me) && waitsForAnswer(states.get(k.id)));
     return Promise.all(
@@ -890,7 +893,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const st = states.get(k.id)!;
         const q = askedQuestions(await pc.comments(k.id).catch(() => [] as Comment[]), k.assigneeAgentId);
         const question = st.question ?? "";
-        return { id: q?.id ?? `wait:${k.id}`, at: q?.at ?? st.since, text: q?.text ?? question, questions: q?.questions ?? [{ question, options: [] }], identifier: k.identifier, agent: ctx.agents.find((a) => a.id === k.assigneeAgentId)?.name ?? "Agent" };
+        return { id: q?.id ?? `wait:${k.id}`, at: q?.at ?? st.since, text: q && boundQuestions(q, question) === q.questions ? q.text : question, questions: boundQuestions(q, question), waitSince: st.wait_since ?? "", identifier: k.identifier, agent: ctx.agents.find((a) => a.id === k.assigneeAgentId)?.name ?? "Agent" };
       }),
     );
   }
@@ -1773,10 +1776,17 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const [read, open] = await Promise.all([taskStates.read({ open: true }), pc.openIssues()]);
         const byId = new Map(open.map((i) => [i.id, i]));
         const rows = await shownRows(read.tasks.filter((r) => r.attention.length && byId.has(r.task)));
-        const items = rows.map((state) => {
+        // A row with an open owner question carries it and its options.
+        const items = await Promise.all(rows.map(async (state) => {
           const i = byId.get(state.task)!;
-          return { identifier: i.identifier, title: i.title, agent: ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You", state };
-        });
+          const open = waitsForAnswer(state) && state.wait_since;
+          const q = open ? askedQuestions(await pc.comments(i.id).catch(() => [] as Comment[]), i.assigneeAgentId) : undefined;
+          const ask = open ? { question: state.question ?? "", questions: boundQuestions(q, state.question ?? ""), waitSince: state.wait_since! } : undefined;
+          return { identifier: i.identifier, title: i.title, agent: ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You", state, ...(ask ? { ask } : {}) };
+        }));
+        // Oldest first, by the obligation each row shows: its open question, else the owner's (or first) attention entry.
+        const since = (r: (typeof items)[number]) => r.ask?.waitSince ?? (r.state.attention.find((a) => a.who === "owner") ?? r.state.attention[0]!).since;
+        items.sort((a, b) => since(a).localeCompare(since(b)));
         // The counts come from the rows the list shows.
         const has = (r: ShownState, f: (a: ShownState["attention"][number]) => boolean) => r.attention.some(f);
         const counts = {
@@ -2192,6 +2202,35 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
         return { ...(await view(posted?.id ?? parts[0]?.message)), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
+      },
+    },
+    {
+      // The owner's answer to a task's open question, bound to the wait it answers: claimed once at the kernel (the board and Telegram
+      // share the claim), posted to this task only (no @mention routing), the claim released if the post fails.
+      method: "POST",
+      path: /^\/api\/issues\/([^/]+)\/answer$/,
+      handle: async (m, body) => {
+        const ref = dec(m[1]!);
+        if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
+        const { body: text, wait_since: waitSince } = parse(z.object({ body: z.string().trim().min(1).max(30_000), wait_since: z.string().min(1) }).strict(), body);
+        const issue = await pc.issue(ref);
+        const claimed = await taskStates.claimAnswer(issue.id, waitSince);
+        if (claimed !== "ok") throw new HttpError(409, "Already answered, or the question changed.");
+        const started = Date.now() - 5000;
+        const words = displayText(text);
+        try {
+          const posted = await pc.addComment(issue.id, words, true);
+          log.info({ issue: issue.identifier }, "question answered");
+          return { identifier: issue.identifier, message: posted.id };
+        } catch (err) {
+          // A failure is not proof nothing was written (a timeout after Paperclip committed): the claim is given back only when
+          // the comment is not there; when that can't be read it stays (it expires), so a retry can't post a second answer.
+          const there = await pc.comments(issue.id).then((cs) => cs.find((c) => c.authorType === "user" && c.body === words && Date.parse(c.createdAt) >= Math.max(started, Date.parse(waitSince))), () => null);
+          if (there) return { identifier: issue.identifier, message: there.id };
+          if (there === null) throw err;
+          await taskStates.releaseAnswer(issue.id, waitSince).catch((e: Error) => log.warn({ err: e.message, issue: issue.identifier }, "couldn't release an answer claim"));
+          throw err;
+        }
       },
     },
     {

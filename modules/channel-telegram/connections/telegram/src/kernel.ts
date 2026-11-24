@@ -48,6 +48,15 @@ export function kernelClient(url: string, token: string, f: Fetch = fetch) {
       if (r.status !== 200) return { ok: false, reason: String(r.json?.error?.message ?? `the kernel said ${r.status}`) };
       return { ok: true, id: String(r.json.id ?? ""), identifier: String(r.json.identifier ?? ""), sentence: String(r.json.sentence ?? ""), state: String(r.json.state ?? "") };
     },
+    /** The once-per-wait claim on the owner's answer to `task`'s open question (kernel answers.ts): "stale" when that wait is no longer the open one, "taken" when it was answered. */
+    claimAnswer: async (task: string, since: string): Promise<"ok" | "stale" | "taken"> => {
+      const r = await raw("POST", "/v1/answers/claim", { task, wait_since: since });
+      if (r.status === 200) return "ok";
+      if (r.status === 409) return r.json?.error === "taken" ? "taken" : "stale";
+      throw new Error(`POST /v1/answers/claim -> ${r.status}`);
+    },
+    /** Gives the claim back after a failed delivery. */
+    releaseAnswer: async (task: string, since: string): Promise<void> => { await call("POST", "/v1/answers/release", { task, wait_since: since }); },
     ownerMessage: async (m: OwnerMessage): Promise<{ task: { id: string; identifier: string } }> => ok("POST", "/v1/channel/owner-message", m),
     stop: async (task: string): Promise<{ stopped: number }> => ok("POST", "/v1/channel/stop", { task }),
     /** Every open task's one state with the fleet's counts (role kernel.flow-read). */

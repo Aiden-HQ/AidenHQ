@@ -1,6 +1,6 @@
 // A fixture-backed stand-in for the board's API, for working on the web UI without a kernel or Paperclip:
 //   node web/dev/mock-api.ts & npm run dev:web     (vite proxies /api to :3120)
-// Neutral sample data only. Writes answer ok and change nothing. GET /__mock?welcome=1|0 shows or hides the first-run wizard;
+// Neutral sample data only. Writes answer ok and change nothing (an answer to WOR-821 is refused 409, the "already answered" case). GET /__mock?welcome=1|0 shows or hides the first-run wizard;
 // GET /__mock?empty=1 empties every list (empty states); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
 // ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
@@ -372,6 +372,7 @@ function route(method: string, url: URL): [number, unknown] {
   const one = /^\/api\/approvals\/(k-[0-9a-f]{16})$/.exec(url.pathname)?.[1];
   if (one && method === "GET") { const a = approvals().find((x) => x.id === one); return a ? [200, { approval: a }] : [404, { error: "no such card" }]; }
   const p = url.pathname;
+  if (method === "POST" && /^\/api\/issues\/[^/]+\/answer$/.test(p)) return p.split("/")[3] === "WOR-821" ? [409, { error: "Already answered, or the question changed." }] : [200, { identifier: p.split("/")[3], message: "m-1" }];
   if (method === "POST" && p === "/api/reviews") return [200, { batch: "b-000000000003" }];
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   if (p.startsWith("/api/models/")) return [200, { default: "openrouter/~deepseek/deepseek-flash-latest", models: ["openrouter/~deepseek/deepseek-flash-latest", "openrouter/~openai/gpt-luna-latest", "openrouter/z-ai/glm-5.3"], efforts: ["low", "medium", "high"] }];
@@ -392,8 +393,10 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/setup-flows": return [200, flows()];
     case "/api/chats": return [200, { chats: chatRows(), agents: [{ key: "aiden", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];
-    case "/api/needs-you": return [200, mock.empty ? { counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, approvals: 0, items: [] } : { counts: { needs_you: 4, failed: 1, unexplained_idle: 3 }, approvals: 2, items: [
-      { identifier: "WOR-801", title: "Brief decisions", agent: "Aiden", state: named("WOR-801", ASK) },
+    case "/api/needs-you": return [200, mock.empty ? { counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, approvals: 0, items: [] } : { counts: { needs_you: 6, failed: 1, unexplained_idle: 3 }, approvals: 2, items: [
+      { identifier: "WOR-801", title: "Brief decisions", agent: "Aiden", state: named("WOR-801", ASK), ask: { question: "Ship the weekly digest now, or wait for the corrected data?", waitSince: ago(120), questions: [{ question: "Ship the weekly digest now, or wait for the corrected data?", options: ["Wait for the corrected data", "Ship it now"] }] } },
+      { identifier: "WOR-815", title: "Weekly metrics digest looks off", agent: "Aiden", state: named("WOR-815", ASK), ask: { question: "A few things before I rebuild the digest.", waitSince: ago(75), questions: [{ question: "Which week should I compare against?", options: ["Last week", "Same week last month"] }, { question: "Which channels should get it?", options: ["#metrics", "#leads", "#exec"], multi: true }] } },
+      { identifier: "WOR-821", title: "Design the invoice screens", agent: "UI Designer", state: named("WOR-821", ASK), ask: { question: "What should the empty invoice list say?", waitSince: ago(30), questions: [{ question: "What should the empty invoice list say?", options: [] }] } },
       { identifier: "WOR-790", title: "Fix the sbom job", agent: "Engineer", state: named("WOR-790", { ...WORKING_CARD, refLabel: "approve the push to main" }) },
       { identifier: "WOR-795", title: "A task handed back to you", agent: "Engineer", state: named("WOR-795", STATES.handback) },
       { identifier: "WOR-802", title: "Slack ingest", agent: "Open Loops", state: named("WOR-802", FAILED) },
