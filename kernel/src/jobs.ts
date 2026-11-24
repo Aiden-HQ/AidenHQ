@@ -115,7 +115,7 @@ const PAD = /[\s\u200b\ufeff\u2060]/;
 /** A chat template's message header, which carries the role of the turn that follows it. */
 const START = /^(?:<\|im_start\|>|<\uff5cim_start\uff5c>|<\|start_header_id\|>|<start_of_turn>)$/;
 /** A turn's role, and the same at the end of a reply: what a template leaves when its turn held no reply body. */
-const ROLE_START = /^(?:system|user|assistant|model|tool|ipython)(?=$|[\s\u200b\ufeff\u2060]*(?:\r?\n|<[|\uff5c]|<end_of_turn>))/;
+const ROLE_START = /^(?:system|user|assistant|model|tool|ipython)(?=[\s\u200b\ufeff\u2060]*(?:$|\r?\n|<[|\uff5c]|<end_of_turn>))/;
 /** A turn's role as it ends a reply: checked as a suffix, so a long reply is not rescanned for a role it never had. */
 const ROLES = ["system", "user", "assistant", "model", "tool", "ipython"];
 /** The first index at or after `from` that is not padding, and the last before `to` that is not. */
@@ -215,7 +215,8 @@ export function stripSentinels(text: string): string {
       to = end - hit.length;
     }
   }
-  // A reply of nothing but padding is no reply; anything else keeps its own text as the model wrote it.
+  // A reply of nothing but padding is no reply; anything else keeps its own text as the model wrote it, its first line's
+  // indentation included (a code block a stripped sentinel sat above), so the body starts at that line rather than past it.
   if (from === 0 && to === text.length) return skipStart(text, 0, to) === to ? "" : text;
   return text.slice(bodyStart(text, from, to), skipEnd(text, from, to));
 }
@@ -509,7 +510,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const end = () => {
       const status = exitStatus(exitFile);
       const code = status === "" ? null : Number(status);
-      let lastMessage = stripSentinels(String(final ?? "")).trim();
+      let lastMessage = stripSentinels(String(final ?? ""));
       const startError = code === 127 && `couldn't start ${r.engine}: ENOENT`;
       if (!lastMessage && startError) {
         appendFileSync(logPath, `# ${startError}\n`);
