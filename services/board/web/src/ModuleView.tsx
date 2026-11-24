@@ -39,17 +39,33 @@ export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSi
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [saving, setSaving] = useState(false);
   const [said, setSaid] = useState("");
+  // The frame's document: the bridge serves only the first one each attempt loads (a view that navigates itself is stopped),
+  // and one that hasn't said ui/initialize a few seconds after loading failed (its module is down, or the view is broken).
+  const [attempt, setAttempt] = useState(0);
+  const [broken, setBroken] = useState("");
+  const loads = useRef(0);
+  const started = useRef(false);
   const id = page?.id;
+  useEffect(() => {
+    loads.current = 0;
+    started.current = false;
+  }, [id, attempt]);
+  function loaded() {
+    loads.current += 1;
+    if (loads.current > 1) return setBroken("The page left its own view, so the board stopped it.");
+    const at = frame.current;
+    setTimeout(() => frame.current === at && !started.current && setBroken("The page didn't start: its module may be restarting or off."), 8_000);
+  }
 
   useEffect(() => {
     if (!id) return;
     const answer = (req: Msg, body: { result: unknown } | { error: { code: number; message: string } }) => frame.current?.contentWindow?.postMessage({ jsonrpc: "2.0", id: req.id, ...body }, "*");
     async function onMessage(e: MessageEvent) {
       // Only the frame this page made, never another window or frame; its origin is "null" (opaque), so the source is the check.
-      if (!frame.current || e.source !== frame.current.contentWindow) return;
+      if (!frame.current || e.source !== frame.current.contentWindow || loads.current > 1) return;
       const m = e.data as Msg;
       if (m?.jsonrpc !== "2.0") return;
-      if (m.method === "ui/initialize") return answer(m, { result: { protocolVersion: PROTOCOL, hostInfo: { name: "AidenHQ board", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: hostContext() } });
+      if (m.method === "ui/initialize") return (started.current = true), answer(m, { result: { protocolVersion: PROTOCOL, hostInfo: { name: "AidenHQ board", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: hostContext() } });
       if (m.method === "ui/notifications/size-changed" && typeof m.params?.height === "number") return setHeight(Math.min(4000, Math.max(160, Math.ceil(m.params.height))));
       if (m.method !== "tools/call") return; // ui/notifications/initialized needs nothing; anything else isn't offered
       const r: { result?: unknown; error?: { code?: number; message?: string } } = await api.viewCall(id!, String(m.params?.name ?? ""), m.params?.arguments).catch((err: Error) => {
@@ -59,7 +75,7 @@ export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSi
       // A settings change the tool proposed: shown on the bar below, saved only by the owner's click (/save checks it).
       const changes = (r.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
       if (Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
-      answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
+      if (loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -104,7 +120,14 @@ export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSi
         </div>
       )}
       {said && <p className="mv-said" role="status">{said}</p>}
-      <iframe ref={frame} className="mv-frame" key={page.id} title={page.title} src={`/api/pages/${page.id}/frame`} sandbox="allow-scripts allow-forms" style={{ height }} />
+      {broken ? (
+        <div className="mv-broken" role="alert">
+          <p>{broken}</p>
+          <Button onClick={() => (setBroken(""), setAttempt((a) => a + 1))}>Try again</Button>
+        </div>
+      ) : (
+        <iframe ref={frame} className="mv-frame" key={`${page.id}-${attempt}`} title={page.title} src={`/api/pages/${page.id}/frame`} sandbox="allow-scripts allow-forms" style={{ height }} onLoad={loaded} />
+      )}
     </Page>
   );
 }

@@ -36,7 +36,7 @@ export function createViewHost({ kernel, pages, fetchFn = fetch }: { kernel?: { 
       method: "POST",
       headers: { authorization: `Bearer ${kernel.token}`, "content-type": "application/json" },
       body: JSON.stringify({ view: p.view, method, params }),
-      signal: AbortSignal.timeout(65_000),
+      // No deadline of the board's own: the kernel's call holds its connection's tool timeout and answers when it passes.
     }).catch((e: Error) => { throw new ViewError(502, `${p.module} didn't answer (${e.message})`); });
     const data = (await res.json().catch(() => ({}))) as { result?: unknown; error?: { message?: string } };
     if (!res.ok) throw new ViewError(res.status === 403 ? 403 : 502, String(data.error?.message ?? `${p.module} failed (${res.status})`).slice(0, 300));
