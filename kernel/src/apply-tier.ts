@@ -185,9 +185,10 @@ export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marke
 }
 
 /**
- * The apply that names or changes the instance's test-user sign-in identity (settings.edge.test_user): the owner's Tier 2
- * card, because it lets an agent sign in as a named account (docs/design/access.md, "Test-user sign-in"), and the line its
- * card carries so the owner reads what it adds. Nothing for an apply that leaves the setting alone, or removes it.
+ * The apply that names or changes the instance's test-user sign-in identity (settings.edge.test_user): it lets an agent sign
+ * in as a named account (docs/design/access.md, "Test-user sign-in"), so the plan carries a Tier 2 raise (merit 2; tier.ts
+ * decides who sees it, as for every raise) and the line its card reads. Nothing for an apply that leaves the setting alone,
+ * or removes it.
  */
 export function testUserIdentity(baseText: string | undefined, headText: string | undefined): { raise?: Raise; line?: string } {
   const after = parse(headText)?.settings?.edge?.test_user;

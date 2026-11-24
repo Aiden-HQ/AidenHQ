@@ -223,6 +223,9 @@ test("the owner's settings change is capped like anyone's, unless saved in his b
 test("an apply that adds or changes settings.edge.test_user plans a Tier 2 raise and says on its card which identity it adds", async () => {
   const edge = (testUser) => `${yaml(OLD)}settings:\n  edge:\n${testUser ? `    test_user: { email: ${testUser.email}, apps: [${testUser.apps.join(", ")}] }\n` : ""}`;
   const add = { base: edge(), head: edge({ email: "canary@aidenhq.test", apps: ["roadmap-keeper"] }) };
+  // The plan itself: the raise the planner returns (writes.ts reads it for the tier).
+  const plan = (texts) => createApplyPlanner({ instanceRepo: () => "acme/aidenhq-instance", read: async () => ({ files: ["instance.yaml"], texts: { base: { "instance.yaml": texts.base }, head: { "instance.yaml": texts.head } }, diff: "x" }), product: { onMain: async () => true, isAncestor: async () => false, log: async () => "" }, modules: () => ({ modules: {}, marketplaces: [] }) })({ args: BUMP });
+  assert.deepEqual((await plan(add)).raise, { tier: 2, rule: "test-user-identity", reason: "adds or changes the instance's agent sign-in identity (settings.edge.test_user)" });
   const r = await kernel({ texts: add }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
   assert.deepEqual([r.merit, r.rule], [2, "test-user-identity"], "the plan's raise");
   assert.match(r.card.reason!, /adds or changes the instance's agent sign-in identity \(settings\.edge\.test_user\)/);
