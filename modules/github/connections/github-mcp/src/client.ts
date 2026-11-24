@@ -23,7 +23,7 @@ export type Need =
   | { cause: "sso"; org: string; url: string; /** GitHub's own words, in full, when it gave them (a GraphQL refusal). */ message?: string }
   | { cause: "restricted"; org: string; url: string; message?: string }
   | { cause: "unreachable"; repo: string }
-  | { cause: "rate_limited"; until: string }
+  | { cause: "rate_limited"; until: string; /** GitHub itself refused the request (not this process's reserve). */ by?: "github" }
   | { cause: "write_busy" };
 
 const OWNER_FIXABLE = new Set<Need["cause"]>(["not_connected", "expired", "scope", "sso", "restricted"]);
@@ -437,6 +437,7 @@ export function createAccess(o: {
     // Another identity's token GitHub refused (revoked, or the installation changed): once more with a new token.
     if (as && res.status === 401 && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
     const need = classify(p, path, res, parsed, Boolean(as));
+    if (need?.cause === "rate_limited") need.by = "github";
     if (need?.cause === "expired") o.auth.mark("expired", "GitHub refused the token (401)");
     if (need) fail(need);
     if (as) {

@@ -96,9 +96,9 @@ export function createFeed(o: FeedOptions) {
   /** One conditional GET: a 304 answers undefined. Never sleeps on a limit: a rate-limited refusal throws (the scheduler pauses). */
   async function get(path: string, etag?: string): Promise<{ body: any; etag: string } | undefined> {
     const r = await o.gh("GET", path, undefined, { background: true, caller: "feed", deadline: now(), ...(etag ? { etag } : {}) }).catch((e) => {
-      // A conditional read skips the reserve, so its refusal is GitHub's own limit: the whole scheduler waits. Any other read's may
-      // be the reserve: only this repo waits.
-      if (e?.need?.cause === "rate_limited") e.global = Boolean(etag);
+      // GitHub's own refusal (a conditional read skips the reserve, so its refusal always is): the whole scheduler waits. The
+      // reserve's refusal of another read: only this repo waits.
+      if (e?.need?.cause === "rate_limited") e.global = Boolean(etag) || e.need.by === "github";
       throw e;
     });
     if (r.status === 304) return undefined;
@@ -300,13 +300,13 @@ export function createFeed(o: FeedOptions) {
     if (first) emitAlways(out, { resource: repo, id: `${repo}:resync:${iso}`, kind: "github.resync" });
     rs.every = out.length ? QUICK_MS : Math.min((rs.every || QUICK_MS) * 2, QUIET_MAX_MS);
     rs.due = now() + rs.every;
-    // The in-process consumers first (each is idempotent: Flow's fact ids, the sweep, a re-read), so a crash before the save
-    // repeats this diff and its hooks, never loses them.
+    // The in-process consumers first, on the new snapshot (each is idempotent: Flow's fact ids, the sweep, a re-read), so a crash
+    // before the save repeats this diff and its hooks, never loses them.
+    rs.okAt = now();
+    state.repos[repo] = rs;
     for (const { ev, ctx } of out) for (const h of o.hooks ?? []) {
       try { await h(ev, ctx); } catch (e) { log("feed: a hook failed", { kind: ev.kind, id: ev.id, err: String((e as Error).message).slice(0, 200) }); }
     }
-    rs.okAt = now();
-    state.repos[repo] = rs;
     state.outbox.push(...out.map(({ ev }) => ({ ...ev, at: t })));
     save();
     return out.map((x) => x.ev);
@@ -382,7 +382,9 @@ export function createFeed(o: FeedOptions) {
   /** One step of the scheduler: the job due first, if any is due. Answers how long until the next one. */
   async function step(): Promise<number> {
     const t = now();
-    if (pausedUntil > t) return pausedUntil - t;
+    // The outbox has its own retry, whether or not a repo is due or GitHub has paused the reads.
+    if (state.outbox.length && timers.send <= t) { timers.send = t + QUICK_MS; await send(); }
+    if (pausedUntil > t) return Math.min(pausedUntil - t, QUICK_MS);
     for (const b of o.background ?? []) {
       if ((timers.bg.get(b.name) ?? 0) <= t && !running.has(b.name)) {
         running.add(b.name);
@@ -392,8 +394,6 @@ export function createFeed(o: FeedOptions) {
     }
     // The watched set lists the fleet org through the reserve: it never holds up a repo's pass.
     if (timers.watch <= t && !running.has("watch")) { timers.watch = t + WATCH_MS; running.add("watch"); void watch().finally(() => running.delete("watch")); }
-    // The outbox has its own retry, whether or not a repo is due.
-    if (state.outbox.length && timers.send <= t) { timers.send = t + QUICK_MS; await send(); }
     if (timers.health <= t) { timers.health = t + HEALTH_MS; await health(); }
     const due = watched.map((r) => [r, state.repos[r]?.due ?? failedFirst.get(r) ?? 0] as const).sort((a, b) => a[1] - b[1]);
     if (due[0] && due[0][1] <= t) { await runRepo(due[0][0]); return 0; }
@@ -425,8 +425,8 @@ export function createFeed(o: FeedOptions) {
     tip(repo: string): { tip?: string; green: boolean } | undefined {
       const rs = state.repos[repo.toLowerCase()];
       // Only a recent read is evidence (the settled head itself is read every 5 minutes).
-      if (!rs?.tip || now() - (rs.okAt ?? 0) > SETTLED_MS) return undefined;
-      const h = rs.heads[rs.tip];
+      const h = rs?.tip ? rs.heads[rs.tip] : undefined;
+      if (!rs?.tip || !h || now() - (rs.okAt ?? 0) > SETTLED_MS || now() - h.read > SETTLED_MS + QUIET_MAX_MS) return undefined;
       const checks = h ? namedChecks(rollup(h)) : [];
       return { tip: rs.tip, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };
     },
