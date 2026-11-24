@@ -528,14 +528,15 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       // A network of the right shape proves nothing about its rules: a reboot restores the bridge before the isolation unit
       // runs, and a firewall reload can drop the rule under it. So the launch checks the isolation itself from a helper on the
       // canary network: the test listener must answer (the bridge is up and the rule admits its one port), and the host's other
-      // services and the Internet must not (the rule is loaded). One external address would not do, because a host or upstream
-      // that blocks it looks the same as the rule; the other destinations are this host's own listeners on its other bridges.
+      // services and the Internet must not (the rule is loaded). A drop is silent, so a timeout counts as blocked as much as a
+      // refusal does; only a real connection is a leak. One external address would not do, because a host or upstream that
+      // blocks it looks the same as the rule; the other destinations are this host's own listeners on its other bridges.
       const probe = [
         'const net=require("net");',
         'const one=(h,p)=>new Promise(ok=>{const s=net.connect({host:h,port:p});const t=setTimeout(()=>{s.destroy();ok("timeout")},3000);',
         's.on("connect",()=>{clearTimeout(t);s.destroy();ok("open")});s.on("error",()=>{clearTimeout(t);ok("blocked")})});',
         '(async()=>{const listener=await one("10.231.6.1",3132);const open=[];',
-        'for(const [h,p] of [["10.231.0.1",3130],["10.231.2.1",8200],["1.1.1.1",443]]) if(await one(h,p)!=="blocked") open.push(h+":"+p);',
+        'for(const [h,p] of [["10.231.0.1",3130],["10.231.2.1",8200],["1.1.1.1",443]]) if(await one(h,p)==="open") open.push(h+":"+p);',
         'console.log("RESULT "+JSON.stringify({listener,open}))})();',
       ].join("");
       const out = await exec(["run", "--rm", "--network", network, cfg.healthImage, "node", "-e", probe], { timeout: 90_000, both: true }).catch((e: Error) => e.message);

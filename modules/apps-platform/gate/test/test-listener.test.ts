@@ -280,6 +280,45 @@ test("a revoked or expired session is 401 and no page; the app's own cookie is n
   }
 });
 
+// An event feed is an open HTTP response, not an upgrade: `server.close()` leaves it streaming. A session that ends, or an
+// app that leaves the setting, must end it too, or it keeps delivering app data after access is gone.
+test("an open event feed is cut when the app leaves the setting, and the browser loses it", async () => {
+  const feed = createServer((q, s) => {
+    s.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+    s.write("data: one\n\n");
+    const t = setInterval(() => s.write("data: tick\n\n"), 50);
+    s.on("close", () => clearInterval(t));
+  });
+  const feedPort = await listen(feed);
+  const c: any = { ...cfg, hosts: { "roadmap.example.com": { app: "roadmap", port: feedPort }, [`roadmap.${CANARY_BASE}`]: { app: "roadmap", port: feedPort } } };
+  const l = createTestListener({ config: () => c, log: () => {} });
+  const port = await listen(l);
+  c.test_listener = { address: "127.0.0.1", port };
+  try {
+    const r = await new Promise<any>((ok) => {
+      const q = request({ host: "127.0.0.1", port, path: "/feed", headers: { host: `roadmap.${CANARY_BASE}`, origin: `http://roadmap.${CANARY_BASE}:${port}`, cookie: `${CANARY_COOKIE}=${COOKIE}` } });
+      q.on("response", (res) => ok(res));
+      q.on("error", () => ok(null));
+      q.end();
+    });
+    assert.ok(r && r.statusCode === 200, "the live feed is served to a live session");
+    let data = "";
+    r.on("data", (d) => (data += d));
+    await new Promise((ok) => setTimeout(ok, 150));
+    assert.match(data, /tick/, "it streams while access holds");
+    // The app leaves settings.edge.test_user: the reconciler closes the feed, not just new connections.
+    c.test_user = { email: EMAIL, apps: [] };
+    const ended = new Promise<boolean>((ok) => { r.once("end", () => ok(true)); r.once("close", () => ok(true)); setTimeout(() => ok(false), 1500); });
+    (l as any).closeTunnels?.((app: string) => Boolean(c.test_user?.apps.includes(app)));
+    assert.equal(await ended, true);
+  } finally {
+    feed.closeAllConnections?.();
+    feed.close();
+    l.closeAllConnections?.();
+    await new Promise<void>((ok) => l.close(() => ok()));
+  }
+});
+
 test("a live tunnel is dropped when the test user is disabled, and server.close takes the rest", async () => {
   // A real upgraded socket through the listener: the fake app answers the upgrade and echoes one frame.
   const echo = createServer();

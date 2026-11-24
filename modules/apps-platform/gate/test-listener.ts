@@ -173,6 +173,17 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     // The token just minted is the only x-aidenhq-* the app may see; everything else of that shape came from the browser.
     for (const k of Object.keys(headers)) if (STRIP.test(k) && k.toLowerCase() !== IDENTITY_HEADER) delete headers[k];
     const up = httpRequest({ host: "127.0.0.1", port: site.port, method: req.method, path: req.url, headers });
+    // A response that stays open (an event feed) is tracked like a socket: it keeps streaming app data after a session ends
+    // otherwise, because `server.close()` only stops new connections.
+    const tunnel: Tunnel = { app, host: publicHost, cookie: cookiesOf(req).find((x) => cookieName(x) === CANARY_COOKIE)?.slice(CANARY_COOKIE.length + 1).trim() ?? "" };
+    streams.set(res, tunnel);
+    const left = Date.parse(who.expires) - Date.now();
+    if (Number.isFinite(left) && left > 0) tunnel.until = setTimeout(() => dropStream(res), Math.min(left, 2 ** 31 - 1));
+    res.on("close", () => {
+      const t = streams.get(res);
+      if (t?.until) clearTimeout(t.until);
+      streams.delete(res);
+    });
     up.on("response", (r) => {
       const h = { ...r.headers };
       for (const k of HOP) delete h[k];
@@ -203,11 +214,22 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
    */
   type Tunnel = { app: string; host: string; cookie: string; until?: NodeJS.Timeout };
   const sockets = new Map<Duplex, Tunnel>();
+  /**
+   * Active HTTP responses (a page's event feed, say) with the same session binding. They are not sockets the upgrade path
+   * sees, but they outlive their request just the same, so reconciliation and the session's expiry end them too.
+   */
+  const streams = new Map<ServerResponse, Tunnel>();
   const drop = (s: Duplex) => {
     const t = sockets.get(s);
     if (t?.until) clearTimeout(t.until);
     sockets.delete(s);
     s.destroy();
+  };
+  const dropStream = (r: ServerResponse) => {
+    const t = streams.get(r);
+    if (t?.until) clearTimeout(t.until);
+    streams.delete(r);
+    r.destroy();
   };
   /** Re-check every open tunnel's session; one that is no longer live is dropped now, never left riding an old session. */
   const recheck = async () => {
@@ -218,6 +240,10 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
       // "down" keeps it (the kernel could not answer, so nothing says the session ended); a refusal or another app's answer
       // ends it now.
       if (!who || who === "other-app") drop(s);
+    }
+    for (const [r, t] of streams) {
+      const who = await sessionOf(c, t.cookie, t.app, t.host).catch(() => "down" as const);
+      if (!who || who === "other-app") dropStream(r);
     }
   };
   const RECHECK_MS = 60_000;
@@ -316,6 +342,7 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
   return Object.assign(server, {
     closeTunnels: (allowed?: (app: string) => boolean) => {
       for (const [s, t] of sockets) if (!allowed || !allowed(t.app)) drop(s);
+      for (const [r, t] of streams) if (!allowed || !allowed(t.app)) dropStream(r);
     },
     /** The timer's own check, for tests: the same one the minute ticker runs. */
     recheckTunnels: recheck,
