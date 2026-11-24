@@ -21,6 +21,10 @@ const paths = {
   // For module pages (modules/board/schemas/pages.json lists the names a page may use).
   rocket: "M9.5 2.5c2.2.2 3.8 1.8 4 4L9 11 5 7zM5 7 2.8 7.4 2 9.5l2.3.2M9 11l-.4 2.2-2.1.8-.2-2.3M4.3 11.7 2.5 13.5",
   list: "M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01",
+  terminal: "M2.5 3.5h11v9h-11zM5 6.5l2 1.5-2 1.5M8.5 10h2.5",
+  phone: "M5 1.8h6a1 1 0 0 1 1 1v10.4a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1zM7 12.2h2",
+  stop: "M4.5 4.5h7v7h-7z",
+  refresh: "M13 8a5 5 0 1 1-1.6-3.7M13 2.8v2.6h-2.6",
   shield: "M8 1.8 13 4v3.6c0 3-2.1 5.3-5 6.6-2.9-1.3-5-3.6-5-6.6V4z",
 } as const;
 

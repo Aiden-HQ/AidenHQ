@@ -8,5 +8,5 @@ export default defineConfig({
   // a [data-theme] subtree can force a theme; the polyfill would fix each token at :root.
   build: { outDir: "../dist/web", emptyOutDir: true, sourcemap: false, cssTarget: ["chrome123", "edge123", "firefox120", "safari17.5"] },
   // `npm run dev:web` proxies the API to a board server on :3120.
-  server: { port: 5173, proxy: { "/api": { target: "http://127.0.0.1:3120", headers: { host: "localhost:3120" } } } },
+  server: { port: 5173, proxy: { "/api": { target: "http://127.0.0.1:3120", headers: { host: "localhost:3120" } }, "/sessions": { target: "http://127.0.0.1:3120", ws: true, headers: { host: "localhost:3120" } } } },
 });

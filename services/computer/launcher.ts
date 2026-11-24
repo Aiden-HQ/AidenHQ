@@ -44,6 +44,7 @@ import { fileURLToPath } from "node:url";
 import { MAX_CHECK_MIN, WARM_MS, standingMounts,  forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
 import { STANDING_AGENT, Standing, dropStandingFiles } from "./standing.ts";
+import { createSessionProxy } from "./session-proxy.ts";
 
 type Failure = Error & { status?: number };
 
@@ -91,6 +92,8 @@ const MODEL_GATEWAY_URL = "http://127.0.0.1:8201";
 // The kernel's backplane listener: every box's tool call and `aidenhq` command goes on to it.
 const KERNEL_URL = "http://10.231.0.1:3130";
 const PROGRESS_TOKEN = secret("computer_progress_token");
+// The board's key for a session's terminal and web view: /session/<lease>/… only (session-proxy.ts).
+const SESSION_KEY = secret("computer_session_key");
 // The kernel's key: the job and check routes. Unset, jobs are off (every /job call is refused).
 const KERNEL_KEY = secret("launcher_kernel_key");
 
@@ -479,8 +482,24 @@ const send = (res: http.ServerResponse, status: number, body: unknown) => res.wr
 // Every answer names this launcher's process, so an apply can tell the next launcher from a draining one (apply-config-work.sh
 // launcherRestart).
 const LAUNCHER_PID = String(process.pid);
+/** A live session lease's address: the standing box's IP on its network, the lease's two ports and their secrets. */
+const sessionProxy = createSessionProxy({
+  key: SESSION_KEY,
+  lease: async (id) => {
+    const box = jobs.dump().find((r) => r.leases?.some((l) => l.lease === id));
+    const l = box?.leases?.find((x) => x.lease === id);
+    if (!box || !l || l.leaseUntil === 0) return undefined; // unknown, released or being stopped
+    const r = await docker(["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", box.container], { timeoutMs: 5000 });
+    const host = r.exitCode === 0 ? r.stdout.trim() : "";
+    return host ? { host, ports: l.ports, secrets: l.secrets } : undefined;
+  },
+});
 const controlServer = http.createServer((req, res) => {
   res.setHeader("x-aidenhq-launcher-pid", LAUNCHER_PID);
+  void sessionProxy.http(req, res).then((done) => done || route(req, res), (e) => res.headersSent || send(res, 500, { error: (e as Error).message }));
+});
+controlServer.on("upgrade", (req, socket, head) => void sessionProxy.upgrade(req, socket, head).then((done) => done || socket.destroy(), () => socket.destroy()));
+const route = (req: http.IncomingMessage, res: http.ServerResponse) => {
   if (req.method === "GET" && req.url === "/health") {
     try { return send(res, 200, { ok: true, computers: boxes.size, max: maxBoxes() }); } catch (e) { return send(res, 500, { ok: false, error: (e as Error).message }); }
   }
@@ -504,7 +523,7 @@ const controlServer = http.createServer((req, res) => {
       send(res, (e as Failure).status ?? 500, { error: (e as Failure).message });
     }
   });
-});
+};
 
 // ------------------------------------------------------------------ gateway (boxes only)
 

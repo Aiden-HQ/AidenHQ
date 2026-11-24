@@ -60,6 +60,7 @@ gen_secret board_internal_token   # the board's internal API
 gen_secret apps_internal_token   # apps-mcp POST /internal/deploy: the board and apps-mcp only
 gen_secret paperclip_master_key  # Paperclip's secret-store key (PAPERCLIP_SECRETS_MASTER_KEY_FILE)
 gen_secret computer_progress_token  # the board → the launcher's /progress only (live view)
+gen_secret computer_session_key  # the board → the launcher's /session/<lease>/… only (a session's terminal and web view)
 placeholder paperclip_ops_key ""
 placeholder paperclip_board_key ""   # written by scripts/paperclip-setup.ts; held by the kernel alone (the board goes through it)
 mkdir -p "$AIDENHQ_SECRETS_DIR/modules/google" && chmod 0700 "$AIDENHQ_SECRETS_DIR/modules" "$AIDENHQ_SECRETS_DIR/modules/google"

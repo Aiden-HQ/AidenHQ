@@ -18,7 +18,7 @@ and type, grids that add columns, never a narrow column in the middle of a big s
 
 ## The frame
 
-- **Top bar** (`TopNav`): Chat, Approvals, Tasks, Fleet, Insight; then ⌘K search, today's spend, shortcuts, Settings.
+- **Top bar** (`TopNav`): Chat, Approvals, Tasks, Sessions (only when the sessions module is on; [sessions.md](sessions.md)), Fleet, Insight; then ⌘K search, today's spend, shortcuts, Settings.
   Live counts sit on the section (approvals waiting, agents working). No sidebar frame (owner rule).
 - **Chat's details panel** starts shut below 1920px wide and open from 1920 up; one click on Details opens or hides it,
   and the choice is remembered (localStorage `aidenhq.panel`, a stored choice beats the width). Chat gets the width first.

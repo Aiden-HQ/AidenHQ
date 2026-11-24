@@ -58,7 +58,7 @@
 //   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
 //                              runs and ended lately; Prometheus text (work.ts)
-//   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
+//   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=|?sessions=1|?session=<task>]  (the board) the same reads (the sessions' task, state, lease, times, last words and spend: work.ts sessions()); never the metrics or a token
 //   GET  /v1/flow?task=|?item=|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
 //                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, the declared journeys, a journey's items (journeys.ts), the summary with its insights
 //   GET  /v1/facts[?since=<seq>&limit=]  (role kernel.flow-read) the fact log after `since` in ingestion order: {facts: [{seq,
@@ -292,9 +292,11 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-/** GET /v1/work's reads, by query: ?job=, ?record=, ?task=, ?agent=, ?since=[&to=], ?generations=1, ?pauses=1, ?owner_cards=1[&after=&limit=], or what runs now (work.ts). */
+/** GET /v1/work's reads, by query: ?job=, ?record=, ?task=, ?agent=, ?since=[&to=], ?generations=1, ?pauses=1, ?owner_cards=1[&after=&limit=], ?sessions=1, ?session=<task>, or what runs now (work.ts). */
 function workRead(work: Work, p: URLSearchParams) {
   const [job, task, agent, since, record] = [p.get("job"), p.get("task"), p.get("agent"), p.get("since"), p.get("record")];
+  if (p.get("sessions")) return work.sessions();
+  if (p.get("session")) return { session: work.sessions(p.get("session")!.slice(0, 64)).sessions[0] ?? null };
   if (p.get("generations")) return work.generations();
   if (p.get("pauses")) return work.pauses();
   if (p.get("owner_cards")) {
@@ -1076,6 +1078,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         return send(res, 200, await workRead(work, new URLSearchParams(q ?? "")));
       }
       if (hit && hit.path.startsWith("/v1/work")) {
+        // The sessions' leases are the board's alone.
+        { const p = new URLSearchParams(q ?? ""); if (p.has("sessions") || p.has("session")) throw fail(403, "forbidden", "session reads are the board's"); }
         const w = await moduleOf(req);
         if (hit.path !== "/v1/work/grader-token" && !w.roles.includes("kernel.work-read")) throw fail(403, "forbidden", `${w.module} may not read kernel work (role kernel.work-read)`);
         if (!work) throw fail(503, "unavailable", "work reads are off");
