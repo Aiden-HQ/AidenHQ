@@ -330,7 +330,7 @@ test("deepsec is handed the repo's records earlier runs left, and what a run cha
   await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.deepsec"] });
   await w.tick();
   assert.equal(w.started[0].deepsec_data, undefined); // nothing held yet
-  w.kept.set("c-1", gz({ records: { "src/a.ts": { filePath: "src/a.ts", status: "analyzed" }, "../x.ts": { filePath: "../x.ts" }, "src/b.ts": { filePath: "src/other.ts" } }, removed: [] }));
+  w.kept.set("c-1", gz({ records: { "src/a.ts": { filePath: "src/a.ts", status: "analyzed", fileHash: "h1" }, "../x.ts": { filePath: "../x.ts" }, "src/b.ts": { filePath: "src/other.ts" } }, removed: [] }));
   w.finish(0);
   await w.tick();
   // Only a record under its own relative path is taken.
@@ -341,8 +341,23 @@ test("deepsec is handed the repo's records earlier runs left, and what a run cha
   assert.equal(w.started[1].deepsec_data, "1".padStart(64, "0"));
   assert.deepEqual(Object.keys(JSON.parse(gunzipSync(w.inputs[0]).toString("utf8")).records), ["src/a.ts"]);
   // A tree run's own records overlay the held ones, and the files gone are dropped.
-  w.kept.set("c-2", gz({ records: { "src/c.ts": { filePath: "src/c.ts", status: "analyzed" } }, removed: ["src/a.ts"] }));
+  // A record named gone with another hash than the one held (a newer run's) stays.
+  w.kept.set("c-2", gz({ records: { "src/c.ts": { filePath: "src/c.ts", status: "analyzed" } }, removed: [["src/a.ts", "older"], ["src/b.ts", "h2"]] }));
   w.finish(1);
   await w.tick();
-  assert.deepEqual(Object.keys(records()), ["src/c.ts"]);
+  assert.deepEqual(Object.keys(records()), ["src/a.ts", "src/c.ts"]);
+  // A kernel that can't hand the kept file over now: the run is applied next tick, records and all.
+  const third = await w.engine.repoReview({ target: { repo: REPO, commit: sha("3") }, options: ["sec.deepsec"] });
+  const status = () => w.engine.batches({}).find((x) => x.id === third.batch).status;
+  await w.tick();
+  const flaky = w.kept.get.bind(w.kept);
+  let down = true;
+  w.kept.get = (c) => { if (down && c === "c-3") throw Object.assign(new Error("kernel restarting"), { status: 503 }); return flaky(c); };
+  w.kept.set("c-3", gz({ records: { "src/d.ts": { filePath: "src/d.ts", status: "analyzed" } }, removed: [["src/a.ts", "h1"]] }));
+  w.finish(2);
+  await w.tick();
+  assert.equal(status(), "running");
+  down = false;
+  await w.tick();
+  assert.deepEqual([Object.keys(records()), status()], [["src/c.ts", "src/d.ts"], "done"]);
 });

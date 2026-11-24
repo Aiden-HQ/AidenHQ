@@ -117,7 +117,7 @@ test("deepsec starts from the records earlier runs left, analyses a file again o
   const withLink = gzipSync(JSON.stringify({ records: { ...JSON.parse(gunzipSync(readFileSync(join(dir, "carried"))).toString("utf8")).records, "src/l.js": { ...rec("src/a.js"), filePath: "src/l.js" } } }));
   writeFileSync(join(dir, "carried"), withLink);
   const carried = layCarried(join(dir, "carried"), files, root);
-  assert.deepEqual([[...carried.was.keys()].sort(), carried.gone.sort()], [["src/a.js", "src/b.js", "src/d.js"], ["src/c.js", "src/l.js"]]);
+  assert.deepEqual([[...carried.was.keys()].sort(), carried.gone.map(([p]) => p).sort()], [["src/a.js", "src/b.js", "src/d.js"], ["src/c.js", "src/l.js"]]);
   const read = (p) => JSON.parse(readFileSync(join(files, `${p}.json`), "utf8"));
   // Unchanged stays analysed; a changed file is pending with its findings dropped (deepsec's scan would keep it analysed); a
   // record a stopped run left mid-processing is pending again.
@@ -129,7 +129,11 @@ test("deepsec starts from the records earlier runs left, analyses a file again o
   write("src/e.js", rec("src/a.js", { filePath: "src/e.js" }));
   leave(carried, files, keep, true);
   const left = JSON.parse(gunzipSync(readFileSync(keep)).toString("utf8"));
-  assert.deepEqual([Object.keys(left.records).sort(), left.removed.sort()], [["src/b.js", "src/d.js", "src/e.js"], ["src/c.js", "src/l.js"]]);
+  assert.deepEqual([Object.keys(left.records).sort(), left.removed.map(([p]) => p).sort()], [["src/b.js", "src/d.js", "src/e.js"], ["src/c.js", "src/l.js"]]);
+  // A record under a path that is now a file's folder (src/a.js/x) is gone, never a failed review.
+  assert.deepEqual(layCarried(join(dir, "carried2"), files, root).gone, []);
+  writeFileSync(join(dir, "carried2"), gzipSync(JSON.stringify({ records: { "src/a.js/x.js": { ...rec("src/a.js"), filePath: "src/a.js/x.js" } } })));
+  assert.deepEqual(layCarried(join(dir, "carried2"), files, root).gone.map(([p]) => p), ["src/a.js/x.js"]);
 });
 
 test("a failed deepsec says why in the run's reason: its own error, from its jsonl on stdout, as data", async () => {

@@ -613,10 +613,11 @@ export function createEngine(d: EngineDeps) {
     if (held && held.length > INPUT_MAX) log("deepsec's records are more than a check input holds: this run starts afresh", { run: r.id, bytes: held.length });
     return held && held.length <= INPUT_MAX ? { deepsec_data: await d.runner.input(held) } : {};
   }
-  /** A deepsec run's check ended: the records it changed are laid over the repo's (a file it can't be read from is logged, never the run's failure). */
+  /** A deepsec run's check ended: the records it changed are laid over the repo's. A kernel that can't answer now throws (the run is
+   * applied next tick, records and all); a file that isn't records is logged, never the run's failure. */
   async function absorbDeepsec(r: RunRow) {
+    const left = await d.runner.kept(r.check_job!);
     try {
-      const left = await d.runner.kept(r.check_job!);
       const merged = left && mergeRecords(d.deepsec.read(r.repo), left, r.target === "tree");
       // Records past what a check input holds are not kept: the repo's records stay those that a later run can be handed.
       if (merged && merged.length > INPUT_MAX) log("deepsec's records would be more than a check input holds: not kept", { run: r.id, bytes: merged.length });
@@ -1549,9 +1550,10 @@ export function createEngine(d: EngineDeps) {
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
       if (res.box_at && !("err" in res)) run("UPDATE runs SET box_at = COALESCE(box_at, ?) WHERE id = ?", res.box_at, r.id);
       if (res.state !== "running") {
-        if (r.engine === "deepsec") await absorbDeepsec(r);
-        // One run that can't be applied now (the catalog unreadable) is asked again next tick; it never stops the others.
-        await finish(r, res).catch((e) => void log("a finished run couldn't be applied; the next tick asks again", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
+        // One run that can't be applied now (the catalog unreadable, deepsec's records not readable from the kernel) is asked again
+        // next tick; it never stops the others.
+        await (async () => { if (r.engine === "deepsec") await absorbDeepsec(r); await finish(r, res); })()
+          .catch((e) => void log("a finished run couldn't be applied; the next tick asks again", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
       } else {
         if (res.waiting && !("err" in res)) waiting.add(r.id);
         if (res.billed_usd !== undefined && !("err" in res)) live.set(r.id, res.billed_usd);

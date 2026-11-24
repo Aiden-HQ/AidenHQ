@@ -1,8 +1,9 @@
 // deepsec's records per repo, kept on this service's own storage (/data), never in the repo: they hold unfixed vulnerability
 // write-ups. Every deepsec check (a PR's or a repo review's) is handed the repo's records as an uploaded input and leaves the ones
 // it changed (recipe/deepsec.ts leave), which are laid over what is held here: a PR check that ran beside a repo review never
-// erases the review's progress. A tree run also names the records of files gone, which are dropped. The box's file is data: only
-// a gzipped { records: { path: record }, removed: [path] } whose paths are relative and whose records name their own path is taken.
+// erases the review's progress. A tree run also names the records of files gone (with the fileHash it was handed), each dropped only
+// while it is still that record: a newer run's record of the same path stays. The box's file is data: only a gzipped
+// { records: { path: record }, removed: [[path, fileHash]] } whose paths are relative and whose records name their own path is taken.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -20,7 +21,7 @@ export function mergeRecords(held: Buffer | undefined, left: Buffer, tree: boole
   if (!j || typeof j !== "object" || !j.records || typeof j.records !== "object" || Array.isArray(j.records)) throw new Error("deepsec's records aren't { records }");
   const records: Record<string, unknown> = held ? JSON.parse(gunzipSync(held, { maxOutputLength: UNPACKED_MAX }).toString("utf8")).records ?? {} : {};
   for (const [p, r] of Object.entries<Record<string, unknown>>(j.records)) if (recordPath(p) && r && typeof r === "object" && r.filePath === p) records[p] = r;
-  if (tree && Array.isArray(j.removed)) for (const p of j.removed) if (recordPath(p)) delete records[p];
+  if (tree && Array.isArray(j.removed)) for (const x of j.removed) if (Array.isArray(x) && recordPath(x[0]) && (records[x[0]] as { fileHash?: unknown } | undefined)?.fileHash === x[1]) delete records[x[0]];
   return gzipSync(JSON.stringify({ records }));
 }
 

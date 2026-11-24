@@ -109,18 +109,18 @@ function recordsIn(files: string) {
 }
 /** A file's hash as deepsec's scan takes it (sha256 of its text, CRLF read as LF); undefined when it isn't there as a file of the
  * checkout (never read through a link). */
-const fileHash = (root: string, p: string) => { if (!plain(root, p)) return undefined; try { return createHash("sha256").update(readFileSync(join(root, p), "utf-8").replaceAll("\r\n", "\n")).digest("hex"); } catch { return undefined; } };
+const fileHash = (root: string, p: string) => { try { if (!plain(root, p)) return undefined; return createHash("sha256").update(readFileSync(join(root, p), "utf-8").replaceAll("\r\n", "\n")).digest("hex"); } catch { return undefined; } };
 /** Lays the carried records of files at this commit in `files`, each as it stands here: one whose file changed since (its
  * fileHash) or that a stopped run left mid-processing is pending, a changed one's findings dropped. `gone`: records of files the
  * commit doesn't have, never laid. */
 export function layCarried(carried: string | undefined, files: string, root: string) {
-  const was = new Map<string, Record<string, unknown>>(), gone: string[] = [];
+  const was = new Map<string, Record<string, unknown>>(), gone: [string, unknown][] = [];
   if (!carried || !existsSync(carried)) return { was, gone };
   const j = JSON.parse(gunzipSync(readFileSync(carried), { maxOutputLength: 512 << 20 }).toString("utf8"));
   for (const [p, r] of Object.entries<Record<string, unknown>>(j?.records ?? {})) {
     if (!recordPath(p) || !r || typeof r !== "object" || r.filePath !== p) continue;
     const hash = fileHash(root, p);
-    if (hash === undefined) { gone.push(p); continue; }
+    if (hash === undefined) { gone.push([p, r.fileHash]); continue; }
     const changed = hash !== r.fileHash;
     const rec = changed || r.status === "processing" ? { ...r, status: "pending", lockedByRunId: undefined, lockedAt: undefined, ...(changed ? { fileHash: hash, findings: [] } : {}) } : r;
     mkdirSync(dirname(join(files, `${p}.json`)), { recursive: true });
@@ -129,7 +129,8 @@ export function layCarried(carried: string | undefined, files: string, root: str
   }
   return { was, gone };
 }
-/** The records this run changed (new, or different from what it was handed), and on a tree the carried ones of files gone. */
+/** The records this run changed (new, or different from what it was handed), and on a tree the carried ones of files gone (each
+ * with the fileHash it was handed, so a newer record of the path is never dropped). */
 export function leave({ was, gone }: ReturnType<typeof layCarried>, files: string, keep: string, tree: boolean) {
   const records = Object.fromEntries([...recordsIn(files)].filter(([p, r]) => !was.has(p) || settled(was.get(p)!) !== settled(r)));
   writeFileSync(keep, gzipSync(JSON.stringify({ records, removed: tree ? gone : [] })));
