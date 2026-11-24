@@ -295,10 +295,10 @@ export function startPrWatch(o: PrWatchOptions) {
           continue;
         }
         if (!job) { spentAll = false; continue; } // the budget is spent: this check is judged on the next tick
-        // A permanent "no such job" (404: the run was deleted) can never clear, so it is not this rule's and the red-head
-        // rules report the failure; a transient read (a 5xx, a body without steps) cannot say a step ran: unjudged for the
-        // next tick, never read as "the code failed" and woken on.
-        if (job.status === 404) return false;
+        // A permanent refusal (404: the run was deleted; 401/403: the credential cannot read Actions) can never clear, so it is
+        // not this rule's and the red-head rules report the failure; a transient read (a 5xx, a body without steps) cannot say
+        // a step ran: unjudged for the next tick, never read as "the code failed" and woken on.
+        if ([401, 403, 404].includes(job.status)) return false;
         if (job.status >= 300 || !Array.isArray(job.body?.steps)) { spentAll = false; continue; }
         if (job.body.steps.length) return false; // a step ran: it judged the commit
         if (job.body.head_sha !== pr.headRefOid || !String(job.body.check_run_url ?? "").endsWith(`/check-runs/${run.id}`)) return false;

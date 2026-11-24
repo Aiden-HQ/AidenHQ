@@ -1095,3 +1095,12 @@ test("a cancelled task's wedged PR is not woken before it is closed", async (t) 
   assert.equal(c.woke.length, 0, "a cancelled task has nobody to wake; its PR is closed instead");
   assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/81"), "the PR is closed as the lifecycle rule says");
 });
+
+// self-review: a credential that cannot read Actions (403) is permanent too, so the failure is still reported.
+test("an Actions permission refusal (403) still reports the red head", async (t) => {
+  const c = await rig(t, { jobRead: () => 403 });
+  c.set([c.agentPr(82, redPr(82))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent permission refusal is not this rule's: the failure is reported");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
