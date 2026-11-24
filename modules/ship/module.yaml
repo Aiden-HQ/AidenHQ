@@ -43,7 +43,7 @@ settings:
   # review_rounds, rounds, usd, requeue_on_timeout: a number, or null for unlimited }, approve: off|observe|safe|all,
   # safe: { max_lines, max_files, deny }, merge: off|ready, enabled: true|false, stop_label,
   # actions: { conflict|behind|before_merge: [ { comment: "/cmd" } | { workflow: "file.yml", inputs? } ] } (the repo's own commands
-  # and workflows, run before ship's own step; service/src/actions.ts) } } }. Ship works the fleet org's repos and the product repo; a maintainer_repos repo is worked only once it has an entry here (quiet until enabled). The Fleet page
+  # and workflows, run before ship's own step; before_merge takes workflows only; service/src/actions.ts) } } }. Ship works the fleet org's repos and the product repo; a maintainer_repos repo is worked only once it has an entry here (quiet until enabled). The Fleet page
   # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
   ship:
     type: object

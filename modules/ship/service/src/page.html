@@ -61,7 +61,7 @@
   }
 
   // Advanced, per repo: the repo's own commands and workflows ship runs before its own step (the `actions` setting).
-  const ACTIONS_HELP = "Your repo's own tools, run before ship's: per stage (conflict, behind, before_merge) a list of steps, each { \"comment\": \"/rebase\" } (ship posts your slash command) or { \"workflow\": \"pr-rebase.yml\", \"inputs\": {} } (ship dispatches it on the PR's branch). Ship waits for the new head or the run, and falls back to its own repair if a step fails. Runs only on adopted PRs, only for the stage needed.";
+  const ACTIONS_HELP = "Your repo's own tools, run before ship's: per stage (conflict, behind, before_merge) a list of steps, each { \"comment\": \"/rebase\" } (ship posts your slash command) or { \"workflow\": \"pr-rebase.yml\", \"inputs\": {} } (ship dispatches it on the PR's branch; before_merge takes workflows only). Ship waits for the new head or the run, and falls back to its own repair if a step fails. Runs only on adopted PRs, only for the stage needed.";
   function advanced(r) {
     const area = h("textarea", { ariaLabel: `Actions for ${r.repo}`, spellcheck: false, value: JSON.stringify(shown(r).actions ?? {}, null, 1) });
     const set = h("button", { type: "button", textContent: "Propose" });

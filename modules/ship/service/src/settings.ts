@@ -148,7 +148,8 @@ function checkEntry(errors: string[], at: string, e: unknown) {
     else for (const [stage, steps] of Object.entries(e.actions)) {
       if (!STAGES.includes(stage as never)) { errors.push(`${at}.actions.${stage.slice(0, 40)}: unknown stage (known: ${STAGES.join(", ")})`); continue; }
       if (!Array.isArray(steps) || steps.length > 5) { errors.push(`${at}.actions.${stage}: a list of up to 5 steps`); continue; }
-      steps.forEach((x, i) => { const m = stepError(x); if (m) errors.push(`${at}.actions.${stage}[${i}]: ${m}`); });
+      // Before a merge only a workflow's run can say it passed: a comment's bot answers only with a new head.
+      steps.forEach((x, i) => { const m = stage === "before_merge" && isMap(x) && "comment" in x ? "before_merge takes workflow steps only" : stepError(x); if (m) errors.push(`${at}.actions.${stage}[${i}]: ${m}`); });
     }
   }
   if ("caps" in e) {
