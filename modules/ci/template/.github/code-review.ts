@@ -12,7 +12,7 @@
 // Env: CI_REVIEW_KEY (a CI token from the model gateway, or an OpenRouter key), CI_REVIEW_URL (the gateway's /api/v1, which
 // forces zero data retention; default OpenRouter, where the key's account must have it on: codex can't ask per call),
 // TRUSTED_BASE (the PR's base commit: AGENTS.md is read from it, never from <base>, which a delta review sets to a commit of
-// the PR's own branch), MODEL, EFFORT (default high), RULES (the house rules file: REVIEW.md), TIER and TIER_RULE (the PR's risk tier and
+// the PR's own branch), MODEL, EFFORT (default high; the final effort), RULES (the house rules file: REVIEW.md), TIER and TIER_RULE (the PR's risk tier and
 // the rule that named it: codegenie-tier.ts), PR_TITLE and PR_BODY (fenced as data), REVIEW_LSP (typescript-language-server, for the repo tools'
 // definition, references and diagnostics), REVIEW_MINUTES (default 40).
 // The reliability checklist (.github/code-review-checklist.json beside this script, so the base commit's, never the PR's):
@@ -45,10 +45,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // out of the workflow's line count. The addressed-text scan reads the whole diff, as the reviewer's tools do.
 export const OUT_TYPES = ["png", "jpg", "jpeg", "webp", "gif"];
 const SEVERITY: Record<number, string> = { 0: "critical", 1: "high", 2: "medium", 3: "low" };
-const UP: Record<string, string> = { minimal: "low", low: "medium", medium: "high", high: "xhigh", xhigh: "xhigh" };
 // Text in the added lines that talks to a reviewer: that PR is reviewed at the higher effort with an explicit warning.
 const AT_REVIEWER = /ignore (all |any |the )?(previous|prior|above|earlier) (instructions|rules)|disregard (the |all )?(instructions|rules)|(^|\W)(system|assistant|developer)\s*(prompt|message|:)|you are (an? )?(ai|assistant|language model|reviewer|code reviewer)|approve (this|the) (pr|pull request|change)|(report|return|output) (no|zero|an empty( list of)?) findings|do not (report|flag)|"findings"\s*:\s*\[\s*\]/i;
 export const atReviewer = (diff: string) => diff.split("\n").some((l) => l.startsWith("+") && !l.startsWith("+++") && AT_REVIEWER.test(l));
+/** Whether the PR's diff, commit messages, title or description (all its own words) address a reviewer. */
+export function addressedAt(git: (...a: string[]) => string, base: string, head: string, diff: string, title = "", body = "") {
+  return atReviewer([diff, git("log", "--format=%B", `${base}..${head}`), title, body].map((t, i) => (i ? t.split("\n").map((l) => `+${l}`).join("\n") : t)).join("\n"));
+}
 
 // codex review's own guidelines (codex 0.167.0), shortened, with the tools this review has and the house rules' severities.
 const PROMPT = `Review the code changes of this pull request: the diff from its base (the merge base) to its head. You are
@@ -278,10 +281,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   git("worktree", "add", "--detach", root, head);
   // Everything the reviewer reads that the PR wrote: the diff, its commit messages, its title and description.
   const diff = git("diff", "--no-color", `${base}...${head}`);
-  const addressed = atReviewer([diff, git("log", "--format=%B", `${base}..${head}`), process.env.PR_TITLE ?? "", process.env.PR_BODY ?? ""]
-    .map((t, i) => (i ? t.split("\n").map((l) => `+${l}`).join("\n") : t)).join("\n"));
-  const effort0 = process.env.EFFORT || "high";
-  const effort = addressed ? UP[effort0] ?? effort0 : effort0;
+  const addressed = addressedAt(git, base, head, diff, process.env.PR_TITLE, process.env.PR_BODY);
+  const effort = process.env.EFFORT || "high"; // already the tier's (and an addressed PR's) effort: codegenie-tier.ts
   const url = (process.env.CI_REVIEW_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
   let rules = "", agents = "";
   try { rules = process.env.RULES ? readFileSync(process.env.RULES, "utf8") : ""; } catch {}

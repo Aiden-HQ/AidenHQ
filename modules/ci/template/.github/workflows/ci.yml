@@ -206,6 +206,8 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set +e
           # A step that ends before it records an outcome (its setup failed) is a run without a verdict: neutral, with its cause.
@@ -390,6 +392,8 @@ jobs:
           git -c http.extraHeader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" \
             fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
           if ! git cat-file -e "origin/$DEFAULT_BRANCH:.github/codegenie-gate.ts" 2>/dev/null; then
+            # The refusal holds without a gate to post it: nothing else here would fail the check.
+            [ "${CODEGENIE_FAILURE:-}" = policy ] && { echo "::error::$CODEGENIE_CAUSE"; exit 1; }
             echo "::notice::No code-review gate on the default branch yet: this PR adds CI, so it is not reviewed."; exit 0
           fi
           git show "origin/$DEFAULT_BRANCH:.github/codegenie-gate.ts" > "$RUNNER_TEMP/codegenie-gate.ts"

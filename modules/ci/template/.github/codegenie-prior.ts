@@ -47,7 +47,7 @@ async function lastGreen(api: Api, { repo, headRef, baseRef, head }: { repo: str
   for (const run of runs) { // newest first
     // Any PR of this repo's branch counts, not only this PR number, so a reopened branch isn't reviewed again from
     // scratch; but only one that targeted the same base ref, and never a fork's run of the same branch name.
-    if (run.head_sha === head || red.has(run.head_sha) || run.head_branch !== headRef || run.head_repository?.full_name !== repo
+    if (red.has(run.head_sha) || run.head_branch !== headRef || run.head_repository?.full_name !== repo
       || !run.pull_requests?.some((p) => p.base?.ref === baseRef)) continue;
     const { jobs = [] } = (await api(`/repos/${repo}/actions/runs/${run.id}/jobs`)) as { jobs?: { name: string; conclusion?: string }[] };
     const conclusion = jobs.find((j) => j.name === "code-review")?.conclusion;
