@@ -1179,3 +1179,43 @@ test("a stack A←B: B waits on #A; once A merges, B is retargeted onto main and
   await watch.tick();
   assert.deepEqual(of("github.merge", 2).map((w) => [w.args.prs[0].base, w.args.prs[0].head]), [["main", "h2b"]], "then the normal path: merged into main");
 });
+
+test("a stack GitHub retargeted itself (the parent's branch deleted) still brings main in first; a conflict there goes to the repair", async (t) => {
+  let open = [], update = 202;
+  const writes = [], updated = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/writes") { writes.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: `w${writes.length}`, state: "claimed" })); }
+    if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify({ state: "claimed" }));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
+  });
+  t.after(() => kernel.s.close());
+  const gh = async (method, path) => {
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path.endsWith("/update-branch")) { updated.push(path); return { status: update, body: update === 422 ? { message: "merge conflict between base and head" } : {} }; }
+    if (path.includes("/git/trees/")) return { status: 200, body: { tree: [] } };
+    return { status: 200, body: {} };
+  };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
+  t.after(() => watch.stop());
+  const agent = { author: { __typename: "Bot", login: "aidenhq" } };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/1", { task: "ACME-1", branch: "bA" });
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/2", { task: "ACME-2", branch: "bB" });
+  const A = pr(1, { ...agent, headRefName: "bA", checks: "PENDING" }), B = pr(2, { ...agent, headRefName: "bB", baseRefName: "bA" });
+  open = [B, A];
+  await watch.tick();
+  open = [{ ...B, baseRefName: "main" }]; // A merged, its branch deleted: GitHub moved B itself
+  await watch.tick();
+  assert.deepEqual([updated, writes.filter((w) => w.kind === "github.retarget").length, writes.filter((w) => w.kind === "github.merge").length], [["/repos/acme/app/pulls/2/update-branch"], 0, 0], "main brought in first, never merged on the old head");
+  // The same with a conflict: GitHub refuses the update, and the repair makes the new head.
+  const c = { ...B, number: 3, url: "https://github.com/acme/app/pull/3", headRefName: "bC", headRefOid: "h3" };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/3", { task: "ACME-3", branch: "bC" });
+  open = [c, A];
+  await watch.tick();
+  update = 422;
+  open = [{ ...c, baseRefName: "main", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }];
+  await watch.tick();
+  assert.equal(writes.filter((w) => w.kind === "github.repair" && w.args.number === 3).length, 1, "the conflict goes to ship's repair, not a hold");
+});

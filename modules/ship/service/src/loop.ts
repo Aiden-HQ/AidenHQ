@@ -175,7 +175,9 @@ export function startLoop(o: LoopOptions) {
         // A newer open PR the same task published supersedes this one.
         const newer = task ? open.find((p) => p.number > pr.number && p.baseRefName === pr.baseRefName && opened[p.url.toLowerCase()]?.task === task && opened[p.url.toLowerCase()]?.branch === p.headRefName)?.url : undefined;
         // A stack: its base is another open PR's head branch (in this repo).
-        const under = open.find((p) => p.number !== pr.number && p.isCrossRepository === false && p.headRefName === pr.baseRefName);
+        // The parent into the default branch first (the same branch may also feed a backport into another base).
+        const parents = open.filter((p) => p.number !== pr.number && p.isCrossRepository === false && p.headRefName === pr.baseRefName);
+        const under = parents.find((p) => p.baseRefName === main.name) ?? parents[0];
         await o.adopted.open(repo, main, pr, new Set(open.map((p) => p.number)), { ...(task ? { opener: task } : {}), ...(newer ? { newer } : {}), ...(under ? { stackedOn: { number: under.number, base: String(under.baseRefName) } } : {}), recover: () => o.recover(repo, pr, state, save) });
       } catch (e) { log("PR pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }); }
     }

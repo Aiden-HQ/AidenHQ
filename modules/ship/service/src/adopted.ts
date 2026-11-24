@@ -60,7 +60,7 @@ export function adoptedPass(o: AdoptedOptions) {
    */
   const front = (repo: string, number: number, open: Set<number>) => {
     const order = (o.state.all() as Kept[])
-      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept)
+      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept && !a.stack)
       .sort((x, y) => String(x.trigger.at ?? "").localeCompare(String(y.trigger.at ?? "")) || x.number - y.number);
     return order[0]?.number === number;
   };
@@ -197,6 +197,9 @@ export function adoptedPass(o: AdoptedOptions) {
       }
       const recovery = await ctx.recover?.();
       a = o.state.get(repo, pr.number) as Kept;
+      // A parent recorded before stays the parent while the branch now only feeds another base (a backport): once it merged into
+      // the default branch, the child follows it there.
+      if (ctx.stackedOn && a.stack && a.stack.number !== ctx.stackedOn.number && ctx.stackedOn.base !== main.name) ctx = { ...ctx, stackedOn: undefined };
       // A stack: it waits on the PR whose branch is its base (decide says so); once that PR merged, it is retargeted onto the
       // default branch, brought up to date with it, and then takes the normal path (checks, review, merge). Down a chain too.
       // The relation is kept whatever holds the PR, so a parent that merged meanwhile is still known.
@@ -207,13 +210,21 @@ export function adoptedPass(o: AdoptedOptions) {
       // The PR's own stops hold a retarget too: a draft, the stop label, or a person assigned.
       const stopped = view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop") || view.assignees.some((x) => !(a!.assigned ?? []).includes(x));
       if (!stopped && !ctx.stackedOn && a.stack && a.stack.branch === view.base && view.base !== main.name && await retargeted(a, view, main.name)) return;
-      // Just retargeted: its base is merged in first (a new head that code review reviews whole); nothing moves on the old head.
-      if (!stopped && a.retarget?.head === view.head && view.base === main.name) {
-        if (a.retarget.updated) return;
-        try { await rounds.updateBranch(repo, view.number, view.head); }
-        catch (e) { await round(rounds, view, { do: "stall", why: `GitHub refused to bring \`${main.name}\` into it after its retarget: ${String((e as Error).message).slice(0, 200)}` }); return; }
-        o.state.put({ ...a, retarget: { ...a.retarget, updated: true } });
-        return;
+      // A stack that reached the default branch (ship's retarget, or GitHub's own once the parent's branch was deleted): its base
+      // is merged in first, a new head code review reviews whole; nothing moves on the old head. A conflict goes to the repair.
+      if (!stopped && a.stack && view.base === main.name) {
+        if (a.stack.landed === undefined) {
+          try { await rounds.updateBranch(repo, view.number, view.head); }
+          catch (e) {
+            const why = String((e as Error).message);
+            // A conflict: the normal path's repair makes the new head (a conflicting PR can't merge on the old one anyway).
+            // A conflict goes to the repair; nothing new to bring in means it already has the base: either way the normal path runs.
+            if (/: 422\b/.test(why) && /conflict|no new commits|up to date/i.test(why)) { const { stack: _, ...rest } = a; a = rest as Kept; o.state.put(a); }
+            else { await round(rounds, view, { do: "stall", why: `GitHub refused to bring \`${main.name}\` into it after its retarget: ${why.slice(0, 200)}` }); return; }
+          }
+          if (a.stack) { o.state.put({ ...a, stack: { ...a.stack, landed: view.head } }); return; }
+        } else if (a.stack.landed === view.head) return;
+        else { const { stack: _, ...rest } = a; a = rest as Kept; o.state.put(a); }
       }
       const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}) });
       // Red checks whose jobs never started are being re-run (ci-recover.ts): no fix is asked for a failure CI never ran.
