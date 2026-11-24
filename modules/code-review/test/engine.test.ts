@@ -217,7 +217,7 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   assert.equal(by["codex/low"].status, "failed");
   // Today spend is the billed costs (0.7 + 0 + 99).
   assert.equal(w.engine.repos().day_spent_usd, 99.7);
-  // GET /reviews/:id carries the run's combo, cost, tokens, duration and its findings in full.
+  // code_review_run_detail carries the run's combo, cost, tokens, duration and its findings in full.
   const one = w.engine.run(by["codex/medium"].id)!;
   assert.ok(one.run.model && one.run.cost_usd === 0.7 && "duration_ms" in one.run && "tokens_in" in one.run && Array.isArray(one.review!.findings) && Array.isArray(one.findings));
   assert.equal(w.posted.length, 2);

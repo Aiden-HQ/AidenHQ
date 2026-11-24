@@ -56,7 +56,6 @@ const ModulesView = lazy(() => VIEW_CHUNKS.modules().then((m) => ({ default: m.M
 const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.AgentPage })));
 const ModulePage = lazy(() => VIEW_CHUNKS.modulePage().then((m) => ({ default: m.ModulePage })));
 const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
-const ReviewsView = lazy(() => VIEW_CHUNKS.reviews().then((m) => ({ default: m.ReviewsView })));
 const ModuleView = lazy(() => VIEW_CHUNKS.moduleView().then((m) => ({ default: m.ModuleView })));
 const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.DesignView })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
@@ -148,8 +147,8 @@ function parseRoute(): Route {
   // #/approvals, #/costs, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
-  // #/reviews[/<tab>|/r/<run>] opens the Reviews page (Reviews.tsx reads the rest itself).
-  if (/^reviews(\/[\w/-]*)?$/.test(h)) return { kind: "view", view: "reviews" };
+  // #/reviews[/…]: the Reviews page is code review's module page now (links from before it moved).
+  if (/^reviews(\/[\w/-]*)?$/.test(h)) return { kind: "page", id: "code-review" };
   // #/flow/<tab> opens a Flow tab (Flow.tsx reads the tab itself).
   if (/^flow\/[a-z]+(\?.*)?$/.test(h)) return { kind: "view", view: "flow" };
   const setup = /^setup\/([a-z0-9-]{1,63})(\?change=1)?$/.exec(h);
@@ -181,8 +180,8 @@ function useMedia(query: string) {
 }
 
 // "design" (#/design, the design system's catalogue) has no tab of its own; "fleet" is a module's page (#/fleet/<id>).
-type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "reviews" | "costs" | "flow" | "settings" | "design" | "fleet";
-const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "reviews", "costs", "flow", "settings"];
+type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "costs" | "flow" | "settings" | "design" | "fleet";
+const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "costs", "flow", "settings"];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
   try {
@@ -683,7 +682,7 @@ export function App() {
   const pagesQ = useQuery(QUERIES.pages, signInNeeded);
   const pages = pagesQ.data?.pages ?? [];
   // An apply can add or remove a module's page while the board is open: Fleet reads them again each time it is opened.
-  const inFleet = ["agents", "apps", "modules", "reviews", "fleet"].includes(view);
+  const inFleet = ["agents", "apps", "modules", "fleet"].includes(view);
   const reloadPages = pagesQ.reload;
   useEffect(() => void (inFleet && reloadPages()), [inFleet, reloadPages]);
   // Signed out, or an admin without an authenticator yet: both are done on the kernel's sign-in pages.
@@ -858,7 +857,6 @@ export function App() {
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
-      {view === "reviews" && <Suspense fallback={<PageLoading />}><ReviewsView onSignIn={signInNeeded} /></Suspense>}
       {view === "fleet" && route.kind === "page" && <Suspense fallback={<PageLoading />}><ModuleView key={route.id} page={pages.find((p) => p.id === route.id)} onSignIn={signInNeeded} /></Suspense>}
       {view === "flow" && <Suspense fallback={<PageLoading />}><FlowView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}

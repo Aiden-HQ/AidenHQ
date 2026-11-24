@@ -393,7 +393,7 @@ export function createEngine(d: EngineDeps) {
     });
     // Who asked, and the runs this request was answered with (its run set): the same ask twice by two askers shares those runs,
     // and each hears one summary of them (a request that also picks up a run already queued is one ask, not two). The row sits
-    // in the first run's batch, whose end re-summarises it. A one-off with no asker (the board's POST /reviews) is the owner's.
+    // in the first run's batch, whose end re-summarises it. A one-off with no asker (the owner's own call from the Reviews page) is the owner's.
     if (kind === "oneoff" && runs.length) recordAsker(runs[0]!.batch, o.asker ?? { requester: "" }, runs.map((r) => r.id));
     return runs;
   }
@@ -2167,7 +2167,7 @@ export function createEngine(d: EngineDeps) {
       // Sorted: the same set in another order is the same review (what is stored and what a duplicate is looked up by).
       const ids = [...new Set((b.options as string[] | undefined) ?? recommended)].sort();
       const unknown = ids.filter((id) => !available.some((o) => o.id === id));
-      if (unknown.length) throw new RequestError(`not offered for ${repo}: ${unknown.join(", ").slice(0, 300)} (GET /catalog lists what its tree fits)`);
+      if (unknown.length) throw new RequestError(`not offered for ${repo}: ${unknown.join(", ").slice(0, 300)} (code_review_catalog lists what its tree fits)`);
       if (!ids.length) throw new RequestError(`pick at least one option for ${repo}`);
       const picked = available.filter((o) => ids.includes(o.id));
       // The effort each model option's engine takes (recipe/engines.ts: deepsec up to xhigh; a skill runs on its harness), checked now, not when its run is refused.

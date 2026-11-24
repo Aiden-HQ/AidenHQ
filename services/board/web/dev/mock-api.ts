@@ -128,9 +128,11 @@ let views = [
   { id: "00000000-0000-4000-8000-0000000000a2", name: "Engineering", rev: 1, spec: { layout: "work", groupBy: "none", filters: { agent: ["engineer", "aiden", "platform-engineer"], updated: "7d" } } },
 ];
 // A module's Fleet page (board.pages): the example view (web/dev/example-view.html) and its two tools, as the kernel would relay them.
-const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }];
+const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }, { id: "code-review", title: "Reviews", icon: "reviews", order: 5, module: "code-review" }];
 function pageRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
   if (url.pathname === "/api/pages") return [200, { pages: mock.empty ? [] : PAGES }];
+  if (method === "POST" && url.pathname === "/api/pages/code-review/save") return [200, { identifier: "WOR-902", record: "k-0000000000000902", tier: 2, state: "approved" }];
+  if (method === "POST" && url.pathname === "/api/pages/code-review/call") { const r = reviewCall(body.name, body.arguments ?? {}); return r ? [200, r] : [403, { error: `${body.name} isn't one of this page's tools` }]; }
   if (method === "POST" && url.pathname === "/api/pages/notes/save") return [200, { identifier: "WOR-901", record: "k-0000000000000901", tier: 2, state: "approved" }];
   if (method !== "POST" || url.pathname !== "/api/pages/notes/call") return undefined;
   if (body.name === "example_notes") return [200, { result: { content: [{ type: "text", text: "3 notes" }], structuredContent: { notes: [{ text: "Renewal call with Acme moved to Thursday", at: "2h ago" }, { text: "Invoices export shipped", at: "yesterday" }, { text: "Draft the Q1 offsite agenda", at: "3 days ago" }] } } }];
@@ -374,9 +376,45 @@ const flows = () => ({
 
 // The Reviews page: a watched repo, a PR run, two whole-repo batches, and the catalog a repo review offers.
 const REVIEW_COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
-const reviewRuns = () => [{ id: "cr-000000000001", repo: "acme/payments", number: 42, head: "a".repeat(40), engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", status: "done", why: null, cost_usd: 0.4, tokens_in: 12000, tokens_out: 3000, duration_ms: 90000, important: 1, nit: 2, pre_existing: 0, started: ago(30), ended: ago(28), full: false, incremental_from: null, posted: true, title: "Retry failed charges" }];
+const RUN = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", why: null, tokens_in: 12000, tokens_out: 3000, duration_ms: 90000, nit: 0, pre_existing: 0, full: false, incremental_from: null, posted: true, target: "pr", batch: null };
+const reviewRuns = () => [
+  { ...RUN, id: "cr-000000000001", repo: "acme/payments", number: 42, head: "a".repeat(40), status: "done", cost_usd: 0.4, important: 1, nit: 2, started: ago(30), ended: ago(28), title: "Retry failed charges" },
+  { ...RUN, id: "cr-000000000002", repo: "acme/payments", number: 43, head: "b".repeat(40), status: "running", cost_usd: 0.1, started: ago(3), ended: null, important: 0, title: "Add idempotency keys to refunds" },
+  { ...RUN, id: "cr-000000000003", repo: "acme/web", number: 9, head: "c".repeat(40), status: "skipped", why: "draft: a draft PR", cost_usd: 0, started: null, ended: ago(60), title: "WIP: new settings layout", kind: "auto" },
+  { ...RUN, id: "cr-000000000004", repo: "acme/web", number: 7, head: "d".repeat(40), status: "done", cost_usd: 0.22, important: 0, nit: 1, started: ago(300), ended: ago(298), title: "Tidy the header", model: "openai/gpt-6.2-sol", engine: "codex-native", effort: "low", kind: "command" },
+  { ...RUN, id: "cr-000000000005", repo: "acme/web", number: 5, head: "e".repeat(40), status: "failed", why: "the box ran out of time", cost_usd: 0.6, started: ago(900), ended: ago(880), title: "Upgrade the bundler" },
+];
+const FINDINGS = [
+  { id: "f1", severity: "important", path: "src/billing/charge.ts", line: 88, end_line: 96, title: "A retried charge can post twice", why: "The idempotency key is written after the provider call, so a timeout between the two lets the retry charge again.", evidence: "88  const res = await provider.charge(card, amount);\n89  await store.put(key, res.id);\nA retry after a timeout at line 88 never sees the key.", fix_brief: "Write the key before calling the provider and treat an existing key as the answer." },
+  { id: "f2", severity: "nit", path: "src/billing/retry.ts", line: 14, title: "Backoff has no jitter", why: "Every retry waits the same time, so a burst of failures retries together.", evidence: "14  await sleep(base * 2 ** n);", fix_brief: "Add up to 20% random jitter." },
+  { id: "f3", severity: "nit", path: "src/billing/retry.ts", line: 31, title: "Unused import", why: "`Duration` isn't used.", evidence: "1  import { Duration } from './time';", fix_brief: "Remove it." },
+];
+let dismissed = false;
+const runDetail = (id: string) => {
+  const r = reviewRuns().find((x) => x.id === id) ?? reviewRuns()[0]!;
+  const done = r.status === "done";
+  const review = done ? { version: 1, repo: r.repo, pr: r.number, base: "0".repeat(40), head: r.head, engine: r.engine, model: r.model, effort: r.effort, incremental_from: null, full: false, coverage: { reviewed: ["src/billing/charge.ts", "src/billing/retry.ts", "test/charge.test.ts"], excluded: ["package-lock.json"], incomplete: null }, findings: r.important ? FINDINGS : [], withheld: { important: 0, nit: 1, pre_existing: 0 }, cost_usd: r.cost_usd, stale_guidance: [] } : null;
+  const gate = r.number === 42 ? { verdict: dismissed ? "pass" : "wait", reasons: dismissed ? [] : [{ code: "findings", text: "1 important finding open: A retried charge can post twice (src/billing/charge.ts:88, id f1)", unblock: "fix and push, or record each outcome with code_review_resolve" }], head: r.head, open: dismissed ? [] : [{ id: "f1", path: "src/billing/charge.ts", line: 88, title: "A retried charge can post twice" }] } : null;
+  return { run: { ...r, url: `https://github.com/${r.repo}/pull/${r.number}`, review_url: done ? `https://github.com/${r.repo}/pull/${r.number}#pullrequestreview-1` : undefined }, review, findings: review ? review.findings.map((f) => ({ id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title, outcome: f.id === "f1" && dismissed ? "dismissed" : null })) : [], gate };
+};
+// The Reviews page's tools (modules/code-review/service/src/config-tool.ts), as the kernel would relay them.
+let watched: any[] = [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "low" }], push_rounds: 1, drafts: false, forks: "manual", max_nits: 5, ignore: ["**/*.lock"], day_spent_usd: 3.2, error: null, identity: "owner" }, { repo: "acme/web", on_open: [REVIEW_COMBO, { engine: "claude-code", model: "anthropic/claude-haiku-5.5", effort: "low", mandatory: true }], on_push: [], push_rounds: null, drafts: true, forks: "auto", max_nits: 3, ignore: [], day_spent_usd: 0.8, error: null, identity: "app" }];
+function reviewCall(name: string, a: any): any {
+  const sc = (v: unknown) => ({ result: { content: [{ type: "text", text: "ok" }], structuredContent: v } });
+  switch (name) {
+    case "code_review_overview": return sc({ runs: mock.empty ? [] : reviewRuns(), batches: mock.empty ? [] : reviewBatches(), repos: { day_spent_usd: 4, errors: [], repos: mock.empty ? [] : watched }, engines: ENGINES, setting: { repos: watched }, problems: [] });
+    case "code_review_run_detail": return sc(runDetail(a.id));
+    case "code_review_report": return sc({ markdown: REPORT });
+    case "code_review_catalog": return sc({ repo: a.repo, ...catalog() });
+    case "code_review_available": return sc({ repos: [{ repo: "acme/payments", private: true }, { repo: "acme/web", private: true }, { repo: "acme/docs", private: false }].filter((x) => x.repo.includes(a.q ?? "")) });
+    case "code_review_run": return sc(a.repo ? { batch: "b-000000000003", repo: a.repo, sha: a.commit, options: a.options, runs: [] } : { runs: [{ ...reviewRuns()[1], id: "cr-000000000009" }] });
+    case "code_review_dismiss": dismissed = true; return sc({ dismissed: a.id });
+    case "code_review_configure": return sc({ changes: [...(a.watch ?? []).map((w: any) => `${w.repo} updated`), ...(a.unwatch ?? []).map((r: string) => `stopped watching ${r}`)], _aidenhq: { settings_change: [{ kind: "setting", key: "code_review", value: { repos: a.watch ?? [] } }] } });
+  }
+  return undefined;
+};
 const reviewBatches = () => [
-  { id: "b-000000000001", repo: "acme/payments", sha: "4e1a9c2".padEnd(40, "0"), sha7: "4e1a9c2", verdict: "concerns", cost_usd: 6.8, status: "done", started: ago(300), ended: ago(260), option_names: ["Codex code review", "Claude Code review", "Trail of Bits security audit", "React performance (Vercel)"] },
+  { id: "b-000000000001", repo: "acme/payments", sha: "4e1a9c2".padEnd(40, "0"), sha7: "4e1a9c2", verdict: "concerns", cost_usd: 6.8, status: "done", started: ago(300), ended: ago(260), option_names: ["Codex code review", "Claude Code review", "Trail of Bits security audit", "React performance (Vercel)"], published: true, primer_url: "https://primer.example.com/d/4e1a9c2", runs: [{ id: "cr-000000000011", option: "cor.codex-native", names: ["Codex code review"], status: "done", important: 1, nit: 2, pre_existing: 0 }, { id: "cr-000000000012", option: "perf.react", names: ["React performance (Vercel)"], status: "done", important: 0, nit: 0, pre_existing: 0, area: "web" }, { id: "cr-000000000013", option: "perf.react", names: ["React performance (Vercel)"], status: "skipped", important: 0, nit: 0, pre_existing: 0, area: "api", unchanged: "unchanged since 3d4c0aa" }], areas: 2 },
   { id: "b-000000000002", repo: "acme/web", sha: "9b0c7de".padEnd(40, "0"), sha7: "9b0c7de", verdict: null, cost_usd: 1.2, status: "running", started: ago(4), ended: null, option_names: ["Codex code review", "Unused code and dependencies (Knip)"] },
 ];
 const CATALOG_ROWS: [string, string, string, string, string, boolean, boolean, string, string, string | null][] = [
@@ -414,6 +452,7 @@ const PAST: Record<string, { model: string; effort: string; n: number; usd: numb
   "sec.tob-audit": [{ model: "anthropic/claude-sonnet-5.5", effort: "high", n: 1, usd: 4.8 }],
 };
 const catalog = () => ({ sha: "6018f7c2f0b7d".padEnd(40, "0"), options: CATALOG_ROWS.map(([id, name, description, lens, kind, recommended, runs_code, cost, repo, unavailable]) => ({ id, name, description, lens, kind, recommended: recommended && !unavailable, runs_code, cost, source: { repo, version: "1.0.0", licence: "MIT" }, ...(PAST[id] ? { past: PAST[id] } : {}), ...(unavailable ? { unavailable } : {}) })) });
+const ENGINES = { codex: { label: "Codex", accepts: { tools: true }, efforts: ["low", "medium", "high"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "deepseek/deepseek-v4-pro", "z-ai/glm-5.3"], run_usd: 5 }, "claude-code": { label: "Claude Code", accepts: { provider: "anthropic" }, efforts: ["low", "medium", "high"], models: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"], run_usd: 5 }, codegenie: { label: "Codegenie", accepts: { tools: true }, efforts: ["low", "medium"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"], run_usd: 5 }, "codex-native": { label: "Codex native", accepts: { tools: true }, efforts: ["low", "medium"], models: ["openai/gpt-6.2-sol", "~openai/gpt-sol-latest"], run_usd: 5 } };
 const REPORT = "# Repo review: acme/payments\n\n**Verdict:** concerns, at `4e1a9c2`\n\n## Security\n\n- **Important** `src/billing/charge.ts:88`: a retried charge can post twice.\n  - Evidence: the idempotency key is written after the provider call.\n  - Found by: sec.quick-scan\n\n## Coverage\n\n| Option | Result |\n| --- | --- |\n| sec.quick-scan | done |\n| maint.knip | done |\n\nCost $6.80.";
 
 function route(method: string, url: URL): [number, unknown] {
@@ -421,18 +460,11 @@ function route(method: string, url: URL): [number, unknown] {
   if (one && method === "GET") { const a = approvals().find((x) => x.id === one); return a ? [200, { approval: a }] : [404, { error: "no such card" }]; }
   const p = url.pathname;
   if (method === "POST" && /^\/api\/issues\/[^/]+\/answer$/.test(p)) return p.split("/")[3] === "WOR-821" ? [409, { error: "Already answered, or the question changed." }] : [200, { identifier: p.split("/")[3], message: "m-1" }];
-  if (method === "POST" && p === "/api/reviews") return [200, { batch: "b-000000000003" }];
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   if (p.startsWith("/api/models/")) return [200, { default: "openrouter/~deepseek/deepseek-flash-latest", models: ["openrouter/~deepseek/deepseek-flash-latest", "openrouter/~openai/gpt-luna-latest", "openrouter/z-ai/glm-5.3"], efforts: ["low", "medium", "high"] }];
   const m = (re: RegExp) => re.exec(p);
   switch (p) {
-    case "/api/reviews/setup": return [200, { module: true, github: { configured: true, connected: true, state: "ok" }, config: { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ ...REVIEW_COMBO, effort: "low" }] }], day_usd: 200 }, problems: [] }];
-    case "/api/reviews": return [200, { runs: reviewRuns(), batches: reviewBatches() }];
-    case "/api/reviews/repos": return [200, { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [], day_usd: 200, day_spent_usd: 3.2 }], day_usd: 200, day_spent_usd: 3.2 }];
-    case "/api/reviews/engines": return [200, { engines: { codex: { label: "Codex", accepts: { tools: true }, efforts: ["low", "medium", "high"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "deepseek/deepseek-v4-pro", "z-ai/glm-5.3"], run_usd: 5 }, "claude-code": { label: "Claude Code", accepts: { provider: "anthropic" }, efforts: ["low", "medium", "high"], models: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"], run_usd: 5 }, codegenie: { label: "Codegenie", accepts: { tools: true }, efforts: ["low", "medium"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"], run_usd: 5 }, "codex-native": { label: "Codex native", accepts: { tools: true }, efforts: ["low", "medium"], models: ["openai/gpt-6.2-sol", "~openai/gpt-sol-latest"], run_usd: 5 } } }];
     case "/api/model-catalog": return [200, { models: MODEL_CATALOG }];
-    case "/api/reviews/available": return [200, { repos: [{ repo: "acme/payments", private: true }, { repo: "acme/web", private: true }, { repo: "acme/docs", private: false }] }];
-    case "/api/reviews/catalog": return [200, catalog()];
     case "/api/session": return [200, { mode: "lan", account: { id: "u1", email: mock.email, name: "Alex", role: "admin", owner: true }, signInConnect: true, adminUrl: "http://127.0.0.1:3120" }];
     case "/api/board": return [200, board()];
     case "/api/search": return search(url.searchParams.get("q") ?? "", url.searchParams.get("after"));
@@ -470,7 +502,6 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/costs/features": return [200, { features: [], unattributed: { usd: 0, calls: 0 } }];
   }
   let x: RegExpExecArray | null;
-  if (m(/^\/api\/reviews\/report\/[\w-]+$/)) return [200, { markdown: REPORT }];
   if ((x = m(/^\/api\/chats\/([^/]+)$/))) return [200, chatDetail(decodeURIComponent(x[1]!))];
   if ((x = m(/^\/api\/issues\/([^/]+)\/feature-cost$/))) return [200, { cost: null }];
   if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, lineage(decodeURIComponent(x[1]!))];
@@ -523,6 +554,10 @@ createServer((req, res) => {
     res.write("event: ping\ndata: {}\n\n");
     const t = setInterval(() => res.write("event: ping\ndata: {}\n\n"), 20_000);
     return req.on("close", () => clearInterval(t));
+  }
+  if (url.pathname === "/api/pages/code-review/frame") {
+    const dir = new URL("../../../../modules/code-review/service/src/", import.meta.url), read = (f: string) => readFileSync(new URL(f, dir), "utf8");
+    return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(read("page.html").replace("/*kit:css*/", () => read("page-kit.css")).replace("/*kit:js*/", () => read("page-kit.js")));
   }
   if (url.pathname === "/api/pages/notes/frame") return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(readFileSync(new URL("./example-view.html", import.meta.url)));
   let text = "";

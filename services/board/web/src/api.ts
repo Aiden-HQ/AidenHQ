@@ -3,7 +3,6 @@ import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, As
 import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
-import type { Catalog, CodeReview, Combo, EngineCatalog, FindingRow, Gate, ReposView, Review, ReviewInsights, Run, TreeBatch, TreeRequest } from "../../src/reviews";
 import type { CatalogModel } from "../../src/model-catalog";
 import type { BrowseModule, GrantConnection, MarketplaceRow, SavedView, ViewSpec, WorkCard } from "./types";
 
@@ -41,14 +40,6 @@ function base64(file: File): Promise<string> {
     reader.onerror = () => reject(new Error(`couldn't read ${file.name}`));
     reader.readAsDataURL(file);
   });
-}
-
-/** The Reviews page's first read: whether the module is on, GitHub signed in, and settings.code_review as compiled. */
-export interface ReviewsSetup {
-  module: boolean;
-  github: { configured: boolean; connected: boolean; state: string | null };
-  config: CodeReview | null;
-  problems: string[];
 }
 
 /** Not signed in (or the session ended), or an admin without an authenticator yet. */
@@ -342,22 +333,7 @@ export const api = {
   module: (name: string) => call<ModuleDetail>("GET", `/api/modules/${encodeURIComponent(name)}`),
   /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
   settings: () => call<SettingsData>("GET", "/api/settings"),
-  /** The Reviews page (Reviews.tsx): the code-review module's setup, runs, repos and the owner's settings change. */
-  reviewsSetup: () => call<ReviewsSetup>("GET", "/api/reviews/setup"),
-  reviews: (q: { repo?: string; status?: string; limit?: number } = {}) => call<{ runs: Run[]; batches?: TreeBatch[] }>("GET", `/api/reviews?${new URLSearchParams(Object.entries(q).flatMap(([k, v]) => (v === undefined || v === "" ? [] : [[k, String(v)]])))}`),
-  review: (id: string) => call<{ run: Run; review: Review | null; findings: FindingRow[]; gate: Gate | null }>("GET", `/api/reviews/run/${encodeURIComponent(id)}`),
-  dismissFinding: (b: { repo: string; number: number; id: string; reason: string }) => call<{ dismissed: string }>("POST", "/api/reviews/dismiss", b),
-  reviewRepos: () => call<ReposView>("GET", "/api/reviews/repos"),
   modelCatalog: () => call<{ models: CatalogModel[] }>("GET", "/api/model-catalog"),
-  reviewEngines: () => call<{ engines: EngineCatalog }>("GET", "/api/reviews/engines"),
-  reviewAvailable: (q: string) => call<{ repos: { repo: string; private: boolean; pushed_at?: string }[] }>("GET", `/api/reviews/available?q=${encodeURIComponent(q)}`),
-  reviewInsights: (days: number) => call<ReviewInsights>("GET", `/api/reviews/insights?days=${days}`),
-  reviewRun: (body: { pr_url: string; combos?: Combo[]; focus?: string; full?: boolean }) => call<{ runs: Run[] }>("POST", "/api/reviews", body),
-  reviewCatalog: (repo: string, commit?: string) => call<Catalog>("GET", `/api/reviews/catalog?${new URLSearchParams({ repo, ...(commit ? { commit } : {}) })}`),
-  reviewTreeRun: (body: TreeRequest) => call<{ batch: string }>("POST", "/api/reviews", body),
-  reviewReport: (batch: string) => call<{ markdown: string }>("GET", `/api/reviews/report/${encodeURIComponent(batch)}`),
-  /** settings.code_review, and/or a GitHub org reviews may post in as the owner, as one settings change. */
-  reviewConfig: (body: { value: CodeReview }) => call<{ identifier: string }>("POST", "/api/reviews/config", body),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
   /** Files a settings change as the Engineer's task; its commit becomes an apply card. */
   testGoogle: () => call<{ ok: true } | { ok: false; message: string; fix?: string }>("POST", "/api/google/check"),

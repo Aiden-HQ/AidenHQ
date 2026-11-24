@@ -1,0 +1,464 @@
+<!doctype html>
+<!-- Code review's Reviews page: an MCP Apps view (text/html;profile=mcp-app) the code_review connection serves as ui://code-review/page.
+     Its own parts only: the shared kit (services/shared/page-kit.css and .js: the bridge, helpers and common styles) is inlined where the
+     markers sit (mcp.ts pageHtml). Calls only the code_review_* tools declared on the page (module.yaml board.pages) through the host; as the
+     owner, code_review_configure only proposes: the board shows the change and files it on his Save. PR titles, findings and reports are
+     strangers' or a model's words: set as text only, and shown as text (the frame has no navigation, so a URL is not a link).
+     docs/design/board-ui.md "Modules". -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/*kit:css*/
+  :root { --bad: #d4493f; --warn: #c98a1b; --good: #2f9e6f; }
+  body { gap: 12px; grid-template-columns: minmax(0, 1fr); }
+  .card, .bar, .pad, .row > * { min-width: 0; }
+  .pad, .mono, .soft, .row .repo { overflow-wrap: anywhere; }
+  .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); flex: 1 1 auto; min-width: 0; }
+  .tabs button { height: 32px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--soft); padding: 0 12px; margin-bottom: -1px; }
+  .tabs button[aria-selected=true] { color: inherit; border-bottom-color: var(--accent); font-weight: 560; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--soft); margin-right: 6px; vertical-align: 1px; }
+  .dot.busy { background: var(--accent); } .dot.done { background: var(--good); } .dot.failed { background: var(--bad); }
+  .link { cursor: pointer; }
+  .link:hover, .link:focus-visible { background: color-mix(in srgb, var(--line) 14%, transparent); outline: none; }
+  .run { grid-template-columns: 104px minmax(0, 2fr) minmax(0, 1.3fr) 150px 56px 64px; }
+  .run .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run .ttl small { display: block; color: var(--soft); overflow: hidden; text-overflow: ellipsis; }
+  .num { text-align: right; color: var(--soft); font-variant-numeric: tabular-nums; }
+  .sev { display: inline-flex; gap: 10px; }
+  .sev span { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+  .sev i { width: 6px; height: 6px; border-radius: 2px; background: var(--soft); }
+  .sev .important i { background: var(--bad); } .sev .nit i { background: var(--warn); }
+  .sev .zero { opacity: .4; }
+  .filters { display: flex; gap: 8px; align-items: center; }
+  .filters select { width: auto; }
+  .banner { padding: 8px 14px; border-radius: var(--r); border: 1px solid var(--line); background: var(--color-background-secondary, Canvas); }
+  .banner.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); } .banner.bad { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); color: var(--color-text-danger, var(--bad)); }
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+  .stack { display: grid; gap: 12px; min-width: 0; }
+  .pad { padding: 12px 14px; display: grid; gap: 8px; }
+  .finding { padding: 10px 14px; border-top: 1px solid var(--line); display: grid; gap: 4px; box-shadow: inset 2px 0 0 var(--soft); }
+  .finding:first-of-type { border-top: 0; }
+  .finding.important { box-shadow: inset 2px 0 0 var(--bad); } .finding.nit { box-shadow: inset 2px 0 0 var(--warn); }
+  .finding h4 { margin: 0; font-size: 13.5px; font-weight: 600; }
+  .finding p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .finding pre, .report { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .finding summary { color: var(--soft); cursor: pointer; }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+  .facts dt { color: var(--soft); } .facts dd { margin: 0; overflow-wrap: anywhere; }
+  .open { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+  .open form { grid-column: 1 / -1; display: flex; gap: 8px; }
+  .gate { display: grid; gap: 6px; }
+  .rep { grid-template-columns: minmax(150px, 1.4fr) minmax(0, 2.4fr) 90px 120px; }
+  .rep .sum { color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .edit { padding: 10px 14px 14px; border-top: 1px solid var(--line); display: grid; gap: 12px; background: color-mix(in srgb, var(--line) 6%, transparent); }
+  .edit .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 14px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 14px; }
+  .intro { padding: 12px 14px; color: var(--soft); max-width: 90ch; }
+  .tip { display: inline-block; position: relative; margin-left: 6px; vertical-align: middle; }
+  .tip summary { list-style: none; cursor: pointer; width: 16px; height: 16px; line-height: 14px; text-align: center; font-size: 11px; border: 1px solid var(--line); border-radius: 4px; color: var(--soft); }
+  .tip summary::-webkit-details-marker { display: none; }
+  .tip[open] summary { color: inherit; border-color: var(--accent); }
+  .tip div { position: absolute; z-index: 5; left: 0; top: 22px; width: min(320px, 70vw); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--color-background-primary, Canvas); color: var(--color-text-primary, CanvasText); font-size: 12.5px; font-weight: 400; text-transform: none; letter-spacing: 0; box-shadow: 0 4px 14px rgb(0 0 0 / .18); }
+  .field { display: grid; gap: 3px; align-content: start; } .field > span { color: var(--soft); font-size: 12px; }
+  .field textarea { font: inherit; min-height: 60px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; resize: vertical; }
+  .combos { display: grid; gap: 6px; }
+  .combo { display: grid; grid-template-columns: minmax(96px, 1fr) minmax(0, 2fr) 90px auto auto; gap: 6px; align-items: center; }
+  .combo label { display: inline-flex; align-items: center; gap: 6px; color: var(--soft); white-space: nowrap; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .lens { padding: 10px 14px; border-top: 1px solid var(--line); display: grid; gap: 6px; }
+  .lens h4 { margin: 0; font-size: 12px; color: var(--soft); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+  .opt { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+  .opt.off { opacity: .5; } .opt small { color: var(--soft); display: block; }
+  .days { display: flex; align-items: flex-end; gap: 2px; height: 56px; padding: 8px 14px 0; }
+  .days i { flex: 1; min-width: 2px; background: var(--accent); opacity: .75; border-radius: 2px 2px 0 0; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; padding: 12px 14px; }
+  .tiles b { display: block; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; } .tiles small { color: var(--soft); }
+  .two { grid-template-columns: minmax(0, 1fr) 90px 80px 80px; }
+  @media (max-width: 860px) {
+    .run { grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 14px; }
+    .run .ttl { grid-column: 1 / -1; grid-row: 2; white-space: normal; } .run .who { grid-column: 1 / -1; grid-row: 3; } .run .sevc { grid-column: 1; }
+    .split { grid-template-columns: 1fr; }
+    .rep { grid-template-columns: 1fr auto; } .rep .sum { grid-column: 1 / -1; white-space: normal; }
+    .combo { grid-template-columns: 1fr 1fr; } .combo .model { grid-column: 1 / -1; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="note" id="note" role="status"></div>
+<div id="lists"></div>
+<script>
+/*kit:js*/
+  let ov = null;                       // the overview: runs, batches, repos, engines, setting
+  let tab = "reviews", route = { page: "list" }, detail = null, report = null, catalog = null, form = null;
+  let filter = "all", repoFilter = "", days = 30, open = new Set();
+  // The edits the owner hasn't saved yet, one proposal for the page: field changes per repo, and repos to stop watching. Each edit merges into it.
+  let pending = { watch: {}, unwatch: [] };
+
+  const SKIPS = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", closed: "PR closed", stopped: "Reviews stopped on this PR", superseded: "A newer push replaced it" };
+  const STATUS = { queued: ["", "Queued"], waiting: ["busy", "Waiting"], running: ["busy", "Reviewing"], done: ["done", "Reviewed"], skipped: ["", "Skipped"], failed: ["failed", "Failed"] };
+  const VERDICTS = { blocked: "Blocked", concerns: "Concerns", incomplete: "Incomplete", clean: "Clean" };
+  const SEV = [["important", "Important"], ["nit", "Nit"], ["pre_existing", "Pre-existing"]];
+  const OUTCOMES = { fixed: "Fixed", dismissed: "Dismissed", open_at_merge: "Open at merge", open_at_close: "Open at close" };
+  const LENSES = { correctness: "Correctness", security: "Security", maintainability: "Maintainability", performance: "Performance" };
+  const live = (r) => r.status === "queued" || r.status === "waiting" || r.status === "running";
+  const skipWords = (why) => { if (!why) return "Skipped"; const k = why.split(":")[0].trim().toLowerCase(); return SKIPS[k] ?? why.replace(/^./, (c) => c.toUpperCase()); };
+  const usd = (n) => (n == null ? "—" : `$${Number(n).toFixed(2)}`);
+  const short = (s) => String(s ?? "").slice(0, 7);
+  const when = (r) => r.started ?? r.ended ?? new Date().toISOString();
+  const ago = (t) => { const s = (Date.now() - Date.parse(t)) / 1000; if (!(s >= 90)) return "now"; const m = s / 60; if (m < 90) return `${Math.round(m)}m`; const hr = m / 60; return hr < 36 ? `${Math.round(hr)}h` : `${Math.round(hr / 24)}d`; };
+  const took = (r) => (r.duration_ms != null ? (r.duration_ms >= 60000 ? `${Math.floor(r.duration_ms / 60000)}m ${Math.round((r.duration_ms % 60000) / 1000)}s` : `${Math.max(1, Math.round(r.duration_ms / 1000))}s`) : null);
+  const tokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
+  const engineLabel = (k) => ov?.engines?.[k]?.label ?? k;
+  const comboLabel = (c) => `${engineLabel(c.engine)} · ${String(c.model).replace(/^~/, "").split("/").pop()} · ${c.effort}`;
+  const fail = (e) => say(e.message, true);
+
+  const t = (tag, cls, text, props) => h(tag, { className: cls ?? "", ...(text !== undefined ? { textContent: text } : {}), ...(props ?? {}) });
+  const btn = (text, fn, cls, props) => { const b = h("button", { type: "button", textContent: text, className: cls ?? "", ...(props ?? {}) }); b.addEventListener("click", fn); return b; };
+  const clickable = (el, fn) => { el.classList.add("link"); el.tabIndex = 0; el.setAttribute("role", "button"); el.addEventListener("click", fn); el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); } }); return el; };
+  const select = (options, value, fn, label) => { const s = h("select", { ariaLabel: label }); for (const [v, text] of options) s.append(h("option", { value: v, textContent: text, selected: v === value })); s.addEventListener("change", () => fn(s.value)); return s; };
+  const check = (on, label, fn) => { const b = h("input", { type: "checkbox", checked: !!on, ariaLabel: label }); b.addEventListener("change", () => fn(b.checked)); return b; };
+  const tip = (text) => h("details", { className: "tip" }, h("summary", { textContent: "?", title: "What is this?", ariaLabel: "What is this?" }), h("div", { textContent: text }));
+  const field = (label, control, help) => h("div", { className: "field" }, h("span", { textContent: label }, help ? tip(help) : null), control);
+  const sevMarks = (v, words) => h("span", { className: "sev", ariaLabel: SEV.map(([k, n]) => `${v[k]} ${n.toLowerCase()}`).join(", ") }, ...SEV.map(([k, n]) => h("span", { className: `${k}${v[k] ? "" : " zero"}`, title: `${v[k]} ${n.toLowerCase()}` }, h("i"), `${v[k]}${words ? " " + n.toLowerCase() : ""}`)));
+  const status = (s) => { const [tone, word] = STATUS[s] ?? ["", s]; return h("span", {}, h("span", { className: `dot ${tone}` }), word); };
+  const card = (title, aside, ...kids) => h("div", { className: "card" }, title ? h("div", { className: "head" }, h("b", { textContent: title }), aside ?? h("span")) : null, ...kids);
+  const go = (r) => { route = r; detail = null; report = null; render(); window.scrollTo?.(0, 0); if (r.page === "run") loadDetail(); if (r.page === "batch") loadReport(); };
+  const back = () => h("div", { className: "bar" }, btn("← Reviews", () => go({ page: "list" })));
+
+  /* -------------------------------------------------------------------------------- reads */
+  async function loadOverview() {
+    try {
+      ov = await tool("code_review_overview", {});
+      $("lists").replaceChildren(...Object.entries(ov.engines).map(([k, e]) => h("datalist", { id: `models-${k}` }, ...e.models.map((m) => h("option", { value: m })))));
+      render();
+    } catch (e) { fail(e); }
+  }
+  async function loadDetail() { const id = route.id; try { const d = await tool("code_review_run_detail", { id }); if (route.id === id) { detail = d; render(); } } catch (e) { fail(e); } }
+  async function loadReport() { const id = route.id; try { const r = await tool("code_review_report", { batch: id }); if (route.id === id) { report = r.markdown; render(); } } catch (e) { if (route.id === id) { report = ""; say(e.message, true); render(); } } }
+  // Runs under way are followed.
+  setInterval(() => {
+    if (!ov) return;
+    if (route.page === "run" && detail && live(detail.run)) loadDetail();
+    else if (route.page === "batch") { const b = ov.batches.find((x) => x.id === route.id); if (!b || b.status === "running" || (b.status === "done" && !b.published)) { loadOverview(); if (b?.status === "done" && report === null) loadReport(); } }
+    else if (route.page === "list" && (ov.runs.some(live) || ov.batches.some(live))) loadOverview();
+  }, 6000);
+
+  /* -------------------------------------------------------------------------------- the owner's settings proposal */
+  async function propose() {
+    const watch = Object.entries(pending.watch).map(([repo, f]) => ({ repo, ...f })), unwatch = [...pending.unwatch];
+    render();
+    if (!watch.length && !unwatch.length) return;
+    await inOrder(async () => { try { proposed(await tool("code_review_configure", { ...(watch.length ? { watch } : {}), ...(unwatch.length ? { unwatch } : {}) })); } catch (e) { say(e.message, true); } });
+  }
+  const edit = (repo, fields) => { pending.watch[repo] = { ...(pending.watch[repo] ?? {}), ...fields }; pending.unwatch = pending.unwatch.filter((r) => r !== repo); return propose(); };
+  const shown = (r) => ({ ...r, ...(pending.watch[r.repo] ?? {}) });
+
+  /* -------------------------------------------------------------------------------- combos */
+  /** A list of combos (engine, model, effort, and for a gated repo whether it is mandatory); at most 4. */
+  function combos(label, list, onChange, gates) {
+    const box = h("div", { className: "combos", role: "group", ariaLabel: label });
+    if (!list.length) box.append(t("span", "soft", gates ? "None" : "The repo's own default"));
+    list.forEach((c, i) => {
+      const e = ov.engines[c.engine] ?? Object.values(ov.engines)[0];
+      const swap = (v) => onChange(list.map((x, j) => (j === i ? { engine: v, model: ov.engines[v].models[0], effort: ov.engines[v].efforts.includes(x.effort) ? x.effort : "medium", ...(x.mandatory ? { mandatory: true } : {}) } : x)));
+      const set = (patch) => onChange(list.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+      const model = h("input", { type: "text", value: c.model, ariaLabel: `${label} ${i + 1} model`, autocomplete: "off", spellcheck: false, className: "model" });
+      model.setAttribute("list", `models-${c.engine}`);
+      model.addEventListener("change", () => set({ model: model.value.trim() }));
+      box.append(h("div", { className: "combo" },
+        select(Object.entries(ov.engines).map(([k, v]) => [k, v.label]), c.engine, swap, `${label} ${i + 1} engine`), model,
+        select(e.efforts.map((x) => [x, x]), c.effort, (x) => set({ effort: x }), `${label} ${i + 1} effort`),
+        gates ? h("label", {}, check(c.mandatory, `${label} ${i + 1} mandatory`, (on) => { const { mandatory: _m, ...rest } = c; set(on ? { ...rest, mandatory: true } : rest); }), "Mandatory", tip("Mandatory: the PR can merge only after this reviewer has looked at its latest version and every important finding is fixed, answered or dismissed. Leave it off for an advisory review.")) : h("span"),
+        btn("Remove", () => onChange(list.filter((_, j) => j !== i)), "", { ariaLabel: `Remove ${label} ${i + 1}` })));
+    });
+    if (list.length < 4) box.append(h("div", {}, btn("Add", () => onChange([...list, { engine: "codex", model: ov.engines.codex.models[0], effort: "medium" }]))));
+    return box;
+  }
+
+  /* -------------------------------------------------------------------------------- Reviews tab */
+  function runRow(r) {
+    const title = r.status === "skipped" ? skipWords(r.why) : r.status === "failed" ? (r.why ?? "The review didn't finish") : (r.title ?? `at ${short(r.head)}`);
+    const who = r.kind !== "auto" ? (r.kind === "command" ? "asked on GitHub" : "one-off") : "";
+    return clickable(h("div", { className: "row run" },
+      status(r.status),
+      h("div", { className: "ttl", title: r.title ?? "" }, h("b", { textContent: `${r.repo} #${r.number}` }), h("small", { textContent: title })),
+      h("div", { className: "who soft", textContent: comboLabel(r) + (who ? ` · ${who}` : "") }),
+      h("div", { className: "sevc" }, r.status === "done" ? sevMarks(r) : h("span")),
+      h("div", { className: "num", textContent: r.cost_usd ? usd(r.cost_usd) : "" }),
+      h("div", { className: "num", textContent: r.status === "queued" ? "queued" : ago(r.ended ?? when(r)) })), () => go({ page: "run", id: r.id }));
+  }
+  function batchRow(b) {
+    return clickable(h("div", { className: "row run" },
+      status(b.status === "done" ? "done" : b.status),
+      h("div", { className: "ttl" }, h("b", { textContent: `${b.repo} ` }), h("span", { className: "mono", textContent: b.sha7 }), h("small", { textContent: b.status === "failed" || b.status === "skipped" ? (b.why ?? "") : `Whole-repo review: ${(b.option_names ?? []).slice(0, 4).join(", ")}${(b.option_names ?? []).length > 4 ? ` and ${b.option_names.length - 4} more` : ""}` })),
+      h("div", { className: "who soft", textContent: b.verdict ? VERDICTS[b.verdict] : "" }), h("div"),
+      h("div", { className: "num", textContent: b.cost_usd ? usd(b.cost_usd) : "" }),
+      h("div", { className: "num", textContent: ago(b.ended ?? b.started) })), () => go({ page: "batch", id: b.id }));
+  }
+  function reviewsTab() {
+    const runs = ov.runs.filter((r) => (!repoFilter || r.repo === repoFilter) && (filter === "all" || (filter === "important" ? r.important > 0 : r.status === "skipped" || r.status === "failed")));
+    const batches = ov.batches.filter((b) => (!repoFilter || b.repo === repoFilter) && (filter === "all" || (filter === "important" ? b.verdict === "blocked" || b.verdict === "concerns" : b.status === "skipped" || b.status === "failed")));
+    const names = [...new Set([...ov.runs.map((r) => r.repo), ...ov.batches.map((b) => b.repo)])].sort();
+    const bad = ov.runs.filter((r) => r.status === "skipped" || r.status === "failed").length, imp = ov.runs.filter((r) => r.important > 0).length;
+    const out = [];
+    if (batches.length) out.push(card("Repo reviews", h("small", { textContent: String(batches.length) }), ...batches.map(batchRow)));
+    out.push(card("Recent reviews", h("div", { className: "filters" },
+      names.length > 1 ? select([["", "All repos"], ...names.map((n) => [n, n])], repoFilter, (v) => { repoFilter = v; render(); }, "Repo") : h("span"),
+      select([["all", "All"], ["important", `Important (${imp})`], ["skipped", `Skipped or failed (${bad})`]], filter, (v) => { filter = v; render(); }, "Show")),
+      ...(runs.length ? [h("div", { className: "row cols run" }, ...["Status", "Pull request", "Reviewer", "Findings", "Cost", "When"].map((x, i) => h("span", { textContent: x, className: i > 3 ? "num" : "" }))), ...runs.map(runRow)]
+        : [t("div", "empty", ov.runs.length || ov.batches.length ? "No reviews match this filter." : "No reviews yet. Watch a repo under Repos and the first review starts when it gets a pull request, or press Review a PR to try one now.")])));
+    return out;
+  }
+
+  /* -------------------------------------------------------------------------------- one run */
+  function runPage() {
+    if (!detail) return [back(), t("div", "empty", "Loading…")];
+    const { run, review, findings, gate } = detail;
+    const outcomes = new Map(findings.map((f) => [f.id, f.outcome]));
+    const out = [back()];
+    out.push(card(null, null, h("div", { className: "pad" },
+      h("div", { className: "bar" }, h("b", { textContent: run.target === "tree" ? `${run.repo} @ ${short(run.head)}` : `${run.repo} #${run.number}` }), status(run.status), t("span", "soft", comboLabel(run)), run.status === "done" ? sevMarks(run, true) : h("span"),
+        h("span", { style: "flex:1" }),
+        run.target === "tree" ? (run.batch ? btn("Repo review", () => go({ page: "batch", id: run.batch })) : h("span")) : btn("Review again", () => { form = { url: `https://github.com/${run.repo}/pull/${run.number}`, combos: [], focus: "", full: false }; go({ page: "pr" }); })),
+      run.title ? t("div", "soft", run.title) : null,
+      t("div", "soft mono", run.review_url ?? run.url ?? ""))));
+    if (run.status === "skipped") out.push(t("div", "banner warn", `Skipped: ${skipWords(run.why)}.${run.target === "tree" && run.why?.startsWith("unchanged") ? (findings.length ? " Its open findings from that review are listed here." : " Nothing was open in it.") : ""}`));
+    if (run.status === "failed") out.push(t("div", "banner bad", `The review didn't finish${run.why ? `: ${run.why}` : ""}. Nothing was posted. Ask again with “Review again”, or comment “aiden review” on the PR.`));
+    if (review?.coverage?.incomplete) out.push(t("div", "banner warn", `Partial review: ${review.coverage.incomplete}. Files outside the reviewed set weren't checked, so fewer findings here doesn't mean clean.`));
+    const main = [];
+    if (live(run)) main.push(card(null, null, t("div", "pad", `${run.status === "running" ? "Reading the diff and checking each finding" : "Waiting for a free slot"}. ${run.started ? `Started ${ago(run.started)} ago. ` : ""}This page updates when it's done.`)));
+    else if (review) {
+      if (!review.findings.length) main.push(t("div", "empty", `No issues found in ${review.coverage.reviewed.length} file${review.coverage.reviewed.length === 1 ? "" : "s"}.`));
+      for (const [sev, name] of SEV) {
+        const list = review.findings.filter((f) => f.severity === sev);
+        if (list.length) main.push(card(name, h("small", { textContent: String(list.length) }), ...list.map((f) => finding(f, outcomes.get(f.id)))));
+      }
+    } else if (findings.length) main.push(card("Findings", h("small", { textContent: String(findings.length) }), ...findings.map((f) => h("div", { className: `finding ${f.severity}` }, h("h4", { textContent: f.title }), h("div", { className: "mono soft", textContent: `${f.path}:${f.line}${f.outcome ? ` · ${OUTCOMES[f.outcome]}` : ""}` })))));
+    else if (run.status === "done") main.push(t("div", "empty", "The findings of this run are no longer kept."));
+    const side = [];
+    if (gate) side.push(gateCard(run, gate));
+    side.push(card("Details", null, h("div", { className: "pad" }, facts([
+      ["Reviewed by", comboLabel(run)], ["Asked by", run.kind === "auto" ? "Repo trigger" : run.kind === "command" ? "aiden review on GitHub" : "One-off"], ["Head", short(run.head)],
+      review ? ["Scope", review.full || !review.incremental_from ? "Whole PR" : `Changes since ${short(review.incremental_from)}`] : null,
+      review ? ["Files", `${review.coverage.reviewed.length} reviewed${review.coverage.excluded.length ? `, ${review.coverage.excluded.length} excluded` : ""}`] : null,
+      ["Cost", usd(run.cost_usd)], run.tokens_in || run.tokens_out ? ["Tokens", `${tokens(run.tokens_in)} in, ${tokens(run.tokens_out)} out`] : null,
+      ["When", new Date(when(run)).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })], took(run) ? ["Took", took(run)] : null]))));
+    if (review && review.withheld.important + review.withheld.nit + review.withheld.pre_existing > 0) side.push(card("Not posted again", null, h("div", { className: "pad" }, t("span", "soft", "Already on the PR from an earlier review of this branch:"), sevMarks(review.withheld))));
+    if (review?.stale_guidance?.length) side.push(card("Guidance this change may make stale", null, h("div", { className: "pad" }, ...review.stale_guidance.map((g) => t("div", "", g)))));
+    if (review?.coverage?.excluded?.length) side.push(card(null, null, h("details", { className: "pad" }, h("summary", { textContent: `Excluded files (${review.coverage.excluded.length})` }), ...review.coverage.excluded.map((f) => t("div", "mono", f)))));
+    out.push(h("div", { className: "split" }, h("div", { className: "stack" }, ...main), h("div", { className: "stack" }, ...side)));
+    return out;
+  }
+  const facts = (items) => h("dl", { className: "facts" }, ...items.filter(Boolean).flatMap(([k, v]) => [h("dt", { textContent: k }), h("dd", { textContent: v })]));
+  function finding(f, outcome) {
+    const where = `${f.path}:${f.line}${f.end_line && f.end_line !== f.line ? `-${f.end_line}` : ""}`;
+    return h("div", { className: `finding ${f.severity}` },
+      h("div", { className: "bar" }, h("h4", { textContent: f.title }), outcome ? t("span", "tag", OUTCOMES[outcome]) : null),
+      t("div", "mono soft", where), t("p", "", f.why),
+      h("details", {}, h("summary", { textContent: "Why flagged" }), h("pre", { textContent: f.evidence }), h("p", {}, h("b", { textContent: "Wanted: " }), f.fix_brief)));
+  }
+  /** A gated repo's merge verdict for the PR's current head: why it waits, and a Dismiss (with a reason) for each open important finding. */
+  function gateCard(run, gate) {
+    const open = gate.open.map((f) => {
+      const row = h("div", { className: "open" }, h("span", {}, h("span", { className: "mono", textContent: `${f.path}:${f.line}` }), ` ${f.title}`));
+      const ask = btn("Dismiss", () => {
+        ask.disabled = true;
+        const why = h("input", { type: "text", ariaLabel: "Why", placeholder: "Why: kept with the finding", autocomplete: "off" });
+        const go1 = btn("Dismiss", async () => { if (!why.value.trim()) return; go1.disabled = true; try { await tool("code_review_dismiss", { repo: run.repo, number: run.number, id: f.id, reason: why.value.trim() }); say(""); loadDetail(); } catch (e) { go1.disabled = false; fail(e); } }, "primary");
+        row.append(h("form", {}, why, go1, btn("Cancel", () => { ask.disabled = false; row.querySelector("form").remove(); })));
+        why.focus();
+      });
+      row.append(ask);
+      return row;
+    });
+    return card("Merge gate", h("span", {}, h("span", { className: `dot ${gate.verdict === "pass" ? "done" : "busy"}` }), gate.verdict === "pass" ? "May merge" : "Waiting", tip("This repo requires a mandatory review. The PR can merge once that review has seen its latest version and no important finding is open. Dismissing a finding means you judged it wrong or not worth fixing: it stops blocking the merge, your reason is kept with it, and it opens again if a later review reports it again.")),
+      h("div", { className: "pad gate" }, t("small", "soft mono", short(gate.head)),
+        ...gate.reasons.map((r) => t("span", "", r.text + (r.unblock ? ` ${r.unblock.replace(/^./, (c) => c.toUpperCase())}.` : ""))), ...open));
+  }
+
+  /* -------------------------------------------------------------------------------- one repo review */
+  function batchPage() {
+    const b = ov.batches.find((x) => x.id === route.id);
+    const out = [back()];
+    if (!b) return [...out, t("div", "empty", "This repo review isn't listed any more.")];
+    out.push(card(null, null, h("div", { className: "pad" }, h("div", { className: "bar" }, h("b", { textContent: `${b.repo} ${b.sha7}` }), status(b.status === "done" ? "done" : b.status), b.verdict ? t("span", "tag", VERDICTS[b.verdict]) : h("span"), t("span", "soft", usd(b.cost_usd))),
+      b.primer_url ? t("div", "soft mono", b.primer_url) : null)));
+    if ((b.status === "failed" || b.status === "skipped") && b.why) out.push(t("div", "banner bad", b.why));
+    if (b.status === "done" && b.why) out.push(t("div", "banner warn", `${b.why}. The report is below.`));
+    if (b.status === "done") out.push(card("Report", null, h("div", { className: "pad" }, report === null ? t("span", "soft", "Loading…") : h("pre", { className: "report", textContent: report }))));
+    if (b.runs?.length) {
+      const groups = new Map();
+      for (const r of b.runs) groups.set(r.option, [...(groups.get(r.option) ?? []), r]);
+      const counts = (rs) => `${rs.reduce((n, r) => n + r.important, 0)} important, ${rs.reduce((n, r) => n + r.nit, 0)} nits, ${rs.reduce((n, r) => n + r.pre_existing, 0)} pre-existing`;
+      const rows = [];
+      for (const rs of groups.values()) {
+        const name = (rs[0].names ?? [rs[0].option]).join(", ");
+        if (rs.length === 1 && !rs[0].area) rows.push(clickable(h("div", { className: "pad" }, h("span", {}, h("b", { textContent: name }), ` ${rs[0].unchanged ?? rs[0].status}${rs[0].status === "done" ? `, ${counts(rs)}` : ""}`)), () => go({ page: "run", id: rs[0].id })));
+        else {
+          const fresh = rs.filter((r) => !r.unchanged), done = fresh.filter((r) => r.status === "done");
+          rows.push(h("div", { className: "pad" }, h("span", {}, h("b", { textContent: name }), ` ${done.length} of ${fresh.length} areas reviewed${rs.length > fresh.length ? `, ${rs.length - fresh.length} unchanged` : ""}, ${counts(done)}`),
+            ...rs.map((r) => clickable(t("div", "soft", `${r.area ?? "whole repo"}: ${r.unchanged ?? r.status}${r.status === "done" ? `, ${r.important} important` : ""}`), () => go({ page: "run", id: r.id })))));
+        }
+      }
+      out.push(card("Findings by option", b.areas > 1 ? h("small", { textContent: `${b.areas} areas${b.full ? ", a full review" : ""}` }) : null, ...rows));
+    }
+    return out;
+  }
+
+  /* -------------------------------------------------------------------------------- start a review */
+  function prForm() {
+    form ??= { url: "", combos: [], focus: "", full: false };
+    const valid = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\/?$/.test(form.url.trim());
+    const url = h("input", { type: "text", value: form.url, placeholder: "https://github.com/owner/name/pull/42", ariaLabel: "Pull request link", autocomplete: "off", spellcheck: false });
+    url.addEventListener("input", () => { form.url = url.value; go1.disabled = !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\/?$/.test(form.url.trim()); });
+    const focus = h("input", { type: "text", value: form.focus, placeholder: "Optional: what to look at", ariaLabel: "Focus", autocomplete: "off" });
+    focus.addEventListener("input", () => (form.focus = focus.value));
+    const go1 = btn("Review now", async () => {
+      go1.disabled = true;
+      try {
+        const r = await tool("code_review_run", { pr_url: form.url.trim(), ...(form.combos.length ? { combos: form.combos } : {}), ...(form.focus.trim() ? { focus: form.focus.trim() } : {}), ...(form.full ? { full: true } : {}) });
+        say(""); form = null; await loadOverview(); go(r.runs.length === 1 ? { page: "run", id: r.runs[0].id } : { page: "list" });
+      } catch (e) { go1.disabled = false; fail(e); }
+    }, "primary"); go1.disabled = !valid;
+    return [back(), card("Review a pull request", null, h("div", { className: "pad" },
+      t("span", "soft", "Any open or merged PR your GitHub sign-in can read. It is posted like a watched repo's review, by each reviewer below (the repo's own on_open ones when none are given)."),
+      field("Pull request", url), field("Focus", focus),
+      field("Reviewers", combos("Reviewer", form.combos, (v) => { form.combos = v; render(); })),
+      h("label", { className: "actions" }, check(form.full, "Whole PR", (on) => (form.full = on)), "Review the whole PR, not only what changed since the last review"),
+      h("div", { className: "actions" }, go1, btn("Cancel", () => { form = null; go({ page: "list" }); }))))];
+  }
+  function treeForm() {
+    form ??= { repo: "", commit: "", model: "", effort: "medium", full: false, ticked: new Set() };
+    const repo = h("input", { type: "text", value: form.repo, placeholder: "owner/name", ariaLabel: "Repository", autocomplete: "off", spellcheck: false }), commit = h("input", { type: "text", value: form.commit, placeholder: "Default branch head", ariaLabel: "Commit", autocomplete: "off", spellcheck: false });
+    repo.setAttribute("list", "repos"); repo.addEventListener("input", () => { form.repo = repo.value; catalog = null; if (/^[\w.-]+\/[\w.-]+$/.test(repo.value.trim())) pick(); }); commit.addEventListener("input", () => (form.commit = commit.value));
+    const find = btn("Find checks", () => load(), "", { disabled: false });
+    const load = async () => {
+      if (!/^[\w.-]+\/[\w.-]+$/.test(form.repo.trim())) return say("A repository is owner/name.", true);
+      if (form.commit.trim() && !/^[0-9a-f]{40}$/i.test(form.commit.trim())) return say("A commit is a full 40-character SHA.", true);
+      find.disabled = true; say("Reading the repository…");
+      try { catalog = await tool("code_review_catalog", { repo: form.repo.trim(), ...(form.commit.trim() ? { commit: form.commit.trim() } : {}) }); form.ticked = new Set(catalog.options.filter((o) => o.recommended).map((o) => o.id)); say(""); render(); } catch (e) { find.disabled = false; fail(e); }
+    };
+    const pick = () => { clearTimeout(pick.t); pick.t = setTimeout(async () => { try { const r = await tool("code_review_available", { q: repo.value.trim().slice(0, 100) }); $("lists").querySelector("#repos")?.replaceChildren(...r.repos.slice(0, 40).map((x) => h("option", { value: x.repo }))); } catch {} }, 250); };
+    const out = [back(), card("Review a whole repository", null, h("div", { className: "pad" },
+      t("span", "soft", "Reads a whole repository (not one PR) at one commit with the checks you tick: AI reviews, security scanners and code-quality tools. Press Find checks to see which fit this repo. The report is private to you, in Primer and here."),
+      h("div", { className: "bar" }, h("div", { className: "field", style: "flex:1 1 220px" }, h("span", { textContent: "Repository" }), repo), h("div", { className: "field", style: "flex:1 1 220px" }, h("span", { textContent: "Commit" }), commit), find)))];
+    if (catalog) {
+      const eng = ov.engines.codex, over = form.model !== "";
+      const list = h("div", { className: "card" }, h("div", { className: "head" }, h("b", { textContent: `Checks for ${form.repo.trim()} at ${short(catalog.sha)}` }), t("small", "", `${form.ticked.size} selected`)));
+      for (const lens of Object.keys(LENSES)) {
+        const opts = catalog.options.filter((o) => o.lens === lens && !o.unavailable);
+        if (opts.length) list.append(h("div", { className: "lens" }, h("h4", { textContent: LENSES[lens] }), ...opts.map(opt)));
+      }
+      const cant = catalog.options.filter((o) => o.unavailable);
+      if (cant.length) list.append(h("div", { className: "lens" }, h("h4", { textContent: "Can't run on this repo" }), ...cant.map(opt)));
+      const model = h("input", { type: "text", value: form.model, placeholder: "Each check's own model", ariaLabel: "Review model", autocomplete: "off", spellcheck: false });
+      model.setAttribute("list", "models-codex"); model.addEventListener("change", () => { form.model = model.value.trim(); render(); });
+      const run = btn("Run review", async () => {
+        run.disabled = true;
+        try {
+          const r = await tool("code_review_run", { repo: form.repo.trim(), commit: catalog.sha, options: [...form.ticked], ...(over ? { combo: { model: form.model, effort: eng.efforts.includes(form.effort) ? form.effort : "medium" } } : {}), ...(form.full ? { full: true } : {}) });
+          say(""); form = null; catalog = null; await loadOverview(); go({ page: "batch", id: r.batch });
+        } catch (e) { run.disabled = false; fail(e); }
+      }, "primary"); run.disabled = !form.ticked.size;
+      out.push(list, card("Options", null, h("div", { className: "pad" },
+        h("div", { className: "grid2" }, field("Model for the checks that call one", model), field("Effort", select(eng.efforts.map((x) => [x, x]), form.effort, (v) => (form.effort = v), "Effort"))),
+        h("label", { className: "actions" }, check(form.full, "Full review", (on) => (form.full = on)), "Full review: every area, not only those changed since each check's last review"),
+        h("div", { className: "actions" }, run, btn("Cancel", () => { form = null; catalog = null; go({ page: "list" }); })))));
+    } else out.push(h("div", { className: "actions" }, btn("Cancel", () => { form = null; go({ page: "list" }); })));
+    return out;
+    function opt(o) {
+      const cb = check(form.ticked.has(o.id), o.name, (on) => { on ? form.ticked.add(o.id) : form.ticked.delete(o.id); render(); });
+      cb.disabled = !!o.unavailable;
+      return h("label", { className: `opt${o.unavailable ? " off" : ""}` }, cb, h("span", {}, h("b", { textContent: o.name }), h("small", { textContent: o.unavailable ?? o.description })), t("span", "tag", o.cost));
+    }
+  }
+
+  /* -------------------------------------------------------------------------------- Repos tab */
+  function reposTab() {
+    const rows = ov.repos.repos.map((r) => ({ ...r, gone: pending.unwatch.includes(r.repo) }));
+    const have = new Set(rows.map((r) => r.repo.toLowerCase()));
+    for (const repo of Object.keys(pending.watch)) if (!have.has(repo.toLowerCase())) rows.push({ repo, on_open: [], on_push: [], day_spent_usd: 0, isNew: true });
+    const body = rows.flatMap((raw) => {
+      const r = shown(raw);
+      const head = h("div", { className: raw.gone ? "row rep unsaved" : raw.repo in pending.watch ? "row rep unsaved" : "row rep" },
+        h("div", { className: "repo", textContent: r.repo }, raw.error ? h("i", { textContent: raw.error, title: raw.error }) : null),
+        h("div", { className: "sum", textContent: raw.gone ? "Will stop watching" : `Opens: ${r.on_open.map(comboLabel).join("; ") || "none"} · Pushes: ${r.on_push.map(comboLabel).join("; ") || "none"}` }),
+        h("div", { className: "num", textContent: `${usd(raw.day_spent_usd)} today` }),
+        h("div", { className: "actions" }, raw.gone ? btn("Undo", () => { pending.unwatch = pending.unwatch.filter((x) => x !== raw.repo); propose(); }) : btn(open.has(r.repo) ? "Close" : "Edit", () => { open.has(r.repo) ? open.delete(r.repo) : open.add(r.repo); render(); })));
+      return raw.gone || !open.has(r.repo) ? [head] : [head, editor(r, raw)];
+    });
+    const add = h("form", { className: "add" }), name = h("input", { type: "text", placeholder: "owner/name", ariaLabel: "Repo to watch", autocomplete: "off", spellcheck: false });
+    name.setAttribute("list", "repos");
+    name.addEventListener("focus", async () => { try { const r = await tool("code_review_available", { q: "" }); $("lists").querySelector("#repos")?.replaceChildren(...r.repos.slice(0, 40).map((x) => h("option", { value: x.repo }))); } catch {} }, { once: true });
+    add.append(name, btn("Watch repo", () => addRepo(), "primary"), t("small", "soft", `Spent today across repos: ${usd(ov.repos.day_spent_usd)}. Spend is bounded by the install-wide limits in Settings.`));
+    add.addEventListener("submit", (e) => { e.preventDefault(); addRepo(); });
+    const addRepo = () => {
+      const v = name.value.trim();
+      if (!/^[\w.-]+\/[\w.-]+$/.test(v)) return say("A repo is owner/name.", true);
+      if (ov.repos.repos.some((r) => r.repo.toLowerCase() === v.toLowerCase()) || Object.keys(pending.watch).some((r) => r.toLowerCase() === v.toLowerCase())) return say(`${v} is already watched.`, true);
+      open.add(v); edit(v, {});
+    };
+    return [card("Watched repos", h("small", { textContent: String(ov.repos.repos.length) }),
+      ...(body.length ? body : [t("div", "empty", "No repo is watched yet. Type owner/name below and press Watch repo: new PRs there are then reviewed with the default reviewers, which you can change by pressing Edit.")]), add),
+      ...(ov.problems?.length ? [t("div", "banner warn", `The setting has problems: ${ov.problems.slice(0, 3).join("; ")}`)] : [])];
+  }
+  function editor(r, raw) {
+    const rounds = h("input", { type: "text", value: r.push_rounds == null ? "" : String(r.push_rounds), placeholder: "Every push", ariaLabel: "Push rounds", inputMode: "numeric" });
+    rounds.addEventListener("change", () => { const v = rounds.value.trim(); if (v !== "" && !/^\d{1,3}$/.test(v)) return say("Push rounds is a number, or empty for every push.", true); edit(r.repo, { push_rounds: v === "" ? null : Number(v) }); });
+    const nits = h("input", { type: "text", value: String(r.max_nits ?? ""), ariaLabel: "Max nits", inputMode: "numeric" });
+    nits.addEventListener("change", () => { const v = nits.value.trim(); if (!/^\d{1,2}$/.test(v)) return say("Max nits is a number.", true); edit(r.repo, { max_nits: Number(v) }); });
+    const ignore = h("textarea", { value: (r.ignore ?? []).join("\n"), ariaLabel: "Ignore globs", spellcheck: false });
+    ignore.addEventListener("change", () => edit(r.repo, { ignore: ignore.value.split("\n").map((x) => x.trim()).filter(Boolean) }));
+    return h("div", { className: "edit" },
+      field("When a PR opens", combos(`${r.repo} on open`, r.on_open, (v) => edit(r.repo, { on_open: v }), true), "The reviewers that read the whole PR when it is opened. Each is one engine (Codex, Claude Code…) with a model and an effort (how hard it thinks; higher costs more). Each reviewer posts its own review. Any OpenRouter model id can be typed."),
+      field("On each push (only the new changes)", combos(`${r.repo} on push`, r.on_push, (v) => edit(r.repo, { on_push: v }), true), "The reviewers that read only what changed when someone pushes more commits to an open PR. Usually one cheaper or faster reviewer."),
+      h("div", { className: "grid" },
+        field("Pushes reviewed per PR", rounds, "How many pushes to one PR get an on-push review. After that, later pushes are not reviewed again, but findings still open keep holding a mandatory merge. Empty means every push."), field("Findings posted as nits, at most", nits, "A nit is a small point, not a bug. This caps how many one review posts, so a PR is not buried in them."),
+        field("Draft PRs", select([["false", "Skipped"], ["true", "Reviewed"]], String(!!r.drafts), (v) => edit(r.repo, { drafts: v === "true" }), "Draft PRs"), "Whether PRs still marked draft are reviewed. Skipped by default: a draft is not ready."),
+        field("Fork PRs", select([["manual", "On request"], ["auto", "Automatically"]], r.forks ?? "manual", (v) => edit(r.repo, { forks: v }), "Fork PRs"), "A fork PR comes from someone outside the repo and is run on your budget. On request: it is reviewed only when someone with write access comments `aiden review`. Automatically: every fork PR is reviewed."),
+        field("Ignore (one glob per line)", ignore, "Files matching these patterns (like **/*.lock) are left out of every review.")),
+      h("div", { className: "actions" }, raw.isNew ? btn("Don't watch", () => { delete pending.watch[r.repo]; open.delete(r.repo); propose(); }) : btn("Stop watching", () => { delete pending.watch[r.repo]; pending.unwatch.push(r.repo); propose(); }),
+        btn("Review a PR here", () => { form = { url: `https://github.com/${r.repo}/pull/`, combos: [], focus: "", full: false }; go({ page: "pr" }); })));
+  }
+
+  /* -------------------------------------------------------------------------------- Insights tab */
+  function insights() {
+    const since = Date.now() - days * 86400000, at = (r) => r.started ?? r.ended ?? "";
+    const inside = ov.runs.filter((r) => at(r) && Date.parse(at(r)) >= since), done = inside.filter((r) => r.status === "done");
+    const total = { reviews: done.length, cost: inside.reduce((s, r) => s + r.cost_usd, 0), prs: new Set(inside.map((r) => `${r.repo}#${r.number}`)).size, failed: inside.filter((r) => r.status === "failed").length };
+    const sev = { important: 0, nit: 0, pre_existing: 0 };
+    for (const r of done) for (const k of Object.keys(sev)) sev[k] += r[k];
+    const byDay = new Map(Array.from({ length: days }, (_, i) => [new Date(Date.now() - (days - 1 - i) * 86400000).toISOString().slice(0, 10), 0]));
+    for (const r of inside) { const k = at(r).slice(0, 10); if (byDay.has(k)) byDay.set(k, byDay.get(k) + r.cost_usd); }
+    const repos = new Map(), skips = new Map();
+    for (const r of inside) { const x = repos.get(r.repo) ?? { reviews: 0, cost: 0, prs: new Set() }; x.cost += r.cost_usd; if (r.status === "done") x.reviews++; x.prs.add(r.number); repos.set(r.repo, x); if (r.status === "skipped") { const w = (r.why ?? "unknown").split(":")[0].trim(); skips.set(w, (skips.get(w) ?? 0) + 1); } }
+    const found = done.reduce((s, r) => s + r.important + r.nit, 0), resolved = done.reduce((s, r) => s + (r.resolved ?? 0), 0), peak = Math.max(0.0001, ...byDay.values());
+    return [h("div", { className: "bar" }, t("span", "soft", "The last"), select([["7", "7 days"], ["30", "30 days"], ["90", "90 days"]], String(days), (v) => { days = Number(v); render(); }, "Period"), t("span", "soft", `of the ${ov.runs.length} most recent PR runs`)),
+      card(null, null, h("div", { className: "tiles" }, ...[["Reviews", total.reviews], ["Pull requests", total.prs], ["Spend", usd(total.cost)], ["Failed", total.failed],
+        ["Resolved as fixed", found && done.some((r) => r.resolved != null) ? `${Math.round(Math.min(1, resolved / found) * 100)}%` : "—"]].map(([k, v]) => h("div", {}, h("b", { textContent: String(v) }), h("small", { textContent: k })))),
+        h("div", { className: "days", ariaLabel: "Spend per day" }, ...[...byDay].map(([d, v]) => h("i", { title: `${d}: ${usd(v)}`, style: `height:${Math.max(2, (v / peak) * 100)}%` })))),
+      card("Findings", null, h("div", { className: "pad" }, sevMarks(sev, true))),
+      card("By repo", null, ...(repos.size ? [...repos].sort((a, b) => b[1].cost - a[1].cost).map(([n, v]) => h("div", { className: "row two" }, h("span", { className: "repo", textContent: n }), t("span", "num", `${v.reviews} reviews`), t("span", "num", `${v.prs} PRs`), t("span", "num", usd(v.cost)))) : [t("div", "empty", "No runs in this period. Reviews appear here once a watched repo has had a pull request, or after you start one.")])),
+      ...(skips.size ? [card("Why reviews were skipped", null, ...[...skips].sort((a, b) => b[1] - a[1]).map(([w, n]) => h("div", { className: "row two" }, h("span", { textContent: skipWords(w) }), t("span", "num", String(n)), h("span"), h("span"))))] : [])];
+  }
+
+  /* -------------------------------------------------------------------------------- the page */
+  function render() {
+    const app = $("app");
+    if (!ov) return app.replaceChildren(t("div", "empty", "Loading…"));
+    const parts = route.page === "run" ? runPage() : route.page === "batch" ? batchPage() : route.page === "pr" ? prForm() : route.page === "tree" ? treeForm() : [
+      h("div", { className: "bar" }, h("div", { className: "tabs", role: "tablist" }, ...[["reviews", "Reviews"], ["repos", "Repos"], ["insights", "Insights"]].map(([k, name]) => { const b = btn(name, () => { tab = k; render(); }, "", { role: "tab" }); b.setAttribute("aria-selected", String(tab === k)); return b; })),
+        btn("Review a PR", () => { form = null; go({ page: "pr" }); }), btn("Review a repo", () => { form = null; catalog = null; go({ page: "tree" }); }), btn("Refresh", () => { pending = { watch: {}, unwatch: [] }; say(""); loadOverview(); })),
+      ...(tab === "repos" ? reposTab() : tab === "insights" ? insights() : reviewsTab())];
+    app.replaceChildren(...(route.page === "list" ? [t("div", "card intro", "Code review reads each pull request on the repos you watch. When a PR opens, and again when it is pushed to, each reviewer you chose (an AI engine with a model) looks at the changes and posts its findings on the PR: important ones that should be fixed, and smaller nits. Watch a repo under Repos, or review any PR or whole repository by hand with the buttons here. Nothing runs until you do.")] : []), ...parts);
+    if (!$("lists").querySelector("#repos")) $("lists").append(h("datalist", { id: "repos" }));
+  }
+  start("code-review", loadOverview);
+</script>
+</body>
+</html>

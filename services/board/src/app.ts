@@ -35,8 +35,6 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, readSources, readUpdates, settingsView, type Probe, type Wakes } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { CodeReviewSchema, CombosSchema, TreeRequestSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
-import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
 import { UsageSchema, keyUsage, modelCatalog, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
@@ -113,8 +111,6 @@ export interface AppOptions {
   welcomeMarker?: string;
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
   grading?: Grading;
-  /** The code-review module's state service, through the kernel (reviews-client.ts). Without it, the Reviews page says the module is off. */
-  reviews?: Reviews;
   /** The modules' Fleet pages (board.pages) and their views' calls through the kernel (module-views.ts). Without it, Fleet lists only its own pages. */
   views?: ViewHost;
   /**
@@ -246,7 +242,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
   const grading = opts.grading ?? createGrading();
-  const reviews = opts.reviews ?? undefined;
   const resolveCommit = createResolver(opts.fetch ?? fetch);
   /** The grades of these tasks; the grading module unreachable: undefined, so the caller leaves its graded closes undone. */
   const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable; not closing graded parts as done"), undefined));
@@ -426,18 +421,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   /** A label by name, created on first use. */
   async function labelNamed(ctx: { labels: Label[] }, name: string, color: string): Promise<Label> {
     return ctx.labels.find((l) => l.name === name) ?? (await pc.createLabel(name, color));
-  }
-
-  /** A call to the code-review service: off answers 404, its refusals 400 in its words, unreachable 502. */
-  async function reviewsCall<T>(f: (r: Reviews) => Promise<T>): Promise<T> {
-    if (!reviews) throw new HttpError(404, "the code-review module is off");
-    try {
-      return await f(reviews);
-    } catch (e) {
-      if (e instanceof ReviewsRefused) throw new HttpError(e.status === 404 ? 404 : 400, e.message);
-      if (e instanceof ReviewsUnavailable) throw new HttpError(502, e.message);
-      throw e;
-    }
   }
 
   /** A module view's call: its refusals and failures in the owner's words, and no page without the view host. */
@@ -2079,58 +2062,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         return agentGrants(compiled, catalog, m[1]!) ?? Promise.reject(new HttpError(404, "no such agent"));
       },
     },
-    // The Reviews page (web/src/Reviews.tsx, docs/design/code-review.md): the code-review module's runs and repos,
-    // one-off runs, and the owner's change to settings.code_review (filed like any settings change).
-    {
-      method: "GET",
-      path: /^\/api\/reviews\/setup$/,
-      handle: async () => {
-        const { compiled, catalog } = readSources(settingsFiles());
-        const mod = catalog.find((m) => m.name === "code-review");
-        const gh = (await signInStates()).find((s) => s.id === "github")?.status;
-        const current = compiled?.settings?.code_review?.value ?? mod?.settings?.code_review?.default ?? null;
-        const parsed = CodeReviewSchema.safeParse(current);
-        return {
-          module: Boolean(mod?.enabled && reviews),
-          github: { configured: Boolean(gh?.configured), connected: gh?.state === "ok", state: gh?.state ?? null },
-          config: parsed.success ? parsed.data : upgradeConfig(current),
-          problems: parsed.success ? [] : configProblems(current),
-        };
-      },
-    },
-    { method: "GET", path: /^\/api\/reviews$/, handle: async (_m, _b, url) => reviewsCall((r) => r.list({ repo: url.searchParams.get("repo") ?? undefined, status: url.searchParams.get("status") ?? undefined, limit: Math.min(500, Number(url.searchParams.get("limit") ?? 100) || 100) })) },
-    { method: "GET", path: /^\/api\/reviews\/run\/([\w-]{1,80})$/, handle: async (m) => reviewsCall((r) => r.get(m[1]!)) },
-    { method: "GET", path: /^\/api\/reviews\/repos$/, handle: async () => reviewsCall((r) => r.repos()) },
-    { method: "GET", path: /^\/api\/reviews\/engines$/, handle: async () => reviewsCall((r) => r.engines()) },
-    // The model picker's list (OpenRouter's text models, from the kernel's gateway); 503 when it can't be read: the picker then offers each engine's short list.
-    { method: "GET", path: /^\/api\/model-catalog$/, handle: async () => { const models = await modelCatalog(opts.gateway); if (!models) throw new HttpError(503, "OpenRouter's model list isn't available yet"); return { models }; } },
-    { method: "GET", path: /^\/api\/reviews\/available$/, handle: async (_m, _b, url) => reviewsCall((r) => r.available((url.searchParams.get("q") ?? "").slice(0, 100))) },
-    {
-      method: "GET",
-      path: /^\/api\/reviews\/insights$/,
-      handle: async (_m, _b, url) => {
-        const days = [7, 30, 90].includes(Number(url.searchParams.get("days"))) ? Number(url.searchParams.get("days")) : 30;
-        return reviewsCall(async (r) => insightsOf((await r.list({ limit: 500 })).runs, days));
-      },
-    },
-    { method: "GET", path: /^\/api\/reviews\/catalog$/, handle: async (_m, _b, url) => reviewsCall((r) => r.catalog(parse(CatalogQuerySchema, { repo: url.searchParams.get("repo") ?? "", ...(url.searchParams.get("commit") ? { commit: url.searchParams.get("commit") } : {}) }))) },
-    { method: "GET", path: /^\/api\/reviews\/report\/([\w-]{1,80})$/, handle: async (m) => reviewsCall((r) => r.report(m[1]!)) },
-    // One POST, two targets: a PR link (a one-off PR review) or a tree target (a whole-repo review). Signed-in admins only, like every route.
-    { method: "POST", path: /^\/api\/reviews$/, handle: async (_m, body) => reviewsCall<unknown>((r) => (typeof body === "object" && body !== null && "target" in body ? r.runTree(parse(TreeRequestSchema, body)) : r.run(parse(OneOffSchema, body)))) },
-    // The owner's dismissal of an open finding (signed in: every admin is an owner); recorded as theirs, with their reason.
-    { method: "POST", path: /^\/api\/reviews\/dismiss$/, handle: async (_m, body) => reviewsCall((r) => r.dismiss({ ...parse(DismissSchema, body), by: "owner (board)" })) },
-    {
-      // The whole code_review value the page edited, checked here for the owner's feedback, then the normal settings change.
-      method: "POST",
-      path: /^\/api\/reviews\/config$/,
-      maxBody: 200_000,
-      handle: async (_m, body) => {
-        const { value } = parse(ReviewConfigSchema, body);
-        const problems = configProblems(value);
-        if (problems.length) throw new HttpError(400, problems.slice(0, 3).join("; "));
-        return fileSettingsChange([{ kind: "setting", key: "code_review", value: value as never }]);
-      },
-    },
     // Module pages (module-views.ts): the Fleet sidebar's entries, a view's tool calls through the kernel, and the owner's Save of the
     // settings a view proposed (shown to him outside the view; only its own module's settings).
     { method: "GET", path: /^\/api\/pages$/, handle: async () => ({ pages: (opts.views?.pages() ?? []).map(({ id, title, icon, order, module }) => ({ id, title, icon, order, module })) }) },
@@ -3008,9 +2939,5 @@ const staticCompressed = new Map<string, Promise<Buffer>>();
 const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
 /** A card's decision on the board: against the digest it showed; a reason only with a reject. */
 const DecideSchema = z.object({ digest: z.string().min(1).max(200), decision: z.enum(["approve", "reject"]), reason: z.string().max(500).optional() }).strict();
-const OneOffSchema = z.object({ pr_url: PR_URL, combos: CombosSchema.min(1).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
-const CatalogQuerySchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), commit: z.string().regex(/^[0-9a-f]{40}$/i).optional() }).strict();
-const ReviewConfigSchema = z.object({ value: z.unknown() }).strict();
 /** A module view's tool call: the tool and its arguments; the module, connection and view come from the page. */
 const ViewCallSchema = z.object({ name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), arguments: z.record(z.string(), z.unknown()).optional() }).strict();
-const DismissSchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), number: z.number().int().min(1), id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/), reason: z.string().trim().min(1).max(1000) }).strict();
