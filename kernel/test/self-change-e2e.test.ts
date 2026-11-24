@@ -6,14 +6,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { createApplyPlanner } from "../src/apply-tier.ts";
 import { fillMemory } from "../src/memory.ts";
-import { checkoutMain, checkoutTree, createSettingsChanges, planFiles, skillSides } from "../src/settings-change.ts";
+import { checkoutMain, checkoutTree, compileTree, createSettingsChanges, planFiles, skillSides } from "../src/settings-change.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 import { kernel, moduleServer } from "./helpers.ts";
 
@@ -127,10 +127,21 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   assert.deepEqual(sRec.args.authority, ["skill library.nudge changed; enabled by agent review-chaser (review)", "agent review-chaser enables skill library.nudge (review)"]);
 
   // The filed record's own commit compiles to the skill the next run loads: the agent's effective list gains library.nudge,
-  // and the compiled SKILL.md is the text the change sent.
-  const compiled = await skillSides({ product, fetch: async () => {}, tree: checkoutTree(bare) })(await host.read({ repo: REPO, branch: sRec.args.branch, sha: sRec.args.sha }));
-  assert.deepEqual(compiled.after["review-chaser"], ["library.nudge", "tasks.delegate-work"]);
-  assert.equal(compiled.enabledTexts["library.nudge"], skillText);
+  // and the compiled skill's own directory holds the text the change sent.
+  const atHead = await host.read({ repo: REPO, branch: sRec.args.branch, sha: sRec.args.sha });
+  const headDir = mkdtempSync(join(tmpdir(), "self-change-head-"));
+  try {
+    await checkoutTree(bare)(atHead.base, headDir);
+    for (const [path, text] of Object.entries(atHead.texts.head)) {
+      mkdirSync(dirname(join(headDir, path)), { recursive: true });
+      writeFileSync(join(headDir, path), text);
+    }
+    const compiled = compileTree(product, headDir);
+    assert.deepEqual(compiled.paperclip.agents["review-chaser"].skills, ["library.nudge", "tasks.delegate-work"]);
+    assert.equal(readFileSync(join(compiled.paperclip.skills["library.nudge"].dir, "SKILL.md"), "utf8"), skillText);
+  } finally {
+    rmSync(headDir, { recursive: true, force: true });
+  }
 
   // A skill another module ships is refused: the library write would be a second, unused skill, since the agent reads the
   // skill copied from its module folder.
