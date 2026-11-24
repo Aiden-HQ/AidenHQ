@@ -390,7 +390,10 @@ if (command === "publish" || command === "review") {
       execFileSync("git", ["-C", dir, "fetch", "--quiet", "--no-tags", file, `+refs/heads/*:refs/ship/pr-${number}/*`], { stdio: ["ignore", "ignore", "inherit"] });
     } finally { rmSync(tmp, { recursive: true, force: true }); }
     // Work in progress here is never dropped: a clone with uncommitted changes is refused, and the branch is moved only then.
-    if (execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" }).trim()) fail(`${dir} has uncommitted changes: commit them (or put them aside yourself) and check out again`, 2);
+    if (execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" }).trim()) fail(`${dir} has uncommitted changes: commit them on a branch of your own and check out again`, 2);
+    // Nor are commits: a ship-pr-<n> with commits beyond <head> is pushed (ship push) or renamed first, never reset here.
+    const kept = (() => { try { return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/ship-pr-${number}`], { encoding: "utf8" }).trim(); } catch { return ""; } })();
+    if (kept) { try { execFileSync("git", ["-C", dir, "merge-base", "--is-ancestor", kept, head]); } catch { fail(`ship-pr-${number} has commits beyond ${head.slice(0, 12)}: push them with \`aidenhq ship push\`, or rename the branch, then check out again`, 2); } }
     execFileSync("git", ["-C", dir, "checkout", "--quiet", "-B", `ship-pr-${number}`, head], { stdio: ["ignore", "ignore", "inherit"] });
     console.log(`${link}: ship-pr-${number} is checked out at ${head.slice(0, 12)} in ${dir}`);
     process.exit(0);
