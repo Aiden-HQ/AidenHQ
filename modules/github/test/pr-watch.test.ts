@@ -172,9 +172,9 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
       return { status, body: {} };
     }
     if (path.startsWith("/repos/acme/app/actions/jobs/")) {
-      // `jobRead` lets a test make this read throw (a timeout, a quota refusal), as the real client can.
+      // `jobRead` lets a test make this read throw (a timeout, a quota refusal) or answer a status (a deleted run's 404).
       const failure = jobRead();
-      if (failure) throw failure;
+      if (failure) { if (typeof failure === "number") return { status: failure, body: {} }; throw failure; }
       const id = Number(path.split("/").at(-1));
       const holder = open.find((p) => (p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).some((n) => n.databaseId === id));
       // A job that replaced a re-run original (77 seen as 78) is its next attempt: the mock treats job 78 as the rerun of 77.
@@ -1051,4 +1051,33 @@ test("a failed listing defers the red-head wake instead of fixing a failure CI m
   await c.watch.tick();
   assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "the next pass judges it and re-runs the never-started job");
   assert.equal(c.woke.length, 0, "still no wake: the job never started");
+});
+
+// self-review: a draft's mixed state is not told to publish, and marking it ready still wakes its task for the failure.
+test("a draft with a red and a wedged check is not told to publish, and its ready head still is", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, { steps: [{ name: "Build" }] });
+  c.set([c.agentPr(79, { isDraft: true, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h79:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h79:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "a draft is not told to publish");
+  c.set([c.agentPr(79, { isDraft: false, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "marked ready, the failure is told once: its report was not spent on the draft");
+});
+
+// self-review: a job that is permanently gone (404) is not deferred forever: the red-head rules report the failure.
+test("a deleted job's 404 does not defer the red-head wake on every tick", async (t) => {
+  const c = await rig(t, { jobRead: () => 404 });
+  c.set([c.agentPr(80, redPr(80))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent 404 is not this rule's: the failure is reported");
+  assert.match(c.woke[0].text, /checks failed at/);
 });

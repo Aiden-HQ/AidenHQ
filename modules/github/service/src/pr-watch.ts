@@ -295,8 +295,10 @@ export function startPrWatch(o: PrWatchOptions) {
           continue;
         }
         if (!job) { spentAll = false; continue; } // the budget is spent: this check is judged on the next tick
-        // A read that came back with no usable job (a 5xx, a body without steps) cannot say a step ran: unjudged for the next
-        // tick, never read as "the code failed" and woken on.
+        // A permanent "no such job" (404: the run was deleted) can never clear, so it is not this rule's and the red-head
+        // rules report the failure; a transient read (a 5xx, a body without steps) cannot say a step ran: unjudged for the
+        // next tick, never read as "the code failed" and woken on.
+        if (job.status === 404) return false;
         if (job.status >= 300 || !Array.isArray(job.body?.steps)) { spentAll = false; continue; }
         if (job.body.steps.length) return false; // a step ran: it judged the commit
         if (job.body.head_sha !== pr.headRefOid || !String(job.body.check_run_url ?? "").endsWith(`/check-runs/${run.id}`)) return false;
@@ -765,7 +767,9 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (optional.length && redNow.length) {
+      } else if (optional.length && redNow.length && !pr.isDraft && pr.mergeable === "MERGEABLE") {
+        // The same eligibility the red-head path requires: a draft (or a head the watcher cannot merge) is not told to publish,
+        // and its once-per-head report stays unspent, so marking it ready still wakes its task for the failure.
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no
         // other rule wakes for it while a named check is still pending. A red whose job never started is the environment's
         // (`redsAreEnvironment`): re-running it is the fix, never a push, so no wake. A head already told about a failure, or one
