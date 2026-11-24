@@ -8,7 +8,7 @@ import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { configTools } from "./config-tool.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
-import { maintainerFeed, maintainerReads, maintainerTriageWake, maintainerWake, startMaintainer, triageLimits } from "./watcher.ts";
+import { maintainerFeed, maintainerReads, maintainerTriageWake, maintainerWake, startMaintainer } from "./watcher.ts";
 
 const stateFile = process.env.MAINTAINER_STATE_FILE ?? "/data/state.json";
 const state = (() => {
@@ -36,7 +36,7 @@ const emitter = () => {
 };
 
 startMaintainer({
-  wiring: () => { const [fire, reads, feed, triage] = [maintainerWake(), maintainerReads(), maintainerFeed(), maintainerTriageWake()]; return fire && reads && feed ? { fire, ...reads, feed, triage, limits: triageLimits(), repos: () => parseRepos(process.env.MAINTAINER_REPOS ?? ""), emit: (f) => emitter()?.emit(f) } : undefined; },
+  wiring: () => { const [fire, reads, feed, triage] = [maintainerWake(), maintainerReads(), maintainerFeed(), maintainerTriageWake()]; return fire && reads && feed && triage ? { fire, ...reads, feed, triage, repos: () => parseRepos(process.env.MAINTAINER_REPOS ?? ""), emit: (f) => emitter()?.emit(f) } : undefined; },
   store, log,
 });
 
@@ -44,7 +44,7 @@ startMaintainer({
 const readKey = () => { try { return readFileSync(process.env.MAINTAINER_SERVICE_KEY_FILE ?? "", "utf8").trim(); } catch { return ""; } };
 const jwks = kernelJwks(`${process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130"}/v1/jwks`);
 const mcp = serveMcp(
-  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "", ship: () => !!process.env.MAINTAINER_SHIP, externalTriage: () => process.env.MAINTAINER_EXTERNAL_TRIAGE === "true" }), [{ uri: "ui://maintainer/page", html: pageHtml(new URL("./", import.meta.url)) }]),
+  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "", ship: () => !!process.env.MAINTAINER_SHIP }), [{ uri: "ui://maintainer/page", html: pageHtml(new URL("./", import.meta.url)) }]),
   readKey, (req) => verifyCaller(req, jwks, "maintainer"),
 );
 createServer(async (req, res) => {

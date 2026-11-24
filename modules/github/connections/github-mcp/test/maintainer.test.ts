@@ -1045,11 +1045,17 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
     [OTHER, "fix-me", ["write"]],
   ]);
   // Duties are opt-in (issues aside), and a quiet PR waits a week.
-  expect(parseRepos(PRODUCT)[0]).toMatchObject({ issues: true, features: false, dependabot: false, contributor_prs: false, stale_days: 7 });
+  expect(parseRepos(PRODUCT)[0]).toMatchObject({ issues: true, features: false, dependabot: false, contributor_prs: false, stale_days: 7, preset: "quiet", triage: "off", triage_cap_per_author_day: 5, triage_labels: true, close: ["duplicate"], needs_info_close_days: null, stale_issues: null, resolved_check: { max_closes: 10, exempt_labels: ["roadmap", "wip", "blocked"] } });
   expect(parseRepos(JSON.stringify([{ repo: PRODUCT, features: true, issues: false, stale_days: 14 }]))[0]).toMatchObject({ issues: false, features: true, stale_days: 14 });
   expect(() => parseRepos(JSON.stringify([{ repo: PRODUCT, contributor_pr: true }]))).toThrow("maintainer_repos[0]: unknown key contributor_pr");
   for (const bad of [
     [{ repo: PRODUCT, stale_days: 0 }],
+    [{ repo: PRODUCT, dependabot: "all" }],
+    [{ repo: PRODUCT, preset: "loud" }],
+    [{ repo: PRODUCT, close: ["spam"] }],
+    [{ repo: PRODUCT, needs_info_close_days: 0 }],
+    [{ repo: PRODUCT, stale_issues: { days: 0 } }],
+    [{ repo: PRODUCT, stale_issues: { days: 30, nope: 1 } }],
     [{ repo: PRODUCT, stale_days: "x" }],
     [{ repo: PRODUCT, features: "yes" }],
     [{ repo: PRODUCT, trusted: ["triage"] }],
@@ -1060,6 +1066,17 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
     [{ repo: PRODUCT }, { repo: PRODUCT.toUpperCase() }],
     [{ repo: PRODUCT, extra: 1 }],
   ]) expect(() => parseRepos(JSON.stringify(bad))).toThrow(/maintainer_repos\[\d\]/);
+});
+
+it("a preset sets features and triage unless the entry says; settings have no upper limit; stale_issues fills its own defaults", () => {
+  const at = (e: object) => parseRepos(JSON.stringify([{ repo: PRODUCT, ...e }]))[0]!;
+  expect(at({ preset: "triage" })).toMatchObject({ features: false, triage: "new" });
+  expect(at({ preset: "full" })).toMatchObject({ features: true, triage: "new+backlog" });
+  expect(at({ preset: "full", features: false, triage: "off" })).toMatchObject({ features: false, triage: "off" });
+  expect(at({ stale_days: 365, needs_info_close_days: 400 })).toMatchObject({ stale_days: 365, needs_info_close_days: 400 });
+  expect(at({ stale_issues: {} }).stale_issues).toEqual({ days: 60, grace_days: 14, exempt_labels: ["roadmap", "wip", "blocked"] });
+  expect(at({ stale_issues: { days: 30, exempt_labels: ["pinned"] } }).stale_issues).toEqual({ days: 30, grace_days: 14, exempt_labels: ["pinned"] });
+  expect(at({ resolved_check: { max_closes: 0 } }).resolved_check.max_closes).toBe(0);
 });
 
 it("inMaintained matches a listed repo in any case", () => {

@@ -9,86 +9,152 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 /*kit:css*/
-  .row { grid-template-columns: minmax(150px, 1.6fr) repeat(4, minmax(84px, 1fr)) 72px; }
-  .duty { display: grid; gap: 4px; justify-items: start; }
-  .repo .link { display: flex; margin-top: 2px; font-weight: 400; }
-  .row .repo { align-self: start; }
-  .trig { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; }
-  .trig p { margin: 2px 0 0; color: var(--soft); max-width: 62ch; }
-  @media (max-width: 860px) { .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; } .row .repo { grid-column: 1 / -1; } }
+  :root { --c-quiet: #6b7a90; --c-triage: #5b7cfa; --c-full: #12a679; }
+  @media (prefers-color-scheme: dark) { :root { --c-quiet: #94a3b8; --c-triage: #8ba3ff; --c-full: #3ccf9f; } }
+  .bar { display: flex; align-items: center; gap: 10px; padding: 0 2px; }
+  .bar b { font-size: 14px; font-weight: 600; }
+  .bar .grow { flex: 1; }
+  .rows { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); align-items: start; }
+  .rc { --tint: var(--c-quiet); border-left: 3px solid var(--tint); }
+  .rc.p-triage { --tint: var(--c-triage); } .rc.p-full { --tint: var(--c-full); }
+  .rc.open { grid-column: 1 / -1; }
+  .rc.unsaved { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+  .rc .head { flex-wrap: wrap; }
+  .rn { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+  .rn i { font-style: normal; font-weight: 400; color: var(--soft); margin-left: 8px; font-size: 12px; }
+  .acts { display: flex; align-items: center; gap: 10px; }
+  .preset { display: flex; align-items: center; gap: 6px; color: var(--soft); font-size: 12px; }
+  .preset select { width: auto; min-width: 92px; border-color: color-mix(in srgb, var(--tint) 60%, var(--line)); background: color-mix(in srgb, var(--tint) 10%, var(--color-background-primary, Canvas)); }
+  .sum { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 210px)); gap: 10px 22px; padding: 10px 14px 12px; }
+  .cell { display: grid; gap: 5px; align-content: start; justify-items: start; min-width: 0; }
+  .cell .lab { display: block; }
+  .cell select { width: 100%; }
+  .cell small { color: var(--soft); font-size: 11.5px; }
+  .gist { padding: 0 14px 10px; color: var(--soft); font-size: 12.5px; }
+  .gist b { color: var(--color-text-primary, CanvasText); font-weight: 560; }
+  .drawer { grid-template-columns: repeat(auto-fill, minmax(260px, 340px)); gap: 12px 28px; }
+  .drawer .fld .row2 { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .drawer .fld input[type=text] { max-width: 220px; }
+  .drawer .fld .meta { min-height: 0; }
+  .more { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; border-top: 1px solid var(--line); }
+  .guide { padding: 12px 14px; display: grid; gap: 4px; }
+  .guide b { font-weight: 600; }
+  @media (max-width: 560px) { .sum { grid-template-columns: 1fr 1fr; } .drawer { grid-template-columns: 1fr; } .rows { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-<p class="intro">The Maintainer looks after the GitHub repos you list. An issue reaches it when someone adds the repo's fix label (<code>agent-fix</code> by default): it checks the report is real, hands the fix to an engineer and follows it to a merged PR that closes the issue, when Fix issues is on for the repo. Switch on the extra duties per repo below.</p>
-<div class="card">
-  <div class="head"><div><b>Repos</b> <small id="count"></small></div><small>What the Maintainer does on each. Repos are added from the Ship page.</small></div>
-  <div id="rows"></div>
-  <div class="note" id="note" role="status"></div>
-</div>
-<div class="card">
-  <div class="head"><b>Triage</b><button type="button" id="refresh" title="Reload the saved settings. Your proposed edits stay until you Save or Discard in the bar above.">Refresh</button></div>
-  <div class="trig"><div><b id="trighelp"></b><p>Each new issue from someone outside gets a triage run within minutes of its filing, and the backlog gets the daily run. Off, only issues carrying the fix label are worked.</p></div><button class="sw" id="triage" role="switch" aria-checked="false" aria-label="Triage unlabelled issues"></button></div>
-</div>
+<p class="intro">The Maintainer looks after the GitHub repos you list. An issue reaches it when someone adds the repo's fix label (<code>agent-fix</code> by default): it checks the report is real, hands the fix to an engineer and follows it to a merged PR that closes the issue. A preset sets how much more it does on a repo, and every setting below it can be changed for that repo alone.</p>
+<div class="bar"><b>Repos</b> <small id="count"></small><span class="grow"></span><button type="button" id="refresh" title="Reload the saved settings. Your proposed edits stay until you Save or Discard in the bar above.">Refresh</button></div>
+<div class="rows" id="rows"><div class="card"><div class="empty">Loading the repos…</div></div></div>
+<div class="note" id="note" role="status"></div>
 <script>
 /*kit:js*/
-  // Plain words for each duty: what the Maintainer does on a repo when it is on.
-  // Each entry field beyond the duty switches, and the value it has when the entry doesn't set it.
-  const OTHER = { label: ["Fix label", "The label that asks for a fix on this repo. An issue carrying it is validated and worked.", "agent-fix", "text"], trusted: ["Trusted roles", "Who may vouch for a label: a label or comment from a collaborator with one of these roles counts.", ["admin", "maintain"], "checks"], stale_days: ["Quiet days", "With Contributor PRs on: days without activity before a nudge, and again before the close. Drafts get double.", 7, "num"] };
-  const ROLES = { admin: "Repo admins.", maintain: "Maintainers.", write: "Anyone with write access." };
-  const open = new Set();
   const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-  function drawer(raw) {
-    const r = shown(raw), set = (k, v, live) => propose(raw.repo, { [k]: v }, live);
-    return h("div", { className: "drawer", id: `drawer-${raw.repo}` }, ...Object.entries(OTHER).map(([k, [label, text, dflt, kind]]) => {
-      const over = !eq(r[k], dflt), ed = editor({ kind, label: `${label} (${raw.repo})`, f: `${raw.repo}|${k}`, value: kind === "num" ? String(r[k]) : r[k], values: Object.keys(ROLES), titles: ROLES, set: (v, live) => set(k, kind === "num" ? v ?? dflt : v, live) });
-      return fld(label, text, kind === "checks" ? { options: ROLES, current: "" } : {}, ed, h("span", { className: "dflt", textContent: `Default: ${Array.isArray(dflt) ? dflt.join(", ") : dflt}` }), over ? h("span", { className: "ovr", textContent: "Overridden" }) : null, over ? linkBtn("Reset to default", () => set(k, null)) : null);
-    }), h("div", { className: "fld" }, h("div", { className: "fl", textContent: "Duties" }), h("div", { className: "meta", textContent: "Fix issues, Features, Dependabot and Contributor PRs are the switches in the row above." })));
-  }
-  const DUTIES = [["issues", "Fix issues", "Checks each issue carrying the repo's fix label, hands the fix to an engineer and follows it to a merged PR that closes the issue. Labelled issues are worked only while this is on for the repo."], ["features", "Features", "Labels feature requests and builds the ones you mark agent-build."], ["dependabot", "Dependabot", "Takes Dependabot's dependency-update PRs on this repo and sees them through to a merge."], ["contributor_prs", "Contributor PRs", "Nudges, then closes, a person's PR that has gone quiet."]];
-  let cfg = { repos: [], external_triage: false };
-  // The edits the owner hasn't saved yet, one proposal for the page: duty changes per repo, and the triage switch. Each edit merges into it.
-  let pending = { repos: {}, external_triage: undefined };
-  const fresh = () => ({ repos: {}, external_triage: undefined });
-  const shown = (r) => { const m = { ...r, ...(pending.repos[r.repo] ?? {}) }; for (const [k, [, , d]] of Object.entries(OTHER)) if (m[k] === null) m[k] = d; return m; };
+  const open = new Set();
+  let cfg = { repos: [], defaults: null };
+  // The edits the owner hasn't saved yet, one proposal for the page: { repo: { field: value | null } } (null: back to the default).
+  let pending = {};
+  let lastGood = {};
+  const PRESET_TEXT = { quiet: "Works the issues labelled for a fix, and nothing else. The default.", triage: "Also triages each new issue from someone outside within a minute of its filing.", full: "Triages each new issue and the backlog, labels feature requests and builds the ones you mark agent-build." };
+  const ROLES = { admin: "Repo admins (you, as the account owner).", maintain: "Maintainers.", write: "Anyone with write access." };
+  const TRIAGES = { off: "Only issues carrying the fix label are worked.", new: "Each new issue from someone outside is triaged within minutes of its filing.", "new+backlog": "Each new issue, and the open issues nobody triaged, in the daily run." };
+  const CLOSES = { duplicate: "The same symptom or request as another issue.", invalid: "Not a defect or a request: a question, a usage problem, another project's behaviour.", empty: "Still an empty body or untouched template after one request for details and a week of silence.", incorrect: "The code disproves what the report claims." };
 
-  // The last proposal the host accepted: a refused edit drops back to it, so one bad value never blocks the next proposal.
-  let lastGood = fresh();
-  async function propose(repo, duties, live) {
-    const next = { repos: { ...pending.repos }, external_triage: pending.external_triage };
-    if (repo) next.repos[repo] = { ...(next.repos[repo] ?? {}), ...duties };
-    else next.external_triage = duties.external_triage;
+  // The values a repo shows: its own entry with the pending edits laid over, and, for what it doesn't set, the default (the preset's, for features and triage).
+  const setOf = (r) => { const m = { ...r.set }; for (const [k, v] of Object.entries(pending[r.repo] ?? {})) v === null ? delete m[k] : (m[k] = v); return m; };
+  const dflt = (m, k) => { const D = cfg.defaults, p = D.presets[m.preset ?? "quiet"]; return k in p ? p[k] : D.base[k]; };
+  // An object field (quiet issues, the resolved check) shows what the entry sets over its own defaults.
+  const FILL = (k) => k === "stale_issues" ? cfg.defaults.stale : k === "resolved_check" ? cfg.defaults.base.resolved_check : null;
+  const val = (r, k) => { const m = setOf(r); const v = k in m ? m[k] : dflt(m, k); return v && FILL(k) && !Array.isArray(v) ? { ...FILL(k), ...v } : v; };
+  const over = (r, k) => { const m = setOf(r); return k in m && !eq(m[k], dflt(m, k)); };
+  const shownDefault = (v, k) => k === "resolved_check" ? `${v.max_closes} closes, skips ${v.exempt_labels.join(", ")}` : v === null ? "none" : Array.isArray(v) ? (v.length ? v.join(", ") : "none") : typeof v === "boolean" ? (v ? "on" : "off") : typeof v === "object" ? Object.entries(v).map(([a, b]) => `${a} ${Array.isArray(b) ? b.join("/") : b}`).join(", ") : String(v);
+
+  async function propose(repo, patch, live) {
+    const next = { ...pending, [repo]: { ...(pending[repo] ?? {}), ...patch } };
     pending = next; // at once, so a second edit before the answer comes back keeps this one
     if (!live) render();
-    const edits = { ...(Object.keys(next.repos).length ? { repos: next.repos } : {}), ...(next.external_triage === undefined ? {} : { external_triage: next.external_triage }) };
-    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits })); lastGood = next; } catch (e) { if (live) say(`${e.message} Correct the value to go on.`, true); else { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } } });
+    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits: { repos: next } })); lastGood = next; } catch (e) { if (live) say(`${e.message} Correct the value to go on.`, true); else { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } } });
+  }
+  const set = (r, k, v, live) => propose(r.repo, { [k]: v }, live);
+  const reset = (r, k) => set(r, k, null);
+
+  // One drawer field: a help label, its control, then Default and the overridden mark with Reset.
+  const field = (r, k, label, text, ctl, more = {}) => {
+    const d = dflt(setOf(r), k), o = over(r, k);
+    return fld(label, text, more, ctl, h("span", { className: "dflt", textContent: `Default: ${shownDefault(d, k)}` }), o ? h("span", { className: "ovr", textContent: "Overridden" }) : null, o ? linkBtn("Reset to default", () => reset(r, k)) : null);
+  };
+  const sw = (r, k, label, text, extra) => { const on = !!val(r, k), b = toggle(on, `${label} on ${r.repo}`, () => set(r, k, !on)); b.classList.toggle("unsaved", k in (pending[r.repo] ?? {})); return b; };
+  const num = (r, k, label, ph) => { const ed = editor({ kind: "num", label: `${label} (${r.repo})`, f: `${r.repo}|${k}`, value: val(r, k) === null ? "" : String(val(r, k)), set: (v, live) => set(r, k, v, live) }); ed.placeholder = ph; return ed; };
+
+  function drawer(r) {
+    const D = cfg.defaults;
+    const stale = val(r, "stale_issues"), rc = val(r, "resolved_check");
+    const exempt = (k, cur, apply) => { const ed = editor({ kind: "list", label: `Exempt labels (${r.repo}, ${k})`, f: `${r.repo}|${k}.exempt`, value: cur, set: (v, live) => apply(v, live) }); return ed; };
+    const rcSet = (patch, live) => set(r, "resolved_check", { ...rc, ...patch }, live);
+    const staleDefault = D.stale;
+    const staleSet = (patch, live) => set(r, "stale_issues", { ...(stale ?? staleDefault), ...patch }, live);
+    const trusted = val(r, "trusted");
+    return h("div", { className: "drawer", id: `drawer-${r.repo}` },
+      h("div", { className: "grp", textContent: "Fixing" }),
+      field(r, "label", "Fix label", "The label that asks for a fix on this repo. An issue carrying it is checked and worked, when Fix issues is on.", editor({ kind: "text", label: `Fix label (${r.repo})`, f: `${r.repo}|label`, value: val(r, "label"), set: (v, live) => set(r, "label", v === "" ? null : v, live) })),
+      field(r, "trusted", "Trusted roles", "Who may vouch for a label: a label added by a collaborator with one of these roles counts. A stranger's label never does.", editor({ kind: "checks", label: `Trusted roles (${r.repo})`, f: `${r.repo}|trusted`, value: trusted, values: D.roles, titles: ROLES, set: (v, live) => v.length ? set(r, "trusted", v, live) : say("Keep at least one role.", true) }), { options: ROLES, current: "" }),
+      h("div", { className: "grp", textContent: "Triage" }),
+      field(r, "triage_cap_per_author_day", "Triage runs per author a day", "The most new issues from one author triaged in a day. Past it, the rest wait for a free slot or the daily run. An issue that proves real (it gets the fix label or feature-request) doesn't count, so a tester's real reports are all triaged.", num(r, "triage_cap_per_author_day", "Triage runs per author", "5")),
+      field(r, "triage_labels", "Triage may label", "Whether a triage verdict may add labels (the fix label, feature-request). Off, a verdict is a comment alone.", h("div", { className: "row2" }, sw(r, "triage_labels", "Triage may label"), h("span", { className: "soft", textContent: val(r, "triage_labels") ? "Adds labels" : "Comments only" }))),
+      field(r, "close", "Triage may close", "The only reasons triage may close an issue for. Any other verdict is a comment and the issue stays open.", editor({ kind: "checks", label: `Triage may close (${r.repo})`, f: `${r.repo}|close`, value: val(r, "close"), values: D.close, titles: CLOSES, set: (v, live) => set(r, "close", v, live) }), { options: CLOSES, current: "" }),
+      h("div", { className: "grp", textContent: "Waiting on the reporter" }),
+      field(r, "needs_info_close_days", "Close after days without a reply", "Days an issue is left open after the Maintainer asked its reporter for details, before it is closed as not planned. Blank never closes it.", num(r, "needs_info_close_days", "Days without a reply", "never")),
+      h("div", { className: "grp", textContent: "Quiet issues" }),
+      field(r, "stale_issues", "Close quiet issues", "Issues only, never PRs. An issue with no activity for the quiet days gets one notice, and closes as not planned if still quiet after the grace days. Off leaves quiet issues open.", h("div", { className: "row2" }, toggle(!!stale, `Close quiet issues on ${r.repo}`, () => set(r, "stale_issues", stale ? null : staleDefault)), h("span", { className: "soft", textContent: stale ? "On" : "Off" }))),
+      ...(stale ? [
+        fld("Quiet days", "Days without activity before the notice.", {}, editor({ kind: "num", label: `Quiet days (${r.repo})`, f: `${r.repo}|stale.days`, value: String(stale.days), set: (v, live) => v >= 1 ? staleSet({ days: v }, live) : live || say("Quiet days: 1 or more.", true) })),
+        fld("Grace days", "Days after the notice before the close.", {}, editor({ kind: "num", label: `Grace days (${r.repo})`, f: `${r.repo}|stale.grace`, value: String(stale.grace_days), set: (v, live) => v >= 1 ? staleSet({ grace_days: v }, live) : live || say("Grace days: 1 or more.", true) })),
+        fld("Exempt labels", "Issues carrying any of these labels are never nudged or closed. One per line.", {}, exempt("stale", stale.exempt_labels, (v, live) => staleSet({ exempt_labels: v }, live))),
+      ] : []),
+      h("div", { className: "grp", textContent: "Already-fixed check" }),
+      field(r, "resolved_check", "Closes per daily run", "The daily sweep closes issues that recently merged work already fixed, citing the commit. This is the most it closes in one run; 0 switches the sweep off.", editor({ kind: "num", label: `Closes per run (${r.repo})`, f: `${r.repo}|rc.max`, value: String(rc.max_closes), set: (v, live) => v === null ? (live || rcSet({ max_closes: D.base.resolved_check.max_closes }, live)) : rcSet({ max_closes: v }, live) })),
+      fld("Exempt labels", "Issues carrying any of these labels are left alone by the sweep. One per line.", {}, exempt("resolved", rc.exempt_labels, (v, live) => rcSet({ exempt_labels: v }, live))),
+      h("div", { className: "grp", textContent: "Pull requests" }),
+      field(r, "stale_days", "Quiet PR days", "With Contributor PRs on: days without activity before a nudge, and again before the close. Drafts get double.", num(r, "stale_days", "Quiet PR days", "7")),
+    );
   }
 
   const redraw = () => keepFocus(draw);
   function render() { soon(redraw); }
+  function card(r) {
+    const preset = val(r, "preset"), unsaved = r.repo in pending;
+    const pe = editor({ kind: "select", label: `Preset (${r.repo})`, f: `${r.repo}|preset`, value: preset, values: cfg.defaults.preset_names, titles: PRESET_TEXT, set: (v) => set(r, "preset", v === "quiet" ? null : v) });
+    const remove = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
+    remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { remove: r.repo }); pending = lastGood = {}; proposed(x); render(); } catch (e) { say(e.message, true); } });
+    const tog = linkBtn("Settings", () => { open.has(r.repo) ? open.delete(r.repo) : open.add(r.repo); render(); });
+    tog.className = "link toggle"; tog.setAttribute("aria-expanded", String(open.has(r.repo))); tog.setAttribute("aria-controls", `drawer-${r.repo}`);
+    const cell = (k, label, text, ctl, note) => h("div", { className: "cell" }, h("span", { className: "lab" }, help(label, text)), ctl, note ? h("small", { textContent: note }) : null);
+    const tri = editor({ kind: "select", label: `Triage (${r.repo})`, f: `${r.repo}|triage`, value: val(r, "triage"), values: cfg.defaults.triage, titles: TRIAGES, set: (v) => set(r, "triage", v === dflt(setOf(r), "triage") ? null : v) });
+    const lab = val(r, "label");
+    const gist = [val(r, "issues") ? `Works issues labelled <b>${esc(lab)}</b>` : "Leaves fix-labelled issues alone", val(r, "triage") === "off" ? "no triage" : `triage ${esc(val(r, "triage"))} (up to ${val(r, "triage_cap_per_author_day")} per author a day)`, ...(val(r, "close").length ? [`may close ${esc(val(r, "close").join(", "))}`] : []), ...(val(r, "stale_issues") ? [`closes issues quiet ${val(r, "stale_issues").days}+ days`] : [])].join("; ");
+    const body = h("div", { className: `card rc p-${preset}${unsaved ? " unsaved" : ""}${open.has(r.repo) ? " open" : ""}` },
+      h("div", { className: "head" }, h("div", { className: "rn" }, r.repo, h("i", { textContent: `label ${lab}` })), h("div", { className: "acts" }, h("div", { className: "preset" }, help("Preset", "A starting point for what the Maintainer does on this repo. A field you set yourself keeps its value when the preset changes.", { options: PRESET_TEXT, current: preset }), pe), tog, remove)),
+      h("div", { className: "sum" },
+        cell("issues", "Fix issues", "Checks each issue carrying the fix label, hands the fix to an engineer and follows it to a merged PR that closes the issue. Labelled issues are worked only while this is on.", sw(r, "issues", "Fix issues")),
+        cell("features", "Features", "Labels feature requests and builds the ones you mark agent-build.", sw(r, "features", "Features")),
+        cell("triage", "Triage", "Whether the Maintainer also looks at issues nobody labelled.", tri),
+        cell("dependabot", "Dependabot", "Hands each Dependabot dependency-update PR on this repo to an engineer and sees it through to a merge.", sw(r, "dependabot", "Dependabot")),
+        cell("contributor_prs", "Contributor PRs", "Nudges, then closes, a person's PR that has gone quiet.", sw(r, "contributor_prs", "Contributor PRs"))),
+      h("div", { className: "gist", innerHTML: `${gist}.` }),
+      open.has(r.repo) ? drawer(r) : null);
+    return body;
+  }
+  const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
   function draw() {
     closeHelp();
-    $("trighelp").replaceChildren(help("Triage unlabelled issues", "Whether the Maintainer also looks at issues nobody labelled.", { options: { on: "Each new issue from someone outside is triaged within minutes; the backlog gets a daily run.", off: "Only issues carrying the fix label are worked." }, current: (pending.external_triage ?? cfg.external_triage) ? "on" : "off", note: "Triage runs cost money, so it starts off. The backlog is triaged by the daily routine, which must be switched on too (routines start off on a new install)." }));
     $("count").textContent = cfg.repos.length ? `${cfg.repos.length}` : "";
-    const rows = cfg.repos.map((raw) => {
-      const r = shown(raw);
-      const remove = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
-      remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { remove: r.repo }); pending = lastGood = fresh(); proposed(x); render(); } catch (e) { say(e.message, true); } });
-      const row = h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
-        h("div", { className: "repo" }, r.repo, h("i", { textContent: `label ${r.label}` }), (() => { const b = linkBtn("Settings", () => { open.has(raw.repo) ? open.delete(raw.repo) : open.add(raw.repo); render(); }); b.className = "link toggle"; b.setAttribute("aria-expanded", String(open.has(raw.repo))); b.setAttribute("aria-controls", `drawer-${raw.repo}`); return b; })()),
-        ...DUTIES.map(([k, label, tip]) => { const sw = toggle(r[k], `${label} on ${r.repo}`, () => propose(r.repo, { [k]: !r[k] })); sw.classList.toggle("unsaved", k in (pending.repos[raw.repo] ?? {})); return h("div", { className: "duty" }, h("span", { className: "lab" }, help(label, tip)), sw); }),
-        remove);
-      return open.has(raw.repo) ? [row, drawer(raw)] : [row];
-    }).flat();
-    const cols = h("div", { className: "row cols" }, ...["Repo", ...DUTIES.map(([, label, tip]) => help(label, tip)), ""].map((t) => typeof t === "string" ? h("span", { textContent: t }) : t));
-    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Add one from the Ship page (Add repo); if the page is missing, add the Ship module under Fleet, Modules first. Then switch on the duties you want here.")]));
-    setSwitch($("triage"), pending.external_triage ?? cfg.external_triage);
-    $("triage").classList.toggle("unsaved", pending.external_triage !== undefined);
+    $("rows").replaceChildren(...(cfg.repos.length ? cfg.repos.map(card) : [h("div", { className: "card" }, h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Add one from the Ship page (Add repo); if the page is missing, add the Ship module under Fleet, Modules first. Then choose a preset and the rules for it here."))]));
   }
 
   async function load() {
-    try { cfg = await tool("maintainer_config", {}); render(); } catch (e) { say(e.message, true); }
+    try { cfg = await tool("maintainer_config", {}); cfg.defaults.stale = { days: 60, grace_days: 14, exempt_labels: cfg.defaults.exempt_labels }; render(); } catch (e) { say(e.message, true); }
   }
-  $("triage").addEventListener("click", () => propose(null, { external_triage: !(pending.external_triage ?? cfg.external_triage) }));
   $("refresh").addEventListener("click", () => { say(""); load(); });
   start("maintainer", load);
 </script>
