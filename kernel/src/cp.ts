@@ -74,7 +74,7 @@ export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: 
 }
 export const NO_HOLDER = "every open task has a holder: an agent (assigneeAgentId, yourself included) or the owner (assigneeUserId)";
 
-export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, appOwners, facts, observe, projects, log = () => {} }: {
+export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agentKey, grants, fleetIssues = () => "", controlUrl, checks, appOwners, facts, observe, projects, log = () => {} }: {
   /** Projects (projects.ts): an agent's `project` tag by name. */
   projects?: Pick<Projects, "serial" | "named">;
   /** The wake inbox's observe (wakes.ts): a task this route just changed has its facts recorded at once, from the issue the write returned. */
@@ -84,6 +84,8 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
   whoami: Whoami; asserter: Asserter; plugin: PluginPost;
   /** The one durable once-only write (once.ts): each write is keyed by its call, and a retry returns the first run's result. */
   once: Once;
+  /** How many comment steps a job has read (jobs.ts sawn): a comment it writes carries it in its tag, so a reader knows which messages it answers. */
+  sawn?: (job: string) => number;
   /** An agent's own Paperclip key (secrets paperclip-agents/<id>), or "". */
   agentKey: (agent: string) => string;
   /** The grants table's agents: roles, delegation targets and the tasks it names for each agent. */
@@ -95,6 +97,8 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
   controlUrl: string; checks?: Checks; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const fact = factWriter(facts, log);
+  /** The tag each op's first write used (see tagOf), for its retries. */
+  const tagIds = new Map<string, string>();
   /** `who`: the module and the agent the call is for, as soon as they are known (a refusal's log line names them). */
   async function handle(req: IncomingMessage, res: ServerResponse, path: string, query: string, who: { module?: string; agent?: string }): Promise<void> {
     const mod = await whoami(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()).catch(() => undefined);
@@ -214,7 +218,18 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     // The kernel's self tag (wakes.ts SELF_TAG: wakes nobody) on the agent's own task and the tasks its grants list; anywhere
     // else (a child, a part, a fleet overseer's comment on another agent's task) the op tag, so the task's own agent hears it
     // by the dispatch rules (who started work there), never the writer itself.
-    const tagOf = (scope: string, op: string) => (scope === "own" || scope === "listed" ? `<!-- aidenhq:job=${op} kind=cp -->` : `<!-- aidenhq:op=${op} -->`);
+    // The job's read step is part of the tag, fixed at the op's first write: a retry of the same op looks for the same tag.
+    const tagOf = (scope: string, op: string) => {
+      if (scope !== "own" && scope !== "listed") return `<!-- aidenhq:op=${op} -->`;
+      const job = live.flight.job;
+      let id = job ? tagIds.get(op) : undefined;
+      if (job && !id) {
+        id = `${job}_${sawn(job)}_${op}`;
+        tagIds.set(op, id);
+        if (tagIds.size > 2000) tagIds.delete(tagIds.keys().next().value!);
+      }
+      return `<!-- aidenhq:job=${id ?? op} kind=cp -->`;
+    };
 
     /** A project's id by name (`project`), made when there is none; its errors as this route's. */
     const projectNamed = async (co: string, name: unknown): Promise<string> => {

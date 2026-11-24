@@ -253,7 +253,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
       jti = signed.jti;
       headers["x-aidenhq-caller"] = signed.jwt;
-      asserter.begin(jti, { credential: who.credential, ...(who.job ? { bearer: callerToken } : {}), aud: conn.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, timeout + 30);
+      asserter.begin(jti, { credential: who.credential, ...(who.job ? { bearer: callerToken, job: who.job } : {}), aud: conn.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, timeout + 30);
     }
     headers.host = new URL(conn.url).host;
     const timeoutMs = (timeout + 30) * 1000;

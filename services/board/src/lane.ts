@@ -43,15 +43,18 @@ export async function laneMessages(pc: Paperclip, lane: LaneOptions | undefined,
   const lines = (await pc.comments(t.task)).flatMap((c) => {
     const r = role(t.id, c);
     // The kernel's label on the owner's words from another channel ("[telegram] ") stays: it says where they were written.
-    return r ? [{ id: c.id, role: r, text: displayText(c.body), at: Date.parse(c.createdAt) || 0 }] : [];
+    // `answers`: the owner comment a lane reply answers, from the kernel's own tag at the end of the reply (job `lane-<turn>_<comment>`;
+    // the plugin quotes any such tag a model writes), so a waiting caller can tell replies apart.
+    const answers = r === "agent" ? /<!-- aidenhq:job=lane-[A-Za-z0-9-]+_([A-Za-z0-9-]+) kind=lane -->\s*$/.exec(c.body)?.[1] : undefined;
+    return r ? [{ id: c.id, role: r, text: displayText(c.body), at: Date.parse(c.createdAt) || 0, ...(answers ? { answers } : {}) }] : [];
   });
   const from = after ? lines.findIndex((l) => l.id === after) + 1 : 0;
   return { messages: lines.slice(from), busy: lines.at(-1)?.role === "owner" };
 }
 
 /** The owner's words on the agent's chat task; `by`: the signed-in admin's name when that admin is not the owner. */
-export async function laneSend(pc: Paperclip, lane: LaneOptions | undefined, key: string, text: string, by?: string): Promise<void> {
+export async function laneSend(pc: Paperclip, lane: LaneOptions | undefined, key: string, text: string, by?: string): Promise<string> {
   const t = chatTasks(lane).find((x) => x.key === key);
   if (!t) throw new Error(`${key} has no fast chat`);
-  await pc.addComment(t.task, `${by ? `(by ${by}) ` : ""}${displayText(text)}`, true);
+  return (await pc.addComment(t.task, `${by ? `(by ${by}) ` : ""}${displayText(text)}`, true)).id;
 }

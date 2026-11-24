@@ -19,8 +19,8 @@ export interface Chat {
   history(agent: LaneAgent, since: number, limit: number): Promise<ChatLine[]>;
   /** The owner's words the lane received (from `via`), posted as the owner under `key` (once per key). */
   said(agent: LaneAgent, key: string, text: string, via: string): Promise<void>;
-  /** A reply, posted as the agent under `key` (once per key). */
-  reply(agent: LaneAgent, key: string, text: string): Promise<void>;
+  /** A reply, posted as the agent under `key` (once per key); `answers`: the id of the newest owner comment the turn read. */
+  reply(agent: LaneAgent, key: string, text: string, answers?: string): Promise<void>;
 }
 
 type Kernel = (method: string, path: string, body?: unknown) => Promise<any>;
@@ -52,8 +52,8 @@ export function kernelChat(kernel: Kernel): Chat {
     async said(agent, key, text, via) {
       await kernel("POST", "/v1/channel/exchange", { agent: agent.id, turn: key, owner_text: text, via });
     },
-    async reply(agent, key, text) {
-      await kernel("POST", "/v1/channel/exchange", { agent: agent.id, turn: key, reply: text });
+    async reply(agent, key, text, answers) {
+      await kernel("POST", "/v1/channel/exchange", { agent: agent.id, turn: key, reply: text, ...(answers ? { answers } : {}) });
     },
   };
 }

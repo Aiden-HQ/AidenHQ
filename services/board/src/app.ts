@@ -654,9 +654,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const text = marker ? `${displayText(instructions)}\n\n${marker}` : displayText(instructions);
     const existing = (await pc.children(parent.id)).find((k) => k.assigneeAgentId === agent.key && !["done", "cancelled"].includes(k.status));
     if (existing) {
-      await pc.addComment(existing.id, text, true);
+      const posted = await pc.addComment(existing.id, text, true);
       log.info({ issue: parent.identifier, part: existing.identifier, agent: agent.name }, "instructions to the crew");
-      return existing;
+      return { ...existing, message: posted.id };
     }
     const assign = paperclipUpdate(
       { ...parent, assigneeAgentId: null, assigneeAdapterOverrides: null },
@@ -676,7 +676,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if ((part as Issue & { deduplicated?: boolean }).deduplicated) throw new HttpError(409, `Paperclip returned ${part.identifier} instead of a new task`);
     store.markSeen(part.id, new Date(Date.now() + 5_000).toISOString());
     log.info({ issue: parent.identifier, part: part.identifier, agent: agent.name }, "agent joined");
-    return part;
+    return { ...part, message: `${part.id}:opening` };
   }
 
   /** The user's task a chat belongs to: the task itself, or the task an agent's part is part of. */
@@ -698,9 +698,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const part = parts.find((k) => k.status !== "done") ?? parts.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")))[0];
     if (!part) return addToCrew(ctx, task, agent, body, {}, fromMarker(from));
     if (part.status === "done") await pc.updateIssue(part.id, { status: "todo" });
-    await pc.addComment(part.id, `${body}\n\n${fromMarker(from)}`);
+    const posted = await pc.addComment(part.id, `${body}\n\n${fromMarker(from)}`);
     log.info({ issue: task.identifier, part: part.identifier, agent: agent.name, from: from.identifier }, "message delivered");
-    return part;
+    return { ...part, message: posted.id };
   }
 
   async function issueView(ref: string) {
@@ -786,7 +786,28 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       issue.parentId ? pc.issueSummary(issue.parentId).catch(() => undefined) : undefined,
       bylines(),
     ]);
-    const [messages, states] = await Promise.all([chatMessages(issue, ctx, comments), stateRows([issue.id, ...kids.map((k) => k.id)])]);
+    const [said, states, jobs] = await Promise.all([chatMessages(issue, ctx, comments), stateRows([issue.id, ...kids.map((k) => k.id)]), work.task(issue.id).catch(() => [])]);
+    // A reply's `answers`: the newest owner message its run had read. The reply's own kernel tag names the run (a model can't write
+    // one: the plugin quotes it), and the run's `saw` is the newest comment its prompt or live input carried.
+    const saw = new Map(jobs.map((j) => [j.id, j.saw ?? []]));
+    const bodies = new Map(comments.map((c) => [c.id, c.body]));
+    const ownerIds = new Set(said.filter((m) => m.kind === "owner").map((m) => m.id));
+    const answersOf = (body: string): string | undefined => {
+      // A comment written mid-run names how many steps the run had read (`_<n>_`); a run's final reply, the last.
+      const m = /<!-- aidenhq:job=(j-[0-9a-f]{16})(?:_(\d+)_[A-Za-z0-9_-]+)? kind=(?:reply|cp) -->\s*$/.exec(body);
+      const steps = saw.get(m?.[1] ?? "") ?? [];
+      const seen = m?.[2] ? (Number(m[2]) > 0 ? steps[Number(m[2]) - 1] : undefined) : steps.at(-1);
+      const opening = ownerIds.has(`${issue.id}:opening`) ? `${issue.id}:opening` : undefined;
+      if (seen === "opening") return opening;
+      if (!seen || !comments.some((c) => c.id === seen)) return undefined;
+      let last = opening;
+      for (const c of comments) {
+        if (ownerIds.has(c.id)) last = c.id;
+        if (c.id === seen) break;
+      }
+      return last;
+    };
+    const messages = said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? "") } : m));
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
     const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
     const agent = agentOf(chatAgent(issue));
@@ -1766,8 +1787,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // A fast-lane agent answers in the lane, not in a task: the board opens its lane chat (`lane:<key>`).
         const lane = (await laneAgents(pc, opts.lane)).find((l) => l.id === agent.id);
         if (lane) {
-          await laneSend(pc, opts.lane, lane.key, input.text, await laneByline(req));
-          return { identifier: `lane:${lane.key}` };
+          const message = await laneSend(pc, opts.lane, lane.key, input.text, await laneByline(req));
+          return { identifier: `lane:${lane.key}`, message };
         }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         const title = input.text.split("\n")[0]!.replace(/^@\S+\s*/, "").slice(0, 80) || "New chat";
@@ -1778,7 +1799,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // as created, never the text: an agent's edit to the description no longer matches, so it is never passed on.
         if (req) store.setMeta(`${CHAT_OPENING}${issue.id}`, JSON.stringify({ sha: sha256(description), length: input.text.length, createdAt: new Date().toISOString() }));
         log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
-        return { identifier: issue.identifier };
+        return { identifier: issue.identifier, message: `${issue.id}:opening` };
       },
     },
     // The fast chat lane's agents and their chats (lane.ts): each agent's chat task.
@@ -1789,8 +1810,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       path: /^\/api\/lane\/([^/]+)\/messages$/,
       handle: async (m, body, _u, req) => {
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(8000) }).strict(), body);
-        await laneSend(pc, opts.lane, dec(m[1]!), text, await laneByline(req));
-        return { ok: true };
+        return { ok: true, message: await laneSend(pc, opts.lane, dec(m[1]!), text, await laneByline(req)) };
       },
     },
     {
@@ -2106,7 +2126,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const issue = asked;
         // `brief`: the chat's send, which refetches the chat itself, so the reply skips building the whole task view.
         const { body: text, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
-        const view = async () => (brief ? { identifier: issue.identifier } : issueView(issue.id));
+        // `message`: the id of the message this request created, which a caller waiting on its reply follows.
+        const view = async (message?: string) => ({ ...(brief ? { identifier: issue.identifier } : await issueView(issue.id)), ...(message ? { message } : {}) });
         // @-mentions: the agents named, other than the one this chat is with, get the message on their part.
         const task = await userTaskOf(issue, ctx);
         const own = issue.id === task?.id ? ctx.assignees.find((a) => a.kind === "assistant")?.key : issue.assigneeAgentId;
@@ -2128,7 +2149,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const parts = [];
         for (const a of others) parts.push(await deliver(ctx, task!, a, text, { identifier: issue.identifier, commentId: posted?.id, note: `Written in ${where} on ${issue.identifier}.` }));
         // A message that left this chat for another agent's: the board opens that one.
-        return { ...(await view()), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
+        return { ...(await view(posted?.id ?? parts[0]?.message)), ...(!posted && parts[0] ? { movedTo: parts[0].identifier } : {}) };
       },
     },
     {

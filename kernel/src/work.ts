@@ -31,7 +31,7 @@ const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).to
 
 export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = async () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
-  const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
+  const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null, saw: r.saw ? JSON.parse(r.saw) : [] });
   /** A rejection the AI reviewer judged malicious (tier.ts MALICE), not code's refusal. */
   const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && MALICE.includes(r.review_code ?? "");
   /** One row, or undefined when its table isn't there (a kernel without the wake inbox or the fact log). */

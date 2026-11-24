@@ -19,6 +19,8 @@ export interface KernelJob {
   started_at: string | null;
   ended_at: string | null;
   session: string | null;
+  /** The newest comment the run had read at each step: its prompt, then each live input it took. */
+  saw?: string[];
   exit?: number | null;
   stopped?: string | null;
   usage?: { input: number; cached: number; output: number } | null;

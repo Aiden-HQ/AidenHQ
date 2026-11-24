@@ -14,6 +14,8 @@ export type InFlight = {
   credential: string;
   /** A kernel job's own token: a module's model calls for that caller are made as the job (cp.ts createAsCaller). Never leaves the kernel. */
   bearer?: string;
+  /** The kernel job making the call: its comments carry it in their tag, so a reader can tell which run wrote one. */
+  job?: string;
   aud: string; run?: string; kind: string; at: number; exp: number };
 
 const b64 = (v: unknown) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");

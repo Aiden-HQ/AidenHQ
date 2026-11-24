@@ -3,7 +3,7 @@
 // (lane_owed: a promised answer the lane continues itself, or a background task whose chat_send hasn't come yet).
 import Database from "better-sqlite3";
 
-export interface Owed { id: number; agent: string; kind: "continue" | "task" | "deliver"; ask: string; attempts: number; due_at: number }
+export interface Owed { id: number; agent: string; kind: "continue" | "task" | "deliver"; ask: string; attempts: number; due_at: number; answers: string | null }
 /** A wake into the agent's chat (`chat` 1) or onto a task. */
 export interface Wake { id: number; agent: string; due_at: number; note: string; chat: number; task: string | null }
 
@@ -25,6 +25,8 @@ export function openLaneStore(path: string) {
       attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER, due_at INTEGER, done_at INTEGER);
     CREATE INDEX IF NOT EXISTS lane_owed_open ON lane_owed (done_at, due_at);
     CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);`);
+  // `answers`: the owner comment a continuation answers, kept so its reply links to it like the turn's own.
+  if (!(db.prepare("PRAGMA table_info(lane_owed)").all() as { name: string }[]).some((c) => c.name === "answers")) db.exec("ALTER TABLE lane_owed ADD COLUMN answers TEXT");
   const q = {
     kvGet: db.prepare(`SELECT v FROM kv WHERE k = ?`),
     kvSet: db.prepare(`INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)`),
@@ -38,7 +40,7 @@ export function openLaneStore(path: string) {
     fire: db.prepare(`UPDATE lane_wakes SET fired_at = ? WHERE id = ? AND fired_at IS NULL`),
     unfire: db.prepare(`UPDATE lane_wakes SET fired_at = NULL WHERE id = ?`),
     answered: db.prepare(`SELECT MAX(received_at) AS t FROM lane_turns WHERE agent = ? AND conversation = 'chat' AND status != 'running'`),
-    owe: db.prepare(`INSERT INTO lane_owed (agent, conversation, kind, ask, created_at, due_at) VALUES (?, 'chat', ?, ?, ?, ?)`),
+    owe: db.prepare(`INSERT INTO lane_owed (agent, conversation, kind, ask, created_at, due_at, answers) VALUES (?, 'chat', ?, ?, ?, ?, ?)`),
     due: db.prepare(`SELECT * FROM lane_owed WHERE done_at IS NULL AND kind = ? AND due_at <= ? ORDER BY id`),
     dueIn: db.prepare(`SELECT * FROM lane_owed WHERE done_at IS NULL AND kind = 'continue' AND agent = ? AND due_at <= ? ORDER BY id LIMIT 1`),
     anyOpen: db.prepare(`SELECT 1 FROM lane_owed WHERE done_at IS NULL AND kind = 'continue' AND agent = ? LIMIT 1`),
@@ -100,8 +102,8 @@ export function openLaneStore(path: string) {
       return ((q.answered.get(agent) as { t: number | null }).t) ?? 0;
     },
     /** Something the lane owes the owner in an agent's chat: `continue` (the lane finishes it) or `task` (a background run will). */
-    owe(agent: string, kind: Owed["kind"], ask: string, dueAt: number, now = Date.now()): number {
-      return Number(q.owe.run(agent, kind, ask, now, dueAt).lastInsertRowid);
+    owe(agent: string, kind: Owed["kind"], ask: string, dueAt: number, now = Date.now(), answers?: string): number {
+      return Number(q.owe.run(agent, kind, ask, now, dueAt, answers ?? null).lastInsertRowid);
     },
     due(kind: Owed["kind"], now = Date.now()): Owed[] {
       return q.due.all(kind, now) as Owed[];

@@ -175,6 +175,8 @@ export function insideNoLinks(root: string, path: string, what: string): string 
 export const dispatchesFrom = (modules: () => Record<string, { dispatches?: string[] } | undefined>, agents: () => Record<string, { key?: unknown } | undefined>) =>
   (module: string, agent: string) => { const key = agents()[agent]?.key; return typeof key === "string" && key !== "" && (modules()[module]?.dispatches ?? []).includes(key); };
 
+/** A comment id (a job's `saw`). */
+const SAW = /^[A-Za-z0-9_-]{1,64}$/;
 const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL, engine TEXT NOT NULL, pid INTEGER NOT NULL,
   log TEXT NOT NULL, dir TEXT NOT NULL, at INTEGER NOT NULL, jobcaps TEXT NOT NULL, observing INTEGER NOT NULL, live_input INTEGER NOT NULL,
@@ -212,7 +214,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the
         // job that started it, its frozen authority and routine), and boxes.ts's lease and release.
         const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"], ["saw", "TEXT"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
         db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
         db.exec("CREATE INDEX IF NOT EXISTS jobs_identifier ON jobs (identifier, state)"); // workspaces.ts: a folder's liveness
         db.exec("CREATE INDEX IF NOT EXISTS jobs_agent_at ON jobs (agent, at DESC)"); // work.ts: an agent's newest jobs first
@@ -230,7 +232,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   };
   setup();
   const refusal = (id: string) => refusalOf(db, id);
-  const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: (by?: string) => void }>();
+  const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string, comment?: string) => boolean; cancel: (by?: string) => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
   const bump = (id: string) => {
@@ -295,6 +297,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const deadline = r.at + cfg.timeout_minutes * 60_000;
     let timedOut = false, cancelled = false, killed = false, stoppedBy: string | undefined;
     let over = false;
+    /** Comments appended to the inbox that no step of the engine has followed yet (see read). */
+    const pending: string[] = [];
     let retried = false;
     const save = () => db.prepare("UPDATE jobs SET offset = ?, session = ?, final = ?, progress = ?, usage = ? WHERE id = ?").run(offset, session, final ?? "", JSON.stringify(progress), usage.seen ? JSON.stringify({ input: usage.input, cached: usage.cached, output: usage.output }) : null, id);
     const read = () => {
@@ -320,6 +324,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
           const plan = PLAN(e.plan);
           if (plan?.length) progress.plan = plan;
           if (steps?.length) progress.steps = steps;
+          // The engine took a step after comments were appended to its inbox (which read() drained first): it has read them. Input
+          // the engine never steps after (it was finishing its answer) is never counted as seen.
+          if (steps?.length) for (const c of pending.splice(0)) db.prepare("UPDATE jobs SET saw = json_insert(COALESCE(saw, '[]'), '$[#]', ?) WHERE id = ?").run(c, id);
         }
       }
       save();
@@ -405,11 +412,12 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     };
     // A box job's dir is the launcher's out folder, mounted in its box: the inbox reaches it the same way.
     const send = r.live_input === 1
-      ? (text: string, from: string) => {
+      ? (text: string, from: string, comment?: string) => {
           read();
           if (over || final !== undefined || exitStatus(exitFile) || !alive(pid)) return false;
           try {
             appendLine(join(jobDir, "inbox.jsonl"), { t: "comment", from, text });
+            if (comment && SAW.test(comment)) pending.push(comment);
             return true;
           } catch {
             return false; // the inbox isn't a regular file (the job's doing): the comment waits for the next turn
@@ -606,9 +614,17 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       });
     },
     /** A comment into a live run's inbox.jsonl: false once the run is over, or for an engine that takes none mid-run. */
-    input(module: string, id: string, text: string, from = "owner") {
+    input(module: string, id: string, text: string, from = "owner", comment?: string) {
       own(module, id);
-      return { sent: watchers.get(id)?.send?.(String(text).slice(0, 65_536), String(from).slice(0, 100)) ?? false };
+      // `saw` (the newest comment the job had read at each step, so a reader can tell which messages a reply answers) takes the
+      // comment only once the engine has stepped after it: the watcher holds it until then.
+      const sent = watchers.get(id)?.send?.(String(text).slice(0, 65_536), String(from).slice(0, 100), comment) ?? false;
+      return { sent };
+    },
+    /** How many steps of comments the job has read so far (its prompt's, then each live input's): a reply written now answers the last. */
+    sawn(id: string): number {
+      const r = db.prepare("SELECT saw FROM jobs WHERE id = ?").get(id) as { saw: string | null } | undefined;
+      return r?.saw ? (JSON.parse(r.saw) as string[]).length : 0;
     },
     /** A restart: every watcher stops and saves its offset; the runs go on for the next kernel. */
     detach() {
