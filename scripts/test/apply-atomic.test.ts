@@ -110,6 +110,7 @@ echo recreate >> "$CALLS"
 if [ -f "$CTRL/block" ]; then touch "$CTRL/blocked"; while [ ! -f "$CTRL/release" ]; do sleep 0.1; done; rm -f "$CTRL/block"; fi
 echo "compose: recreated what moved"
 `,
+  "ops/paperclip-pg-tune.sh": "#!/usr/bin/env bash\n", // exit 0: nothing changed, no Paperclip restart
   "ops/computer-images.sh": "#!/usr/bin/env bash\n",
   "ops/warehouse-sources.sh": "#!/usr/bin/env bash\n",
   "ops/ci-runner-units.sh": "#!/usr/bin/env bash\n",
