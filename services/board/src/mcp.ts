@@ -206,13 +206,26 @@ export function createMcp(d: McpDeps) {
       "write",
       async (a) => {
         const lane = (id: string) => (id.startsWith("lane:") ? id.slice(5) : null);
-        // A reply is an agent message after the owner's newest message (ours, once posted): owner messages keep their ids and
-        // kind however the conversation folds the agents' notes around them.
+        // Our message is pinned on the first read after posting (the owner's newest then); later messages never move it. A reply
+        // answers it only when the run that wrote it read the chat at or after it: a lane reply says which owner message its turn
+        // answered, and a board reply belongs to the job that was running when it was posted (a job starting after our message read it).
+        // A late answer to an earlier message in the same chat is never returned as ours.
+        let pinned: string | number | undefined;
         const read = async (id: string): Promise<string[]> => {
           const key = lane(id);
-          const { messages } = (key ? await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`) : await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: any[] };
-          const from = messages.findLastIndex((m) => (key ? m.role === "owner" : m.kind === "owner")) + 1;
-          return messages.slice(from).filter((m) => (key ? m.role === "agent" : m.kind === "reply")).map((m) => m.text);
+          if (key) {
+            const { messages } = (await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`)) as { messages: { id: string; role: string; text: string; answers?: string }[] };
+            pinned ??= messages.findLast((m) => m.role === "owner")?.id;
+            const at = messages.findIndex((m) => m.id === pinned);
+            return messages.filter((m) => m.role === "agent" && m.answers && at >= 0 && messages.findIndex((x) => x.id === m.answers) >= at).map((m) => m.text);
+          }
+          const { messages, runs } = (await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: { kind: string; text: string; at: string }[]; runs: { at: string | null }[] };
+          pinned ??= Date.parse(messages.findLast((m) => m.kind === "owner")?.at ?? "");
+          const starts = runs.flatMap((r) => (r.at ? [Date.parse(r.at)] : []));
+          return messages
+            .filter((m) => m.kind === "reply")
+            .filter((m) => Math.max(0, ...starts.filter((t) => t <= Date.parse(m.at))) >= Number(pinned))
+            .map((m) => m.text);
         };
         let id = a.chat as string | undefined;
         if (id && lane(id)) await call("POST", `/api/lane/${encodeURIComponent(lane(id)!)}/messages`, { text: a.text });

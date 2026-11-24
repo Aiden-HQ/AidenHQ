@@ -19,8 +19,8 @@ export interface Chat {
   history(agent: LaneAgent, since: number, limit: number): Promise<ChatLine[]>;
   /** The owner's words the lane received (from `via`), posted as the owner under `key` (once per key). */
   said(agent: LaneAgent, key: string, text: string, via: string): Promise<void>;
-  /** A reply, posted as the agent under `key` (once per key). */
-  reply(agent: LaneAgent, key: string, text: string): Promise<void>;
+  /** A reply, posted as the agent under `key` (once per key); `answers`: the id of the newest owner comment the turn read. */
+  reply(agent: LaneAgent, key: string, text: string, answers?: string): Promise<void>;
 }
 
 type Kernel = (method: string, path: string, body?: unknown) => Promise<any>;
@@ -28,12 +28,14 @@ interface Comment { id: string; body?: string; authorAgentId?: string | null; au
 
 /** The kernel's self tag on a lane post: `kind=owner` the owner's words it posted, `kind=lane` the agent's reply. */
 const TAG = /\n*<!-- aidenhq:job=lane-[\w-]+ kind=(owner|lane) -->\s*$/;
+/** The kernel's note on a lane reply: the owner comment it answers (never part of the text). */
+const ANSWERS = /\n*<!-- aidenhq-answers:[\w-]+ -->/;
 
 /** One comment as a chat line for `agent`. */
 export function lineOf(agent: LaneAgent, c: Comment): ChatLine {
   const body = String(c.body ?? "");
   const side = TAG.exec(body)?.[1];
-  const text = body.replace(TAG, "");
+  const text = body.replace(TAG, "").replace(ANSWERS, "");
   const at = Date.parse(c.createdAt ?? "") || 0;
   if (side === "lane" && c.authorAgentId === agent.id) return { id: c.id, role: "agent", text, at };
   if (c.authorUserId && !c.authorAgentId) {
@@ -52,8 +54,8 @@ export function kernelChat(kernel: Kernel): Chat {
     async said(agent, key, text, via) {
       await kernel("POST", "/v1/channel/exchange", { agent: agent.id, turn: key, owner_text: text, via });
     },
-    async reply(agent, key, text) {
-      await kernel("POST", "/v1/channel/exchange", { agent: agent.id, turn: key, reply: text });
+    async reply(agent, key, text, answers) {
+      await kernel("POST", "/v1/channel/exchange", { agent: agent.id, turn: key, reply: text, ...(answers ? { answers } : {}) });
     },
   };
 }

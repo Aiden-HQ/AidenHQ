@@ -35,6 +35,11 @@ const thread = [...Array.from({ length: 20 }, (_, n) => notice(n)), ...Array.fro
 const mk = (n: number, extra: Record<string, unknown>) => ({ status: "todo", priority: "medium", createdAt: "2026-11-12T08:00:00.000Z", updatedAt: "2026-11-12T08:00:00.000Z", description: "", id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`, identifier: `WOR-${n}`, ...extra });
 const agents = [{ id: "aiden", name: "Aiden", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } }];
 issues.push(mk(1, { title: "A task", assigneeAgentId: "aiden" }));
+// A lane agent's chat task: what is said on it, and what the next owner message makes the lane say back.
+const laneThread: Record<string, unknown>[] = [{ id: "q0", body: "earlier", authorUserId: "me", createdAt: "2026-11-12T10:00:00.000Z" }];
+let laneAnswers: "late" | "own" = "late";
+const laneGrants = join(mkdtempSync(join(tmpdir(), "mcp-lane-")), "grants.json");
+writeFileSync(laneGrants, JSON.stringify({ agents: { a1: { key: "aria", chat_task: "i-chat" } } }));
 const fakeFetch = (async (url: URL, init: RequestInit = {}) => {
   const method = init.method ?? "GET";
   const lane = /^\/v1\/cp\/(read|owner)(\/.*)$/.exec(url.pathname)!;
@@ -46,7 +51,16 @@ const fakeFetch = (async (url: URL, init: RequestInit = {}) => {
     issues.push(made);
     return json(made);
   }
+  if (method === "POST" && path === "/api/issues/i-chat/comments") {
+    const id = `q${laneThread.length}`;
+    const agent = (answers: string, text: string) => ({ id: `r${laneThread.length}`, body: `${text}\n\n<!-- aidenhq-answers:${answers} -->`, authorAgentId: "a1", createdAt: "2026-11-12T10:00:02.000Z" });
+    laneThread.push({ id, body: JSON.parse(String(init.body)).body, authorUserId: "me", createdAt: "2026-11-12T10:00:01.000Z" });
+    // The lane's turn for the previous message ends after this one was posted; or this message gets its own answer.
+    laneThread.push(laneAnswers === "late" ? agent(`q${laneThread.length - 2}`, "answer to the earlier message") : agent(id, "answer to this message"));
+    return json({ id });
+  }
   if (method !== "GET") return json({});
+  if (path === "/api/issues/i-chat/comments") return json(laneThread);
   if (path === "/api/issues/00000000-0000-4000-8000-000000000001/comments") return json(thread);
   if (path === "/api/cli-auth/me") return json({ userId: "me" });
   if (path === `/api/companies/${CO}`) return json({ issuePrefix: "WOR" });
@@ -74,7 +88,7 @@ describe("mcp end to end", () => {
       if (path === "/auth/check") return Response.json({ ok: true });
       return Response.json({}, { status: 404 });
     }) as typeof fetch);
-    app = createApp({ signIns: [{ id: "jira", label: "Jira", connect: "/jira/connect", callback: "/jira/callback", missing: "m", stopped: "s", fields: [], auth: jira }], paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), store: new Store(":memory:"), records, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, adminUrl: "https://admin.example.com", allowedHosts: ["board.example.com"], mode: "lan",
+    app = createApp({ signIns: [{ id: "jira", label: "Jira", connect: "/jira/connect", callback: "/jira/callback", missing: "m", stopped: "s", fields: [], auth: jira }], paperclip: new Paperclip("http://paperclip", CO, KEY, fakeFetch), lane: { grantsFile: laneGrants }, store: new Store(":memory:"), records, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, adminUrl: "https://admin.example.com", allowedHosts: ["board.example.com"], mode: "lan",
       // beta is paired (done), acme is not: status lists only acme.
       setupFlows: { flows: ["acme", "beta"].map((module) => ({ module, title: module, why: "w", effort: "1 min", steps: "s", pair_url: `http://${module}/pair`, token: "t" }) as never), fetchImpl: (async (u: string) => Response.json({ paired: String(u).includes("beta") })) as typeof fetch } });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -154,6 +168,15 @@ describe("mcp end to end", () => {
     expect((await rpc("tools/list", {}, token, { origin: "https://evil.example" })).status).toBe(403);
     expect((await rpc("tools/list", {}, token, { origin: "https://board.example.com" })).status).toBe(200);
     expect((await rpc("tools/list", {})).status).toBe(200);
+  });
+
+  it("ask returns only the reply to its own message, never a late answer to an earlier one", async () => {
+    laneAnswers = "late";
+    const late = (await call("ask", { text: "second question", chat: "lane:aria", wait_seconds: 1 })).json.result.structuredContent;
+    expect(late).toMatchObject({ replied: false, reply: null });
+    laneAnswers = "own";
+    const own = (await call("ask", { text: "third question", chat: "lane:aria", wait_seconds: 1 })).json.result.structuredContent;
+    expect(own).toMatchObject({ replied: true, reply: expect.stringContaining("answer to this message") });
   });
 
   it("ask returns the chat id and 'still working' when the agent is silent, and waits no longer than asked", async () => {

@@ -43,7 +43,9 @@ export async function laneMessages(pc: Paperclip, lane: LaneOptions | undefined,
   const lines = (await pc.comments(t.task)).flatMap((c) => {
     const r = role(t.id, c);
     // The kernel's label on the owner's words from another channel ("[telegram] ") stays: it says where they were written.
-    return r ? [{ id: c.id, role: r, text: displayText(c.body), at: Date.parse(c.createdAt) || 0 }] : [];
+    // `answers`: the owner comment a lane reply answers (the kernel's note on it), so a waiting caller can tell replies apart.
+    const answers = r === "agent" ? /<!-- aidenhq-answers:([\w-]+) -->/.exec(c.body)?.[1] : undefined;
+    return r ? [{ id: c.id, role: r, text: displayText(c.body), at: Date.parse(c.createdAt) || 0, ...(answers ? { answers } : {}) }] : [];
   });
   const from = after ? lines.findIndex((l) => l.id === after) + 1 : 0;
   return { messages: lines.slice(from), busy: lines.at(-1)?.role === "owner" };
