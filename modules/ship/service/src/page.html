@@ -45,7 +45,7 @@
     else next.paused = fields.paused;
     pending = next; // at once, so a second edit before the answer comes back keeps this one
     render();
-    try { proposed(await tool("ship_configure", { edits: next })); } catch (e) { say(e.message, true); }
+    await inOrder(async () => { try { proposed(await tool("ship_configure", { edits: next })); } catch (e) { say(e.message, true); } });
   }
   const own = (r) => ({ ...pending.repos[r.repo] });
 

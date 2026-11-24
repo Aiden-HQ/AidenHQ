@@ -41,7 +41,8 @@
     else next.external_triage = duties.external_triage;
     pending = next; // at once, so a second edit before the answer comes back keeps this one
     render();
-    try { proposed(await tool("maintainer_configure", { edits: { ...(Object.keys(next.repos).length ? { repos: next.repos } : {}), ...(next.external_triage === undefined ? {} : { external_triage: next.external_triage }) } })); } catch (e) { say(e.message, true); }
+    const edits = { ...(Object.keys(next.repos).length ? { repos: next.repos } : {}), ...(next.external_triage === undefined ? {} : { external_triage: next.external_triage }) };
+    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits })); } catch (e) { say(e.message, true); } });
   }
 
   function render() {

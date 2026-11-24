@@ -18,6 +18,9 @@ new ResizeObserver(() => { const r = document.body.getBoundingClientRect(); noti
 const $ = (id) => document.getElementById(id);
 const h = (tag, props, ...kids) => { const el = Object.assign(document.createElement(tag), props); el.append(...kids.filter((k) => k !== null)); return el; };
 const say = (t, err) => { $("note").textContent = t; $("note").className = err ? "note err" : "note"; };
+// Proposal requests run one after another, so the last answer is the latest draft (the host shows each answer as the proposal).
+let queue = Promise.resolve();
+const inOrder = (fn) => (queue = queue.then(fn, fn));
 const proposed = (r) => say(`Proposed: ${(r.changes ?? []).join("; ")}. Save it in the bar above.`);
 const setSwitch = (b, on) => b.setAttribute("aria-checked", String(!!on));
 const toggle = (on, label, fn) => { const b = h("button", { className: "sw", role: "switch", ariaLabel: label }); setSwitch(b, on); b.addEventListener("click", fn); return b; };

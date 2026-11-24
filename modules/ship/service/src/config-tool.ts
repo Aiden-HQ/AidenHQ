@@ -113,6 +113,7 @@ export function configTools(d: {
           if (!owner) throw new Error("removing a repo is the owner's: ask them to remove it from the Fleet page");
           ({ changes, summary } = removeRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, repo));
         } else if (repo && !a.edits && repo !== "defaults" && !covers(repo, scope)) {
+          if (typeof a.paused === "boolean") throw new Error("adding a repo is its own change: pause separately");
           // One change across the github, code-review and ship settings: the board saves it for the owner; an agent's filing is per module, so an agent is refused.
           if (!owner) throw new Error(`${repo} isn't covered yet: adding a repo (its maintainer_repos, code_review and ship entries together) is the owner's: ask them to add it from the Fleet page`);
           ({ changes, summary } = addRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, repo, a.change));
