@@ -132,21 +132,22 @@ export type Action = "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "
  * - `queue`: its branch merges through the merge queue (mergePath);
  * - `approve`: ship may post the App's approval now (its `approve` setting and code review's pass for this head: ship's call,
  *   lane D2's verdict carry-over and fresh-review rule included);
- * - `review`: an approval on the head is needed though GitHub doesn't ask for one (code review gates the repo);
- * - `findings`: code review's open important findings on the head;
+ * - `verdict`: code review's answer for the head (review-gate.ts), read once by the caller: undefined where the repo isn't gated.
+ *   A gated repo merges on its pass (or a bypass); open important findings are a fix, anything else a wait. GitHub's own review
+ *   rule (REVIEW_REQUIRED) is what asks for an approval on the head;
  * - `required`: the check names the target branch's rules require (requiredChecks): only those are judged, and none required is green;
  * - `checks`: every check on the head, every page.
  */
-export type ShipContext = { queue: boolean; approve: boolean; review?: boolean; findings?: boolean; required: string[]; checks: NamedCheck[] };
+export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; required: string[]; checks: NamedCheck[] };
 
 /**
  * The one readiness rule: what to do with one PR from `data` (PR_QUERY's answer, withGate applied) and its bound `head`.
  * Without `ship` it is the merge queue's for an approved record: { do: "merge" | "done" | "wait" | "fail", why }, and before a
  * "merge" merges.ts still asks code review's gate; only our own repos (agents org, product) and maintained ones reach it, so
  * the record is the review. With `ship` (an adopted PR) it never fails what a round can move: a conflict is a repair, red is a
- * fix, a missing review is a wait; it judges only the required checks, and needs an approval on the head only where GitHub or
- * code review asks for one. A PR on a non-default base stalls for ship (unsupported). The design review is advisory: it never
- * holds a merge.
+ * fix, a missing review is a wait; it judges only the required checks, needs code review's pass where code review gates the
+ * repo, and an approval on the head only where GitHub asks for one. A PR on a non-default base waits for ship (unsupported, said
+ * each pass, never stored). The design review is advisory: it never holds a merge.
  */
 export function decide(data: Json, head: string, ship?: ShipContext): { do: Action; why?: string } {
   const pr = data?.repository?.pullRequest;
@@ -154,7 +155,7 @@ export function decide(data: Json, head: string, ship?: ShipContext): { do: Acti
   if (pr.state === "MERGED") return pr.headRefOid === head ? { do: "done", why: "already merged" } : { do: "fail", why: `merged by someone else at \`${String(pr.headRefOid).slice(0, 12)}\`, not the approved head` };
   if (pr.state !== "OPEN") return { do: "fail", why: "closed" };
   const def = data.repository.defaultBranchRef?.name;
-  if (!def || pr.baseRefName !== def) return ship ? { do: "stall", why: `non-default base unsupported (\`${pr.baseRefName}\`)` } : { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch \`${def}\`: retarget it and ask for its merge again` };
+  if (!def || pr.baseRefName !== def) return ship ? { do: "wait", why: `non-default base unsupported (\`${pr.baseRefName}\`)` } : { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch \`${def}\`: retarget it and ask for its merge again` };
   if (pr.headRefOid !== head) return { do: "fail", why: `its head moved since the merge was approved (now \`${String(pr.headRefOid).slice(0, 12)}\`): for an agent's PR the queue files its merge again at the new head once its checks are green, so there is nothing to do; any other PR needs a new merge request` };
   const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r: Json) => r.state);
   if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: ship ? "fix_review" : "fail", why: "changes are requested on it" };
@@ -186,9 +187,12 @@ export function decide(data: Json, head: string, ship?: ShipContext): { do: Acti
     if (named.some((c) => c.pending)) return { do: "wait", why: `${named.filter((c) => c.pending).length} check(s) still running on its head` };
   }
   if (skippedImageScan(pr)) return { do: ship ? "fix_ci" : "fail", why: "it changes an image but its image-scan check was skipped" };
-  if (ship?.findings) return { do: "fix_review", why: "code review has open findings on its head" };
-  // An approval is needed only where GitHub asks for a review or code review gates the repo; elsewhere the trusted hand-off is enough.
-  if (ship && (pr.reviewDecision === "REVIEW_REQUIRED" || ship.review) && !approvedAt(pr, head)) return ship.approve ? { do: "approve", why: "ready, and no approval on its head yet" } : { do: "wait", why: reviewWait(pr) };
+  // Code review gates the repo: its pass (or a bypass while it is down) is the review; open important findings are the PR's to fix.
+  const v = ship?.verdict;
+  if (v && "findings" in v && v.findings) return { do: "fix_review", why: "code review has open findings on its head" };
+  if (v && "wait" in v) return { do: "wait", why: v.wait };
+  // An approval on the head is needed only where GitHub's own rules ask for a review; elsewhere the hand-off (and code review) is enough.
+  if (ship && pr.reviewDecision === "REVIEW_REQUIRED" && !approvedAt(pr, head)) return ship.approve ? { do: "approve", why: "ready, and no approval on its head yet" } : { do: "wait", why: reviewWait(pr) };
   switch (pr.mergeStateStatus) {
     case "CLEAN":
     case "HAS_HOOKS":

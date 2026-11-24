@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { createService } from "../service/src/service.ts";
 import { planParts } from "../service/src/plan.ts";
 import { decide, mergePath, requiredChecks } from "../service/src/merge-gate.ts";
+import { createMerges } from "../service/src/merges.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
@@ -229,12 +230,15 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.equal(go({ mergeStateStatus: "DIRTY" }).do, "repair");
   assert.equal(go({ mergeStateStatus: "DIRTY" }, { checks: [] }).do, "repair", "a conflict is repaired before waiting on checks that can't run");
   assert.equal(go({}, { queue: true }).do, "enqueue", "no review needed: the hand-off is enough");
-  assert.equal(go({}, { review: true }).do, "wait", "a gated repo needs an approval on the head");
-  assert.equal(go({ reviews: { nodes: [{ state: "APPROVED", commit: { oid: H } }] } }, { review: true }).do, "merge");
+  // A gated repo merges on code review's pass: no GitHub approval unless GitHub's own rules ask for one.
+  assert.equal(go({}, { verdict: { wait: "code review: running" } }).do, "wait");
+  assert.equal(go({}, { verdict: { wait: "code review: findings", findings: "code review: findings", findingsKey: "k" } }).do, "fix_review");
+  assert.equal(go({}, { verdict: { pass: true } }).do, "merge", "code review's pass is the review");
+  assert.equal(go({}, { verdict: { bypass: "down" } }).do, "merge");
   assert.equal(go({ state: "MERGED" }).do, "done");
   assert.equal(go({ isInMergeQueue: true }).do, "wait");
-  // A non-default base is unsupported: a visible stall, never a silent wait.
-  assert.deepEqual(go({ baseRefName: "release" }), { do: "stall", why: "non-default base unsupported (`release`)" });
+  // A non-default base is unsupported: a wait said each pass, never a stored stall.
+  assert.deepEqual(go({ baseRefName: "release" }), { do: "wait", why: "non-default base unsupported (`release`)" });
   // Only the required checks: an optional red one doesn't hold it; none required (and none run) is green.
   const red = [...ok, { name: "lint", ok: false, pending: false }];
   assert.equal(go({}, { checks: red }).do, "merge");
@@ -407,4 +411,18 @@ test("ship's repair takes the box's files only on generated paths and conflicted
     assert.match(r.text, why);
     assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "nothing was written");
   }
+});
+
+test("ship's decision from its list read: no PR or check read, the branch rules read once, code review's pass is the review", async () => {
+  const H = "b".repeat(40), calls = [];
+  const gh = async (method, path) => (calls.push(`${method} ${path}`), path.includes("/rules/branches/") ? { status: 200, body: [{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "build" }] } }] } : { status: 404, body: {} });
+  let verdict = { wait: "code review: running" };
+  const merges = createMerges({ dir: mkdtempSync(join(tmpdir(), "decision-")), gh, fleetOrg: "acme-agents", reviewGate: async () => verdict, report: async () => {} });
+  const rollup = { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
+  const pr = { number: 3, headRefOid: H, baseRefName: "main", mergeStateStatus: "CLEAN", reviewDecision: null, isDraft: false, isInMergeQueue: false, latestOpinionatedReviews: { nodes: [] }, reviews: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } };
+  const view = { pr, main: { name: "main", oid: "c".repeat(40), rollup: { state: "SUCCESS" } } };
+  assert.equal((await merges.decision("acme-agents/widget", 3, H, view)).do, "wait");
+  verdict = { pass: true };
+  assert.equal((await merges.decision("acme-agents/widget", 3, H, view)).do, "merge", "a gated repo merges on code review's pass, no GitHub approval");
+  assert.deepEqual(calls, ["GET /repos/acme-agents/widget/rules/branches/main", "GET /repos/acme-agents/widget/branches/main/protection/required_status_checks"]);
 });

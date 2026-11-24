@@ -6,7 +6,9 @@
 //                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's.
 //   POST /internal/ship/flow     {fn, args} -> Flow's fact for what the loop saw (flow.ts), or `authored`'s answer
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
-//   POST /internal/ship/decision {repo, number, head} -> an adopted PR's round decision (merges.ts decision: decide with ship's context)
+//   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
+//                                context); `pr` and `main` are the list read's node and default branch (OPEN_PRS_QUERY), so the
+//                                PR isn't read again
 //   POST /internal/ship/decide   {data, head} -> the merge gate's rule on the loop's view of a PR (merge-gate.ts decide)
 //   GET  /internal/ship/openers  -> pr-tasks.json: which task opened each PR
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -59,14 +61,14 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first: 30) { nodes { state } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } maintainerCanModify labels(first: 30) { nodes { name } } assignees(first: 10) { nodes { login } } timelineItems(last: 30, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { __typename login } label { name } } ... on UnlabeledEvent { id createdAt actor { __typename login } label { name } } ... on IssueComment { id createdAt author { __typename login } body } } } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision isInMergeQueue latestOpinionatedReviews(first: 30) { nodes { state } } reviews(last: 20) { nodes { state commit { oid } } } reviewRequests(first: 10) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } maintainerCanModify labels(first: 30) { nodes { name } } assignees(first: 10) { nodes { login } } timelineItems(last: 30, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { __typename login } label { name } } ... on UnlabeledEvent { id createdAt actor { __typename login } label { name } } ... on IssueComment { id createdAt author { __typename login } body } } } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
   }
 }`;
 const FLOW = ["opened", "pushed", "merged", "closed", "checksStarted", "checksCompleted", "authored"] as const;
 
 export function shipRoutes(o: {
-  gh: Gh; decision?: (repo: string, number: number, head: string) => Promise<unknown>; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
+  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json } }) => Promise<unknown>; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
   allowed: (repo: string) => boolean;
   /** Whether a bearer is the ship module's own token (undefined: the kernel couldn't say now). */
@@ -160,7 +162,8 @@ export function shipRoutes(o: {
       if (op === "decision" && o.decision) {
         const repo = String(b.repo);
         if (!o.allowed(repo)) return send(res, 403, { error: `ship may not read ${repo.slice(0, 200)}` }), true;
-        return send(res, 200, await o.decision(repo, Number(b.number), String(b.head))), true;
+        const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup } } : undefined;
+        return send(res, 200, await o.decision(repo, Number(b.number), String(b.head), view)), true;
       }
       if (op === "decide") return send(res, 200, decide(b.data, String(b.head))), true;
       return send(res, 404, { error: "no such operation" }), true;
