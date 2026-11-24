@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 
 /** One compiled page (modules/board/schemas/pages.json) and its module. */
-export interface PagePoint { id: string; title: string; icon: string; order: number; module: string; connection: string; view: string; tools: string[] }
+export interface PagePoint { id: string; title: string; icon: string; order: number; module: string; connection: string; view: string; tools: string[]; settings?: string[] }
 
 export const VIEW_MIME = "text/html;profile=mcp-app";
 /** How the frame route sends a module's view (never HTML of the board's own). */
@@ -18,6 +18,9 @@ export const FRAME_CSP = "sandbox allow-scripts allow-forms; default-src 'none';
 export function pagePoints(file: string): PagePoint[] {
   return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).pages ?? []) : [];
 }
+
+/** Whether a page may propose a change to this setting: one only its own module declares, or one its declaration lists. */
+export const mayPropose = (page: PagePoint, key: string, owners: string[]) => (page.settings ?? []).includes(key) || owners.join() === page.module;
 
 export class ViewError extends Error {
   status: number;

@@ -1,0 +1,103 @@
+<!doctype html>
+<!-- Ship's Fleet page: an MCP Apps view (text/html;profile=mcp-app) the ship connection serves as ui://ship/page. Its own parts only:
+     the shared kit (services/shared/page-kit.css and .js: the bridge, helpers and common styles) is inlined where the markers sit
+     (mcp.ts pageHtml). Calls only ship_config, ship_status and ship_configure through the host; as the owner, ship_configure only
+     proposes: the board shows the change and files it on his Save. docs/design/board-ui.md "Modules". -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/*kit:css*/
+  .row { grid-template-columns: minmax(150px, 1.6fr) 64px repeat(4, minmax(104px, 1fr)) 72px; }
+  .pause { display: flex; align-items: center; gap: 8px; }
+  .pause.on { color: var(--color-text-danger, red); }
+  .hold { display: grid; grid-template-columns: minmax(150px, 1fr) 110px 2fr; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line); }
+  .hold:first-of-type { border-top: 0; }
+  @media (max-width: 860px) {
+    .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; }
+    .row .repo { grid-column: 1; } .row .onoff { grid-column: 2; justify-self: end; }
+    .hold { grid-template-columns: 1fr; gap: 2px; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head"><div><b>Repos</b> <small id="count"></small></div><label class="pause" id="pausebox"><span id="pausetxt">Running</span><button class="sw" id="pause" role="switch" aria-checked="true" aria-label="Ship is running"></button></label></div>
+  <div id="rows"></div>
+  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><button type="button" id="refresh">Refresh</button></form>
+  <div class="note" id="note" role="status"></div>
+</div>
+<div class="card">
+  <div class="head"><b>On hold</b><small>PRs ship stopped on, with why</small></div>
+  <div id="holds"></div>
+</div>
+<script>
+/*kit:js*/
+  let controls = {}, presets = {}, status = { paused: false, repos: [], held: [] };
+  // The edits the owner hasn't saved yet, one proposal for the page: field changes per repo, and the pause. Each edit merges into it.
+  let pending = { repos: {}, paused: undefined };
+  // A proposed preset moves every field the repo's entry doesn't set itself to that preset's value, before Save.
+  const shown = (r) => { const p = pending.repos[r.repo] ?? {}, base = p.preset && presets[p.preset] ? Object.fromEntries(["enabled", "handoff", "approve", "merge"].filter((k) => !(r.over ?? []).includes(k)).map((k) => [k, presets[p.preset][k]])) : {}; return { ...r, ...base, ...p }; };
+
+  async function propose(fields, repo) {
+    const next = { repos: { ...pending.repos }, paused: pending.paused };
+    if (repo) next.repos[repo] = { ...(next.repos[repo] ?? {}), ...fields };
+    else next.paused = fields.paused;
+    pending = next; // at once, so a second edit before the answer comes back keeps this one
+    render();
+    await inOrder(async () => { try { proposed(await tool("ship_configure", { edits: next })); } catch (e) { say(e.message, true); } });
+  }
+  const own = (r) => ({ ...pending.repos[r.repo] });
+
+  function choice(r, key) {
+    const c = controls[key];
+    const sel = h("select", { ariaLabel: `${c.label} for ${r.repo}` });
+    for (const v of c.values) sel.append(h("option", { value: v, textContent: v, selected: shown(r)[key] === v }));
+    sel.addEventListener("change", () => propose({ [key]: sel.value }, r.repo));
+    return h("div", {}, h("span", { className: "lab", textContent: c.label }), sel);
+  }
+
+  function render() {
+    $("count").textContent = status.repos.length ? `${status.repos.length}` : "";
+    const paused = pending.paused ?? status.paused;
+    setSwitch($("pause"), !paused);
+    $("pause").classList.toggle("unsaved", pending.paused !== undefined);
+    $("pause").setAttribute("aria-label", paused ? "Ship is paused" : "Ship is running");
+    $("pausetxt").textContent = paused ? "Paused: nothing is adopted, pushed, approved or merged" : "Running";
+    $("pausebox").className = paused ? "pause on" : "pause";
+    const rows = status.repos.map((raw) => {
+      const r = shown(raw);
+      const sw = toggle(r.enabled, `Ship on ${r.repo}`, () => propose({ enabled: !r.enabled }, r.repo));
+      sw.classList.toggle("unsaved", "enabled" in own(raw));
+      const rm = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
+      rm.addEventListener("click", async () => { try { const x = await tool("ship_configure", { repo: r.repo, remove: true }); pending = { repos: {}, paused: undefined }; proposed(x); render(); } catch (e) { say(e.message, true); } });
+      return h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
+        h("div", { className: "repo", textContent: r.repo }), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: controls.enabled.label }), sw),
+        choice(raw, "preset"), choice(raw, "handoff"), choice(raw, "approve"), choice(raw, "merge"), rm);
+    });
+    const cols = h("div", { className: "row cols" }, ...["Repo", "On", "Preset", "Adopt PRs", "Approve", "Merge", ""].map((t) => h("span", { textContent: t })));
+    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty", textContent: "No repo is on yet. Ship stays quiet until you add one: it adopts the PRs you hand it and works them to a merge." })]));
+    $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", textContent: String(x.hold?.kind ?? "").replace("_", " ") }), h("span", { className: "soft", textContent: x.hold?.reason ?? "" }))) : [h("div", { className: "empty", textContent: "Nothing is held." })]));
+  }
+
+  async function load() {
+    try {
+      const config = await tool("ship_config", {});
+      controls = config.controls ?? {}; presets = config.presets ?? {};
+      status = await tool("ship_status", {});
+      render();
+    } catch (e) { say(e.message, true); }
+  }
+  $("pause").addEventListener("click", () => propose({ paused: !(pending.paused ?? status.paused) }));
+  $("refresh").addEventListener("click", () => { pending = { repos: {}, paused: undefined }; say(""); load(); });
+  $("add").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const repo = $("newrepo").value.trim();
+    if (!repo) return;
+    try { proposed(await tool("ship_configure", { repo, add: true })); pending = { repos: {}, paused: undefined }; render(); } catch (err) { say(err.message, true); }
+  });
+  start("ship", load);
+</script>
+</body>
+</html>

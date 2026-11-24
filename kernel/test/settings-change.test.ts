@@ -116,6 +116,14 @@ test("on a team, the record's settings edit teams.<t>.defaults, a member's its e
     assert.throws(() => checkTyped(bad, src), /isn't a change|team|can't be/);
 });
 
+test("a setting its module declares `entry:` takes a list of names or maps carrying that field, bounded; other lists stay plain", () => {
+  const src = { compiled: { settings: {} }, catalog: [{ name: "github", enabled: true, settings: { maintainer_repos: { entry: "repo" }, ignore: {} } }] };
+  checkTyped({ kind: "setting", key: "maintainer_repos", value: ["a/b", { repo: "c/d", issues: false }] }, src);
+  for (const value of [[{ issues: true }], "a/b", [{ repo: 1 }], [{ repo: "a/b", deep: { x: "$no" } }]])
+    assert.throws(() => checkTyped({ kind: "setting", key: "maintainer_repos", value }, src), /entry|entries|plain|a name/);
+  assert.throws(() => checkTyped({ kind: "setting", key: "ignore", value: [{ repo: "a/b" }] }, src), /plain values only/);
+});
+
 test("an agent writes a structured setting its module names its role a writer of, on its own task, and nothing else", async () => {
   const { apply, filed, at } = setup();
   const manager = { agent: "a1", key: "reviewer-manager", name: "Reviewer Manager", roles: ["reviewer-manager"], kind: "run", task: OTHER };

@@ -60,6 +60,8 @@ const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 export interface Scope { fleet: string[]; listed: string[] }
 const match = (repo: string, list: string[]) => list.some((c) => { const [a, b] = c.toLowerCase().split("/"); const [r, n] = repo.toLowerCase().split("/"); return (a === "*" || a === r) && (b === "*" || b === n); });
 const ALL: Scope = { fleet: ["*/*"], listed: [] };
+/** Whether ship works the repo: a fleet repo, or a listed one (its ship entry is what turns a listed repo on). */
+export const covers = (repo: string, scope: Scope) => match(repo, scope.fleet) || match(repo, scope.listed);
 
 /** The entry as a preset name plus overrides: `"full"`, `{ preset, ...fields }` or `{ ...fields }` over `base`. */
 function entryOf(e: unknown, base: "cautious" | "full"): { preset: "cautious" | "full"; over: Dict } {
@@ -78,6 +80,12 @@ function resolve(preset: "cautious" | "full", over: Dict): ShipSettings {
   return s;
 }
 const defaultsOf = (raw: Dict) => entryOf(raw.defaults, "cautious");
+/** The preset a repo's entry (or the defaults) names. */
+export const presetOf = (raw: unknown, repo: string): "cautious" | "full" => {
+  const r = isMap(raw) ? raw : {};
+  const key = Object.keys(isMap(r.repos) ? r.repos : {}).find((k) => k.toLowerCase() === repo.toLowerCase());
+  return entryOf(key ? (r.repos as Dict)[key] : undefined, defaultsOf(r).preset).preset;
+};
 
 /** The settings a repo runs under, or null where ship doesn't work it: not a fleet repo and no entry of its own. */
 export function effective(raw: unknown, repo: string, scope: Scope): ShipSettings | null {

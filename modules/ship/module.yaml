@@ -8,6 +8,12 @@ license: MIT
 # (the Fleet page).
 requires:
   - github # the covered repos' reads and the effects ship files (later releases)
+  - code-review # a new repo is added to settings.code_review with the others (the Fleet page's Add repo)
+  - board # contributes.board.pages
+contributes:
+  # The Fleet page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules").
+  board.pages:
+    - { id: ship, title: Ship, icon: rocket, order: 10, connection: ship, view: "ui://ship/page", tools: [ ship_config, ship_configure, ship_status ], settings: [ ship, ship_paused, code_review, maintainer_repos ] }
 roles:
   # kernel.settings: the config tool's settings changes (writers below). kernel.tasks and kernel.wake: a hand-off's one Engineer
   # task (module-task source ship:<repo>/<n>:<generation>) and its wakes (handoff.ts, rounds.ts).
@@ -35,8 +41,7 @@ settings:
   # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command },
   # fix: [conflicts, ci, review], protected: [globs], caps: { wakes_per_head, ci_rounds, same_check_heads,
   # review_rounds, rounds, usd, requeue_on_timeout: a number, or null for unlimited }, approve: off|observe|safe|all,
-  # safe: { max_lines, max_files, deny }, merge: off|ready, enabled: true|false, stop_label } }, paused: true|false (stops every adoption, push,
-  # approval and merge) }. Ship works the fleet org's repos and the product repo; a maintainer_repos repo is worked only once it has an entry here (quiet until enabled). The Fleet page
+  # safe: { max_lines, max_files, deny }, merge: off|ready, enabled: true|false, stop_label } } }. Ship works the fleet org's repos and the product repo; a maintainer_repos repo is worked only once it has an entry here (quiet until enabled). The Fleet page
   # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
   ship:
     type: object
@@ -44,7 +49,12 @@ settings:
     default:
       defaults: cautious
       repos: {}
-# The Fleet page (a module view, declared here by a later lane) calls only this module's own tools: ship_config and ship_configure
+  # The kill switch: true stops every adoption, push, approval and merge; PRs resume where they were. Its own setting, so a repo
+  # change saved from an older proposal can never put it back (resuming is the owner's).
+  ship_paused:
+    default: false
+    writers: [ ship-admin ]
+# The Fleet page (contributes.board.pages above) calls only this module's own tools: ship_config and ship_configure
 # for settings and presets, ship_status for status.
 connections:
   ship:
@@ -69,9 +79,11 @@ services:
       env:
         SHIP_STATE_FILE: /data/state.json
         SHIP_SETTINGS: "${settings.ship}"
+        SHIP_PAUSED: "${settings.ship_paused}"
         SHIP_FLEET_ORG: "${settings.github_fleet_org}"
         SHIP_PRODUCT_REPO: "${settings.product_repo}"
         SHIP_MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        SHIP_CODE_REVIEW: "${settings.code_review}"
         SHIP_TOKEN_FILE: ${secrets.ship_token}
         SHIP_SERVICE_KEY_FILE: ${secrets.ship_service_key}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
