@@ -31,8 +31,10 @@
 // A restart doesn't lose a check whose box is running: the box's run is detached (as an agent job's is), its handle is on the row
 // (`follow`: the box, and where the check is in its steps), and a draining kernel stops following it (detach) while it runs on.
 // Once the old kernel has exited, the new one follows it again from the row (recover) and finishes it as the old one would have:
-// its result, receipt and cost, its model token's spend by the same run key. A check whose box is gone (no exit status and not
-// running), that hadn't reached its box, or whose recipe has changed since is lost: no receipt; asking again runs it again, and
+// its result, receipt and cost, its model token's spend by the same run key. A code recipe's run is followed even when a deploy
+// changed its recipe since: the box already holds the files it launched with, and the receipt binds the hash it started under.
+// A check whose box is gone (no exit status and not running), that hadn't reached its box, or a judged run whose recipe has
+// changed since (its next pass would run new files under the old hash) is lost: no receipt; asking again runs it again, and
 // the lost run doesn't use up a try.
 // Each run attempt (the row's start time `at`) has its own folder and lands its end only while the row is still that attempt's;
 // a re-run asked meanwhile supersedes it.
@@ -720,18 +722,21 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     },
     /**
      * After a restart, once the previous kernel has exited (main.ts afterPrevious): its runs whose boxes run on are followed
-     * again here, from their row, to their end. One that hadn't reached its box, or whose recipe has changed since, is lost: no
-     * receipt (fail closed); asking again runs it again, and the lost run doesn't count as a try. Settles when the runs it
-     * follows have ended.
+     * again here, from their row, to their end: a code recipe's run under the hash it started with even when a deploy changed
+     * its recipe since (its box already holds the files it launched with). One that hadn't reached its box, or a judged run whose
+     * recipe has changed since (its next pass would run the new files), is lost: no receipt (fail closed); asking again runs it
+     * again, and the lost run doesn't count as a try. Settles when the runs it follows have ended.
      */
     recover() {
       const adopting: Promise<void>[] = [];
       for (const r of db.prepare("SELECT id, at, run, spec, hash, run_key, cost_usd, follow FROM checks WHERE state = 'running'").all() as { id: string; at: number; run: string; spec: string; hash: string; run_key: string | null; cost_usd: number | null; follow: string | null }[]) {
         if (mine.has(r.id)) continue;
         const recipe = recipes()[r.run];
-        if (r.follow && recipe && specHash(JSON.parse(r.spec), recipe) === r.hash) {
-          log("adopted a running check", { check: r.id, run: r.run });
-          adopting.push(execute(r.id, recipe, JSON.parse(r.follow)));
+        const follow = r.follow ? (JSON.parse(r.follow) as { box: BoxRun; step: Step }) : undefined;
+        const code = follow !== undefined && !("n" in follow.step) && !recipe?.judged;
+        if (follow && recipe && (code || specHash(JSON.parse(r.spec), recipe) === r.hash)) {
+          log("adopted a running check", { check: r.id, run: r.run, ...(specHash(JSON.parse(r.spec), recipe) === r.hash ? {} : { recipe: "changed since it started" }) });
+          adopting.push(execute(r.id, recipe, follow));
           continue;
         }
         // What its model token spent counts in the check's cost, as a finished run's does.

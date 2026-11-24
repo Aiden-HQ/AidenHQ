@@ -281,31 +281,48 @@ export function checkoutDest(repo: unknown) {
  */
 export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -xz --no-same-owner -C "$1" && find "$1" -name .aidenhq -type d -prune -exec rm -rf {} +';
 
+/** How long a box's model call waits for a model gateway that isn't listening (a kernel restart: the old one has closed its
+ * listener and the next one hasn't bound it yet, a minute or more under load). */
+export const GATEWAY_WAIT_MS = 2 * 60_000;
+
 /**
  * A box's model call, passed on to the model gateway (kernel/src/gateway) with the job token as its credential: the gateway
  * names the job from it, counts what OpenRouter billed and refuses past a spend cap. Its answer (a stream, or a 402
  * cap_reached) goes back to the box as it is. The OpenRouter key is never here.
+ * A refused connection is tried again every `retryMs` for up to `waitMs`: the request never reached the gateway, so nothing was
+ * sent upstream or billed, and the box's call (a check's review, an agent's turn) survives a kernel restart instead of failing.
+ * The request body is read whole first, so it can be sent again.
  */
-export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse, url: string, token: string) {
+export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse, url: string, token: string, { waitMs = GATEWAY_WAIT_MS, retryMs = 1000 }: { waitMs?: number; retryMs?: number } = {}) {
   return new Promise<void>((resolve) => {
     const u = new URL(url);
     // anthropic-version and anthropic-beta go on for the Anthropic format (the gateway keeps only the betas it allows).
     const anthropic = Object.fromEntries((["anthropic-version", "anthropic-beta"] as const).filter((h) => typeof req.headers[h] === "string").map((h) => [h, req.headers[h] as string]));
-    const headers = { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${token}`, ...anthropic };
-    const up = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (ur) => {
-      res.writeHead(ur.statusCode ?? 502, ur.headers);
-      ur.pipe(res);
-      ur.on("end", resolve);
-      ur.on("error", () => { res.destroy(); resolve(); });
-    });
-    up.on("error", (e) => {
-      if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 502, type: "gateway_unreachable", message: `the model gateway is unreachable (${e.message})` } }));
-      else res.destroy();
-      resolve();
-    });
-    // The box hung up: drop our leg too (the gateway still reads OpenRouter's answer to the end and records it).
-    res.on("close", () => { if (!res.writableFinished) up.destroy(); resolve(); });
-    req.pipe(up);
+    const chunks: Buffer[] = [];
+    let up: http.ClientRequest | undefined, hungUp = false;
+    const send = (body: Buffer, until: number) => {
+      if (hungUp) return;
+      const headers = { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${token}`, "content-length": String(body.length), ...anthropic };
+      up = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (ur) => {
+        res.writeHead(ur.statusCode ?? 502, ur.headers);
+        ur.pipe(res);
+        ur.on("end", resolve);
+        ur.on("error", () => { res.destroy(); resolve(); });
+      });
+      up.on("error", (e: NodeJS.ErrnoException) => {
+        if (hungUp) return resolve();
+        if (e.code === "ECONNREFUSED" && Date.now() < until) return void setTimeout(() => send(body, until), retryMs);
+        if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 502, type: "gateway_unreachable", message: `the model gateway is unreachable (${e.message})` } }));
+        else res.destroy();
+        resolve();
+      });
+      up.end(body);
+    };
+    // The box hung up: drop our leg too (the gateway still reads OpenRouter's answer to the end and records it), and stop waiting.
+    res.on("close", () => { if (!res.writableFinished) { hungUp = true; up?.destroy(); } resolve(); });
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("error", () => { res.destroy(); resolve(); });
+    req.on("end", () => send(Buffer.concat(chunks), Date.now() + waitMs));
   });
 }
 

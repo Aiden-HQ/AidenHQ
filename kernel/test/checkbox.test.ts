@@ -137,7 +137,8 @@ test("check box: every computer busy is a wait for a free one, not a check that 
 
 test("check box: a restart adopts a running check, which ends with its result, receipt and cost, and its box ends once", async () => {
   // Two kernels on one db and work dir, as across a restart: the old one launches the box run and stops following it as it
-  // drains; the box runs on, and the next kernel follows it to its end.
+  // drains; the box runs on, and the next kernel follows it to its end, though the deploy that restarted it changed the recipe
+  // (the box already holds the files it launched with): never a second run.
   const dir = mkdtempSync(join(tmpdir(), "adopt-"));
   const db = new DatabaseSync(join(dir, "kernel.db"));
   const A = "a".repeat(40), B = "b".repeat(40);
@@ -148,7 +149,7 @@ test("check box: a restart adopts a running check, which ends with its result, r
     if (route === "/check") return (boxes.push(body), { container: `box-${boxes.length}` });
     return { state: "missing" };
   };
-  const kernel = () => createChecks({ db, secret: () => "receipt-secret", recipes: () => ({ "code-review": review }), box: checkBoxes({ call, spawnRun: hostRun(boxes), pollMs: 20 }),
+  const kernel = (recipe = review) => createChecks({ db, secret: () => "receipt-secret", recipes: () => ({ "code-review": recipe }), box: checkBoxes({ call, spawnRun: hostRun(boxes), pollMs: 20 }),
     snapshot: () => async () => {}, modelToken: () => "tok", spent: () => 0.25, tokens: () => ({ input: 10, cached: 0, output: 5 }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
   const pause = () => new Promise((r) => setTimeout(r, 10));
   const old = kernel();
@@ -163,7 +164,7 @@ test("check box: a restart adopts a running check, which ends with its result, r
   const boxAt = (await old.get("github", id)).box_at;
   assert.match(boxAt, /^\d{4}-\d\d-\d\dT/, "the check records when it got its box");
 
-  const next = kernel();
+  const next = kernel({ ...review, files: { "review.ts": "// the deploy's newer recipe" } });
   await next.recover();
   const v = await next.get("github", id);
   assert.equal(v.state, "done", v.error ?? "");

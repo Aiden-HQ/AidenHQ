@@ -51,3 +51,29 @@ test("a restart lets the model call in flight finish in the old launcher while t
     upstream.closeAllConnections();
   }
 });
+
+test("a kernel restart: a model call waits for the next gateway's listener instead of failing, its body sent once whole", async () => {
+  // A free port with nothing on it: the old kernel has closed its listener and the next one hasn't bound it yet.
+  const probe = http.createServer();
+  const port = await listen(probe);
+  await new Promise((r) => probe.close(r));
+  const bodies: string[] = [];
+  const next = http.createServer(async (req, res) => {
+    let b = "";
+    for await (const c of req) b += c;
+    bodies.push(b);
+    res.end("answered");
+  });
+  const launcher = http.createServer((req, res) => void forwardModel(req, res, `http://127.0.0.1:${port}/api/v1/responses`, "ahqj_t", { retryMs: 50 }));
+  const lp = await listen(launcher);
+  try {
+    const call = post(lp);
+    await new Promise((r) => setTimeout(r, 300));
+    await listen(next, port);
+    assert.equal(await (await call).body, "answered");
+    assert.deepEqual(bodies, ["{}"]);
+  } finally {
+    launcher.close();
+    next.close();
+  }
+});
