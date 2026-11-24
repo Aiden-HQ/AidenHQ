@@ -706,7 +706,6 @@ export function createService(o: Options) {
     const kept = await kernel("GET", `/v1/checks/${check.id}/kept`);
     const entries: { path: string; mode: string; sha: string | null; content?: string }[] = Array.isArray(kept.entries) ? kept.entries : [];
     const globs = (Array.isArray(a.plan?.globs) ? a.plan.globs : []).map(globRe);
-    const allowed = (p: string) => REPAIR_LOCKS.includes(p.slice(p.lastIndexOf("/") + 1)) || globs.some((re: RegExp) => re.test(p));
 
     const tmp = mkdtempSync(join(o.cacheDir, "repair-"));
     let final: string, made: string;
@@ -717,6 +716,8 @@ export function createService(o: Options) {
       // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
       const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", a.head, baseSha], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
       const [merged, ...conflicted] = out.split("\0").filter(Boolean);
+      // A generated path (the plan's globs), or a lockfile git couldn't merge (its package manager rewrote it).
+      const allowed = (p: string) => globs.some((re: RegExp) => re.test(p)) || (REPAIR_LOCKS.includes(p.slice(p.lastIndexOf("/") + 1)) && conflicted.includes(p));
       const refuse = (why: string) => ({ ok: false, text: `ship-refused: the repair of ${url} ${why}: nothing was changed.` });
       const taken = new Set<string>();
       await g(["read-tree", merged!]);
@@ -728,7 +729,9 @@ export function createService(o: Options) {
         // As git's merge has it: nothing to write, but on a generated path or a lockfile it is the repair's decision (a conflict
         // it resolved to that same side).
         if (e.sha === (sha ?? null) && (e.sha === null || e.mode === mode)) { if (allowed(e.path)) taken.add(e.path); continue; }
-        if (!allowed(e.path)) return refuse(`changed \`${e.path}\`, which is neither a generated path nor a lockfile`);
+        if (!allowed(e.path)) return refuse(`changed \`${e.path}\`, which is neither a generated path nor a conflicted lockfile`);
+        // A symlink only where git's merge already has one: a new link could point outside the repo.
+        if (e.mode === "120000" && mode !== "120000") return refuse(`kept \`${e.path}\` as a symlink where the merge has none`);
         if (e.path.startsWith(".github/") && e.sha !== ((await blobAt(baseSha, e.path))[2] ?? null)) return refuse(`changed \`${e.path}\` under .github/`);
         if (e.sha === null) { execFileSync("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "update-index", "-z", "--index-info"], { env, input: `0 ${"0".repeat(40)}\t${e.path}\0` }); taken.add(e.path); continue; }
         if (e.content !== undefined) {
