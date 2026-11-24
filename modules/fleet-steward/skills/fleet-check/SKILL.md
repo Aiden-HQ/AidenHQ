@@ -82,6 +82,7 @@ An incident is yours until it is resolved live:
 
 ## Settling each kind
 
+- **A task whose deliverable is an open PR is never `task_cancel`led.** The product closes a cancelled task's PR and deletes its branch (AidenHQ#1656), which cost WOR-11495's PR #1644. Free a run or a cap with `stop_run` and `task_route` the PR work to a successor; if a cancel already closed a PR, recover its head from `refs/pull/<n>/head` into a replacement PR.
 - `judgement:<task>` (an owner wait is never raised): `delegator_wait`: answer with `task_comment`. `handback`: a result
   with nothing asked is logged once and left; a step asked of the owner goes by `task_route` to the agent that can do it,
   else to the Engineer with "make this work without a person". Only a sign-in or credential stays theirs.
