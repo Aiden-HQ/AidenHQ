@@ -104,8 +104,6 @@ export function effective(raw: unknown, repo: string, scope: Scope): ShipSetting
   const key = Object.keys(isMap(r.repos) ? r.repos : {}).find((k) => k.toLowerCase() === repo.toLowerCase());
   if (!match(repo, scope.fleet) && !(key && match(repo, scope.listed))) return null;
   const d = defaultsOf(r);
-  // An entry still in the old shape (approve, merge or safe: refused by validate) is never half-read: ship leaves the repo alone.
-  if ([d.over, ...(key ? [entryOf((r.repos as Dict)[key], d.preset).over] : [])].some((o) => OLD.some((k) => k in o))) return null;
   if (!key) return resolve(d.preset, d.over);
   const entry = (r.repos as Dict)[key];
   const e = entryOf(entry, d.preset);
@@ -177,6 +175,13 @@ function checkEntry(errors: string[], at: string, e: unknown) {
     if (!isMap(e.caps)) errors.push(`${at}.caps: a map`);
     else for (const [k, v] of Object.entries(e.caps)) CAP_KEYS.includes(k as never) ? count(errors, `${at}.caps.${k}`, v) : errors.push(`${at}.caps.${k}: unknown cap (known: ${CAP_KEYS.join(", ")})`);
   }
+}
+
+/** The old per-repo fields (`defaults.safe`, `owner/name.merge`) a raw `ship` value still holds. The compile refuses them whole. */
+export function oldShape(raw: unknown): string[] {
+  const r = isMap(raw) ? raw : {};
+  const entries: [string, unknown][] = [["defaults", r.defaults], ...Object.entries(isMap(r.repos) ? r.repos : {})];
+  return entries.flatMap(([at, e]) => (isMap(e) ? OLD.filter((k) => k in e).map((k) => `${at}.${k}`) : []));
 }
 
 /** The errors in a raw `ship` value (none: valid). */

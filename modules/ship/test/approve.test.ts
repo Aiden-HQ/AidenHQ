@@ -39,9 +39,11 @@ test("the final check at the effect: the tier's approve and merge, a head not cl
   assert.equal(effectRefusal(off, classified("standard"), "merge", undefined, H1), undefined);
   assert.deepEqual(effectRefusal(off, { ...PASS, tier: { state: "pending" } }, "merge", undefined, H1)!.retry, true, "not classified yet: tried again, not ended");
   assert.match(effectRefusal(off, classified("standard"), "merge", { head: H1, policy: "older" }, H1)!.why, /another policy/);
+  assert.match(effectRefusal(off, classified("standard"), "merge", { head: H2, policy: "older" }, H1)!.why, /another policy/, "an approval kept across a push counts too");
   assert.equal(effectRefusal(off, classified("standard"), "approve", undefined, H1, "p1"), undefined);
   assert.match(effectRefusal(off, classified("standard"), "approve", undefined, H1, "older")!.why, /policy changed/);
-  assert.match(effectRefusal(off, classified("standard", { kind: "exhausted" }), "approve", undefined, H1)!.why, /under its current policy/);
+  assert.equal(effectRefusal(off, classified("standard", { kind: "exhausted" }), "approve", undefined, H1, "p1"), undefined, "a carried pass: judge() verified it when the approval was filed");
+  assert.match(effectRefusal(off, classified("standard", { kind: "skipped" }), "approve", undefined, H1)!.why, /under its current policy/);
   assert.equal(effectRefusal(off, classified("standard"), "merge", { head: H1, policy: "p1" }, H1), undefined);
 });
 

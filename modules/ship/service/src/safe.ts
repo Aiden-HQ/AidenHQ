@@ -83,9 +83,10 @@ export const canApprove = (j: Judged | undefined) => j?.ok === true && j.risk.ap
 /** The App's approval ship filed (the adoption's `approve`): at which head, under which policy, and whether a person's is awaited. */
 export type Approved = { head: string; why?: string; policy?: string };
 /** An App approval of this head that was issued under another policy than the head's current one, or where the tier's `approve`
- * is no longer `on` (a person's approval stays whatever the tier says; an approval ship never made is none). It is dismissed
+ * is no longer `on`, whatever head it was made at (GitHub may keep an approval across pushes; a person's stays whatever the tier says;
+ * an approval ship never made is none). It is dismissed
  * before a merge or an enqueue, never counted (risk tiers §7). */
-export const staleApproval = (ap: Approved | undefined, head: string, r: Risk) => !!ap && ap.head === head && !ap.why && (r.approve !== "on" || ap.policy !== r.policy);
+export const staleApproval = (ap: Approved | undefined, _head: string, r: Risk) => !!ap && !ap.why && (r.approve !== "on" || ap.policy !== r.policy);
 
 /**
  * The final check before the App approves, or ship merges or queues (github asks right before the write): the verdict read now, with
@@ -102,5 +103,7 @@ export function effectRefusal(s: ShipSettings, v: Verdict, what: "approve" | "me
   if (r.state === "unwatched") return no("code review doesn't watch this repo: nothing to approve on");
   if (r.approve !== "on") return no(`tier \`${r.tier}\`: approval is ${r.approve}`);
   if (policy !== undefined && v.policy !== policy) return no("the head's review policy changed since the approval was filed", true);
-  return v.verdict === "pass" && v.kind === "completed" ? undefined : no("code review hasn't passed this head under its current policy", true);
+  // `exhausted`: the pass stands on an earlier head whose change this head keeps; judge() verified that when the approval was filed,
+  // and github binds the write to that head and policy (checked above).
+  return v.verdict === "pass" && (v.kind === "completed" || v.kind === "exhausted") ? undefined : no("code review hasn't passed this head under its current policy", true);
 }

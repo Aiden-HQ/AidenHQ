@@ -240,7 +240,8 @@ export function adoptedPass(o: AdoptedOptions) {
       // The head's risk tier, read for every PR (the merge is per tier): code review's verdict with the live base and author. A head
       // not classified yet waits at approve, enqueue and merge alike; never guessed.
       const s = o.settings(repo);
-      const verdict = s ? await o.effects.verdict(repo, pr.number, view.head, { base: view.base, association: String(pr.authorAssociation ?? "") }) : undefined;
+      // A verdict that can't be read (code review down) is a head not classified: this PR waits, the others' rounds go on.
+      const verdict = s ? await o.effects.verdict(repo, pr.number, view.head, { base: view.base, association: String(pr.authorAssociation ?? "") }).catch((e: Error) => { o.log("code review's verdict unreadable", { pr: view.url, err: String(e.message).slice(0, 200) }); return { verdict: "wait", reasons: [], tier: { state: "pending" } } as Verdict; }) : undefined;
       const risk: Risk | undefined = s && verdict ? riskOf(s, verdict) : undefined;
       if (risk?.state === "pending" && ["approve", "enqueue", "merge"].includes(v.do)) Object.assign(v, { do: "wait", why: risk.why });
       // Waiting only on an approval: the evidence is judged, and decide's `approve` is taken where the tier's `approve` allows it.

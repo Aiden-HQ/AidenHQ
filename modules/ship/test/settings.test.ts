@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { effective, loosens, validate, type Scope } from "../service/src/settings.ts";
+import { effective, loosens, oldShape, validate, type Scope } from "../service/src/settings.ts";
 
 const scope: Scope = { fleet: ["acme-agents/*", "acme/product"], listed: ["a/b", "a/c"] };
 
@@ -14,9 +14,9 @@ test("cautious carries today's pr-watch constants; full is unlimited; overrides 
   assert.deepEqual([d.by_tier.trivial.merge, d.by_tier.sensitive.merge, d.by_tier.standard.approve], ["off", "off", "on"], "an entry sits over the defaults' tiers");
 });
 
-test("an entry still in the old shape is never half-read: ship leaves the repo alone", () => {
-  assert.equal(effective({ repos: { "a/b": { preset: "full", merge: "off" } } }, "a/b", scope), null);
-  assert.equal(effective({ defaults: { approve: "safe" }, repos: { "a/b": "cautious" } }, "a/b", scope), null);
+test("an old-shape entry is named by oldShape (the compile refuses it), at repo and defaults level", () => {
+  assert.deepEqual(oldShape({ defaults: { safe: {} }, repos: { "a/b": { preset: "full", merge: "off" }, "c/d": "full" } }), ["defaults.safe", "a/b.merge"]);
+  assert.deepEqual(oldShape({ defaults: "full", repos: { "a/b": { by_tier: {} } } }), []);
 });
 
 test("quiet until enabled: a fleet repo is worked, a maintainer_repos repo only with its own entry", () => {
