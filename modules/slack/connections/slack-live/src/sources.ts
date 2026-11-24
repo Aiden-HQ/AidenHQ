@@ -302,6 +302,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     let newest = st.cursor ?? oldest;
     const seen = new Set<string>();
     const threads = new Set<string>();
+    const readFrom = tsAt(Date.now()); // messages newer than the reads began (live arrivals) aren't in `seen`, and aren't tombstoned
     for await (const m of pages(api, "conversations.history", { channel: id, oldest }, "messages")) {
       seen.add(m.ts);
       const w = messageWrite(id, m, type);
@@ -333,7 +334,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     if (gone.size || pending.length) await store.saveScope(pendingKey, [...gone].join(",")); // not done: retried next pass
     if (reconcile) {
       // Messages of the last week that Slack no longer returns were deleted while we weren't listening.
-      const ours = await store.pool.query(`SELECT ts FROM src_slack.message WHERE channel_id = $1 AND NOT deleted AND ts > $2 AND (thread_ts IS NULL OR thread_ts = ts OR thread_ts = ANY($3))`, [id, weekAgo, [...threads].filter((t) => !gone.has(t))]);
+      const ours = await store.pool.query(`SELECT ts FROM src_slack.message WHERE channel_id = $1 AND NOT deleted AND ts > $2 AND ts < $4 AND (thread_ts IS NULL OR thread_ts = ts OR thread_ts = ANY($3))`, [id, weekAgo, [...threads].filter((t) => !gone.has(t)), readFrom]);
       for (const r of ours.rows) if (!seen.has(r.ts) && (await writeMessage(store, TOMBSTONE, tombstone(id, r.ts, type), false)) !== "same") written++;
     }
     await store.saveScope(scope, newest, true);

@@ -435,9 +435,10 @@ export function createFlow(d: FlowDeps) {
     churnPass, churnRepo, issuesRepo, backfill, eventsPass,
     /** The churn loop: a first pass shortly after start, then every 15 minutes. */
     startChurn() {
-      const t = setInterval(() => void churnPass(), 15 * 60_000);
+      const pass = () => churnPass().catch((e) => d.log("churn pass failed", { err: String(e?.message ?? e).slice(0, 300) }));
+      const t = setInterval(pass, 15 * 60_000);
       t.unref?.();
-      setTimeout(() => void churnPass(), 60_000).unref?.();
+      setTimeout(pass, 60_000).unref?.();
       return () => clearInterval(t);
     },
   });
