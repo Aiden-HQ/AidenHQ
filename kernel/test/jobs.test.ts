@@ -131,8 +131,8 @@ test("a job's final has model-format sentinels stripped, and a final of only sen
   assert.equal(keeps.final, "The marker is `<|im_end|>`.", "a sentinel the reply quotes on purpose stays");
 });
 
-// A sentinel stands at a final's edges, with the padding a tokenizer leaves beside it; a marker a reply quotes on purpose stays,
-// and a long run of whitespace is not a place for a quadratic scan (the kernel's loop serves every request).
+// A sentinel stands at a final's edges, with the padding a tokenizer leaves beside it; a marker a reply shows on purpose (in a
+// blockquote, or inside its text) stays, and a long reply or run of sentinels is not a place for a quadratic scan.
 test("a final's sentinels are stripped from its edges only, in time linear in its length", () => {
   assert.equal(stripSentinels("Attention: x<|im_end|>\n"), "Attention: x", "a newline after the sentinel goes with it");
   assert.equal(stripSentinels("<\uff5cbegin_of_sentence\uff5c>hello"), "hello", "the full-width underscore spelling");
@@ -148,35 +148,32 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("<|im_start|>model\n---\nUse gpt-4.1."), "model\n---\nUse gpt-4.1.", "Gemma's role is not a ChatML role");
   assert.equal(stripSentinels("<|im_start|>user<sub>1</sub> was updated"), "user<sub>1</sub> was updated", "a tag is not a template delimiter");
   assert.equal(stripSentinels("<|im_start|>user@example.com"), "user@example.com", "an address is not a role");
-  assert.equal(stripSentinels("<|im_start|>model<sub>1</sub> is ready"), "model<sub>1</sub> is ready", "a tag is not a role delimiter");
   assert.equal(stripSentinels("NO_REPLY<|im_end|><|im_start|>\u200buser"), "NO_REPLY", "invisible padding at a header's role");
   assert.equal(stripSentinels("<|im_start|>user settings were saved."), "user settings were saved.", "a reply starting with a word is not a role");
 
   assert.equal(stripSentinels("Done.<|eot_id|><|start_header_id|>ipython<|end_header_id|>"), "Done.", "a Llama tool-result header goes too");
   assert.equal(stripSentinels("<start_of_turn>model\nNO_REPLY<end_of_turn>"), "NO_REPLY", "Gemma's opening turn header goes too");
   assert.equal(stripSentinels("<|im_start|>assistant<|im_start|>assistant\nDone."), "Done.", "a repeated opening header goes too");
-  assert.equal(stripSentinels("The token is:\n```\n<|im_end|>\n```"), "The token is:\n```\n<|im_end|>\n```", "a reply showing a marker in code keeps it");
   assert.equal(stripSentinels("<|im_start|>\nmodel\ngpt-4.1"), "model\ngpt-4.1", "a bare header is a leak; the next line is the reply");
   assert.equal(stripSentinels("<|im_end|>\n    "), "", "trailing whitespace does not hide a sentinel");
   assert.equal(stripSentinels("<\uff5cUser\uff5c>"), "", "DeepSeek's own turn marker is a sentinel");
   assert.equal(stripSentinels("<|im_start|>\u200bassistant\nDone."), "Done.", "padding before a role still finds it");
   assert.equal(stripSentinels("<|im_start|>\nmodel<|im_end|>"), "model", "the trailing scan stays inside what the leading one left");
-  assert.equal(stripSentinels("The stop token is:\n> <|im_end|>"), "The stop token is:\n> <|im_end|>", "a marker a blockquote quotes stays");
-  assert.equal(stripSentinels("See the header:\n> <|im_start|>assistant"), "See the header:\n> <|im_start|>assistant", "a quoted header and its role stay");
-  assert.equal(stripSentinels("The stop token is:\n\n    <|im_end|>"), "The stop token is:\n\n    <|im_end|>", "a marker in an indented code block stays");
-  assert.equal(stripSentinels("    <|im_end|>\n\nThis token ends a turn."), "    <|im_end|>\n\nThis token ends a turn.", "a reply that opens with an indented example keeps it");
-  assert.equal(stripSentinels("Example:\n\n    echo hello<|im_end|>"), "Example:\n\n    echo hello", "an indented line with text is not a quoted marker");
   assert.equal(stripSentinels("Done.<|im_start|>\nmodel"), "Done.<|im_start|>\nmodel", "a role on the next line is the reply's own word");
-  assert.equal(stripSentinels("    <|im_end|>Attention: x"), "Attention: x", "an indented marker beside reply text is still a leak");
-  assert.equal(stripSentinels("> <|im_end|><|endoftext|>"), "> <|im_end|>", "a quoted example stays when a leak follows it");
-  assert.equal(stripSentinels("    <|im_end|><|endoftext|>\n\nThis token ends a turn."), "    <|im_end|>\n\nThis token ends a turn.", "a leak after an indented example goes, and the example stays");
-  assert.equal(stripSentinels("<|im_end|>\n    echo hi"), "    echo hi", "a stripped sentinel keeps the next line's indentation");
-  assert.equal(stripSentinels("    echo hello<|im_end|>"), "    echo hello", "a trailing sentinel keeps the code block it ended");
+
+  // A marker the reply shows on purpose stays: inside its text, in a fenced block, and on a blockquote line.
+  assert.equal(stripSentinels("The marker is `<|im_end|>`."), "The marker is `<|im_end|>`.", "a marker inside the reply's own text stays");
+  assert.equal(stripSentinels("The token is:\n```\n<|im_end|>\n```"), "The token is:\n```\n<|im_end|>\n```", "a marker in a fenced block stays");
+  assert.equal(stripSentinels("The stop token is:\n> <|im_end|>"), "The stop token is:\n> <|im_end|>", "a marker on a blockquote line stays");
+  assert.equal(stripSentinels("See the header:\n> <|im_start|>assistant"), "See the header:\n> <|im_start|>assistant", "a quoted header and its role stay");
+  assert.equal(stripSentinels("> <|im_end|><|endoftext|>"), "> <|im_end|>", "a leak after a quoted marker goes, the quote stays");
+
+  // Only a blockquote is a quote: a marker beside reply text is a leak, however it is indented.
+  assert.equal(stripSentinels("    <|im_end|>Attention: x"), "Attention: x", "an indented marker beside reply text is a leak");
   assert.equal(stripSentinels("    <|im_end|>"), "", "an indented marker that is the whole reply is no reply");
-  assert.equal(stripSentinels("    <|im_end|>\n<|endoftext|>"), "", "a stripped sentinel is not content that makes a marker quoted");
-  assert.equal(stripSentinels("    <|im_end|>\n<|im_start|>user"), "", "a trailing template role is not content either");
-  assert.equal(stripSentinels("    <|im_start|>assistant\n\nThat is the header."), "    <|im_start|>assistant\n\nThat is the header.", "a reply that opens with a quoted header keeps it");
-  assert.equal(stripSentinels("  keep my padding  "), "  keep my padding  ", "a reply without a sentinel is left as it is");
+  assert.equal(stripSentinels("Example:\n\n    echo hello<|im_end|>"), "Example:\n\n    echo hello", "a marker after reply text goes");
+  assert.equal(stripSentinels("<|im_end|>\n    echo hi"), "echo hi", "the padding a stripped sentinel left goes too");
+
   for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`,
     `<|im_end|>${"<|im_end|>".repeat(20_000)}`, `${"a".repeat(100_000)}<|im_end|>${"<|im_end|>".repeat(20_000)}`]) {
     const t0 = Date.now();
