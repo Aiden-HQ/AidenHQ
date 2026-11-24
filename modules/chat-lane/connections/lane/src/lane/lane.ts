@@ -150,7 +150,7 @@ export function makeLane(d: LaneDeps) {
     // Tries are counted before the run, so one that a crash or restart cut off still counts toward the cap.
     if (c && c.attempts >= CONTINUE_TRIES) return await failed(agent, { ...c, attempts: CONTINUE_TRIES }, "it was cut off");
     if (c) d.store.attempt(c.id);
-    const turnId = d.store.startTurn(agent.key, agent.model, lastOwner?.at ?? now());
+    const turnId = d.store.startTurn(agent.key, agent.model, c || wake !== undefined ? now() : lastOwner!.at, !c && wake === undefined);
     const messages: ChatMsg[] = [
       { role: "system", content: systemPrompt(agent, d, d.store.pendingWakes(agent.key), now(), await d.memory(agent)) },
       // The lane's own "on it" is not the model's words: left in, the model copies it instead of answering.
@@ -290,8 +290,9 @@ export function makeLane(d: LaneDeps) {
     async followUp(agentKey: string, text: string): Promise<void> {
       const agent = d.agents()[agentKey];
       if (!agent) throw new Error(`${agentKey} has no fast lane`);
-      await send(agent, `f${randomUUID()}`, text, true);
-      d.store.settleTasks(agentKey, now());
+      await d.chat.reply(agent, `f${randomUUID()}`, text);
+      d.store.settleTasks(agentKey, now()); // it is on the board: a Telegram failure below must not read as a stall
+      if (agent.telegramToken) await d.telegram(agent, text);
     },
     /**
      * On start, turns a restart cut off (in the last hour): an unanswered message gets its turn again (the scan's job); one

@@ -113,8 +113,10 @@ export async function wakePass(o: WakeDeps): Promise<void> {
       else if (await o.taskIsClosed(w.task)) o.log.info({ wake: w.id, agent: w.agent, task: w.task }, "wake dropped: its task is done or cancelled");
       else await o.wakeTask(w.id, w.task, w.note);
     } catch (e) {
-      o.store.unfire(w.id); // not delivered: due again next pass (the kernel files a wake once per id)
-      o.log.warn({ wake: w.id, err: (e as Error).message }, "wake failed; retried next pass");
+      // Not delivered: due again next pass (the kernel files a wake once per id), unless its task is gone (404).
+      const gone = (e as { status?: number }).status === 404;
+      if (!gone) o.store.unfire(w.id);
+      o.log.warn({ wake: w.id, err: (e as Error).message }, gone ? "wake dropped: its task is gone" : "wake failed; retried next pass");
     }
   }
   await o.lane.tick().catch((e: Error) => o.log.warn({ err: e.message }, "lane owed pass failed"));

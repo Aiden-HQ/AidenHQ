@@ -28,7 +28,7 @@ export function openLaneStore(path: string) {
   const q = {
     kvGet: db.prepare(`SELECT v FROM kv WHERE k = ?`),
     kvSet: db.prepare(`INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)`),
-    turn: db.prepare(`INSERT INTO lane_turns (agent, conversation, model, received_at, status) VALUES (?, 'chat', ?, ?, 'running')`),
+    turn: db.prepare(`INSERT INTO lane_turns (agent, conversation, model, received_at, status) VALUES (?, ?, ?, ?, 'running')`),
     first: db.prepare(`UPDATE lane_turns SET first_sent_at = ? WHERE id = ? AND first_sent_at IS NULL`),
     end: db.prepare(`UPDATE lane_turns SET final_sent_at = ?, steps = ?, tools = ?, status = ?, error = ? WHERE id = ?`),
     turns: db.prepare(`SELECT * FROM lane_turns WHERE agent = ? ORDER BY id DESC LIMIT ?`),
@@ -37,7 +37,7 @@ export function openLaneStore(path: string) {
     dueWakes: db.prepare(`SELECT id, agent, due_at, note, conversation IS NOT NULL AS chat, task FROM lane_wakes WHERE fired_at IS NULL AND due_at <= ? ORDER BY due_at LIMIT 50`),
     fire: db.prepare(`UPDATE lane_wakes SET fired_at = ? WHERE id = ? AND fired_at IS NULL`),
     unfire: db.prepare(`UPDATE lane_wakes SET fired_at = NULL WHERE id = ?`),
-    answered: db.prepare(`SELECT MAX(received_at) AS t FROM lane_turns WHERE agent = ? AND status != 'running'`),
+    answered: db.prepare(`SELECT MAX(received_at) AS t FROM lane_turns WHERE agent = ? AND conversation = 'chat' AND status != 'running'`),
     owe: db.prepare(`INSERT INTO lane_owed (agent, conversation, kind, ask, created_at, due_at) VALUES (?, 'chat', ?, ?, ?, ?)`),
     due: db.prepare(`SELECT * FROM lane_owed WHERE done_at IS NULL AND kind = ? AND due_at <= ? ORDER BY id`),
     dueIn: db.prepare(`SELECT * FROM lane_owed WHERE done_at IS NULL AND kind = 'continue' AND agent = ? AND due_at <= ? ORDER BY id LIMIT 1`),
@@ -53,8 +53,9 @@ export function openLaneStore(path: string) {
     /** Small state of its own (each lane bot's Telegram offset). */
     getKv: (k: string): string | undefined => (q.kvGet.get(k) as { v: string } | undefined)?.v,
     setKv: (k: string, v: string): void => void q.kvSet.run(k, v),
-    startTurn(agent: string, model: string, receivedAt: number): number {
-      return Number(q.turn.run(agent, model, receivedAt).lastInsertRowid);
+    /** `answers`: the turn answers an owner message (received at `receivedAt`), not a wake or a continuation. */
+    startTurn(agent: string, model: string, receivedAt: number, answers = true): number {
+      return Number(q.turn.run(agent, answers ? "chat" : "other", model, receivedAt).lastInsertRowid);
     },
     firstSent(turn: number, at = Date.now()): void {
       q.first.run(at, turn);
@@ -93,7 +94,7 @@ export function openLaneStore(path: string) {
     unfire(id: number): void {
       q.unfire.run(id);
     },
-    /** The newest owner message (its time) that a finished turn was started for: later ones are unanswered. */
+    /** The newest owner message (its time) that a finished turn answered: later ones are unanswered. */
     answeredAt(agent: string): number {
       return ((q.answered.get(agent) as { t: number | null }).t) ?? 0;
     },
