@@ -1,29 +1,45 @@
-// Approval end to end against a fake kernel: the safe class, the verdict carry-over, and each `approve` mode's round (off, observe,
-// safe, all), with the App's approval bound to the head and code review's fresh review asked once.
+// Approval end to end against a fake kernel: the risk tier's approve, the verdict carry-over, and each mode's round (off, observe, on),
+// with the App's approval bound to the head and its policy, and code review's fresh review asked once.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { intake, type PrView } from "../service/src/handoff.ts";
-import { round } from "../service/src/rounds.ts";
-import { canApprove, carries, judge, safeClass, type ChangedFile, type Verdict } from "../service/src/safe.ts";
+import { round as roundWith } from "../service/src/rounds.ts";
+import { RISK, verdict as classified } from "./risk.ts";
+// Every round here sees a classified head whose tier approves and merges (risk.ts).
+const round = ((d: any, pr: any, v: any, f: any = {}) => roundWith(d, pr, v, { risk: RISK, ...f })) as typeof roundWith;
+import { canApprove, carries, effectRefusal, judge, riskOf, type ChangedFile, type Verdict } from "../service/src/safe.ts";
 import { effective, PRESETS } from "../service/src/settings.ts";
 import { openState } from "../service/src/state.ts";
 
 const H1 = "1".repeat(40), H2 = "2".repeat(40);
 const file = (filename: string, n = 10, patch = `@@ -1,2 +1,${n} @@\n+x`): ChangedFile => ({ filename, status: "modified", additions: n, deletions: 0, patch });
-const PASS: Verdict = { verdict: "pass", reasons: [], reviewed: H1, kind: "completed" };
+const PASS: Verdict = classified("standard", { reviewed: H1 });
 
-test("the safe class counts substantive lines only, denies config, and never takes generated files without their source", () => {
-  const s = PRESETS.cautious.safe;
-  assert.deepEqual(safeClass([file("src/a.ts", 1300), file("src/a.test.ts", 5000), file("README.md", 900)], { ...s, max_lines: 1200 }, []), { safe: false, why: "1300 lines > 1200", lines: 1300, files: 1 });
-  assert.equal(safeClass([file("src/a.ts", 1300)], { ...s, max_lines: null }, []).safe, true);
-  assert.match(safeClass([file("gen/api.pb.go"), file("go.sum")], s, ["gen/**"]).why, /generated files .* without the source/);
-  assert.equal(safeClass([file("proto/api.proto"), file("gen/api.pb.go")], s, ["gen/**"]).safe, true);
-  assert.match(safeClass([file("src/a.ts"), file("web/yarn.lock")], { ...s, deny: [] }, []).why, /yarn\.lock.*without the source/, "a lockfile's source is its manifest");
-  assert.equal(safeClass([file("packages/ui/package.json"), file("pnpm-lock.yaml")], { ...s, deny: [] }, []).safe, true, "a workspace member's manifest counts");
-  assert.match(safeClass([file("src/a.ts"), file("infra/main.tf")], s, []).why, /infra\/main\.tf.*safe\.deny/);
+test("judge reads the head's tier: off never approves, observe reports, on approves; no tier, no review and no watch never do", () => {
+  const s = PRESETS.cautious; // trivial on, standard observe, sensitive off
+  const at = (tier: any, o: Partial<Verdict> = {}) => judge(s, { files: [], generated: [], verdict: classified(tier, { reviewed: H1, ...o }) });
+  assert.deepEqual([at("trivial").ok, at("standard").ok, at("sensitive").ok], [true, true, false]);
+  assert.match(at("sensitive").why, /tier `sensitive`: approval is off/);
+  assert.deepEqual([canApprove(at("trivial")), canApprove(at("standard")), canApprove(at("sensitive"))], [true, false, false], "only `on` approves; observe reports");
+  assert.match(at("trivial", { kind: "none", requires_review: false }).why, /needs no review/);
+  assert.match(judge(s, { files: [], generated: [], verdict: { ...PASS, tier: { state: "pending" } } }).why, /hasn't classified/);
+  assert.match(judge(s, { files: [], generated: [], verdict: { ...PASS, tier: { state: "unwatched" } } }).why, /doesn't watch/);
+  assert.deepEqual(riskOf(s, { ...PASS, tier: { state: "unwatched" } }).merge, "ready", "an unwatched repo's merge is its own setting");
+  assert.equal(riskOf(s, { ...PASS, tier: { state: "pending" } }).merge, "off", "a head not classified yet merges nothing");
+});
+
+test("the final check at the effect: the tier's approve and merge, a head not classified, and an App approval of another policy", () => {
+  const off = effective({ repos: { "a/b": { preset: "full", by_tier: { sensitive: { approve: "off", merge: "off" } } } } }, "a/b", { fleet: [], listed: ["a/b"] })!;
+  const sens = classified("sensitive");
+  assert.match(effectRefusal(off, sens, "approve", undefined, H1)!, /approval is off/);
+  assert.match(effectRefusal(off, sens, "merge", undefined, H1)!, /merge is off/);
+  assert.equal(effectRefusal(off, classified("standard"), "merge", undefined, H1), undefined);
+  assert.match(effectRefusal(off, { ...PASS, tier: { state: "pending" } }, "merge", undefined, H1)!, /try again/);
+  assert.match(effectRefusal(off, classified("standard"), "merge", { head: H1, policy: "older" }, H1)!, /another policy/);
+  assert.equal(effectRefusal(off, classified("standard"), "merge", { head: H1, policy: "p1" }, H1), undefined);
 });
 
 test("a verdict carries after a base merge or a regeneration, and a model fix needs a fresh review", () => {
@@ -33,12 +49,12 @@ test("a verdict carries after a base merge or a regeneration, and a model fix ne
   assert.equal(carries(reviewed, [file("src/a.ts", 3, "@@ -40,2 +40,3 @@\n+fix")], []), false);
   assert.equal(carries(reviewed, [file("src/a.ts", 4, "@@ -10,2 +10,4 @@\n+fix\n+more")], []), false);
   assert.equal(carries(reviewed, [{ ...file("src/a.ts"), patch: undefined }], []), false, "an unreadable patch is a change");
-  const s = effective({ repos: { "a/b": { approve: "safe" } } }, "a/b", { fleet: [], listed: ["a/b"] })!;
+  const s = effective({ repos: { "a/b": { preset: "full" } } }, "a/b", { fleet: [], listed: ["a/b"] })!;
   const exhausted: Verdict = { ...PASS, kind: "exhausted", reviewed: H1 };
   assert.equal(judge(s, { files: [file("src/a.ts", 3, "@@ -10,2 +10,3 @@\n+fix")], generated: [], verdict: exhausted, reviewedFiles: reviewed }).ok, true);
   assert.deepEqual([judge(s, { files: [file("src/a.ts", 9)], generated: [], verdict: exhausted, reviewedFiles: reviewed })].map((j) => [j.ok, j.ask]), [[false, true]]);
   assert.equal(judge(s, { files: [file("src/a.ts")], generated: [], verdict: { ...PASS, kind: "skipped" } }).ok, false, "a skipped review never approves");
-  assert.equal(judge(s, { files: [file("src/a.ts")], generated: [], verdict: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open" }] } }).ok, false);
+  assert.equal(judge(s, { files: [file("src/a.ts")], generated: [], verdict: { ...PASS, verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open" }] } }).ok, false);
 });
 
 function world(approve: string) {
@@ -55,7 +71,7 @@ function world(approve: string) {
     },
   };
   const scope = { fleet: [], listed: ["a/b"] };
-  const settings = (repo: string) => effective({ repos: { "a/b": { approve } } }, repo, scope);
+  const settings = (repo: string) => effective({ repos: { "a/b": { preset: "full", by_tier: { standard: { approve } } } } }, repo, scope);
   const reports: string[] = [];
   const deps = {
     state, kernel, settings, log: () => {}, paused: () => false,
@@ -71,32 +87,56 @@ function world(approve: string) {
   const pass = async (p: PrView, e: Parameters<typeof judge>[1]) => {
     const s = settings("a/b")!;
     const j = judge(s, e);
-    await round(deps, p, canApprove(s, j) ? { do: "approve", why: "ready, and no approval on its head yet" } : { do: "wait", why: "waiting for required review" }, { approval: j });
+    await round(deps, p, canApprove(j) ? { do: "approve", why: "ready, and no approval on its head yet" } : { do: "wait", why: "waiting for required review" }, { approval: j, risk: j.risk });
   };
   const approvals = () => calls.filter((c) => c.what === "POST /v1/writes" && c.body.kind === "github.approve").map((c) => c.body.args);
-  return { state, calls, records, deps, pr, pass, approvals, reports };
+  return { state, calls, records, deps, pr, pass, approvals, reports, settings };
 }
 
-test("approve modes: off and observe post nothing (observe reports what it would do); safe approves the exact head once inside the safe class; all approves outside it", async () => {
+test("approve modes: off and observe post nothing (observe reports what it would do); on approves the exact head once, under its policy", async () => {
   const small = { files: [file("src/a.ts")], generated: [], verdict: PASS };
-  const big = { files: [file("src/a.ts", 5000)], generated: [], verdict: PASS };
-  for (const mode of ["off", "observe", "safe", "all"]) {
+  for (const mode of ["off", "observe", "on"]) {
     const w = world(mode);
     await intake(w.deps, w.pr());
     await w.pass(w.pr(), small);
     await w.pass(w.pr(), small);
     if (mode === "off") assert.doesNotMatch(w.reports.at(-1)!, /\*\*Approval:\*\*/);
     if (mode === "observe") assert.match(w.reports.at(-1)!, /\*\*Approval:\*\* would approve: code review passed on its head/);
-    assert.deepEqual(w.approvals(), mode === "safe" || mode === "all" ? [{ repo: "a/b", number: 7, head: H1, generation: 1, base: "main" }] : [], mode);
-    // A big change at the next head: outside the safe class.
-    await w.pass(w.pr({ head: H2 }), { ...big, verdict: { ...PASS, reviewed: H2 } });
-    assert.equal(w.approvals().length, mode === "all" ? 2 : mode === "safe" ? 1 : 0, mode);
-    if (mode === "observe") assert.match(w.reports.at(-1)!, /would not: outside the safe class: 5000 lines > 1200/);
+    assert.deepEqual(w.approvals(), mode === "on" ? [{ repo: "a/b", number: 7, head: H1, generation: 1, base: "main", policy: "p1" }] : [], mode);
+    assert.match(w.reports.at(-1)!, /Risk tier: `standard`/);
+    // A head whose tier needs no review is never approved on.
+    await w.pass(w.pr({ head: H2 }), { ...small, verdict: classified("standard", { kind: "none", requires_review: false, reviewed: null }) });
+    assert.equal(w.approvals().length, mode === "on" ? 1 : 0, mode);
   }
 });
 
+test("a skip-tier PR merges (merge ready) with no approval; a head not classified yet merges nothing", async () => {
+  const w = world("on");
+  await intake(w.deps, w.pr());
+  await round(w.deps, w.pr(), { do: "merge", why: "ready" }, { risk: riskOf(w.settings("a/b")!, classified("skip", { kind: "none", requires_review: false })) });
+  assert.deepEqual(w.calls.filter((c) => c.what === "POST /v1/writes").map((c) => c.body.kind), ["github.merge"]);
+  const p = world("on");
+  await intake(p.deps, p.pr());
+  await round(p.deps, p.pr(), { do: "merge", why: "ready" }, { risk: riskOf(p.settings("a/b")!, { ...PASS, tier: { state: "pending" } }) });
+  assert.equal(p.calls.filter((c) => c.what === "POST /v1/writes").length, 0);
+});
+
+test("an App approval issued under another policy is dismissed before a merge, then the PR is decided again", async () => {
+  const w2 = world("on");
+  const p2 = riskOf(w2.settings("a/b")!, classified("standard", { policy: "p2" }));
+  // Approved under p1; the head's policy is p2 now: the dismissal is filed first and nothing is merged.
+  await intake(w2.deps, w2.pr());
+  await w2.pass(w2.pr(), { files: [file("src/a.ts")], generated: [], verdict: classified("standard", { policy: "p1" }) });
+  await round(w2.deps, w2.pr(), { do: "merge", why: "ready" }, { risk: p2 });
+  const kinds = () => w2.calls.filter((c) => c.what === "POST /v1/writes").map((c) => [c.body.kind, c.body.args.dismiss ?? false]);
+  assert.deepEqual(kinds(), [["github.approve", false], ["github.approve", true]]);
+  w2.records["rec-2"] = { state: "done" };
+  await round(w2.deps, w2.pr(), { do: "merge", why: "ready" }, { risk: p2 });
+  assert.equal(w2.state.get("a/b", 7)?.approve, undefined, "the stale approval is forgotten once its dismissal is done");
+});
+
 test("a model fix past the review cap asks code review once and isn't approved; the App that can't approve leaves it to a person", async () => {
-  const w = world("safe");
+  const w = world("on");
   await intake(w.deps, w.pr());
   const fix = { files: [file("src/a.ts", 12, "@@ -1,2 +1,12 @@\n+x\n+fix")], generated: [], verdict: { ...PASS, kind: "exhausted" as const }, reviewedFiles: [file("src/a.ts")] };
   await w.pass(w.pr({ head: H2 }), fix);

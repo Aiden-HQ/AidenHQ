@@ -48,7 +48,8 @@ export type Kept = Adoption & {
   /** The repair filed for a head (github's `repair`, ship's check job), and whether its leftovers have woken the Engineer. */
   repair?: { head: string; record: string; woke?: boolean; retried?: boolean };
   /** The App's approval filed for a head (github's `approve`): its record and attempt, and why it ended without one (no App). */
-  approve?: { head: string; attempt: number; record: string; why?: string };
+  /** The App's approval: its record, the policy it was issued under (risk tiers §7), and `dismissed`: the record dismissing it. */
+  approve?: { head: string; attempt: number; record: string; why?: string; policy?: string; dismissed?: string };
   /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
   freshAsked?: string;
   /** The repo's own steps at a stage (actions.ts): which step, at which head, and how it ended. */

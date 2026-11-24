@@ -6,7 +6,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { intake, generationOf, type PrView } from "../service/src/handoff.ts";
-import { round } from "../service/src/rounds.ts";
+import { round as roundWith } from "../service/src/rounds.ts";
+import { RISK } from "./risk.ts";
+// Every round here sees a classified head whose tier approves and merges (risk.ts).
+const round = ((d: any, pr: any, v: any, f: any = {}) => roundWith(d, pr, v, { risk: RISK, ...f })) as typeof roundWith;
 import { effective } from "../service/src/settings.ts";
 import { openState } from "../service/src/state.ts";
 import { MARKER } from "../service/src/report.ts";

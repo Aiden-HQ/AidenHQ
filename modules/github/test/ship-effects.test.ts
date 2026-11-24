@@ -98,8 +98,9 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
     graphql: async () => ({}),
   };
-  const adoption = { generation };
-  const ship = { generation: async () => ({ generation: adoption.generation, task: "t1" }) };
+  const adoption = { generation, refused: undefined };
+  // Ship's answer, and its final tier check where github passes the write and the live head, base and author.
+  const ship = { generation: async (_r, _n, check) => ({ generation: adoption.generation, task: "t1", ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg: "acme-agents", productRepo: "acme/aidenhq",
@@ -197,6 +198,19 @@ test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts
   const enq = await call("/aidenhq/v1/executor/plan", { kind: "github.enqueue", args: e, requester: SHIP, task: "t1" });
   assert.equal(enq.status, 200, JSON.stringify(enq.json));
   assert.equal(enq.json.raise?.rule, "agents-org-merge-foreign-head");
+});
+
+test("ship's final tier check refuses an approve before it posts; a dismissal asks no tier and dismisses only the App's approvals", async (t) => {
+  const { c1, calls, run, adoption } = await setup(t);
+  const a = { repo: REPO, number: 7, head: c1, generation: 2, base: "main" };
+  adoption.refused = "tier `sensitive`: approval is off";
+  const refused = await run("k-00000000000000d0", "github.approve", a);
+  assert.match(refused.text, /^ship-tier: .*approval is off/);
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/reviews")).length, 0);
+  const out = await run("k-00000000000000d1", "github.approve", { ...a, dismiss: true, policy: "p2" });
+  assert.equal(out.ok, true, out.text);
+  assert.deepEqual(calls.filter((c) => c.method === "PUT" && /dismissals$/.test(c.path)).map((c) => c.path.split("/").at(-2)), ["50", "99"], "the App's own approvals, never the owner's");
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/reviews")).length, 0, "nothing is approved");
 });
 
 test("an enqueue GitHub didn't answer is reconciled by reading the queue entry, never sent twice", async (t) => {

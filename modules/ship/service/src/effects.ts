@@ -13,8 +13,10 @@ export function shipEffects(kernel: Pick<KernelClient, "call">, o: { codeReview:
       return Number(r.id);
     },
     /** Code review's verdict at the head, with what it stands on (approval evidence). */
-    async verdict(repo: string, number: number, head: string): Promise<Verdict> {
-      const r = await fetchFn(`${o.codeReview.replace(/\/+$/, "")}/v1/verdict?${new URLSearchParams({ repo, pr: String(number), head })}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(30_000) });
+    async verdict(repo: string, number: number, head: string, live: { base?: string; association?: string } = {}): Promise<Verdict> {
+      // The caller's live base branch and author association go along: a risk tier computed from other ones answers pending.
+      const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), head, ...(live.base ? { base: live.base } : {}), ...(live.association ? { association: live.association } : {}) });
+      const r = await fetchFn(`${o.codeReview.replace(/\/+$/, "")}/v1/verdict?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(30_000) });
       if (!r.ok) throw new Error(`code review answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
       return r.json() as Promise<Verdict>;
     },

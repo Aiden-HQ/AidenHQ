@@ -11,7 +11,7 @@ import type { Discovered } from "./discover.ts";
 import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
 import { queueNext, type QueueFacts, type QueueNext, type Queued } from "./queue.ts";
 import { renderReport, type Facts } from "./report.ts";
-import type { Judged } from "./safe.ts";
+import { staleApproval, type Judged, type Risk } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
 
@@ -33,6 +33,8 @@ export interface RoundFacts extends QueueFacts {
   discovered?: Discovered;
   /** safe.ts judge()'s answer at the head, where approval is needed: what the App approves on (and decide's ShipContext.approve). */
   approval?: Judged;
+  /** The head's risk tier with its `by_tier` approve and merge (safe.ts riskOf, from code review's verdict). Without one nothing merges. */
+  risk?: Risk;
   /** Code review's findings at this head (its digest): a new set at the same head is a new fix_review. */
   findingsKey?: string;
   /** Red at a head behind a green base: GitHub's update-branch is tried once at this head before any fix_ci wake. */
@@ -124,8 +126,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   }
   const suggest = suggestLines(f.discovered, s.actions);
   const j = f.approval;
-  const facts: Facts = { ...(suggest.length ? { suggest } : {}), state: "working", stopLabel: s.stop_label, ...(j ? { lines: j.safe.lines, files: j.safe.files, safe: j.safe } : {}), ...(f.report ?? {}), ...(f.failing?.length ? { failing: f.failing, onBase: f.onBase ?? [] } : {}),
-    ...(j && s.approve !== "off" ? { approval: s.approve === "observe" ? (j.ok ? `would approve: ${j.why}` : `would not: ${j.why}`) : j.ok ? `approves: ${j.why}` : `not yet: ${j.why}` } : {}) };
+  const risk = f.risk;
+  const merge = risk?.merge ?? "off";
+  const facts: Facts = { ...(suggest.length ? { suggest } : {}), state: "working", stopLabel: s.stop_label, ...(risk ? { risk } : {}), ...(f.report ?? {}), ...(f.failing?.length ? { failing: f.failing, onBase: f.onBase ?? [] } : {}),
+    ...(j && risk && risk.approve !== "off" ? { approval: risk.approve === "observe" ? (j.ok ? `would approve: ${j.why}` : `would not: ${j.why}`) : j.ok ? `approves: ${j.why}` : `not yet: ${j.why}` } : {}) };
   const save = async (state: string, waits?: string) => { d.state.put(a!); await report(d, a!, pr, { ...facts, state, ...(waits ? { waits } : {}) }); };
   const hold = async (reason: string) => {
     // Its owner is told: a task's PR wakes whoever asked for the task; a member's PR assigns its author (and the report says why).
@@ -158,7 +162,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   };
 
   // A model fix the last review doesn't carry to: code review is asked once for a review of this head (never under observe).
-  if (j?.ask && (s.approve === "safe" || s.approve === "all") && a.freshAsked !== pr.head) {
+  if (j?.ask && risk?.approve === "on" && a.freshAsked !== pr.head) {
     try {
       await d.askFresh(pr.url, pr.head);
       a = { ...a, freshAsked: pr.head, did: [...(a.did ?? []), `asked code review for a review of \`${pr.head.slice(0, 12)}\``] };
@@ -168,12 +172,33 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     }
   }
 
+  /**
+   * An App approval of this head issued under another policy (or where the tier's approve is no longer `on`) never counts at a merge or an
+   * enqueue (risk tiers §7): its dismissal is filed first (github.approve with `dismiss`, as the App), and the round after it decides
+   * again: approved under the current policy, or waiting for a person's. "acted" or "nothing" while it is in hand, else undefined.
+   */
+  const dismissStale = async (): Promise<"acted" | "nothing" | undefined> => {
+    const ap = a!.approve;
+    if (!risk || !staleApproval(ap, pr.head, risk)) return undefined;
+    if (ap!.dismissed) {
+      const r = await d.kernel.call("GET", `/v1/writes/${ap!.dismissed}`);
+      if (r.state === "done") { const { approve: _, ...rest } = a!; a = { ...rest, did: [...(a!.did ?? []), `dismissed the App's approval of \`${pr.head.slice(0, 12)}\` (another review policy)`] } as typeof a; return "acted"; }
+      if (OPEN.includes(String(r.state))) return "nothing";
+      await hold(`dismissing the App's approval at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)} (${String(r.outcome?.text ?? r.reason ?? "no reason given").slice(0, 200)})`);
+      return "acted";
+    }
+    const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);
+    if (holder) a = { ...a!, holder };
+    const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.approve", task: a!.task ?? a!.holder, args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, dismiss: true } });
+    a = { ...a!, approve: { ...ap!, dismissed: String(r.id) }, did: [...(a!.did ?? []), `asked to dismiss the App's approval of \`${pr.head.slice(0, 12)}\` (it was issued under another review policy)`] };
+    return "acted";
+  };
   const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
   // Behind only, under `rebase: conflict`: brought up to date only at the front of the repo's merge order; the rest wait their turn.
   if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front && !f.queue) return "nothing";
   // The repo's own commands and workflows for the stage this round needs (actions.ts), before ship's own step for it.
   const stage = stageOf(v.do, f.dirty);
-  const steps = stage && d.gh && (stage === "before_merge" ? s.merge !== "off" : s.fix.includes("conflicts")) ? s.actions[stage] ?? [] : [];
+  const steps = stage && d.gh && (stage === "before_merge" ? merge !== "off" : s.fix.includes("conflicts")) ? s.actions[stage] ?? [] : [];
   if (stage && steps.length) {
     // Each step started spends a round.
     const r = await advance(d.gh!, pr, stage, steps, a!.action, () => (over(c.rounds, caps.rounds) ? false : (c.rounds++, true)));
@@ -187,7 +212,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   }
   // A queue branch: the removal is read here. A red required check on the merge_group run that is this PR's own is a fix_ci round.
   let qn: QueueNext | undefined, viaQueue = false;
-  if (v.do === "enqueue" && s.merge !== "off") {
+  if (v.do === "enqueue" && merge !== "off") {
     qn = await queueNext(d.kernel, a.queue, pr, f);
     if (qn.act === "fix_ci") { v = { do: "fix_ci", why: "a required check failed on its merge queue run" }; f = { ...f, failing: qn.failing }; facts.failing = qn.failing; facts.onBase = f.onBase ?? []; viaQueue = true; qn = undefined; }
   }
@@ -303,7 +328,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         return wake("fix_review", `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.\n${push()}`);
       }
       case "merge": {
-        if (s.merge === "off") return "nothing";
+        if (merge === "off") return "nothing";
+        const dismissing = await dismissStale();
+        if (dismissing) return dismissing;
         if (a!.merge?.head === pr.head) {
           const r = await d.kernel.call("GET", `/v1/writes/${a!.merge.record}`);
           if (OPEN.includes(String(r.state))) return "nothing";
@@ -334,6 +361,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       case "enqueue": {
         const q = qn;
         if (!q || q.act === "nothing") return "nothing";
+        const dismissing = await dismissStale();
+        if (dismissing) return dismissing;
         if (q.act === "hold") return hold(q.why);
         if (q.act === "wait") { queueWait = q.why; return "nothing"; }
         if (q.attempt > 1) {
@@ -349,7 +378,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "approve": {
         // Gated in code by the repo's `approve` and the evidence at this head, whatever decide was told.
-        if (!(s.approve === "safe" || s.approve === "all") || !j?.ok) return "nothing";
+        if (risk?.approve !== "on" || !j?.ok) return "nothing";
         // No App that may approve it (github refuses at planning or at the effect): a person's approval is what it waits for, said once.
         const NO_APP = /ship-no-app|approval needs a human/;
         const person = (text: string) => {
@@ -373,13 +402,13 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           // A reviewed approval needs a task: the Engineer's, or the adoption's quiet records task.
           const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);
           if (holder) a = { ...a!, holder };
-          r = await d.kernel.call("POST", "/v1/writes", { kind: "github.approve", task: a!.task ?? a!.holder, args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base } });
+          r = await d.kernel.call("POST", "/v1/writes", { kind: "github.approve", task: a!.task ?? a!.holder, args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, ...(risk?.policy ? { policy: risk.policy } : {}) } });
         } catch (e) {
           const text = String((e as Error).message);
           if (NO_APP.test(text)) return person(text);
           throw e;
         }
-        a = { ...a!, approve: { head: pr.head, attempt, record: String(r.id) }, did: [...(a!.did ?? []), `asked the App to approve \`${pr.head.slice(0, 12)}\` (${j.why})`] };
+        a = { ...a!, approve: { head: pr.head, attempt, record: String(r.id), ...(risk?.policy ? { policy: risk.policy } : {}) }, did: [...(a!.did ?? []), `asked the App to approve \`${pr.head.slice(0, 12)}\` (${j.why})`] };
         return "acted";
       }
       case "stall":
@@ -398,7 +427,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const marker = queueWait ? `${key}:wait` : updatedOnly ? `${key}:updated` : key;
   if (did === "nothing" && c.lastRound === marker) return did;
   c.lastRound = marker;
-  const state = v.do === "done" ? "merged" : v.do === "merge" ? (s.merge === "off" ? "ready (its `merge` setting is off: a person merges it)" : "merging") : v.do === "enqueue" ? (s.merge === "off" ? "ready (its `merge` setting is off: a person queues it)" : "queueing") : v.do === "approve" ? (a!.approve?.why ? "ready: waiting for a person's approval" : "approving") : v.do === "wait" ? "waiting" : "working";
+  const state = v.do === "done" ? "merged" : v.do === "merge" ? (merge === "off" ? `ready (${risk?.state === "classified" ? `tier \`${risk.tier}\`: ` : ""}merge is off: a person merges it)` : "merging") : v.do === "enqueue" ? (merge === "off" ? `ready (${risk?.state === "classified" ? `tier \`${risk.tier}\`: ` : ""}merge is off: a person queues it)` : "queueing") : v.do === "approve" ? (a!.approve?.why ? "ready: waiting for a person's approval" : "approving") : v.do === "wait" ? "waiting" : "working";
   await save(queueWait ? "waiting" : state, queueWait ?? (["wait", "approve", "enqueue"].includes(v.do) ? v.why : undefined));
   return did;
 }

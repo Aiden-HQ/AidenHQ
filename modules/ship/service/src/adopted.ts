@@ -11,7 +11,7 @@ import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
 import { handBack, intake, recordTask, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
 import { retryReport, round, tell, type Decision, type RoundDeps } from "./rounds.ts";
-import { canApprove, judge, type ChangedFile, type Judged, type Verdict } from "./safe.ts";
+import { canApprove, judge, riskOf, type ChangedFile, type Judged, type Risk, type Verdict } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
 
@@ -28,7 +28,7 @@ export type AdoptedOptions = {
    * approval of the head is all it waits on. */
   decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
   /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
-  effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string): Promise<Verdict> };
+  effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string, live?: { base?: string; association?: string }): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
 };
 
@@ -90,9 +90,9 @@ export function adoptedPass(o: AdoptedOptions) {
   /** The PR's own change from its merge base with `base` (GitHub's compare files). */
   const changed = async (repo: string, base: string, head: string) => ((await must("GET", `/repos/${repo}/compare/${base}...${head}`))?.files ?? []) as ChangedFile[];
   /** judge() at the head: code review's verdict, the PR's change, and the change at the head the verdict stands on when it isn't this one. */
-  const approvalOf = async (s: ShipSettings, view: PrView, base: string): Promise<Judged> => {
-    const verdict = await o.effects.verdict(view.repo, view.number, view.head);
-    const files = await changed(view.repo, base, view.head);
+  const approvalOf = async (s: ShipSettings, view: PrView, base: string, verdict: Verdict): Promise<Judged> => {
+    // The PR's own change is read only where a pass stands on an earlier head (carries): a completed or absent one needs none.
+    const files = verdict.verdict === "pass" && verdict.kind !== "completed" && verdict.kind !== "none" ? await changed(view.repo, base, view.head) : [];
     // The reviewed head may be gone (a force-push): its change can't be read, so nothing carries and a fresh review is asked for.
     const reviewedChange = async (h: string) => { const r = await o.gh("GET", `/repos/${view.repo}/compare/${base}...${h}`); if (r.status === 404 || r.status === 422) return undefined; if (r.status >= 300) throw new Error(`GitHub GET compare: ${r.status}`); return (r.body?.files ?? []) as ChangedFile[]; };
     const reviewedFiles = verdict.verdict === "pass" && verdict.kind !== "completed" && verdict.reviewed ? await reviewedChange(verdict.reviewed) : undefined;
@@ -237,17 +237,22 @@ export function adoptedPass(o: AdoptedOptions) {
         a = { ...a, wedgedTold: view.head };
         o.state.put(a);
       }
-      // Waiting only on an approval: the evidence is judged, and decide's `approve` is taken where the repo's `approve` allows it.
+      // The head's risk tier, read for every PR (the merge is per tier): code review's verdict with the live base and author. A head
+      // not classified yet waits at approve, enqueue and merge alike; never guessed.
       const s = o.settings(repo);
-      const approval = v.approval && s && s.approve !== "off" && main.oid ? await approvalOf(s, view, main.oid) : undefined;
-      if (s && canApprove(s, approval)) Object.assign(v, { do: "approve", why: "ready, and no approval on its head yet" });
+      const verdict = s ? await o.effects.verdict(repo, pr.number, view.head, { base: view.base, association: String(pr.authorAssociation ?? "") }) : undefined;
+      const risk: Risk | undefined = s && verdict ? riskOf(s, verdict) : undefined;
+      if (risk?.state === "pending" && ["approve", "enqueue", "merge"].includes(v.do)) Object.assign(v, { do: "wait", why: risk.why });
+      // Waiting only on an approval: the evidence is judged, and decide's `approve` is taken where the tier's `approve` allows it.
+      const approval = v.approval && s && verdict && risk && risk.approve !== "off" && main.oid ? await approvalOf(s, view, main.oid, verdict) : undefined;
+      if (canApprove(approval)) Object.assign(v, { do: "approve", why: "ready, and no approval on its head yet" });
       // Red on the base too: the same required check names (on the head or the merge_group run) red on the default branch's head.
       const onBase = new Set(namedChecks(main.rollup).filter((c) => !c.ok && !c.pending).map((c) => c.name));
       const red = [...new Set([...(v.failing ?? []), ...(v.groupFailing ?? [])])];
       // Red while behind a green base: round() has GitHub update the branch once at this head before asking for a fix.
       const behindGreen = v.do === "fix_ci" && main.rollup?.state === "SUCCESS" && main.oid && a.counters?.updated !== view.head
         ? Number((await o.gh("GET", `/repos/${repo}/compare/${main.oid}...${view.head}`)).body?.behind_by) > 0 : false;
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
     },
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {

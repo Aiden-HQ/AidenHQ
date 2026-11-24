@@ -6,7 +6,10 @@ export const CAP_KEYS = ["wakes_per_head", "ci_rounds", "same_check_heads", "rou
 export type Caps = Record<(typeof CAP_KEYS)[number], number | null>;
 export const HANDOFF = ["none", "label", "all"] as const;
 export const REBASE = ["conflict", "behind"] as const;
-export const APPROVE = ["off", "observe", "safe", "all"] as const;
+export const APPROVE = ["off", "observe", "on"] as const;
+/** The risk tiers code review classifies each PR head into (kernel/sdk/src/tiers.ts): ship's approve and merge are set per tier. */
+export const TIERS = ["skip", "trivial", "standard", "sensitive"] as const;
+export type Tier = (typeof TIERS)[number];
 export const MERGE = ["off", "ready"] as const;
 export const FIX = ["conflicts", "ci", "review"] as const;
 /** The stages a repo's own commands and workflows run at (actions.ts): before ship's repair of a conflict, before it brings a
@@ -24,9 +27,10 @@ export interface ShipSettings {
   fix: (typeof FIX)[number][];
   protected: string[];
   caps: Caps;
-  approve: (typeof APPROVE)[number];
-  safe: { max_lines: number | null; max_files: number | null; deny: string[] };
-  merge: (typeof MERGE)[number];
+  /** Per risk tier: whether the App approves (`skip` has no review to approve on, so its approve is always off) and whether ship merges. */
+  by_tier: Record<Tier, { approve: (typeof APPROVE)[number]; merge: (typeof MERGE)[number] }>;
+  /** A repo code review doesn't watch has no tier: this is its merge. */
+  unwatched: { merge: (typeof MERGE)[number] };
   stop_label: string;
   /** The repo's own commands and workflows per stage (actions.ts). An ordinary setting: they are the repo's own CI. */
   actions: Partial<Record<(typeof STAGES)[number], ActionStep[]>>;
@@ -38,28 +42,27 @@ const PROTECTED = ["**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", 
 const CAUTIOUS: ShipSettings = {
   enabled: true, handoff: "label", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
   caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, rounds: 30, usd: 5, requeue_on_timeout: 1 },
-  approve: "observe", safe: { max_lines: 1200, max_files: 50, deny: [...PROTECTED, "**/migrations/**", "**/auth/**", "**/Dockerfile*", "**/docker-compose*", "**/*.tf", "infra/**", "**/.env*", "**/config/**"] }, merge: "ready", stop_label: "ship:stop", actions: {},
+  by_tier: { skip: { approve: "off", merge: "ready" }, trivial: { approve: "on", merge: "ready" }, standard: { approve: "observe", merge: "ready" }, sensitive: { approve: "off", merge: "ready" } },
+  unwatched: { merge: "ready" }, stop_label: "ship:stop", actions: {},
 };
 const FULL: ShipSettings = {
   // Unguarded at ship's own policy layer. Host rules, human code-owner reviews and kernel authority still apply.
-  ...CAUTIOUS, handoff: "all", rebase: "behind", protected: [], approve: "all",
+  ...CAUTIOUS, handoff: "all", rebase: "behind", protected: [],
+  by_tier: { skip: { approve: "off", merge: "ready" }, trivial: { approve: "on", merge: "ready" }, standard: { approve: "on", merge: "ready" }, sensitive: { approve: "on", merge: "ready" } },
   caps: Object.fromEntries(CAP_KEYS.map((k) => [k, null])) as Caps,
-  safe: { max_lines: null, max_files: null, deny: [] },
 };
 /** The Fleet page's controls (per repo, and the global pause) and the declared setting each one edits (the same fields the English tool and validate use). */
 export const CONTROLS = {
   enabled: { setting: "enabled", scope: "repo", values: [true, false], label: "On or off" },
   preset: { setting: "preset", scope: "repo", values: ["cautious", "full"], label: "Preset" },
   handoff: { setting: "handoff", scope: "repo", values: HANDOFF, label: "Which PRs to adopt" },
-  approve: { setting: "approve", scope: "repo", values: APPROVE, label: "Approval policy" },
-  merge: { setting: "merge", scope: "repo", values: MERGE, label: "Auto-merge" },
   paused: { setting: "paused", scope: "global", values: [true, false], label: "Pause everything" },
 } as const;
 export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CAUTIOUS, full: FULL };
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label", "actions"];
+export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "by_tier", "unwatched", "stop_label", "actions"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 /** Where ship works: the fleet's own repos (the agents org as `org/*`, the product repo), always; a `maintainer_repos` repo only
@@ -80,7 +83,8 @@ function resolve(preset: "cautious" | "full", over: Dict): ShipSettings {
   const s = clone(PRESETS[preset]) as ShipSettings & Dict;
   for (const [k, v] of Object.entries(over)) {
     if (k === "caps" && isMap(v)) s.caps = { ...s.caps, ...(v as Partial<Caps>) };
-    else if (k === "safe" && isMap(v)) s.safe = { ...s.safe, ...v } as ShipSettings["safe"];
+    else if (k === "by_tier" && isMap(v)) for (const t of TIERS) s.by_tier[t] = { ...s.by_tier[t], ...(isMap(v[t]) ? v[t] : {}) } as ShipSettings["by_tier"][Tier];
+    else if (k === "unwatched" && isMap(v)) s.unwatched = { ...s.unwatched, ...v } as ShipSettings["unwatched"];
     else if (k === "generated") s.generated = isMap(v) ? { globs: (v.globs as string[]) ?? [], command: (v.command as string) ?? "" } : null;
     else s[k] = v;
   }
@@ -105,7 +109,7 @@ export function effective(raw: unknown, repo: string, scope: Scope): ShipSetting
   const e = entryOf(entry, d.preset);
   // An entry spelled with only fields sits over the defaults' preset and overrides.
   const inherits = isMap(entry) && !("preset" in entry);
-  return resolve(e.preset, inherits ? { ...d.over, ...e.over, caps: { ...(d.over.caps as Dict), ...(e.over.caps as Dict) }, safe: { ...(d.over.safe as Dict), ...(e.over.safe as Dict) } } : e.over);
+  return resolve(e.preset, inherits ? { ...d.over, ...e.over, caps: { ...(d.over.caps as Dict), ...(e.over.caps as Dict) }, by_tier: Object.fromEntries(TIERS.map((t) => [t, { ...((d.over.by_tier as Dict)?.[t] as Dict), ...((e.over.by_tier as Dict)?.[t] as Dict) }])), unwatched: { ...(d.over.unwatched as Dict), ...(e.over.unwatched as Dict) } } : e.over);
 }
 
 const oneOf = (errors: string[], at: string, v: unknown, list: readonly string[]) => { if (!list.includes(v as string)) errors.push(`${at}: one of ${list.join(", ")}`); };
@@ -125,16 +129,31 @@ function stepError(x: unknown): string | undefined {
   return undefined;
 }
 
+/** The per-repo fields risk tiers replaced: refused with a message. */
+const OLD = ["approve", "merge", "safe"];
 function checkEntry(errors: string[], at: string, e: unknown) {
   if (typeof e === "string") return void (Object.hasOwn(PRESETS, e) || errors.push(`${at}: preset ${e} (cautious or full)`));
   if (!isMap(e)) return void errors.push(`${at}: a preset name or a map of fields`);
-  for (const k of Object.keys(e)) if (!FIELDS.includes(k)) errors.push(`${at}.${k}: unknown field (known: ${FIELDS.join(", ")})`);
+  for (const k of Object.keys(e)) if (!FIELDS.includes(k) && !OLD.includes(k)) errors.push(`${at}.${k}: unknown field (known: ${FIELDS.join(", ")})`);
   if ("preset" in e) oneOf(errors, `${at}.preset`, e.preset, ["cautious", "full"]);
   if ("enabled" in e && typeof e.enabled !== "boolean") errors.push(`${at}.enabled: true or false`);
   if ("handoff" in e) oneOf(errors, `${at}.handoff`, e.handoff, HANDOFF);
   if ("rebase" in e) oneOf(errors, `${at}.rebase`, e.rebase, REBASE);
-  if ("approve" in e) oneOf(errors, `${at}.approve`, e.approve, APPROVE);
-  if ("merge" in e) oneOf(errors, `${at}.merge`, e.merge, MERGE);
+  // The old per-repo shape is refused with its way out, never read (risk tiers spec §11).
+  for (const k of OLD) if (k in e) errors.push(`${at}.${k}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
+  if ("by_tier" in e) {
+    if (!isMap(e.by_tier)) errors.push(`${at}.by_tier: a map of tier (${TIERS.join(", ")}) to { approve, merge }`);
+    else for (const [t, c] of Object.entries(e.by_tier)) {
+      if (!TIERS.includes(t as Tier)) { errors.push(`${at}.by_tier.${t.slice(0, 40)}: unknown tier (known: ${TIERS.join(", ")})`); continue; }
+      if (!isMap(c) || Object.keys(c).some((k) => !["approve", "merge"].includes(k))) { errors.push(`${at}.by_tier.${t}: { approve, merge }`); continue; }
+      if ("approve" in c) { if (t === "skip") errors.push(`${at}.by_tier.skip.approve: skip has no review to approve on`); else oneOf(errors, `${at}.by_tier.${t}.approve`, c.approve, APPROVE); }
+      if ("merge" in c) oneOf(errors, `${at}.by_tier.${t}.merge`, c.merge, MERGE);
+    }
+  }
+  if ("unwatched" in e) {
+    if (!isMap(e.unwatched) || Object.keys(e.unwatched).some((k) => k !== "merge")) errors.push(`${at}.unwatched: { merge }`);
+    else if ("merge" in e.unwatched) oneOf(errors, `${at}.unwatched.merge`, e.unwatched.merge, MERGE);
+  }
   if ("fix" in e) { strings(errors, `${at}.fix`, e.fix); if (Array.isArray(e.fix)) for (const f of e.fix) if (!FIX.includes(f)) errors.push(`${at}.fix: ${String(f).slice(0, 40)} (known: ${FIX.join(", ")})`); }
   if ("protected" in e) strings(errors, `${at}.protected`, e.protected);
   if ("stop_label" in e && (typeof e.stop_label !== "string" || !e.stop_label || e.stop_label.length > 50)) errors.push(`${at}.stop_label: a label name`);
@@ -155,10 +174,6 @@ function checkEntry(errors: string[], at: string, e: unknown) {
   if ("caps" in e) {
     if (!isMap(e.caps)) errors.push(`${at}.caps: a map`);
     else for (const [k, v] of Object.entries(e.caps)) CAP_KEYS.includes(k as never) ? count(errors, `${at}.caps.${k}`, v) : errors.push(`${at}.caps.${k}: unknown cap (known: ${CAP_KEYS.join(", ")})`);
-  }
-  if ("safe" in e) {
-    if (!isMap(e.safe)) errors.push(`${at}.safe: a map`);
-    else for (const [k, v] of Object.entries(e.safe)) k === "deny" ? strings(errors, `${at}.safe.deny`, v) : ["max_lines", "max_files"].includes(k) ? count(errors, `${at}.safe.${k}`, v) : errors.push(`${at}.safe.${k}: unknown field`);
   }
 }
 
@@ -191,14 +206,14 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if (y.enabled && !x.enabled) add("enabled");
     if (rank(HANDOFF, y.handoff) > rank(HANDOFF, x.handoff)) add("handoff");
     if (y.rebase === "behind" && x.rebase !== "behind") add("rebase");
-    if (y.approve !== x.approve && rank(APPROVE, y.approve) > rank(APPROVE, x.approve)) add("approve");
-    if (y.merge === "ready" && x.merge !== "ready") add("merge");
+    for (const t of TIERS) {
+      if (rank(APPROVE, y.by_tier[t].approve) > rank(APPROVE, x.by_tier[t].approve)) add(`by_tier.${t}.approve`);
+      if (y.by_tier[t].merge === "ready" && x.by_tier[t].merge !== "ready") add(`by_tier.${t}.merge`);
+    }
+    if (y.unwatched.merge === "ready" && x.unwatched.merge !== "ready") add("unwatched.merge");
     if (y.fix.some((f) => !x.fix.includes(f))) add("fix");
     if (x.protected.some((p) => !y.protected.includes(p))) add("protected");
     for (const k of CAP_KEYS) if (raised(x.caps[k], y.caps[k])) add(`caps.${k}`);
-    if (raised(x.safe.max_lines, y.safe.max_lines)) add("safe.max_lines");
-    if (raised(x.safe.max_files, y.safe.max_files)) add("safe.max_files");
-    if (x.safe.deny.some((p) => !y.safe.deny.includes(p))) add("safe.deny");
     // The repair writes the generators' output on these paths: a new glob widens what an untrusted box may change. The command
     // stays an ordinary setting (it runs only in the credential-free box).
     if ((y.generated?.globs ?? []).some((g) => !(x.generated?.globs ?? []).includes(g))) add("generated.globs");
