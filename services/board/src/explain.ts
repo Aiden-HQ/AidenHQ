@@ -61,13 +61,20 @@ const REVIEW_WORDS: Record<string, string> = {
 const capWords = (c: NonNullable<RecordWhole["cap"]>) => `Autonomy is ${c.value}.`;
 const models = (by: string) => (by.startsWith("reviewer:") && by !== "reviewer:kernel/code" ? [by.slice("reviewer:".length)] : []);
 /**
- * The tier the record actually filed at, in words: the tier itself, raised by a cap (autonomy) above its merits, or above its
- * merits (any raise above 0 is the AI reviewer's, tier.ts), so the history never calls a reviewer's record the owner's.
+ * The tier the record actually filed at, in words: its own tier, Tier 2 because a cap (autonomy) or the owner's call lifted
+ * it above its merits, or Tier 1 above its merits (any raise above 0 is the AI reviewer's, tier.ts). The reviewer's
+ * escalation sets the record's tier to 2 without a cap, so a record without one reads its merits, never "at Tier 2" for
+ * what the reviewer sent to the owner.
  */
-const tierWords = (r: { tier: number; merit?: number | null; cap?: { by: "autonomy"; value: string } | null }) => {
+const tierWords = (r: { tier: number; merit?: number | null; cap?: { by: "autonomy"; value: string } | null; state: string; review?: string | null }) => {
   const merit = r.merit ?? r.tier;
+  // A record in the owner's hands with no cap got there by the reviewer's escalation (records.review sets tier 2): it filed
+  // at its merits, whatever that tier was, so the history shows the reviewer's step rather than calling it filed at Tier 2.
+  if (r.state === "owner" && !r.cap && r.review) return `at Tier ${merit}, then the AI reviewer sent it to you`;
   if (merit === r.tier) return `at Tier ${r.tier}`;
-  if (merit < r.tier) return `at Tier ${merit}, raised to Tier ${r.tier}${r.cap ? ` (${capWords(r.cap).replace(/\.$/, "").toLowerCase()})` : ""}`;
+  if (merit < r.tier) return r.cap
+    ? `at Tier ${merit}, raised to Tier ${r.tier} (${capWords(r.cap).replace(/\.$/, "").toLowerCase()})`
+    : `at Tier ${merit}, then yours to decide`;
   return `at Tier ${r.tier} (Tier ${merit} on its merits; every raise above 0 is the AI reviewer's)`;
 };
 const verdict = (state: string) => (["approved", "claimed", "done", "failed", "unknown"].includes(state) ? "approved it" : state === "stale" ? "closed it: its head moved, so nothing ran" : "rejected it");

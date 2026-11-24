@@ -241,11 +241,13 @@ test("an apply that adds or changes settings.edge.test_user plans a Tier 2 raise
     assert.deepEqual([plain.tier, plain.merit, plain.rule], [1, 1, null]);
     assert.doesNotMatch(plain.card.changes, /test sign-in identity/);
   }
-  // Removing it: the head has no test_user (or a null one), so neither the raise nor the line.
-  const nulled = `${yaml(OLD)}settings:\n  edge:\n    test_user: ~\n`;
-  for (const texts of [{ base: add.head, head: edge() }, { base: add.head, head: nulled }]) {
-    const removed = await kernel({ texts }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
-    assert.deepEqual([removed.tier, removed.merit, removed.rule], [1, 1, null]);
-    assert.doesNotMatch(removed.card.changes, /test sign-in identity/);
-  }
+  // Rewriting the setting without changing the identity (key order, app order): no change, so no raise and no line.
+  const reordered = { base: add.head, head: `${yaml(OLD)}settings:\n  edge:\n    test_user: { apps: [roadmap-keeper], email: canary@aidenhq.test }\n` };
+  const same = await kernel({ texts: reordered }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+  assert.deepEqual([same.tier, same.merit, same.rule], [1, 1, null]);
+  assert.deepEqual((await plan(reordered)).raise, undefined);
+  // Removing it: the head has no test_user, so neither the raise nor the line.
+  const removed = await kernel({ texts: { base: add.head, head: edge() } }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+  assert.deepEqual([removed.tier, removed.merit, removed.rule], [1, 1, null]);
+  assert.doesNotMatch(removed.card.changes, /test sign-in identity/);
 });

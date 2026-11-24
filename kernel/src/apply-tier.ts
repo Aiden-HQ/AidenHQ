@@ -184,6 +184,12 @@ export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marke
   return lines.length ? { authority: lines } : {};
 }
 
+/** The test user as one comparable value: the email trimmed and lower-cased, the apps sorted (compile's own normalisation). */
+const identityKey = (t: any) => t === undefined ? undefined : JSON.stringify({
+  email: typeof t?.email === "string" ? t.email.trim().toLowerCase() : null,
+  apps: (Array.isArray(t?.apps) ? t.apps : []).filter((x: unknown): x is string => typeof x === "string").map((x: string) => x.trim().toLowerCase()).sort(),
+});
+
 /**
  * The apply that names or changes the instance's test-user sign-in identity (settings.edge.test_user): it lets an agent sign
  * in as a named account (docs/design/access.md, "Test-user sign-in"), so the plan carries a Tier 2 raise (merit 2; tier.ts
@@ -193,10 +199,13 @@ export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marke
  */
 export function testUserIdentity(baseText: string | undefined, headText: string | undefined): { raise?: Raise; line?: string } {
   const after = parse(headText)?.settings?.edge?.test_user;
-  // No test_user in the head, or a null one (`test_user: ~`), is a removal: no raise and no line.
-  if (after == null || eq(parse(baseText)?.settings?.edge?.test_user, after)) return {};
+  // No test_user in the head is a removal: no raise and no line. (Compile refuses a null one, scripts/edge.ts, so key
+  // removal is the only way to drop it.)
+  if (after === undefined) return {};
   const email = typeof after?.email === "string" && after.email.trim() ? after.email.trim() : undefined;
   const apps = (Array.isArray(after?.apps) ? after.apps : []).filter((x: unknown): x is string => typeof x === "string" && x.length > 0);
+  // The effective identity, by value: a rewrite that only reorders the keys or the apps changes no access, so no raise.
+  if (eq(identityKey(parse(baseText)?.settings?.edge?.test_user), identityKey(after))) return {};
   const identity = `Adds a test sign-in identity${email ? `: ${email}` : ""}${apps.length ? ` as a member of ${apps.join(", ")}` : ""}; 15-minute sessions; every mint and revoke audited.`;
   const host = "An apply doesn't install the canary network: on an upgraded host, install ops/vm/canary-net.sh and its aidenhq-canary-net.service once, and open the listener with ops/vm/ufw-rules.sh where ufw is active (docs/design/access.md, \"Test-user sign-in\"), or app_page_canary can't start a browser.";
   return { raise: { tier: 2, rule: "test-user-identity", reason: "adds or changes the instance's agent sign-in identity (settings.edge.test_user)" }, line: `${identity}\n${host}` };

@@ -21,6 +21,16 @@ describe("explain's tier history", () => {
     expect(e.path[0]).toBe("Filed by Engineer at Tier 1, raised to Tier 2 (autonomy is off).");
     expect(e.decider.kind).toBe("pending-owner");
   });
+  it("keeps the filing tier when the reviewer escalated it to the owner", () => {
+    // records.review() sets tier 2 with no cap on an escalate: the record filed at its merits.
+    for (const [merit, tier] of [[1, 2], [2, 2]] as const) {
+      const e = explain(record({ tier, merit, state: "owner", review: "send it to the owner" }), null);
+      expect(e.path[0]).toBe(`Filed by Engineer at Tier ${merit}, then the AI reviewer sent it to you.`);
+      expect(e.decider.kind).toBe("pending-owner");
+    }
+    // The owner's own veto needs no review: the record is Tier 2 from the start.
+    expect(explain(record({ tier: 2, merit: 1, state: "owner", review: null }), null).path[0]).toBe("Filed by Engineer at Tier 1, then yours to decide.");
+  });
   it("says the tier plainly when it is its own merits", () => {
     expect(explain(record({ tier: 1, merit: 1 }), null).path[0]).toBe("Filed by Engineer at Tier 1.");
   });
