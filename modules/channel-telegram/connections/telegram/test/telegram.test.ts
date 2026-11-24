@@ -12,7 +12,7 @@ describe("Telegram buttons", () => {
     expect(markup.inline_keyboard.flat().map((b) => b.text)).toEqual(["Apply WOR-184", "Not now"]);
     const data = markup.inline_keyboard[0]![0]!.callback_data;
     const press = { callback_query: { id: "cb1", data, message: { message_id: 7, chat: { id: 42 } } } };
-    expect(fromTelegramCallback(press, "42", store)).toEqual({ message: { source: "telegram", text: "Apply WOR-184" }, chatId: "42", messageId: 7, label: "Apply WOR-184" });
+    expect(fromTelegramCallback(press, "42", store)).toEqual({ message: { source: "telegram", text: "Apply WOR-184", replyTo: "7" }, chatId: "42", messageId: 7, label: "Apply WOR-184" });
     expect(fromTelegramCallback(press, "42", store)).toBeNull(); // one-shot
   });
 });

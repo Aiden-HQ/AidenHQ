@@ -119,7 +119,7 @@ export function askedQuestions(comments: ChatComment[], agentId: string | null |
   if (!agentId) return undefined;
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!;
-    if (c.authorType !== "agent" || c.authorAgentId !== agentId || !c.body.includes(REPLY_MARKER)) continue;
+    if (c.authorType !== "agent" || c.authorAgentId !== agentId || !isReply(c.body)) continue;
     // The newest reply decides: a later reply with no choices means the older form is no longer the question.
     const questions = replyQuestions(c.body);
     return questions ? { id: c.id, at: c.createdAt, text: strip(c.body), questions } : undefined;

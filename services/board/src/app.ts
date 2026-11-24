@@ -1763,12 +1763,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // A page of the live read that fails (the kernel restarting) is not "no live records": the cached page is kept instead
         // of publishing a short list that would drop an old blocked merge off the cards. The kernel-down fallback below still
         // answers what the capped reads have.
-        // Every undecided card (owner or reviewer) is read apart too: an old one must not fall off behind a hundred newer records.
+        // Every undecided card (owner or reviewer) is read apart too, page by page: an old one must not fall off behind newer records.
         const [cards, all, live, undecided] = await Promise.all([
           cardsOf("recent", { limit: 100 }),
           cardsOf("recent", { limit: 100, tier0: true }),
           records.live().then((rows) => Promise.all(rows.map(named))).then((rows) => ((liveCache = rows), rows), () => liveCache ?? []),
-          cardsOf("pending"),
+          records.allOf("pending").then((rows) => Promise.all(rows.map(named))),
         ]);
         const held = [...undecided, ...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
         const seen = new Set(cards.map((c) => c.id));

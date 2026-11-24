@@ -72,21 +72,25 @@ export function diffPath(l: string): string | undefined {
 
 /** The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. */
 export function diffFiles(diff: string | null | undefined) {
-  const out: { path: string; add: number; del: number }[] = [];
+  const out: { path: string; add: number; del: number; deleted?: boolean }[] = [];
   let hunk = false;
-  let cur: (typeof out)[number] | undefined;
+  let deleted = false;
   for (const l of String(diff ?? "").split("\n")) {
     const path = diffPath(l);
     if (path !== undefined) {
-      // A file-type change (symlink to file) is two records of one path; numstat counts the path once.
-      if (!out.some((f) => f.path === path)) out.push({ path, add: 0, del: 0 });
-      cur = out.find((f) => f.path === path)!;
+      out.push({ path, add: 0, del: 0 });
       hunk = false;
+      deleted = false;
+    } else if (l.startsWith("deleted file mode") && !hunk) deleted = true;
+    else if (l.startsWith("new file mode") && !hunk && out.length > 1 && out.at(-2)!.path === out.at(-1)!.path && out.at(-2)!.deleted) {
+      // A file-type change (symlink to file) is a delete record then an add record of one path; numstat counts the path once.
+      out.pop();
     } else if (l.startsWith("@@")) hunk = true;
-    else if (hunk && cur && l.startsWith("+")) cur.add++;
-    else if (hunk && cur && l.startsWith("-")) cur.del++;
+    else if (hunk && out.length && l.startsWith("+")) out.at(-1)!.add++;
+    else if (hunk && out.length && l.startsWith("-")) out.at(-1)!.del++;
+    if (deleted && !hunk && out.length) out.at(-1)!.deleted = true;
   }
-  return out;
+  return out.map(({ path, add, del }) => ({ path, add, del }));
 }
 
 /**
