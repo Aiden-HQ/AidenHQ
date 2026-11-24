@@ -7,6 +7,7 @@ import { join, posix } from "node:path";
 import type { Cleaned, Excluded, Placed } from "./brief.ts";
 import { plain, readSmall } from "./proc.ts";
 import { globRe } from "./review-checklist.ts";
+import { GENERATED, LOCKS } from "./tiers.ts";
 
 type Git = (args: string[]) => string;
 export interface Changed { path: string; added: number; removed: number; binary: boolean }
@@ -14,9 +15,7 @@ export interface Changed { path: string; added: number; removed: number; binary:
 // Excluded unless the reviewer's own globs say otherwise: lockfiles, generated code, build output, minified bundles (made, not
 // written). Vendored code is reviewed: a repo that vendors third-party code ignores it with its own globs (owner-tier).
 // Lockfiles: no findings asked for, never a coverage gap (they carry no code). Generated and bundled code: a gap when
-// the change adds it (a place to hide code).
-const LOCKS = ["**/package-lock.json", "**/npm-shrinkwrap.json", "**/*.lock", "**/*-lock.json", "**/*-lock.yaml", "**/go.sum", "**/bun.lockb"];
-const GENERATED = ["**/generated/**", "**/__generated__/**", "**/node_modules/**", "**/dist/**", "**/*.min.js", "**/*.min.css", "**/*.map", "**/*.snap"];
+// the change adds it (a place to hide code). Both lists are the risk tiers' (tiers.ts), their one definition.
 
 /** The changed files from `from` to `to` (the head) with their line counts: [{ path, added, removed, binary }]. */
 export function changed(git: Git, from: string, to = "HEAD"): Changed[] {

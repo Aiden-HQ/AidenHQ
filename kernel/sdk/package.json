@@ -47,7 +47,7 @@
     "zod": "4.6.7"
   },
   "scripts": {
-    "test": "NODE_PATH=../node_modules node --test test/checks.test.ts test/engine-kit.test.ts test/executor.test.ts test/paperclip.test.ts ../../modules/engine-*/test/*.test.ts && vitest run test/vendor-proxy.test.ts",
+    "test": "NODE_PATH=../node_modules node --test test/checks.test.ts test/engine-kit.test.ts test/executor.test.ts test/paperclip.test.ts test/tiers.test.ts ../../modules/engine-*/test/*.test.ts && vitest run test/vendor-proxy.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "node ../../scripts/sdk-pack.ts"
   }
