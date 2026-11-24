@@ -561,8 +561,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const kernelRole = k.module === "kernel" && Object.hasOwn(planners, kind) && (who.roles ?? []).includes(kind);
     // A kernel job (its identity is a run) by the kinds its frozen authority names, or by its tools.
     const named = Boolean(who.task && who.writes?.includes(kind));
-    // A session files exactly the kinds its frozen authority names (the code host's merge and close), never one through its tools.
-    const granted = (who.kind === "module" && (who.module === k.module || kernelRole || Boolean(who.module && k.filed_by?.includes(who.module)))) || named || (!sessionOf(who) && k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); }));
+    const granted = (who.kind === "module" && (who.module === k.module || kernelRole || Boolean(who.module && k.filed_by?.includes(who.module)))) || named || k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); });
     if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
     // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
     const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";

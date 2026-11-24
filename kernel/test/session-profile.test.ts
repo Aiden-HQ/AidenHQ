@@ -88,10 +88,9 @@ test("session authority: the code host's merge and close, the session role only 
   // Each task's own wait, armed before this job (a session's, before its box was replaced).
   for (const task of ["t-session-1", "t-crew-1"]) k.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state, until) VALUES (?, ?, 'a', 'wait: x', ?, 'open', ?)").run(`wait:${task}:9`, task, Date.now() + 3600_000, Date.now() + 3600_000);
   const s = (await k.admit("t-session-1")).authority;
-  assert.deepEqual([s.profile, s.image, s.writes, s.roles], ["session", "session", ["github.close", "github.merge"], ["session"]]);
+  assert.deepEqual([s.profile, s.image, s.writes, s.roles], ["session", "session", ["github.close", "github.merge", "slack.post"], ["session"]], "the code host's merge and close, and every kind its tools reach; never push, pr, create_repo or an apply");
   const c = (await k.admit("t-crew-1")).authority;
   assert.deepEqual([c.writes, c.roles], [[], []], "a crew agent listing the role holds nothing of it");
-  // A slack.post a session's tool would reach is no write its authority names (only merge and close are).
   const waits = Object.fromEntries(k.db.prepare("SELECT task, state FROM wakes WHERE key LIKE 'wait:%'").all().map((w) => [w.task, w.state]));
   assert.deepEqual(waits, { "t-session-1": "open", "t-crew-1": "dropped" });
 });
@@ -110,8 +109,10 @@ test("a session's merge runs at once on a head the plan raises; an Engineer's go
   const s = await writes.request(job(["session"], "t-1"), merge);
   assert.deepEqual([s.tier, s.state, s.rule], [0, "claimed", "session"]);
   assert.equal(executed.length, 1);
-  // Only the kinds its authority names: a kind its tools would reach is no session's to file.
-  await assert.rejects(writes.request({ ...job(["session"], "t-1"), tools: { slack: ["post"] } }, { kind: "slack.post", args: {} }), (e) => e.status === 403);
+  // Unrestricted: a send its tools reach runs at once too; autonomy off still makes it the owner's.
+  const send = { ...job(["session"], "t-1"), tools: { slack: ["post"] } };
+  assert.deepEqual(await writes.request(send, { kind: "slack.post", args: { text: "hi" } }).then((r) => [r.tier, r.state]), [0, "claimed"]);
+  assert.deepEqual(await createWrites({ ...opts, autonomy: () => "off" }).request(send, { kind: "slack.post", args: { text: "hi again" } }).then((r) => [r.tier, r.state]), [2, "owner"]);
   const e = await writes.request(job([], "t-2"), merge);
   assert.deepEqual([e.tier, e.state], [1, "review"]);
   // The owner's no on that head (a card he got with autonomy off) binds a session on the task too, even in a batch with another

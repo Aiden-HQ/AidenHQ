@@ -144,11 +144,12 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
     // a record its tier decides, filed with the job's own workspace.
     const engineer = (id: string, k: { module: string }) => profile === "engineer" && (CODEHOSTS.includes(k.module) || id === "kernel.apply");
-    // A session merges and closes through the code host (its pushes are git's, its own App token); a push, PR or new repo
-    // reads a tasks/<identifier> workspace it doesn't have, and an apply is never a session's.
+    // A session files every kind its tools reach (unrestricted: owner decisions 6 and 9), and merges and closes through the code
+    // host (its pushes are git's, its own App token); a push, PR or new repo reads a tasks/<identifier> workspace it doesn't
+    // have, and an apply is never a session's.
     const session = (id: string, k: { module: string }) => profile === "session" && CODEHOSTS.includes(k.module) && (id === `${k.module}.merge` || id === `${k.module}.close`);
     // A kind only the owner's own save files (`filer: owner`, a share's publish) is no job's.
-    const writes = Object.entries(kinds()).filter(([id, k]) => !k.filer && (profile === "session" ? session(id, k) : (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k))).map(([id]) => id).sort();
+    const writes = Object.entries(kinds()).filter(([id, k]) => !k.filer && ((k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k) || session(id, k))).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
