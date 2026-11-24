@@ -24,6 +24,7 @@ import { createHealthProbe } from "../src/health.ts";
 import { createProxy } from "../src/proxy.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
+import { createTaskIdentifier } from "../src/task-identifier.ts";
 import { createWork } from "../src/work.ts";
 import { check as productGate } from "../../modules/platform/src/check.ts";
 import { check as instanceDetailsCheck } from "../src/instance-details-check.ts";
@@ -126,21 +127,8 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
     checks: typeof checkTable === "function" ? checkTable : () => checkTable ?? {}, filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck },
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text, o) => { const to = o?.parent ? parents[task] : task; if (to && !closed.includes(to)) notices.push({ task: to, text }); },
       scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; } },
-    // A named task's identifier, read as main.ts reads it: none when the task answers without one (404, empty); a failed read
-    // (a 5xx, a dropped connection, a body that isn't JSON) refuses the filing with a retryable 503 check_failed.
-    taskIdentifier: async (task) => {
-      const unavailable = (why: string) => Object.assign(new Error(`control plane GET task ${task} failed (${why}): nothing was filed; try again`), { status: 503, type: "check_failed" });
-      try {
-        const r = await fetch(new URL(`/api/issues/${encodeURIComponent(task)}`, cpServer.url), { headers: { authorization: "Bearer board-key" } });
-        if (r.status === 404) return undefined;
-        if (!r.ok) throw unavailable(`it answered ${r.status}`);
-        const i = (await r.json()) as { identifier?: unknown };
-        return typeof i.identifier === "string" && i.identifier ? i.identifier : undefined;
-      } catch (e) {
-        if ((e as { type?: string })?.type === "check_failed") throw e;
-        throw unavailable(String((e as Error)?.message ?? e).slice(0, 200));
-      }
-    } });
+    // The same reader main.ts wires in (task-identifier.ts), over the fake control plane: one contract, never a copy.
+    taskIdentifier: createTaskIdentifier(async (method, path) => { const r = await fetch(new URL(path, cpServer.url), { method, headers: { authorization: "Bearer board-key" } }); return { status: r.status, json: await r.json().catch(() => ({})) }; }) });
   // `connect`: connect on first use wired as main.ts wires it (facts, the wake inbox, waits, the connection state).
   let connectionState;
   const proxy = createProxy({ whoami, grants: () => grantsTable().agents ?? {}, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, needs: () => connectionState, log: logf });

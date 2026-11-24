@@ -174,6 +174,13 @@ test("a module-filed write on a task the control plane can't resolve leaves its 
   assert.equal(k.records.get(gone.json.id).identifier ?? null, null);
 });
 
+test("a task that answers 200 with no issue body names no identifier, and the write is still filed", async (t) => {
+  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") ? { status: 200, body: null } : undefined) });
+  const r = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(k.records.get(r.json.id).identifier ?? null, null);
+});
+
 test("a module-filed write whose task the control plane can't read now is refused retryably, never filed identifier-less", async (t) => {
   const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") ? { status: 503, body: { error: "unavailable" } } : undefined) });
   const r = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");

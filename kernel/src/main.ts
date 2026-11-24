@@ -68,6 +68,7 @@ import { createReviewLoop } from "./review-loop.ts";
 import { createNotices, type NoticeOpts } from "./notices.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
+import { createTaskIdentifier } from "./task-identifier.ts";
 import type { Executor } from "../sdk/src/executor.ts";
 import { createApply, hostApply } from "./apply.ts";
 import { checkoutMain, checkoutTree, createSettingsChanges, skillSides } from "./settings-change.ts";
@@ -234,23 +235,10 @@ const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, r
 const checksRegistry = checksFile(path.join(configDir, "kernel", "checks.json"));
 const writes = createWrites({
   records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos,
-  // A write a module or the kernel files on a named task records that task's identifier (there is no job row to take it from):
-  // the same control-plane read onTask.scope uses. None when the task answers without one; a failed read refuses the filing
-  // (503, retryable) rather than store an identifier-less record the merge queue could never land.
-  taskIdentifier: async (task: string) => {
-    // A timeout, a dropped connection or a body that isn't JSON is no answer yet either: the same retryable refusal as a 5xx.
-    const unavailable = (why: string) => Object.assign(new Error(`control plane GET task ${task} failed (${why}): nothing was filed; try again`), { status: 503, type: "check_failed" });
-    let identifier: { identifier?: unknown };
-    try {
-      const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`);
-      if (r.status === 404) return undefined;
-      if (!r.ok) throw unavailable(`it answered ${r.status}`);
-      identifier = (await r.json()) as { identifier?: unknown };
-    } catch (e) {
-      throw (e as { type?: string })?.type === "check_failed" ? e : unavailable(String((e as Error)?.message ?? e).slice(0, 200));
-    }
-    return typeof identifier.identifier === "string" && identifier.identifier ? identifier.identifier : undefined;
-  },
+  // A write a module or the kernel files on a named task records that task's identifier (there is no job row to take it
+  // from): the control plane's own read of the task (task-identifier.ts). None when the task answers without one; a failed
+  // read refuses the filing (503, retryable) rather than store an identifier-less record the merge queue could never land.
+  taskIdentifier: createTaskIdentifier((method, path) => ownerApi(method, path)),
   // ai_review_code (the ai-reviewer module's setting) and the mandatory code-review repos, compiled into the modules file.
   reviewCode: () => ({ mode: modulesFile().repos?.review_code, mandatory: modulesFile().repos?.code_review_mandatory }),
   // The write.filed checks' code, run in process: the platform check (a hard gate, gates.ts) on the code hosts' git writes.
