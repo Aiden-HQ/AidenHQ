@@ -50,8 +50,10 @@ app_vols="$(docker volume ls -q --filter name='^app-')"
 for v in $app_vols; do
   if [ -n "$(docker ps -q --filter volume="$v")" ] && docker run --rm -v "$v:/v:ro" "$IMG" test -f /v/PG_VERSION; then
     # Skipped only while its app's <app>_backups volume holds a non-empty dump from the last two days.
-    if ! docker run --rm -v "${v%_*}_backups:/b:ro" "$IMG" sh -c "find /b -name '*.dump' -size +0 -mtime -2 | grep -q ." 2>/dev/null; then
-      echo "error: $v is a live Postgres cluster and ${v%_*}_backups has no fresh dump, so skipping it would leave the backup unrecoverable" >&2; exit 1
+    bv="$(docker volume inspect -f '{{index .Labels "com.docker.compose.project"}}' "$v")_backups"
+    if ! docker volume inspect "$bv" >/dev/null 2>&1 \
+      || ! docker run --rm -v "$bv:/b:ro" "$IMG" sh -c "find /b -name '*.dump' -size +0 -mtime -2 | grep -q ." 2>/dev/null; then
+      echo "error: $v is a live Postgres cluster and $bv has no fresh dump, so skipping it would leave the backup unrecoverable" >&2; exit 1
     fi
     echo "  volume $v: a live Postgres cluster, skipped (its app's dumps carry it)"
   else vols+=("$v"); fi
