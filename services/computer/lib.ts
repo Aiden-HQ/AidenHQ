@@ -13,8 +13,13 @@ export const MAX_CHECK_MIN = 180;
 
 /** A box the launcher holds: busy while a call runs in it, lastUsed for eviction. */
 export interface Box { busy: number; lastUsed: number; agentId?: string }
-/** A job's box record (see Jobs). */
-export interface JobRec { container: string; agentId?: string; issueId?: string; identifier?: string; workspace?: string; codexHome?: string; kernel?: boolean; check?: string; tokenHash?: string; roles?: string[]; leaseUntil: number }
+/**
+ * A job's box record (see Jobs). A kernel job's box is leased to one job at a time: `job` and `gen` (the lease generation,
+ * bumped at every lease) bind it, so a late renew or release of an earlier job never touches its successor's lease. Between
+ * its task's jobs the box is parked (`parked`: when): no job, no token, kept warm for the task's next job when that job's box
+ * would be the same (`compat`, compatKey).
+ */
+export interface JobRec { container: string; agentId?: string; issueId?: string; identifier?: string; workspace?: string; codexHome?: string; kernel?: boolean; check?: string; tokenHash?: string; roles?: string[]; leaseUntil: number; job?: string; gen?: number; compat?: string; parked?: number }
 
 const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
 const MCP_BLOCK_ENV = "AIDENHQ_MCP_B64";
@@ -120,11 +125,25 @@ export function boxOf(boxes: Map<string, Box>, agentId: string) {
 /** Last lines of the newest Codex session log in a job's box (its Codex home is /codex-home; sh -c). */
 export const PROGRESS_SCRIPT = 'f=$(ls -t $(find /codex-home/sessions -name "rollout-*.jsonl" 2>/dev/null) 2>/dev/null | head -1); [ -n "$f" ] && tail -n 400 "$f"';
 
-/** Boxes idle longer than idleMs; a held one (a job's live lease) never is. */
+/** Boxes idle longer than idleMs (a parked box since it was parked); a held one (a job's live lease) never is. */
 export const stale = (boxes: Map<string, Box>, idleMs: number, now = Date.now(), held: (name: string) => boolean = () => false) => [...boxes].filter(([n, b]) => !b.busy && !held(n) && now - b.lastUsed > idleMs).map(([n]) => n);
 
 /** A job's lease: renewed by the kernel while it follows the job. Lapsed (the kernel gone this long), the box goes. */
 export const LEASE_MS = 15 * 60_000;
+/** How long a parked box waits for its task's next job before it goes (any idle box: the one idle-reaping limit). */
+export const WARM_MS = 30 * 60_000;
+
+/**
+ * What makes a box fit a job: its whole `docker run` line (image, user, limits, network, labels, every mount: workspace, Codex
+ * home, engine, hooks, roles) with the name and out folder held constant, and the identity (device, inode, birth) of each folder
+ * it binds by path. A folder removed or replaced since the box started (the disk sweep, `aidenhq cleanup`, a rotated cache)
+ * is a new inode, so the box, whose mount still holds the old one, no longer fits.
+ */
+export function compatKey(runArgs: string[], boundDirs: string[]) {
+  // The birth time too: ext4 hands a freed inode number straight to the next folder made.
+  const ids = boundDirs.map((d) => { const st = statSync(d); return `${st.dev}:${st.ino}:${st.birthtimeMs}`; });
+  return createHash("sha256").update(JSON.stringify([runArgs, ids])).digest("hex");
+}
 
 /** Whether a box may use repo-checkout: by the roles its job's admission froze (the launcher's job record). */
 export const mayCheckout = (who?: { roles?: string[] }) => (who?.roles ?? []).includes("repo-checkout");
@@ -145,6 +164,25 @@ export class Jobs {
   has(container: string) { return this.#by.has(container); }
   delete(container: string) { return this.#by.delete(container); }
   byIssue(issueId: string | undefined) { return [...this.#by.values()].find((r) => r.issueId === issueId); }
+  /** Whether `gen` is the box's current lease (a record from before leases had generations is generation 0). */
+  current(container: string, gen: unknown) { const r = this.#by.get(container); return Boolean(r) && (r!.gen ?? 0) === (gen ?? 0); }
+  /** The job's lease ends and the box is parked: its token opens nothing from now on. */
+  park(container: string, now = Date.now()) {
+    const r = this.#by.get(container);
+    if (!r) return false;
+    delete r.tokenHash; delete r.job;
+    r.parked = now; r.leaseUntil = 0;
+    return true;
+  }
+  /** Revokes the box's token now (its job is over), before the box is parked or goes. */
+  revoke(container: string) { const r = this.#by.get(container); if (r) { delete r.tokenHash; delete r.job; } }
+  /** A parked box leased to the task's next job: a new generation, the new job's token and roles. */
+  lease(container: string, { job, tokenHash, roles }: { job: string; tokenHash: string; roles: string[] }, now = Date.now()) {
+    const r = this.#by.get(container)!;
+    delete r.parked;
+    Object.assign(r, { job, tokenHash, roles, gen: (r.gen ?? 0) + 1, leaseUntil: now + LEASE_MS });
+    return r;
+  }
   /** A kernel job's box by its job token (the kernel minted it; only its hash is kept): its container and agent, else undefined. */
   byKernelToken(token: unknown) {
     if (typeof token !== "string" || !token.startsWith("ahqj_")) return undefined;
@@ -153,17 +191,17 @@ export class Jobs {
     return r && { container: r.container, agentId: r.agentId, roles: [...(r.roles ?? [])] };
   }
   containers() { return [...this.#by.keys()]; }
-  /** A live lease: admission and idle reaping leave the box alone. */
-  leased(container: string, now = Date.now()) { return (this.#by.get(container)?.leaseUntil ?? 0) > now; }
-  /** The kernel still follows the job (after its own restart too): a new lease. Undefined: no such job. */
-  renew(container: string, { issueId }: { issueId?: string } = {}, now = Date.now()) {
+  /** A live lease: admission and idle reaping leave the box alone (a parked box has none). */
+  leased(container: string, now = Date.now()) { const r = this.#by.get(container); return Boolean(r && !r.parked && r.leaseUntil > now); }
+  /** The kernel still follows the job (after its own restart too): a new lease. Undefined: no such job, or not this lease. */
+  renew(container: string, { issueId, gen }: { issueId?: string; gen?: number } = {}, now = Date.now()) {
     const r = this.#by.get(container);
-    if (!r || r.issueId !== issueId || r.leaseUntil <= now) return undefined;
+    if (!r || r.parked || r.issueId !== issueId || r.leaseUntil <= now || !this.current(container, gen)) return undefined;
     r.leaseUntil = now + LEASE_MS;
     return r;
   }
   /** Jobs whose lease ran out: the kernel has been gone too long. */
-  lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => r.leaseUntil <= now).map((r) => r.container); }
+  lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => !r.parked && r.leaseUntil <= now).map((r) => r.container); }
   dump() { return [...this.#by.values()]; }
   load(rows: JobRec[] | undefined) { for (const r of rows ?? []) if (r?.container && r.issueId) this.#by.set(r.container, r); }
 }

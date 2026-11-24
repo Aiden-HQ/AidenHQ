@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { admit, emitsServer, mcpBlock, stale, unemittedServers } from "../lib.ts";
+import { WARM_MS, admit, compatKey, emitsServer, Jobs, mcpBlock, stale, tokenHash, unemittedServers } from "../lib.ts";
 
 test("the box's Codex config lists only granted connections, through the gateway, keyed by the job token", () => {
   const conns = { apps: { tool_timeout_sec: 600 }, slack: { tool_timeout_sec: 300 }, paperclip_tasks: { tool_timeout_sec: 300 } };
@@ -66,5 +66,44 @@ test("repo-checkout sends the job's own token to the gateway", () => {
   const none = run("");
   assert.notEqual(none.status, 0);
   assert.match(none.stderr, /no job token/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a task's box is leased to one job at a time: a late renew or release of an earlier lease touches nothing; parked, its token opens nothing", () => {
+  const jobs = new Jobs();
+  jobs.add({ container: "box", agentId: "a1", issueId: "t1", kernel: true, tokenHash: tokenHash("ahqj_one"), job: "j1", gen: 1, compat: "k" }, 0);
+  assert.ok(jobs.renew("box", { issueId: "t1", gen: 1 }, 1));
+  jobs.revoke("box");
+  assert.equal(jobs.byKernelToken("ahqj_one"), undefined, "the job's token is revoked at its release");
+  jobs.park("box", 2);
+  assert.equal(jobs.leased("box", 3), false, "a parked box holds no lease: admission may evict it, the idle reaper takes it");
+  assert.deepEqual(jobs.lapsed(10 ** 12), [], "a parked box is no lapsed lease");
+  assert.equal(jobs.renew("box", { issueId: "t1", gen: 1 }, 3), undefined, "nothing renews a parked box");
+  jobs.lease("box", { job: "j2", tokenHash: tokenHash("ahqj_two"), roles: [] }, 4);
+  assert.equal(jobs.get("box").gen, 2);
+  assert.equal(jobs.current("box", 1), false, "the first job's late release is not this lease");
+  assert.equal(jobs.renew("box", { issueId: "t1", gen: 1 }, 5), undefined);
+  assert.ok(jobs.renew("box", { issueId: "t1", gen: 2 }, 5));
+  assert.equal(jobs.byKernelToken("ahqj_two").container, "box");
+  // A record saved before leases had generations is generation 0, so its kernel's release (no gen) still ends it.
+  jobs.add({ container: "old", issueId: "t2", kernel: true }, WARM_MS);
+  assert.equal(jobs.current("old", undefined), true);
+  // The idle reaper takes a parked box WARM_MS after it was parked, never a leased one.
+  const boxes = new Map([["box", { lastUsed: 0, busy: 0 }], ["old", { lastUsed: 0, busy: 0 }]]);
+  jobs.park("box", 0);
+  assert.deepEqual(stale(boxes, WARM_MS, WARM_MS + 1, (n) => jobs.leased(n, WARM_MS + 1)), ["box"]);
+});
+
+test("a parked box fits the next job only with the same run line and the very folders it mounted", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compat-"));
+  const ws = join(dir, "PEN-1"), home = join(dir, "home");
+  mkdirSync(ws); mkdirSync(home);
+  const args = ["run", "-v", `${ws}:/workspace`, "img:1"];
+  const k = compatKey(args, [ws, home]);
+  assert.equal(compatKey([...args], [ws, home]), k);
+  assert.notEqual(compatKey(["run", "-v", `${ws}:/workspace`, "img:2"], [ws, home]), k, "a new image is a new box");
+  // The workspace removed and made again (aidenhq cleanup, the disk sweep): the parked box's mount holds the old folder.
+  rmSync(ws, { recursive: true }); mkdirSync(ws);
+  assert.notEqual(compatKey(args, [ws, home]), k);
   rmSync(dir, { recursive: true, force: true });
 });

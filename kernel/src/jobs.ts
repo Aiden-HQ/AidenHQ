@@ -56,7 +56,8 @@ const BOX_ENV = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT
 const ID = /^[\w.-]{1,100}$/;
 
 // The run (its `docker exec` client) under a `sh` of builtins only that records its exit status and outlives a stop's SIGTERM
-// to record it. Stopping the client stops nothing in the box: the dispatcher releases the box (the launcher destroys it).
+// to record it. Stopping the client stops nothing in the box: the dispatcher releases the box (the launcher restarts or destroys
+// it, which ends every process in it).
 const WRAP = 'trap : TERM INT HUP; "$@"; echo "$?" > "$0"';
 /** The slow poll behind the file events: a missed event, and a run that died without writing its status (silent death). */
 const POLL_MS = 2_000;

@@ -2,10 +2,12 @@
 // launcher_kernel_key), mints the job's only credential (an `ahqj_` job token naming the job, whose authority is its row's,
 // frozen at admission), has an engineer job's box clone its task's named repositories itself (`aidenhq clone`), builds the job's engine home (per agent and task: its skills, its compiled handbook, its granted
 // connections as Codex config), starts the run (jobs.ts runAdmitted), renews the box's lease while the job lives and releases
-// it when the job ends, removing the task's workspace then if the job asked (`aidenhq cleanup`, jobtools.ts). A kernel restart
-// changes nothing: the renewals and releases are driven from the job rows.
+// it when the job ends: the launcher parks it for the task's next job (warm: no new box on a follow-up), or destroys it when
+// the job asked for its workspace to go (`aidenhq cleanup`, jobtools.ts), which then goes too. The lease is the job's and its
+// generation's (the row's box `gen`), so a late release of one job never touches the next one's. A kernel restart changes
+// nothing: the renewals and releases are driven from the job rows.
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { mcpBlock, unemittedServers } from "../../services/computer/lib.ts";
@@ -16,6 +18,7 @@ import { JobError, insideNoLinks, type Jobs } from "./jobs.ts";
 import type { Once } from "./once.ts";
 import { outFiles } from "./outfiles.ts";
 import { engineState, type Box, type SandboxConfig } from "./sandbox.ts";
+import { trashAway } from "./trash.ts";
 
 const RENEW_MS = 5 * 60_000; // the launcher's lease is 15 minutes
 
@@ -118,13 +121,14 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const missing = a.profile === "check" ? [] : unemittedServers([...new Set(declaredServers?.(job.agent) ?? [])], tools, conns);
     if (missing.length) throw new JobError(500, "mcp-server-missing", `declares MCP server(s) ${missing.join(", ")} but this job's frozen authority has no tools for them; refusing to start a run without them`);
     const mcp = mcpBlock(tools, conns, cfg.boxGatewayUrl);
-    // The task's last box goes first (the launcher keeps one per task); while it is still going, the job waits a tick.
+    // The task's last job lets its box go first (the launcher keeps one per task and parks it between jobs); while it is still
+    // leased, the job waits a tick.
     for (const r of db.prepare("SELECT id FROM jobs WHERE task = ? AND authority IS NOT NULL AND box IS NOT NULL AND released IS NULL AND state NOT IN ('admitted', 'running')").all(job.task) as { id: string }[]) await release(r.id).catch(unavailable);
     // After that release: a cleanup it does removes the last job's workspace, never this one's.
     mkdirSync(workspace, { recursive: true });
     insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
     // 409: the task's box is still going (the computers are full for it); a 5xx, a timeout or no answer: the launcher can't now.
-    const box = (await call("/job", { agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: await identity(job.agent) }).catch((e: Error & { status?: number }) => {
+    const box = (await call("/job", { job: job.id, agentId: job.agent, issueId: job.task, identifier: job.identifier, workspace, engine: a.engine, state, image: a.image, token, mcp, roles: a.roles, identity: await identity(job.agent) }).catch((e: Error & { status?: number }) => {
       if (e.status === 409) throw Object.assign(e, { status: 503 });
       if (e.status === undefined || e.status >= 500) unavailable(e);
       throw e;
@@ -206,27 +210,30 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   }
 
   /**
-   * The job's box goes, once: a release claims the row first (released = -1), so two at once (the job's end and tend) never
-   * both run; a failed launcher call gives the claim back for the next tend. The workspace goes too when the job asked
-   * (`aidenhq cleanup`), unless a later job on the task is already admitted or running in it.
+   * The job's lease on its box ends, once: a release claims the row first (released = -1), so two at once (the job's end and
+   * tend) never both run; a failed launcher call gives the claim back for the next tend. The launcher parks the box for the
+   * task's next job, or destroys it: a job that never ran (still admitted: a failed or abandoned launch, its box suspect), or
+   * one that asked for its workspace to go (`aidenhq cleanup`), whose workspace then goes too, unless a later job on the task
+   * is already admitted or running in it.
    */
   async function release(id: string) {
     const r = db.prepare("SELECT task, box, state FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { task: string; box: string | null; state: string } | undefined;
     if (!r?.box || db.prepare("UPDATE jobs SET released = -1 WHERE id = ? AND released IS NULL").run(id).changes !== 1) return;
-    const { container, workspace } = JSON.parse(r.box) as Box & { workspace?: string };
+    const { container, workspace, gen } = JSON.parse(r.box) as Box & { workspace?: string; gen?: number };
     // A job that never ran (still admitted: its launch failed or was abandoned) made no output; what is there is an earlier job's.
     if (workspace && r.state !== "admitted") await shareOutFiles(id, r.task, workspace);
+    const wipe = Boolean(workspace) && cleanup(id);
     try {
-      // A 2xx with the box still there (Docker didn't remove it) is no release: the claim goes back for the next tend.
-      const { state } = await call("/job/release", { container });
-      if (state !== "missing") throw new Error(`the computer launcher left ${container} ${String(state)}`);
+      // A 2xx that isn't a release (Docker didn't remove the box) is none: the claim goes back for the next tend.
+      const { released, state } = await call("/job/release", { container, gen, destroy: wipe || r.state === "admitted" });
+      if (released !== true && state !== "missing") throw new Error(`the computer launcher left ${container} ${String(state)}`);
     } catch (e) {
       db.prepare("UPDATE jobs SET released = NULL WHERE id = ? AND released = -1").run(id);
       throw e;
     }
-    if (workspace && cleanup(id) && existsSync(workspace) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND id != ? AND state IN ('admitted', 'running')").get(r.task, id)) {
-      insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
-      rmSync(workspace, { recursive: true, force: true, maxRetries: 2 });
+    if (wipe && existsSync(workspace!) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND id != ? AND state IN ('admitted', 'running')").get(r.task, id)) {
+      insideNoLinks(join(cfg.workDir, "tasks"), workspace!, "workspace");
+      trashAway(workspace!, join(cfg.workDir, "tasks", ".trash"), log);
       log("job's workspace removed (aidenhq cleanup)", { job: id, workspace });
     }
     db.prepare("UPDATE jobs SET released = ? WHERE id = ?").run(now(), id);
@@ -243,7 +250,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
       try {
         if (r.state !== "running" && r.state !== "admitted") await release(r.id);
         else if (now() - (r.renewed ?? 0) >= RENEW_MS) {
-          await call("/job/renew", { container: (JSON.parse(r.box) as Box).container, issueId: r.task });
+          const { container, gen } = JSON.parse(r.box) as Box & { gen?: number };
+          await call("/job/renew", { container, issueId: r.task, gen });
           db.prepare("UPDATE jobs SET renewed = ? WHERE id = ?").run(now(), r.id);
         }
       } catch (e) {

@@ -17,11 +17,15 @@
 //
 // Jobs (bearer = secret launcher_kernel_key, the kernel's; it opens nothing else).
 // A job's process runs in the box through the kernel's own `docker exec`.
-//   POST /job {agentId, issueId, identifier, workspace, engine, state, image, token, mcp, roles}   the kernel's (boxes.ts): the
-//                             image its admission froze, its job token (ahqj_) as the box's only credential and the job's
-//                             Codex MCP config → {container, envFile, outDir}
-//   POST /job/renew {container, issueId}   the kernel still follows it (also on adoption): a new lease
-//   POST /job/release {container}   destroy; idempotent → {state} ("missing" once the box is gone)
+//   POST /job {job, agentId, issueId, identifier, workspace, engine, state, image, token, mcp, roles}   the kernel's (boxes.ts):
+//                             the image its admission froze, its job token (ahqj_) as the box's only credential and the job's
+//                             Codex MCP config → {container, envFile, outDir, gen}. The task's parked box when it fits the job
+//                             (lib.ts compatKey), else a new one.
+//   POST /job/renew {container, issueId, gen}   the kernel still follows it (also on adoption): a new lease
+//   POST /job/release {container, gen?, destroy?}   the job is over: its token is revoked and its box parked for the task's
+//                             next job (restarted, so nothing of the job runs on), or destroyed (`destroy`, a check's box, or
+//                             parking failed); idempotent, and a release of an earlier lease touches nothing →
+//                             {released, state} (state "missing" once the box is gone)
 //   POST /check {check, image, workspace, out, readOnly, token?, timeoutMs}   the kernel's only: a box for one run of a check
 //                             (kernel/src/checkjobs.ts), with only its snapshot and out folder → {container}; /job/release ends it
 //
@@ -29,11 +33,12 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_CHECK_MIN, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
+import { MAX_CHECK_MIN, WARM_MS, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
 
 type Failure = Error & { status?: number };
@@ -64,7 +69,6 @@ const CFG = {
   gateway: { host: "10.231.2.1", port: 8200 },
   network: "aidenhq-computers",
   prefix: "aidenhq-computer-",
-  idleMs: 10 * 60_000,
   limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "6g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "1g", pids: 1024 },
   computersFile: path.join(configDir, "computers.json"),
   composeProject: env("COMPOSE_PROJECT_NAME", "aidenhq"),
@@ -164,12 +168,66 @@ async function remove(name: string, why: string) {
   return true;
 }
 
-/** A kernel job's image, by the name its admission froze: one compile tagged (computers.json). */
-async function imageNamed(name: unknown) {
+/** A box that is not to be reused goes: its record first, so no lease can pick it while Docker removes it. */
+function retire(name: string, why: string) {
+  if (jobs.delete(name)) saveJobs();
+  return destroy(name, why);
+}
+
+/** What a released job leaves in its box's out folder goes (the folder itself is the box's mount, so it stays). */
+const outTrash = path.join(stateDir, "trash");
+function emptyOut(outDir: string) {
+  let names: string[] = [];
+  try { names = readdirSync(outDir); } catch { return; }
+  mkdirSync(outTrash, { recursive: true, mode: 0o700 });
+  for (const n of names) {
+    const to = path.join(outTrash, `${n}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    try { renameSync(path.join(outDir, n), to); } catch { continue; }
+    void rm(to, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * The job is over: its token is revoked at once, and the box is parked for the task's next job. A restart ends every process
+ * the job left in it (a stopped job's engine, a server it started) and keeps its mounts and files; the env file and the out
+ * folder's contents go. Any step failing destroys the box instead. While it parks it is busy, and a lease waits for it.
+ */
+const parking = new Map<string, Promise<boolean>>();
+function park(name: string) {
+  let p = parking.get(name);
+  if (!p) {
+    p = (async () => {
+      const b = boxes.get(name);
+      if (b) b.busy++;
+      jobs.revoke(name); saveJobs();
+      try {
+        rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
+        emptyOut(path.join(jobEnvDir, name));
+        const r = await docker(["restart", "-t", "0", name], { timeoutMs: 60_000 });
+        if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `docker restart ${r.exitCode ?? r.signal}`);
+        if (draining || !jobs.park(name)) throw new Error(draining ? "the launcher is restarting" : "its record went");
+        saveJobs();
+        log("parked", name);
+        return true;
+      } catch (e) {
+        await retire(name, `couldn't be parked (${(e as Error).message})`);
+        return false;
+      } finally {
+        if (b) { b.busy--; b.lastUsed = Date.now(); }
+      }
+    })().finally(() => parking.delete(name));
+    parking.set(name, p);
+  }
+  return p;
+}
+
+/** A kernel job's image tag, by the name its admission froze: one compile tagged (computers.json). */
+function imageTag(name: unknown): string {
   const tag = typeof name === "string" ? readJson(CFG.computersFile).images?.[name] : undefined;
   if (!tag) throw fail(400, `no computer image ${name} (computers.json)`);
-  return builtImage(tag, docker, log);
+  return tag;
 }
+const imageNamed = (name: unknown) => builtImage(imageTag(name), docker, log);
 /**
  * A free slot for a new box: the least recently used idle box goes (never a leased job's; one Docker didn't remove, the next is
  * tried); all busy → wait. 45 s in all, so the kernel (120 s a call) is still waiting for the box this frees.
@@ -179,7 +237,7 @@ async function makeRoom() {
     const max = maxBoxes();
     const evict = admit(boxes, max, (n) => held(n) || unremoved.has(n));
     if (evict === null) return;
-    if (evict !== "wait" && (await destroy(evict, "evicted (computers full)"))) return;
+    if (evict !== "wait" && (await retire(evict, "evicted (computers full)"))) return;
     if (Date.now() >= end) throw fail(503, `all ${max} computers are busy; try again shortly`);
     if (evict === "wait") await new Promise((r) => setTimeout(r, 1000));
   }
@@ -188,7 +246,8 @@ const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toStr
 
 /** The board's live line for an agent in its own computer: the tail of its Codex session log. */
 async function progress({ agentId }: { agentId?: unknown }) {
-  const box = typeof agentId === "string" ? boxOf(boxes, agentId) : undefined;
+  // Only a leased box runs a job: a parked one holds the last job's log, not live work.
+  const box = typeof agentId === "string" ? boxOf(new Map([...boxes].filter(([n]) => held(n))), agentId) : undefined;
   if (!box) return { lines: [] };
   const r = await docker(["exec", box, "sh", "-c", PROGRESS_SCRIPT], { timeoutMs: 8000 });
   return { lines: r.exitCode === 0 ? r.stdout.split("\n").filter(Boolean) : [] };
@@ -200,8 +259,9 @@ const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** The job and check routes (lib.ts controlAllowed). */
 const jobControl = {
-  async "/job"({ agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }: { agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown; agent?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
+  async "/job"({ job, agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }: { job: string; agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown; agent?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!kernel) throw fail(403, "job boxes are the kernel's");
+    if (typeof job !== "string" || !job) throw fail(400, "the kernel sends its job id");
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
     if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");
     if (typeof token !== "string" || !token.startsWith("ahqj_") || /\s/.test(token) || typeof mcp !== "string") throw fail(400, "the kernel sends the job's token and its MCP config");
@@ -209,33 +269,51 @@ const jobControl = {
     // The job's engine (engine@1): a kind the compiled registry says runs in a box, its module mounted read-only.
     const entry = (() => { try { return readJson(path.join(configDir, "engines.json"))[engine]; } catch { return undefined; } })();
     if (typeof engine !== "string" || entry?.box !== true || !/^modules\/[a-z0-9-]+$/.test(entry.dir ?? "")) throw fail(400, `engine ${engine} doesn't run in a box (config/engines.json)`);
-    const image = await imageNamed(imageName);
+    const tag = imageTag(imageName);
     // Exactly this task's folder and its engine's state folder, real directories with no symlink below the work dirs: never
     // the cache clones, another task's folder or anything a path trick reaches. A job's state is its agent's on this task
     // (kernel/src/sandbox.ts engineState), so two agents never share one.
     jobFolder(workspace, path.join(CFG.runnerWork, "tasks"), identifier);
     jobFolder(state, path.join(CFG.runnerState, engine), `${agentId}/${issueId}`.replace(/[^\w.-]/g, "_"));
     const codexHome = state;
-    // Two executions never share a workspace: the task's last box must be gone first (the kernel releases it).
-    const before = jobs.byIssue(issueId);
+    const runArgs = (name: string, outDir: string) => dockerRunArgs({ name, image: tag, agentId, network: CFG.network, limits: CFG.limits, mounts: jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork: CFG.runnerWork, repo, engineDir: entry.dir, roles }), user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME });
+    const compat = compatKey(runArgs("", "/aidenhq-out"), [workspace, codexHome]);
+    const envText = jobEnvFile({ token, mcp, gatewayUrl: GATEWAY_URL, identity });
+    // One box per task, leased to one job at a time. A box still parking is waited for; a box leased to a job is never shared.
+    let before = jobs.byIssue(issueId);
+    if (before && parking.has(before.container)) { await parking.get(before.container); before = jobs.byIssue(issueId); }
     // A record whose box is gone (a draining launcher gave it back) holds nothing: it goes.
-    if (before && (await jobState(before.container)) === "missing") await destroy(before.container, "gone before the task's next box");
-    else if (before) throw fail(409, `the task's last box ${before.container} is still up: release it first`);
+    if (before && !before.parked && (await jobState(before.container)) === "missing") { await destroy(before.container, "gone before the task's next box"); before = undefined; }
+    else if (before && !before.parked) throw fail(409, `the task's last box ${before.container} is still up: release it first`);
+    if (before) {
+      // The task's parked box, warm: the next job leases it when it fits (same image, mounts and folders) and is still running.
+      const name = before.container;
+      const fits = before.compat === compat && !removing.has(name) && !draining && (await jobState(name)) === "running";
+      if (fits && jobs.get(name) === before && before.parked) {
+        jobs.lease(name, { job, tokenHash: tokenHash(token), roles }); saveJobs();
+        const envFile = path.join(jobEnvDir, `${name}.env`);
+        writeFileSync(`${envFile}.tmp`, envText, { mode: 0o600 }); renameSync(`${envFile}.tmp`, envFile);
+        const b = boxes.get(name);
+        if (b) b.lastUsed = Date.now();
+        return { container: name, envFile, outDir: path.join(jobEnvDir, name), gen: before.gen, warm: true };
+      }
+      await retire(name, "doesn't fit the task's next job");
+    }
+    await builtImage(tag, docker, log);
     await makeRoom();
     const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
     // The job's only credential is the kernel's job token: the launcher keeps only its hash.
-    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, kernel: true, tokenHash: tokenHash(token), roles }); saveJobs();
+    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, kernel: true, tokenHash: tokenHash(token), roles, job, gen: 1, compat }); saveJobs();
     const envFile = path.join(jobEnvDir, `${name}.env`);
     // The job's last message lands here, outside the workspace: a folder of the launcher's, mounted at /aidenhq-out.
     const outDir = path.join(jobEnvDir, name);
     try {
       mkdirSync(outDir, { mode: 0o700 });
-      const mounts = jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork: CFG.runnerWork, repo, engineDir: entry.dir, roles });
       // aidenhq-browse uses the image's own agent-browser and Chrome (the browser image every computer builds on).
-      const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: CFG.limits, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
+      const r = await docker(runArgs(name, outDir));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
-      writeFileSync(envFile, jobEnvFile({ token, mcp, gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });
+      writeFileSync(envFile, envText, { mode: 0o600 });
       // A launcher draining for its successor hands out no box the successor may not know: it goes back, and the kernel asks again.
       if (draining) throw fail(503, "the launcher is restarting; ask the next one");
     } catch (e) {
@@ -243,16 +321,16 @@ const jobControl = {
       throw e;
     }
     boxes.get(name)!.busy = 0;
-    return { container: name, envFile, outDir };
+    return { container: name, envFile, outDir, gen: 1 };
   },
-  async "/job/renew"({ container, issueId }: { container: string; issueId?: string }, { kernel = false }: { kernel?: boolean } = {}) {
+  async "/job/renew"({ container, issueId, gen }: { container: string; issueId?: string; gen?: number }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
     if (!kernel) throw fail(403, `not your job's box: ${container}`);
     if ((await jobState(container)) === "missing") {
       if (jobs.has(container)) await destroy(container, "gone before its renewal");
       throw fail(404, `box gone: ${container}`);
     }
-    const r = jobs.renew(container, { issueId });
+    const r = jobs.renew(container, { issueId, gen });
     if (!r) throw fail(404, `no live job ${container} for that task (its lease lapsed, or it is another task's)`);
     saveJobs();
     return { container, issueId: r.issueId, identifier: r.identifier, workspace: r.workspace, leaseUntil: r.leaseUntil };
@@ -292,11 +370,16 @@ const jobControl = {
     boxes.get(name)!.busy = 0;
     return { container: name };
   },
-  async "/job/release"({ container }: { container: string }, { kernel = false }: { kernel?: boolean } = {}) {
+  async "/job/release"({ container, gen, destroy: wipe }: { container: string; gen?: number; destroy?: boolean }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
     if (!kernel) throw fail(403, `not your job's box: ${container}`);
-    if (jobs.has(container) || (await jobState(container)) !== "missing") await destroy(container, "released");
-    return { state: await jobState(container) };
+    const rec = jobs.get(container);
+    // A kernel job's box: an earlier lease's release touches nothing (the box is its successor's now, or parked for it).
+    if (rec && !rec.check && !jobs.current(container, gen)) return { released: true, state: "superseded" };
+    if (rec && !rec.check && wipe !== true && !draining && (rec.parked || (await park(container)))) return { released: true, state: "parked" };
+    if (jobs.has(container) || (await jobState(container)) !== "missing") await retire(container, "released");
+    const state = await jobState(container);
+    return { released: state === "missing", state };
   },
 };
 
@@ -423,6 +506,7 @@ const gatewayServer = http.createServer(async (req, res) => {
 
 // ------------------------------------------------------------------ boxes from before a restart, and idle reaping
 
+// A job's records outlive the launcher (jobs.json): its leases and its parked boxes are reconciled against Docker here.
 const existing = await docker(["ps", "-a", "--filter", "label=aidenhq.computer=1", "--format", "{{.Names}}"]);
 // A failed scan is not an empty one: starting would prune every saved lease, so fail and let the supervisor restart us.
 if (existing.exitCode !== 0) throw new Error(`docker ps failed: ${existing.stderr.trim() || existing.signal}`);
@@ -454,12 +538,13 @@ const listen = async (server: http.Server, { host, port }: { host: string; port:
   }
 };
 await Promise.all([listen(controlServer, CFG.control, "launcher"), listen(gatewayServer, CFG.gateway, "gateway")]);
-// Idle boxes go; a leased job's never does. A lapsed lease (the kernel gone 15 minutes) takes its box.
+// Idle boxes go (a parked one WARM_MS after its task's last job); a leased job's never does. A lapsed lease (the kernel gone 15
+// minutes) takes its box.
 const reaper = setInterval(() => {
   const lapsed = reapLapsed(jobs);
   if (lapsed.length) saveJobs();
   for (const n of lapsed) destroy(n, "lease lapsed");
-  for (const n of stale(boxes, CFG.idleMs, Date.now(), held)) destroy(n, "idle");
+  for (const n of stale(boxes, WARM_MS, Date.now(), held)) retire(n, "idle");
   for (const n of unremoved) destroy(n, "removal retried");
 }, 60_000).unref();
 // A restart (ops/run-draining.sh): the next launcher is starting. This one stops reaping and saving (the next one adopts the
