@@ -149,7 +149,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -215,6 +215,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
       return { status: r, body: {} };
     }
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
+    if (method === "POST" && /^\/repos\/acme\/app\/issues\/\d+\/comments$/.test(path) && commentFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
@@ -225,12 +226,13 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
-test("a cancelled task's PR is closed with its branch once; a done task's unmerged PR once its head is old and no merge is open", async (t) => {
+test("a cancelled task's PR is left open with its branch and noted once; a done task's unmerged PR once its head is old and no merge is open", async (t) => {
   const c = await rig(t, { taskStatus: "cancelled" });
   c.set([c.agentPr(1)]);
   await c.watch.tick(); await c.watch.tick();
-  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/1").length, 1);
-  assert.ok(c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b1"));
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/1").length, 0, "a cancelled task never closes its PR");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b1"), "a cancelled task never deletes its PR's branch");
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/issues/1/comments").length, 1, "noted once that it is left for a successor");
   const d = await rig(t, { taskStatus: "done" });
   d.set([d.agentPr(2)]);
   await d.watch.tick();
@@ -243,6 +245,42 @@ test("a cancelled task's PR is closed with its branch once; a done task's unmerg
   assert.equal(e.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/2").length, 1, "done, unmerged and old: closed once");
   assert.ok(e.gh.includes("DELETE /repos/acme/app/git/refs/heads/b2"));
   assert.ok(!e.gh.includes("PATCH /repos/acme/app/pulls/3"), "a merge of it is in flight: left alone");
+});
+
+// A PR into a release (or former default) branch is behind and conflicting with *that* base, never with today's main: comparing it
+// to main would report a conflict that isn't one, and telling its task to rebase onto `origin/main` would add main's commits to it.
+test("a conflicting PR into another base is woken against that base, not main", async (t) => {
+  let open = [];
+  const gh = [];
+  const woke = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
+  });
+  t.after(() => kernel.s.close());
+  const cacheDir = mkdtempSync(join(tmpdir(), "loop-base-"));
+  const api = async (m, path) => {
+    gh.push(`${m} ${path}`);
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path === "/repos/acme/app/branches/release-1") return { status: 200, body: { name: "release-1", commit: { sha: "r1" } } };
+    if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: 2 } };
+    if (path.endsWith("/update-branch")) return { status: 422, body: { message: "merge conflict between base and head" } };
+    return { status: 200, body: {} };
+  };
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api });
+  t.after(() => watch.stop());
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/12", { task: "ACME-12", branch: "b12" });
+  open = [{ ...pr(12, { author: { __typename: "Bot", login: "aidenhq" }, baseRefName: "release-1", mergeable: "CONFLICTING", commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] } }) }];
+  await watch.tick();
+  assert.equal(woke.length, 1, JSON.stringify(gh));
+  assert.match(woke[0].text, /conflicts with `release-1` \(at `r1`\)/);
+  assert.match(woke[0].text, /Rebase the PR's branch onto `origin\/release-1`/);
+  assert.doesNotMatch(woke[0].text, /origin\/main/);
+  assert.ok(gh.includes("GET /repos/acme/app/branches/release-1"), "the base's own head was read");
+  assert.ok(!gh.some((g) => g.includes("compare/m1")), "never compared against main");
+  assert.ok(JSON.parse(readFileSync(join(cacheDir, "loop.json"), "utf8"))["acme/app"].pinged["https://github.com/acme/app/pull/12:r1"], "the ask is keyed on that base's head");
 });
 
 test("an agent PR red on its own head wakes its task once per head, and no PR gets more than 3 wakes at one head", async (t) => {
@@ -584,14 +622,32 @@ test("a wake the kernel doesn't take (a restart) is sent again on the next tick"
   assert.match(c.woke[0].text, /checks are green at `h3`/);
 });
 
-test("a cancelled task's PR whose close GitHub refused is closed on the next tick", async (t) => {
-  const c = await rig(t, { taskStatus: "cancelled", closeFails: 1 });
+test("a cancelled task's PR whose note GitHub refused is noted on the next tick and never closed", async (t) => {
+  const c = await rig(t, { taskStatus: "cancelled", commentFails: 1 });
   c.set([c.agentPr(4)]);
   await c.watch.tick();
-  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b4"), "not closed: the branch stays");
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/issues/4/comments").length, 1, "the note was refused");
+  assert.ok(!c.gh.some((g) => g.startsWith("PATCH") || g.startsWith("DELETE")), "nothing is closed or deleted either way");
   await c.watch.tick();
-  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/4").length, 2);
-  assert.ok(c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b4"));
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/issues/4/comments").length, 2, "the note is retried");
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/4").length, 0);
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b4"));
+});
+
+// The incident: ACME-12 hit its spend cap, ACME-13 was filed naming its PR, and cancelling ACME-12 closed the PR seconds later and
+// deleted the branch. A successor that has not published yet is invisible to the watcher (pr-tasks.json names only the task that
+// published), so ownership cannot be determined here: it must fail safe and destroy nothing.
+test("a cancelled task's PR with a successor task naming it is neither closed nor branch-deleted, this tick or the next", async (t) => {
+  const c = await rig(t, { taskStatus: "cancelled" });
+  c.set([c.agentPr(12)]);
+  // ACME-13 is an open successor whose brief names https://github.com/acme/app/pull/12. The watcher's only ownership record
+  // (pr-tasks.json) still names the cancelled opener, because a successor writes nothing until it publishes: ownership cannot be
+  // determined, so the rule must fail safe. It never reads the successor, it just destroys nothing.
+  await c.watch.tick();
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/12").length, 0, "no close");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b12"), "no branch delete");
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/issues/12/comments").length, 1, "left open for the successor, noted once");
 });
 
 test("the CI breaker: a check red again on a new head, or a third red round, tells the asker once and stops the red wakes; green resets it", async (t) => {
@@ -1118,8 +1174,8 @@ test("a deleted job's 404 does not defer the red-head wake on every tick", async
   assert.match(c.woke[0].text, /checks failed at/);
 });
 
-// self-review: a cancelled task's PR is closed, never woken for its checks' state first.
-test("a cancelled task's wedged PR is not woken before it is closed", async (t) => {
+// self-review: a cancelled task's PR is left for a successor, never woken for its checks' state first, and never closed.
+test("a cancelled task's wedged PR is neither woken nor closed", async (t) => {
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   const c = await rig(t, { taskStatus: "cancelled" });
   c.set([c.agentPr(81, stuckPr(81))]);
@@ -1128,8 +1184,9 @@ test("a cancelled task's wedged PR is not woken before it is closed", async (t) 
     reran: { "acme/app:h81:77": asked },
   } }));
   await c.watch.tick();
-  assert.equal(c.woke.length, 0, "a cancelled task has nobody to wake; its PR is closed instead");
-  assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/81"), "the PR is closed as the lifecycle rule says");
+  assert.equal(c.woke.length, 0, "a cancelled task has nobody to wake");
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/81").length, 0, "the PR is left open for a successor");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b81"), "and its branch is not deleted");
 });
 
 // self-review: a credential that cannot read Actions (403) is permanent too, so the failure is still reported.
@@ -1263,6 +1320,17 @@ test("a superseded PR's wedged check is neither re-run nor reported", async (t) 
   assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/92"), "the older PR is closed as superseded");
   assert.equal(c.woke.filter((w) => /pull\/92/.test(w.text ?? "")).length, 0, "a PR about to be closed is not woken for its checks");
   assert.ok(!c.gh.some((g) => g.startsWith("POST /repos/acme/app/actions/jobs/")), "no recovery run is spent on it");
+});
+
+// Two PRs from one task into different bases are different proposals: the task's newer PR into main does not supersede its PR
+// into a release branch (closing it would take a release back out of the train).
+test("a PR into another base is not closed as superseded by the task's newer PR into main", async (t) => {
+  const c = await rig(t);
+  c.set([c.agentPr(23, { baseRefName: "release-1", checks: "PENDING" }), pr(24, { author: { __typename: "Bot", login: "aidenhq" }, checks: "PENDING" })]);
+  notePrTask(c.cacheDir, "https://github.com/acme/app/pull/24", { task: "ACME-23", branch: "b24" });
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/23").length, 0, "the release PR is not superseded by the main PR");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b23"), "and its branch stays");
 });
 
 // self-review: a re-run the credential can never be allowed to send is not retried forever: the red-head rules report the head.

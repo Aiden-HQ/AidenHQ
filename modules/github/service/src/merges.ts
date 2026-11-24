@@ -71,6 +71,11 @@ export function createMerges(d: {
   identifierOf?: (record: string) => Promise<string | undefined>;
   /** A task's status (GET /v1/work?task=): a merge ship filed on a task that has since ended is never called. */
   taskStatus?: (task: string) => Promise<string | null | undefined>;
+  /**
+   * The status of the task a merge is for (GET /v1/work?task=). A cancelled task's approved merge never lands: cancellation leaves
+   * its PR for a successor, so sending the merge would destroy the handoff. Undefined: the read failed, which holds the merge.
+   */
+  statusOf?: (task: string) => Promise<string | undefined>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
   /** Tells the kernel why a claimed record is still running (POST /v1/writes/:id/wait), so its task hears the reason. */
@@ -343,6 +348,21 @@ export function createMerges(d: {
         const status = await d.taskStatus(q.task);
         // Only a cancelled task: a merge in flight may finish after its task is done (ship files none on a done task).
         if (status === "cancelled") return fail("its task is cancelled: not merged");
+      }
+      // Cancellation is not authority to land work either: the PR is left for a successor (ship's loop, keepForSuccessor), and a
+      // merge this queue was approved for before the cancellation would take that handoff from it. A read that fails holds the
+      // merge (waiting is never failing): only an answer that the task is live lets it go.
+      if (q.task && d.statusOf) {
+        const status = await d.statusOf(q.task).catch((e: Error) => {
+          log("merge queue: task status not read (retrying)", { pr: p.url, task: q.task, err: says(e).slice(0, 300) });
+          return undefined;
+        });
+        if (status === undefined) return wait("task-status");
+        if (status === "cancelled") return fail(`${q.task}, the task this merge was for, is cancelled: its PR is left open for a successor task, and this merge does not land`);
+        // The PR itself may have changed owners since the card was filed (a done task handed it to a successor): pr-tasks.json's
+        // current row is the authority, and a row naming another task ends this card rather than merging the successor's PR.
+        const now = d.taskOf?.(p.repo, p.number);
+        if (now && now !== q.task && now !== q.taskIdentifier) return fail(`${p.url} now belongs to ${now}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
       // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy). It joins the attempts

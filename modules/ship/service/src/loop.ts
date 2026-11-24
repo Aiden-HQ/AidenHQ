@@ -9,8 +9,9 @@
 // by ship itself (POST /v1/writes github.merge with the adoption's generation, on the opener's task: github's `filed_by: [ship]`),
 // when it is the task's only open PR; any other green head (a task with several PRs, a refused filing) wakes the task to merge it; one whose named checks have
 // finished red on its own mergeable head (not only behind main) wakes it once per head to fix it. A check whose job never started (GitHub
-// refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. The PR of
-// a cancelled task is closed with its branch, once (the runner's abandoned PR), and so is a done task's unmerged PR once its head is half an hour old with no merge of it open. A PR behind main with no conflict is updated by GitHub
+// refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. A cancelled
+// task's PR is left open with its head branch and noted once: cancellation is never authority to close a PR or delete a branch (a successor may
+// finish it, and a branch delete is unrecoverable). A done task's unmerged PR is closed with its branch once its head is half an hour old with no merge of it open. A PR behind main with no conflict is updated by GitHub
 // (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than the repo's
 // `caps.wakes_per_head` wakes at one head; the asker is told once when it is capped. A conflict, a 404, or a refusal the last method answers with no right to update is final; a transient failure retries every five minutes without waking the task, until a few retries at one head have all gone the same way, and then the task is woken to rebase it.
 // The CI breaker: after `caps.ci_rounds` red rounds on an agent's PR (heads whose own checks finished red), or the same named check red on
@@ -183,7 +184,8 @@ export function startLoop(o: LoopOptions) {
     state.wedgedAt ??= {};   // `<repo>:<head>` -> the check a pass's budget ran out at, so the next pass starts there
     state.neverStartedJudged ??= {}; // `<pr url>:<head>` -> check id -> "unstarted" or "started": what the budget has judged
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
-    state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
+    state.abandoned ??= {};  // PR url -> when it was closed for its done task
+    state.kept ??= {};       // `<pr url>|<task>` -> when that cancelled task's PR was noted as left open for a successor
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
     state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "final" (a conflict or no right) or "retry:<time>" (a transient failure)
     state.updatedOk ??= {};  // `<pr url>:<head>` -> when GitHub accepted an update for that head: it is waited for however main moves, never asked again
@@ -734,7 +736,12 @@ export function startLoop(o: LoopOptions) {
       state.breaker[key] = { ...roundOf(b, red, pr.headRefOid), rounds: b.rounds + 1, ...(b.told ? { told: true } : {}) };
       save();
     }
-    /** Close a cancelled or done task's PR and delete its branch, once: recorded only once GitHub closed it, so a refused close is tried again next tick. */
+    /**
+     * Close a superseded or done task's PR and delete its branch, once: recorded only once GitHub closed it, so a refused close is
+     * tried again next tick. Never for a cancelled task (keepForSuccessor): a branch delete is unrecoverable and a successor may
+     * still finish the PR. The close and the delete run under github's per-branch lock (branch-lock.ts, ship-routes.ts), the one a
+     * publish holds around its push and its ownership write, so no delete lands in the gap between them.
+     */
     async function abandon(pr: Json, task: string, comment: string) {
       const c = await gh("PATCH", `/repos/${repo}/pulls/${pr.number}`, { state: "closed" });
       if (c.status >= 300) { log("abandoned PR not closed: retried next tick", { pr: pr.url, task, status: c.status }); return false; }
@@ -744,6 +751,25 @@ export function startLoop(o: LoopOptions) {
       const d = await gh("DELETE", `/repos/${repo}/git/refs/heads/${pr.headRefName}`);
       log("abandoned PR closed", { pr: pr.url, task, branchDeleted: d.status < 300 });
       return true;
+    }
+    /**
+     * A cancelled task's PR is left open, branch and all, and noted once: cancellation may not destroy work a successor task can
+     * finish (publishing to the same head branch records the successor, and the PR is worked for it again). Recorded only once
+     * GitHub took the note, so a refused comment is tried again next tick; the PR is never closed or deleted meanwhile.
+     */
+    async function keepForSuccessor(pr: Json, task: string): Promise<void> {
+      const key = `${pr.url.toLowerCase()}|${task}`; // per task: a successor that takes the PR over and is later cancelled is noted in its turn
+      if (state.kept[key]) return;
+      const text = `Left open by the code host: ${task}, the task this PR was for, is cancelled. The PR and its branch \`${pr.headRefName}\` are left as they are for a successor task to finish, and this PR is not closed or deleted while it waits. A successor takes it over by checking \`${pr.headRefName}\` out and publishing to it (\`aidenhq publish\` with that branch): that records the successor as the PR's task and the PR is worked for it again.`;
+      // The note is informational: a rate-limited or failed POST must not hold the repo's scan (the next PR's merge is waiting),
+      // so it carries the recovery write's deadline and a refusal is retried on the next tick. Nothing is closed or deleted.
+      let c: { status: number };
+      try { c = await gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, { body: withFooter(text, "Ship") }, { deadline: Date.now() + RECOVERY_WRITE_DEADLINE_MS }); }
+      catch (e) { log("cancelled task's PR left open: note not sent, retried next tick", { pr: pr.url, task, err: String((e as Error).message).slice(0, 200) }); return; }
+      if (c.status >= 300) { log("cancelled task's PR left open: note not posted, retried next tick", { pr: pr.url, task, status: c.status }); return; }
+      state.kept[key] = new Date().toISOString();
+      save();
+      log("cancelled task's PR left open", { pr: pr.url, task });
     }
 
     const superseded = new Set<string>(); // PRs closed as superseded in this pass: not counted as their task's open PRs
@@ -843,7 +869,9 @@ export function startLoop(o: LoopOptions) {
         if (work) adopt(pr, taskId(work, opener.task));
         if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
         const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
-        const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
+        // A newer PR supersedes this one only when it proposes the same change into the same base: two PRs from one head into
+        // different bases (a release branch and the default) are different proposals, and one is never the other's replacement.
+        const newer = open.find((p) => p.number > pr.number && p.baseRefName === pr.baseRefName && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
         if (newer && work?.status && !merging) retiring = true;
         if (work?.status === "done" && !merging && Date.now() - Date.parse(state.headAt[url].at) >= HALF_HOUR) retiring = true;
       }
@@ -942,8 +970,10 @@ export function startLoop(o: LoopOptions) {
       if (retiring && !state.abandoned[url]) {
         const status = work?.status;
         if (!status) log("task status unknown: the cancelled-task rule cannot run", { pr: pr.url, task: opener.task });
-        if (status === "cancelled") { await abandon(pr, opener.task, `Closed by the code host: ${opener.task}, the task this PR was for, is cancelled.`); continue; }
-        const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
+        if (status === "cancelled") { await keepForSuccessor(pr, opener.task); continue; }
+        // A newer PR supersedes this one only when it proposes the same change into the same base: two PRs from one head into
+        // different bases (a release branch and the default) are different proposals, and one is never the other's replacement.
+        const newer = open.find((p) => p.number > pr.number && p.baseRefName === pr.baseRefName && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
         if (newer && status) { if (await abandon(pr, opener.task, `Closing: superseded by ${newer.url}, the newer PR ${opener.task} published for the same task.`)) superseded.add(url); continue; }
         if (status === "done") {
           await abandon(pr, opener.task, `Closing: its task ${opener.task} is done; its change landed elsewhere or isn't needed.`);
@@ -997,14 +1027,17 @@ export function startLoop(o: LoopOptions) {
       if (pr.mergeable === "MERGEABLE" && env) continue; // true, or "unknown"
       const why = rebaseReason(pr, main.rollup);
       if (why === "conflict" || why === "red") {
-        const key = `${url}:${main.oid}`;
-        const behind = why === "conflict" || Number((await gh("GET", `/repos/${repo}/compare/${main.oid}...${pr.headRefOid}`)).body?.behind_by) > 0;
+        // The base this PR actually targets: a PR into a release (or a former default) branch is behind and conflicting with that
+        // branch, never with today's default, and telling its task to rebase onto `origin/main` would add main's commits to it.
+        const base = { name: String(pr.baseRefName ?? main.name), oid: String(pr.baseRefName && pr.baseRefName !== main.name ? (await gh("GET", `/repos/${repo}/branches/${encodeURIComponent(pr.baseRefName)}`)).body?.commit?.sha ?? main.oid : main.oid) };
+        const key = `${url}:${base.oid}`;
+        const behind = why === "conflict" || Number((await gh("GET", `/repos/${repo}/compare/${base.oid}...${pr.headRefOid}`)).body?.behind_by) > 0;
         if (behind) {
           // Behind with no conflict: GitHub updates the branch (the runner's rebaseInCode), once per head and head of main, and no task is woken.
           // `"retry"` is truthy: the update owns this rebase while it backs off, but a refusal that will not clear ("stuck")
           // falls through to the wake below, so a branch GitHub won't update is still rebased by its task.
           if (why === "red") {
-            const update = await updateBranch(pr, main.oid);
+            const update = await updateBranch(pr, base.oid);
             if (update === true || update === "retry") continue;
           }
           // The CI breaker tripped: red checks no longer wake the task, behind main or not.
@@ -1012,11 +1045,11 @@ export function startLoop(o: LoopOptions) {
           // One ask per PR per half hour and per head of main: main moves every few minutes, and each ask is a run.
           if (state.pinged[key] || Date.now() - Date.parse(state.asked[url] ?? "") < HALF_HOUR) continue;
           const what = why === "conflict"
-            ? `${pr.url} now conflicts with \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`).`
-            : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${main.name}\` (at \`${main.oid.slice(0, 12)}\`, green): perhaps only because \`${main.name}\` moved.`;
-          const w = await wake(pr, opener.task, `${what} Rebase the PR's branch onto \`origin/${main.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says (a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.`);
+            ? `${pr.url} now conflicts with \`${base.name}\` (at \`${base.oid.slice(0, 12)}\`).`
+            : `${pr.url}'s checks failed (\`gh pr checks ${pr.url}\` names them) while it is behind \`${base.name}\` (at \`${base.oid.slice(0, 12)}\`, green): perhaps only because \`${base.name}\` moved.`;
+          const w = await wake(pr, opener.task, `${what} Rebase the PR's branch onto \`origin/${base.name}\`, resolve any conflict, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says (a rebase that leaves the change exactly as approved needs no new approval). If a check still fails for another reason, fix that on the same branch first. Nothing else.`);
           if (w !== "failed") { state.pinged[key] = state.asked[url] = new Date().toISOString(); save(); }
-          if (w === "sent") log("rebase requested", { pr: pr.url, task: opener.task, why, main: main.oid });
+          if (w === "sent") log("rebase requested", { pr: pr.url, task: opener.task, why, base: base.oid });
           continue;
         }
       }
