@@ -149,7 +149,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, refTip, branchUses, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -162,11 +162,13 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   });
   t.after(() => kernel.s.close());
   let open = [];
+  const sent = []; // every call's body: a close names the task it was decided for, a delete carries no such field
   const reran = new Set(); // job ids this head's re-run was asked for: GitHub posts their next attempt
   const jobProbeOpts = []; // the opts of each Actions job read: a probe must carry a deadline
   const headRunsOpts = []; // the opts of each REST check-runs listing: the recovery paths' first read carries one too
   const api = async (method, path, body, opts) => {
     gh.push(`${method} ${path}${body?.update_method ? ` ${body.update_method}` : ""}`);
+    sent.push({ method, path, body });
     if (method === "GET" && /^\/repos\/acme\/app\/actions\/jobs\/\d+$/.test(path)) jobProbeOpts.push(opts ?? {});
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: mainBefore?.() ?? "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     // REST check runs for a head, as GitHub lists them: the full Actions job id is carried in details_url.
@@ -214,6 +216,15 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
       if (r?.throw) throw r.throw; // a POST that never gets an answer (a timeout, a quota refusal)
       return { status: r, body: {} };
     }
+    // A branch delete's guards: the ref is still the PR's head, and no other open PR uses the branch (so the delete is allowed).
+    const ref = path.match(/^\/repos\/acme\/app\/git\/ref\/heads\/(.+)$/);
+    if (ref) {
+      const tip = refTip?.(ref[1]);
+      if (tip?.throw) throw tip.throw;
+      const sha = typeof tip === "string" ? tip : open.find((p) => p.headRefName === ref[1])?.headRefOid ?? "moved";
+      return { status: 200, body: { ref: `refs/heads/${ref[1]}`, object: { sha } } };
+    }
+    if (method === "GET" && path.startsWith("/repos/acme/app/pulls?state=open")) return { status: 200, body: branchUses?.() ?? [] };
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     if (method === "POST" && /^\/repos\/acme\/app\/issues\/\d+\/comments$/.test(path) && commentFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
@@ -222,7 +233,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate, ...(settings ? { settings } : {}) });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, merges, watch, cacheDir, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
+  return { woke, gh, merges, sent, watch, cacheDir, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -1320,6 +1331,59 @@ test("a superseded PR's wedged check is neither re-run nor reported", async (t) 
   assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/92"), "the older PR is closed as superseded");
   assert.equal(c.woke.filter((w) => /pull\/92/.test(w.text ?? "")).length, 0, "a PR about to be closed is not woken for its checks");
   assert.ok(!c.gh.some((g) => g.startsWith("POST /repos/acme/app/actions/jobs/")), "no recovery run is spent on it");
+});
+
+// A merge that failed at an unchanged green head is a decision for the task, not a head already settled: the kernel answers
+// `skip: "merging"` for the historical record, so the green marker alone must not silence it (the failure has its own marker).
+test("a failed merge at an unchanged green head wakes its task, even when the head was already marked green", async (t) => {
+  const records = [{ kind: "github.merge", state: "failed", args: { prs: [{ repo: "acme/app", number: 3, head: "h3" }] } }];
+  const c = await rig(t, { merge: () => [200, { skip: "merging" }], records });
+  c.set([c.agentPr(3)]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.merges.length, 0, "a failed merge at this head is not asked for again through the same record");
+  assert.equal(c.woke.length, 1, "its task is told the merge did not land");
+  assert.match(c.woke[0].text, /did not land/);
+  assert.match(c.woke[0].text, /aidenhq merge https:\/\/github\.com\/acme\/app\/pull\/3 h3/);
+  const marked = await rig(t, { merge: () => [200, { skip: "merging" }], records });
+  marked.set([marked.agentPr(3)]);
+  writeFileSync(join(marked.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { greened: { "https://github.com/acme/app/pull/3": "h3" } } }));
+  await marked.watch.tick(); await marked.watch.tick();
+  assert.equal(marked.woke.length, 1, "a green head whose merge then failed is still reported once");
+  assert.match(marked.woke[0].text, /did not land/);
+});
+
+// A done task's cleanup closes the PR and would delete the branch: a tip that moved since this PR's head, any open PR on the
+// branch, or a read that failed keeps the branch (deleting one that may be in use is unrecoverable).
+test("a done task's PR whose head branch moved since its head is closed but never branch-deleted", async (t) => {
+  // The branch's tip is a successor's push, not this PR's head any more: a delete would destroy that work.
+  const c = await rig(t, { taskStatus: "done", refTip: () => "h4-successor" });
+  const old = new Date(Date.now() - 31 * 60_000).toISOString();
+  c.set([c.agentPr(4, { headRefOid: "h4" })]);
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { headAt: { "https://github.com/acme/app/pull/4": { head: "h4", at: old } } } }));
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/4").length, 1, "the done PR is still closed");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b4"), "a moved tip keeps the branch");
+  // Any open PR still using the branch keeps it too, and so does a read that failed.
+  const shared = await rig(t, { taskStatus: "done", branchUses: () => [{ number: 9 }] });
+  shared.set([shared.agentPr(6)]);
+  writeFileSync(join(shared.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { headAt: { "https://github.com/acme/app/pull/6": { head: "h6", at: old } } } }));
+  await shared.watch.tick();
+  assert.ok(!shared.gh.includes("DELETE /repos/acme/app/git/refs/heads/b6"), "another open PR on the branch keeps it");
+  const blind = await rig(t, { taskStatus: "done", refTip: () => ({ throw: new Error("timeout") }) });
+  blind.set([blind.agentPr(7)]);
+  writeFileSync(join(blind.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { headAt: { "https://github.com/acme/app/pull/7": { head: "h7", at: old } } } }));
+  await blind.watch.tick();
+  assert.ok(!blind.gh.some((g) => g.startsWith("DELETE")), "a branch whose tip could not be read is not deleted");
+});
+
+// The close names the task it was decided for, so github's route can tell a successor's PR from the opener's under the lock.
+test("an abandoned PR's close names the task it was decided for", async (t) => {
+  const c = await rig(t, { taskStatus: "done" });
+  const old = new Date(Date.now() - 31 * 60_000).toISOString();
+  c.set([c.agentPr(5)]);
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { headAt: { "https://github.com/acme/app/pull/5": { head: "h5", at: old } } } }));
+  await c.watch.tick();
+  assert.deepEqual(c.sent.find((x) => x.method === "PATCH" && x.path === "/repos/acme/app/pulls/5")?.body, { state: "closed", expectTask: "ACME-5" });
 });
 
 // Two PRs from one task into different bases are different proposals: the task's newer PR into main does not supersede its PR

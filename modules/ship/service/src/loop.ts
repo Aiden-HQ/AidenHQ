@@ -176,6 +176,7 @@ export function startLoop(o: LoopOptions) {
     state.dependabot ??= {}; // PR url -> its task's id
     state.asked ??= {};      // PR url -> when its task was last woken
     state.greened ??= {};    // PR url -> the head whose green checks woke its task
+    state.mergeTold ??= {};  // PR url -> the head whose failed merge its task was told about (separate from `greened`, which may predate it)
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<repo>:<head>:<job id>` -> a wedged check run's job (the job is the repository's)
@@ -743,12 +744,29 @@ export function startLoop(o: LoopOptions) {
      * publish holds around its push and its ownership write, so no delete lands in the gap between them.
      */
     async function abandon(pr: Json, task: string, comment: string) {
-      const c = await gh("PATCH", `/repos/${repo}/pulls/${pr.number}`, { state: "closed" });
+      // The close names the task it was decided for: github's route re-reads pr-tasks.json under the branch lock, and a PR that a
+      // successor took over while this cleanup waited is not closed under the earlier task's status.
+      const c = await gh("PATCH", `/repos/${repo}/pulls/${pr.number}`, { state: "closed", expectTask: task });
       if (c.status >= 300) { log("abandoned PR not closed: retried next tick", { pr: pr.url, task, status: c.status }); return false; }
       state.abandoned[pr.url.toLowerCase()] = new Date().toISOString();
       save();
       await gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, { body: withFooter(comment, "Ship") });
-      const d = await gh("DELETE", `/repos/${repo}/git/refs/heads/${pr.headRefName}`);
+      // The branch's current tip: a publish that moved it after this pass's snapshot keeps it (its own PR may not exist yet).
+      // A read that fails keeps the branch too: deleting one that may be in use is unrecoverable.
+      const ref = await gh("GET", `/repos/${repo}/git/ref/heads/${pr.headRefName}`).catch(() => undefined);
+      const moved = !ref || ref.status >= 300 || String(ref.body?.object?.sha ?? "") !== pr.headRefOid;
+      // Read the branch's current use as well: a successor may have opened another PR from it while this repo was scanned.
+      const uses = await gh("GET", `/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${pr.headRefName}`)}`).catch(() => undefined);
+      // Any open PR on the branch keeps it: another PR, or this one reopened while the closing comment was posted (a branch a
+      // reopened PR lives on is not deletable). So does a tip this PR's head no longer is. Only an empty answer from a good read
+      // of a branch still at this PR's head allows the delete.
+      const shared = !uses || uses.status >= 300 || (uses.body ?? []).length > 0;
+      if (shared || moved) {
+        const why = shared ? (uses && uses.status < 300 ? "another open PR uses the branch" : "branch use could not be read") : "the branch moved since this PR's head";
+        log("abandoned PR closed", { pr: pr.url, task, branchDeleted: false, why });
+        return true;
+      }
+      const d = await gh("DELETE", `/repos/${repo}/git/refs/heads/${pr.headRefName}`, { expectTask: task });
       log("abandoned PR closed", { pr: pr.url, task, branchDeleted: d.status < 300 });
       return true;
     }
@@ -865,12 +883,17 @@ export function startLoop(o: LoopOptions) {
       // makes, so the two cannot disagree within a pass. A PR nobody opened here (an outside author's) is not its subject.
       const ours = !isDependabot(pr) && pr.isCrossRepository === false && !!opener && opener.branch === pr.headRefName;
       let retiring = !taskLive;
+      let mergeFailed = false;
       if (ours && !state.abandoned[url]) {
         if (work) adopt(pr, taskId(work, opener.task));
         if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
         const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
         // A newer PR supersedes this one only when it proposes the same change into the same base: two PRs from one head into
         // different bases (a release branch and the default) are different proposals, and one is never the other's replacement.
+        // A merge this task filed for this PR at this head that failed: the head is not handled, whatever `greened` remembers
+        // from before (a task cancelled and resumed without moving it). The kernel answers `skip: "merging"` for that
+        // historical record, so the green rule below tells it from one in flight and wakes the task instead of settling it.
+        mergeFailed = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && r.state === "failed" && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number && p.head === pr.headRefOid));
         const newer = open.find((p) => p.number > pr.number && p.baseRefName === pr.baseRefName && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
         if (newer && work?.status && !merging) retiring = true;
         if (work?.status === "done" && !merging && Date.now() - Date.parse(state.headAt[url].at) >= HALF_HOUR) retiring = true;
@@ -1004,21 +1027,28 @@ export function startLoop(o: LoopOptions) {
           continue;
         }
       }
-      if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
+      // A merge that failed at this head is reported to its task even when the head was already marked green (the merge was
+      // filed, then the task was cancelled and resumed while the queue held it): the notice has its own once-per-head marker.
+      const tellFailed = mergeFailed && state.mergeTold[url] !== pr.headRefOid;
+      if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && (state.greened[url] !== pr.headRefOid || tellFailed)) {
         // The repo's Auto-merge off (`merge: off`): ship files no merge and asks for none; the agent's own `aidenhq merge` still works.
-        if (o.settings(repo)?.merge !== "ready") continue; // nothing recorded: turning it on again files this head
+        if (o.settings(repo)?.merge !== "ready" && !tellFailed) continue; // nothing recorded: turning it on again files this head
         // The task's only open PR, green at the head its approved PR record pushed: the kernel files its merge, as its agent.
+        // A merge that already failed at this head is a decision for the task, never a head to settle: ask it again rather than
+        // letting the kernel's historical record answer for one still in flight.
         const only = open.filter((p) => !superseded.has(p.url.toLowerCase()) && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName).length === 1;
-        const asked = only ? await fileMerge(pr, opener.task, work) : "wake";
+        const asked = tellFailed ? "wake" : only ? await fileMerge(pr, opener.task, work) : "wake";
         if (asked === "failed") continue;
         if (asked !== "wake") {
           state.greened[url] = pr.headRefOid; delete state.breaker[url]; save();
           log(asked === "filed" ? "merge filed" : "merge already asked for", { pr: pr.url, task: opener.task, head: pr.headRefOid });
           continue;
         }
-        const w = await wake(pr, opener.task, `${pr.url}'s checks are green at \`${pr.headRefOid}\`. If this PR is your task's change, merge it with \`aidenhq merge ${pr.url} ${pr.headRefOid}\`; if it is superseded, close it with \`aidenhq close ${pr.url}\`. Nothing else.`);
-        if (w !== "failed") { state.greened[url] = pr.headRefOid; delete state.breaker[url]; save(); }
-        if (w === "sent") log("merge requested", { pr: pr.url, task: opener.task, head: pr.headRefOid });
+        const failed = tellFailed ? `${pr.url}'s merge was filed for this head and did not land (\`task_approvals\` has its outcome). ` : "";
+        const w = await wake(pr, opener.task, `${pr.url}'s checks are green at \`${pr.headRefOid}\`. ${failed}If this PR is your task's change, merge it with \`aidenhq merge ${pr.url} ${pr.headRefOid}\`; if it is superseded, close it with \`aidenhq close ${pr.url}\`. Nothing else.`);
+        // The head is settled once the task is told, a failed merge or a merge it must file itself alike; the wake cap bounds it.
+        if (w !== "failed") { state.greened[url] = pr.headRefOid; if (tellFailed) state.mergeTold[url] = pr.headRefOid; delete state.breaker[url]; save(); }
+        if (w === "sent") log(tellFailed ? "failed merge reported to its task" : "merge requested", { pr: pr.url, task: opener.task, head: pr.headRefOid });
         continue;
       }
       // Red checks whose jobs never started are the environment's: re-run once at this head, never a rebase or a wake. A head
