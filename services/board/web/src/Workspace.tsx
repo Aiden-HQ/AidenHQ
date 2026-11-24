@@ -8,6 +8,7 @@ import { SignInRequired, api } from "./api";
 import { load as loadCached } from "./cache";
 import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queries";
 import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
+import { AnswerForm } from "./AnswerForm";
 import { ApprovalCard } from "./Chat";
 import { LaneChat } from "./LaneChat";
 import { FeatureCostStrip } from "./FeatureCost";
@@ -18,7 +19,7 @@ import { Markdown } from "./markdown";
 import { anyLive, groupChats, groupTasks, laneOf, settleableChat, taskSummary, type AgentGroup } from "./sidebar";
 import { TaskState, isActive, needsOwner, waitsForAnswer } from "./ui/TaskState";
 import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
-import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, FileView, Question, SettledItem, Working } from "./types";
+import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, FileView, SettledItem, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { Icon } from "./ui/icons";
 
@@ -530,6 +531,17 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   const sendRef = useRef(send);
   sendRef.current = send;
   const answer = useCallback((t: string) => void sendRef.current(t, [], true), []);
+  // The form's answer to the question the kernel says is open: claimed against that wait (never routed by @mentions), then the chat refreshes.
+  const waitSince = chat?.state?.wait_since;
+  const answerAsk = useCallback(
+    async (t: string) => {
+      if (!waitSince) throw new Error("This question was already answered or has changed.");
+      await api.answer(refId, t, waitSince);
+      const q = chatQuery(refId);
+      await Promise.all([loadCached(q.key, q.fetch, false, true), reloadList()]).catch(() => {});
+    },
+    [refId, waitSince, reloadList],
+  );
   const openChat = useCallback((id: string) => go(`#/c/${id}`), [go]);
 
   async function settle(on: boolean) {
@@ -595,12 +607,12 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             ) : it.type === "ask" ? (
               <AskView q={it.q} crew={crew} prefix={prefix} go={go} answered={load} toast={toast} />
             ) : (
-              <MessageView m={it.m} crew={crew} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={open} notRight={notRight} answer={answer} />
+              <MessageView m={it.m} crew={crew} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={open} notRight={notRight} answer={answer} answerAsk={answerAsk} />
             )}
           </div>
         );
       }),
-    [items, crew, prefix, lastReply, asking, open, hold, openChat, load, go, toast, notRight, answer],
+    [items, crew, prefix, lastReply, asking, open, hold, openChat, load, go, toast, notRight, answer, answerAsk],
   );
 
   if (!chat)
@@ -798,7 +810,7 @@ function dayLabel(iso: string): string {
 }
 const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
-const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<boolean>; answer: (t: string) => void }) {
+const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer, answerAsk }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<boolean>; answer: (t: string) => void; answerAsk: (t: string) => Promise<unknown> }) {
   const [fixing, setFixing] = useState(false);
   const [fix, setFix] = useState("");
   const [busy, setBusy] = useState(false);
@@ -871,7 +883,7 @@ const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, aski
           ))}
         </div>
       )}
-      {asking && open && m.questions && <QuestionForm questions={m.questions} answer={answer} />}
+      {asking && open && m.questions && <AnswerForm questions={m.questions} onAnswer={answerAsk} />}
       <div className="msg-actions">
         <button className="link-btn small" onClick={() => setFixing(!fixing)} title="Tell the agent this reply was wrong (recorded as a correction)">
           Not right
@@ -1351,11 +1363,7 @@ const SendIcon = () => (
  * the owner's message there, which wakes it), not to this chat's agent.
  */
 function AskView({ q, crew, prefix, go, answered, toast }: { q: Ask; crew: Assignee[]; prefix: string; go: (h: string) => void; answered: () => Promise<void>; toast: (t: string) => void }) {
-  const answer = (t: string) =>
-    void api.comment(q.identifier, t, true).then(
-      () => (toast(`Sent to ${q.agent}`), answered()),
-      (e: Error) => toast(`Couldn't send: ${e.message}`),
-    );
+  const answer = (t: string) => api.answer(q.identifier, t, q.waitSince).then(() => (toast(`Sent to ${q.agent}`), void answered()));
   return (
     <div className="msg agent">
       <div className="msg-who">
@@ -1370,55 +1378,7 @@ function AskView({ q, crew, prefix, go, answered, toast }: { q: Ask; crew: Assig
       <div className="bubble">
         <Markdown text={q.text} prefix={prefix} className="md" />
       </div>
-      <QuestionForm questions={q.questions} answer={answer} />
-    </div>
-  );
-}
-
-/**
- * An agent's multiple-choice questions as one form (like Claude's own): pick an option, or several where it says so, or
- * write your own answer; one Send posts them all as your message. Answers are only words: they never approve anything.
- */
-function QuestionForm({ questions, answer }: { questions: Question[]; answer: (t: string) => void }) {
-  const [picked, setPicked] = useState<string[][]>(() => questions.map(() => []));
-  const [own, setOwn] = useState<string[]>(() => questions.map(() => ""));
-  const [sent, setSent] = useState(false);
-  const pick = (n: number, o: string, multi?: boolean) =>
-    setPicked((p) => p.map((cur, i) => (i !== n ? cur : multi ? (cur.includes(o) ? cur.filter((x) => x !== o) : [...cur, o]) : cur[0] === o ? [] : [o])));
-  const reply = (n: number) => [...picked[n]!, own[n]!.trim()].filter(Boolean).join(", ");
-  const ready = questions.some((_, n) => reply(n));
-  const send = () => {
-    setSent(true);
-    answer(questions.map((q, n) => (questions.length === 1 ? reply(n) : `**${q.question}**\n${reply(n) || "(skipped)"}`)).join("\n\n"));
-  };
-  if (sent) return null;
-  return (
-    <div className="qform">
-      {questions.map((q, n) => (
-        <fieldset key={n} className="q">
-          <legend>
-            {questions.length > 1 && <span className="q-num">{n + 1}</span>}
-            {q.question}
-            {q.multi && <span className="muted small"> · pick any</span>}
-          </legend>
-          {q.options.map((o, i) => {
-            const on = picked[n]!.includes(o);
-            return (
-              <button key={o} type="button" className={`q-opt${on ? " on" : ""}`} aria-pressed={on} onClick={() => pick(n, o, q.multi)}>
-                <span className={`q-mark${q.multi ? " box" : ""}`} />
-                <span className="q-label">{o}</span>
-                {i === 0 && <span className="q-rec">Recommended</span>}
-              </button>
-            );
-          })}
-          <input className="q-own" placeholder="Or in your own words…" value={own[n]} onChange={(e) => setOwn((p) => p.map((x, i) => (i === n ? e.target.value : x)))} onKeyDown={(e) => e.key === "Enter" && ready && send()} />
-        </fieldset>
-      ))}
-      <div className="row-end">
-        <button className="btn primary" disabled={!ready} onClick={send}>
-          Send {questions.length > 1 ? "answers" : "answer"}
-        </button>
-      </div>
+      <AnswerForm key={`${q.waitSince}:${q.questions.length}`} questions={q.questions} onAnswer={answer} />
     </div>
   );
 }

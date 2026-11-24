@@ -648,7 +648,7 @@ export interface ChatDetail {
   parent: TaskRef | null;
   runs: RunLink[];
   /** Questions an agent this chat handed work to is asking the owner; answered on that agent's task (`identifier`). */
-  asks: { id: string; at: string; text: string; questions: Question[]; identifier: string; agent: string }[];
+  asks: { id: string; at: string; text: string; questions: Question[]; waitSince: string; identifier: string; agent: string }[];
 }
 export interface RunLink {
   id: string;
@@ -680,7 +680,7 @@ export interface NeedsYou {
   /** Open Tier 2 approval cards: the Approvals badge. */
   approvals: number;
   /** Every open task with someone to act on it, oldest first. */
-  items: { identifier: string; title: string; agent: string; state: ShownState }[];
+  items: { identifier: string; title: string; agent: string; state: ShownState; /** The open owner question, answered in place: its options and the wait it belongs to. */ ask?: { question: string; questions: Question[]; waitSince: string } }[];
 }
 
 /** A multiple-choice question an agent asks (recommended option first); the owner may answer in his own words. */

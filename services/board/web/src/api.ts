@@ -388,6 +388,8 @@ export const api = {
   /** `brief`: the chat's send, which refetches the chat itself; the board then skips building the whole task view. */
   comment: (ref: string, body: string, answer = false, brief = false) =>
     call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/comments`, { body, ...(answer ? { answer: true } : {}), ...(brief ? { brief: true } : {}) }),
+  /** An answer to the task's open question, bound to the wait it answers (`waitSince`): refused when that wait is no longer the open one or was answered. */
+  answer: (ref: string, body: string, waitSince: string) => call<{ identifier: string; message: string }>("POST", `/api/issues/${encodeURIComponent(ref)}/answer`, { body, wait_since: waitSince }),
   attach: async (ref: string, file: File) =>
     call<IssueView>("POST", `/api/issues/${encodeURIComponent(ref)}/files`, { name: file.name, type: file.type, data: await base64(file) }),
   move: (ref: string, bucket: Bucket, position: "top" | "bottom" = "top") => call("POST", `/api/issues/${encodeURIComponent(ref)}/move`, { bucket, position }),

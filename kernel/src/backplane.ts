@@ -17,6 +17,8 @@
 //   GET  /v1/writes/:id/chain  (the board's key) what the record's task asks, as the AI reviewer reads it (review-loop.ts requestChain)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}  (a speaks-as-owner channel's token) cards
 //                              with decision tokens, a token spent, the owner's words (channels.ts)
+//   POST /v1/answers/{claim,release}  (the board's key, or a channel's own token) {task, wait_since}: the owner's answer to that
+//                              open wait is claimed once (200 ok, 409 stale|taken) before it is posted; a failed post releases it (answers.ts)
 //   GET  /v1/cp/read/<path>    (a channel, or a module with role kernel.cp-read) the control plane's read routes, as the owner;
 //                              with the board's key, the board's reads (cp.ts createBoardCp)
 //   ANY  /v1/cp/owner/<path>   (the board's key) the owner's writes the board makes, X-AidenHQ-Account the admin's (cp.ts)
@@ -120,6 +122,7 @@ import type { Brake } from "./brake.ts";
 import type { Checks } from "./checks.ts";
 import type { Lane } from "./lane.ts";
 import { INPUT_MAX, type Checks as CheckJobs } from "./checkjobs.ts";
+import type { Answers } from "./answers.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Identity, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
@@ -181,6 +184,8 @@ export const ROUTES = [
   { method: "POST", path: "/v1/channel/stop", auth: "module" },
   { method: "POST", path: "/v1/channel/thread", auth: "module" },
   { method: "POST", path: "/v1/channel/exchange", auth: "module" },
+  { method: "POST", path: "/v1/answers/claim", auth: "module|board" },
+  { method: "POST", path: "/v1/answers/release", auth: "module|board" },
   { method: "GET", path: "/v1/cp/read/*", auth: "module|board" },
   { method: "ANY", path: "/v1/cp/owner/*", auth: "board" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
@@ -331,7 +336,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -368,6 +373,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   flow?: Flow;
   /** Each task's one state (task-state-read.ts). */
   taskStates?: Pick<TaskStateRead, "read" | "named" | "issues">;
+  /** The once-per-wait claim on an owner's answer (answers.ts): the board and a channel module post only after it. */
+  answers?: Answers;
   /** The repos the instance reaches (codehostRepos in main.ts): GET /v1/agents hands them to modules. */
   repos?: () => Record<string, unknown>;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
@@ -557,6 +564,21 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (!notify) throw fail(503, "unavailable", "notify is off");
           notify.queue(notice(await json(req)));
           return send(res, 200, { queued: true });
+        }
+        case "POST /v1/answers/claim": case "POST /v1/answers/release": {
+          // The board, or a speaks-as-owner channel with its own token (as owner-message): the claimant is the caller.
+          let by = "board";
+          if (!isBoard(req)) {
+            const w = await moduleOf(req);
+            if (!isChannel(modules().modules?.[w.module!]) || !w.own) throw fail(403, "forbidden", `${w.module} may not answer for the owner`);
+            by = w.module!;
+          }
+          if (!answers) throw fail(503, "unavailable", "answers are off");
+          const b = await json(req);
+          if (typeof b.task !== "string" || !b.task || typeof b.wait_since !== "string" || !b.wait_since) throw fail(400, "bad_request", "send {task, wait_since}");
+          if (hit!.path === "/v1/answers/release") { answers.release(b.task, b.wait_since, by); return send(res, 200, { ok: true }); }
+          const r = answers.claim(b.task, b.wait_since, by);
+          return r === "ok" ? send(res, 200, { ok: true }) : send(res, 409, { error: r });
         }
         case "POST /v1/board-tasks": {
           // The board's own alerts for the chief of staff (an app incident): a task of fixed text, once per source (modtasks.ts, as module "board").

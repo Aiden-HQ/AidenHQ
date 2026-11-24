@@ -30,7 +30,7 @@ export interface NotifyArgs {
   asker?: { id: string; key: string; roles: string[] } | undefined;
 }
 /** What a channel's transport gets: the text as written (each channel renders and escapes it), and who it is from. */
-export type Message = { kind: Kind; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: true };
+export type Message = { kind: Kind; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: true; /** One tap answers it: a single single-choice question's options, and the start of the wait it answers (the kernel claims the answer against it). */ answer?: { options: string[]; since: string } };
 export type Found = { issueId: string; agentId: string; agentName: string; ownerVia?: "board" | "telegram" | "slack" | undefined };
 /** Who called notify: the agent, its key, its roles, and the kernel's assertion of this call (its reply is posted on it). */
 export interface Caller { id: string; name?: string | undefined; key: string; roles?: string[] | undefined; assertion: string }
@@ -51,7 +51,7 @@ export interface Deps {
    * assertion). The kernel says who settles it: the owner (this message goes to them), else the chief of staff (it got the
    * question; nothing goes to the owner).
    */
-  wait?: (task: string, assertion: string, question: string) => Promise<{ to?: string; open?: boolean }>;
+  wait?: (task: string, assertion: string, question: string) => Promise<{ to?: string; open?: boolean; since?: string }>;
   /** Files a task for the chief of staff (the kernel's POST /v1/tasks, by role; the same `source` is one task). Throws on failure. */
   fileTask?: (b: { title: string; description: string; role: string; source: string }) => Promise<{ id: string; deduplicated: boolean }>;
   /** A wake notice on a task (the kernel's POST /v1/wakes): shown as a kernel notice, not the assignee's words, and wakes its agent; `closed` when the task is. */
@@ -137,6 +137,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     // Attention: a blocked or over-cap agent sends nothing; a crew agent's routine done/fyi goes to the digest (and its chat).
     const att = who && d.attention && ["decision", "done", "fyi"].includes(kind) ? attend(d.store, d.attention, { id: who.id, key: who.key, roles: who.roles ?? [] }, kind, { conversing: Boolean(found?.ownerVia), buttons: Boolean(a.actions?.length) }, now) : ({ do: "pass" } as const);
     if (att.do === "block" || att.do === "limit") return { sent: false, reason: att.do === "block" ? "blocked" : "limit", note: att.note };
+    // When the wait this question opens began: what a one-tap answer is bound to.
+    let since: string | undefined;
     // A question reaches the owner directly only from the chief of staff, or on a task the owner is talking to its agent on
     // (the kernel decides, escalate.ts); any other goes to the Fleet Steward, which settles it (the Steward's own to the chief
     // of staff). The wait is recorded first, so a question is never sent without it.
@@ -177,6 +179,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       if ("error" in w) return { sent: false, reason: "error", note: `Your question wasn't recorded (${w.error}): nothing was sent; try again.` };
       if (w.open) return { sent: false, reason: "duplicate", note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." };
       if (w.to !== "owner" && w.to !== "chief_of_staff" && w.to !== "steward") return { sent: false, reason: "error", note: "Your question wasn't routed: nothing was sent; try again." };
+      since = w.since;
       if (w.to !== "owner") return { sent: true, to: w.to as "steward" | "chief_of_staff", note: `The owner isn't talking with you on this task, so your question went to ${w.to === "steward" ? "the Fleet Steward" : "the chief of staff"}, who settles it (and has it brought to the owner only when the call is theirs). Its answer comes as a comment on your task and wakes you: end your turn.` };
     }
     const muted = kind === "fyi" && d.muteFyi === true && !a.actions?.length;
@@ -190,9 +193,19 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     if (digested) queueDigest(d.store, { agent: found?.agentName ?? caller?.name ?? "agent", ...(a.task ? { task: a.task } : {}), text, source: who?.key ?? "kernel", kind, ...(onChat ? { told: true } : {}) }, now);
     // The owner is typing in this chat on the board: the reply stays there (the board notifies them).
     const boardOnly = found?.ownerVia === "board" || digested || muted;
+    // The chief of staff's question on its own task files its owner wait (the kernel refuses any other task; that is no failure).
+    // It is filed before a channel send, which a one-tap answer is bound to; a question that stays on the board (or goes to the
+    // digest) files it only once it is on the chat. A wait that failed is returned: the task would read orphaned and be woken
+    // to ask again.
+    let waitError: string | undefined;
+    const chief = kind === "decision" && found && caller?.roles?.includes(CHIEF) && d.wait;
+    const fileWait = async () => (await d.wait!(found!.issueId, caller!.assertion, [text, ...(a.questions ?? []).map((q) => q.question)].join("\n")).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); return undefined; }))?.since;
+    if (chief && !boardOnly) since = await fileWait();
+    const only = a.questions?.length === 1 ? a.questions[0]! : undefined;
+    const answer = since && only && !only.multi && only.options.length >= 2 && only.options.length <= 4 && !a.actions?.length ? { options: only.options, since } : undefined;
     let out: "sent" | "down" | "off" | "board" = "board";
     if (!boardOnly) {
-      const m: Message = { kind, text: text + spellOut(a.questions), ...(found && a.task ? { head: { agent: found.agentName, task: a.task, issue: found.issueId } } : {}), ...(a.actions?.length ? { actions: a.actions } : {}), ...(a.questions?.length ? { asks: true as const } : {}) };
+      const m: Message = { kind, text: text + spellOut(a.questions), ...(found && a.task ? { head: { agent: found.agentName, task: a.task, issue: found.issueId } } : {}), ...(a.actions?.length ? { actions: a.actions } : {}), ...(a.questions?.length ? { asks: true as const } : {}), ...(answer ? { answer } : {}) };
       const to = a.relay ? [transportOf[a.relay.via]] : order(d.transports, found?.ownerVia);
       out = await deliver(d, m, to);
       // The kernel's, the board's and the runner's messages have no chat to land on: they also wait for a channel to be set up.
@@ -203,13 +216,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     if (ok) d.store.setKv(dedupe, String(now));
     // Reached the owner (a channel took it, or it is on their chat) (a digest item is told when its digest goes); a message still waiting for a channel is written by the retry that delivers it.
     if (out === "sent" || onChat) d.store.told(told, now);
-    // The chief of staff's question on its own task files its owner wait (the kernel refuses any other task; that is no failure).
-    // A wait that failed is returned: the task would read orphaned and be woken to ask again.
-    let waitError: string | undefined;
-    if (ok && kind === "decision" && found && caller?.roles?.includes(CHIEF) && d.wait) {
-      const question = [text, ...(a.questions ?? []).map((q) => q.question)].join("\n");
-      await d.wait(found.issueId, caller.assertion, question).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); });
-    }
+    if (chief && boardOnly && ok) await fileWait();
     const failed = waitError ? { wait_error: `the question went out, but its wait wasn't recorded (${waitError}): call task_wait for: owner with the question so the task isn't woken as idle.` } : {};
     const chat = onChat ? { onChat: true as const } : {};
     // Sent only when a channel took it, its chat holds it or the digest will carry it; waiting for a channel is never "sent".
