@@ -31,6 +31,8 @@ const FORWARDED = new Set(["initialize", "notifications/initialized", "ping", "t
 // Request headers passed on: the MCP transport's own. Nothing else (the caller's bearer above all) leaves.
 const PASS = ["accept", "content-type", "mcp-session-id", "mcp-protocol-version", "last-event-id"];
 const HOP = new Set(["connection", "keep-alive", "transfer-encoding", "content-length", "content-encoding"]);
+/** What an agent is told in place of a result over MAX_RESULT: the call ran. */
+const oversized = (connection: string, tool: string | undefined, n: number) => `oversized-result: ${connection}.${tool} answered ${n} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
 export const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
 
 async function readAll(stream: IncomingMessage, max: number): Promise<Buffer> {
@@ -278,13 +280,17 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     headers.authorization = `Bearer ${key}`;
     const to = await resolver.resolve(conn.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
     // Session setup from the kernel's own copy, while the deployment needs no session of its own.
-    const setupCall = req.method === "POST" && !needs()?.down(connection) && typeof req.headers["mcp-session-id"] !== "string" && (method === "initialize" || method === "notifications/initialized" || (method === "tools/list" && hasId));
+    const signedOut = needs()?.down(connection);
+    if (signedOut) forgetSetup(connection); // what was kept before the need was seen is no answer once it is signed in again
+    // A caller that doesn't accept JSON (the kernel answers setup in JSON) gets the module's own answer.
+    const accept = String(req.headers.accept ?? "");
+    const setupCall = req.method === "POST" && !signedOut && (!accept || /application\/json|\*\/\*|application\/\*/i.test(accept)) && typeof req.headers["mcp-session-id"] !== "string" && (method === "initialize" || method === "notifications/initialized" || (method === "tools/list" && hasId));
     let deploy = "", setupKey: string | undefined;
     if (setupCall) {
       deploy = deployment(connection, conn, to, key);
       if (!sessionful.has(deploy)) {
         // The module hears one initialized per deployment; a stateless one has nothing to remember from the rest.
-        if (method === "notifications/initialized") { if (notified.has(deploy)) { outcome("ok-local"); res.writeHead(202).end(); return; } notified.add(deploy); }
+        if (method === "notifications/initialized") { if (notified.has(deploy)) { outcome("ok-local"); res.writeHead(202).end(); return; } }
         setupKey = `${deploy}\0${method}\0${method === "initialize" ? proto : String(req.headers["mcp-protocol-version"] ?? "")}\0${cursor}`;
         const hit = setup.get(setupKey);
         if (hit && Date.now() - hit.at < SETUP_TTL_MS) {
@@ -324,6 +330,18 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
               return resolve();
             }
             const call = method === "tools/call";
+            // Counted only once the module took it: a refused or lost one is sent again.
+            if (setupCall && method === "notifications/initialized" && status < 300) notified.add(deploy);
+            // A trusted connection's failure is bounded like its answers.
+            if (call && !fenced && status >= 300) {
+              const body = await readAll(ur, MAX_ANSWER);
+              if (body.length > MAX_RESULT) {
+                const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: oversized(connection, tool, body.length) }], isError: true } });
+                bytes = Buffer.byteLength(out);
+                res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(out);
+              } else { bytes = body.length; res.writeHead(status, { ...hdrs, "content-length": String(body.length) }).end(body); }
+              return resolve();
+            }
             const rewrite = status < 300 && (method === "tools/list" || method === "initialize" || call || !!rec);
             if (!rewrite) {
               res.writeHead(status, { ...hdrs, ...(ur.headers["content-length"] ? { "content-length": ur.headers["content-length"] } : {}) });
@@ -395,7 +413,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             // A result too big for an agent's context is refused with its size, not truncated; the call itself ran and is recorded.
             const sent = asIs ? raw.length : Buffer.byteLength(answer!);
             if (call && sent > MAX_RESULT && !image) {
-              const said = `oversized-result: ${connection}.${tool} answered ${sent} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
+              const said = oversized(connection, tool, sent);
               const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: said }], isError: true } });
               bytes = Buffer.byteLength(out);
               res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(out);

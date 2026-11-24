@@ -205,3 +205,18 @@ test("a result over 1 MB reaches the agent as an explicit oversized-result error
   assert.equal(r.result.isError, true);
   assert.match(r.result.content[0].text, /^oversized-result: docs\.doc_read/);
 });
+
+test("setup is the module's own for a caller that doesn't accept JSON, and an oversized trusted failure is capped", async (t) => {
+  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read"] });
+  const k = await kernel(t, { agents, grants, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }) } });
+  await k.call("docs", "run-jwt-ada", { method: "tools/list" });
+  await k.call("docs", "run-jwt-ada", { method: "tools/list" }, { accept: "text/event-stream" });
+  assert.equal(docs.seen.filter((s) => s.method === "tools/list").length, 2);
+  const big = http.createServer(async (req, res) => { for await (const _ of req); res.writeHead(500).end("x".repeat(1_200_000)); });
+  await new Promise((ok) => big.listen(0, "127.0.0.1", ok));
+  t.after(() => { big.closeAllConnections(); big.close(); });
+  const k2 = await kernel(t, { agents, grants, secrets, connections: { docs: conn(`http://127.0.0.1:${big.address().port}`, "docs", { read: ["doc_read"] }, { returns: "trusted" }) } });
+  const r = await k2.call("docs", "run-jwt-ada", { method: "tools/call", params: { name: "doc_read", arguments: {} } });
+  const text = await r.text();
+  assert.match(text, /oversized-result: docs\.doc_read/);
+});
