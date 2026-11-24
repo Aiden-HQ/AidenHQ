@@ -24,7 +24,7 @@ export interface KernelJob {
   exit?: number | null;
   stopped?: string | null;
   usage?: { input: number; cached: number; output: number } | null;
-  progress?: { said: string | null; plan: { text: string; state: string }[]; steps: { at: string; text: string }[] };
+  progress?: { said: string | null; plan: { text: string; state: string }[]; steps: { at: string; text: string }[]; /** Retention cleared the steps (kernel/src/retention.ts): how many there were. */ expired?: boolean; step_count?: number };
   final?: string | null;
 }
 
@@ -203,6 +203,7 @@ export function buildRun(job: KernelJob, rows: UsageRecord[], revsJsonl: string)
   const finished = Date.parse(job.ended_at ?? "");
   const error = job.stopped ? clip(String(job.stopped), 300) : job.state === "failed" ? `exited ${job.exit ?? "?"}` : null;
   const timeline: TraceEvent[] = (job.progress?.steps ?? []).map((s) => ({ at: s.at, kind: "step" as const, text: clip(s.text, 200), ok: true }));
+  if (job.progress?.expired) timeline.unshift({ at: job.started_at ?? "", kind: "step", text: `${job.progress.step_count ?? 0} steps (the step list expires 14 days after a run ends)`, ok: true });
   if (job.final) timeline.push({ at: job.ended_at ?? "", kind: "message", text: clip(job.final, 600), ok: true });
   else if (job.progress?.said) timeline.push({ at: job.ended_at ?? "", kind: "message", text: clip(job.progress.said, 600), ok: true });
   if (error) timeline.push({ at: job.ended_at ?? "", kind: "error", text: error, ok: false });

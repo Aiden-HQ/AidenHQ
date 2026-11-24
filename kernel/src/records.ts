@@ -27,7 +27,8 @@ export const SETTINGS: Requester = { agent: "", key: "", name: "the owner's sett
 /** The release updater itself (by kind and name, as the planner's updaterMove): the only requester the autonomy caps don't hold. */
 export const isUpdater = (q: Requester | undefined) => q?.kind === UPDATER.kind && q.name === UPDATER.name;
 /** `target`: what it acts on, in a line. */
-export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string };
+/** `expired`: a finished write's details cleared by retention (retention.ts): `details` then says so. */
+export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string; expired?: true };
 /**
  * How much of an outcome the kernel keeps: a code host's merge result carries its machine-readable evidence on the first line
  * (the grading module reads it: a full 30-PR batch is about 4,300 characters), so the cap holds that whole and the human summary
@@ -62,6 +63,8 @@ export type Rec = {
   waits?: number;
   /** The files the write changes, as its plan named them (`repo:path`): task search reads them; never part of the digest. */
   paths?: string[] | null;
+  /** When retention cleared its args' large values and its card details (ms), after the retention window; null before. */
+  expired?: number | null;
 };
 /** A record without its heavy columns (`args`, `card`, `context`): what a reader that only needs state, who, when and the outcome selects (`list(..., { light: true })`). */
 export type RecRow = Omit<Rec, "args" | "card" | "context">;
@@ -109,7 +112,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"], ["waits", "INTEGER"], ["paths", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"], ["waits", "INTEGER"], ["paths", "TEXT"], ["expired", "INTEGER"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   // The lists read one state newest first, `since` and `stats` read by filing and decision time (stats' counts are answered from these two indexes alone). A state alone is the prefix of the first.
   db.exec(`DROP INDEX IF EXISTS records_state;
     CREATE INDEX IF NOT EXISTS records_state_created ON records (state, created_at DESC);

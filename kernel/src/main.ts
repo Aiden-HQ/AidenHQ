@@ -53,6 +53,7 @@ import { createConnectionHealth, createHealthProbe } from "./health.ts";
 import { createProxy } from "./proxy.ts";
 import { SETTINGS, UPDATER, openRecords } from "./records.ts";
 import { renameKinds, type Catalog } from "./kind-rename.ts";
+import { createRetention } from "./retention.ts";
 import { backfillLocal, openFacts } from "./facts.ts";
 import { createDeploys } from "./generations.ts";
 import { createFlow } from "./flow.ts";
@@ -846,6 +847,9 @@ const gw = createGateway({
 // follows those again to their end, and what never reached its box is lost. Asked only after the gateway exists: with no
 // previous kernel alive afterPrevious runs at once, and a lost run's cost is read from the gateway (spent).
 afterPrevious(() => void checkJobs.recover().catch((e: Error) => log("WARNING: adopted checks failed outside their own handling", { err: String(e?.message ?? e).slice(0, 300) })));
+// Retention (retention.ts): finished rows lose their big text after 14 days, Paperclip prunes its runs; ten minutes after start, then daily.
+const retention = createRetention({ db: records.db, log, stopping: () => draining });
+afterPrevious(() => { once(() => void retention.run(), 10 * 60_000); every(() => void retention.run(), 864e5); });
 
 // host:port pairs. Each binds on its own: the backplane address exists only once compose is up, so a failed bind is retried
 // (backoff up to a minute) while the others keep serving (a draining kernel's ports included). One process owns a port at a
