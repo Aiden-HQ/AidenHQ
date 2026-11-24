@@ -144,6 +144,8 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
   if (b.ship) {
     const refused = shipRefusal(b.ship, `${b.repo}#${b.ship.number}`);
     if (refused) return [refused];
+    // A contributor's fork receives the commits: an outside push, whatever its base repo is.
+    if (b.ship.headRepo && !same(b.ship.headRepo, b.repo)) return [T(1, "outside-push", `a push to ${b.ship.headRepo}, a contributor's fork of ${b.repo} (outside the agents org)`)];
   }
   const foreign = !b.ship && !s.requester?.platform && !b.branch.startsWith(`agent/${s.workspace}/`);
   const namespace = () => REJECT("branch-namespace", `\`${b.branch}\` isn't this task's branch: name it \`agent/${s.workspace}/<topic>\` and publish again`);
@@ -251,6 +253,8 @@ function checkCounts(checks: Check[]) {
 
 function mergeParts(p: Pr, s: State): Part[] {
   const ref = `${p.repo}#${p.number ?? "?"}`;
+  // An adoption's merge (its own readiness rules) is ship's alone, as approve and enqueue are.
+  if (p.ship && !p.ship.byShip) return [REJECT("ship-only", `${ref}: only the ship module files a merge for an adoption`)];
   const refused = p.ship && shipRefusal(p.ship, ref);
   if (refused) return [refused];
   // The instance repo is refused before anything reads its files: it changes only through apply, whatever it touches.
