@@ -45,6 +45,7 @@ export function openLaneStore(path: string) {
     attempt: db.prepare(`UPDATE lane_owed SET attempts = attempts + 1 WHERE id = ?`),
     retry: db.prepare(`UPDATE lane_owed SET due_at = ? WHERE id = ?`),
     settle: db.prepare(`UPDATE lane_owed SET done_at = ? WHERE id = ? AND done_at IS NULL`),
+    settleAsk: db.prepare(`UPDATE lane_owed SET done_at = ? WHERE agent = ? AND kind = 'continue' AND ask = ? AND done_at IS NULL`),
     settleTasks: db.prepare(`UPDATE lane_owed SET done_at = ? WHERE agent = ? AND kind = 'task' AND done_at IS NULL`),
     running: db.prepare(`SELECT id, agent, received_at FROM lane_turns WHERE status = 'running'`),
     interrupt: db.prepare(`UPDATE lane_turns SET status = 'error', error = 'interrupted by a restart' WHERE id = ?`),
@@ -120,6 +121,10 @@ export function openLaneStore(path: string) {
     },
     settle(id: number, now = Date.now()): void {
       q.settle.run(now, id);
+    },
+    /** A fresh answer to an ask settles the continuation owed for that same ask. */
+    settleAsk(agent: string, ask: string, now = Date.now()): void {
+      q.settleAsk.run(now, agent, ask);
     },
     settleTasks(agent: string, now = Date.now()): void {
       q.settleTasks.run(now, agent);

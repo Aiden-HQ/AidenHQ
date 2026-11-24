@@ -221,6 +221,7 @@ export function makeLane(d: LaneDeps) {
       done("ok");
       d.log.info({ agent: agent.key, ms: now() - (c ? c.due_at : wake !== undefined ? now() : lastOwner!.at), steps: r.steps, tools: r.tools, ...(c ? { continued: c.id } : {}) }, "lane turn done");
       if (c) d.store.settle(c.id, now());
+      else if (wake === undefined) d.store.settleAsk(agent.key, ask, now()); // a failed try of this ask left a continuation owed: this answer is it
       if (tasked) d.store.owe(agent.key, "task", ask, now() + TASK_GRACE_MS, now());
       else if (!c && promise && (await deferred(agent, ask, r.text))) {
         d.store.owe(agent.key, "continue", ask, now(), now());
@@ -296,7 +297,13 @@ export function makeLane(d: LaneDeps) {
       const agent = d.agents()[agentKey];
       if (!agent) return Promise.reject(new Error(`${agentKey} has no fast lane`));
       wakes.set(agentKey, [...(wakes.get(agentKey) ?? []), note]);
-      return schedule(agent);
+      // A rejection hands the wake back to the caller's retry, so it leaves this queue (else the retry would queue it twice).
+      return schedule(agent).catch((e) => {
+        const q = wakes.get(agentKey);
+        const i = q?.indexOf(note) ?? -1;
+        if (q && i >= 0) q.splice(i, 1);
+        throw e;
+      });
     },
     /** A background run's follow-up (chat_send): posted as the agent in its chat, never starting a turn. */
     async followUp(agentKey: string, text: string): Promise<void> {
