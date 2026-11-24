@@ -844,11 +844,10 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
       const t = now();
       const out: Incident[] = [];
       const live = lookup();
-      for (const a of await agents()) {
-        for (const p of pingPong(await jobsOf(a.id), t)) {
-          const task = await live(p.task);
-          if (task && !out.some((o) => o.key === slug(task))) out.push({ key: slug(task), reason: `task ${task}: ${p.n} runs in 12 hours alternated between two agents (${p.agents.map(slug).join(", ")})` });
-        }
+      const jobs = (await Promise.all((await agents()).map((a) => jobsOf(a.id)))).flat();
+      for (const p of pingPong(jobs, t)) {
+        const task = await live(p.task);
+        if (task && !out.some((o) => o.key === slug(task))) out.push({ key: slug(task), reason: `task ${task}: ${p.n} runs in 12 hours alternated between two agents (${p.agents.map(slug).join(", ")})` });
       }
       return out;
     },

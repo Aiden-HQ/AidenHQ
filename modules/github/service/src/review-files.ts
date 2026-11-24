@@ -74,14 +74,17 @@ export function diffPath(l: string): string | undefined {
 export function diffFiles(diff: string | null | undefined) {
   const out: { path: string; add: number; del: number }[] = [];
   let hunk = false;
+  let cur: (typeof out)[number] | undefined;
   for (const l of String(diff ?? "").split("\n")) {
     const path = diffPath(l);
     if (path !== undefined) {
-      out.push({ path, add: 0, del: 0 });
+      // A file-type change (symlink to file) is two records of one path; numstat counts the path once.
+      if (!out.some((f) => f.path === path)) out.push({ path, add: 0, del: 0 });
+      cur = out.find((f) => f.path === path)!;
       hunk = false;
     } else if (l.startsWith("@@")) hunk = true;
-    else if (hunk && out.length && l.startsWith("+")) out.at(-1)!.add++;
-    else if (hunk && out.length && l.startsWith("-")) out.at(-1)!.del++;
+    else if (hunk && cur && l.startsWith("+")) cur.add++;
+    else if (hunk && cur && l.startsWith("-")) cur.del++;
   }
   return out;
 }

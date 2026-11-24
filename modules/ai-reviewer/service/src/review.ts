@@ -56,6 +56,8 @@ export function markComments(text: string): string | undefined {
     const m = LABEL_LINE.exec(line);
     if (m) list.push({ label: line, author: m[1]!, mark: `[${m[1]}${m[2] ? ` ${m[2]}` : ""}]`, lines: [] });
     else if (/^>( |$)/.test(line) && list.length) list.at(-1)!.lines.push(IMITATION.test(line.replace(/^> ?/, "")) ? REMOVED : line.replace(/^> ?/, ""));
+    // The kernel's own note under an owner's short answer read against an agent's form (review-loop.ts): unquoted, but code's, and an author's text can't begin it (its lines are all quoted).
+    else if (line.startsWith("(code matched these letters") && list.length) list.at(-1)!.lines.push(line);
     else if (line !== "") return undefined;
   }
   const out: string[] = [];
