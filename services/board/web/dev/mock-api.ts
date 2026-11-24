@@ -376,7 +376,7 @@ const flows = () => ({
 
 // The Reviews page: a watched repo, a PR run, two whole-repo batches, and the catalog a repo review offers.
 const REVIEW_COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
-const RUN = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", why: null, tokens_in: 12000, tokens_out: 3000, duration_ms: 90000, nit: 0, pre_existing: 0, full: false, incremental_from: null, posted: true, target: "pr", batch: null };
+const RUN = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", why: null, tokens_in: 12000, tokens_out: 3000, duration_ms: 90000, important: 0, nit: 0, pre_existing: 0, full: false, incremental_from: null, posted: true, target: "pr", batch: null };
 const reviewRuns = () => [
   { ...RUN, id: "cr-000000000001", repo: "acme/payments", number: 42, head: "a".repeat(40), status: "done", cost_usd: 0.4, important: 1, nit: 2, started: ago(30), ended: ago(28), title: "Retry failed charges" },
   { ...RUN, id: "cr-000000000002", repo: "acme/payments", number: 43, head: "b".repeat(40), status: "running", cost_usd: 0.1, started: ago(3), ended: null, important: 0, title: "Add idempotency keys to refunds" },
