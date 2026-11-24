@@ -7,8 +7,8 @@ import { createAnswers } from "../src/answers.ts";
 const SINCE = "2026-11-24T10:00:00.000Z";
 const owner = { who: "owner", why: "owner_wait", ref: "wait:t1", since: SINCE };
 function setup(row = { task: "t1", wait_since: SINCE, attention: [owner] }) {
-  const s = { row: row as { task: string; wait_since?: string; attention: unknown[] } | undefined };
-  return { s, answers: createAnswers({ db: new DatabaseSync(":memory:"), states: { read: () => ({ tasks: s.row ? [s.row] : [] }) } as never }) };
+  const s = { row: row as { task: string; wait_since?: string; attention: unknown[] } | undefined, at: 0 };
+  return { s, answers: createAnswers({ db: new DatabaseSync(":memory:"), states: { read: () => ({ tasks: s.row ? [s.row] : [] }) } as never, now: () => s.at }) };
 }
 
 test("claim succeeds once for the open owner wait", () => {
@@ -31,4 +31,13 @@ test("release lets the same wait be claimed again", () => {
   assert.equal(answers.claim("t1", SINCE, "telegram"), "taken");
   answers.release("t1", SINCE, "board");
   assert.equal(answers.claim("t1", SINCE, "board"), "ok");
+});
+
+test("a claim that never produced an answer expires, so the wait can be answered again", () => {
+  const { s, answers } = setup();
+  assert.equal(answers.claim("t1", SINCE, "board"), "ok");
+  s.at = 30_000;
+  assert.equal(answers.claim("t1", SINCE, "telegram"), "taken");
+  s.at = 61_000;
+  assert.equal(answers.claim("t1", SINCE, "telegram"), "ok");
 });

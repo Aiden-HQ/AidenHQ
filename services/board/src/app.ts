@@ -1773,14 +1773,17 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const [read, open] = await Promise.all([taskStates.read({ open: true }), pc.openIssues()]);
         const byId = new Map(open.map((i) => [i.id, i]));
         const rows = await shownRows(read.tasks.filter((r) => r.attention.length && byId.has(r.task)));
-        // Oldest owner obligation first (the attention entry's own start); a row with an open owner question carries it and its options.
-        const since = (r: ShownState) => (r.attention.find((a) => a.who === "owner") ?? r.attention[0]!).since;
-        const items = await Promise.all(rows.sort((a, b) => since(a).localeCompare(since(b))).map(async (state) => {
+        // A row with an open owner question carries it and its options.
+        const items = await Promise.all(rows.map(async (state) => {
           const i = byId.get(state.task)!;
-          const q = waitsForAnswer(state) && state.wait_since ? askedQuestions(await pc.comments(i.id).catch(() => [] as Comment[]), i.assigneeAgentId) : undefined;
-          const ask = waitsForAnswer(state) && state.wait_since ? { question: state.question ?? "", questions: q?.questions ?? [{ question: state.question ?? "", options: [] }], waitSince: state.wait_since } : undefined;
+          const open = waitsForAnswer(state) && state.wait_since;
+          const q = open ? askedQuestions(await pc.comments(i.id).catch(() => [] as Comment[]), i.assigneeAgentId) : undefined;
+          const ask = open ? { question: state.question ?? "", questions: q?.questions ?? [{ question: state.question ?? "", options: [] }], waitSince: state.wait_since! } : undefined;
           return { identifier: i.identifier, title: i.title, agent: ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You", state, ...(ask ? { ask } : {}) };
         }));
+        // Oldest first, by the obligation each row shows: its open question, else the owner's (or first) attention entry.
+        const since = (r: (typeof items)[number]) => r.ask?.waitSince ?? (r.state.attention.find((a) => a.who === "owner") ?? r.state.attention[0]!).since;
+        items.sort((a, b) => since(a).localeCompare(since(b)));
         // The counts come from the rows the list shows.
         const has = (r: ShownState, f: (a: ShownState["attention"][number]) => boolean) => r.attention.some(f);
         const counts = {

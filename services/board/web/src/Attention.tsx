@@ -44,9 +44,10 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
   const rows = d.items.filter(IN[which]);
   /** After an answer: the next row's first control, else the heading, so the keyboard never lands on a removed row. */
   const moveOn = (identifier: string) => {
-    const els = [...(listRef.current?.querySelectorAll<HTMLElement>(".attn-row") ?? [])];
+    const els = [...(listRef.current?.querySelectorAll<HTMLElement>(".attn-row, .ui-row") ?? [])];
     const next = els[els.findIndex((e) => e.dataset.task === identifier) + 1];
-    (next?.querySelector<HTMLElement>("button, input") ?? headRef.current)?.focus();
+    const target = next?.matches(".ui-row") ? next : next?.querySelector<HTMLElement>("button, input");
+    (target ?? headRef.current)?.focus();
   };
   const list = rows.length > 0 && (
     <div className={`attn-list${rows.some((i) => i.ask) ? " asks" : ""}`} ref={listRef}>
@@ -63,6 +64,7 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
                 <time title={new Date(ask.waitSince).toLocaleString()}>{ago(ask.waitSince)}</time>
               </div>
               <AnswerForm
+                key={ask.waitSince}
                 questions={ask.questions}
                 askedAbove
                 onAnswer={(text) => api.answer(i.identifier, text, ask.waitSince).then(() => (void q.reload(), moveOn(i.identifier)))}
@@ -78,7 +80,7 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
     return (
       <section className="attn attn-compact" aria-label="What needs attention">
         <div className="attn-head">
-          <b className="attn-title">Fleet attention</b>
+          <b className="attn-title" tabIndex={-1} ref={headRef}>Fleet attention</b>
           {(["needs", "failed", "idle"] as const).map((w) => (
             <button key={w} type="button" className={`attn-count attn-${w}${n[w] ? " on" : ""}`} aria-expanded={chosen === w} onClick={() => setChosen(chosen === w ? null : w)}>
               {words[w]}

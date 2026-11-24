@@ -531,6 +531,17 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   const sendRef = useRef(send);
   sendRef.current = send;
   const answer = useCallback((t: string) => void sendRef.current(t, [], true), []);
+  // The form's answer to the question the kernel says is open: claimed against that wait (never routed by @mentions), then the chat refreshes.
+  const waitSince = chat?.state?.wait_since;
+  const answerAsk = useCallback(
+    async (t: string) => {
+      if (!waitSince) throw new Error("This question was already answered or has changed.");
+      await api.answer(refId, t, waitSince);
+      const q = chatQuery(refId);
+      await Promise.all([loadCached(q.key, q.fetch, false, true), reloadList()]).catch(() => {});
+    },
+    [refId, waitSince, reloadList],
+  );
   const openChat = useCallback((id: string) => go(`#/c/${id}`), [go]);
 
   async function settle(on: boolean) {
@@ -596,12 +607,12 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             ) : it.type === "ask" ? (
               <AskView q={it.q} crew={crew} prefix={prefix} go={go} answered={load} toast={toast} />
             ) : (
-              <MessageView m={it.m} crew={crew} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={open} notRight={notRight} answer={answer} />
+              <MessageView m={it.m} crew={crew} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={open} notRight={notRight} answer={answer} answerAsk={answerAsk} />
             )}
           </div>
         );
       }),
-    [items, crew, prefix, lastReply, asking, open, hold, openChat, load, go, toast, notRight, answer],
+    [items, crew, prefix, lastReply, asking, open, hold, openChat, load, go, toast, notRight, answer, answerAsk],
   );
 
   if (!chat)
@@ -799,7 +810,7 @@ function dayLabel(iso: string): string {
 }
 const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
-const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<boolean>; answer: (t: string) => void }) {
+const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer, answerAsk }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<boolean>; answer: (t: string) => void; answerAsk: (t: string) => Promise<unknown> }) {
   const [fixing, setFixing] = useState(false);
   const [fix, setFix] = useState("");
   const [busy, setBusy] = useState(false);
@@ -872,7 +883,7 @@ const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, aski
           ))}
         </div>
       )}
-      {asking && open && m.questions && <AnswerForm questions={m.questions} onAnswer={async (t) => answer(t)} />}
+      {asking && open && m.questions && <AnswerForm questions={m.questions} onAnswer={answerAsk} />}
       <div className="msg-actions">
         <button className="link-btn small" onClick={() => setFixing(!fixing)} title="Tell the agent this reply was wrong (recorded as a correction)">
           Not right
@@ -1367,7 +1378,7 @@ function AskView({ q, crew, prefix, go, answered, toast }: { q: Ask; crew: Assig
       <div className="bubble">
         <Markdown text={q.text} prefix={prefix} className="md" />
       </div>
-      <AnswerForm questions={q.questions} onAnswer={answer} />
+      <AnswerForm key={q.waitSince} questions={q.questions} onAnswer={answer} />
     </div>
   );
 }
