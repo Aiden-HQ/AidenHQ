@@ -19,6 +19,8 @@
 //                default branch's head, on a new aidenhq/setup-<sha> branch no one else has moved, and its PR (an earlier setup PR is
 //                closed). Answers {pending, write} while the record waits.
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
+//   app_token    {repo} → {token, expires_at}: the kernel's own op (appToken below, never a module's: no grant names it), the
+//                GitHub App's installation token narrowed to that repo (contents and pull requests), for a session box's git
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
 // and the same answer (its bundle: every branch), and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
 // the github code host for other orgs is 404.
@@ -269,6 +271,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
   }
   /** The GitHub code host's call: the kernel's executor key, the op's validated body, the answer as it came. */
   async function forward(k2: Kind, module: string, op: string, out: Record<string, unknown>): Promise<Answer> {
+    // app_token is the App's, not the owner's sign-in: its success proves nothing about the owner's need, so it never clears one.
     const key = secret(k2.executor!.auth_secret);
     if (!key) throw fail(503, `${CODEHOST}'s key is missing`);
     const url = new URL(`/ops/${op}`, k2.executor!.url).toString();
@@ -278,7 +281,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10 * 60_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } },
       // The code host answers as the owner: a 2xx proves the sign-in worked, so a full need an earlier refusal recorded clears
       // (a scope need is partial and stays until the owner grants it). The answer itself is untouched.
-      (r) => { if ((r.statusCode ?? 500) < 300) clearNeed(module); ok(r); });
+      (r) => { if ((r.statusCode ?? 500) < 300 && op !== "app_token") clearNeed(module); ok(r); });
       req.on("timeout", () => req.destroy(fail(504, `${CODEHOST} didn't answer`)));
       req.on("error", (e) => { resolver.forget(url); reject((e as { status?: number }).status ? e : fail(502, `${CODEHOST} is unreachable (${e.message})`)); });
       req.end(data);
@@ -331,8 +334,24 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
     const existing = Array.isArray(j.existing) ? j.existing.filter((p): p is string => typeof p === "string") : [];
     return { repo: j.repo, base: j.base, private: j.private !== false, existing, ...(typeof j.conflict === "string" ? { conflict: j.conflict } : {}) };
   }
+  /**
+   * A session box's git credential (jobtools.ts gitToken asks, for a repo it already checked): the App's installation token
+   * narrowed to `repo`, at most an hour old. Never a module's op (no grant names it), and never the owner's token.
+   */
+  async function appToken(repo: string): Promise<{ token: string; expires_at: string }> {
+    const k = kind();
+    if (!k?.executor) throw fail(404, NO_HOST);
+    const r = await forward(k, "kernel", "app_token", { module: "kernel", repo });
+    let said = "";
+    for await (const c of r) said += c;
+    let j: { token?: unknown; expires_at?: unknown; error?: unknown } = {};
+    try { j = JSON.parse(said); } catch { /* the status says it */ }
+    if ((r.statusCode ?? 502) >= 300) throw fail(r.statusCode === 409 ? 409 : 502, String(j.error ?? `${CODEHOST} answered ${r.statusCode}`).slice(0, 500));
+    if (typeof j.token !== "string" || !j.token) throw fail(502, `${CODEHOST} sent no token`);
+    return { token: j.token, expires_at: String(j.expires_at ?? "") };
+  }
   return {
-    ask, identity, publishTip,
+    ask, identity, publishTip, appToken,
     /** POST /v1/codehost/:op: the answer goes back as it came. */
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
       if (op === "bundle") throw fail(404, "no codehost operation bundle");

@@ -1,5 +1,5 @@
 // The typed GitHub operations other modules ask the kernel for (POST /v1/codehost/:op → here, /ops/<op>), each run on the
-// owner's sign-in inside this process: fetch, head, read, comment, commit, runner_token. The kernel has checked the caller's
+// owner's sign-in inside this process: fetch, head, read, comment, commit, runner_token (app_token alone is the App's). The kernel has checked the caller's
 // grant and the shape of every field; the owner's token never leaves this process, so no answer, header or error carries it
 // (errors are scrubbed of it as a last guard). snapshot, clone and bundle stay in service.ts.
 import { createReadStream, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -24,6 +24,11 @@ export type OpsContext = {
   initBare: (dir: string) => Promise<void>;
   /** Whether the kernel's records name this GitHub object (a ref like `github:o/r#1/comment/2`) as made by AidenHQ. */
   ours: (ref: string) => Promise<boolean>;
+  /** The owner's one GitHub App (github-mcp's gitHubApp): where it is installed, and a repo-narrowed token from it. */
+  app?: {
+    installation(repo: string): Promise<number | null>;
+    mint(installation: number, narrow: { repositories: string[]; permissions: Record<string, string> }): Promise<{ token: string; expires_at: string }>;
+  };
 };
 type Body = Record<string, any>;
 type Answer = { status: number; json?: unknown; text?: string; stream?: Readable };
@@ -291,6 +296,13 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
     return { status: 200, json: { token: r.body?.token, expires_at: r.body?.expires_at } };
   }
   const s = slugOf(b.repo);
+  // A session box's git credential: an installation token for this one repo, contents and pull requests only. The App's token,
+  // never the owner's: the kernel asks only for a repo a session may reach (jobtools.ts gitToken).
+  if (op === "app_token") {
+    const installation = await ctx.app?.installation(s.slug);
+    if (installation == null) throw fail(409, `the GitHub App isn't set up or isn't installed on ${s.slug}: set up the GitHub App (#/setup/github-app) and install it there`);
+    return { status: 200, json: await ctx.app!.mint(installation, { repositories: [s.name], permissions: { contents: "write", pull_requests: "write" } }) };
+  }
   if (op === "fetch") return bundleOf(ctx, s, String(b.ref));
   if (op === "head") return { status: 200, json: { sha: String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(String(b.ref))}`)).body?.commit?.sha ?? "") } };
   if (op === "read" && b.kind === "file") return file(ctx, s, b);
@@ -310,7 +322,7 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
 
 /** POST /ops/<op> from the kernel (already authenticated by the caller): the answer, or an error naming its cause and fix. */
 export async function serveOps(req: IncomingMessage, res: ServerResponse, ctx: OpsContext): Promise<void> {
-  const op = /^\/ops\/(fetch|head|read|comment|commit|runner_token)$/.exec(String(req.url ?? ""))?.[1];
+  const op = /^\/ops\/(fetch|head|read|comment|commit|runner_token|app_token)$/.exec(String(req.url ?? ""))?.[1];
   if (!op) throw fail(404, "no such operation");
   let raw = "";
   for await (const c of req) { raw += c; if (raw.length > 2_000_000) throw fail(413, "request too large"); }
