@@ -623,7 +623,7 @@ export function createEngine(d: EngineDeps) {
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skills: o.run.skills, tools: o.run.tools } : {}), ...(o?.run.max_cost_usd ? { max_cost_usd: o.run.max_cost_usd } : {}) },
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
         ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}), ...await deepsecData(r),
-        ...(area ? { area: { id: area.id, name: area.name, files: area.files } } : {}), ...(o?.scope === "map" && plan ? { area_map: areaMap(plan) } : {}),
+        ...(area ? { area: { id: area.id, name: area.name, files: area.files } } : {}), ...(o?.scope === "map" && plan && plan.areas.length > 1 ? { area_map: areaMap(plan) } : {}),
         focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -698,7 +698,10 @@ export function createEngine(d: EngineDeps) {
     mirrorDue = true;
     // A result is bound to its run: one for another repo, PR, head or base (what a box could claim) is refused, never posted.
     if (res.state === "done" && r.profile === PLAN) {
-      const plan = planOf(r, res.review as unknown as Record<string, unknown>);
+      // The plan is the run's kept file (its result only the summary); a read that fails now is asked again next tick.
+      const kept = await d.runner.kept(r.check_job!);
+      let plan: Plan | string = "the plan run left no plan";
+      if (kept) { try { plan = planOf(r, JSON.parse(kept.toString("utf8"))); } catch { plan = "the plan isn't JSON"; } }
       if (typeof plan !== "string") { filePlan(r, plan, charge(r, res.billed_usd)); return batchEnded(r.batch); }
       res = { state: "failed", why: `the review's result isn't a plan: ${plan}`, billed_usd: res.billed_usd };
     }
@@ -729,9 +732,12 @@ export function createEngine(d: EngineDeps) {
         if (capped && r.kind === "oneoff") summarise(r.batch, r.id);
         return;
       }
-      run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
+      const why = res.why, cost = charge(r, res.billed_usd);
+      const failed = () => run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", why.slice(0, 500), cost, iso(), r.id);
+      // A failed plan and the failures of the options that waited for it land together: never a plan failed with nothing to say so.
+      if (r.profile === PLAN) tx(() => { failed(); failPlan(r, why); });
+      else failed();
       end(runRow(r.id)!);
-      if (r.profile === PLAN) failPlan(r, res.why);
       if (r.target === "tree") return batchEnded(r.batch);
       if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
@@ -949,11 +955,11 @@ export function createEngine(d: EngineDeps) {
   /** One run of a repo review: queued, or ended at once (`end`: skipped or failed, with why). */
   const addTree = (b: BatchRow, engine: string, model: string, effort: string, option: string, profile: string, area: string | null, end?: { status: "skipped" | "failed"; why: string }) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, why, ended, full, due, created, author, batch, target, option, profile, area)
     VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'oneoff', ?, ?, ?, 1, ?, ?, ?, ?, 'tree', ?, ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, b.repo, b.sha, b.sha, engine, model, effort, end?.status ?? "queued", end?.why.slice(0, 500) ?? null, end ? iso() : null, now(), now(), b.author, b.id, option, profile, area);
-  /** The plan failed for good: each option that waited for it fails with its reason. */
+  /** The plan failed for good: each option that waited for it fails with its reason (inside the caller's transaction). */
   function failPlan(r: RunRow, why: string) {
     const b = batchRow(r.batch)!;
     const combos = JSON.parse(b.combo) as Record<string, { model: string; effort: string }>;
-    tx(() => { for (const o of deferredOf(b)) { const c = combos[o.id]!; addTree(b, "gone" in o ? "gone" : engineOf(o), c.model, c.effort, o.id, "code-review", null, { status: "failed", why: `the area plan failed: ${why}` }); } });
+    for (const o of deferredOf(b)) { const c = combos[o.id]!; addTree(b, "gone" in o ? "gone" : engineOf(o), c.model, c.effort, o.id, "code-review", null, { status: "failed", why: `the area plan failed: ${why}` }); }
   }
   /** A plan run's result, checked: every area named, its tags the catalog's, its file list within a check's spec field. */
   function planOf(r: RunRow, v: Record<string, unknown>): Plan | string {

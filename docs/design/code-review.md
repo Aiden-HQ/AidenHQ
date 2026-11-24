@@ -167,7 +167,7 @@ deepsec 254.
   code", which is no gap in the verdict. A failed plan fails the options that waited for it.
 - **An area check sees only its area.** The spec's `area` is the area's file list, and `review.ts` makes the head commit hold
   only those files. `git ls-files` and the diff from the empty tree are the area's, for every engine and skill (a skill's own
-  checkout is `git archive` of that commit). The rest of the checkout stays on disk to follow calls. Coverage counts against
+  checkout is a clone of that commit, so it holds the area's files only); `git status` shows no untracked files. The rest of the checkout stays on disk to follow calls. Coverage counts against
   the area's files, a finding outside them is dropped, and paths and lines stay the repo's. The brief and the skills' `tree`
   contracts say "the assigned area".
 - **Roll-up.** There is one run row per option and area: the same poller, and a failed area retries alone with the same spec

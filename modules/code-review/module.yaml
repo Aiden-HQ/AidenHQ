@@ -49,8 +49,9 @@ check_jobs:
     result: true
     keep: true
   # A repo review's area plan (recipe/plan.ts): the batch's first check when it has a per-area option. `base` is the commit,
-  # `model` the planner's (a cheap one), `stacks` the catalog's stack tags with their path globs. Its result is the areas (each a
-  # file list a review check's `area` spec field carries); the per-area checks are filed from it.
+  # `model` the planner's (a cheap one), `stacks` the catalog's stack tags with their path globs. It keeps the plan (the areas, each
+  # a file list a review check's `area` spec field carries; a large repo's is more than a result holds) and its result is the plan's
+  # summary; the per-area checks are filed from the kept plan.
   code-review-plan:
     dir: recipe
     argv: [ node, /aidenhq-out/recipe/plan.ts ]
@@ -59,6 +60,7 @@ check_jobs:
     spec: { base: sha, run: text, model: text, stacks: json }
     model: true
     result: true
+    keep: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is
   # the JSON object recipe/catalog.ts toolSpec builds, `base` the commit itself (a whole tree only, for now). No model.
   code-review-tools:

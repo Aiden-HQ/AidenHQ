@@ -30,10 +30,12 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, areas = undef
   const heads = { HEAD: sha("1") };
   const started = [], results = new Map(), published = [], setups = [], branch = { setup: undefined, asked: [] };
   const held = new Map(), inputs = [], kept = new Map(), plans = [];
+  // A plan run keeps its plan and answers with the summary (recipe/plan.ts).
+  const planned = (check, r) => { kept.set(check, Buffer.from(JSON.stringify(r.review))); results.set(check, { ...r, review: { ...r.review, areas: r.review.areas.length } }); };
   const engine = createEngine({
     db, config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
-    runner: { start: async (s) => (s.profile === "code-review-plan" ? (plans.push(s), results.set(`p-${plans.length}`, planResult(s, areas)), { check: `p-${plans.length}` }) : (started.push(s), { check: `c-${started.length}` })), result: async (c) => results.get(c) ?? { state: "running" },
+    runner: { start: async (s) => (s.profile === "code-review-plan" ? (plans.push(s), planned(`p-${plans.length}`, planResult(s, areas)), { check: `p-${plans.length}` }) : (started.push(s), { check: `c-${started.length}` })), result: async (c) => results.get(c) ?? { state: "running" },
       input: async (data) => (inputs.push(data), `${inputs.length}`.padStart(64, "0")), kept: async (c) => kept.get(c) },
     deepsec: { read: (repo) => held.get(repo), write: (repo, data) => held.set(repo, data) },
     poster: {},

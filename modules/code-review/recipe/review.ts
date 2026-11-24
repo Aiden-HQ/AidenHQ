@@ -153,6 +153,8 @@ export function history(ws: string, out: string, spec: Spec, paths?: string[]) {
     return g(["rev-parse", "HEAD"]);
   };
   g(["init", "-q", "."]);
+  // An area's checkout: the rest of the repo on disk is context, never shown as untracked changes to review.
+  if (paths) g(["config", "status.showUntrackedFiles", "no"]);
   // The repo's own .gitattributes are the PR's to write: they could mark code binary (hidden from the diff), set filters or
   // rewrite line ends. The box's info/attributes, which outranks them, puts every path back on git's defaults: binary only
   // by content (a NUL in the first 8000 bytes), no filter, no conversion.

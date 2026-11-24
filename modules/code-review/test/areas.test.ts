@@ -23,7 +23,8 @@ test("planner: a repo within budget is one area and asks no model; a model's are
   assert.deepEqual([small.planned_by, small.areas.length, small.areas[0].count, asked], ["one", 1, 20, 0]);
   // Over budget: the model groups the service with its tests; an area over budget is split by folder, then sorted file.
   const repo = [...items(100, "svc/src"), ...items(100, "svc/test"), ...items(30, "web", 10, "tsx"), { path: "README.md", lines: 5 }];
-  const p = await plan(repo, STACKS, "m", async () => ({ areas: [{ name: "service", include: ["svc/"], tags: [] }, { name: "web", include: ["web/", "README.md"], tags: ["react"] }] }));
+  // Prefixes with or without their slash (or a ./); a tag the model left off is the stack's still (web holds .tsx files).
+  const p = await plan(repo, STACKS, "m", async () => ({ areas: [{ name: "service", include: ["./svc"], tags: [] }, { name: "web", include: ["web/", "README.md"], tags: [] }] }));
   assert.equal(p.planned_by, "model");
   assert.deepEqual(p.areas.map((a) => [a.name, a.count, a.tags]), [["service (1 of 2)", 100, []], ["service (2 of 2)", 100, []], ["web", 31, ["react"]]]);
   assert.deepEqual(every(p), repo.map((i) => i.path).sort(), "every file in exactly one area");
@@ -42,6 +43,14 @@ test("planner: an answer that misses a file, names an unknown tag or isn't one i
     assert.ok(p.areas.every((a) => a.count <= FILES_MAX));
     assert.deepEqual(p.areas.filter((a) => a.tags.includes("react")).map((a) => a.name), ["b/y"]);
   }
+  // A project marker tags every area of its project: manage.py's folder holds the Django app's code split into two areas.
+  const django = [{ path: "app/manage.py", lines: 5 }, ...items(150, "app/views"), ...items(150, "app/models"), ...items(5, "docs")];
+  const d = await plan(django, { django: ["**/manage.py"] }, "m", async () => "no answer");
+  const appAreas = d.areas.filter((a) => decode(a.files).some((f) => f.startsWith("app/")));
+  assert.ok(appAreas.length >= 2 && appAreas.every((a) => a.tags.includes("django")), JSON.stringify(d.areas.map((a) => [a.name, a.tags])));
+  assert.ok(d.areas.filter((a) => decode(a.files).every((f) => f.startsWith("docs/"))).every((a) => !a.tags.length));
+  {
+  }
 });
 
 test("an area check sees only its area: git lists its files, coverage counts them and a finding outside is dropped", async () => {
@@ -55,6 +64,7 @@ test("an area check sees only its area: git lists its files, coverage counts the
     { severity: "nit", path: "svc/a.ts", line: 2, title: "in the area", why: "w", evidence: "e", fix_brief: "f" },
     { severity: "nit", path: "web/c.tsx", line: 1, title: "outside it", why: "w", evidence: "e", fix_brief: "f" }] }) }) });
   assert.deepEqual(execFileSync("git", ["ls-files"], { cwd: ws, encoding: "utf8" }).trim().split("\n"), ["svc/a.ts", "svc/b.ts"]);
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: ws, encoding: "utf8" }), "", "the rest of the repo isn't shown as changes");
   assert.deepEqual([r.coverage.counts.eligible, r.findings.map((f) => f.title)], [2, ["in the area"]]);
   assert.match(seen.instructions, /covers one area of the repository \(2 files/);
 });
@@ -72,11 +82,11 @@ const CATALOG = [
 const AREAS = [{ id: "a01", name: "service", tags: [], files: { svc: ["a.ts", "b.ts"] }, count: 2, lines: 30 }, { id: "a02", name: "web", tags: ["react"], files: { web: ["c.tsx"] }, count: 1, lines: 10 }];
 
 test("a plan of several areas files each per-area option per area, a stack option on its stack's areas (none: skipped, no gap) and a map option once with the areas; the report rolls them up", async () => {
-  const started = [], results = new Map();
+  const started = [], results = new Map(), kept = new Map();
   let t = Date.parse("2026-11-24T10:00:00Z");
   const engine = createEngine({
     db: new DatabaseSync(":memory:"), config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t, source: { open: async () => [] }, poster: {}, catalog: () => CATALOG,
-    runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async () => undefined },
+    runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async (c) => kept.get(c) },
     codehost: { tree: async () => ({ sha: sha("1"), paths: ["svc/a.ts", "svc/b.ts", "web/c.tsx"] }) },
     publisher: { file: async () => ({ state: "refused", write: "p", why: "off" }), outcome: async () => ({ state: "refused" }) }, deepsec: { read: () => undefined, write: () => {} },
   });
@@ -85,7 +95,10 @@ test("a plan of several areas files each per-area option per area, a stack optio
   // deepsec (whole repo) and the plan start at once; the rest wait for the plan.
   assert.deepEqual(started.map((s) => s.profile === "code-review-plan" ? "plan" : s.option), ["sec.deepsec", "plan"]);
   assert.deepEqual([started[1].combo.model, Object.keys(started[1].stacks).sort()], ["anthropic/claude-haiku-5.5", ["react", "solidity"]]);
-  results.set("c-2", { state: "done", billed_usd: 0.02, review: { version: 1, repo: REPO, head: sha("1"), eligible: 3, lines: 40, planned_by: "model", note: null, areas: AREAS } });
+  // The plan is the run's kept file; its result only the summary.
+  const plan = { version: 1, repo: REPO, head: sha("1"), eligible: 3, lines: 40, planned_by: "model", note: null };
+  kept.set("c-2", Buffer.from(JSON.stringify({ ...plan, areas: AREAS })));
+  results.set("c-2", { state: "done", billed_usd: 0.02, review: { ...plan, areas: 2 } });
   await engine.tick({ github: false });
   const filed = started.slice(2).map((s) => `${s.option}${s.area ? `@${s.area.id}` : ""}${s.area_map ? "+map" : ""}`);
   assert.deepEqual(filed, ["cor.review@a01", "cor.review@a02", "perf.react@a02", "maint.arch+map"]);
@@ -121,18 +134,19 @@ test("a plan of several areas files each per-area option per area, a stack optio
 });
 
 test("a failed plan fails every option that waited for it; the whole-repo ones keep their results", async () => {
-  const started = [], results = new Map();
+  const started = [], results = new Map(), kept = new Map();
   let t = Date.parse("2026-11-24T10:00:00Z");
   const engine = createEngine({
     db: new DatabaseSync(":memory:"), config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t, source: { open: async () => [] }, poster: {}, catalog: () => CATALOG,
-    runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async () => undefined },
+    runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async (c) => kept.get(c) },
     codehost: { tree: async () => ({ sha: sha("1"), paths: ["svc/a.ts", "web/c.tsx"] }) },
     publisher: { file: async () => ({ state: "refused", write: "p", why: "off" }), outcome: async () => ({ state: "refused" }) }, deepsec: { read: () => undefined, write: () => {} },
   });
   const b = await engine.repoReview({ target: { repo: REPO }, options: ["cor.review", "sec.deepsec"] });
   await engine.tick({ github: false });
   results.set("c-1", { state: "done", billed_usd: 1, review: { version: 1, repo: REPO, pr: 0, base: sha("1"), head: sha("1"), coverage: { reviewed: [], excluded: [], incomplete: null, counts: { eligible: 2, reviewed: 2 } }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [] } });
-  results.set("c-2", { state: "done", billed_usd: 0, review: { version: 1, repo: REPO, head: sha("1"), areas: [{ id: "x", name: 3 }] } });
+  kept.set("c-2", Buffer.from(JSON.stringify({ version: 1, repo: REPO, head: sha("1"), areas: [{ id: "x", name: 3 }] })));
+  results.set("c-2", { state: "done", billed_usd: 0, review: { version: 1, repo: REPO, head: sha("1"), areas: 1 } });
   await engine.tick({ github: false });
   assert.equal(engine.batches({})[0].status, "done");
   const md = engine.report(b.batch);
