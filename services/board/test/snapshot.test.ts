@@ -32,14 +32,14 @@ it("serves the open and recent closed issues from memory, brought up to date by 
   expect(asked.slice(full).filter((a) => a.startsWith("GET")).length).toBe(1);
 });
 
-it("keeps serving the snapshot when Paperclip fails, and never an older row over a newer one", async () => {
+it("fails the read when its refresh fails, rather than serve inventory that may have changed", async () => {
   let down = false;
   const fetchImpl = (async () => (down ? new Response("{}", { status: 500 }) : new Response(JSON.stringify([issue(1, "todo", at(-600))]), { status: 200 }))) as unknown as typeof fetch;
   const pc = new Paperclip("http://kernel", "co", "key", fetchImpl);
   await pc.openIssues();
   down = true;
   await pc.updateIssue("id-1", {}).catch(() => {}); // dirty: the next read tries again, and fails
-  expect((await pc.openIssues()).map((i) => i.identifier)).toEqual(["WOR-1"]);
+  await expect(pc.openIssues()).rejects.toThrow();
 });
 
 it("serves the last good response while a fresh one is read, one read at a time", async () => {

@@ -220,7 +220,7 @@ export class Paperclip {
 
   /**
    * The open issues with whether LIST_BOUND cut them short (the board's inventory), from the snapshot. `strict`: a read that
-   * writes follow from; the snapshot must have been brought up to date just now, never the last one kept through a failure.
+   * writes follow from; the snapshot is brought up to date just now, never taken as it was.
    */
   async openListed(strict = false): Promise<Listed> {
     const s = await this.snapshot(strict);
@@ -237,8 +237,7 @@ export class Paperclip {
 
   /**
    * The snapshot, current to within SNAP_FRESH_MS and no later than the last write the board made: readers share one
-   * incremental read, and the full inventory is read again every SNAP_FULL_MS. An upstream that fails or is slow never blanks
-   * a display read once there is a snapshot: the last one is served.
+   * incremental read, and the full inventory is read again every SNAP_FULL_MS. A refresh that fails fails the read.
    */
   private async snapshot(strict: boolean): Promise<Snapshot> {
     const s = this.snap;
@@ -246,11 +245,9 @@ export class Paperclip {
     if (strict) await this.syncing?.catch(() => {});
     else if (s && s.syncedWrites === this.writes && Date.now() - s.syncedAt < SNAP_FRESH_MS && Date.now() - s.fullAt < SNAP_FULL_MS) return s;
     this.syncing ??= this.sync().finally(() => (this.syncing = undefined));
-    try {
-      await this.syncing;
-    } catch (err) {
-      if (strict || !this.snap) throw err;
-    }
+    // A failed refresh is the read's failure: the pages that can show their last good response (swr.ts) say so, and no write is
+    // validated against inventory that may have changed.
+    await this.syncing;
     return this.snap!;
   }
 

@@ -338,7 +338,7 @@ export function App() {
     const b = fresh(peek<Board>("board")?.data);
     if (!b || (b as { stale?: unknown }).stale === true) return;
     setBoard(b);
-    if (Date.now() > holdUntil.current) setItems(b.buckets);
+    if (!dragFrom.current && Date.now() > holdUntil.current) setItems(b.buckets);
   }), []);
   // A sign-in finished (in the tab Connect opened): its banner goes at once.
   useEffect(() => subscribe(["connections"], () => void refresh()), [refresh]);

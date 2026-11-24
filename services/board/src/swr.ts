@@ -41,6 +41,8 @@ export class Swr {
     if (!read) {
       const r: Read = { gen: this.gen, late: false, promise: undefined as unknown as Promise<object> };
       r.promise = load().then((value) => {
+        // A partial answer (marked stale by its own route) never replaces a complete one.
+        if ((value as { stale?: unknown }).stale === true) return value;
         // A read that began before the latest change is kept to show in a pinch, never as fresh.
         this.last.set(key, { value, until: r.gen === this.gen ? Date.now() + (r.late ? LATE_FRESH_MS : FRESH_MS) : 0 });
         return value;

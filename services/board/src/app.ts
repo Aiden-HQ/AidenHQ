@@ -607,6 +607,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   /** The big pages' last good responses (swr.ts), per account; anything the board or Paperclip changes makes the next read look again. */
   const swr = new Swr();
   store.events.listen((name) => name !== "progress" && swr.touch());
+  /** Runs a route; a write (or anything that failed halfway) makes the pages read again, whichever way the route was reached. */
+  const handled = async (route: { handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }, method: string | undefined, m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => {
+    try {
+      return await route.handle(m, body, url, req);
+    } finally {
+      if (method !== "GET") swr.touch();
+    }
+  };
   const served = <T extends object>(page: string, load: () => Promise<T>, waitMs?: number) => swr.serve(`${page}:${viewer()}`, load, waitMs);
   const savedViews = (): View[] => store.views(viewer()).map((r) => ({ ...r, spec: ViewSpecSchema.parse(JSON.parse(r.spec)) }));
   const viewConflict = (id: string) => new ViewConflict(savedViews().find((x) => x.id === id) ?? null);
@@ -2361,7 +2369,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const route = internal.find((r) => r.method === req.method && r.path.test(url.pathname));
     if (!route) throw new HttpError(404, "not found");
     const body = await readJson(req, route.maxBody);
-    send(res, 200, JSON.stringify(await route.handle(url.pathname.match(route.path)!, body, url, req)), "application/json");
+    send(res, 200, JSON.stringify(await handled(route, req.method, url.pathname.match(route.path)!, body, url, req)), "application/json");
   }
 
   /** The organisation whose app a module's client is now (a pasted or own client clears it: setup-flows.ts). */
@@ -2500,8 +2508,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       const route = routes.find((r) => r.method === req.method && r.path.test(path));
       if (!route) throw new HttpError(404, "not found");
       const body = req.method === "GET" ? undefined : await readJson(req, route.maxBody);
-      const result = await route.handle(path.match(route.path)!, body, url, req);
-      if (req.method !== "GET") swr.touch();
+      const result = await handled(route, req.method, path.match(route.path)!, body, url, req);
       await sendCompressed(req, res, 200, JSON.stringify(result), "application/json");
     });
   }
@@ -2673,7 +2680,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const url = new URL(path, "http://board");
     const route = routes.find((r) => r.method === method && r.path.test(url.pathname));
     if (!route) throw new HttpError(404, `no such route ${method} ${url.pathname}`);
-    return perRequest.run({ session, via: "mcp", credential }, () => route.handle(url.pathname.match(route.path)!, body, url, req));
+    return perRequest.run({ session, via: "mcp", credential }, () => handled(route, method, url.pathname.match(route.path)!, body, url, req));
   }
   const mcpAuth = opts.accounts && opts.adminUrl ? createMcpAuth(opts.accounts, opts.adminUrl) : undefined;
   /** The same dispatch with the bearer's own session (checked per request), for the tools' `callRoute`. */

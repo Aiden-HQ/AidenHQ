@@ -84,10 +84,12 @@ export function startWatch(o: {
   let cards: string | undefined;
   let liveCards: Awaited<ReturnType<Records["live"]>> | undefined;
   let failures = 0;
+  let sweepDue = false;
   let sweeping = false, sweptAt = 0, sweepFailing = false;
   const sweep = () => {
     if (!o.sweep || sweeping) return;
     sweeping = true;
+    sweepDue = false;
     sweptAt = Date.now();
     void o.sweep().then(
       () => (sweepFailing && o.log.info("board sweep back"), (sweepFailing = false)),
@@ -151,7 +153,9 @@ export function startWatch(o: {
       }
       s.last = seen;
       // The board's writes follow the tasks that changed (the snapshot already has these rows); a quiet board looks once a minute.
-      if (touched.size ? Date.now() - sweptAt >= SWEEP_MS : Date.now() - sweptAt >= SWEEP_IDLE_MS) sweep();
+      // A change seen during the cooldown waits for it (`swept` is false until a sweep starts).
+      if (touched.size) sweepDue = true;
+      if (sweepDue ? Date.now() - sweptAt >= SWEEP_MS : Date.now() - sweptAt >= SWEEP_IDLE_MS) sweep();
       // A run that started, ended or changed state touches its task; more output is progress.
       const now = await runs(s, live);
       for (const id of new Set([...now.keys(), ...s.runs.keys()])) {
