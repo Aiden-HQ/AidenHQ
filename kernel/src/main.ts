@@ -363,7 +363,7 @@ const updates = createUpdates({
     }
   },
   record: (id) => records.get(id),
-  close: (task, body) => moduleTasks.close("kernel", task, { status: "done", body }),
+  close: (task, body, status) => moduleTasks.close("kernel", task, { status, body }),
 });
 const updatesTick = () => void updates.tick().catch((e: Error) => log("update pass failed", { err: e.message.slice(0, 300) }));
 every(updatesTick, 5 * 60_000);

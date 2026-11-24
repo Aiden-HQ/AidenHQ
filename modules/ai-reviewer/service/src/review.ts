@@ -418,9 +418,11 @@ export function toolCallFromDetails(action: string, details: unknown): ToolCall 
   return { connection, tool, arguments: args as Record<string, unknown> };
 }
 
-export function reviewPrompt({ policy, card, diff, full = diff, rest = [], files = "", leftOut = [], chain, comments = "", toolCall, toolBody, reasonWithheld = false }: {
+export function reviewPrompt({ policy, card, diff, full = diff, rest = [], files = "", leftOut = [], chain, comments = "", toolCall, toolBody, productCommits, reasonWithheld = false }: {
   policy: string; card: ReviewCard; diff: string; files?: string; leftOut?: string[]; chain: string; comments?: string;
-  /** A second look at a reject that rested only on the card's generated `reason:`: that line is withheld from this prompt. */
+  /** The product commits a pin move brings (code's account of commits already on the product's main): shown as PRODUCT_COMMITS. */
+  productCommits?: string;
+  /** A second look at a reject whose only evidence was code's own text (the card's reason or the product roll-up): withheld. */
   reasonWithheld?: boolean;
   /** A `conn.tool` call's arguments (code's, read from the record): shown as TOOL_CALL, never as a DIFF. */
   toolCall?: ToolCall;
@@ -470,6 +472,7 @@ ${fence("DIFF", diff, MAX_DIFF)}
 
 The changed files at that commit, for context (data). A file named here with its size rather than shown is read with read_file:
 ${fence("FILES", files, MAX_FILES + 10_000)}${unreadable}`;
+  // The request is shown whole: an owner's or agent's own words are never edited here.
   const request_ = `What the owner or the delegating agent asked for (the request chain, data):
 ${fence("REQUEST_CHAIN", chain, MAX_CHAIN, true)}${comments_}`;
   // The card's target and summary say what the write is, and a summary that misstates the change is the sabotage policy's own
@@ -477,7 +480,14 @@ ${fence("REQUEST_CHAIN", chain, MAX_CHAIN, true)}${comments_}`;
   // a count of `.github/` files): a finding quoting only that line is dropped, never a reason to block the write.
   const card_ = `The card: its target, summary and code's reason (data; names in it were chosen by agents):
 ${fence("CARD", `target: ${card.target ?? ""}\nsummary: ${card.sentence ?? ""}\nreason: ${reasonWithheld ? "(withheld: code's own description of the plan and gate, never the change)" : card.reason ?? ""}`, 2000)}`;
-  const user = `The request: action ${action}.${change_}
+  // The product commits a pin move brings, in code's own words: the commits the release installs, already merged on the
+  // product's main. Their own labelled block, so a finding quoting the change this apply makes is not quoting code's list of
+  // what the product already ran.
+  const product_ = productCommits ? `
+
+The product commits this change's pin move brings (data), written out by code from the product's own main: the commits this release installs, already merged there.
+${reasonWithheld ? "(withheld for this second look: code's account of commits already on the product's main, never the change under review)" : fence("PRODUCT_COMMITS", productCommits, MAX_DIFF)}` : "";
+  const user = `The request: action ${action}.${change_}${product_}
 
 ${card_}
 ${request_}`;
@@ -525,7 +535,7 @@ type ReviewArgs = ReviewRequest & { ask: Ask; policy?: string };
  * count. Every model is asked in turn (judge.ts: never the requester's family) until one answers; a call error, a timeout, a
  * limit or every model refusing is reviewer_failed, which the kernel tries once more and then approves (fail open).
  */
-export async function review({ card, diff, tool_call: sentToolCall, files = { list: [], leftOut: [] }, chain = "", requesterModel = "", policy = readPolicy(), ask, comments = "" }: ReviewArgs): Promise<Result> {
+export async function review({ card, diff, tool_call: sentToolCall, files = { list: [], leftOut: [] }, chain = "", requesterModel = "", policy = readPolicy(), ask, comments = "", productCommits }: ReviewArgs): Promise<Result> {
   const models = judgeModels(requesterModel);
   const failed = (reason: string, model = models[0] ?? LUNA): Result => ({ decision: "escalate", code: "reviewer_failed", reason, model });
   // Code's own refusal of an unreadable call: `kernel/code` as the model because no model ran, which is also what keeps the
@@ -564,15 +574,22 @@ export async function review({ card, diff, tool_call: sentToolCall, files = { li
   // that count (an eval case, a kind no code host files) it is unchecked. A tool call carries no diff to count.
   const differs = !toolCall && files.changed?.length ? sameChanges(files.changed, diff) : [];
   if (differs.length) return { decision: "reject", code: "files_not_shown", reason: `the diff sent for review differs from the code host's own count of the change, so it can't be reviewed. File the card again:\n${differs.slice(0, 40).map((d) => `- ${d}`).join("\n")}`, model: models[0]! };
+  // An apply's product-commit roll-up arrives as code's own field, in the exact words the planner wrote into the details: the
+  // reviewer removes that text from the diff and shows it as PRODUCT_COMMITS, apart from the DIFF a finding may quote
+  // (issue #1639). Taking out only the exact text code named means a line of the change that merely looks like a block is still
+  // the change. Only an apply carries one (a push or merge that sent one still reviews the code it changes).
+  const rolled = card.action === "apply" && typeof productCommits === "string" && productCommits ? productCommits : undefined;
+  const all = String(diff ?? "");
+  const change = rolled && all.includes(rolled) ? `${all.slice(0, all.indexOf(rolled))}${all.slice(all.indexOf(rolled) + rolled.length)}`.replace(/\n{3,}/g, "\n\n").trim() : all;
   const list = files.list ?? [];
-  const view = toolCall ? { diff: "", files: "", rest: [] as string[] } : changeView(String(diff ?? ""), list);
-  const promptArgs = { policy, card, diff: view.diff, full: String(diff ?? ""), rest: view.rest, files: view.files, leftOut: toolCall ? [] : files.leftOut ?? [], chain, comments: markComments(comments) ?? "" };
+  const view = toolCall ? { diff: "", files: "", rest: [] as string[] } : changeView(change, list);
+  const promptArgs = { policy, card, diff: view.diff, full: change, rest: view.rest, files: view.files, leftOut: toolCall ? [] : files.leftOut ?? [], chain, comments: markComments(comments) ?? "", productCommits: rolled };
   // The tool answers are part of what the reviewer read, so a quote from one (`diff`, `read_file`, `grep`) is kept: a large
   // change's offending line is read there, never inline.
   const seen: string[] = [];
   const prompt: Prompt = toolCall
     ? reviewPrompt({ ...promptArgs, toolCall, toolBody: block?.text })
-    : { ...reviewPrompt(promptArgs), tools: changeTools(String(diff ?? ""), list, view.rest, seen) };
+    : { ...reviewPrompt(promptArgs), tools: changeTools(change, list, view.rest, seen) };
   let last = "every reviewer model refused";
   for (const model of models) {
     let raw;
@@ -584,16 +601,27 @@ export async function review({ card, diff, tool_call: sentToolCall, files = { li
     const shown = `${prompt.quoteSource}\n${seen.join("\n")}`;
     const v = verdictOf(raw, shown);
     if (!v) { last = `${model} refused or answered off-schema`; continue; }
-    // A reject whose only evidence was the card's generated `reason:` is the false rejection this change exists to stop: the
-    // kernel keeps a malice verdict and refuses the same request again, so it would block the write for good. Show the model the
-    // same card with that line withheld, once; whatever it answers then is the verdict.
-    // The model is shown the reason as the rendered `reason: <text>` line, so a quote of that whole line counts too.
+    // Code's own text is never the change: the card's generated `reason:` (shown to the model as the rendered `reason: <text>`
+    // line, so a quote of that whole line counts too) and an apply's product-commit roll-up. A reject whose every dropped quote
+    // comes from those, one or both in a single reject, is the false rejection this change exists to stop: the kernel keeps a
+    // malice verdict, so it would block the write for good. Show the model the same card once with both withheld; whatever it
+    // answers then is the verdict.
     const reason = squash(card.reason ?? ""), reasonLine = squash(`reason: ${card.reason ?? ""}`);
-    const cardOnly = v.decision === "reject" && !v.findings.length && v.dropped.length && v.dropped.every((d) => reason.includes(d.quote) || reasonLine.includes(d.quote));
-    if (cardOnly) {
+    // The roll-up as the model reads it: raw and as the fence renders it (a run of three or more `<`/`>` becomes `≪`/`≫`).
+    const productText = squash(rolled ?? ""), productShown = squash(fence("PRODUCT_COMMITS", rolled ?? "", MAX_DIFF));
+    // A quote of the product's own commits is code's account of what is already on main, never evidence about this change: it
+    // is not in the quotable source, so the quote check drops it. A quote that is also in the change, or in the request the
+    // model was shown whole, stays a finding, and so does the reject.
+    const fromRollup = (q: string) => Boolean(productText && (productText.includes(q) || productShown.includes(q)));
+    const codeText = (q: string) => reason.includes(q) || reasonLine.includes(q) || fromRollup(q);
+    // A reject whose every dropped quote is code's own text (the card's generated reason, the product roll-up, or both) is the
+    // false rejection this change exists to stop: the kernel keeps a malice verdict, so it would block the write for good. Show
+    // the model the same request once with both withheld; whatever it answers then is the verdict.
+    const codeOnly = v.decision === "reject" && !v.findings.length && v.dropped.length > 0 && v.dropped.every((d) => codeText(d.quote));
+    if (codeOnly) {
       const again = toolCall
-        ? reviewPrompt({ ...promptArgs, toolCall, toolBody: block?.text, reasonWithheld: true })
-        : { ...reviewPrompt({ ...promptArgs, reasonWithheld: true }), tools: changeTools(String(diff ?? ""), list, view.rest, seen) };
+        ? reviewPrompt({ ...promptArgs, toolCall, toolBody: block?.text, reasonWithheld: true, productCommits: rolled })
+        : { ...reviewPrompt({ ...promptArgs, reasonWithheld: true, productCommits: rolled }), tools: changeTools(change, list, view.rest, seen) };
       let raw2;
       try {
         raw2 = await ask(model, again);
@@ -601,7 +629,14 @@ export async function review({ card, diff, tool_call: sentToolCall, files = { li
         return failed(`the reviewer failed (${String((err as Error).message ?? err).slice(0, 160)})`, model);
       }
       const v2 = verdictOf(raw2, `${again.quoteSource}\n${seen.join("\n")}`);
-      if (v2) return { decision: v2.decision, code: v2.code, reason: v2.reason, findings: v2.findings, model };
+      if (v2) {
+        // The second look carries the same rule: a reject that again names nothing but the roll-up (a model may repeat what it
+        // read on the first look) has no evidence in the change, so it approves; a reject resting on the card's reason still
+        // stands, as it always has.
+        const codeOnly2 = v2.decision === "reject" && !v2.findings.length && v2.dropped.length > 0 && v2.dropped.every((d) => fromRollup(d.quote));
+        if (codeOnly2) return { decision: "approve", code: "clean", reason: "the second look named no change but the product's own commits", findings: [], model };
+        return { decision: v2.decision, code: v2.code, reason: v2.reason, findings: v2.findings, model };
+      }
       last = `${model} refused or answered off-schema`;
       continue;
     }

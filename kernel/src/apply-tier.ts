@@ -183,6 +183,20 @@ export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marke
   return lines.length ? { authority: lines } : {};
 }
 
+/**
+ * The product commits a pin move brings, as its own labelled block: code's account of commits already merged on the product's
+ * main, never the change under review. It rides in the card's details (the owner reads it) and is handed to the reviewer in
+ * the same words as its own field (ReviewContext.productCommits), so the reviewer shows it as PRODUCT_COMMITS, never as the
+ * DIFF. The reviewer removes exactly this text from the diff it was sent, so a line of the change can never pass for it.
+ */
+export const PRODUCT_COMMITS_OPEN = "<<<PRODUCT_COMMITS";
+export const PRODUCT_COMMITS_CLOSE = "PRODUCT_COMMITS>>>";
+export function productCommits(bump: Bump): string {
+  // The same characters the card's render() drops (a commit subject may carry them): the reviewer removes exactly this text
+  // from the details, so both copies must be identical or the roll-up would stay in the quotable diff.
+  const clean = (t: string) => t.replace(/[\p{Cc}\p{Cf}]/gu, (c) => (c === "\n" || c === "\t" ? c : " "));
+  return clean(`${PRODUCT_COMMITS_OPEN}\nProduct commits the pin move brings, already on the product's main (code's account, not the change under review):\n${bump.title.replaceAll("`", "")}:\n${bump.log}\n${PRODUCT_COMMITS_CLOSE}`);
+}
 /** The product pin's move, as the product's git reads it on its main: the commits it adds or removes. */
 export type Bump = { from?: string; to: string; title: string; forward: boolean; back: boolean; log: string };
 export type ProductGit = {
@@ -208,6 +222,8 @@ export async function productBump(from: string | undefined, to: string | undefin
 export type ApplyPlan = {
   args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; release?: string };
   targets: { diff: string; content: string }; card: Record<string, string>;
+  /** The reviewer's extra input (executor.ts ReviewContext): a pin move's product-commit roll-up. */
+  review?: { productCommits: string };
 };
 export class Refused extends Error {
   status = 422;
@@ -287,11 +303,14 @@ export function createApplyPlanner(h: {
     const authority = [...modules, ...skills];
     const release = standingRelease(parse(baseI), parse(headI), releaseVerified, Boolean(bump && bump.back));
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...(authority.length ? { authority } : {}), ...(release ? { release } : {}) };
-    const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote, enabledText].filter(Boolean).join("\n\n");
+    const commits = bump ? productCommits(bump) : "";
+    const details = [notes, c.diff, commits, reviewerFacts(full), st.remote, enabledText].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
     const card = applyCard(full, details);
     return {
       args: full, targets: { diff: createHash("sha256").update(details).digest("hex"), content: readDigest(c) }, card: card as unknown as Record<string, string>,
+      // The reviewer reads the roll-up as its own field, never as part of the change (issue #1639).
+      ...(commits ? { review: { productCommits: commits } } : {}),
     };
   };
 }

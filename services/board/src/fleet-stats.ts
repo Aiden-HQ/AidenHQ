@@ -87,11 +87,22 @@ export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue
   for (const c of f.cost) if (c.day === yesterday && c.agentId) perAgent.set(c.agentId, (perAgent.get(c.agentId) ?? 0) + c.costUsd);
   const rows: Row[] = f.approvals.map((a) => ({ id: a.id, kind: a.action, args: a.args, tier: a.tier, panel: a.panel, by: a.decidedBy, state: a.outcome === "applied" ? "done" : a.outcome === "failed" ? "failed" : a.state, at: a.usedAt ?? a.createdAt, outcome: a.outcomeText, identifier: a.identifier }));
   const quality = report(rows, {}, now, [o.window === "24h" ? 1 : 7]);
+  // A release apply that did not install closes its task cancelled, but a done task with apply cards and none of them
+  // `outcome === "applied"` shipped nothing: the card data says how it ended, never the closing comment's prose. A task with
+  // no apply card is unaffected, and one whose later apply did land counts. A card names its task by its identifier, or by
+  // its id when the filer didn't know the identifier.
+  const cards = new Map<string, Approval[]>();
+  for (const a of f.approvals) cards.set(a.identifier, [...(cards.get(a.identifier) ?? []), a]);
+  const shippedTask = (i: Issue) => {
+    const mine = [...(cards.get(i.id) ?? []), ...(i.identifier === i.id ? [] : cards.get(i.identifier) ?? [])];
+    const applies = mine.filter((a) => a.action === "apply");
+    return !applies.length || applies.some((a) => a.outcome === "applied");
+  };
   return {
     window: o.window,
     quality: { line: oneLine(quality), reverted: quality.reverted },
     shipped: {
-      tasks: f.closed.filter((i) => i.status === "done" && doneAt(i) >= since).map((i) => ({ identifier: i.identifier, title: i.title, agent: (i.assigneeAgentId && o.names.get(i.assigneeAgentId)) || "someone", link: link(i.identifier) })),
+      tasks: f.closed.filter((i) => i.status === "done" && doneAt(i) >= since && shippedTask(i)).map((i) => ({ identifier: i.identifier, title: i.title, agent: (i.assigneeAgentId && o.names.get(i.assigneeAgentId)) || "someone", link: link(i.identifier) })),
       landed: recent.filter((a) => landed.includes(a.action) && a.outcome === "applied").map(card),
     },
     failed: {

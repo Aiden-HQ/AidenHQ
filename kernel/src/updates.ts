@@ -583,8 +583,8 @@ export function createUpdates({ db, dir, board, inst, ownerLine, alert = () => {
   file: (r: Ready) => Promise<{ record: string; task: string }>;
   /** A record's state and outcome, undefined when there is none. */
   record: (id: string) => { state: string; outcome?: { text?: string } | null } | undefined;
-  /** Closes the release's task with one line. */
-  close: (task: string, body: string) => Promise<unknown>;
+  /** Closes the release's task with one line and the status the ending earned: done only when it installed. */
+  close: (task: string, body: string, status: "done" | "cancelled") => Promise<unknown>;
   log?: (msg: string, f?: Record<string, unknown>) => void; now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS update_notices (id TEXT PRIMARY KEY, at TEXT NOT NULL)");
@@ -625,7 +625,12 @@ export function createUpdates({ db, dir, board, inst, ownerLine, alert = () => {
     delete s.flight;
     writeState(d, s);
     const done = s.last?.release === f.release && s.last.at === at;
-    await close(f.task, !done ? `Not landed: the instance's main moved first; it is prepared again on the new main${f.by === "auto-update" ? " (tonight)" : ""}.` : s.last!.outcome === "installed" ? `Installed: this server runs AidenHQ ${labelOf(f.release)}.` : `**Not installed:** ${s.last!.why}.`).catch((e: Error) => log("update task not closed", { task: f.task, err: e.message }));
+    // Only an install closes the release task done: a rejected card, a failed apply, a gone record and a main that moved first
+    // all leave the release not installed, so the task is cancelled (the body says which ending it was).
+    const installed = done && s.last!.outcome === "installed";
+    const body = !done ? `Not landed: the instance's main moved first; it is prepared again on the new main${f.by === "auto-update" ? " (tonight)" : ""}.` : installed ? `Installed: this server runs AidenHQ ${labelOf(f.release)}.` : `**Not installed:** ${s.last!.why}.`;
+    const status = installed ? "done" as const : "cancelled" as const;
+    await close(f.task, body, status).catch((e: Error) => log("update task not closed", { task: f.task, err: e.message }));
   }
 
   async function pass() {
