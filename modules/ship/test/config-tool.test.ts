@@ -11,10 +11,11 @@ const state = () => openState(join(mkdtempSync(join(tmpdir(), "ship-")), "state.
 const adoption = (n: number, hold: unknown = null) => ({ repo: "a/b", number: n, generation: 1, trigger: { kind: "fleet", event: "e", actor: "x" }, hold }) as any;
 
 test("applyShipChange sets one repo's entry and reports what it loosens; an uncovered repo is refused", () => {
-  const raw = { defaults: "cautious", repos: {} };
+  const raw = { defaults: "cautious", repos: { "a/b": "cautious" } };
   const r = applyShipChange(raw, { repo: "a/b", change: "full", scope });
   assert.deepEqual([r.summary, r.value.repos], [["a/b: ship full"], { "a/b": "full" }]);
   assert.ok(r.loosens.includes("a/b.approve"));
+  assert.deepEqual(applyShipChange({}, { repo: "a/b", change: "cautious", scope }).loosens, ["a/b.enabled"]);
   const kept = applyShipChange({ repos: { "a/b": { caps: { usd: 1, rounds: 10 } } } }, { repo: "a/b", change: { caps: { rounds: 5 } }, scope });
   assert.deepEqual((kept.value.repos as any)["a/b"].caps, { usd: 1, rounds: 5 });
   assert.throws(() => applyShipChange(raw, { repo: "a/c", change: "full", scope }), /isn't a repo ship covers/);

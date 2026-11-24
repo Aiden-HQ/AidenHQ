@@ -145,7 +145,7 @@ export function validate(raw: unknown, scope: Scope): string[] {
 const rank = (list: readonly string[], v: string) => list.indexOf(v);
 const raised = (a: number | null, b: number | null) => (b === null ? a !== null : a !== null && b > a);
 /** Every field a change loosens, by repo (`owner/name.field`, or `defaults.field`): the owner's to approve. */
-export function loosens(before: unknown, after: unknown): string[] {
+export function loosens(before: unknown, after: unknown, scope: Scope = ALL): string[] {
   const b = isMap(before) ? before : {}, a = isMap(after) ? after : {};
   const repos = new Set([...Object.keys(isMap(b.repos) ? b.repos : {}), ...Object.keys(isMap(a.repos) ? a.repos : {})].map((r) => r.toLowerCase()));
   const out: string[] = [];
@@ -165,7 +165,11 @@ export function loosens(before: unknown, after: unknown): string[] {
   };
   const dx = resolve(defaultsOf(b).preset, defaultsOf(b).over), dy = resolve(defaultsOf(a).preset, defaultsOf(a).over);
   diff("defaults", dx, dy);
-  for (const r of [...repos].sort()) diff(r, effective(b, r, ALL)!, effective(a, r, ALL)!);
+  for (const r of [...repos].sort()) {
+    const x = effective(b, r, scope), y = effective(a, r, scope);
+    if (!x && y) out.push(`${r}.enabled`); // bringing a listed repo into scope is the owner's
+    else if (x && y) diff(r, x, y);
+  }
   if (b.paused === true && a.paused !== true) out.push("paused");
   return out;
 }

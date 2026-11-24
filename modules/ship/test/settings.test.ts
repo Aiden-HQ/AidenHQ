@@ -31,5 +31,6 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": { preset: "full" } } }), []);
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": "cautious" } }), []);
   assert.deepEqual(loosens({ repos: { "a/b": "cautious" } }, { repos: { "a/b": { rebase: "behind" } } }), ["a/b.rebase"]);
+  assert.deepEqual(loosens({}, { repos: { "a/b": "cautious" } }, scope), ["a/b.enabled"]);
   assert.deepEqual(loosens({ paused: true }, { paused: false }), ["paused"]);
 });
