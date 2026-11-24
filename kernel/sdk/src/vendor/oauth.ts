@@ -203,7 +203,8 @@ export function oauth(o: OAuthOptions): Auth {
     if (status.state === state && status.detail === detail) return;
     status = { state, since: new Date().toISOString(), ...(detail ? { detail } : {}) };
     if (state === "expired" && o.accepts && !healer) {
-      healer = setInterval(() => void refused().then((r) => { if (!r && status.state === "expired") mark("ok"); }, () => undefined), o.healMs ?? 30_000);
+      // Only a confirmed answer heals: a timeout or a vendor 5xx (accepts throws) leaves the mark.
+      healer = setInterval(() => void Promise.resolve().then(() => o.accepts!(load().access_token)).then((ok) => { if (ok && status.state === "expired") mark("ok"); }, () => undefined), o.healMs ?? 30_000);
       healer.unref?.();
     }
   }
@@ -229,7 +230,9 @@ export function oauth(o: OAuthOptions): Auth {
     const endpoint = t.token_endpoint ?? o.endpoints?.token;
     const clientId = t.client_id ?? o.client?.()?.id;
     if (!t.refresh_token || !endpoint || !clientId) {
-      if (await refused()) mark("expired", "the sign-in has no refresh token");
+      const gone = await refused();
+      if (token !== t) return token!;
+      if (gone) mark("expired", "the sign-in has no refresh token");
       throw new AuthError(`${o.name} token expired and can't be refreshed (Reconnect on the board)`);
     }
     const body = new URLSearchParams({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: clientId });
@@ -247,7 +250,12 @@ export function oauth(o: OAuthOptions): Auth {
     } catch (err) {
       // A refusal (invalid_grant and the like) needs the owner; a 5xx is the vendor's problem and may pass.
       // A refused refresh on a token the vendor still answers (a rotated refresh token reused after a restart) is not an expiry.
-      if (res.status < 500 && (await refused())) mark("expired", String((err as Error).message));
+      if (res.status < 500) {
+        const gone = await refused();
+        // A reconnect saved a newer grant while the probe was in flight: its verdict is on the old token.
+        if (token !== t) return token!;
+        if (gone) mark("expired", String((err as Error).message));
+      }
       throw err;
     }
     save({ ...t, ...next, refresh_token: next.refresh_token ?? t.refresh_token, scope: next.scope ?? t.scope });

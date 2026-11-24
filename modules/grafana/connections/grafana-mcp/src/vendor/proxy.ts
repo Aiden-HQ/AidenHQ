@@ -248,7 +248,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       await withUpstream((u) => u.client.listTools());
       return { ok: true };
     } catch (err) {
-      const signIn = err instanceof AuthError || isAuthFailure(err) || auth.status().state === "expired";
+      const signIn = auth.status().state === "expired" || ((err instanceof AuthError || isAuthFailure(err)) && (await auth.refused?.() ?? true));
       return signIn ? { ok: false, message: `${o.name} no longer accepts the sign-in.`, fix: "Reconnect" } : { ok: false, message: `${o.name} didn't answer: ${String((err as Error).message).slice(0, 200)}` };
     }
   }
