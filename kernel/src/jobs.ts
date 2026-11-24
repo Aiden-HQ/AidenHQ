@@ -92,6 +92,26 @@ export function writeLastMessage(logPath: string, text: string, log: (msg: strin
     log("couldn't write the job's last message", { log: logPath, err: (e as Error).message });
   }
 }
+/**
+ * Model-format sentinels a tokenizer or chat template can leak into a reply as literal text: DeepSeek's
+ * `<begin\u2581of\u2581sentence>` (its word separator, U+2581), the `<\uff5c...\uff5c>` and `<|...|>` families, and a stray
+ * zero-width space. A run whose whole answer was sentinels is left with no message at all, which its dispatcher reads as one that
+ * ended without a reply.
+ */
+const SENTINELS = [
+  "<begin\u2581of\u2581sentence>", "<begin_of_sentence>",
+  "<\uff5cbegin_of_sentence\uff5c>", "<|begin_of_text|>", "<|end_of_text|>", "<|endoftext|>",
+  "<\uff5cend\u2581of\u2581text\uff5c>", "<|end\u2581of\u2581text|>",
+  "<|eot_id|>", "<|eom_id|>", "<|end_of_turn|>", "<end_of_turn>",
+  "<|start_header_id|>", "<|end_header_id|>", "<|im_start|>", "<\uff5cim_start\uff5c>",
+  "<|im_end|>", "<\uff5cim_end\uff5c>",
+];
+const SENTINEL = new RegExp(SENTINELS.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+/** A final message without the model-format sentinels a tokenizer or chat template leaks as literal text, and the invisible
+ * characters that pad them: what is left is what the model meant to say. */
+export function stripSentinels(text: string): string {
+  return text.replace(SENTINEL, "").replace(/[\u200b\ufeff\u2060]/g, "");
+}
 export function firstError(logPath: string): string {
   let head = "";
   try { head = readFrom(logPath, 0, 256 * 1024).toString("utf8"); } catch { return ""; }
@@ -382,7 +402,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const end = () => {
       const status = exitStatus(exitFile);
       const code = status === "" ? null : Number(status);
-      let lastMessage = String(final ?? "").trim();
+      let lastMessage = stripSentinels(String(final ?? "")).trim();
       const startError = code === 127 && `couldn't start ${r.engine}: ENOENT`;
       if (!lastMessage && startError) {
         appendFileSync(logPath, `# ${startError}\n`);

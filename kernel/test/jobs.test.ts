@@ -44,6 +44,9 @@ function sandbox() {
   const envdump = engine("env.mjs", `emit({ t: "final", text: JSON.stringify(process.env) });`);
   // An engine whose program isn't installed: it exits 127, as a shell does for a command it can't find.
   const missing = engine("missing.mjs", `import { spawnSync } from "node:child_process";\nconst r = spawnSync("aidenhq-no-such-program", [], { stdio: "inherit" });\nprocess.exit(r.error?.code === "ENOENT" ? 127 : 1);`);
+  // Engines whose reply carries model-format sentinels as literal text, as a tokenizer or chat template can leak them.
+  const sentinel = engine("sentinel.mjs", `emit({ t: "final", text: "<begin\u2581of\u2581sentence>Attention: x<|im_end|>" });`);
+  const sentinelsOnly = engine("sentinels-only.mjs", `emit({ t: "final", text: "<begin\u2581of\u2581sentence>\u200b<|endoftext|>" });`);
   // An engine that dies at start on stderr, as Codex does resuming a session its home doesn't have.
   const dies = engine("dies.mjs", `console.log(JSON.stringify({ type: "noise" }));\nconsole.error("Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=sk-or-v1-abc123 Bearer sk-or-v1-def456 run ahqj_body.sig");\nprocess.exit(1);`);
   const engines = {
@@ -51,6 +54,8 @@ function sandbox() {
     echo: { module: "engine-echo", dir: "fixtures/engine-echo", bin: "fixtures/engine-echo/bin/engine", kind: "echo", live_input: true, box: true },
     slow: { module: "test", dir: join(dir, "engines"), bin: slow, kind: "slow", box: true },
     env: { module: "test", dir: join(dir, "engines"), bin: envdump, kind: "env", box: true },
+    sentinel: { module: "test", dir: join(dir, "engines"), bin: sentinel, kind: "sentinel", box: true },
+    sentinelsOnly: { module: "test", dir: join(dir, "engines"), bin: sentinelsOnly, kind: "sentinelsOnly", box: true },
     missing: { module: "test", dir: join(dir, "engines"), bin: missing, kind: "missing", box: true },
   };
   writeFileSync(join(dir, "engines.json"), JSON.stringify(engines));
@@ -104,6 +109,22 @@ test("a job runs for its task, in its workspace, and reports its end: final word
   assert.equal(j.dir, join(cfg.boxDir, j.dir.split("/").at(-2), "job"), "its job dir is in the box's out folder");
   assert.ok(readFileSync(j.log, "utf8").includes(join(cfg.workDir, "tasks/PEN-1")));
   assert.equal((await jobs.get("other-module", j.id).catch((e) => e)).status, 404, "another module never sees it");
+});
+
+// A model can return a tokenizer's control tokens as literal text: they are stripped from the recorded final message, and a final
+// that was nothing but sentinels leaves no message, so its dispatcher sees a run that ended without a reply.
+test("a job's final has model-format sentinels stripped, and a final of only sentinels records no reply", async () => {
+  const sb = sandbox();
+  const jobs = inProcess(sb.cfg);
+  const said = await finished(jobs, jobs.run(sb, "sentinel").id);
+  assert.equal(said.state, "done");
+  assert.equal(said.exit, 0);
+  assert.equal(said.final, "Attention: x");
+  assert.equal(readFileSync(`${said.log}.last.md`, "utf8"), "Attention: x");
+  const silent = await finished(jobs, jobs.run(sb, "sentinelsOnly").id);
+  assert.equal(silent.final, "", "no sentinel survives, and no reply is recorded");
+  assert.equal(silent.state, "done");
+  assert.equal(silent.exit, 0);
 });
 
 test("a job's env in its box: the launcher's env file, nothing of the kernel's own", async () => {
