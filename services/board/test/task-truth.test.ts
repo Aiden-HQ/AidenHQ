@@ -12,14 +12,15 @@ import { fakeStates } from "./fake-states.js";
 
 const base = { priority: "medium", assigneeUserId: "me-1", assigneeAdapterOverrides: null, createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:05:00.000Z", assigneeAgentId: null };
 const issue = (n: number, status = "in_progress"): Issue => ({ ...base, id: `0000000${n}-0000-0000-0000-000000000000`, identifier: `WOR-${n}`, title: `Task ${n}`, description: "x", status });
-const [graded, ungraded, down, closed, bare] = [issue(1), issue(2), issue(3), issue(4, "done"), issue(5)];
-const all = [graded, ungraded, down, closed, bare];
+const [graded, ungraded, down, closed, bare, gaveUp] = [issue(1), issue(2), issue(3), issue(4, "done"), issue(5), issue(6, "done")];
+const all = [graded, ungraded, down, closed, bare, gaveUp];
 const verdict = { at: "2026-11-10T11:00:00.000Z", version: "abc123", model: "m", verdict: "needs_revision" as const, criteria: [{ id: "1", met: "yes" as const, evidence: "tests pass" }, { id: "2", met: "no" as const, evidence: "no docs" }] };
 const row = (id: string, o: Partial<Grade>): Grade => ({ issueId: id, rubric: [], deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ#12" }, attempts: 1, state: "needs_revision", verdicts: [], failures: 0, failedAt: null, delegators: null, closedReason: null, createdAt: "", updatedAt: "", ...o });
 const rows: Record<string, Grade | null> = {
   [graded.id]: row(graded.id, { rubric: ["Tests pass", "Docs updated", "Reviewed"], verdicts: [verdict] }),
   [ungraded.id]: null,
   [closed.id]: row(closed.id, { rubric: ["a", "b", "c"], state: "satisfied", deliverable: { kind: "pr", ref: "" } }),
+  [gaveUp.id]: row(gaveUp.id, { rubric: ["a", "b", "c"], state: "satisfied", verdicts: [verdict] }),
   [bare.id]: row(bare.id, { state: "open", deliverable: { kind: "report", ref: "" } }),
 };
 let gradingUp = true;
@@ -86,6 +87,8 @@ describe("task truth", () => {
   it("no row shows nothing; a close without a verdict says so; an empty rubric uses the module's template; an empty ref has no link", async () => {
     expect((await get(ungraded)).grade.state).toBe("none");
     expect((await get(closed)).grade).toMatchObject({ state: "ungraded_close", deliverable: { ref: "" } });
+    // The module closes a row satisfied when it gives up on unmet work: never shown as Met.
+    expect((await get(gaveUp)).grade.state).toBe("ungraded_close");
     const b = (await get(bare)).grade;
     expect(b.rubric.map((r: { text: string }) => r.text)).toEqual(["Says what was found", "Cites sources", "Answers the ask"]);
     expect(b.deliverable.href).toBeUndefined();
@@ -112,7 +115,7 @@ describe("chat run line", () => {
     { id: "c2", body: "Typed by hand.\n\n<!-- aidenhq-reply -->", authorType: "agent", authorAgentId: "cos", createdAt: "2026-11-10T10:20:00.000Z" },
   ];
   const chatPc = { ...pc, labelled: async () => [chat], openIssues: async () => [chat], issue: async () => chat, issueSummary: async () => chat, comments: async () => comments, labels: async () => chat.labels, agents: async () => [{ id: "cos", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff" } }] } as unknown as Paperclip;
-  const chatFlow = { task: async () => ({ task: chat.id, root: chat.id, stages: [], idle: [], facts: [fact("wake.opened", "wake:w1", "2026-11-10T10:00:00.000Z", { cause: "routine:daily-brief", author: "kernel" }), fact("wake.bound", "wake:w1", "2026-11-10T10:00:05.000Z", { job: "j-2222222222222222" })] }) } as unknown as Flow;
+  const chatFlow = { task: async () => ({ task: chat.id, root: chat.id, stages: [], idle: [], facts: [fact("wake.opened", "wake:w1", "2026-11-10T10:00:00.000Z", { cause: "routine:daily-brief", author: "kernel" }), fact("wake.bound", "wake:w1", "2026-11-10T10:00:05.000Z", { job: "j-2222222222222222" }), fact("job.started", "job:j-2222222222222222", "2026-11-10T10:00:00.000Z"), fact("job.ended", "job:j-2222222222222222", "2026-11-10T10:06:12.000Z", { state: "done" })] }) } as unknown as Flow;
   const work = { job: async () => null, task: async () => [{ id: "j-2222222222222222", started_at: "2026-11-10T10:00:00.000Z", ended_at: "2026-11-10T10:06:12.000Z" }], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async () => [] };
   const app = createApp({ taskStates: fakeStates([]), paperclip: chatPc, store: new Store(":memory:"), records: fakeRecords([]), grading, flow: chatFlow, work: work as never, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
   let port = 0;

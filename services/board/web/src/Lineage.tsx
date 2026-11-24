@@ -31,7 +31,7 @@ interface Target {
 }
 
 /** The delegated tasks, kept fresh: task changes and approvals (throttled: each read walks two levels of children) and a 15s poll; not every progress tick. */
-function useLineage(refId: string, onSignIn: () => void): Lineage | null {
+export function useLineage(refId: string, onSignIn: () => void): Lineage | null {
   const [data, setData] = useState<Lineage | null>(null);
   const load = useCallback(
     () =>
@@ -57,8 +57,8 @@ function useLineage(refId: string, onSignIn: () => void): Lineage | null {
 const needsFirst = (rows: LineageRow[]) => [...rows].sort((a, b) => Number(waitsOnApproval(b) || needsOwner(b.state)) - Number(waitsOnApproval(a) || needsOwner(a.state)));
 
 /** A chat's Details: the delegated work as dense rows, Needs you first; each row opens the child. */
-export function DelegatedList({ refId, go, onSignIn }: { refId: string; go: (hash: string) => void; onSignIn: () => void }) {
-  const rows = needsFirst(useLineage(refId, onSignIn)?.children ?? []);
+export function DelegatedList({ lineage, go }: { lineage: Lineage | null; go: (hash: string) => void }) {
+  const rows = needsFirst(lineage?.children ?? []);
   if (!rows.length) return null;
   const row = (r: LineageRow, grand: boolean) => (
     <li key={r.identifier}>
@@ -76,8 +76,7 @@ export function DelegatedList({ refId, go, onSignIn }: { refId: string; go: (has
   return <ul className="handed-list">{rows.flatMap((r) => [row(r, false), ...r.children.map((g) => row(g, true))])}</ul>;
 }
 
-export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn }: { refId: string; title: string; agent: string; crew: Assignee[]; prefix: string; href: (identifier: string) => string; onSignIn: () => void }) {
-  const data = useLineage(refId, onSignIn);
+export function LineageStrip({ data, refId, title, agent, crew, prefix, href, onSignIn }: { data: Lineage | null; refId: string; title: string; agent: string; crew: Assignee[]; prefix: string; href: (identifier: string) => string; onSignIn: () => void }) {
   const [table, setTable] = useState<boolean | null>(null);
   const [unfolded, setUnfolded] = useState<Set<string>>(new Set());
   const [ask, setAsk] = useState<{ target: Target; anchor: DOMRect; drawer: boolean } | null>(null);

@@ -35,7 +35,7 @@ function hrefOf(d: Deliverable): string | undefined {
 }
 
 /** The grade as the drawer shows it. `view` undefined: the module couldn't be read (never read as passed). */
-export function gradeShown(view: GradesView | undefined, id: string, status: string): GradeShown {
+export function gradeShown(view: GradesView | undefined, id: string, status: string, w: Waterfall | null = null): GradeShown {
   if (!view || !Object.hasOwn(view.grades, id)) return { state: "unavailable", rubric: [] };
   const g = view.grades[id];
   if (!g) return { state: "none", rubric: [] };
@@ -46,11 +46,16 @@ export function gradeShown(view: GradesView | undefined, id: string, status: str
     return { text, met: c?.met ?? "unknown", ...(c?.evidence ? { evidence: clip(c.evidence, 200) } : {}) };
   });
   const closed = status === "done" || g.closedReason !== null;
+  // Met only on a satisfied (or owner-accepted) verdict: the module also closes a row satisfied when it gives up or lets unmet work through.
+  const verified = v?.verdict === "satisfied" || v?.verdict === "accepted";
+  // An unset PR ref means the task's own PRs: the newest one it opened.
+  const opened = g.deliverable.ref || g.deliverable.kind !== "pr" ? undefined : w?.facts.findLast((f) => f.type === "pr.opened" && HOSTED.test(f.subject.slice(3)))?.subject.slice(3);
+  const deliverable = { ...g.deliverable, ref: g.deliverable.ref || opened || "" };
   return {
-    state: !v && closed ? "ungraded_close" : g.state,
+    state: (g.state === "satisfied" && !verified) || (!v && closed) ? "ungraded_close" : g.state,
     rubric,
     ...(v ? { judgedAt: v.at, version: v.version } : {}),
-    deliverable: { kind: g.deliverable.kind, ref: g.deliverable.ref, href: hrefOf(g.deliverable) },
+    deliverable: { kind: deliverable.kind, ref: deliverable.ref, href: hrefOf(deliverable) },
   };
 }
 
@@ -69,7 +74,7 @@ export function milestonesOf(w: Waterfall | null): Milestone[] {
       case "record.decided": if (d.decision === "approved") m("approved", `Card approved${d.decider === "reviewer" ? " by the AI reviewer" : d.decider === "owner" ? " by you" : ""}`, { href: record }); break;
       case "record.landed": m("applied", `Card applied${d.kind ? `: ${clip(d.kind, 60)}` : ""}`, { href: record }); break;
       case "pr.deployed": m("deployed", `Deployed${d.generation ? ` in generation ${d.generation}` : ""}`, { href: HOSTED.test(String(d.pr ?? "")) ? `https://github.com/${String(d.pr).replace("#", "/pull/")}` : undefined }); break;
-      case "grade.verdict": m("graded", d.pass === true ? "Graded: satisfied" : "Graded: sent back"); break;
+      case "grade.verdict": m("graded", d.pass === true ? "Graded: satisfied" : d.reason_code === "needs_revision" ? "Graded: sent back" : `Graded: ${String(d.reason_code ?? "not met").replaceAll("_", " ")}`); break;
     }
   }
   return out.sort((a, b) => a.at.localeCompare(b.at));
@@ -82,16 +87,17 @@ export interface RunLine {
   trigger?: string;
 }
 
-/** The run behind an agent's final reply (its job tag, which only the kernel writes): how long it ran and what woke it. */
-export function runLineOf(body: string, jobs: { id: string; started_at: string | null; ended_at: string | null }[], w: Waterfall | null, agents: Parameters<typeof triggerWords>[2]): RunLine | undefined {
+/** The run behind an agent's final reply (its job tag, which only the kernel writes): how long it ran and what woke it, from the task's facts. */
+export function runLineOf(body: string, w: Waterfall | null, agents: Parameters<typeof triggerWords>[2]): RunLine | undefined {
   const id = /<!-- aidenhq:job=(j-[0-9a-f]{16}) kind=reply -->\s*$/.exec(body)?.[1];
-  const job = jobs.find((j) => j.id === id);
-  if (!id || !job?.started_at || !job.ended_at) return undefined;
-  const wake = w?.facts.find((f) => f.type === "wake.bound" && f.data?.job === id)?.subject;
+  const at = (type: string) => w?.facts.find((f) => f.type === type && f.subject === `job:${id}`)?.at;
+  const [start, end] = [at("job.started"), at("job.ended")];
+  if (!id || !start || !end) return undefined;
+  const wake = w!.facts.find((f) => f.type === "wake.bound" && f.data?.job === id)?.subject;
   const opened = wake ? w!.facts.findLast((f) => f.type === "wake.opened" && f.subject === wake) : undefined;
   return {
     id,
-    seconds: Math.max(0, Math.round((Date.parse(job.ended_at) - Date.parse(job.started_at)) / 1000)),
+    seconds: Math.max(0, Math.round((Date.parse(end) - Date.parse(start)) / 1000)),
     ...(opened ? { trigger: triggerWords(String(opened.data?.cause ?? ""), String(opened.data?.author ?? ""), agents) } : {}),
   };
 }

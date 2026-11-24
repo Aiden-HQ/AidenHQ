@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FeatureCostStrip } from "./FeatureCost";
-import { LineageStrip } from "./Lineage";
+import { LineageStrip, useLineage } from "./Lineage";
 import { api } from "./api";
 import { Avatar, Chips, CloseIcon, CrewAvatar, MergeMenu, MoveMenu, Plan, SnoozeMenu, memberIssue } from "./components";
 import { Markdown } from "./markdown";
@@ -10,6 +10,8 @@ import { MAX_FILE, PRIORITIES, PRIORITY_NAMES, ago, dayDate, elapsed, fileSize, 
 import { ModelPicker, StatusDot, type StatusTone } from "./ui";
 import { bare, prefixOf, shortId } from "../../src/model-catalog";
 import { useModelCatalog } from "./useModelCatalog";
+
+const signedOut = () => undefined;
 
 interface Props {
   refId: string;
@@ -126,6 +128,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
   const closed = issue.status === "done" || issue.status === "cancelled";
   const editable = issue.editable;
   const mine = issue.assignee === "me";
+  const lineage = useLineage(issue.identifier, signedOut);
   const [bucket, setBucket] = useState<Bucket | null>(issue.bucket);
   useEffect(() => setBucket(issue.bucket), [issue.bucket]);
   const focused = focus && issue.crew.find((m) => m.issues.some((i) => i.identifier === focus))?.agent;
@@ -249,8 +252,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
           )}
         </div>
       </div>
-      <DoneMeans grade={issue.grade} />
-      <LineageStrip refId={issue.identifier} title={issue.title} agent={(issue.assignee && who(issue.assignee)?.name) || "you"} crew={board.assignees} prefix={board.prefix} href={(id) => `#/t/${id}`} onSignIn={() => undefined} />
+      <LineageStrip data={lineage} refId={issue.identifier} title={issue.title} agent={(issue.assignee && who(issue.assignee)?.name) || "you"} crew={board.assignees} prefix={board.prefix} href={(id) => `#/t/${id}`} onSignIn={signedOut} />
       <FeatureCostStrip refId={issue.identifier} />
       {(issue.crew.length > 0 || (mine && editable && !closed)) && (
         <nav className="task-tabs" aria-label="The crew on this task">
@@ -349,6 +351,7 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
   return (
     <>
       <div className="drawer-scroll" {...scroll}>
+        <DoneMeans grade={issue.grade} />
         <Description issue={issue} prefix={board.prefix} editable={editable} save={(description) => update({ description })} />
         <Files issue={issue} />
         {issue.crew.length > 0 ? (
@@ -489,6 +492,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
             )}
           </div>
         )}
+        {part && <DoneMeans grade={part.grade} />}
         {part && agent?.kind === "engineer" && <ModelLine part={part} agent={agent} toast={toast} reload={self ? reload : load} />}
         {part && !self && part.description && (
           <details className="instructions" open={!part.comments.length}>
@@ -628,7 +632,7 @@ function useFollow(comments: CommentView[], openAtEnd = true, tail = "") {
   const latest = comments.at(-1);
   useLayoutEffect(() => {
     const el = ref.current;
-    const last = el?.querySelector<HTMLElement>(".thread > .comment:last-child");
+    const last = el && [...el.querySelectorAll<HTMLElement>(".thread > .comment")].at(-1);
     if (!el || !last || latest?.id === seen.current) return;
     const first = seen.current === undefined;
     seen.current = latest?.id;

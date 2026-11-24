@@ -763,7 +763,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
-      grade: gradeShown(grades, issue.id, issue.status),
+      grade: gradeShown(grades, issue.id, issue.status, facts),
       milestones: milestonesOf(facts),
     };
   }
@@ -837,7 +837,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       }
       return last;
     };
-    const messages = said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? ""), run: runLineOf(bodies.get(m.id) ?? "", jobs, facts, ctx.agents) } : m));
+    const messages = said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? ""), run: runLineOf(bodies.get(m.id) ?? "", facts, ctx.agents) } : m));
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
     const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
     const agent = agentOf(chatAgent(issue));
