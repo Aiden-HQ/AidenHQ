@@ -315,7 +315,7 @@ it("a timeline longer than the page cap is refused, never read as if its tail we
   // The watcher skips it rather than trusting the older event it could read.
   const out = await m.repoSince(PRODUCT);
   expect(out.issues.map((i) => i.number)).toEqual([1]);
-  expect(out.skipped).toEqual([{ number: 2, reason: expect.stringMatching(/longer than/), unread: true }]);
+  expect(out.skipped).toEqual([{ number: 2, reason: expect.stringMatching(/longer than/) }]);
 });
 
 it("a comment has the owner's host and email removed before it is sent", async () => {
@@ -1191,6 +1191,10 @@ it("oneIssue reads the issue as it stands with its label's trust verdict, and nu
   for (const n of [3, 4]) expect((await m.oneIssue(PRODUCT, n)).issue).toBeNull();
   f.opts.failTimeline = [1];
   await expect(m.oneIssue(PRODUCT, 1)).rejects.toThrow(/timeline/);
+  f.opts.failTimeline = undefined;
+  f.opts.longTimeline = 2;
+  expect(await m.oneIssue(PRODUCT, 2)).toMatchObject({ issue: null, refused: expect.stringMatching(/longer than/) });
+  expect((await maintainer(f).bootstrap([OTHER])).repos).toEqual([]);
 });
 
 it("pr_list tells bot, fleet and human PRs apart, and reads a human author's latest activity and what waits on them", async () => {

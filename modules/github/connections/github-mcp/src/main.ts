@@ -605,7 +605,7 @@ const http = createServer(async (req, res) => {
     if (req.method !== "GET") return void res.writeHead(405).end();
     try {
       let out: unknown;
-      if (url.pathname === "/internal/maintainer/issues") out = await maintainer.bootstrap();
+      if (url.pathname === "/internal/maintainer/issues") out = await maintainer.bootstrap(url.searchParams.get("repos")?.split(",").filter(Boolean));
       else {
         const number = Number(url.searchParams.get("number"));
         if (!Number.isInteger(number) || number < 1) throw new GitHubRefused("number must be an issue number");

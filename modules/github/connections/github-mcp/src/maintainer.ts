@@ -840,13 +840,13 @@ export class Maintainer {
   }
 
   /**
-   * The Maintainer's bootstrap read (its watcher's start, a feed gap or resync): per listed repo, the open issues carrying its
+   * The Maintainer's bootstrap read (its watcher's start, a feed gap or resync; `only` names the repos to read, else every listed one): per listed repo, the open issues carrying its
    * fix label (`issues` duty on), and, with `features` on, those carrying agent-build (`builds`) and the trusted
    * feature-request ones (`featured`, which the per-author triage cap leaves uncounted). One repo's failure is its `error` and
    * holds up no other. A label-event read that failed is also an `error`: the bootstrap is retried rather than commit over an
    * issue it never read. Read-only, no model call.
    */
-  async bootstrap() {
+  async bootstrap(only?: string[]) {
     if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
     type Read = Awaited<ReturnType<Maintainer["repoSince"]>>;
     const whole = (r: Read, what: string) => {
@@ -855,7 +855,7 @@ export class Maintainer {
       return r.issues;
     };
     const out: ({ repo: string; error: string } | { repo: string; issues?: Read["issues"]; builds?: Read["issues"]; featured?: number[] })[] = [];
-    for (const r of this.repos) {
+    for (const r of this.repos.filter((x) => !only || only.some((o) => same(o, x.repo)))) {
       try {
         const row: { repo: string; issues?: Read["issues"]; builds?: Read["issues"]; featured?: number[] } = { repo: r.repo };
         if (r.issues) row.issues = whole(await this.repoSince(r.repo), `${r.repo} ${r.label}`);
@@ -883,7 +883,14 @@ export class Maintainer {
     if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number} (GitHub said ${res.status})`);
     const i = res.body as GhIssue & { state?: string };
     if (i.pull_request || i.state !== "open" || !labelNames(i).some((l) => named(l, asked))) return { repo: r.repo, number, issue: null };
-    const latest = this.latestLabel(r, (await this.labelEvents(r.repo, number, asked)).events, asked);
+    let latest: LabelEvent | undefined;
+    try {
+      latest = this.latestLabel(r, (await this.labelEvents(r.repo, number, asked)).events, asked);
+    } catch (err) {
+      // A timeline that can never be read (past the page cap) is a definite no, never a retry that would stall the watcher's feed.
+      if (err instanceof GitHubRefused) return { repo: r.repo, number, issue: null, refused: err.message.slice(0, 200) };
+      throw err;
+    }
     if (!latest) return { repo: r.repo, number, issue: null };
     return { repo: r.repo, number, issue: { number, trusted: latest.trusted, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null, created_at: i.created_at, labels: labelNames(i) } };
   }
@@ -926,7 +933,8 @@ export class Maintainer {
         }
         issues.push({ number: i.number, trusted: true, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null, created_at: i.created_at, labels: labelNames(i) });
       } catch (err) {
-        skipped.push({ number: i.number, reason: `could not read its label events: ${(err as Error).message.slice(0, 120)}`, unread: true });
+        // A refusal (a timeline past the page cap) is permanent: skipped like an untrusted label. Anything else is a failed read, retried.
+        skipped.push({ number: i.number, reason: `could not read its label events: ${(err as Error).message.slice(0, 120)}`, ...(err instanceof GitHubRefused ? {} : { unread: true as const }) });
       }
     }
     return { issues, skipped };

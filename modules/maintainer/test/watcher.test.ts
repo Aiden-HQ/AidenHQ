@@ -92,6 +92,35 @@ test("a feed gap, a resync and a changed repo setting each bootstrap again, and 
   assert.deepEqual(w.state().repos[R.toLowerCase()].featured, [9]);
 });
 
+test("a failed first bootstrap keeps the first watermark, so what was opened meanwhile is still handled; a removed repo is forgotten", async () => {
+  const w = world({ log: [ev(5, "issues.opened")], repos: [repo()] });
+  const opened = (seq, number) => ev(seq, "issues.opened", { number, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] });
+  assert.equal(await w.look({ bootstrap: async () => { throw new Error("github 502"); } }), 0);
+  assert.equal(w.state().feed.after, 5, "the watermark is saved before the bootstrap");
+  w.log.push(opened(6, 6));
+  assert.equal(await w.look(), 1);
+  assert.deepEqual(w.triaged, [6]);
+  w.repos = [];
+  await w.look();
+  assert.deepEqual([w.state().feed.digest, w.state().repos], [{}, {}], "a repo that leaves the list leaves no digest or state behind");
+});
+
+test("a reopened issue is read afresh, an unlabelled feature-request leaves the valid reports, and an issue opened and closed in one read is not triaged", async () => {
+  const w = world({ repos: [repo({ features: true })], ones: { "7:agent-fix": issue(7), "7:feature-request": issue(7) } });
+  await w.look();
+  w.log.push(ev(1, "issues.reopened", { number: 7 }));
+  assert.equal(await w.look(), 1);
+  assert.deepEqual(w.fired, [[7, "fix"]]);
+  assert.deepEqual(w.state().repos[R.toLowerCase()].featured, [7]);
+  w.log.push(ev(2, "issues.unlabeled", { number: 7, label: "feature-request" }));
+  await w.look();
+  assert.deepEqual(w.state().repos[R.toLowerCase()].featured, []);
+  const opened = (seq, number) => ev(seq, "issues.opened", { number, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] });
+  w.log.push(opened(3, 8), ev(4, "issues.closed", { number: 8 }), opened(5, 9));
+  await w.look();
+  assert.deepEqual(w.triaged, [9]);
+});
+
 test("agent-build and feature-request need features on; a trusted feature request joins the valid reports", async () => {
   const w = world({ repos: [repo({ features: true })], ones: { "5:agent-build": issue(5), "6:feature-request": issue(6) } });
   await w.look();

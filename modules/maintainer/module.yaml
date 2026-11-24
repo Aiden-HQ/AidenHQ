@@ -17,7 +17,7 @@ roles:
 # module's own committed cursor). The declaration is the grant: the log answers only these kinds and repos.
 subscribes:
   github:
-    kinds: [ issues.opened, issues.labeled, issues.closed, github.resync ]
+    kinds: [ issues.opened, issues.labeled, issues.unlabeled, issues.closed, issues.reopened, github.resync ]
     resources: { setting: maintainer_repos, path: "[].repo" }
 # Flow (docs/design/flow.md): an issue is triaged when its fix label lands; the stage runs from the issue's creation.
 facts:

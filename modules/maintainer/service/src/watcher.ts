@@ -15,7 +15,9 @@
  *   number only: the title is a stranger's text), through the per-author cap on invalid issues a day. Past it the issue is `held` and
  *   filed once a slot frees (oldest first); a day on, the daily run has it. An issue is valid once it carries the fix label (trusted,
  *   in `fired`) or feature-request (`featured`), labels only a trusted collaborator adds.
- * - `issues.closed`: a held issue is let go.
+ * - `issues.reopened`: the issue's labels are read afresh (a closed issue that already carried a label has no task yet), as for a label event.
+ * - `issues.unlabeled` of `feature-request`: the issue leaves `featured`.
+ * - `issues.closed`: a held issue is let go, and an issue opened and closed in the same read is not triaged.
  * - `github.resync` (the feed read a repo afresh): that repo is bootstrapped.
  *
  * The bootstrap is github-mcp's read of every open labelled issue of the repo (its trust verdicts included): at the first start, after a
@@ -105,7 +107,8 @@ export interface TriageLimits {
 export interface PumpDeps {
   /** The kernel's log of the feed events this module subscribes to, after a seq (no seq: the watermark). */
   feed: (after?: number) => Promise<FeedPage>;
-  bootstrap: () => Promise<{ repos: BootstrapRow[] }>;
+  /** `repos`: the repos to read (lower case), else every listed one. */
+  bootstrap: (repos?: string[]) => Promise<{ repos: BootstrapRow[] }>;
   /** One issue's trust read for a label (github-mcp), null when it is closed or no longer carries it. */
   one: (repo: string, number: number, label: string) => Promise<MaintainerIssue | null>;
   fire: Fire;
@@ -133,35 +136,40 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
   let count = 0;
   const save = (error?: string) => d.store.setMeta(STATE_KEY, JSON.stringify({ repos, ...(after === undefined ? {} : { feed: { after, digest: committed } }), ...(error ? { error } : {}) }));
   const of = (repo: string): RepoState => (repos[repo.toLowerCase()] ??= {});
-  const prune = () => { for (const k of Object.keys(repos)) if (!cfg.has(k)) delete repos[k]; };
+  const bootstrap = async (keys: string[]) => {
+    const read = await d.bootstrap(keys);
+    for (const row of read.repos) {
+      const k = row.repo.toLowerCase();
+      if (keys.includes(k)) count += await bootRepo(d, cfg.get(k)!, row, of(k));
+    }
+  };
   try {
     cfg = new Map(d.repos().map((r) => [r.repo.toLowerCase(), r]));
-    digest = Object.fromEntries([...cfg].map(([k, r]) => [k, JSON.stringify([r, !!d.triage])]));
+    digest = Object.fromEntries([...cfg].map(([k, r]) => [k, JSON.stringify(r)]));
     const first = after === undefined;
     const page = await d.feed(after);
+    // The first look's watermark is kept at once, so a bootstrap that fails and is retried still handles what was opened since it.
+    if (first) { after = page.next; save(); }
     const stale = first || page.gap ? [...cfg.keys()] : [...cfg.keys()].filter((k) => committed[k] !== digest[k]);
-    if (stale.length) {
-      const read = await d.bootstrap();
-      for (const row of read.repos) {
-        const k = row.repo.toLowerCase();
-        if (!stale.includes(k)) continue;
-        count += await bootRepo(d, cfg.get(k)!, row, of(k));
-        committed = { ...committed, [k]: digest[k]! };
-      }
-      for (const k of Object.keys(committed)) if (!cfg.has(k)) delete committed[k];
+    for (const k of stale) {
+      await bootstrap([k]);
+      committed = { ...committed, [k]: digest[k]! };
     }
+    // An issue opened and closed within one read is not triaged.
+    const closed = new Map<string, number>();
+    for (const ev of page.events) if (ev.kind === "issues.closed") closed.set(`${ev.resource.toLowerCase()}#${ev.data?.number}`, ev.seq);
     for (const ev of page.events) {
       const r = cfg.get(ev.resource.toLowerCase());
-      if (r) count += await handle(d, r, ev, of(r.repo), async () => { const row = (await d.bootstrap()).repos.find((x) => same(x.repo, r.repo)); if (!row) throw new Error(`${r.repo} is not in the bootstrap read`); return bootRepo(d, r, row, of(r.repo)); });
+      if (r) count += await handle(d, r, ev, of(r.repo), () => bootstrap([r.repo.toLowerCase()]).then(() => 0), (closed.get(`${ev.resource.toLowerCase()}#${ev.data?.number}`) ?? 0) > ev.seq);
     }
     for (const r of cfg.values()) count += await releaseHeld(d, r, of(r.repo));
-    prune();
+    for (const k of Object.keys(repos)) if (!cfg.has(k)) delete repos[k];
+    for (const k of Object.keys(committed)) if (!cfg.has(k)) delete committed[k];
     after = page.next;
     save();
   } catch (err) {
     const message = String(err instanceof Error ? err.message : err).slice(0, 300);
     if (message !== state.error) d.log.warn({ err: message }, "maintainer feed not handled; the next look redelivers it");
-    after = state.feed?.after;
     save(message);
   }
   return count;
@@ -198,12 +206,25 @@ async function file(d: PumpDeps, r: MaintainedRepo, issue: MaintainerIssue, kind
   return 1;
 }
 
-async function handle(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoState, boot: () => Promise<number>): Promise<number> {
+async function handle(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoState, boot: () => Promise<number>, closedLater: boolean): Promise<number> {
   const number = Number(ev.data?.number);
   switch (ev.kind) {
     case "github.resync": return boot();
     case "issues.closed":
       if (st.held) st.held = st.held.filter((h) => h.number !== number);
+      return 0;
+    case "issues.reopened": {
+      let count = 0;
+      for (const [on, label, kind] of [[r.issues, r.label, "fix"], [r.features, BUILD_LABEL, "build"]] as const) {
+        if (!on) continue;
+        const issue = await d.one(r.repo, number, label);
+        if (issue) count += await file(d, r, issue, kind, st);
+      }
+      if (r.features && (await d.one(r.repo, number, FEATURE_LABEL))?.trusted) st.featured = keep([...(st.featured ?? []), number]);
+      return count;
+    }
+    case "issues.unlabeled":
+      if (String(ev.data?.label ?? "") === FEATURE_LABEL && st.featured) st.featured = st.featured.filter((n) => n !== number);
       return 0;
     case "issues.labeled": {
       const label = String(ev.data?.label ?? "");
@@ -218,7 +239,7 @@ async function handle(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoSta
       }
       return 0;
     }
-    case "issues.opened": return opened(d, r, ev, st);
+    case "issues.opened": return closedLater ? 0 : opened(d, r, ev, st);
     default: return 0;
   }
 }
@@ -248,7 +269,7 @@ async function opened(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoSta
 
 /** Held issues, oldest first: one files as soon as its author is under the cap; one labelled valid or a day old is let go (the daily run has it). A local deadline, never a GitHub read. */
 async function releaseHeld(d: PumpDeps, r: MaintainedRepo, st: RepoState): Promise<number> {
-  if (!st.held?.length || !d.triage) return 0;
+  if (!st.held?.length || !d.triage || !(r.issues || r.features)) return 0;
   const limits = d.limits ?? triageLimits({});
   const recent = (st.recent = (st.recent ?? []).filter((x) => Date.now() - x.at < DAY));
   const valid = new Set([...(st.fired ?? []), ...(st.featured ?? [])]);
@@ -283,7 +304,7 @@ export function maintainerReads(env: NodeJS.ProcessEnv = process.env): Pick<Pump
     return (await res.json()) as any;
   };
   return {
-    bootstrap: () => get(url),
+    bootstrap: (repos) => get(repos ? `${url}?repos=${encodeURIComponent(repos.join(","))}` : url),
     one: async (repo, number, label) => (await get(`${url.replace(/\/issues$/, "/issue")}?repo=${encodeURIComponent(repo)}&number=${number}&label=${encodeURIComponent(label)}`)).issue ?? null,
   };
 }
