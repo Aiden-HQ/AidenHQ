@@ -1771,7 +1771,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           records.live().then((rows) => Promise.all(rows.map(named))).then((rows) => ((liveCache = rows), rows), () => liveCache ?? []),
           records.allOf("pending").then((rows) => Promise.all(rows.map(named))).then((rows) => ((pendingCache = rows), rows), () => pendingCache ?? []),
         ]);
-        const held = [...undecided, ...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
+        const held = [...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state)), ...undecided];
         const seen = new Set(cards.map((c) => c.id));
         const rest = held.filter((a) => !seen.has(a.id) && (seen.add(a.id), true));
         return { approvals: [...cards, ...rest].map((a) => shownApproval(names, a)) };

@@ -122,8 +122,9 @@ export function askedQuestions(comments: ChatComment[], agentId: string | null |
     // A form the owner has since commented after was answered: it is not the current question.
     if (c.authorType === "user") return undefined;
     if (c.authorType !== "agent" || c.authorAgentId !== agentId || !isReply(c.body)) continue;
+    // The newest own reply decides: a later one without choices (a new question, a note) retires an older form.
     const questions = replyQuestions(c.body);
-    if (questions) return { id: c.id, at: c.createdAt, text: strip(c.body), questions };
+    return questions ? { id: c.id, at: c.createdAt, text: strip(c.body), questions } : undefined;
   }
   return undefined;
 }

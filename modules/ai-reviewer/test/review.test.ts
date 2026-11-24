@@ -453,6 +453,9 @@ test("a file-type change is one numstat line; records of one path from separate 
   const { sameChanges } = await import("../service/src/review-files.ts");
   const gone = "diff --git a/b.md b/b.md\ndeleted file mode 120000\n--- a/b.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-a.md";
   const made = "diff --git a/b.md b/b.md\nnew file mode 100644\n--- /dev/null\n+++ b/b.md\n@@ -0,0 +1 @@\n+a.md";
+  const cut = "diff --git a/b.md b/b.md\nnew file mode 100644\n--- /dev/null\n+++ b/b.md\n@@ -0,0 +1,3 @@\n+a.md";
+  assert.notDeepEqual(sameChanges([{ path: "b.md", add: 0, del: 0 }], `${gone}\n${cut}`), []); // a patch cut short fails
+  assert.notDeepEqual(sameChanges([{ path: "b.md", add: 0, del: 0 }], `${gone}\n${made.split("\n").slice(0, 2).join("\n")}`), []); // cut before the hunk
   assert.deepEqual(sameChanges([{ path: "b.md", add: 0, del: 0 }], `${gone}\n${made}`), []);
   assert.deepEqual(sameChanges([{ path: "b.md", add: 0, del: 1 }, { path: "b.md", add: 1, del: 0 }], `${gone}\n${made}`), []);
 });
