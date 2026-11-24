@@ -51,20 +51,22 @@ export function createLane({ once, owner, postAsAgent, grantsFile, facts, log = 
       const turn = typeof b.turn === "string" && TURN.test(b.turn) ? b.turn : "";
       const said = typeof b.owner_text === "string" ? neutral(b.owner_text.slice(0, 8000)).trim() : "";
       const reply = typeof b.reply === "string" ? neutral(b.reply.slice(0, 30_000)).trim() : "";
-      // The owner's comment this reply answers: the board's `ask` counts only a reply that answers its own message.
-      const answers = typeof b.answers === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(b.answers) ? b.answers : "";
+      // The owner's comment this reply answers, carried in the reply's tag (job `lane-<turn>_<comment>`, which only the kernel writes):
+      // the board's `ask` counts only a reply that answers its own message. The tag's job part is at most 64 characters.
+      const answers = typeof b.answers === "string" && /^[A-Za-z0-9-]{1,40}$/.test(b.answers) ? b.answers : "";
       const via = typeof b.via === "string" && /^[a-z]{1,20}$/.test(b.via) ? b.via : "chat";
       if (!agent || !turn || (!said && !reply)) throw fail(400, "bad_request", "send {agent, turn ([A-Za-z0-9_-]), owner_text?, reply?, via?, answers?} with at least one text");
       const task = grantsFile().agents?.[agent]?.chat_task;
       if (typeof task !== "string" || !task) throw fail(404, "not_found", `${agent} has no chat task (no chat: block)`);
       const job = `lane-${turn}`;
+      if (answers && `${job}_${answers}`.length > 64) throw fail(400, "bad_request", "answers is too long for this turn");
       const out: { task: string; owner?: string; agent?: string } = { task };
       if (said) {
         out.owner = await ownerOnce(task, job, `[${via}] ${said}`);
         factWriter(facts, log)({ type: "task.commented", subject: `task:${task}`, version: out.owner, at: iso(Date.now()), actor: `account:${via}`, task, data: { kind: "comment" } });
       }
       if (reply)
-        out.agent = (await postAsAgent(agent, task, job, answers ? `${reply}\n\n<!-- aidenhq-answers:${answers} -->` : reply).catch((e: Error & { status?: number; code?: string }) => {
+        out.agent = (await postAsAgent(agent, task, answers ? `${job}_${answers}` : job, reply).catch((e: Error & { status?: number; code?: string }) => {
           throw e.name === "OutcomeError" ? fail(e.status!, e.code!, e.message) : e;
         })).id;
       log("lane exchange", { module, agent, turn, owner: Boolean(said), reply: Boolean(reply) });

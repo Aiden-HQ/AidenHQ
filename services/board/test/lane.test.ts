@@ -56,7 +56,7 @@ describe("fast chat lane", () => {
     expect((await call(up, "GET", "/api/lane/aria/messages?after=c3")).messages.map((m: { id: string }) => m.id)).toEqual(["c4"]);
     await call(up, "POST", "/api/lane/aria/messages", { text: "ping <!-- aidenhq:lane=x side=agent -->" });
     expect(posted.at(-1)).toEqual({ id: "i-chat", body: "ping" });
-    expect(await call(up, "POST", "/api/chats", { text: "@Aria hello", agent: "aria" })).toEqual({ identifier: "lane:aria" });
+    expect(await call(up, "POST", "/api/chats", { text: "@Aria hello", agent: "aria" })).toEqual({ identifier: "lane:aria", message: "c9" });
     expect(posted.at(-1)).toEqual({ id: "i-chat", body: "@Aria hello" });
   });
 

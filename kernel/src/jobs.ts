@@ -175,6 +175,8 @@ export function insideNoLinks(root: string, path: string, what: string): string 
 export const dispatchesFrom = (modules: () => Record<string, { dispatches?: string[] } | undefined>, agents: () => Record<string, { key?: unknown } | undefined>) =>
   (module: string, agent: string) => { const key = agents()[agent]?.key; return typeof key === "string" && key !== "" && (modules()[module]?.dispatches ?? []).includes(key); };
 
+/** A comment id (a job's `saw`). */
+const SAW = /^[A-Za-z0-9_-]{1,64}$/;
 const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL, engine TEXT NOT NULL, pid INTEGER NOT NULL,
   log TEXT NOT NULL, dir TEXT NOT NULL, at INTEGER NOT NULL, jobcaps TEXT NOT NULL, observing INTEGER NOT NULL, live_input INTEGER NOT NULL,
@@ -212,7 +214,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the
         // job that started it, its frozen authority and routine), and boxes.ts's lease and release.
         const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"], ["saw", "TEXT"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
         db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
         db.exec("CREATE INDEX IF NOT EXISTS jobs_identifier ON jobs (identifier, state)"); // workspaces.ts: a folder's liveness
         db.exec("CREATE INDEX IF NOT EXISTS jobs_agent_at ON jobs (agent, at DESC)"); // work.ts: an agent's newest jobs first
@@ -606,9 +608,18 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       });
     },
     /** A comment into a live run's inbox.jsonl: false once the run is over, or for an engine that takes none mid-run. */
-    input(module: string, id: string, text: string, from = "owner") {
+    input(module: string, id: string, text: string, from = "owner", comment?: string) {
       own(module, id);
-      return { sent: watchers.get(id)?.send?.(String(text).slice(0, 65_536), String(from).slice(0, 100)) ?? false };
+      const sent = watchers.get(id)?.send?.(String(text).slice(0, 65_536), String(from).slice(0, 100)) ?? false;
+      // `saw`: the newest comment the job had read at each step (its prompt, then each input it took), so a reader can tell which
+      // messages a reply answers.
+      if (sent && comment && SAW.test(comment)) db.prepare("UPDATE jobs SET saw = json_insert(COALESCE(saw, '[]'), '$[#]', ?) WHERE id = ?").run(comment, id);
+      return { sent };
+    },
+    /** How many steps of comments the job has read so far (its prompt's, then each live input's): a reply written now answers the last. */
+    sawn(id: string): number {
+      const r = db.prepare("SELECT saw FROM jobs WHERE id = ?").get(id) as { saw: string | null } | undefined;
+      return r?.saw ? (JSON.parse(r.saw) as string[]).length : 0;
     },
     /** A restart: every watcher stops and saves its offset; the runs go on for the next kernel. */
     detach() {

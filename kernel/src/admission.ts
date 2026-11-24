@@ -150,7 +150,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     };
   }
 
-  async function admit(module: string, b: { wake: string; prompt: string; full_prompt?: string }) {
+  async function admit(module: string, b: { wake: string; prompt: string; full_prompt?: string; saw?: string }) {
     if (!b || typeof b !== "object" || !ID.test(String(b.wake)) || typeof b.prompt !== "string" || (b.full_prompt !== undefined && typeof b.full_prompt !== "string")) throw new JobError(400, "bad-request", "send {wake, prompt, full_prompt?}");
     const first = wakes.claimed(module, b.wake);
     if (!first) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
@@ -196,6 +196,8 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?)")
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), routineOf ?? null, identifier);
       wakes.bind(b.wake, id);
+      // The newest comment the prompt carried: what this job's replies answer.
+      if (typeof b.saw === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(b.saw)) db.prepare("UPDATE jobs SET saw = ? WHERE id = ?").run(JSON.stringify([b.saw]), id);
       db.exec("COMMIT");
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };
     } catch (e) {

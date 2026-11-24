@@ -28,14 +28,12 @@ interface Comment { id: string; body?: string; authorAgentId?: string | null; au
 
 /** The kernel's self tag on a lane post: `kind=owner` the owner's words it posted, `kind=lane` the agent's reply. */
 const TAG = /\n*<!-- aidenhq:job=lane-[\w-]+ kind=(owner|lane) -->\s*$/;
-/** The kernel's note on a lane reply: the owner comment it answers (never part of the text). */
-const ANSWERS = /\n*<!-- aidenhq-answers:[\w-]+ -->/;
 
 /** One comment as a chat line for `agent`. */
 export function lineOf(agent: LaneAgent, c: Comment): ChatLine {
   const body = String(c.body ?? "");
   const side = TAG.exec(body)?.[1];
-  const text = body.replace(TAG, "").replace(ANSWERS, "");
+  const text = body.replace(TAG, "");
   const at = Date.parse(c.createdAt ?? "") || 0;
   if (side === "lane" && c.authorAgentId === agent.id) return { id: c.id, role: "agent", text, at };
   if (c.authorUserId && !c.authorAgentId) {

@@ -22,7 +22,7 @@ export interface Kernel {
   agent(id: string): Promise<Agent | undefined>;
   directory(): Promise<Directory>;
   /** Admission (F3): one job for the claimed wake (`full_prompt`: what runs when no session is resumed), or busy (429: the wake stays claimed and comes back). */
-  start(req: { wake: string; prompt: string; full_prompt?: string }): Promise<{ job: JobView } | { busy: true }>;
+  start(req: { wake: string; prompt: string; full_prompt?: string; saw?: string }): Promise<{ job: JobView } | { busy: true }>;
   /** This module's jobs the kernel keeps open for it: live, or ended and not yet acknowledged. */
   open(): Promise<JobView[]>;
   /** This module's jobs on a task, newest first. */
@@ -30,7 +30,7 @@ export interface Kernel {
   /** An ended job is dealt with (its outcome posted, whoever asked told): it leaves the open list. */
   ack(job: string): Promise<void>;
   /** A comment into a running job; the wake is delivered only when `sent`. */
-  input(job: string, b: { text: string; from: string; wake: string }): Promise<{ sent: boolean }>;
+  input(job: string, b: { text: string; from: string; wake: string; comment?: string }): Promise<{ sent: boolean }>;
   /** A job's outcome on its task, posted by the kernel as the agent, once per (job, kind) (F5). */
   post(job: string, b: { kind: "reply" | "notice" | "status"; body: string; status?: string; blocked_by?: string[] }): Promise<void>;
   /** Stop a running job (its task was closed under it). */

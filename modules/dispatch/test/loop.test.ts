@@ -103,7 +103,7 @@ test("a comment during a run goes into it; after the run the owner's next commen
   comments.push({ id: "c1", authorType: "user", body: "Also check the logout.", createdAt: "2026-11-18T10:00:00Z" });
   k.inbox.push(wake("comment:c1", "comment", { live_job: "j1" }));
   await k.dispatch.tick();
-  assert.deepEqual(k.inputs, [{ job: "j1", text: "Also check the logout.", from: "owner", wake: "comment:c1" }]);
+  assert.deepEqual(k.inputs, [{ job: "j1", text: "Also check the logout.", from: "owner", wake: "comment:c1", comment: "c1" }]);
   assert.equal(k.started.length, 1, "no second job");
   k.end("j1", "Both fixed.");
   await k.dispatch.tick();

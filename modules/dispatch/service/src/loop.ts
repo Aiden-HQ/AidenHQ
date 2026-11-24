@@ -274,7 +274,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       }
       if (w.live_job) {
         const from = who === "owner" ? "owner" : who === "notice" ? "wake notice" : agents.get(c!.authorAgentId!)?.name ?? "agent";
-        const r = await kernel.input(w.live_job, { text: stripHidden(c!.body).trim(), from, wake: w.key });
+        const r = await kernel.input(w.live_job, { text: stripHidden(c!.body).trim(), from, wake: w.key, comment: c!.id });
         if (r.sent) q("INSERT OR IGNORE INTO delivered (comment, task) VALUES (?, ?)").run(c!.id, task.id);
         log(r.sent ? "comment passed to the run" : "the run took no input: the comment waits for the next job", { task: task.identifier, job: w.live_job });
         return;
@@ -324,7 +324,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     // A hint, never a gate: a failed read lists nothing.
     const down = await kernel.connectionsDown(w.agent).catch(() => []);
     const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, down, profile: dir[w.agent]?.profile ?? "crew", agentName: assignee?.name, thread: threadSection(owner, entries, { resumed }), words, resumed });
-    const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
+    const r = await kernel.start({ wake: w.key, saw: comments.at(-1)?.id ?? "opening", prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
     // Busy (429), or admitted but deferred for want of a computer (the kernel handed the wake back): nothing ran, so nothing is seen.
     if ("busy" in r || r.job.state === "deferred") {
       const tries = (deferred.get(w.key)?.tries ?? 0) + 1;

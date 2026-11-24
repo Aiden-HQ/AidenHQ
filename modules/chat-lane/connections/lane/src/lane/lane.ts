@@ -158,7 +158,7 @@ export function makeLane(d: LaneDeps) {
     if (!c && wake === undefined && last?.role !== "owner" && !(lastOwner && lastOwner.at > d.store.answeredAt(agent.key))) return; // nothing new to answer
     const ask = c ? c.ask : wake ?? lastOwner!.text;
     // The owner message this turn answers (the newest it read), recorded on the reply so a caller waiting on an earlier one can tell it apart.
-    const answered = !c && wake === undefined ? lastOwner!.id : undefined;
+    const answered = c ? c.answers ?? undefined : wake === undefined ? lastOwner!.id : undefined;
     // A wake or a continuation goes where the owner is most likely to read it; an answer, where the ask came in.
     const telegram = c || wake !== undefined ? true : lastOwner!.via === "telegram";
     // Tries are counted before the run, so one that a crash or restart cut off still counts toward the cap.
@@ -226,7 +226,7 @@ export function makeLane(d: LaneDeps) {
       else if (wake === undefined) d.store.settleAsk(agent.key, ask, now()); // a failed try of this ask left a continuation owed: this answer is it
       if (tasked) d.store.owe(agent.key, "task", ask, now() + TASK_GRACE_MS, now());
       else if (!c && promise && (await deferred(agent, ask, r.text))) {
-        d.store.owe(agent.key, "continue", ask, now(), now());
+        d.store.owe(agent.key, "continue", ask, now(), now(), answered);
         d.log.info({ agent: agent.key }, "lane reply only promised; continuing");
       }
     } catch (e) {
@@ -237,10 +237,10 @@ export function makeLane(d: LaneDeps) {
       if (!first) d.store.firstSent(turnId, now());
       first = true;
       const owed = wake === undefined && !d.store.owesContinue(agent.key);
-      if (owed) d.store.owe(agent.key, "continue", ask, now() + RETRY_MS, now()); // before the notice: a notice that can't be sent still leaves the retry
+      if (owed) d.store.owe(agent.key, "continue", ask, now() + RETRY_MS, now(), answered); // before the notice: a notice that can't be sent still leaves the retry
       // A failed turn says so (the owner is never left in silence) but is not the answer: the ask stays owed and the lane
       // retries it after the pause, and only a turn that produces the answer settles it. A wake is not owed again.
-      await send(agent, `t${turnId}`, `Sorry, that didn't work (${msg.slice(0, 160)}). ${owed ? "Retrying in a minute." : "Try again in a moment."}`, telegram, answered);
+      await send(agent, `t${turnId}`, `Sorry, that didn't work (${msg.slice(0, 160)}). ${owed ? "Retrying in a minute." : "Try again in a moment."}`, telegram);
       d.log.warn({ agent: agent.key, err: msg, owed }, "lane turn failed");
     } finally {
       clearTimeout(limit);

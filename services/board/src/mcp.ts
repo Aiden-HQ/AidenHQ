@@ -206,34 +206,29 @@ export function createMcp(d: McpDeps) {
       "write",
       async (a) => {
         const lane = (id: string) => (id.startsWith("lane:") ? id.slice(5) : null);
-        // Our message is pinned on the first read after posting (the owner's newest then); later messages never move it. A reply
-        // answers it only when the run that wrote it read the chat at or after it: a lane reply says which owner message its turn
-        // answered, and a board reply belongs to the job that was running when it was posted (a job starting after our message read it).
-        // A late answer to an earlier message in the same chat is never returned as ours.
-        let pinned: string | number | undefined;
-        const read = async (id: string): Promise<string[]> => {
+        // A reply is ours when it says which owner message it answered (the newest its run had read) and that one is our message
+        // or a later one (a run that read ours and a newer message together answers both). The id of our message is the one the
+        // send request returned; a reply that links to no owner message never counts.
+        const read = async (id: string, sent: string): Promise<string[]> => {
           const key = lane(id);
-          if (key) {
-            const { messages } = (await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`)) as { messages: { id: string; role: string; text: string; answers?: string }[] };
-            pinned ??= messages.findLast((m) => m.role === "owner")?.id;
-            const at = messages.findIndex((m) => m.id === pinned);
-            return messages.filter((m) => m.role === "agent" && m.answers && at >= 0 && messages.findIndex((x) => x.id === m.answers) >= at).map((m) => m.text);
-          }
-          const { messages, runs } = (await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: { kind: string; text: string; at: string }[]; runs: { at: string | null }[] };
-          pinned ??= Date.parse(messages.findLast((m) => m.kind === "owner")?.at ?? "");
-          const starts = runs.flatMap((r) => (r.at ? [Date.parse(r.at)] : []));
-          return messages
-            .filter((m) => m.kind === "reply")
-            .filter((m) => Math.max(0, ...starts.filter((t) => t <= Date.parse(m.at))) >= Number(pinned))
-            .map((m) => m.text);
+          const { messages } = (key ? await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`) : await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: { id: string; role?: string; kind?: string; text: string; answers?: string }[] };
+          const owners = messages.filter((m) => (key ? m.role === "owner" : m.kind === "owner")).map((m) => m.id);
+          const ours = owners.indexOf(sent);
+          return messages.filter((m) => (key ? m.role === "agent" : m.kind === "reply") && m.answers && ours >= 0 && owners.indexOf(m.answers) >= ours).map((m) => m.text);
         };
         let id = a.chat as string | undefined;
-        if (id && lane(id)) await call("POST", `/api/lane/${encodeURIComponent(lane(id)!)}/messages`, { text: a.text });
-        else if (id) id = ((await call("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body: a.text, brief: true })) as { movedTo?: string }).movedTo ?? id;
-        else id = (await call("POST", "/api/chats", { text: a.text, ...(a.agent ? { agent: (await agentRef(a.agent)).id } : {}) })).identifier as string;
+        let sent: string;
+        if (id && lane(id)) sent = (await call("POST", `/api/lane/${encodeURIComponent(lane(id)!)}/messages`, { text: a.text })).message;
+        else if (id) {
+          const r = (await call("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body: a.text, brief: true })) as { movedTo?: string; message: string };
+          [id, sent] = [r.movedTo ?? id, r.message];
+        } else {
+          const r = await call("POST", "/api/chats", { text: a.text, ...(a.agent ? { agent: (await agentRef(a.agent)).id } : {}) });
+          [id, sent] = [r.identifier as string, r.message as string];
+        }
         const until = Date.now() + a.wait_seconds * 1000;
         for (;;) {
-          const replies = await read(id);
+          const replies = await read(id, sent);
           if (replies.length) return out(`Reply in ${id}.`, { chat: id, replied: true, reply: replies.join("\n\n") });
           const left = until - Date.now();
           if (left <= 0) return out(`${id}: still working. Call get_task with this id to read the reply.`, { chat: id, replied: false, reply: null });

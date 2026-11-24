@@ -1000,7 +1000,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             case "POST /v1/jobs/:job/input": {
               const b = await json(req);
               if (typeof b.text !== "string") throw fail(400, "bad_request", "send {text}");
-              const r = jobs.input(w.module!, m[0]!, b.text, typeof b.from === "string" ? b.from : "owner");
+              const r = jobs.input(w.module!, m[0]!, b.text, typeof b.from === "string" ? b.from : "owner", typeof b.comment === "string" ? b.comment : undefined);
               // A claimed comment wake is delivered only once the run took it.
               if (r.sent && typeof b.wake === "string") wakes?.delivered(w.module!, b.wake, m[0]!);
               return send(res, 200, r);
