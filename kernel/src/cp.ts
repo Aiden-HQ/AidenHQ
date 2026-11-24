@@ -11,9 +11,9 @@
 //   top-level). A fleet overseer (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit) comments on any
 //   task of its company; an agent comments on the tasks the
 //   grants table names for it (review log, chat) and on the shared "Fleet issues" log task (grants `fleet_issues`). A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
-//   task of its company an agent made (scope `settle`): a comment, a status (done only on a task in review, through the finish
-//   gate, heard as the task's own close), and handing the task to any agent; never a task a person
-//   made (the owner's own task or chat) and never a log task. Anything else is
+//   task of its company an agent made, or a routine run with a holder agent (scope `settle`): a comment, a status (done only on a
+//   task in review, through the finish gate, heard as the task's own close), and handing the task to any agent; never a task a
+//   person made (the owner's own task or chat), a routine run with no agent, and never a log task. Anything else is
 //   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the tasks its
 //   grants list the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the task's assignee as any
 //   agent's comment does.
@@ -60,7 +60,7 @@ const MAX = 32 * 1024 * 1024;
  */
 const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds", "project"];
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate", "project"];
-type Issue = { id: string; identifier?: string; companyId?: string; projectId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string };
+type Issue = { id: string; identifier?: string; companyId?: string; projectId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string; originKind?: string | null };
 /** The role that settles stuck work on another agent's task (the Fleet Steward): see `settle` above. */
 export const SETTLE = "fleet-settle";
 
@@ -149,10 +149,21 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       if (fleet && t.identifier === fleet) return "listed";
       return roles.includes("fleet-admin") || roles.includes("fleet-audit") ? "admin" : undefined;
     };
-    /** A task a fleet settler may change: one an agent made (never a person's own task or chat), and not a log task. */
-    const settleScope = (t: Issue) => (roles.includes(SETTLE) && !isLogTask(t, logs) && t.createdByAgentId && !t.createdByUserId ? "settle" : undefined);
+    /** A routine run: a task a routine wakes on its own timetable, with no agent as its creator (wakes.ts, admission.ts). */
+    const isRoutineRun = (t: Issue) => t.originKind === "routine_execution";
+    /**
+     * A task a fleet settler may change: one an agent made (never a person's own task or chat) or a routine run with a holder
+     * agent (a routine run has no creator agent), and not a log task.
+     */
+    const settleScope = (t: Issue) =>
+      roles.includes(SETTLE) && !isLogTask(t, logs) && !t.createdByUserId && (t.createdByAgentId || (isRoutineRun(t) && t.assigneeAgentId)) ? "settle" : undefined;
+    /** A settler is told the state that blocks it, not to ask itself to pass the task on. */
     const refuse = (t: Issue): never => {
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
+      if (roles.includes(SETTLE) && !isLogTask(t, logs)) {
+        const blocked = t.createdByUserId ? "it is the owner's own task" : isRoutineRun(t) ? "it has no agent to hold it" : "no agent made it";
+        throw fail(403, "forbidden", `${t.identifier ?? t.id} can't be settled: ${blocked}`);
+      }
       throw fail(403, "forbidden", `${t.identifier ?? t.id} isn't yours to change: ask ${who} or the Fleet Steward to pass it on`);
     };
     // The write's once-only key: this call's write itself, so a module's retry of it within the call is the same op.
