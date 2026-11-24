@@ -41,11 +41,24 @@ check_jobs:
     # target: pr, or tree (a whole repo at head: pr is empty and base is the head); option and lens: a catalog option's (empty
     # for a combo); setup_files: a pending deepsec setup branch's files ({} for none); deepsec_data: deepsec's records from earlier
     # runs of the repo (an uploaded input, "" for none or another engine), and keep: the records a deepsec run changed, which the
-    # service lays over the ones it holds (its /data, never the repo).
-    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, previous_b: json, previous_c: json, previous_d: json, previous_e: json, previous_f: json, intent: text, deepsec_data: input }
+    # service lays over the ones it holds (its /data, never the repo). A repo review's area check: area is its area of the plan
+    # ({ id, name, files }: the review sees only those files), {} for a whole repo; area_map the plan's areas a whole-repo option
+    # is given as data ({ areas: [{ name, folders, tags }] }), {} for none.
+    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, previous_b: json, previous_c: json, previous_d: json, previous_e: json, previous_f: json, intent: text, deepsec_data: input, area: json, area_map: json }
     model: true
     result: true
     keep: true
+  # A repo review's area plan (recipe/plan.ts): the batch's first check when it has a per-area option. `base` is the commit,
+  # `model` the planner's (a cheap one), `stacks` the catalog's stack tags with their path globs. Its result is the areas (each a
+  # file list a review check's `area` spec field carries); the per-area checks are filed from it.
+  code-review-plan:
+    dir: recipe
+    argv: [ node, /aidenhq-out/recipe/plan.ts ]
+    timeout_min: 20
+    title: the repo review's area plan
+    spec: { base: sha, run: text, model: text, stacks: json }
+    model: true
+    result: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is
   # the JSON object recipe/catalog.ts toolSpec builds, `base` the commit itself (a whole tree only, for now). No model.
   code-review-tools:
