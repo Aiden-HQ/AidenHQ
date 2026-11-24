@@ -54,9 +54,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const s = d.settings(pr.repo);
   let a = d.state.get(pr.repo, pr.number) as Kept | undefined;
   if (!a || !s) return "nothing";
-  // A report that failed last pass is posted again first.
-  if (a.reportStale) await report(d, a, pr, a.reportStale);
-  a = d.state.get(pr.repo, pr.number) as Kept;
+  a = await retryReport(d, a, pr);
   // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.
   // Landed: a hand-off's task ends with it (a fleet PR's task is its opener's), whatever else holds the PR.
   if (pr.state === "merged" && v.do === "done") {
@@ -231,6 +229,15 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   return did;
 }
 
+/** A report that failed last pass is posted again (at the head it was for; a new head's round writes its own). */
+export async function retryReport(d: RoundDeps, a: Kept, pr: PrView): Promise<Kept> {
+  const stale = a.reportStale;
+  if (!stale) return a;
+  if (stale.head === pr.head) await report(d, a, pr, stale.facts);
+  else { const { reportStale: _, ...kept } = a; d.state.put(kept); }
+  return d.state.get(pr.repo, pr.number) as Kept;
+}
+
 /** Posts the report, or edits it in place (its id kept on the adoption). */
 async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts) {
   try {
@@ -238,6 +245,6 @@ async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts) {
     if (id !== a.report || a.reportStale) { const { reportStale: _, ...kept } = a; d.state.put({ ...kept, report: id }); }
   } catch (e) {
     d.log("report failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
-    d.state.put({ ...a, reportStale: f });
+    d.state.put({ ...a, reportStale: { head: pr.head, facts: f } });
   }
 }

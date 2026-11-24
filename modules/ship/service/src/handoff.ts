@@ -33,8 +33,8 @@ export type Kept = Adoption & {
   assigned?: string[];
   /** The report comment's id (edited in place). */
   report?: number;
-  /** The facts of a report that failed to post or edit: the next pass posts it again (the comment never stays stale). */
-  reportStale?: import("./report.ts").Facts;
+  /** The head and facts of a report that failed to post or edit: the next pass at that head posts it again (the comment never stays stale). */
+  reportStale?: { head: string; facts: import("./report.ts").Facts };
   /** Counters for the caps: per head (wakes), per PR (rounds, ci, review) and the heads each required check was red on. */
   counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[] };
   /** The direct merge filed for a head: its kernel record and attempt (a failed one is filed again with the next attempt). */

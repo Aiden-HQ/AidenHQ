@@ -7,7 +7,7 @@
 export const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
 // The `github.repair` request's limits (modules/github/schemas/repair.json, plan).
-const MAX_GLOBS = 200, MAX_GLOB_LEN = 300, MAX_COMMANDS = 20;
+const MAX_GLOBS = 200, MAX_GLOB_LEN = 300, MAX_COMMANDS = 20, MAX_DIR_LEN = 300, MAX_CMD_LEN = 500;
 
 export type Discovered = { globs: string[]; commands: { dir: string; cmd: string }[]; ambiguous: string[] };
 
@@ -38,7 +38,10 @@ export function discover(files: Record<string, string>): Discovered {
   }
 
   const byDir = new Map<string, string>();
-  const put = (dir: string, cmd: string) => { if (!byDir.has(dir)) byDir.set(dir, cmd); };
+  const put = (dir: string, cmd: string) => {
+    if (dir.length > MAX_DIR_LEN || cmd.length > MAX_CMD_LEN) { ambiguous.push(`${dir}: \`${cmd.slice(0, 60)}…\` is too long for the repair request`); return; }
+    if (!byDir.has(dir)) byDir.set(dir, cmd);
+  };
   // 1. CI: the run lines of a job that checks generated code (the repo's own word for how to regenerate).
   for (const [path, text] of Object.entries(files)) {
     if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)) continue;
