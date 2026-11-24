@@ -48,23 +48,23 @@ function productRepo(repo: string): string | undefined {
   }
 }
 const SHA = /^[0-9a-f]{40}$/;
-/** The most merges one look checks with git (the rest wait for the next look). */
+/** The most git runs one look makes (the rest wait for the next look, which finds the earlier answers remembered). */
 const CHECKS = 200;
 /**
- * Whether commit `a` is in `b` in the product checkout (any failure, an unknown commit included, is no). Git runs off the event
- * loop. An answer git gave (exit 0 or 1) is final, since ancestry between two commits never changes, so it is remembered; a
- * failure (a commit this checkout has not fetched yet) is asked again next time.
+ * Whether commit `a` is in `b` in the product checkout, git run off the event loop; undefined when git could not say (a commit this
+ * checkout has not fetched yet: asked again at the next look). An answer git gave (exit 0 or 1) is final, since ancestry between two
+ * commits never changes, so it is remembered and costs no run; `runs` counts the runs made.
  */
 const known = new Map<string, boolean>();
-const contains = (repo: string, a: string, b: string): Promise<boolean> => {
+const contains = (repo: string, a: string, b: string, runs: { n: number }): Promise<boolean | undefined> => {
   if (!SHA.test(a) || !SHA.test(b)) return Promise.resolve(false);
   const key = `${a}:${b}`, hit = known.get(key);
   if (hit !== undefined) return Promise.resolve(hit);
+  runs.n++;
   return new Promise((resolve) => {
     execFile("git", ["-C", repo, "merge-base", "--is-ancestor", "--end-of-options", a, b], (err) => {
       const code = err ? (err as { code?: unknown }).code : 0;
-      if (code === 0 || code === 1) { if (known.size >= 50_000) known.clear(); known.set(key, code === 0); }
-      resolve(code === 0);
+      if (code === 0 || code === 1) { if (known.size >= 50_000) known.clear(); known.set(key, code === 0); resolve(code === 0); } else resolve(undefined);
     });
   });
 };
@@ -114,12 +114,21 @@ export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
     .all(host.length, host, since, `pr:${slug}#%`) as { subject: string; at: string; sha: unknown }[])
     .filter((m) => typeof m.sha === "string" && SHA.test(m.sha) && !deployed.has(m.subject.toLowerCase()));
   const good = gens.filter((g) => g.health === "good" && g.product && SHA.test(g.product)).sort((a, b) => a.n! - b.n!);
-  for (const m of merged.slice(0, CHECKS)) {
+  const runs = { n: 0 };
+  let complete = true; // false when a look ran out of runs or git could not answer: the next look goes again
+  for (const m of merged) {
     let g: Generation | undefined;
-    for (const x of good) if (Date.parse(x.at!) >= Date.parse(m.at) && await contains(repo, m.sha as string, x.product!)) { g = x; break; }
+    // A merge no good generation can hold yet (all older than it) costs no run; the cap counts runs, not merges.
+    for (const x of good) {
+      if (Date.parse(x.at!) < Date.parse(m.at)) continue;
+      if (runs.n >= CHECKS) { complete = false; break; }
+      const c = await contains(repo, m.sha as string, x.product!, runs);
+      if (c === undefined) complete = false;
+      else if (c) { g = x; break; }
+    }
     if (g && facts.record({ type: "pr.deployed", subject: m.subject, version: "deployed", at: g.at!, actor: "kernel", source: "poll", data: { pr: m.subject.slice(3), generation: g.n } })) n++;
   }
-  if (merged.length <= CHECKS) looked = state;
+  if (complete) looked = state;
   return n;
   };
   return () => (running ??= look().finally(() => { running = undefined; }));
