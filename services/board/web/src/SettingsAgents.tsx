@@ -93,7 +93,7 @@ function Edit({ label, current, item, input, options, models }: { label: string;
   );
 }
 
-export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData }) {
+export function AgentDetails({ a, data, reload }: { a: AgentSettings; data: SettingsData; /** Re-reads settings, dropping any older read still in flight. */ reload?: () => void }) {
   const d = a.defaults ?? {};
   const agentField = (f: "model" | "reasoning_effort" | "heartbeat" | "max_parallel") => (c: SettingChange) => c.kind === "agent" && c.agent === a.key && c.field === f;
   const dflt = (f: "model" | "reasoning_effort" | "heartbeat", now: unknown, text: (v: unknown) => ReactNode) =>
@@ -139,7 +139,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
           </Field>
         )}
         {routines.map((r) => (
-          <RoutineField key={`${r.key}:${JSON.stringify([r.schedules, r.model])}`} r={r} models={data.choices.models} agentModel={a.model} zone={data.instance.boardTimezone} />
+          <RoutineField key={`${r.key}:${JSON.stringify([r.schedules, r.model])}`} r={r} models={data.choices.models} agentModel={a.model} zone={data.instance.boardTimezone} reload={reload} />
         ))}
         {a.recurring.map((r) => (
           <Row
@@ -171,7 +171,7 @@ const zoneNote = (tz: string) => (tz && tz !== browserZone ? ` (${tz})` : "");
  * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed; pause and
  * resume are its live controls here (Paperclip's status, no settings change).
  */
-function RoutineField({ r, models, agentModel, zone }: { r: Routine; models: string[]; agentModel: string; zone: string }) {
+function RoutineField({ r, models, agentModel, zone, reload }: { r: Routine; models: string[]; agentModel: string; zone: string; reload?: () => void }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
   const [model, setModel] = useState(r.model ?? "");
@@ -182,7 +182,7 @@ function RoutineField({ r, models, agentModel, zone }: { r: Routine; models: str
   const [pauseError, setPauseError] = useState("");
   const togglePause = () => {
     setPausing(true);
-    api.pauseRoutine(r.id!, !paused).then((x) => (setPaused((r.paused = x.status === "paused")), setNext(x.next), setPauseError("")), (e) => setPauseError((e as Error).message)).finally(() => setPausing(false));
+    api.pauseRoutine(r.id!, !paused).then((x) => (setPaused((r.paused = x.status === "paused")), setNext(x.next), setPauseError(""), reload?.()), (e) => setPauseError((e as Error).message)).finally(() => setPausing(false));
   };
   const [review, setReview] = useState(false);
   const own = r.defaults ?? {};

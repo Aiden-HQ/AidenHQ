@@ -1,5 +1,5 @@
 // An agent's Settings tab (#/agents/<key>/settings), docs/design/agent-and-module-pages.md "Agent page".
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLive } from "./events";
 import { AgentGrants } from "./AgentGrants";
 import { SignInRequired, api } from "./api";
@@ -12,14 +12,23 @@ import type { AgentProfile, SettingsData } from "./types";
 export function AgentSettings({ agentKey, profile, onSignIn }: { agentKey: string; profile?: AgentProfile; onSignIn: () => void }) {
   const [data, setData] = useState<SettingsData | null>(null);
   const [error, setError] = useState("");
-  // Reload on fleet changes and once a minute, so a shown next run moves on after its schedule fires.
-  useLive(["fleet"], () => api.settings().then((d) => (setData(d), setError("")), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), 60_000);
+  // Reload on fleet changes and once a minute, so a shown next run moves on after its schedule fires. Only the newest read
+  // lands: an older one finishing late must not undo a pause or resume shown since.
+  const seq = useRef(0);
+  const load = () => {
+    const n = ++seq.current;
+    return api.settings().then(
+      (d) => n === seq.current && (setData(d), setError("")),
+      (e) => n === seq.current && (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
+    );
+  };
+  useLive(["fleet"], load, 60_000);
   const a = data?.agents.find((x) => x.key === agentKey);
   return (
     <ChangesScope onSignIn={onSignIn}>
       {profile && <Details p={profile} />}
       <section className="st-embedded">
-        {error && !data ? <p className="fleet-empty">Couldn't load settings: {error}</p> : !data ? <SkeletonLines lines={4} /> : a ? <AgentDetails a={a} data={data} /> : <p className="fleet-empty">This agent has no settings in the compiled config yet.</p>}
+        {error && !data ? <p className="fleet-empty">Couldn't load settings: {error}</p> : !data ? <SkeletonLines lines={4} /> : a ? <AgentDetails a={a} data={data} reload={() => void load()} /> : <p className="fleet-empty">This agent has no settings in the compiled config yet.</p>}
       </section>
       <AgentGrants agentKey={agentKey} onSignIn={onSignIn} />
     </ChangesScope>
