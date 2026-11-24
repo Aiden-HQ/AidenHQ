@@ -425,7 +425,7 @@ export function createService(o: Options) {
         current: at ? at.generation : undefined, ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
       };
     };
-    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair")) {
+    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget")) {
       const s = slugOf(a.repo);
       const n = Number(a.number);
       const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
@@ -447,7 +447,7 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the App`;
+      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the App`;
       return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha)) } : {}),
@@ -691,6 +691,7 @@ export function createService(o: Options) {
       if (action === "approve") return approve(a);
       if (action === "enqueue") return enqueue(a);
       if (action === "repair") return repairPr(a);
+      if (action === "retarget") return retarget(a);
       if (action === "push" && a.pr) return pushOnto(a);
       if (action === "push" || action === "pr") {
         for (const b of a.only) {
@@ -764,6 +765,25 @@ export function createService(o: Options) {
    * The adoption, read once more right before an effect runs (one call to ship): a hand-back, a stop, a pause (hold) or a newer
    * generation since the filing refuses it, as the direct merge does before its PUT. Undefined while it holds.
    */
+  /**
+   * A stacked adopted PR onto the default branch once the PR it stood on merged (ship's `retarget`): only from the base it was
+   * filed against, only onto the repo's default branch, at the bound head and generation. Already there is done.
+   */
+  async function retarget(a: any): Promise<{ ok: boolean; text: string }> {
+    const s = slugOf(a.repo);
+    const n = Number(a.number);
+    const url = `https://github.com/${s.slug}/pull/${n}`;
+    const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    if (pr.base?.ref === a.to) return { ok: true, text: `${url} targets \`${a.to}\`.` };
+    if (pr.state !== "open") return { ok: false, text: `${url} is ${pr.state}: not retargeted.` };
+    if (pr.base?.ref !== a.base) return { ok: false, text: `ship-scope: ${url} now targets \`${pr.base?.ref}\`, not \`${a.base}\`: not retargeted.` };
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not retargeted.` };
+    if (a.to !== await defaultBranch(s.slug)) return { ok: false, text: `ship-scope: \`${a.to}\` isn't ${s.slug}'s default branch: not retargeted.` };
+    const ended = await adoptionEnded(s.slug, n, a.generation);
+    if (ended) return { ok: false, text: ended };
+    const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
+    return r.status < 300 ? { ok: true, text: `${url} now targets \`${a.to}\`.` } : { ok: false, text: `GitHub refused the retarget of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+  }
   async function adoptionEnded(repo: string, n: number, generation: number): Promise<string | undefined> {
     const at = o.ship ? await o.ship.generation(repo, n).catch(() => undefined) : undefined;
     return at?.generation === generation ? undefined : `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
@@ -1663,6 +1683,6 @@ export function createService(o: Options) {
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
     /** Ship's round decision for an adopted PR (merges.ts decision), for /internal/ship/decision. */
-    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any } }) => merges.decision(repo, number, head, view),
+    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number }) => merges.decision(repo, number, head, view),
   });
 }

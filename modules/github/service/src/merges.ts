@@ -658,7 +658,7 @@ export function createMerges(d: {
      * the checks from its rollup unless that is cut at 100. Code review's verdict is read once and decided on (`findingsKey`
      * names its findings, so new findings at one head are a new fix_review).
      */
-    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any } }) {
+    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number }) {
       // A skipped image scan is judged on the PR's files, which only the full read has.
       const listed = view && !skippedImageScan(view.pr);
       const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);
@@ -671,7 +671,7 @@ export function createMerges(d: {
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
-      const ctx = { queue, verdict: g, required, checks };
+      const ctx = { queue, verdict: g, required, checks, ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       const v = decide(data, head, { ...ctx, approve: false });
       const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
