@@ -617,7 +617,10 @@ export function createEngine(d: EngineDeps) {
   async function absorbDeepsec(r: RunRow) {
     try {
       const left = await d.runner.kept(r.check_job!);
-      if (left) d.deepsec.write(r.repo, mergeRecords(d.deepsec.read(r.repo), left, r.target === "tree"));
+      const merged = left && mergeRecords(d.deepsec.read(r.repo), left, r.target === "tree");
+      // Records past what a check input holds are not kept: the repo's records stay those that a later run can be handed.
+      if (merged && merged.length > INPUT_MAX) log("deepsec's records would be more than a check input holds: not kept", { run: r.id, bytes: merged.length });
+      else if (merged) d.deepsec.write(r.repo, merged);
     } catch (e) {
       log("deepsec's records not kept", { run: r.id, err: String((e as Error).message).slice(0, 200) });
     }

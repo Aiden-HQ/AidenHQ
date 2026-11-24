@@ -112,8 +112,12 @@ test("deepsec starts from the records earlier runs left, analyses a file again o
   const rec = (p, o) => ({ filePath: p, status: "analyzed", fileHash: hash(p), findings: [{ severity: "HIGH", title: `old in ${p}` }], lastScannedAt: "t0", ...o });
   // src/b.js changed since its record (another hash); src/c.js is gone from this commit; ../evil.js is out of the data folder.
   writeFileSync(join(dir, "carried"), gzipSync(JSON.stringify({ records: { "src/a.js": rec("src/a.js"), "src/b.js": rec("src/b.js", { fileHash: "old" }), "src/d.js": rec("src/d.js", { status: "processing", lockedByRunId: "r0" }), "src/c.js": { ...rec("src/a.js"), filePath: "src/c.js" }, "../evil.js": rec("src/a.js") } })));
+  // A path that is a link now (src/l.js) is never read through: as good as gone.
+  symlinkSync("/etc/hosts", join(root, "src/l.js"));
+  const withLink = gzipSync(JSON.stringify({ records: { ...JSON.parse(gunzipSync(readFileSync(join(dir, "carried"))).toString("utf8")).records, "src/l.js": { ...rec("src/a.js"), filePath: "src/l.js" } } }));
+  writeFileSync(join(dir, "carried"), withLink);
   const carried = layCarried(join(dir, "carried"), files, root);
-  assert.deepEqual([[...carried.was.keys()].sort(), carried.gone], [["src/a.js", "src/b.js", "src/d.js"], ["src/c.js"]]);
+  assert.deepEqual([[...carried.was.keys()].sort(), carried.gone.sort()], [["src/a.js", "src/b.js", "src/d.js"], ["src/c.js", "src/l.js"]]);
   const read = (p) => JSON.parse(readFileSync(join(files, `${p}.json`), "utf8"));
   // Unchanged stays analysed; a changed file is pending with its findings dropped (deepsec's scan would keep it analysed); a
   // record a stopped run left mid-processing is pending again.
@@ -125,7 +129,7 @@ test("deepsec starts from the records earlier runs left, analyses a file again o
   write("src/e.js", rec("src/a.js", { filePath: "src/e.js" }));
   leave(carried, files, keep, true);
   const left = JSON.parse(gunzipSync(readFileSync(keep)).toString("utf8"));
-  assert.deepEqual([Object.keys(left.records).sort(), left.removed], [["src/b.js", "src/d.js", "src/e.js"], ["src/c.js"]]);
+  assert.deepEqual([Object.keys(left.records).sort(), left.removed.sort()], [["src/b.js", "src/d.js", "src/e.js"], ["src/c.js", "src/l.js"]]);
 });
 
 test("a failed deepsec says why in the run's reason: its own error, from its jsonl on stdout, as data", async () => {

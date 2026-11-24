@@ -107,8 +107,9 @@ function recordsIn(files: string) {
   for (const n of names) { try { const r = JSON.parse(readFileSync(join(files, n), "utf8")); if (r && recordPath(r.filePath)) out.set(r.filePath, r); } catch {} }
   return out;
 }
-/** A file's hash as deepsec's scan takes it (sha256 of its text, CRLF read as LF); undefined when it isn't there. */
-const fileHash = (root: string, p: string) => { try { return createHash("sha256").update(readFileSync(join(root, p), "utf-8").replaceAll("\r\n", "\n")).digest("hex"); } catch { return undefined; } };
+/** A file's hash as deepsec's scan takes it (sha256 of its text, CRLF read as LF); undefined when it isn't there as a file of the
+ * checkout (never read through a link). */
+const fileHash = (root: string, p: string) => { if (!plain(root, p)) return undefined; try { return createHash("sha256").update(readFileSync(join(root, p), "utf-8").replaceAll("\r\n", "\n")).digest("hex"); } catch { return undefined; } };
 /** Lays the carried records of files at this commit in `files`, each as it stands here: one whose file changed since (its
  * fileHash) or that a stopped run left mid-processing is pending, a changed one's findings dropped. `gone`: records of files the
  * commit doesn't have, never laid. */
