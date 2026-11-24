@@ -262,11 +262,18 @@ test("a revoked or expired session is 401 and no page; the app's own cookie is n
   // as they do at the public gate, so a form's own check works on the canary.
   const plant = createServer((q, s) => s.writeHead(200, { "set-cookie": [`${CANARY_COOKIE}=planted; Path=/; Secure`, "__Host-csrf=app-token; Path=/; Secure", "theme=dark"] }).end("ok"));
   const plantPort = await listen(plant);
-  const roadmapPort = cfg.hosts[`roadmap.${CANARY_BASE}`].port;
-  cfg.hosts[`roadmap.${CANARY_BASE}`] = { app: "roadmap", port: plantPort };
+  // The upstream is the app's public entry, never the synthetic listener name: a decoy entry under `roadmap.canary.localhost`
+  // pointing at another server is not what a page request reaches.
+  const publicPort = cfg.hosts["roadmap.example.com"].port;
+  cfg.hosts["roadmap.example.com"] = { app: "roadmap", port: plantPort };
+  cfg.hosts[`roadmap.${CANARY_BASE}`] = { app: "roadmap", port: publicPort };
   try {
     const r = await hit(lPort, `roadmap.${CANARY_BASE}`, "/", { cookie: `${CANARY_COOKIE}=${COOKIE}` });
     assert.equal(r.status, 200);
     assert.deepEqual(r.cookies, ["__Host-csrf=app-token; Path=/; Secure", "theme=dark"]);
-  } finally { cfg.hosts[`roadmap.${CANARY_BASE}`] = { app: "roadmap", port: roadmapPort }; plant.close(); plant.closeAllConnections?.(); }
+  } finally {
+    cfg.hosts["roadmap.example.com"] = { app: "roadmap", port: publicPort };
+    cfg.hosts[`roadmap.${CANARY_BASE}`] = { app: "roadmap", port: appPort };
+    plant.close(); plant.closeAllConnections?.();
+  }
 });
