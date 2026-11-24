@@ -28,6 +28,7 @@ const CONTINUE_LIMIT_MS = 300_000;
 const CONTINUE_STEPS = 12;
 const CONTINUE_TRIES = 2;
 const RETRY_MS = 60_000;
+const DELIVER_TRIES = 5;
 const RESUME_MS = 3600_000;
 /** How long an agent's turns pause after one could not post (the kernel or the control plane down). */
 const PAUSE_MS = 60_000;
@@ -98,10 +99,21 @@ export function makeLane(d: LaneDeps) {
     else active--;
   };
 
-  /** Posts on the chat task as the agent (once per key), then to Telegram when asked. A post that fails throws. */
+  /** Posts on the chat task as the agent (once per key), then to Telegram when asked. Only a failed board post throws. */
   async function send(agent: LaneAgent, key: string, text: string, telegram: boolean): Promise<void> {
     await d.chat.reply(agent, key, text);
-    if (telegram && agent.telegramToken) await d.telegram(agent, text).catch((e: Error) => d.log.warn({ agent: agent.key, err: e.message }, "lane reply not sent to telegram"));
+    if (telegram) await deliver(agent, text);
+  }
+
+  /** Telegram's copy of a reply already on the board. A failure is owed as a redelivery of that text (tick), never a rerun of the turn. */
+  async function deliver(agent: LaneAgent, text: string): Promise<void> {
+    if (!agent.telegramToken) return;
+    try {
+      await d.telegram(agent, text);
+    } catch (e) {
+      d.store.owe(agent.key, "deliver", text, now() + RETRY_MS, now());
+      d.log.warn({ agent: agent.key, err: (e as Error).message }, "lane telegram delivery failed; retried by the lane");
+    }
   }
 
   /** Whether a reply only promises the answer (a one-word model call; on its failure, a phrase check). */
@@ -142,14 +154,15 @@ export function makeLane(d: LaneDeps) {
     const history = await d.chat.history(agent, now() - HISTORY_MS, HISTORY);
     const lastOwner = [...history].reverse().find((m) => m.role === "owner");
     const last = [...history].reverse().find((m) => m.role !== "other");
-    if (!c && wake === undefined && last?.role !== "owner") return; // nothing new to answer
+    // An owner message newer than the last finished turn's trigger is unanswered even when a reply landed after it (it was sent mid-turn).
+    if (!c && wake === undefined && last?.role !== "owner" && !(lastOwner && lastOwner.at > d.store.answeredAt(agent.key))) return; // nothing new to answer
     const ask = c ? c.ask : wake ?? lastOwner!.text;
     // A wake or a continuation goes where the owner is most likely to read it; an answer, where the ask came in.
     const telegram = c || wake !== undefined ? true : lastOwner!.via === "telegram";
     // Tries are counted before the run, so one that a crash or restart cut off still counts toward the cap.
     if (c && c.attempts >= CONTINUE_TRIES) return await failed(agent, { ...c, attempts: CONTINUE_TRIES }, "it was cut off");
     if (c) d.store.attempt(c.id);
-    const turnId = d.store.startTurn(agent.key, agent.model, c || wake !== undefined ? now() : lastOwner!.at);
+    const turnId = d.store.startTurn(agent.key, agent.model, c || wake !== undefined ? now() : lastOwner!.at, !c && wake === undefined);
     const messages: ChatMsg[] = [
       { role: "system", content: systemPrompt(agent, d, d.store.pendingWakes(agent.key), now(), await d.memory(agent)) },
       // The lane's own "on it" is not the model's words: left in, the model copies it instead of answering.
@@ -183,7 +196,7 @@ export function makeLane(d: LaneDeps) {
         tools: await d.tools.defs(agent),
         callTool: async (name, args) => {
           const out = await d.tools.call(agent, name, args);
-          if (!out.startsWith("error:")) {
+          if (!out.startsWith("error:") && !out.startsWith('{"ok":false')) { // a refusal comes back as {"ok":false,…}, not an error
             if (name === "task_create") tasked = true;
             if (name === "wake_at") woke = true;
           }
@@ -208,6 +221,7 @@ export function makeLane(d: LaneDeps) {
       done("ok");
       d.log.info({ agent: agent.key, ms: now() - (c ? c.due_at : wake !== undefined ? now() : lastOwner!.at), steps: r.steps, tools: r.tools, ...(c ? { continued: c.id } : {}) }, "lane turn done");
       if (c) d.store.settle(c.id, now());
+      else if (wake === undefined) d.store.settleAsk(agent.key, ask, now()); // a failed try of this ask left a continuation owed: this answer is it
       if (tasked) d.store.owe(agent.key, "task", ask, now() + TASK_GRACE_MS, now());
       else if (!c && promise && (await deferred(agent, ask, r.text))) {
         d.store.owe(agent.key, "continue", ask, now(), now());
@@ -220,11 +234,11 @@ export function makeLane(d: LaneDeps) {
       if (c) return await failed(agent, c, msg.slice(0, 160));
       if (!first) d.store.firstSent(turnId, now());
       first = true;
+      const owed = wake === undefined && !d.store.owesContinue(agent.key);
+      if (owed) d.store.owe(agent.key, "continue", ask, now() + RETRY_MS, now()); // before the notice: a notice that can't be sent still leaves the retry
       // A failed turn says so (the owner is never left in silence) but is not the answer: the ask stays owed and the lane
       // retries it after the pause, and only a turn that produces the answer settles it. A wake is not owed again.
-      const owed = wake === undefined && !d.store.owesContinue(agent.key);
       await send(agent, `t${turnId}`, `Sorry, that didn't work (${msg.slice(0, 160)}). ${owed ? "Retrying in a minute." : "Try again in a moment."}`, telegram);
-      if (owed) d.store.owe(agent.key, "continue", ask, now() + RETRY_MS, now());
       d.log.warn({ agent: agent.key, err: msg, owed }, "lane turn failed");
     } finally {
       clearTimeout(limit);
@@ -283,14 +297,21 @@ export function makeLane(d: LaneDeps) {
       const agent = d.agents()[agentKey];
       if (!agent) return Promise.reject(new Error(`${agentKey} has no fast lane`));
       wakes.set(agentKey, [...(wakes.get(agentKey) ?? []), note]);
-      return schedule(agent);
+      // A rejection hands the wake back to the caller's retry, so it leaves this queue (else the retry would queue it twice).
+      return schedule(agent).catch((e) => {
+        const q = wakes.get(agentKey);
+        const i = q?.indexOf(note) ?? -1;
+        if (q && i >= 0) q.splice(i, 1);
+        throw e;
+      });
     },
     /** A background run's follow-up (chat_send): posted as the agent in its chat, never starting a turn. */
     async followUp(agentKey: string, text: string): Promise<void> {
       const agent = d.agents()[agentKey];
       if (!agent) throw new Error(`${agentKey} has no fast lane`);
-      await send(agent, `f${randomUUID()}`, text, true);
-      d.store.settleTasks(agentKey, now());
+      await d.chat.reply(agent, `f${randomUUID()}`, text);
+      d.store.settleTasks(agentKey, now()); // it is on the board: a Telegram failure below must not read as a stall
+      await deliver(agent, text);
     },
     /**
      * On start, turns a restart cut off (in the last hour): an unanswered message gets its turn again (the scan's job); one
@@ -309,6 +330,18 @@ export function makeLane(d: LaneDeps) {
     /** Every few seconds: runs due continuations; a background task whose follow-up is overdue is said to have stalled. */
     async tick(): Promise<void> {
       for (const c of d.store.due("continue", now())) void lane.poke(c.agent).catch((e: Error) => d.log.warn({ agent: c.agent, err: e.message }, "lane continuation failed"));
+      for (const r of d.store.due("deliver", now())) {
+        const agent = d.agents()[r.agent];
+        d.store.attempt(r.id); // claimed before the send: an overlapping pass does not send it again
+        d.store.retryAt(r.id, now() + RETRY_MS);
+        try {
+          if (agent) await d.telegram(agent, r.ask);
+          d.store.settle(r.id, now());
+        } catch (e) {
+          if (r.attempts + 1 >= DELIVER_TRIES) d.store.settle(r.id, now());
+          d.log.warn({ agent: r.agent, err: (e as Error).message }, "lane telegram redelivery failed");
+        }
+      }
       for (const t of d.store.due("task", now())) {
         const agent = d.agents()[t.agent];
         if (!agent) {

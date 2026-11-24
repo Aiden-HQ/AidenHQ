@@ -3,7 +3,7 @@
 // (lane_owed: a promised answer the lane continues itself, or a background task whose chat_send hasn't come yet).
 import Database from "better-sqlite3";
 
-export interface Owed { id: number; agent: string; kind: "continue" | "task"; ask: string; attempts: number; due_at: number }
+export interface Owed { id: number; agent: string; kind: "continue" | "task" | "deliver"; ask: string; attempts: number; due_at: number }
 /** A wake into the agent's chat (`chat` 1) or onto a task. */
 export interface Wake { id: number; agent: string; due_at: number; note: string; chat: number; task: string | null }
 
@@ -28,7 +28,7 @@ export function openLaneStore(path: string) {
   const q = {
     kvGet: db.prepare(`SELECT v FROM kv WHERE k = ?`),
     kvSet: db.prepare(`INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)`),
-    turn: db.prepare(`INSERT INTO lane_turns (agent, conversation, model, received_at, status) VALUES (?, 'chat', ?, ?, 'running')`),
+    turn: db.prepare(`INSERT INTO lane_turns (agent, conversation, model, received_at, status) VALUES (?, ?, ?, ?, 'running')`),
     first: db.prepare(`UPDATE lane_turns SET first_sent_at = ? WHERE id = ? AND first_sent_at IS NULL`),
     end: db.prepare(`UPDATE lane_turns SET final_sent_at = ?, steps = ?, tools = ?, status = ?, error = ? WHERE id = ?`),
     turns: db.prepare(`SELECT * FROM lane_turns WHERE agent = ? ORDER BY id DESC LIMIT ?`),
@@ -36,6 +36,8 @@ export function openLaneStore(path: string) {
     pendingWakes: db.prepare(`SELECT id, agent, due_at, note, conversation IS NOT NULL AS chat, task FROM lane_wakes WHERE agent = ? AND fired_at IS NULL ORDER BY due_at`),
     dueWakes: db.prepare(`SELECT id, agent, due_at, note, conversation IS NOT NULL AS chat, task FROM lane_wakes WHERE fired_at IS NULL AND due_at <= ? ORDER BY due_at LIMIT 50`),
     fire: db.prepare(`UPDATE lane_wakes SET fired_at = ? WHERE id = ? AND fired_at IS NULL`),
+    unfire: db.prepare(`UPDATE lane_wakes SET fired_at = NULL WHERE id = ?`),
+    answered: db.prepare(`SELECT MAX(received_at) AS t FROM lane_turns WHERE agent = ? AND conversation = 'chat' AND status != 'running'`),
     owe: db.prepare(`INSERT INTO lane_owed (agent, conversation, kind, ask, created_at, due_at) VALUES (?, 'chat', ?, ?, ?, ?)`),
     due: db.prepare(`SELECT * FROM lane_owed WHERE done_at IS NULL AND kind = ? AND due_at <= ? ORDER BY id`),
     dueIn: db.prepare(`SELECT * FROM lane_owed WHERE done_at IS NULL AND kind = 'continue' AND agent = ? AND due_at <= ? ORDER BY id LIMIT 1`),
@@ -43,6 +45,7 @@ export function openLaneStore(path: string) {
     attempt: db.prepare(`UPDATE lane_owed SET attempts = attempts + 1 WHERE id = ?`),
     retry: db.prepare(`UPDATE lane_owed SET due_at = ? WHERE id = ?`),
     settle: db.prepare(`UPDATE lane_owed SET done_at = ? WHERE id = ? AND done_at IS NULL`),
+    settleAsk: db.prepare(`UPDATE lane_owed SET done_at = ? WHERE agent = ? AND kind = 'continue' AND ask = ? AND done_at IS NULL`),
     settleTasks: db.prepare(`UPDATE lane_owed SET done_at = ? WHERE agent = ? AND kind = 'task' AND done_at IS NULL`),
     running: db.prepare(`SELECT id, agent, received_at FROM lane_turns WHERE status = 'running'`),
     interrupt: db.prepare(`UPDATE lane_turns SET status = 'error', error = 'interrupted by a restart' WHERE id = ?`),
@@ -51,8 +54,9 @@ export function openLaneStore(path: string) {
     /** Small state of its own (each lane bot's Telegram offset). */
     getKv: (k: string): string | undefined => (q.kvGet.get(k) as { v: string } | undefined)?.v,
     setKv: (k: string, v: string): void => void q.kvSet.run(k, v),
-    startTurn(agent: string, model: string, receivedAt: number): number {
-      return Number(q.turn.run(agent, model, receivedAt).lastInsertRowid);
+    /** `answers`: the turn answers an owner message (received at `receivedAt`), not a wake or a continuation. */
+    startTurn(agent: string, model: string, receivedAt: number, answers = true): number {
+      return Number(q.turn.run(agent, answers ? "chat" : "other", model, receivedAt).lastInsertRowid);
     },
     firstSent(turn: number, at = Date.now()): void {
       q.first.run(at, turn);
@@ -87,6 +91,14 @@ export function openLaneStore(path: string) {
     takeDue(now = Date.now()): Wake[] {
       return (q.dueWakes.all(now) as Wake[]).filter((w) => q.fire.run(now, w.id).changes === 1);
     },
+    /** A taken wake that could not be delivered: due again on the next pass. */
+    unfire(id: number): void {
+      q.unfire.run(id);
+    },
+    /** The newest owner message (its time) that a finished turn answered: later ones are unanswered. */
+    answeredAt(agent: string): number {
+      return ((q.answered.get(agent) as { t: number | null }).t) ?? 0;
+    },
     /** Something the lane owes the owner in an agent's chat: `continue` (the lane finishes it) or `task` (a background run will). */
     owe(agent: string, kind: Owed["kind"], ask: string, dueAt: number, now = Date.now()): number {
       return Number(q.owe.run(agent, kind, ask, now, dueAt).lastInsertRowid);
@@ -109,6 +121,10 @@ export function openLaneStore(path: string) {
     },
     settle(id: number, now = Date.now()): void {
       q.settle.run(now, id);
+    },
+    /** A fresh answer to an ask settles the continuation owed for that same ask. */
+    settleAsk(agent: string, ask: string, now = Date.now()): void {
+      q.settleAsk.run(now, agent, ask);
     },
     settleTasks(agent: string, now = Date.now()): void {
       q.settleTasks.run(now, agent);

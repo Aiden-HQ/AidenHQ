@@ -96,7 +96,7 @@ export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile
           <div ref={end} />
         </div>
       </div>
-      <Composer placeholder={`Message ${agent.name}`} draftKey={`draft:lane:${agent.key}`} mobile={mobile} onSend={send} />
+      <Composer placeholder={`Message ${agent.name}`} draftKey={`draft:lane:${agent.key}`} mobile={mobile} noFiles onSend={send} />
     </section>
   );
 }

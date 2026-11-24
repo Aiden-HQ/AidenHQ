@@ -1147,7 +1147,7 @@ function FileRow({ f, chatId }: { f: FileView; chatId: string }) {
 
 // ------------------------------------------------------------------ the composer
 
-export function Composer({ initialText, placeholder, draftKey, mobile, crew = [], autoFocus, onSend, starters = [], dropZone }: { initialText?: string; placeholder: string; draftKey: string; mobile: boolean; crew?: Assignee[]; autoFocus?: boolean; onSend: (text: string, files: File[]) => Promise<void>; starters?: string[]; dropZone?: boolean }) {
+export function Composer({ initialText, placeholder, draftKey, mobile, crew = [], autoFocus, onSend, starters = [], dropZone, noFiles }: { initialText?: string; placeholder: string; draftKey: string; mobile: boolean; crew?: Assignee[]; autoFocus?: boolean; onSend: (text: string, files: File[]) => Promise<void>; starters?: string[]; dropZone?: boolean; /** The conversation can't take files (Fast chat): no attach button, no pasted files. */ noFiles?: boolean }) {
   const [text, setText] = useState(() => {
     if (initialText) return initialText;
     try {
@@ -1285,7 +1285,7 @@ export function Composer({ initialText, placeholder, draftKey, mobile, crew = []
           onChange={(e) => (setText(e.target.value), setCaret(e.target.selectionStart))}
           onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
           onPaste={(e) => {
-            if (!e.clipboardData.files.length) return;
+            if (noFiles || !e.clipboardData.files.length) return;
             e.preventDefault();
             add(e.clipboardData.files);
           }}
@@ -1298,19 +1298,23 @@ export function Composer({ initialText, placeholder, draftKey, mobile, crew = []
           aria-label={placeholder}
         />
         <div className="composer-row">
-          <input
-            ref={picker}
-            type="file"
-            multiple
-            hidden
-            onChange={(e) => {
-              add(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <button className="icon-btn" title="Attach files" aria-label="Attach files" disabled={busy} onClick={() => picker.current?.click()}>
-            <ClipIcon />
-          </button>
+          {!noFiles && (
+            <>
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                hidden
+                onChange={(e) => {
+                  add(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <button className="icon-btn" title="Attach files" aria-label="Attach files" disabled={busy} onClick={() => picker.current?.click()}>
+                <ClipIcon />
+              </button>
+            </>
+          )}
           <span className="muted small composer-hint">{mobile ? "" : "Enter to send · Shift+Enter for a new line · @ to bring in an agent"}</span>
           <button className="send-btn" aria-label="Send" disabled={(!text.trim() && !files.length) || busy} onClick={() => void send()}>
             <SendIcon />
