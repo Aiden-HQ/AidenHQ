@@ -60,7 +60,7 @@ if (secrets && !stage && !existsSync(join(secrets, "github_retired_app_id")) && 
 // The host's inputs (scripts/compiler/inputs.ts): the kernel compiles an agent's prospective change with the same ones.
 const inputs = loadInputs(repo, env);
 let out!: ReturnType<typeof compile>, computers!: ReturnType<typeof computersConfig> & { pull?: ReturnType<typeof computerPulls> };
-try { out = compile(repo, instanceDir, inputs); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die((e as Error).message); }
+try { out = compile(repo, instanceDir, inputs); computers = computersConfig(out.paperclip, repo, out.computersMax, out.checkComputersMax); } catch (e) { die((e as Error).message); }
 if (!stage) { mkdirSync(dirname(bundleFile), { recursive: true }); writeFileSync(bundleFile, JSON.stringify(out.bundleState)); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die((e as Error).message); }

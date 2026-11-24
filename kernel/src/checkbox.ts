@@ -32,11 +32,11 @@ const BUSY_RETRY_MS = 30_000;
 const POLL_MS = 1_000;
 
 export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), pollMs = POLL_MS, pool }: { call: Call; spawnRun?: Spawn; sleep?: (ms: number) => Promise<void>; pollMs?: number; pool?: Pool }): CheckBox {
-  // The boxes this kernel's checks hold in the pool's check share, from their slot until their release.
+  // The boxes this kernel's checks hold in the pool's check computers, from their slot until their release.
   const holding = new Set<string>();
   const release = (container: string) => { if (holding.delete(container)) pool?.freeCheck(); return call("/job/release", { container }).then(() => {}, () => {}); };
   return {
-    // Fair share (pool.ts): over its half of the pool, a check waits for its slot here, queued, never failed.
+    // The check computers (pool.ts): with every one taken, a check waits for its slot here, queued, never failed.
     async launch(o) {
       o.waiting?.(true);
       let boxed = false;
@@ -147,7 +147,7 @@ type Ask = (module: string, op: string, body: Record<string, unknown>) => Promis
 /** The kernel's check jobs (checkjobs.ts) on these: the launcher's check boxes, the snapshot provider, `check` model tokens. */
 export function checkJobsFrom({ db, pool, secret, recipes, ask, call, workDir, gatewayUrl, spent, tokens, refused, log, spawnRun, pollMs }: {
   db: DatabaseSync; secret: (name: string) => string;
-  /** The computer pool's fair share (pool.ts): a check takes its slot before it asks the launcher for a box. */
+  /** The computer pool (pool.ts): a check takes one of the check computers before it asks the launcher for a box. */
   pool: Pool;
   /** The installed modules' check recipes (config/kernel/modules.json `check_jobs`). */
   recipes: () => Recipes;

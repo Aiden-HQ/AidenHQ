@@ -792,6 +792,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // settings.exposure: one mode, never a list; unset is tailscale, the mode of every install made before the setting.
   if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
   if (!(Number.isInteger(settings.computers_max) && settings.computers_max >= 1 && settings.computers_max <= 64)) fail("settings.computers_max: a whole number, 1 to 64");
+  if (!(Number.isInteger(settings.check_computers_max) && settings.check_computers_max >= 1 && settings.check_computers_max <= 64)) fail("settings.check_computers_max: a whole number, 1 to 64");
   settings.exposure ??= "tailscale";
   // instance_name: a DNS label (agents commit as <key>@<instance_name>.aidenhq.ai).
   if (settings.instance_name != null && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(settings.instance_name))) fail("settings.instance_name: lowercase letters, digits and - (a DNS label)");
@@ -1355,7 +1356,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
   for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
   const secretPatterns = Object.fromEntries([...all.values()].flatMap((m) => [m.def.secrets?.provided ?? []].flat().filter((p: Obj) => p?.setup?.pattern).map((p: Obj) => [p.name, p.setup.pattern])));
-  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, checkComputersMax: settings.check_computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**

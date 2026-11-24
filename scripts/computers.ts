@@ -60,14 +60,15 @@ export function validateImages(agents: Record<string, ComputerAgent>) {
   }
 }
 
-/** `max`: settings.computers_max, the pool the launcher keeps and the kernel admits jobs into. */
-export function computersConfig(paperclip: Record<string, any>, productDir: string, max?: number) {
+/** `max`: settings.computers_max, the agent jobs' computers; `checks`: settings.check_computers_max, the check jobs'. The launcher
+ * keeps both (their sum); the kernel admits each kind against its own. */
+export function computersConfig(paperclip: Record<string, any>, productDir: string, max?: number, checks?: number) {
   validateImages(paperclip.agents);
   const used = [...new Set(Object.values<ComputerAgent>(paperclip.agents).map((a) => a.image).filter(Boolean) as string[])];
   const connections: Record<string, { tool_timeout_sec: number }> = {};
   // Every connection is reached through the kernel's proxy (the launcher forwards a box's calls there with its run token).
   for (const [name, c] of Object.entries<{ tool_timeout_sec?: number }>(paperclip.mcp_servers)) connections[name] = { tool_timeout_sec: c.tool_timeout_sec ?? 300 };
-  return { max, images: imageTags(productDir, ["browser", ...used]), connections };
+  return { max, checks, images: imageTags(productDir, ["browser", ...used]), connections };
 }
 
 const COMPUTER_SECTION = `
