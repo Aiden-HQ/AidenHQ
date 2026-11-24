@@ -23,10 +23,10 @@ if [ "${1:-}" = "--remove" ]; then
   echo "removed $TABLE and $NET"; exit 0
 fi
 
-# No inter-container traffic: one canary browser never reaches another.
-docker network inspect "$NET" >/dev/null 2>&1 || docker network create --driver bridge --subnet "$SUBNET" --gateway "$GATEWAY" \
-  -o com.docker.network.bridge.name="$BRIDGE" -o com.docker.network.bridge.enable_icc=false "$NET" >/dev/null
-
+# The rules go in before the network exists: a bridge that is up while their transaction fails would be a usable, unrestricted
+# network (the gate could bind its listener there, and apps-mcp could launch a signed-in browser), so a failure here must stop
+# before there is anything to reach. They match the bridge by name, so they apply the moment Docker creates it.
+#
 # Our own nft table: an accept elsewhere never overrides a drop here. Input = anything addressed to the host itself; forward =
 # anywhere else. The one way in is the gate's test listener on the bridge gateway, and there is no way out at all: a signed-in
 # page's external request must not be able to carry anything off the host.
@@ -51,4 +51,9 @@ table inet $TABLE {
   }
 }
 EOF
+
+# No inter-container traffic: one canary browser never reaches another.
+docker network inspect "$NET" >/dev/null 2>&1 || docker network create --driver bridge --subnet "$SUBNET" --gateway "$GATEWAY" \
+  -o com.docker.network.bridge.name="$BRIDGE" -o com.docker.network.bridge.enable_icc=false "$NET" >/dev/null
+
 echo "canary network $NET ($BRIDGE, $SUBNET) and rule $TABLE in place"

@@ -77,7 +77,20 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const { sessionId } = await dt.send("Target.attachToTarget", { targetId, flatten: true });
     for (const d of ["Network", "Page"]) await dt.send(d + ".enable", {}, sessionId);
     // Every request the page itself makes, with its answer's status: the canary's own evidence, not a re-request.
-    dt.on["Network.requestWillBeSent"] = (p) => NET.push({ id: p.requestId, url: p.request.url, method: p.request.method, status: null, at: Date.now() });
+    // One entry per request. A redirect reuses the request id with its own redirectResponse: keep that hop's status apart
+    // from the final response's, so the app refusing a POST with a 302 -> 200 error page isn't read as a 200 on the POST.
+    dt.on["Network.requestWillBeSent"] = (p) => {
+      const x = NET.find((n) => n.id === p.requestId);
+      if (x && p.redirectResponse) {
+        x.hop ??= p.redirectResponse.status;
+        x.url = p.request.url;
+        x.method = p.request.method;
+        x.status = null;
+        x.at = Date.now();
+        return;
+      }
+      NET.push({ id: p.requestId, url: p.request.url, method: p.request.method, status: null, hop: null, at: Date.now() });
+    };
     dt.on["Network.responseReceived"] = (p) => { const x = NET.find((n) => n.id === p.requestId); if (x) x.status = p.response.status; };
     await ab("set", "viewport", String(r.width || 1280), "900");
     // The handoff sets the listener's host-only cookie, then lands on the app's own page.
@@ -104,12 +117,25 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       || (Object.values(refs).filter((v) => v.role === "textbox").length === 1 && Object.values(refs).some((v) => v.role === "button" && FEEDBACK.test(v.name || ""))
         ? Object.entries(refs).find(([, v]) => v.role === "textbox")?.[0] : undefined);
     if (!box) return out({ error: "no feedback field on the page", finalUrl: landed, pageTitle: title });
-    const button = Object.entries(refs).find(([, v]) => v.role === "button" && /send|submit|share|post|feedback/i.test(v.name || ""))?.[0];
     // Nothing was submitted yet: evidence is only what this action causes.
     const submittedAt = Date.now();
     await ab("fill", "@" + box, r.text);
-    if (button) await ab("click", "@" + button);
-    else await ab("press", "Enter");
+    // The button is the one in the form that owns the filled field, never "the first submit-like button on the page" (a header
+    // search form would otherwise be submitted instead). The filled field is focused, so its own form is the one to send.
+    const formSubmit = await within(ab("eval", "(() => {" +
+      "const a = document.activeElement, f = a && a.closest && a.closest('form');" +
+      "const b = f && (f.querySelector('button[type=submit]') || f.querySelector('button'));" +
+      "if (!b) return '';" +
+      "b.setAttribute('data-aidenhq-canary-submit', '1');" +
+      "return b.tagName + ':' + (b.textContent || '').trim().slice(0, 60);" +
+      "})()"), 4000, {});
+    const own = String(formSubmit.result ?? "");
+    if (own) await ab("click", "[data-aidenhq-canary-submit]");
+    else {
+      const button = Object.entries(refs).find(([, v]) => v.role === "button" && /send|submit|share|post|feedback/i.test(v.name || ""))?.[0];
+      if (button) await ab("click", "@" + button);
+      else await ab("press", "Enter");
+    }
     // The page's own notify (and its intake call) happen in its click handler: wait for them, bounded, from the submission.
     const notifyOf = () => NET.find((n) => n.at >= submittedAt && n.method === "POST" && new URL(n.url).origin === listener && new URL(n.url).pathname === "/.aidenhq/notify");
     let notify = notifyOf();
@@ -126,7 +152,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const ti = Date.now();
     while (intake.length && intake.some((x) => x.status == null) && Date.now() - ti < 10000) { await new Promise((ok) => setTimeout(ok, 250)); intake = intakeOf(); }
     // No intake request at all is a page that never saved anything either: report it as no answer rather than a success.
-    const intakeStatus = intake.length ? intake.at(-1).status : null;
+    // The POST's own answer: the first hop when it redirected, else the response itself. Its redirect target's status says
+    // nothing about whether the app took the feedback.
+    const last = intake.at(-1);
+    const intakeStatus = last ? (last.hop ?? last.status) : null;
     // The reference: the app's own intake response body, else the text the page shows.
     let reference = null;
     for (const n of intake.filter((x) => x.id).slice(-4)) {

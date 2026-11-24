@@ -107,9 +107,14 @@ describe("app_page_canary", () => {
     // Evidence is only what this submission caused, from the page's own origin.
     expect(script).toContain("n.at >= submittedAt");
     expect(script).toContain("new URL(n.url).origin === listener");
-    // The app's own intake answer is the reported status; a 5xx is not a success.
+    // The app's own intake answer is the reported status; a 5xx is not a success, and a redirect's own hop answers the POST.
     expect(script).toContain("const intakeStatus =");
+    expect(script).toContain("last.hop ?? last.status");
+    expect(script).toContain("p.redirectResponse");
     expect(script).toContain("status: intakeStatus ?? 0");
+    // The submit control is the one in the form that owns the filled field, not the first submit-like button on the page.
+    expect(script).toContain("a.closest && a.closest('form')");
+    expect(script).toContain("data-aidenhq-canary-submit");
     expect(script).toContain("intake.some((x) => x.status == null)");
     // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
     expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);
