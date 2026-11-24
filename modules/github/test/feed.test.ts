@@ -43,8 +43,9 @@ function rig() {
   };
   const dir = mkdtempSync(join(tmpdir(), "feed-"));
   const seen: any[] = [];
-  const feed = createFeed({ gh: gh as any, cacheDir: dir, kernel, managed: async () => [R], kindOf: async () => "owner", hooks: [(e) => void seen.push(e)], now: () => t });
-  return { feed, world, calls, sent, seen, dir, tick: (ms: number) => void (t += ms), kernel: (up: boolean) => void (kernelUp = up), at: () => new Date(t).toISOString() };
+  let connected = true;
+  const feed = createFeed({ gh: gh as any, cacheDir: dir, kernel, managed: async () => { if (!connected) throw new Error("GitHub isn't connected"); return [R]; }, kindOf: async () => "owner", hooks: [(e) => void seen.push(e)], now: () => t });
+  return { feed, world, calls, sent, seen, dir, connect: (c: boolean) => void (connected = c), tick: (ms: number) => void (t += ms), kernel: (up: boolean) => void (kernelUp = up), at: () => new Date(t).toISOString() };
 }
 
 test("baseline, changes as typed events, 304s when quiet, and an outbox that waits for the kernel", async () => {
@@ -83,7 +84,7 @@ test("baseline, changes as typed events, 304s when quiet, and an outbox that wai
   // PR 2 merges while the kernel is down: the event waits in the saved outbox and goes once the kernel answers.
   r.kernel(false);
   r.world.prs = [pr(1, B)];
-  r.world.closed[2] = { ...pr(2, C), merged_at: r.at(), closed_at: r.at(), merge_commit_sha: T };
+  r.world.closed[2] = { ...pr(2, C), state: "closed", merged_at: r.at(), closed_at: r.at(), merge_commit_sha: T };
   r.tick(30_000);
   await r.feed.pass(R);
   await r.feed.send();
@@ -93,4 +94,31 @@ test("baseline, changes as typed events, 304s when quiet, and an outbox that wai
   await r.feed.send();
   assert.deepEqual(r.sent.map((e) => [e.kind, e.data.merged, e.data.merge_sha]), [["pull_request.closed", true, T]]);
   assert.equal(r.feed.tip(R)?.tip, T);
+});
+
+test("a PR missing from the open list but still open is no close; signed out, the watched repos keep their state", async () => {
+  const r = rig();
+  await r.feed.watch();
+  await r.feed.pass(R);
+  // PR 1 drops out of the list (a page shift) while GitHub still says it is open: no close, still in the snapshot.
+  r.world.prs = [];
+  r.world.closed[1] = { ...pr(1, A), state: "open" };
+  r.tick(30_000);
+  await r.feed.pass(R);
+  r.world.prs = [pr(1, A)];
+  r.tick(30_000);
+  await r.feed.pass(R);
+  await r.feed.send();
+  assert.deepEqual(r.sent.map((e) => e.kind), ["github.resync"], "neither a close nor a reopen");
+
+  // GitHub signed out: the watched set can't be read, so the repo keeps its state (no second baseline when it is back).
+  r.connect(false);
+  await r.feed.watch();
+  r.connect(true);
+  await r.feed.watch();
+  r.tick(30_000);
+  r.sent.length = 0;
+  await r.feed.pass(R);
+  await r.feed.send();
+  assert.deepEqual(r.sent, []);
 });

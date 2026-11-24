@@ -90,9 +90,10 @@ export type Identity = {
   /** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
 type CallOpts = {
   background?: boolean; accept?: string; as?: Identity;
-  /** A conditional read: it also skips the background reserve, since a 304 costs nothing and a 200 is a change the reader needs. */
+  /** A conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
   etag?: string;
-  /** Who is calling, for the hourly count of calls by caller and status (the change feed, the sync, …). */
+  /** Who is calling, for the hourly count of calls by caller and status (the change feed, the sync, …). The change feed ("feed")
+   * skips the background reserve down to a small floor: its 304s are free and its 200s are the changes every consumer needs. */
   caller?: string;
   /** The latest this call may spend waiting out a rate limit (a read) or waiting out a quota before its write is retried.
    * Past it the call refuses at once as a typed rate_limited need instead of sleeping until the reset, which is what a
@@ -153,6 +154,8 @@ type Sleep = (ms: number) => Promise<void>;
 /** Calls `fire` after `ms`; the returned function cancels it. */
 type Timer = (ms: number, fire: () => void) => () => void;
 
+/** The change feed's reads stop only this close to empty (the rest of the reserve is theirs). */
+const FEED_FLOOR = 100;
 /** GitHub: content-creating requests go serially, at least this far apart (its secondary-limit guidance). */
 const WRITE_GAP_MS = 1000;
 /** A secondary-limit refusal without retry-after waits this long, doubling per refusal in a row. */
@@ -250,11 +253,11 @@ export function createAccess(o: {
    * A background call sleeps on the reserve and on a refusal alike, but only where a write can still see its attempt through
    * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. A read's `deadline` bounds
    * the wait itself (`read`), never the attempt: a read that starts just before it still gets its own fetch timeout. */
-  async function admit(p: Pace, resource: string, background: boolean, deadline?: number, read = false, conditional = false): Promise<void> {
+  async function admit(p: Pace, resource: string, background: boolean, deadline?: number, read = false, feed = false): Promise<void> {
     for (;;) {
       const t = now();
       const r = p.rates.get(resource);
-      const low = !conditional && r && r.limit > 0 && r.remaining < r.limit * reserve && r.reset > t ? r.reset : 0;
+      const low = r && r.limit > 0 && r.remaining < (feed ? Math.min(FEED_FLOOR, r.limit * reserve) : r.limit * reserve) && r.reset > t ? r.reset : 0;
       const until = Math.max(p.blockedUntil > t ? p.blockedUntil : 0, background ? low : 0);
       if (!until) return;
       const canWait = read ? deadline === undefined || until <= deadline : fits(deadline, until);
@@ -410,7 +413,7 @@ export function createAccess(o: {
     // A read's `deadline` bounds only its rate-limit wait (admit): the attempt that follows has its own timeout, and a read
     // creates nothing, so nothing lands after a caller was told it failed.
     const read = !createsContent(method, path, body);
-    await admit(p, resource, background, deadline, read, Boolean(etag));
+    await admit(p, resource, background, deadline, read, caller === "feed");
     const t = as ? await as.token(retried) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();

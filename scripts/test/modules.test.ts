@@ -506,4 +506,5 @@ test("subscribes: compiled from settings into the kernel's module table, kinds c
   assert.deepEqual(t.ship.subscribes, { github: { kinds: ["push"], resources: "*" } });
   assert.throws(() => kernelModuleTable({ github: gh, x: { subscribes: { github: { kinds: ["push"], resources: "*" } } } }, {}), /product modules/);
   assert.throws(() => kernelModuleTable({ github: gh, x: { subscribes: { github: { kinds: ["status"], resources: [] } } } }, {}), /isn't one of github's events.kinds/);
+  assert.throws(() => kernelModuleTable({ github: gh, x: { subscribes: { github: { kinds: ["push"], resources: ["org/a"] } } } }, {}), /"\*" or \{ setting, path \}/);
 });

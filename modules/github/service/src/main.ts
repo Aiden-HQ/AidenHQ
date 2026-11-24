@@ -72,13 +72,17 @@ const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const feed = createFeed({
   gh: access.rest, cacheDir, kernel: kernelClient(kernelUrl, key), log,
   // The repos the code host manages, the maintained ones included: always watched.
-  managed: async () => [...new Set([...(await handle.managedRepos()), ...(access.connected() ? maintained.map((r) => r.repo.toLowerCase()) : [])])],
+  // Signed out, the set can't be read: the feed keeps what it watched (and its state) until GitHub is back.
+  managed: async () => {
+    if (!access.connected()) throw new Error("GitHub isn't connected");
+    return [...new Set([...(await handle.managedRepos()), ...maintained.map((r) => r.repo.toLowerCase())])];
+  },
   kindOf: (who, association, repo, seen) => handle.flow.kindOf(who, association, repo, seen),
   hooks: [
     handle.flow.observe({ runs: (repo, sha) => feed.runs(repo, sha) }),
     handle.designReviews.observe({ pr: (repo, n) => feed.pr(repo, n) }),
     // The train reads instance.yaml again when the instance repo's default branch moves.
-    (e) => { if (e.kind === "push" && env.INSTANCE_REPO && e.resource === env.INSTANCE_REPO.toLowerCase()) void handle.train?.refresh().catch((err: Error) => log("instance.yaml read failed", { err: err.message.slice(0, 200) })); },
+    (e) => { if (e.kind === "push" && env.INSTANCE_REPO && e.resource === env.INSTANCE_REPO.toLowerCase()) void handle.train?.refresh(String(e.data?.after ?? "") || undefined).catch((err: Error) => log("instance.yaml read failed", { err: err.message.slice(0, 200) })); },
   ],
   ...(sources ? { record: (scope: string, fn: () => Promise<number>) => sources.run("github_feed", scope, fn) } : {}),
   background: [

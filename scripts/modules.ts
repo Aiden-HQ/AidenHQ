@@ -1519,8 +1519,8 @@ function flowDecls(name: string, def: Obj, declared: Obj) {
 
 /**
  * A module's `subscribes:` (connection -> { kinds, resources }): the events of the kernel's log it reads (kernel/src/events.ts).
- * Each kind is one its connection's `events.kinds` declares. `resources` is "*" (every resource; a product module's only), a list,
- * or `{ setting, path }`: the repos the owner's settings name, resolved here so a module can't widen them at run time (`path`
+ * Each kind is one its connection's `events.kinds` declares. `resources` is "*" (every resource; a product module's only) or
+ * `{ setting, path }`: the repos the owner's settings name, resolved here so a module can't widen them at run time (`path`
  * walks the setting: `repos[].repo` is each entry's `repo`; a plain string entry stands for itself). Resources are lower case.
  */
 export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, official: boolean) {
@@ -1539,8 +1539,7 @@ export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, 
     if (s.resources === "*") {
       if (!official) fail(`${at}.${conn}.resources: * is for product modules; name the resources`);
       resources = "*";
-    } else if (Array.isArray(s.resources)) resources = s.resources.map(String);
-    else if (s.resources && typeof s.resources === "object" && typeof s.resources.setting === "string") {
+    } else if (s.resources && typeof s.resources === "object" && typeof s.resources.setting === "string") {
       let vals: unknown[] = [settings[s.resources.setting]];
       for (const seg of String(s.resources.path ?? "").split(".").filter(Boolean)) {
         const [, field, many] = /^([^[\]]*)(\[\])?$/.exec(seg) ?? fail(`${at}.${conn}.resources.path: ${seg} is a field or field[]`);
@@ -1548,7 +1547,7 @@ export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, 
         if (many) vals = vals.flatMap((v) => (Array.isArray(v) ? v : v == null ? [] : [v]));
       }
       resources = vals.flatMap((v) => (Array.isArray(v) ? v : [v])).filter((v) => typeof v === "string" && v);
-    } else fail(`${at}.${conn}.resources is "*", a list, or { setting, path }`);
+    } else fail(`${at}.${conn}.resources is "*" or { setting, path }`);
     out[conn] = { kinds: [...s.kinds], resources: resources === "*" ? "*" : [...new Set((resources as string[]).map((r) => r.toLowerCase()))] };
   }
   return out;

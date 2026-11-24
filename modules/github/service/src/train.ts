@@ -32,7 +32,7 @@ export type TrainOptions = {
     /** A repo's default branch head and whether every check on it passed; undefined while not known yet. */
     tip(repo: string): Promise<{ tip?: string; green: boolean } | undefined>;
     /** A file at the default branch's head, undefined when it isn't there. */
-    text(repo: string, path: string): Promise<string | undefined>;
+    text(repo: string, path: string, at?: string): Promise<string | undefined>;
     commits(repo: string, from: string, to: string): Promise<Commit[]>;
   };
   /** The bump's commit on the instance's main, in this service's cache: `edit` reads the file at the head it builds on. */
@@ -54,7 +54,7 @@ export function createReleaseTrain(o: TrainOptions) {
   const log = o.log ?? (() => {});
   /** instance.yaml as last read (refresh): at start, then on each push to the instance repo. */
   let instanceText: Promise<string | undefined> | undefined;
-  const refresh = () => { const p = o.github.text(o.instanceRepo, "instance.yaml"); instanceText = p; p.catch(() => { if (instanceText === p) instanceText = undefined; }); return p; };
+  const refresh = (at?: string) => { const p = o.github.text(o.instanceRepo, "instance.yaml", at); instanceText = p; p.catch(() => { if (instanceText === p) instanceText = undefined; }); return p; };
   const now = o.now ?? (() => new Date());
   mkdirSync(o.dir, { recursive: true });
   const file = join(o.dir, "release-instance.json");
@@ -222,8 +222,8 @@ export function createReleaseTrain(o: TrainOptions) {
   }
   return {
     step,
-    /** Reads instance.yaml again (a push to the instance repo). */
-    refresh: () => refresh().then(() => undefined),
+    /** Reads instance.yaml again at the commit a push to the instance repo moved its default branch to. */
+    refresh: (at?: string) => refresh(at).then(() => undefined),
     start(everyMs = 60_000) {
       let busy = false;
       const tick = () => { if (busy) return; busy = true; step().catch((e: Error) => log("release train step failed", { err: e.message.slice(0, 300) })).finally(() => { busy = false; }); };

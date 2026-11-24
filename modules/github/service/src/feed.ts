@@ -88,6 +88,13 @@ export function createFeed(o: FeedOptions) {
   const win = (repo: string) => { let w = windows.get(repo); if (!w) windows.set(repo, (w = { passes: 0, ok: 0, sent: 0 })); return w; };
   const loss = (repo: string, why: string) => { win(repo).loss ??= why; log("feed: loss", { repo, why }); };
   let watched: string[] = [];
+  /** Writes this process made, per repo (true: they unsettle its heads), kept until a pass's new state carries them. */
+  const touched = new Map<string, boolean[]>();
+  const applyTouch = (rs: RepoState, heads: boolean) => {
+    rs.every = QUICK_MS;
+    rs.due = Math.min(rs.due, now() + QUICK_MS);
+    if (heads) for (const h of Object.values(rs.heads)) h.settled = false;
+  };
   let pausedUntil = 0;
 
   /** The next id of an inferred transition of `key` (`<repo>#<n>:head`…): unique per state file and occurrence. */
@@ -95,12 +102,8 @@ export function createFeed(o: FeedOptions) {
 
   /** One conditional GET: a 304 answers undefined. Never sleeps on a limit: a rate-limited refusal throws (the scheduler pauses). */
   async function get(path: string, etag?: string): Promise<{ body: any; etag: string } | undefined> {
-    const r = await o.gh("GET", path, undefined, { background: true, caller: "feed", deadline: now(), ...(etag ? { etag } : {}) }).catch((e) => {
-      // GitHub's own refusal (a conditional read skips the reserve, so its refusal always is): the whole scheduler waits. The
-      // reserve's refusal of another read: only this repo waits.
-      if (e?.need?.cause === "rate_limited") e.global = Boolean(etag) || e.need.by === "github";
-      throw e;
-    });
+    // The feed's reads skip the reserve down to a small floor (client.ts): any rate-limited refusal pauses the whole scheduler.
+    const r = await o.gh("GET", path, undefined, { background: true, caller: "feed", deadline: now(), ...(etag ? { etag } : {}) });
     if (r.status === 304) return undefined;
     // A feature the repo has turned off (Issues: 410 Gone) is an empty list, not a failed pass.
     if (r.status === 410) return { body: [], etag: "" };
@@ -161,6 +164,8 @@ export function createFeed(o: FeedOptions) {
   /** One repo's pass: read, diff, save (snapshots and outbox together), then the hooks see what's new. */
   async function pass(repo: string): Promise<FeedEvent[]> {
     const first = !state.repos[repo];
+    // Touches made before now are in the state this pass starts from.
+    touched.delete(repo);
     const t = now(), iso = new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z");
     // A working copy: nothing is kept unless the whole pass succeeds.
     const rs: RepoState = first
@@ -192,6 +197,8 @@ export function createFeed(o: FeedOptions) {
     for (const [n, p] of Object.entries(was)) {
       if (now_[n]) continue;
       const g = await get(`/repos/${repo}/pulls/${n}`);
+      // Missing from the open list but still open (the list shifted between pages): kept, never a false close.
+      if (g?.body?.state !== "closed") { now_[n] = p; continue; }
       const closedAt = String(g?.body?.closed_at ?? iso);
       emit({ author: p.author, bot: bot(p.author), url: p.url, ...clip(p.title), id: `${repo}#${n}:closed:${closedAt}`, kind: "pull_request.closed", data: { ...record({ ...p, head: String(g?.body?.head?.sha ?? p.head) }), merged: Boolean(g?.body?.merged_at), merge_sha: g?.body?.merge_commit_sha ? String(g.body.merge_commit_sha) : null } }, { pr: g?.body });
       rs.closed = [...rs.closed, Number(n)].slice(-200);
@@ -304,6 +311,9 @@ export function createFeed(o: FeedOptions) {
     // before the save repeats this diff and its hooks, never loses them.
     rs.okAt = now();
     state.repos[repo] = rs;
+    // Writes made while this pass ran touched the old state: applied again to the new one.
+    for (const heads of touched.get(repo) ?? []) applyTouch(rs, heads);
+    touched.delete(repo);
     for (const { ev, ctx } of out) for (const h of o.hooks ?? []) {
       try { await h(ev, ctx); } catch (e) { log("feed: a hook failed", { kind: ev.kind, id: ev.id, err: String((e as Error).message).slice(0, 200) }); }
     }
@@ -319,7 +329,8 @@ export function createFeed(o: FeedOptions) {
     while (state.outbox.length) {
       const { at: _at, ...ev } = state.outbox[0]!;
       const r = await o.kernel.raw("POST", "/v1/events", { connection: "github", ...ev }).catch(() => ({ status: 0, json: {} }));
-      if (r.status === 0 || r.status === 429 || r.status >= 500) break;
+      // No answer, a 5xx, a 429, or a 401/404 the kernel gives while it restarts mid-apply: tried again later.
+      if (r.status === 0 || r.status === 429 || r.status === 401 || r.status === 404 || r.status >= 500) break;
       if (r.status >= 300) { loss(ev.resource, `the kernel refused ${ev.kind} ${ev.id} (${r.status})`); log("feed: the kernel refused an event, dropped", { id: ev.id, kind: ev.kind, status: r.status, why: String(r.json?.error?.message ?? "").slice(0, 200) }); }
       else win(ev.resource).sent++;
       state.outbox.shift();
@@ -365,7 +376,7 @@ export function createFeed(o: FeedOptions) {
     } catch (e) {
       const need = (e as { need?: { cause?: string; until?: string } }).need;
       const until = need?.cause === "rate_limited" && need.until ? Date.parse(need.until) : 0;
-      if (until && (e as { global?: boolean }).global) { pausedUntil = Math.max(pausedUntil, until); log("feed: paused for GitHub's rate limit", { until: need!.until }); }
+      if (until) { pausedUntil = Math.max(pausedUntil, until); log("feed: paused for GitHub's rate limit", { until: need!.until }); }
       w.err = String((e as Error).message).slice(0, 300);
       const rs = state.repos[repo];
       if (rs) rs.due = Math.max(now() + QUIET_MAX_MS, until);
@@ -415,11 +426,10 @@ export function createFeed(o: FeedOptions) {
     },
     /** A write this process made to `repo` (and, for a status, a re-run or an update-branch, its heads): read again within 15 s. */
     touch(repo: string, heads = false) {
-      const rs = state.repos[repo.toLowerCase()];
+      const key = repo.toLowerCase(), rs = state.repos[key];
       if (!rs) return;
-      rs.every = QUICK_MS;
-      rs.due = Math.min(rs.due, now() + QUICK_MS);
-      if (heads) for (const h of Object.values(rs.heads)) h.settled = false;
+      applyTouch(rs, heads);
+      touched.set(key, [...(touched.get(key) ?? []), heads]);
     },
     /** The default branch's head and whether every check on it passed (undefined until the repo is read). */
     tip(repo: string): { tip?: string; green: boolean } | undefined {

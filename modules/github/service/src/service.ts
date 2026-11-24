@@ -1414,11 +1414,12 @@ export function createService(o: Options) {
     commit: trainCommit,
     github: {
       async tip(repo) { return feed?.tip(repo); },
-      async text(repo, path) {
+      async text(repo, path, at) {
         const s = slugOf(repo);
         const ref = await defaultBranch(s.slug);
         const { dir, sha } = await fetchRemote(s, ref);
-        return fileAt(dir, sha, path);
+        // At the commit a push named (the branch's tip may already be past it): the fetch brings it.
+        return fileAt(dir, at && /^[0-9a-f]{40}$/.test(at) ? at : sha, path);
       },
       async commits(repo, from, to) {
         const s = slugOf(repo);
