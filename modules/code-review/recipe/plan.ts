@@ -30,7 +30,8 @@ const PROMPT_MAX = 400_000;
 export type Item = { path: string; lines: number };
 /** An area: its id and name, stack tags, files (by folder: { "src/api": ["a.ts"] }, "" the root) and size. */
 export type Area = { id: string; name: string; tags: string[]; files: Record<string, string[]>; count: number; lines: number };
-export type Plan = { version: 1; repo?: string; head: string; eligible: number; lines: number; planned_by: "one" | "model" | "folders"; note: string | null; areas: Area[] };
+/** `blobs`: each eligible file's git mode and blob sha at the head (its content and mode: an incremental review compares them). */
+export type Plan = { version: 1; repo?: string; head: string; blobs?: Record<string, string>; eligible: number; lines: number; planned_by: "one" | "model" | "folders"; note: string | null; areas: Area[] };
 
 /** Paths as an area's file list: grouped by folder, sorted (a folder named like an Object property is a key like any other). */
 export function encode(paths: string[]) {
@@ -150,6 +151,16 @@ Answer only this JSON: {"areas": [{"name": "...", "include": ["src/api/", "READM
   }
 }
 
+/** The mode and blob sha ("100755:<sha>": a mode change is a change) of each wanted path from `git ls-tree -r -z` output ("<mode> blob <sha>\t<path>", NUL-separated). */
+export function blobsOf(listing: string, want: Set<string>) {
+  const out: Record<string, string> = {};
+  for (const l of listing.split("\0")) {
+    const m = /^(\d{6}) blob ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(l);
+    if (m && want.has(m[3]!)) out[m[3]!] = `${m[1]}:${m[2]}`;
+  }
+  return out;
+}
+
 /** The plan of the inventory: one area when it fits, else the model's areas checked and split to the budget (or the folder split). */
 export async function plan(items: Item[], stacks: Record<string, string[]>, model: string, ask_ = ask): Promise<Pick<Plan, "planned_by" | "note" | "areas">> {
   const of = projects(items, stacks);
@@ -177,10 +188,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const eligible = new Set(scope(all).reviewed);
     const items = all.filter((f) => eligible.has(f.path)).map((f) => ({ path: f.path, lines: f.added }));
     const p = await plan(items, stacks, String(spec.model));
-    const result: Plan = { version: 1, repo: spec.repo, head: spec.head, eligible: items.length, lines: lines(items), ...p };
+    const blobs = blobsOf(h.git(["ls-tree", "-r", "-z", "--full-tree", h.head]), new Set(items.map((i) => i.path)));
+    const result: Plan = { version: 1, repo: spec.repo, head: spec.head, blobs, eligible: items.length, lines: lines(items), ...p };
     // The whole plan is the kept file; the result its summary (the areas' count), which the receipt binds.
     writeFileSync(`${dirname(specFile)}/keep`, JSON.stringify(result));
-    writeFileSync(resultFile, JSON.stringify({ ...result, areas: result.areas.length }));
+    writeFileSync(resultFile, JSON.stringify({ ...result, blobs: undefined, areas: result.areas.length }));
     console.error(`code-review-plan: ${result.areas.length} areas of ${items.length} files (${result.planned_by})${result.note ? `; ${result.note}` : ""}`);
   } catch (e) {
     console.error(`code-review-plan: no plan: ${String((e as Error).message ?? e).split("\n")[0]!.slice(0, 300)}`);

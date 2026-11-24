@@ -35,10 +35,11 @@ export function pickService(services: string[], want?: string): string {
   throw new Error(`the app has several services (${services.join(", ")}): name one`);
 }
 
-/** `docker compose … exec` argv: no TTY, npm's cache in /tmp (app rootfs is read-only). */
-export function runArgv(service: string, script: string): string[] {
+/** `docker compose … exec` argv: no TTY, npm's cache in /tmp (app rootfs is read-only). `timeout` runs inside the container and
+ * kills the script's whole process group at the deadline (killing the docker CLI alone leaves the script running). */
+export function runArgv(service: string, script: string, timeoutMs: number): string[] {
   if (!SERVICE.test(service) || !SCRIPT.test(script)) throw new Error("bad service or script name");
-  return ["exec", "-T", "-e", "npm_config_cache=/tmp/.npm", "-e", "npm_config_update_notifier=false", service, "npm", "run", script];
+  return ["exec", "-T", "-e", "npm_config_cache=/tmp/.npm", "-e", "npm_config_update_notifier=false", service, "timeout", "-k", "10", String(Math.ceil(timeoutMs / 1000)), "npm", "run", script];
 }
 
 /** Only the app's owner (its agent key in the registry) may ask; never a role, never the incident path. */

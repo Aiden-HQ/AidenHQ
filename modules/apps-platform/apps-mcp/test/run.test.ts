@@ -21,8 +21,8 @@ describe("app_run validation", () => {
     expect(() => assertOwner(app, "chief-of-staff")).toThrow(/only demo's owner/);
   });
   it("execs argv, never a shell string", () => {
-    expect(runArgv("app", "seed:backfill")).toEqual(["exec", "-T", "-e", "npm_config_cache=/tmp/.npm", "-e", "npm_config_update_notifier=false", "app", "npm", "run", "seed:backfill"]);
-    expect(() => runArgv("app", "x;id")).toThrow();
+    expect(runArgv("app", "seed:backfill", 600_000)).toEqual(["exec", "-T", "-e", "npm_config_cache=/tmp/.npm", "-e", "npm_config_update_notifier=false", "app", "timeout", "-k", "10", "600", "npm", "run", "seed:backfill"]);
+    expect(() => runArgv("app", "x;id", 1000)).toThrow();
   });
 });
 
@@ -50,9 +50,9 @@ describe("engine.run", () => {
     await engine.deploy(app, { by: "t" });
     expect(await engine.run(app, { script: "seed:backfill", service: "", sha: "v1", timeoutMs: 600_000 })).toEqual({ ok: true, timed_out: false, output: "seeded 3 rows\n" });
     const ex = calls.find((c) => c.args.includes("exec"))!;
-    expect(ex.args.slice(-6)).toEqual(["-e", "npm_config_update_notifier=false", "app", "npm", "run", "seed:backfill"]);
+    expect(ex.args.slice(-10)).toEqual(["-e", "npm_config_update_notifier=false", "app", "timeout", "-k", "10", "600", "npm", "run", "seed:backfill"]);
     expect(ex.args.slice(0, 3)).toEqual(["compose", "-p", "app-demo"]);
-    expect(ex.o?.timeout).toBe(600_000);
+    expect(ex.o?.timeout).toBe(630_000);
     fail = true;
     expect(await engine.run(app, { script: "seed:backfill", service: "app", sha: "v1", timeoutMs: 1000 })).toMatchObject({ ok: false, output: expect.stringContaining("partial") });
     await expect(engine.run(app, { script: "seed:backfill", service: "app", sha: "v0", timeoutMs: 1000 })).rejects.toThrow(/not the approved v0/);

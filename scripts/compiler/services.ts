@@ -12,6 +12,9 @@ type Dict = Record<string, unknown>;
  * A service people reach through the gate (`share`): the gate's host for the module's app name, to its ui_port; with no host,
  * the install's module door (scripts/edge.ts). `service` is its compose key (the gate gives it AIDENHQ_APP_URL there).
  */
+/** json-file has no rotation by default; every generated service (and the front door) gets this. */
+export const LOG_ROTATION = { driver: "json-file", options: { "max-size": "20m", "max-file": "3" } };
+
 export type Share = { name: string; service: string; port: number; share: { host: string; aud?: string; default_role?: string } };
 export type Generated = { services: Record<string, Dict>; networks: Record<string, Dict>; secrets: Record<string, Dict>; roots: Record<string, Dict>; dataDirs: string[]; stateDirs: string[]; shares: Share[] };
 
@@ -175,7 +178,8 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (s.read_only != null && typeof s.read_only !== "boolean") fail(`${at("read_only")} is true or false`);
     if (s.read_only !== false) o.read_only = true;
     if (s.tmp != null) o.tmpfs = [`/tmp:size=${typeof s.tmp === "string" && SIZE.test(s.tmp) ? s.tmp : fail(`${at("tmp")} is a size (16m)`)}`];
-    Object.assign(o, { security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: s.on_demand === true ? "no" : "unless-stopped" });
+    // init: a node PID 1 never reaps its exited children (git zombies); logging: json-file has no rotation by default.
+    Object.assign(o, { init: true, logging: LOG_ROTATION, security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: s.on_demand === true ? "no" : "unless-stopped" });
     if (s.on_demand != null && typeof s.on_demand !== "boolean") fail(`${at("on_demand")} is true or false`);
     if (s.on_demand === true) o.profiles = [name];
     for (const f of ["entrypoint", "command"]) if (s[f] != null) o[f] = strings(s[f], at(f)).map((v) => interpolation(v, at(f)));

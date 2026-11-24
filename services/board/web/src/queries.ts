@@ -82,6 +82,18 @@ export function prefetchView(view: string) {
   for (const x of VIEW_QUERIES[view] ?? []) prefetch(x.key, x.fetch, x.persist);
 }
 
+/** The page this device opens on is Tasks (or a task over it): the only one that needs the board's inventory at once. */
+export function landsOnBoard(): boolean {
+  const h = hashPath();
+  if (h === "board" || h.startsWith("board?") || h.startsWith("t/")) return true;
+  if (h) return false;
+  try {
+    return localStorage.getItem("aidenhq.view") === "board";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * At boot, before React renders: the reads the first screen needs start together with the session check, instead of one
  * after another as each component mounts; meanwhile the device's last board paints (adoptStoredAccount).
@@ -90,7 +102,7 @@ export function preloadBoot() {
   adoptStoredAccount();
   const quiet = (p: Promise<unknown>) => void p.catch(() => {});
   quiet(load("session", api.session, false));
-  quiet(load("board", api.board));
+  if (landsOnBoard()) quiet(load("board", api.board));
   const h = hashPath();
   let view = "chat";
   try {

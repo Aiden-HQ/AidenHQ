@@ -1,0 +1,12 @@
+[Unit]
+Description=AidenHQ: transparent hugepage defrag=defer (no direct compaction stalls)
+
+ConditionPathExists=/sys/kernel/mm/transparent_hugepage/defrag
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo defer > /sys/kernel/mm/transparent_hugepage/defrag'
+
+[Install]
+WantedBy=multi-user.target

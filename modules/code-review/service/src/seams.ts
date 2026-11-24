@@ -92,7 +92,7 @@ export type ReviewSpec = {
   deepsec_data?: string;
   /** A repo review run's area of the plan (it sees only those files), the plan's areas a whole-repo option is given, and (the
    * plan run) the catalog's stack tags with their globs. */
-  area?: { id: string; name: string; files: Record<string, string[]> }; area_map?: unknown; stacks?: Record<string, string[]>;
+  area?: { id: string; name: string; files: Record<string, string[]> }; area_map?: unknown; /** The area's files not read since they changed or never read: changed first (`changed` of them), then never reviewed; `more` left off to fit. */ unseen?: { files: string[]; changed: number; more: number }; stacks?: Record<string, string[]>;
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;

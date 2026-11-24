@@ -117,7 +117,7 @@ export function parseRubric(v: unknown, { allowEmpty = true }: { allowEmpty?: bo
   if (rubric.length > 8 || (!allowEmpty && rubric.length < 3) || (allowEmpty && rubric.length > 0 && rubric.length < 3)) bad(`rubric: 3-8 criteria${allowEmpty ? ", or none for the template" : ""}`);
   return rubric;
 }
-/** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/grading/rubrics/<kind>.md). */
+/** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/grading/service/rubrics/<kind>.md). */
 export function parseFiling(b: unknown): { issue: string; rubric: string[]; deliverable: Deliverable } {
   if (!isMap(b)) return bad("send {issue, rubric, deliverable}");
   only(b, ["issue", "rubric", "deliverable"], "");

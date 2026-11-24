@@ -43,8 +43,9 @@ check_jobs:
     # runs of the repo (an uploaded input, "" for none or another engine), and keep: the records a deepsec run changed, which the
     # service lays over the ones it holds (its /data, never the repo). A repo review's area check: area is its area of the plan
     # ({ id, name, files }: the review sees only those files), {} for a whole repo; area_map the plan's areas a whole-repo option
-    # is given as data ({ areas: [{ name, folders, tags }] }), {} for none.
-    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, previous_b: json, previous_c: json, previous_d: json, previous_e: json, previous_f: json, intent: text, deepsec_data: input, area: json, area_map: json }
+    # is given as data ({ areas: [{ name, folders, tags }] }), {} for none; unseen the due area's files to read first, in order (an
+    # incremental rerun: { files, changed, more }: the changed ones, then the never-reviewed ones; {} for none).
+    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, previous_b: json, previous_c: json, previous_d: json, previous_e: json, previous_f: json, intent: text, deepsec_data: input, area: json, area_map: json, unseen: json }
     model: true
     result: true
     keep: true

@@ -77,7 +77,7 @@ const appFollowupSection = (a: Obj) => (a.enabled_tools?.apps?.includes("app_log
 
 /** A section's text as the agent reads it: past its frontmatter, `{{fleet_issues}}` filled in. `{{memory}}` stays: the kernel fills it from the agent's memory when a job starts, and the chat lane each turn (memory.ts fillMemory). */
 function sectionText(cfg: Obj, a: Obj, id: string, { repo, fleetIssues }: { repo: string; fleetIssues?: string }) {
-  const { body } = frontmatter(readInside(join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: section ${id}`));
+  const { body } = frontmatter(readInside(String(cfg.prompts?.[id]?.file).startsWith(join(defaultCache(), "trees") + sep) ? join(defaultCache(), "trees") : join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: section ${id}`));
   if (body.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`section ${id}: the Fleet issues task is missing`);
   return body.replaceAll("{{fleet_issues}}", fleetIssues!);
 }

@@ -24,11 +24,11 @@ import { SettingsView, isCategory, type Category } from "./Settings";
 import { AttentionStrip } from "./Attention";
 import { ApprovalsView, onYouBeyondCards } from "./Chat";
 import { needsOwner } from "./ui/TaskState";
-import { clearCache, load, peek, setAccount } from "./cache";
+import { clearCache, load, peek, setAccount, subscribe as cacheSubscribe } from "./cache";
 import { subscribe } from "./events";
 import type { AgentTab } from "./AgentPage";
 import type { ModuleTab } from "./ModulePage";
-import { QUERIES, VIEW_CHUNKS, hashPath, useQuery } from "./queries";
+import { QUERIES, VIEW_CHUNKS, hashPath, landsOnBoard, useQuery } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
 import { CardView, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
@@ -301,6 +301,7 @@ export function App() {
   const filtering = !isEmpty(tb.filters);
   const [saveOpen, setSaveOpen] = useState(0);
 
+  const loaded = useRef(!!board); // a board is on hand (cached or read)
   const seq = useRef(0); // only the latest board request counts (an old 401 must not undo a sign-in)
   const refresh = useCallback(async (force = false) => {
     const n = ++seq.current;
@@ -310,6 +311,7 @@ export function App() {
       if (n !== seq.current) return;
       setSlackTeams(b.slackTeams ?? {});
       setBoard(b);
+      loaded.current = true;
       setError("");
       setNeedsSignIn(false);
       if (force || Date.now() > holdUntil.current) setItems(b.buckets);
@@ -331,10 +333,17 @@ export function App() {
     setItems((i) => i ?? cached.buckets);
   }, [session]);
 
+  // A stale answer's retry (cache.ts) lands in the cache, not through refresh(): paint it unless an edit is being held.
+  useEffect(() => cacheSubscribe("board", () => {
+    const b = fresh(peek<Board>("board")?.data);
+    if (!b || (b as { stale?: unknown }).stale === true) return;
+    setBoard(b);
+    if (!dragFrom.current && Date.now() > holdUntil.current) setItems(b.buckets);
+  }), []);
   // A sign-in finished (in the tab Connect opened): its banner goes at once.
   useEffect(() => subscribe(["connections"], () => void refresh()), [refresh]);
   useEffect(() => {
-    if (view !== "board" || Date.now() - boardAt.current < 10_000) return;
+    if (view !== "board" || (loaded.current && Date.now() - boardAt.current < 10_000)) return;
     boardAt.current = Date.now();
     void refresh();
   }, [view, refresh]);
@@ -348,7 +357,10 @@ export function App() {
       } catch {}
       setSession(s);
     }, () => {});
-    void refresh(true);
+    // Tasks, or a first visit with nothing cached (the page waits for a board), needs the inventory now; any other landing paints the
+    // cached board and reads it a few seconds later (its header only), so the page opened first gets the server.
+    const first = landsOnBoard() || !loaded.current ? undefined : setTimeout(() => void refresh(true), 3_000);
+    if (!first) void refresh(true);
     // Every 10s on Tasks; elsewhere only the header reads it (the working dot, sign-in banners, the brief): once a minute.
     const t = setInterval(() => {
       if (document.visibilityState !== "visible" || dragFrom.current || (viewRef.current !== "board" && Date.now() - boardAt.current < 60_000)) return;
@@ -367,6 +379,7 @@ export function App() {
     hash();
     window.addEventListener("hashchange", hash);
     return () => {
+      clearTimeout(first);
       clearInterval(t);
       document.removeEventListener("visibilitychange", vis);
       window.removeEventListener("hashchange", hash);

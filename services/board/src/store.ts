@@ -220,10 +220,24 @@ export class Store {
    * reserved amount is the gateway's fail-closed hold, not spend: it counts as unpriced here.
    */
   addUsage(u: UsageRecord): void {
-    this.db
-      .prepare(`INSERT INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (key) DO UPDATE SET model = excluded.model, input = excluded.input, cached = excluded.cached, output = excluded.output, cost_usd = excluded.cost_usd, ms = excluded.ms, status = excluded.status WHERE usage.status = 'unsettled'`)
-      .run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.status === "unsettled" ? null : (u.costUsd ?? null), u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null, u.subject ?? null);
+    this.addUsages([u]);
+  }
+
+  private usageStmt: ReturnType<DatabaseSync["prepare"]> | undefined;
+
+  /** A page of usage records (see addUsage) in one transaction, through one prepared statement. */
+  addUsages(rows: UsageRecord[]): void {
+    if (!rows.length) return;
+    this.usageStmt ??= this.db.prepare(`INSERT INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (key) DO UPDATE SET model = excluded.model, input = excluded.input, cached = excluded.cached, output = excluded.output, cost_usd = excluded.cost_usd, ms = excluded.ms, status = excluded.status WHERE usage.status = 'unsettled'`);
+    this.db.exec("BEGIN");
+    try {
+      for (const u of rows) this.usageStmt.run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.status === "unsettled" ? null : (u.costUsd ?? null), u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null, u.subject ?? null);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   /** Usage records older than `before` go (the Costs tab compares 30 days with the 30 before). */

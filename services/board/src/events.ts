@@ -18,8 +18,15 @@ const HEARTBEAT_MS = 25_000;
 
 export class Events {
   private streams = new Set<ServerResponse>();
+  private listeners = new Set<(name: EventName) => void>();
+
+  /** Called on every emit, listening boards or not (the page cache, swr.ts, looks again after any change). */
+  listen(fn: (name: EventName) => void): void {
+    this.listeners.add(fn);
+  }
 
   emit(name: EventName, issue?: string): void {
+    for (const fn of this.listeners) fn(name);
     if (!this.streams.size) return;
     const frame = `event: ${name}\ndata: ${JSON.stringify(issue ? { issue } : {})}\n\n`;
     for (const res of this.streams) res.write(frame);

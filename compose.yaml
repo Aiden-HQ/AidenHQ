@@ -11,6 +11,12 @@ x-hardening: &hardening
   cap_drop:
     - ALL
   restart: unless-stopped
+  # Docker's json-file driver never rotates by default: Paperclip alone wrote 390 MB a day.
+  logging:
+    driver: json-file
+    options:
+      max-size: 20m
+      max-file: "3"
 
 services:
   paperclip:
@@ -60,6 +66,8 @@ services:
       # instance setting scripts/modules.ts ensureBackupRetention writes.
       PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES: "360"
       PAPERCLIP_TELEMETRY_DISABLED: "1"
+      # Paperclip logs every request with full headers at its default level (~370 MB a day).
+      PAPERCLIP_LOG_LEVEL: warn
       DO_NOT_TRACK: "1"
       # Agents use the ChatGPT login in /paperclip/.codex, never an API key from here.
       OPENAI_API_KEY: ""
@@ -108,6 +116,8 @@ services:
     # A recreate (apply) sends SIGTERM and waits this long: apps-mcp finishes the app deploys in flight first
     # (modules/apps-platform/apps-mcp/src/main.ts DRAIN_MS, a little shorter).
     stop_grace_period: 11m
+    # node runs as PID 1 here and reaps nothing: its git children piled up as zombies toward pids_limit.
+    init: true
     user: "${PUID:-1000}:${DOCKER_GID:?set DOCKER_GID in .env (getent group docker | cut -d: -f3)}"
     read_only: true
     tmpfs:
@@ -202,6 +212,7 @@ services:
     <<: *hardening
     build: ./services/board
     image: aidenhq/board:local
+    init: true
     user: "${PUID:-1000}:${PGID:-100}"
     read_only: true
     tmpfs:

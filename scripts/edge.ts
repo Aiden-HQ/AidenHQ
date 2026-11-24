@@ -30,7 +30,6 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import YAML from "yaml";
 
 export const GATE_PORT = 3130; // modules/apps-platform/apps-mcp/src/tailnet.ts reserves the same port
 export const GATE_URL = `http://127.0.0.1:${GATE_PORT}`;
@@ -271,6 +270,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "c
   let login = "access";
   try { login = JSON.parse(readFileSync(join(dirname(file), "gate.json"), "utf8")).login === "password" ? "password" : "access"; } catch {}
   try {
+    // Loaded here only: setup.sh runs front-door.ts from a root copy that has no node_modules, and imports this file for DOOR_PORT.
+    const { default: YAML } = await import("yaml");
     checkIngress(YAML.parse(readFileSync(file, "utf8")), { login });
   } catch (e) {
     console.error((e as Error).message);
