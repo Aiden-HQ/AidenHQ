@@ -1,9 +1,12 @@
 // The code-review service's HTTP API: only what another module asks of it, each with its own token (the kernel says whose);
 // the Reviews page and the Reviewer Manager's tools are the MCP connection (mcp.ts and config-tool.ts):
-//   GET  /v1/verdict?repo=&pr=&head=     → { verdict: pass|wait, reasons: [{ code, text, unblock? }] }   the github module's merge
-//                                        queue
+//   GET  /v1/verdict?repo=&pr=&head=     → { verdict: pass|wait, reasons: [{ code, text, unblock? }], reviewed, kind }   the github
+//                                        module's merge queue and ship's approval; kind: completed (the head is covered), exhausted
+//                                        (the verdict stands on `reviewed`, an earlier head) or skipped
 //   POST /reviews { pr_url, task? }      → { runs }   the ship module's ask on a fork it adopted: a one-off review of that PR,
 //                                        its summary on `task` (the adoption's)
+//   POST /reviews { pr_url, fresh: true, head } → { runs }   ship's gating review of the head (a writer's `aiden review`), when a
+//                                        model fix has no review of its own
 // Errors are { error, detail }.
 //   GET  /healthz
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -33,18 +36,21 @@ export function handler(engine: Engine, isModule: (authorization: string, module
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "")}`;
     if (route === "GET /healthz") return send(res, 200, { ok: true });
     if (route === "GET /v1/verdict") {
-      const ok = await isModule(String(req.headers.authorization ?? ""), "github");
-      if (!ok) return send(res, ok === undefined ? 503 : 401, { error: "unauthorized", detail: ok === undefined ? "the kernel couldn't say whose token this is; try again" : "only the github module's token" });
+      const auth = String(req.headers.authorization ?? "");
+      const gh = await isModule(auth, "github");
+      const ok = gh || (await isModule(auth, "ship"));
+      if (!ok) return send(res, ok === undefined || gh === undefined ? 503 : 401, { error: "unauthorized", detail: ok === undefined || gh === undefined ? "the kernel couldn't say whose token this is; try again" : "only the github or ship module's token" });
       const q = url.searchParams;
       const repo = (q.get("repo") ?? "").toLowerCase(), pr = Number(q.get("pr")), head = q.get("head") ?? "";
       if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(pr) || pr < 1 || !/^[0-9a-f]{40}$/.test(head)) return send(res, 400, { error: "bad_request", detail: "repo, pr and head (a 40-character sha)" });
-      return send(res, 200, engine.verdict(repo, pr, head));
+      return send(res, 200, { ...engine.verdict(repo, pr, head), ...engine.evidence(repo, pr, head) });
     }
     if (route === "POST /reviews") {
       const ok = await isModule(String(req.headers.authorization ?? ""), "ship");
       if (!ok) return send(res, ok === undefined ? 503 : 401, { error: "unauthorized", detail: ok === undefined ? "the kernel couldn't say whose token this is; try again" : "only the ship module's token" });
       try {
         const b = await body(req);
+        if (b.fresh === true) return send(res, 200, { runs: await engine.fresh({ pr_url: b.pr_url, head: b.head }) });
         const task = typeof b.task === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(b.task) ? b.task : undefined;
         return send(res, 200, { runs: await engine.oneoff({ pr_url: b.pr_url }, { requester: "Ship", ...(task ? { task } : {}) }) });
       } catch (e) {

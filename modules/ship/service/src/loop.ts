@@ -78,7 +78,7 @@ export type LoopOptions = {
   reviewGate?: ReviewGate;
   /** Every other PR's hand-off and rounds (adopted.ts): called for each open PR that isn't the fleet's own or Dependabot's, and
    * with the open list, for adoptions whose PR left it. */
-  adopted?: { begin(): void; open(repo: string, main: { name: string; rollup: Json }, pr: Json, open: Set<number>): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
+  adopted?: { begin(): void; open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number>): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
 };
 
 /** The pass runs every minute while a watched PR is open; with none open it waits twice as long each pass, up to 30 minutes. */

@@ -1,9 +1,11 @@
 // The watch loop's pass for the PRs that aren't the fleet's own (loop.ts calls it for each one it reads): the hand-off's intake and,
 // once adopted, its round (handoff.ts, rounds.ts). This file turns the loop's GitHub reads into their PrView and facts, and supplies
-// the GitHub effects they need (a trigger author's role, assignees, update-branch) through github's /internal/ship/* routes.
+// the GitHub effects they need (a trigger author's role, assignees, update-branch) through github's /internal/ship/* routes. Where
+// the PR waits only on an approval, it reads the PR's own change and code review's verdict and judges the App's approval (safe.ts).
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { handBack, intake, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
 import { retryReport, round, type Decision, type RoundDeps } from "./rounds.ts";
+import { canApprove, judge, type ChangedFile, type Judged, type Verdict } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
 
@@ -15,10 +17,11 @@ export type AdoptedOptions = {
   /** The kernel as ship (its module token): throws on a refusal. */
   kernel: { call(method: string, path: string, body?: unknown): Promise<any> };
   /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
-   * whether the branch merges through a merge queue, and the required checks red on the PR's latest merge_group run. */
-  decision(repo: string, number: number, head: string): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[] }>;
-  /** The report comment and code review's ask (effects.ts shipEffects). */
-  effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"] };
+   * whether the branch merges through a merge queue, the required checks red on the PR's latest merge_group run, and whether an
+   * approval of the head is all it waits on. */
+  decision(repo: string, number: number, head: string): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean }>;
+  /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
+  effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
 };
 
@@ -73,15 +76,26 @@ export function adoptedPass(o: AdoptedOptions) {
     unassign: async (repo, n, logins) => void (await must("DELETE", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
   };
   const rounds: RoundDeps = {
-    state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, comment: o.effects.comment, log: o.log,
+    state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, comment: o.effects.comment, askFresh: o.effects.askFresh, log: o.log,
     updateBranch: async (repo, n, head) => void (await must("PUT", `/repos/${repo}/pulls/${n}/update-branch`, { expected_head_sha: head })),
     assign: async (repo, n, logins) => void (await must("POST", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
+  };
+  /** The PR's own change from its merge base with `base` (GitHub's compare files). */
+  const changed = async (repo: string, base: string, head: string) => ((await must("GET", `/repos/${repo}/compare/${base}...${head}`))?.files ?? []) as ChangedFile[];
+  /** judge() at the head: code review's verdict, the PR's change, and the change at the head the verdict stands on when it isn't this one. */
+  const approvalOf = async (s: ShipSettings, view: PrView, base: string): Promise<Judged> => {
+    const verdict = await o.effects.verdict(view.repo, view.number, view.head);
+    const files = await changed(view.repo, base, view.head);
+    // The reviewed head may be gone (a force-push): its change can't be read, so nothing carries and a fresh review is asked for.
+    const reviewedChange = async (h: string) => { const r = await o.gh("GET", `/repos/${view.repo}/compare/${base}...${h}`); if (r.status === 404 || r.status === 422) return undefined; if (r.status >= 300) throw new Error(`GitHub GET compare: ${r.status}`); return (r.body?.files ?? []) as ChangedFile[]; };
+    const reviewedFiles = verdict.verdict === "pass" && verdict.kind !== "completed" && verdict.reviewed ? await reviewedChange(verdict.reviewed) : undefined;
+    return judge(s, { files, generated: s.generated?.globs ?? [], verdict, ...(reviewedFiles ? { reviewedFiles } : {}) });
   };
   return {
     /** A new pass: roles are read again. */
     begin() { roles.clear(); },
     /** One open PR that isn't the fleet's own: intake, then a round once adopted (and handed back when its task was cancelled). */
-    async open(repo: string, main: { name: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number])) {
+    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number])) {
       const view = viewOf(repo, main.name, pr);
       let a = await intake(handoff, view) as Kept | undefined;
       if (!a || a.trigger.kind === "fleet") return;
@@ -93,10 +107,14 @@ export function adoptedPass(o: AdoptedOptions) {
       a = o.state.get(repo, pr.number) as Kept;
       if (a.hold || o.paused()) { await retryReport(rounds, a, view); return; }
       const v = await o.decision(repo, pr.number, view.head);
+      // Waiting only on an approval: the evidence is judged, and decide's `approve` is taken where the repo's `approve` allows it.
+      const s = o.settings(repo);
+      const approval = v.approval && s && s.approve !== "off" && main.oid ? await approvalOf(s, view, main.oid) : undefined;
+      if (s && canApprove(s, approval)) Object.assign(v, { do: "approve", why: "ready, and no approval on its head yet" });
       // Red on the base too: the same required check names (on the head or the merge_group run) red on the default branch's head.
       const onBase = new Set(namedChecks(main.rollup).filter((c) => !c.ok && !c.pending).map((c) => c.name));
       const red = [...new Set([...(v.failing ?? []), ...(v.groupFailing ?? [])])];
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)) });
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}) });
     },
     /** The adoptions of `repo` (not the fleet's) whose PR left the open list: a merged one closes its hand-off's task once. */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {

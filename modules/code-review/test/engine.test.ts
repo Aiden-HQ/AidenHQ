@@ -1878,6 +1878,24 @@ test("push_rounds 1: a push superseded mid-review isn't a round; after the one p
   assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("5"), "codex/medium"]], "a writer's ask beats the cap");
 });
 
+test("ship's evidence: a covered head is completed; past the push cap the verdict is exhausted on the last covered head, and ship's fresh ask gates and covers the new head", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  assert.deepEqual(w.engine.evidence(REPO, 2, sha("2")), { reviewed: sha("2"), kind: "completed" });
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 1, "no push review past the cap");
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  assert.deepEqual(w.engine.evidence(REPO, 2, sha("3")), { reviewed: sha("2"), kind: "exhausted" });
+  await assert.rejects(w.engine.fresh({ pr_url: `https://github.com/${REPO}/pull/2`, head: sha("2") }), /not 222/, "only at the head ship judged");
+  await w.engine.fresh({ pr_url: `https://github.com/${REPO}/pull/2`, head: sha("3") }); await w.tick();
+  assert.deepEqual([w.started[1].head, w.started[1].mandatory], [sha("3"), true]);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"]);
+  w.finish(1); await w.tick(); // an important finding
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "its findings gate");
+  assert.deepEqual(w.engine.evidence(REPO, 2, sha("3")), { reviewed: sha("3"), kind: "completed" });
+});
+
 test("push_rounds: an advisory push review that finishes first never uses up the round while the mandatory one runs", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH, CLAUDE], push_rounds: 1 }] });
   await opened(w, 2, sha("2"));

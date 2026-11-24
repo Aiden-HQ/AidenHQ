@@ -148,3 +148,27 @@ test("on a merge queue branch the pass fills queue and groupFailing: a ready PR 
   assert.deepEqual(enqueues().map((a) => a.attempt), [1, 2]);
   assert.equal(calls.some((c) => c.path === "/v1/wakes"), false);
 });
+
+test("a covered PR waiting only on an approval is judged through the loop and approved as the App", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "c".repeat(40), BASE = "b".repeat(40);
+  state.put({ repo: "acme/app", number: 11, generation: 1, trigger: { kind: "label", event: "e11", actor: "maria", at: "2026-11-24T09:00:00Z", head: H }, task: "T11", hold: null });
+  const calls = [], reads = [];
+  const kernel = { call: async (method, path, body) => {
+    calls.push({ method, path, body });
+    if (path.startsWith("/v1/work")) return { status: "in_progress", records: [] };
+    if (path === "/v1/writes") return { id: "a1", state: "claimed" };
+    return {};
+  } };
+  const gh = async (method, path) => (reads.push(path), path.includes("/compare/") ? { status: 200, body: { files: [{ filename: "src/a.ts", status: "modified", additions: 3, deletions: 1, patch: "@@ -1 +1 @@" }] } } : { status: 200, body: {} });
+  const pass = adoptedPass({
+    gh, state, kernel, settings: () => ({ ...PRESETS.cautious, approve: "safe" }), paused: () => false, log() {},
+    decision: async () => ({ do: "wait", why: "waiting for required review", failing: [], dirty: false, approval: true }),
+    effects: { comment: async () => 1, askReview: async () => {}, askFresh: async () => {}, verdict: async () => ({ verdict: "pass", reasons: [], reviewed: H, kind: "completed" }) },
+  });
+  const pr = { number: 11, url: "https://github.com/acme/app/pull/11", headRefOid: H, baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } };
+  await pass.open("acme/app", { name: "main", oid: BASE, rollup: { contexts: { nodes: [] } } }, pr);
+  assert.ok(reads.includes(`/repos/acme/app/compare/${BASE}...${H}`));
+  const approve = calls.find((c) => c.path === "/v1/writes" && c.body.kind === "github.approve");
+  assert.deepEqual(approve?.body.args, { repo: "acme/app", number: 11, head: H, generation: 1, base: "main" });
+});

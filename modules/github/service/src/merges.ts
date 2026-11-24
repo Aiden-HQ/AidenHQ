@@ -635,7 +635,8 @@ export function createMerges(d: {
     /**
      * Ship's round decision for an adopted PR at `head` (its watch loop asks through /internal/ship/decision): decide with ship's
      * context, as an adoption's merge is judged here, and the required checks red on the head. On a merge queue branch (mergePath)
-     * a ready PR is `enqueue`, with the required checks red on its latest merge_group run (a removal's cause). No approval yet (D2).
+     * a ready PR is `enqueue`, with the required checks red on its latest merge_group run (a removal's cause). `approval`: the PR
+     * waits only on an approval of its head (decide would answer `approve` if ship may approve), so ship judges its evidence.
      */
     async decision(repo: string, number: number, head: string) {
       const data = await readPr(repo, number);
@@ -644,9 +645,11 @@ export function createMerges(d: {
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
-      const v = decide(data, head, { queue, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
+      const ctx = { queue, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks };
+      const v = decide(data, head, { ...ctx, approve: false });
+      const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
-      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
+      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
     enqueue(id: string, args: { prs: { repo: string; number: number; head: string; base?: string }[]; generation?: number }, task?: string, identifier?: string, tier?: number, byShip?: boolean): Promise<Outcome> {
