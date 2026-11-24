@@ -150,13 +150,14 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       // "feedback" is the form's own subject, not its send: a "Preview feedback" button must not be taken for "Save feedback".
       // A draft action ("Save draft") is never the send, even though it saves; "save" alone does not name a send either.
       "const sendish = /send|submit|share|post|publish/i;" +
-      // Never guess between several explicit controls, and never click a type=button "Save draft": only a send-named submit
-      // control sends, or the form's one explicit submit when it is worded as sending. Otherwise the canary stops.
-      "const draftish = /draft|preview|discard|cancel|back/i;";
-      "const named = explicit.filter((x) => sendish.test(word(x)) && !draftish.test(word(x)));" +
+      // A whole word, so "feedback" is not read as a "back" action. Never guess between several explicit controls, and never
+      // click a type=button "Save draft": only a send-named submit control sends, or the form's one explicit submit when it is
+      // worded as sending. Otherwise the canary stops.
+      "const draftish = (w) => /draft|preview|discard|cancel/i.test(w) || /(^|[^a-z])back([^a-z]|$)/i.test(w);" +
+      "const named = explicit.filter((x) => sendish.test(word(x)) && !draftish(word(x)));" +
       // One send-named control, or the form's only button when it is worded as sending. A lone "Preview feedback" is not
       // that: a two-step form's real send is on the next screen, and clicking Preview would send nothing.
-      "const b = named.length === 1 ? named[0] : named.length === 0 && explicit.length === 1 && sendish.test(word(explicit[0])) && !draftish.test(word(explicit[0])) ? explicit[0] : null;" +
+      "const b = named.length === 1 ? named[0] : named.length === 0 && explicit.length === 1 && sendish.test(word(explicit[0])) && !draftish(word(explicit[0])) ? explicit[0] : null;" +
       "if (!b) return '';" +
       "b.setAttribute('data-aidenhq-canary-submit', '1');" +
       "return b.tagName + ':' + word(b).trim().slice(0, 60);" +
