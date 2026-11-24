@@ -2,11 +2,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { deepsec, layCarried, leave, resetChanged, said } from "../recipe/deepsec.ts";
+import { deepsec, layCarried, leave, said } from "../recipe/deepsec.ts";
 import { review } from "../recipe/review.ts";
 
 const A = "a".repeat(40), E = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -107,26 +108,24 @@ test("deepsec scans when INFO.md is committed and sets up (init) when it isn't; 
 
 test("deepsec starts from the records earlier runs left, analyses a file again once its content changed, and leaves only what it changed", () => {
   const dir = mkdtempSync(join(tmpdir(), "cr-ds-carry-")), files = join(dir, "files"), keep = join(dir, "keep"), root = repoRoot({ "src/d.js": "d\n" });
-  const rec = (p, o) => ({ filePath: p, status: "analyzed", fileHash: `h-${p}`, findings: [{ severity: "HIGH", title: `old in ${p}` }], lastScannedAt: "t0", ...o });
-  writeFileSync(join(dir, "carried"), gzipSync(JSON.stringify({ records: { "src/a.js": rec("src/a.js"), "src/b.js": rec("src/b.js"), "src/c.js": rec("src/c.js", { status: "processing", lockedByRunId: "r0" }), "../evil.js": rec("../evil.js") } })));
-  const was = layCarried(join(dir, "carried"), files);
-  // A path out of the data folder is never laid; a record a stopped run left mid-processing is pending again.
-  assert.deepEqual([...was.keys()].sort(), ["src/a.js", "src/b.js", "src/c.js"]);
-  assert.equal(JSON.parse(readFileSync(join(files, "src/c.js.json"), "utf8")).status, "pending");
-  // deepsec's scan stamps every record and its new fileHash, and keeps an analysed one analysed: a changed file is reset here.
-  const write = (p, r) => writeFileSync(join(files, `${p}.json`), JSON.stringify(r));
-  write("src/a.js", { ...rec("src/a.js"), lastScannedAt: "t1" });
-  write("src/b.js", { ...rec("src/b.js"), fileHash: "h-b2", lastScannedAt: "t1" });
-  resetChanged(was, files);
+  const hash = (p) => createHash("sha256").update(readFileSync(join(root, p), "utf8")).digest("hex");
+  const rec = (p, o) => ({ filePath: p, status: "analyzed", fileHash: hash(p), findings: [{ severity: "HIGH", title: `old in ${p}` }], lastScannedAt: "t0", ...o });
+  // src/b.js changed since its record (another hash); src/c.js is gone from this commit; ../evil.js is out of the data folder.
+  writeFileSync(join(dir, "carried"), gzipSync(JSON.stringify({ records: { "src/a.js": rec("src/a.js"), "src/b.js": rec("src/b.js", { fileHash: "old" }), "src/d.js": rec("src/d.js", { status: "processing", lockedByRunId: "r0" }), "src/c.js": { ...rec("src/a.js"), filePath: "src/c.js" }, "../evil.js": rec("src/a.js") } })));
+  const carried = layCarried(join(dir, "carried"), files, root);
+  assert.deepEqual([[...carried.was.keys()].sort(), carried.gone], [["src/a.js", "src/b.js", "src/d.js"], ["src/c.js"]]);
   const read = (p) => JSON.parse(readFileSync(join(files, `${p}.json`), "utf8"));
-  assert.deepEqual([read("src/a.js").status, read("src/b.js").status, read("src/b.js").findings], ["analyzed", "pending", []]);
-  // process analyses it again and a new file; a tree's records of files gone (src/c.js) are named, the unchanged one isn't left.
+  // Unchanged stays analysed; a changed file is pending with its findings dropped (deepsec's scan would keep it analysed); a
+  // record a stopped run left mid-processing is pending again.
+  assert.deepEqual([read("src/a.js").status, read("src/b.js").status, read("src/b.js").findings, read("src/d.js").status], ["analyzed", "pending", [], "pending"]);
+  // The scan stamps every record it reads; process analyses src/b.js again and finds a new file.
+  const write = (p, r) => writeFileSync(join(files, `${p}.json`), JSON.stringify(r));
+  write("src/a.js", { ...read("src/a.js"), lastScannedAt: "t1" });
   write("src/b.js", { ...read("src/b.js"), status: "analyzed", findings: [{ severity: "LOW", title: "new" }] });
-  mkdirSync(join(files, "src"), { recursive: true });
-  write("src/d.js", rec("src/d.js"));
-  leave(was, files, keep, root, true);
+  write("src/e.js", rec("src/a.js", { filePath: "src/e.js" }));
+  leave(carried, files, keep, true);
   const left = JSON.parse(gunzipSync(readFileSync(keep)).toString("utf8"));
-  assert.deepEqual([Object.keys(left.records).sort(), left.removed], [["src/b.js", "src/d.js"], ["src/c.js"]]);
+  assert.deepEqual([Object.keys(left.records).sort(), left.removed], [["src/b.js", "src/d.js", "src/e.js"], ["src/c.js"]]);
 });
 
 test("a failed deepsec says why in the run's reason: its own error, from its jsonl on stdout, as data", async () => {

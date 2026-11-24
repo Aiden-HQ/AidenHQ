@@ -85,8 +85,9 @@ export interface EngineInput {
   target?: "tree" | "pr";
   /** Skill engines: the harness, the skills (resolveSkills) and where the image keeps skills (default /opt/review). */
   harness?: string; skills?: SkillRef[]; tools?: string[]; skillsRoot?: string;
-  /** deepsec: its own spend cap, and the files of a pending setup (JSON: path to text) to scan with instead of setting up. */
-  max_cost_usd?: number; setupFiles?: Record<string, string>;
+  /** deepsec: its own spend cap, the files of a pending setup (JSON: path to text) to scan with instead of setting up, and its
+   * records carried from earlier runs (`carried`, a file) and where it leaves the ones this run changed (`keep`). */
+  max_cost_usd?: number; setupFiles?: Record<string, string>; carried?: string; keep?: string;
 }
 /** `calls`: the repo tools a run called, with the arguments code checks coverage by (path, the page `from`, `stat`). */
 /** `incomplete`: the engine covered only part of the change. `untracked`: it reads the change its own way, so which parts it read
@@ -284,9 +285,9 @@ function stage(sk: Skill, n: number, base: string) {
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
-async function deepsecEngine({ model, effort, root, base, trusted, minutes, scratch, target, max_cost_usd, setupFiles }: EngineInput): Promise<EngineResult> {
+async function deepsecEngine({ model, effort, root, base, trusted, minutes, scratch, target, max_cost_usd, setupFiles, carried, keep }: EngineInput): Promise<EngineResult> {
   try {
-    const { review, setup } = await deepsec({ root, target: target ?? "pr", base, trusted: trusted ?? base, model, effort, max_cost_usd, scratch, setupFiles, minutes });
+    const { review, setup } = await deepsec({ root, target: target ?? "pr", base, trusted: trusted ?? base, model, effort, max_cost_usd, scratch, setupFiles, minutes, carried, keep });
     return { message: JSON.stringify({ findings: review.findings, stale_guidance: [] }), read: true, covered: review.covered, ...(review.incomplete ? { incomplete: review.incomplete } : {}), ...(setup ? { setup } : {}) };
   } catch (e) {
     return { message: "", read: false, cause: String((e as Error).message ?? e).slice(0, 300) };

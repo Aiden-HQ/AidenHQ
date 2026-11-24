@@ -58,7 +58,7 @@
 // /aidenhq-out/keep, which the kernel keeps after the run (a regular file of at most INPUT_MAX, never through a link) for its
 // module to fetch (GET /v1/checks/:check/kept). Both are the box's data, never read by the kernel; both go after FILES_DAYS.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { missKind, passes } from "../sdk/src/pass-rule.ts";
@@ -409,23 +409,25 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   /** Where a module's uploaded inputs (by sha256) and a check's kept file are. */
   const inputPath = (module: string, sha: string) => join(workDir, "check-inputs", module, sha);
   const keptPath = (id: string) => join(workDir, "check-kept", id);
-  /** Inputs and kept files older than FILES_DAYS go (each upload sweeps). */
+  /** Inputs and kept files older than FILES_DAYS go (each upload and each check started sweeps). */
   const sweepFiles = () => {
     const old = now() - FILES_DAYS * 86_400_000;
     for (const dir of [join(workDir, "check-kept"), ...(() => { try { return readdirSync(join(workDir, "check-inputs")).map((m) => join(workDir, "check-inputs", m)); } catch { return []; } })()])
       for (const f of (() => { try { return readdirSync(dir); } catch { return []; } })()) { try { if (statSync(join(dir, f)).mtimeMs < old) rmSync(join(dir, f), { force: true }); } catch {} }
   };
-  /** The run's kept file (a keep recipe's /aidenhq-out/keep: a regular file of at most INPUT_MAX, never through a link), moved
-   * out of the attempt's folder before it goes; anything else there is no file. */
+  /** The run's kept file (a keep recipe's /aidenhq-out/keep: a regular file of at most INPUT_MAX, never through a link), copied
+   * from the descriptor it was checked on into a file of the kernel's own before the attempt's folder goes; anything else is none. */
   const keepOut = (id: string, dir: string) => {
-    const from = join(dir, "out", "keep");
     let fd: number | undefined;
     try {
-      fd = openSync(from, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      fd = openSync(join(dir, "out", "keep"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const st = fstatSync(fd);
       if (!st.isFile() || st.size > INPUT_MAX) return;
+      const buf = Buffer.alloc(st.size);
+      let n = 0;
+      for (let r; n < st.size && (r = readSync(fd, buf, n, st.size - n, n)); n += r);
       mkdirSync(join(workDir, "check-kept"), { recursive: true, mode: 0o700 });
-      renameSync(from, keptPath(id));
+      writeFileSync(keptPath(id), buf.subarray(0, n), { mode: 0o600 });
     } catch { /* none */ } finally { if (fd !== undefined) closeSync(fd); }
   };
   /** The checks this process is running (a drain waits for them). */
@@ -709,6 +711,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       // The task is the latest asker's: a re-run for another task is that task's evidence from here on.
       rmSync(keptPath(id), { force: true });
+      sweepFiles();
       if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, capped = NULL, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now(), (b.task as string | undefined) ?? null);
       log("check started", { check: id, module, repo, head, run });

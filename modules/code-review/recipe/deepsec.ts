@@ -17,8 +17,9 @@
 // scan data. Its records outlive the run through the code-review service, never the repo (they hold unfixed vulnerability
 // write-ups): a scan starts from the records earlier runs left (`carried`, gzipped JSON { records: { path: record } }), and the
 // run leaves the ones it changed at `keep` (with `removed`, a tree's records of files gone), which the service lays over what it
-// holds. deepsec's scan updates a record's fileHash and keeps an analysed file analysed (its re-scan "doesn't invalidate previous
-// analysis"), so a file whose content changed since its record is set pending here, its findings dropped, and analysed again. Model: deepsec's pi backend through our gateway's OpenAI-compatible route (a pi models.json in the run's own
+// holds. deepsec's scan keeps an analysed file analysed (its re-scan "doesn't invalidate previous analysis") and touches only the
+// records of files its matchers hit, so each carried record's fileHash is checked here against the file at this commit (deepsec's
+// own hash: sha256 of the text, CRLF as LF): a file whose content changed is laid pending, its findings dropped, and analysed again. Model: deepsec's pi backend through our gateway's OpenAI-compatible route (a pi models.json in the run's own
 // PI_CODING_AGENT_DIR: provider `openrouter`, so pi counts the cost OpenRouter reports, which the gateway passes through; its key
 // `$OPENROUTER_API_KEY`, pi's env interpolation: a bare name is sent as the key itself, which the gateway refused, 2026-11-23), the
 // run's capped token in OPENROUTER_API_KEY. The `local` route configures no credential (every other route links a Vercel project
@@ -29,6 +30,7 @@
 // what was analysed so far. A failed step says why: deepsec's own last error (init's jsonl on stdout, else stderr), as data.
 // Install scripts never run (npm_config_ignore_scripts).
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -105,35 +107,31 @@ function recordsIn(files: string) {
   for (const n of names) { try { const r = JSON.parse(readFileSync(join(files, n), "utf8")); if (r && recordPath(r.filePath)) out.set(r.filePath, r); } catch {} }
   return out;
 }
-/** Lays the carried records in `files` (a record left mid-processing is pending again): their paths and fileHash as carried. */
-export function layCarried(carried: string | undefined, files: string) {
-  const was = new Map<string, Record<string, unknown>>();
-  if (!carried || !existsSync(carried)) return was;
+/** A file's hash as deepsec's scan takes it (sha256 of its text, CRLF read as LF); undefined when it isn't there. */
+const fileHash = (root: string, p: string) => { try { return createHash("sha256").update(readFileSync(join(root, p), "utf-8").replaceAll("\r\n", "\n")).digest("hex"); } catch { return undefined; } };
+/** Lays the carried records of files at this commit in `files`, each as it stands here: one whose file changed since (its
+ * fileHash) or that a stopped run left mid-processing is pending, a changed one's findings dropped. `gone`: records of files the
+ * commit doesn't have, never laid. */
+export function layCarried(carried: string | undefined, files: string, root: string) {
+  const was = new Map<string, Record<string, unknown>>(), gone: string[] = [];
+  if (!carried || !existsSync(carried)) return { was, gone };
   const j = JSON.parse(gunzipSync(readFileSync(carried), { maxOutputLength: 512 << 20 }).toString("utf8"));
   for (const [p, r] of Object.entries<Record<string, unknown>>(j?.records ?? {})) {
     if (!recordPath(p) || !r || typeof r !== "object" || r.filePath !== p) continue;
-    const rec = r.status === "processing" ? { ...r, status: "pending", lockedByRunId: undefined, lockedAt: undefined } : r;
+    const hash = fileHash(root, p);
+    if (hash === undefined) { gone.push(p); continue; }
+    const changed = hash !== r.fileHash;
+    const rec = changed || r.status === "processing" ? { ...r, status: "pending", lockedByRunId: undefined, lockedAt: undefined, ...(changed ? { fileHash: hash, findings: [] } : {}) } : r;
     mkdirSync(dirname(join(files, `${p}.json`)), { recursive: true });
     writeFileSync(join(files, `${p}.json`), JSON.stringify(rec));
-    was.set(p, rec);
+    was.set(p, r);
   }
-  return was;
+  return { was, gone };
 }
-/** After a scan: a carried analysed file whose content changed (its fileHash) is pending again, its old findings dropped. */
-export function resetChanged(was: Map<string, Record<string, unknown>>, files: string) {
-  for (const [p, r] of recordsIn(files)) {
-    const old = was.get(p);
-    if (!old?.fileHash || old.fileHash === r.fileHash || r.status === "pending") continue;
-    writeFileSync(join(files, `${p}.json`), JSON.stringify({ ...r, status: "pending", findings: [] }));
-  }
-}
-/** The records this run changed (new or different from what it was handed), and on a tree the carried ones of files gone. */
-export function leave(was: Map<string, Record<string, unknown>>, files: string, keep: string, root: string, tree: boolean) {
-  const now = recordsIn(files);
-  const records = Object.fromEntries([...now].filter(([p, r]) => !was.has(p) || settled(was.get(p)!) !== settled(r)));
-  const removed = tree ? [...was.keys()].filter((p) => !now.has(p) || !existsSync(join(root, p))) : [];
-  for (const p of removed) delete records[p];
-  writeFileSync(keep, gzipSync(JSON.stringify({ records, removed })));
+/** The records this run changed (new, or different from what it was handed), and on a tree the carried ones of files gone. */
+export function leave({ was, gone }: ReturnType<typeof layCarried>, files: string, keep: string, tree: boolean) {
+  const records = Object.fromEntries([...recordsIn(files)].filter(([p, r]) => !was.has(p) || settled(was.get(p)!) !== settled(r)));
+  writeFileSync(keep, gzipSync(JSON.stringify({ records, removed: tree ? gone : [] })));
 }
 
 /** deepsec's finding records under `data/<id>/files/` (one JSON per scanned file), as findings and the analysed files. */
@@ -198,7 +196,7 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
   writeFileSync(join(w, "deepsec.config.mjs"), `export default ${JSON.stringify({ ai: { mode: "local", provider: "local" }, projects: [{ id: pid, root }] })};\n`);
   let setup: Record<string, string> | undefined, processed = false;
   const files = join(data, pid, "files");
-  let was = new Map<string, Record<string, unknown>>();
+  let carriedIn: ReturnType<typeof layCarried> = { was: new Map(), gone: [] };
 
   if (committed || pending.length) {
     // INFO.md in as data: the committed one (a regular file, never through a link; for a change, the merge base's: the PR's own
@@ -209,10 +207,9 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
     mkdirSync(join(data, pid));
     if (info !== undefined) writeFileSync(join(data, pid, "INFO.md"), info);
     // init refuses a project whose data is there, so only a scan starts from the carried records.
-    was = layCarried(carried, files);
+    carriedIn = layCarried(carried, files, root);
     const s = await step("deepsec", ["scan", "--project-id", pid, "--root", root], w);
     if (s.cause) throw new Error(s.cause);
-    resetChanged(was, files);
   } else {
     // Not set up: init writes .deepsec/ and INFO.md and runs the baseline scan (on the `local` route, no Vercel link). Its cwd is the
     // checkout, where deepsec would load a repo-root config as code: refused.
@@ -242,7 +239,7 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
     setup[`.deepsec/data/${pid}/INFO.md`] = info;
   }
   if (!gaps.length) await analyse();
-  if (keep) leave(was, files, keep, root, target === "tree");
+  if (keep) leave(carriedIn, files, keep, target === "tree");
 
   /** The AI review: every pending candidate then revalidated (a tree), or the change's files (a PR). A failed step is a gap. */
   async function analyse() {

@@ -7,6 +7,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 
+/** The most a check input may be (the kernel's INPUT_MAX): records past it are not handed in, and the run starts afresh. */
+export const INPUT_MAX = 64 * 1024 * 1024;
 /** The most a records file unpacks to. */
 const UNPACKED_MAX = 512 << 20;
 /** A record's path as deepsec takes one (recipe/deepsec.ts recordPath). */

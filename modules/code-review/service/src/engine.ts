@@ -33,7 +33,7 @@ import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullR
 import { detect, toolSpec, whyNot, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
-import { mergeRecords, type DeepsecStore } from "./deepsec-store.ts";
+import { INPUT_MAX, mergeRecords, type DeepsecStore } from "./deepsec-store.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 /** How a finding reopened by an unsafe answer says so in the post (fixed words). */
@@ -607,10 +607,11 @@ export function createEngine(d: EngineDeps) {
     }
   }
 
-  /** A deepsec run's records of its repo, uploaded for its check (none held yet: none). */
+  /** A deepsec run's records of its repo, uploaded for its check (none held yet, or more than a check input holds: none). */
   async function deepsecData(r: RunRow) {
     const held = r.engine === "deepsec" ? d.deepsec.read(r.repo) : undefined;
-    return held ? { deepsec_data: await d.runner.input(held) } : {};
+    if (held && held.length > INPUT_MAX) log("deepsec's records are more than a check input holds: this run starts afresh", { run: r.id, bytes: held.length });
+    return held && held.length <= INPUT_MAX ? { deepsec_data: await d.runner.input(held) } : {};
   }
   /** A deepsec run's check ended: the records it changed are laid over the repo's (a file it can't be read from is logged, never the run's failure). */
   async function absorbDeepsec(r: RunRow) {

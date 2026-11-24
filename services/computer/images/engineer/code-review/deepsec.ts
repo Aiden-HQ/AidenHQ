@@ -14,7 +14,12 @@
 // binary is always the image's.
 //
 // State: DEEPSEC_DATA_ROOT is a folder in the run's scratch (INFO.md and the finding records), so the repo's checkout takes no
-// scan data. Model: deepsec's pi backend through our gateway's OpenAI-compatible route (a pi models.json in the run's own
+// scan data. Its records outlive the run through the code-review service, never the repo (they hold unfixed vulnerability
+// write-ups): a scan starts from the records earlier runs left (`carried`, gzipped JSON { records: { path: record } }), and the
+// run leaves the ones it changed at `keep` (with `removed`, a tree's records of files gone), which the service lays over what it
+// holds. deepsec's scan keeps an analysed file analysed (its re-scan "doesn't invalidate previous analysis") and touches only the
+// records of files its matchers hit, so each carried record's fileHash is checked here against the file at this commit (deepsec's
+// own hash: sha256 of the text, CRLF as LF): a file whose content changed is laid pending, its findings dropped, and analysed again. Model: deepsec's pi backend through our gateway's OpenAI-compatible route (a pi models.json in the run's own
 // PI_CODING_AGENT_DIR: provider `openrouter`, so pi counts the cost OpenRouter reports, which the gateway passes through; its key
 // `$OPENROUTER_API_KEY`, pi's env interpolation: a bare name is sent as the key itself, which the gateway refused, 2026-11-23), the
 // run's capped token in OPENROUTER_API_KEY. The `local` route configures no credential (every other route links a Vercel project
@@ -25,8 +30,10 @@
 // what was analysed so far. A failed step says why: deepsec's own last error (init's jsonl on stdout, else stderr), as data.
 // Install scripts never run (npm_config_ignore_scripts).
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { plain, readSmall, run, stopped } from "./proc.ts";
 
 /** A finding in the finder JSON the recipe takes (the recipe adds each finding's option and lens). */
@@ -41,6 +48,8 @@ export interface DeepsecInput {
   setupFiles?: Record<string, string>;
   /** The project id (default `repo`); an existing `.deepsec/data/<id>/` names its own. */
   id?: string; minutes?: string | number;
+  /** Records earlier runs left (gzipped JSON { records }), and where this run leaves the ones it changed. */
+  carried?: string; keep?: string;
 }
 export interface DeepsecOutput {
   review: { findings: DeepsecFinding[]; /** the files deepsec analysed */ covered: string[]; incomplete?: string };
@@ -85,7 +94,45 @@ export function said(r: { stdout: string; stderr: string }) {
   return String(text).replace(/[\x00-\x1f\x7f«»]+/g, " ").trim();
 }
 
-type Record_ = { filePath?: string; status?: string; findings?: { severity?: string; title?: string; description?: string; recommendation?: string; lineNumbers?: number[]; revalidation?: { verdict?: string } }[] };
+type Record_ = { filePath?: string; status?: string; fileHash?: string; findings?: { severity?: string; title?: string; description?: string; recommendation?: string; lineNumbers?: number[]; revalidation?: { verdict?: string } }[] };
+/** A record's path as deepsec takes one (assertSafeFilePath): relative, no empty, `.` or `..` part, no backslash or NUL. */
+export const recordPath = (p: unknown): p is string => typeof p === "string" && p.length > 0 && p.length <= 1000 && !/[\\\0]/.test(p) && !p.startsWith("/") && p.split("/").every((x) => x && x !== "." && x !== "..");
+/** A record as compared between runs: what a scan stamps on every file it reads (its time and run) and a lock left out. */
+const settled = (r: Record<string, unknown>) => JSON.stringify({ ...r, lastScannedAt: undefined, lastScannedRunId: undefined, lockedByRunId: undefined, lockedAt: undefined });
+/** Every record under `files`, by path. */
+function recordsIn(files: string) {
+  const out = new Map<string, Record<string, unknown>>();
+  let names: string[] = [];
+  try { names = readdirSync(files, { recursive: true }).map(String).filter((f) => f.endsWith(".json")); } catch {}
+  for (const n of names) { try { const r = JSON.parse(readFileSync(join(files, n), "utf8")); if (r && recordPath(r.filePath)) out.set(r.filePath, r); } catch {} }
+  return out;
+}
+/** A file's hash as deepsec's scan takes it (sha256 of its text, CRLF read as LF); undefined when it isn't there. */
+const fileHash = (root: string, p: string) => { try { return createHash("sha256").update(readFileSync(join(root, p), "utf-8").replaceAll("\r\n", "\n")).digest("hex"); } catch { return undefined; } };
+/** Lays the carried records of files at this commit in `files`, each as it stands here: one whose file changed since (its
+ * fileHash) or that a stopped run left mid-processing is pending, a changed one's findings dropped. `gone`: records of files the
+ * commit doesn't have, never laid. */
+export function layCarried(carried: string | undefined, files: string, root: string) {
+  const was = new Map<string, Record<string, unknown>>(), gone: string[] = [];
+  if (!carried || !existsSync(carried)) return { was, gone };
+  const j = JSON.parse(gunzipSync(readFileSync(carried), { maxOutputLength: 512 << 20 }).toString("utf8"));
+  for (const [p, r] of Object.entries<Record<string, unknown>>(j?.records ?? {})) {
+    if (!recordPath(p) || !r || typeof r !== "object" || r.filePath !== p) continue;
+    const hash = fileHash(root, p);
+    if (hash === undefined) { gone.push(p); continue; }
+    const changed = hash !== r.fileHash;
+    const rec = changed || r.status === "processing" ? { ...r, status: "pending", lockedByRunId: undefined, lockedAt: undefined, ...(changed ? { fileHash: hash, findings: [] } : {}) } : r;
+    mkdirSync(dirname(join(files, `${p}.json`)), { recursive: true });
+    writeFileSync(join(files, `${p}.json`), JSON.stringify(rec));
+    was.set(p, r);
+  }
+  return { was, gone };
+}
+/** The records this run changed (new, or different from what it was handed), and on a tree the carried ones of files gone. */
+export function leave({ was, gone }: ReturnType<typeof layCarried>, files: string, keep: string, tree: boolean) {
+  const records = Object.fromEntries([...recordsIn(files)].filter(([p, r]) => !was.has(p) || settled(was.get(p)!) !== settled(r)));
+  writeFileSync(keep, gzipSync(JSON.stringify({ records, removed: tree ? gone : [] })));
+}
 
 /** deepsec's finding records under `data/<id>/files/` (one JSON per scanned file), as findings and the analysed files. */
 export function readRecords(dir: string) {
@@ -107,7 +154,7 @@ export function readRecords(dir: string) {
   return { findings, covered, pending };
 }
 
-export async function deepsec({ root, target, base, trusted = base, model, effort, max_cost_usd, scratch, setupFiles, id, minutes }: DeepsecInput): Promise<DeepsecOutput> {
+export async function deepsec({ root, target, base, trusted = base, model, effort, max_cost_usd, scratch, setupFiles, id, minutes, carried, keep }: DeepsecInput): Promise<DeepsecOutput> {
   const tmp = mkdtempSync(join(scratch, "deepsec-"));
   const home = join(tmp, "home"), pi = join(tmp, "pi"), data = join(tmp, "data");
   for (const d of [home, pi, data]) mkdirSync(d);
@@ -148,6 +195,8 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
   mkdirSync(w);
   writeFileSync(join(w, "deepsec.config.mjs"), `export default ${JSON.stringify({ ai: { mode: "local", provider: "local" }, projects: [{ id: pid, root }] })};\n`);
   let setup: Record<string, string> | undefined, processed = false;
+  const files = join(data, pid, "files");
+  let carriedIn: ReturnType<typeof layCarried> = { was: new Map(), gone: [] };
 
   if (committed || pending.length) {
     // INFO.md in as data: the committed one (a regular file, never through a link; for a change, the merge base's: the PR's own
@@ -157,6 +206,8 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
     const info = committedInfo ?? pending.find(([p]) => p === rel)?.[1];
     mkdirSync(join(data, pid));
     if (info !== undefined) writeFileSync(join(data, pid, "INFO.md"), info);
+    // init refuses a project whose data is there, so only a scan starts from the carried records.
+    carriedIn = layCarried(carried, files, root);
     const s = await step("deepsec", ["scan", "--project-id", pid, "--root", root], w);
     if (s.cause) throw new Error(s.cause);
   } else {
@@ -188,6 +239,7 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
     setup[`.deepsec/data/${pid}/INFO.md`] = info;
   }
   if (!gaps.length) await analyse();
+  if (keep) leave(carriedIn, files, keep, target === "tree");
 
   /** The AI review: every pending candidate then revalidated (a tree), or the change's files (a PR). A failed step is a gap. */
   async function analyse() {
@@ -201,7 +253,7 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
     }
   }
 
-  const records = readRecords(join(data, pid, "files"));
+  const records = readRecords(files);
   const { findings, covered } = records;
   // A PR's process analyses only the change: the scan's other candidates stay pending and are no gap.
   const changed = target === "pr" ? new Set(execFileSync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", String(base), "HEAD"], { encoding: "utf8" }).split("\0").filter(Boolean)) : undefined;
