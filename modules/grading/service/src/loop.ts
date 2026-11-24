@@ -397,6 +397,12 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       return;
     }
     gradeLooked.set(g.issueId, Date.now());
+    // A pass on a row the ladder left failed ends that pass's wait here, before anything can branch: the retry may find evidence
+    // unavailable and go back to waiting (awaiting_evidence), and a wait left open would have Flow report grade_retry for a task
+    // that has left the ladder. Its version names the round the failed pass left, so it stays distinct from a revision's
+    // attempt-keyed wait (a failed pass does not move `attempts`); a re-run of the same pass names the same version, so the log
+    // records it once.
+    if (g.state === "grading_failed") fact("work.resumed", `task:${g.issueId}`, `round:${g.round}`, g.issueId, { reason: "grade_retry" });
     const rubric = g.rubric.length ? g.rubric : template(g.deliverable.kind);
     const deps = gradeDeps(issue);
     // The day a grade may wait is the one hard bound: past it the row closes done, ungraded whatever it was waiting on, so no
@@ -472,10 +478,6 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       const woken = JSON.parse(state.get(`evidence-woken:${issue.id}`) || "null")?.codes?.length ?? 0;
       if (attempt > 1) fact("work.resumed", `task:${issue.id}`, attempt - 1, issue.id, { reason: "grade_retry" });
       else if (woken) fact("work.resumed", `task:${issue.id}`, `wake:${woken}`, issue.id, { reason: "grade_retry" });
-      // A pass on the ladder after a failed one ends that pass's wait (Flow ends a task's wait on any resumed fact for it). Its
-      // version names the round the failed pass left, so the two facts stay distinct in the log: a failed pass does not move
-      // `attempts`, and the attempt-keyed version above is taken when the pass follows a rejected version.
-      if (g.state === "grading_failed") fact("work.resumed", `task:${issue.id}`, `round:${g.round}`, issue.id, { reason: "grade_retry" });
       fact("grade.requested", `grade:${issue.id}:${attempt}`, attempt, issue.id);
       asked = true;
       v = await grade({ rubric, deliverable: g.deliverable, facts: ev.facts, data: ev.data, request: `${issue.title}\n\n${stripHidden(issue.description ?? "")}`, images: ev.images, authorModel, ask });
@@ -484,6 +486,11 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     // re-bound while the pass ran. The row's own list (g.rubric) and deliverable, not the template the pass falls back to, are
     // what the store compares against.
     const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: filing, round: g.round, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
+    // Whether the store took this pass's verdict. A verdict on a filing or round that moved while the pass ran is dropped, and the
+    // store answers the row as it now stands: its round is unchanged (the drop writes nothing), or a later pass or amendment has
+    // already moved it on. The side effects below are this pass's (a note worded from its verdict, keyed on the round it produced),
+    // so they are only taken when the round it produced is the one that came back.
+    const applied = row?.round === g.round + 1;
     if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
@@ -504,7 +511,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
       // The reopen wakes the task's agent through the kernel: nothing to dispatch here.
-    } else if (row.state === "grading_failed") {
+    } else if (row.state === "grading_failed" && applied) {
       // A failed pass says so on the task, once per pass: the grader's reason and when the ladder asks again. It is a note, not a
       // verdict move: the task keeps its grading hold, and the ladder (never the note) is what asks the grader again. The note's
       // id is the pass it reports (the row's round), so a retried post lands once and a later pass gets its own.

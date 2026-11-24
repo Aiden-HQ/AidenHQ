@@ -485,6 +485,56 @@ test("a grading-failed note is posted for the pass it reports, and dropped once 
   assert.equal(calls.wake[0].quiet, true, "posted as a quiet note, never a wake");
 });
 
+test("a failed pass whose verdict the store dropped posts no note and no wait", async () => {
+  // The store drops a verdict computed on a filing or round that moved while the pass ran, and answers the row as it stands.
+  // The note is worded from this pass's verdict and keyed on the round it produced, so a dropped pass must not post it or
+  // claim a wait: the next pass grades what the row holds now, and its own note reports that pass.
+  const issue = { id: "t30", identifier: "WOR-30", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] }, facts = [];
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["says it"];
+  grades.file("t30", rubric, { kind: "report", ref: "" });
+  const row = grades.record("t30", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "report", ref: "" }, 0) });
+  assert.equal(row.state, "grading_failed");
+  const gateway = http.createServer(async (req, res) => { for await (const _ of req); res.writeHead(502).end("upstream down"); }).listen(0);
+  const drop = async (m, p, b) => {
+    // The store took nothing: its answer is the row as it stood before the pass.
+    if (m === "POST" && p === "/internal/grades/t30/verdict") return grades.get("t30");
+    return runner(m, p, b);
+  };
+  const loop = createKernelGradeLoop({ db, runner: drop, due: () => ({ grades: [grades.get("t30")], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
+  try {
+    await loop.runGrades();
+  } finally {
+    gateway.close();
+  }
+  assert.deepEqual(calls.wake, [], "a dropped pass posts no note");
+  assert.equal(facts.filter((f) => f.type === "work.waiting").length, 0, "and claims no wait");
+  assert.equal(grades.get("t30").round, row.round, "the row is where it was");
+});
+
+test("a retry that finds its evidence unavailable still ends the failed pass's wait", async () => {
+  // The resumed fact is emitted before the pass can branch: a retry whose evidence is not there yet goes back to
+  // awaiting_evidence, and a wait left open would have Flow report grade_retry for a task that left the ladder.
+  const issue = { id: "t31", identifier: "WOR-31", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] }, facts = [];
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["the app is deployed"];
+  grades.file("t31", rubric, { kind: "app", ref: "roadmap-keeper" });
+  const row = grades.record("t31", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "app", ref: "roadmap-keeper" }, 0) });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [grades.get("t31")], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
+  await loop.runGrades();
+  const resumed = facts.filter((f) => f.type === "work.resumed" && f.task === "t31");
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0].version, `round:${row.round}`, "it names the wait the failed pass left");
+  assert.equal(grades.get("t31").state, "awaiting_evidence", "the retry is waiting for evidence, not on the retry ladder");
+  assert.deepEqual(calls.wake, [], "nothing is posted on the task for a wait");
+});
+
 /**
  * A fake kernel for a grade whose rubric names another task: the graded task, the named task's read and attachments, and the
  * agents read. `named` and `attachments` are what those reads answer, so a test can make them a 404, a 5xx or another company.
