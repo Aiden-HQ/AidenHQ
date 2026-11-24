@@ -232,7 +232,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   };
   setup();
   const refusal = (id: string) => refusalOf(db, id);
-  const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: (by?: string) => void }>();
+  const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string, comment?: string) => boolean; cancel: (by?: string) => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
   const bump = (id: string) => {
@@ -297,6 +297,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const deadline = r.at + cfg.timeout_minutes * 60_000;
     let timedOut = false, cancelled = false, killed = false, stoppedBy: string | undefined;
     let over = false;
+    /** Comments appended to the inbox that no step of the engine has followed yet (see read). */
+    const pending: string[] = [];
     let retried = false;
     const save = () => db.prepare("UPDATE jobs SET offset = ?, session = ?, final = ?, progress = ?, usage = ? WHERE id = ?").run(offset, session, final ?? "", JSON.stringify(progress), usage.seen ? JSON.stringify({ input: usage.input, cached: usage.cached, output: usage.output }) : null, id);
     const read = () => {
@@ -322,6 +324,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
           const plan = PLAN(e.plan);
           if (plan?.length) progress.plan = plan;
           if (steps?.length) progress.steps = steps;
+          // The engine took a step after comments were appended to its inbox (which read() drained first): it has read them. Input
+          // the engine never steps after (it was finishing its answer) is never counted as seen.
+          if (steps?.length) for (const c of pending.splice(0)) db.prepare("UPDATE jobs SET saw = json_insert(COALESCE(saw, '[]'), '$[#]', ?) WHERE id = ?").run(c, id);
         }
       }
       save();
@@ -407,11 +412,12 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     };
     // A box job's dir is the launcher's out folder, mounted in its box: the inbox reaches it the same way.
     const send = r.live_input === 1
-      ? (text: string, from: string) => {
+      ? (text: string, from: string, comment?: string) => {
           read();
           if (over || final !== undefined || exitStatus(exitFile) || !alive(pid)) return false;
           try {
             appendLine(join(jobDir, "inbox.jsonl"), { t: "comment", from, text });
+            if (comment && SAW.test(comment)) pending.push(comment);
             return true;
           } catch {
             return false; // the inbox isn't a regular file (the job's doing): the comment waits for the next turn
@@ -610,10 +616,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     /** A comment into a live run's inbox.jsonl: false once the run is over, or for an engine that takes none mid-run. */
     input(module: string, id: string, text: string, from = "owner", comment?: string) {
       own(module, id);
-      const sent = watchers.get(id)?.send?.(String(text).slice(0, 65_536), String(from).slice(0, 100)) ?? false;
-      // `saw`: the newest comment the job had read at each step (its prompt, then each input it took), so a reader can tell which
-      // messages a reply answers.
-      if (sent && comment && SAW.test(comment)) db.prepare("UPDATE jobs SET saw = json_insert(COALESCE(saw, '[]'), '$[#]', ?) WHERE id = ?").run(comment, id);
+      // `saw` (the newest comment the job had read at each step, so a reader can tell which messages a reply answers) takes the
+      // comment only once the engine has stepped after it: the watcher holds it until then.
+      const sent = watchers.get(id)?.send?.(String(text).slice(0, 65_536), String(from).slice(0, 100), comment) ?? false;
       return { sent };
     },
     /** How many steps of comments the job has read so far (its prompt's, then each live input's): a reply written now answers the last. */
