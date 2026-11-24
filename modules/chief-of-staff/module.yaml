@@ -10,7 +10,7 @@ roles:
     # the Maintainer requests it (it files the Fleet Steward's product-bug reports).
     - { id: product-issues, description: "Product bugs as issues on the product repo, as the owner (github-mcp github_product_issue)." }
   # ops-key (the meetings module's): the Researcher runs the meeting scan, so ops-mcp acts as it, while meetings is on.
-  requests: [ ops-key? ]
+  requests: [ ops-key?, ship-admin? ]
 agents:
   chief-of-staff:
     skills: [ tasks.delegate-work ]

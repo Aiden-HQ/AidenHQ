@@ -1,11 +1,11 @@
 name: ship
-description: "Ship: owns every pull request's lifecycle on the repos it covers (the fleet's own, and the ones you list in maintainer_repos): per-repo settings and presets (cautious, full), who may hand a PR over, admission of outside contributors' PRs before anything is spent on them, and, in later releases, rounds, repair, App approval and the merge itself. Idle until a repo is listed."
+description: "Ship: owns every pull request's lifecycle on the repos it covers (the fleet's own, and the ones you list in maintainer_repos): per-repo settings and presets (cautious, full), who may hand a PR over, and, in later releases, rounds, repair, App approval and the merge itself. Idle until a repo is listed."
 license: MIT
 # Design: docs/superpowers/specs/2026-11-24-ship-design.md. The service (service/) holds the per-repo settings (`ship`), the
-# adoption records (data/ship/state.json) and the admission answer code review asks before it starts a review. Its tools
-# (ship_config, ship_configure) read and change the setting like code-review's config tool: validated whole, a stale read refused,
-# one typed settings change filed as the calling job; a change that loosens anything is the owner's, made from the board's Ship page
-# (the `board` provider below).
+# adoption records (data/ship/state.json, holds only: the rest is derived from the PR). Its tools
+# (ship_config, ship_configure) read and change the setting like code-review's config tool: validated whole,
+# one typed settings change filed as the calling job; a change that loosens anything is the owner's, made from the Fleet page
+# (the Fleet page).
 requires:
   - github # the covered repos' reads and the effects ship files (later releases)
 roles:
@@ -15,25 +15,20 @@ roles:
     - { id: ship-admin, description: "Reads ship's settings and changes one repo's entry (ship_config, ship_configure) when the owner asks in words; a change that loosens anything is the owner's." }
 settings:
   # The per-repo ship settings: { defaults: cautious | full | { preset, …fields }, repos: { owner/name: cautious | full | { preset?,
-  # handoff: none|label|all, external: member|any, forks: skip|replace, rebase: conflict|behind, generated: { globs, command },
-  # fix: [conflicts, ci, review], protected: [globs], caps: { wakes_per_head, ci_rounds, same_check_heads, reasks_per_head,
-  # review_rounds, rounds, usd, silence_min, requeue_on_timeout: a number, or null for unlimited }, approve: off|observe|safe|all,
-  # safe: { max_lines, max_files, deny }, merge: off|ready, stop_label } }, paused: true|false (stops every adoption, push,
-  # approval and merge) }. An entry names only a repo ship covers: the fleet org's, the product repo and maintainer_repos. The board's
-  # Ship page edits it; this is the advanced form. Read by the service (service/src/settings.ts).
+  # handoff: none|label|all, external: member|any, rebase: conflict|behind, generated: { globs, command },
+  # fix: [conflicts, ci, review], protected: [globs], caps: { wakes_per_head, ci_rounds, same_check_heads,
+  # review_rounds, rounds, usd, requeue_on_timeout: a number, or null for unlimited }, approve: off|observe|safe|all,
+  # safe: { max_lines, max_files, deny }, merge: off|ready, enabled: true|false, stop_label } }, paused: true|false (stops every adoption, push,
+  # approval and merge) }. An entry names only a repo ship covers: the fleet org's, the product repo and maintainer_repos. The Fleet page
+  # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
   ship:
     type: object
     writers: [ ship-admin ]
     default:
       defaults: cautious
       repos: {}
-# The module's own check of the value before the board saves it (the whole setting, the same validation as ship_configure).
-validate: { post: "http://ship:8101/validate", auth: ship_api_token, mode: observe }
-# The Ship page in the board's Fleet sidebar (a module view, built in a later lane) calls only this module's own tools: ship_config
-# and ship_configure for settings and presets, ship_status for status and metrics. The HTTP API below (service/src/api.ts) serves the
-# same reads and validation to the board with ship_api_token.
-providers:
-  board: { url: "http://ship:8101", auth: ship_api_token }
+# The Fleet page (a module view, declared here by a later lane) calls only this module's own tools: ship_config and ship_configure
+# for settings and presets, ship_status for status and metrics.
 connections:
   ship:
     setup: "Built in: nothing to connect."
@@ -51,7 +46,7 @@ services:
       tmp: 16m
       port: 8101
       egress: true # the kernel's listener is a host address
-      # Shares github's network (as code-review does), so code review reaches ship's admission answer at http://ship:8101.
+      # github's network: its reads, and its generation check on ship's writes.
       join: [github]
       data: ["ship:/data"]
       env:
@@ -62,11 +57,9 @@ services:
         SHIP_MAINTAINER_REPOS: "${settings.maintainer_repos}"
         SHIP_GATED: "${settings.code_review_gated}"
         SHIP_TOKEN_FILE: ${secrets.ship_token}
-        SHIP_API_TOKEN_FILE: ${secrets.ship_api_token}
         SHIP_SERVICE_KEY_FILE: ${secrets.ship_service_key}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - ship_token
-  - ship_api_token
   - ship_service_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

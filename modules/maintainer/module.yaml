@@ -5,7 +5,7 @@ requires:
   - github
 roles:
   # product-issues (the chief of staff's): the Fleet Steward's product-bug reports, filed upstream as the owner.
-  requests: [ product-issues, kernel.tasks, kernel.facts ] # kernel.tasks: the issue watcher files a task per labelled or new issue; kernel.facts: its issue.triaged fact
+  requests: [ product-issues, ship-admin?, kernel.tasks, kernel.facts ] # kernel.tasks: the issue watcher files a task per labelled or new issue; kernel.facts: its issue.triaged fact
   declares:
     - { id: maintainer, description: "Issues as the owner, labelled as AidenHQ, on the repos in settings.maintainer_repos only (github-mcp github_issue_*, github_label_events, github_pr_list, github_repo_* tools)." }
 # Flow (docs/design/flow.md): an issue is triaged when its fix label lands; the stage runs from the issue's creation.

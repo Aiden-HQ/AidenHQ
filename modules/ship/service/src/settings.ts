@@ -2,20 +2,20 @@
 // loosens. Every knob is a per-repo setting with no floor in code; `null` caps are unlimited (owner, 2026-11-24).
 type Dict = Record<string, unknown>;
 
-export const CAP_KEYS = ["wakes_per_head", "ci_rounds", "same_check_heads", "reasks_per_head", "review_rounds", "rounds", "usd", "silence_min", "requeue_on_timeout"] as const;
+export const CAP_KEYS = ["wakes_per_head", "ci_rounds", "same_check_heads", "review_rounds", "rounds", "usd", "requeue_on_timeout"] as const;
 export type Caps = Record<(typeof CAP_KEYS)[number], number | null>;
 export const HANDOFF = ["none", "label", "all"] as const;
 export const EXTERNAL = ["member", "any"] as const;
-export const FORKS = ["skip", "replace"] as const;
 export const REBASE = ["conflict", "behind"] as const;
 export const APPROVE = ["off", "observe", "safe", "all"] as const;
 export const MERGE = ["off", "ready"] as const;
 export const FIX = ["conflicts", "ci", "review"] as const;
 
 export interface ShipSettings {
+  /** Whether ship adopts and works this repo's PRs (the Fleet page's Enabled switch). */
+  enabled: boolean;
   handoff: (typeof HANDOFF)[number];
   external: (typeof EXTERNAL)[number];
-  forks: (typeof FORKS)[number];
   rebase: (typeof REBASE)[number];
   generated: { globs: string[]; command: string } | null;
   fix: (typeof FIX)[number][];
@@ -27,23 +27,34 @@ export interface ShipSettings {
   stop_label: string;
 }
 
+// Protected paths bind the model's fixes only: the deterministic repair may regenerate lockfiles.
 const PROTECTED = ["**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", ".github/**", "**/.eslintrc*", "**/eslint.config.*", "**/vitest.config.*", "**/jest.config.*", "**/tsconfig*.json", "**/CODEOWNERS"];
 
 const CAUTIOUS: ShipSettings = {
-  handoff: "label", external: "member", forks: "replace", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
-  caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, reasks_per_head: 2, review_rounds: 3, rounds: 30, usd: 5, silence_min: 15, requeue_on_timeout: 1 },
-  approve: "safe", safe: { max_lines: 1200, max_files: 50, deny: [...PROTECTED, "**/migrations/**", "**/auth/**"] }, merge: "ready", stop_label: "ship:stop",
+  enabled: true, handoff: "label", external: "member", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
+  caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, review_rounds: 3, rounds: 30, usd: 5, requeue_on_timeout: 1 },
+  approve: "observe", safe: { max_lines: 1200, max_files: 50, deny: [...PROTECTED, "**/migrations/**", "**/auth/**", "**/Dockerfile*", "**/docker-compose*", "**/*.tf", "infra/**", "**/.env*", "**/config/**"] }, merge: "ready", stop_label: "ship:stop",
 };
 const FULL: ShipSettings = {
-  ...CAUTIOUS, handoff: "all", rebase: "behind", protected: [], approve: "all",
-  caps: { ...Object.fromEntries(CAP_KEYS.map((k) => [k, null])) as Caps, silence_min: 15 },
+  // Unguarded at ship's own policy layer: outside PRs admitted too. Host rules, human code-owner reviews and kernel authority still apply.
+  ...CAUTIOUS, handoff: "all", external: "any", rebase: "behind", protected: [], approve: "all",
+  caps: Object.fromEntries(CAP_KEYS.map((k) => [k, null])) as Caps,
   safe: { max_lines: null, max_files: null, deny: [] },
 };
+/** The Fleet page's controls (per repo, and the global pause) and the declared setting each one edits (the same fields the English tool and validate use). */
+export const CONTROLS = {
+  enabled: { setting: "enabled", scope: "repo", values: [true, false], label: "On or off" },
+  preset: { setting: "preset", scope: "repo", values: ["cautious", "full"], label: "Preset" },
+  handoff: { setting: "handoff", scope: "repo", values: HANDOFF, label: "Which PRs to adopt" },
+  approve: { setting: "approve", scope: "repo", values: APPROVE, label: "Approval policy" },
+  merge: { setting: "merge", scope: "repo", values: MERGE, label: "Auto-merge" },
+  paused: { setting: "paused", scope: "global", values: [true, false], label: "Pause everything" },
+} as const;
 export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CAUTIOUS, full: FULL };
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-const FIELDS = ["preset", "handoff", "external", "forks", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
+const FIELDS = ["preset", "enabled", "handoff", "external", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 /** A repo ship covers: the agents org (`org/*`), the product repo and every maintainer_repos entry. a wildcard owner and name covers all. */
@@ -88,9 +99,9 @@ function checkEntry(errors: string[], at: string, e: unknown) {
   if (!isMap(e)) return void errors.push(`${at}: a preset name or a map of fields`);
   for (const k of Object.keys(e)) if (!FIELDS.includes(k)) errors.push(`${at}.${k}: unknown field (known: ${FIELDS.join(", ")})`);
   if ("preset" in e) oneOf(errors, `${at}.preset`, e.preset, ["cautious", "full"]);
+  if ("enabled" in e && typeof e.enabled !== "boolean") errors.push(`${at}.enabled: true or false`);
   if ("handoff" in e) oneOf(errors, `${at}.handoff`, e.handoff, HANDOFF);
   if ("external" in e) oneOf(errors, `${at}.external`, e.external, EXTERNAL);
-  if ("forks" in e) oneOf(errors, `${at}.forks`, e.forks, FORKS);
   if ("rebase" in e) oneOf(errors, `${at}.rebase`, e.rebase, REBASE);
   if ("approve" in e) oneOf(errors, `${at}.approve`, e.approve, APPROVE);
   if ("merge" in e) oneOf(errors, `${at}.merge`, e.merge, MERGE);
@@ -140,9 +151,10 @@ export function loosens(before: unknown, after: unknown): string[] {
   const out: string[] = [];
   const diff = (name: string, x: ShipSettings, y: ShipSettings) => {
     const add = (f: string) => out.push(`${name}.${f}`);
+    if (y.enabled && !x.enabled) add("enabled");
     if (rank(HANDOFF, y.handoff) > rank(HANDOFF, x.handoff)) add("handoff");
     if (y.external === "any" && x.external !== "any") add("external");
-    if (y.forks === "replace" && x.forks !== "replace") add("forks");
+    if (y.rebase === "behind" && x.rebase !== "behind") add("rebase");
     if (y.approve !== x.approve && rank(APPROVE, y.approve) > rank(APPROVE, x.approve)) add("approve");
     if (y.merge === "ready" && x.merge !== "ready") add("merge");
     if (y.fix.some((f) => !x.fix.includes(f))) add("fix");
@@ -151,7 +163,6 @@ export function loosens(before: unknown, after: unknown): string[] {
     if (raised(x.safe.max_lines, y.safe.max_lines)) add("safe.max_lines");
     if (raised(x.safe.max_files, y.safe.max_files)) add("safe.max_files");
     if (x.safe.deny.some((p) => !y.safe.deny.includes(p))) add("safe.deny");
-    if (y.generated?.command && y.generated.command !== x.generated?.command) add("generated.command");
   };
   const dx = resolve(defaultsOf(b).preset, defaultsOf(b).over), dy = resolve(defaultsOf(a).preset, defaultsOf(a).over);
   diff("defaults", dx, dy);

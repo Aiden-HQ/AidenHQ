@@ -541,13 +541,16 @@ export function createSettingsChanges(d: SettingsDeps) {
     count(changes);
     if (tool === "self_change") return self(requester, taskId, changes as unknown[], why);
     const src = sources();
-    // The filing module speaks only for its own agents, and only of its own settings.
+    // The filing module speaks only of its own settings, and for its own agents, or for any agent holding one of the role(s) the
+    // setting's `writers` names (an agent of another module granted that role: ship's settings, changed by the Maintainer).
     const agent = has(src.compiled.agents, requester.key) ? src.compiled.agents[requester.key] : undefined;
-    if (!module || agent?.module !== module) refuse(`${module} files settings changes only for its own agents, and ${requester.key || requester.name} isn't one`);
+    if (!module) refuse(`${module} files settings changes only for its own agents, and ${requester.key || requester.name} isn't one`);
+    const own = agent?.module === module;
+    const notOwn = () => refuse(`${module} files settings changes only for its own agents, and ${requester.key || requester.name} isn't one`);
     for (const ch of changes as Dict[]) {
-      if (!isMap(ch) || ch.kind !== "setting") refuse("an agent changes settings only: { kind: setting, key, value }");
+      if (!isMap(ch) || ch.kind !== "setting") return own ? refuse("an agent changes settings only: { kind: setting, key, value }") : notOwn();
       const writers: unknown = src.catalog.find((m) => m.enabled && m.name === module && has(m.settings, ch.key))?.settings?.[ch.key]?.writers;
-      if (!Array.isArray(writers) || !writers.some((r) => requester.roles.includes(r))) refuse(`${requester.key || requester.name} may not change ${ch.key} (only a setting ${module} declares, whose settings.${ch.key}.writers names one of the agent's roles)`);
+      if (!Array.isArray(writers) || !writers.some((r) => requester.roles.includes(r))) return own ? refuse(`${requester.key || requester.name} may not change ${ch.key} (only a setting ${module} declares, whose settings.${ch.key}.writers names one of the agent's roles)`) : notOwn();
     }
     const issue = (await d.task(taskId)) ?? refuse("no such task");
     return write(taskId, issue, changes as unknown[], src, requester);

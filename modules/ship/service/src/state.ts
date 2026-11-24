@@ -1,13 +1,16 @@
-// Ship's durable state (data/ship/state.json, atomic rename): one record per adoption. Lane A holds the shape and the file;
+// Ship's durable state (data/ship/state.json, atomic rename): one record per adoption (a hold, when it has one). Lane A holds the shape and the file;
 // the loop (a later lane) writes it.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export const STATUSES = ["working", "waiting", "stalled", "queued", "merged", "handed_back", "stopped"] as const;
+// Only a hold is stored: working, waiting, queued and merged are derived from the PR's live state (decide).
+export const HOLDS = ["stalled", "handed_back", "stopped"] as const;
 export interface Adoption {
   repo: string; number: number; generation: number;
   trigger: { kind: "fleet" | "label" | "comment" | "tool" | "all"; event: string; actor: string };
-  task?: string; status: (typeof STATUSES)[number];
+  task?: string;
+  /** The one sticky state: set on a stall, a hand-back or a stop; only a fresh trusted trigger (a new generation) clears it. */
+  hold: { kind: (typeof HOLDS)[number]; reason: string } | null;
 }
 const key = (repo: string, n: number) => `${repo.toLowerCase()}#${n}`;
 

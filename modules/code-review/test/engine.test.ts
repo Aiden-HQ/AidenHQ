@@ -24,14 +24,13 @@ function world(settings = {}) {
   const refusals = new Map();
   const threads = new Map(), commits = new Map(), patches = new Map(), bases = new Map();
   const readsDown = settings.readsDown ?? [];
-  const { db: _db, readsDown: _rd, admit, ...rest } = settings;
+  const { db: _db, readsDown: _rd, ...rest } = settings;
   // Every push is reviewed here (push_rounds null) unless a test sets the cap.
   const cfg = readConfig(JSON.stringify({ ...rest, repos: (rest.repos ?? [{ repo: REPO }]).map((r) => ({ push_rounds: null, ...r })) }));
   const db = settings.db ?? new DatabaseSync(":memory:");
   const deps = {
     db,
     config: () => cfg,
-    ...(admit ? { admit } : {}),
     now: () => t,
     source: {
       open: async () => [...prs.values()].filter((p) => p.open),
@@ -1887,19 +1886,4 @@ test("push_rounds: an advisory push review that finishes first never uses up the
   w.finish(2, NONE); await w.tick(); // the advisory run at 3 is done; the mandatory one still runs
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.ok(w.started.some((s) => s.head === sha("4") && s.mandatory), "4 still gets the push review");
-});
-
-test("a PR ship does not admit starts nothing and is not recorded; once admitted it gets its opening review once", async () => {
-  const admitted = new Set();
-  const w = world({ admit: async (_r, p) => admitted.has(p.number) });
-  await w.tick();
-  w.later(1000);
-  w.pr(2, sha("2"));
-  await w.tick();
-  await w.tick();
-  assert.deepEqual([w.started.length, w.engine.runs({ repo: REPO }).length], [0, 0]);
-  admitted.add(2);
-  await w.tick();
-  await w.tick();
-  assert.equal(w.started.length, 1);
 });

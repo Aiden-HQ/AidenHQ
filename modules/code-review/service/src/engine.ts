@@ -206,8 +206,6 @@ export type EngineDeps = {
   codehost: CodeHost; catalog: () => Option[]; publisher: Publisher;
   /** deepsec's records per repo (this service's /data). */
   deepsec: DeepsecStore;
-  /** Admission before spend (the ship module's answer): false defers a PR, which is read again next tick. Absent: every PR is admitted. */
-  admit?: (repo: string, pr: PullRequest) => Promise<boolean>;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
 export class RequestError extends Error {
@@ -1603,9 +1601,6 @@ export function createEngine(d: EngineDeps) {
     const open = await d.source.open(cfg.repo);
     const seenNow = new Set(open.map((p) => p.number));
     for (const p of open) {
-      // A PR ship doesn't admit yet (an outside contributor's, until a trusted member hands it off) is not recorded: once admitted
-      // it is a new PR and gets its opening review, exactly once.
-      if (d.admit && !(await d.admit(cfg.repo, p))) continue;
       const was = prRow(p.repo, p.number);
       upsertPr(p);
       if (!was) trigger(cfg, p, "open");

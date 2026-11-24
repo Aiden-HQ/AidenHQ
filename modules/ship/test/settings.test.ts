@@ -8,6 +8,7 @@ test("cautious carries today's pr-watch constants; full is unlimited; overrides 
   assert.equal(effective({ repos: { "a/b": "full" } }, "a/b", ["a/b"])!.caps.usd, null);
   const o = effective({ repos: { "a/b": { preset: "cautious", approve: "all" } } }, "a/b", ["a/b"])!;
   assert.deepEqual([o.approve, o.caps.ci_rounds], ["all", 3]);
+  assert.equal(effective({ repos: { "a/b": "full" } }, "a/b", ["a/b"])!.external, "any");
   assert.equal(effective({}, "z/z", ["org/*"]), null);
   assert.ok(effective({}, "org/anything", ["org/*"]));
 });
@@ -24,7 +25,7 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   assert.ok(l.includes("a/b.approve") && l.includes("a/b.caps.usd") && l.includes("a/b.handoff"));
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": { preset: "full" } } }), []);
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": "cautious" } }), []);
-  assert.deepEqual(loosens({ repos: { "a/b": "cautious" } }, { repos: { "a/b": { generated: { globs: ["g/**"], command: "make" } } } }), ["a/b.generated.command"]);
+  assert.deepEqual(loosens({ repos: { "a/b": "cautious" } }, { repos: { "a/b": { rebase: "behind" } } }), ["a/b.rebase"]);
   assert.deepEqual(loosens({ paused: true }, { paused: false }), ["paused"]);
 });
 

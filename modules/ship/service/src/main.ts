@@ -23,7 +23,7 @@ const gated = () => (env.SHIP_GATED === undefined ? undefined : env.SHIP_GATED.s
 
 const state = openState(env.SHIP_STATE_FILE ?? "/data/state.json");
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
-const api = handler({ raw, covered, gated, state, token: () => file(env.SHIP_API_TOKEN_FILE), isModule: (a, m) => isModule(kernelUrl, a, m) });
+const api = handler({ state, isModule: (a, m) => isModule(kernelUrl, a, m) });
 const mcp = serveMcp(createMcp(configTools({
   raw, covered, gated, state,
   file: async (changes, assertion) => {
