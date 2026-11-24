@@ -293,4 +293,10 @@ test("the month's spend from the closed days' cache equals a full sum, across an
   clock = Date.parse("2026-12-01T00:05:00Z"); // a call that started last month is still checked against last month
   check("2026-11");
   check("2026-12");
+  // Parts whose float sum falls just under a cap still meet it: $0.2 closed + $0.7 today + $0.1 held for good is $1.
+  add("j", "2026-12-02", "ok", 0.2);
+  add("k", "2026-12-03", "ok", 0.7);
+  add("l", "2026-12-02", "unsettled", 0.1, "2026-12-02T12:00:00.000Z");
+  clock = Date.parse("2026-12-03T12:00:00Z");
+  assert.equal(spend("2026-12", "2026-12-03T11:30:00.000Z").settled, 1);
 });

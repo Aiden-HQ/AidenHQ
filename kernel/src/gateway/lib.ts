@@ -180,6 +180,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
   // final calls is good while their counts are unchanged.
   db.exec(`
     CREATE TABLE IF NOT EXISTS calls_final (day TEXT PRIMARY KEY, n INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS calls_open ON calls (day) WHERE status IN ('reserved', 'unsettled');
     CREATE TRIGGER IF NOT EXISTS calls_final_add AFTER INSERT ON calls WHEN NEW.status NOT IN ('reserved', 'unsettled') BEGIN
       INSERT INTO calls_final (day, n) VALUES (NEW.day, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1; END;
     CREATE TRIGGER IF NOT EXISTS calls_final_set AFTER UPDATE ON calls WHEN NEW.status NOT IN ('reserved', 'unsettled') BEGIN
@@ -191,7 +192,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
 /**
  * Month `m`'s spend (`spent`: every call; `settled`: without holds that may still shrink, as limits() counts them), exact and
  * cheap: the closed days' final calls (days before today; a final call never changes, and the ledger keeps 40 days, so none
- * leaves the month) are summed once and kept while their calls_final counts stand; calls not yet final (few: on the status
+ * leaves the month) are summed once and kept while their calls_final counts stand; calls not yet final (few: on calls_open, a partial
  * index) and today's are read each time. `open`: cut-off calls closed at or after it may still be trued up.
  */
 export function monthSpend(db: DatabaseSync, now: () => number) {
@@ -200,17 +201,25 @@ export function monthSpend(db: DatabaseSync, now: () => number) {
     count: db.prepare("SELECT COALESCE(SUM(n), 0) AS n FROM calls_final WHERE day >= ? AND day < ?"),
     final: db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day < ? AND ${FINAL}`),
     finalDay: db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND ${FINAL}`),
-    open: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS spent, COALESCE(SUM(CASE WHEN status = 'unsettled' AND (gen IS NULL OR at < ?) THEN cost_usd END), 0) AS settled FROM calls INDEXED BY calls_status WHERE status IN ('reserved', 'unsettled') AND day >= ? AND day <= ?"),
+    open: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS spent, COALESCE(SUM(CASE WHEN status = 'unsettled' AND (gen IS NULL OR at < ?) THEN cost_usd END), 0) AS settled FROM calls INDEXED BY calls_open WHERE status IN ('reserved', 'unsettled') AND day >= ? AND day <= ?"),
   };
   let kept: { key: string; s: number } | undefined;
-  return (m: string, open: string): { spent: number; settled: number } => {
+  // Whole nano-dollars, so the parts' float sum meets a cap exactly where one SUM would.
+  const usd = (n: number) => Math.round(n * 1e9) / 1e9;
+  const read = (m: string, open: string) => {
     const today = day(now()), from = `${m}-01`, until = month(now()) === m ? today : `${m}-32`;
     // The count is read before the sum: a write between them only costs one more sum next time.
     const key = `${from}|${until}|${(q.count.get(from, until) as { n: number }).n}`;
     if (kept?.key !== key) kept = { key, s: (q.final.get(from, until) as Sum).s };
     const live = q.open.get(open, from, `${m}-31`) as { spent: number; settled: number };
     const todays = until === today ? (q.finalDay.get(today) as Sum).s : 0;
-    return { spent: kept.s + todays + live.spent, settled: kept.s + todays + live.settled };
+    return { spent: usd(kept.s + todays + live.spent), settled: usd(kept.s + todays + live.settled) };
+  };
+  // One snapshot: limits() reads inside its reservation's transaction; the spend summary gets its own.
+  return (m: string, open: string): { spent: number; settled: number } => {
+    if (db.isTransaction) return read(m, open);
+    db.exec("BEGIN");
+    try { return read(m, open); } finally { db.exec("COMMIT"); }
   };
 }
 
