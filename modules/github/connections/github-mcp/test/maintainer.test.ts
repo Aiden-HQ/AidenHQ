@@ -1077,6 +1077,7 @@ it("a preset sets features and triage unless the entry says; settings have no up
   expect(at({ stale_issues: {} }).stale_issues).toEqual({ days: 60, grace_days: 14, exempt_labels: ["roadmap", "wip", "blocked"] });
   expect(at({ stale_issues: { days: 30, exempt_labels: ["pinned"] } }).stale_issues).toEqual({ days: 30, grace_days: 14, exempt_labels: ["pinned"] });
   expect(at({ resolved_check: { max_closes: 0 } }).resolved_check.max_closes).toBe(0);
+  expect(at({ stale_issues: { exempt_labels: ["🚧 in progress"] } }).stale_issues!.exempt_labels).toEqual(["🚧 in progress"]);
 });
 
 it("inMaintained matches a listed repo in any case", () => {

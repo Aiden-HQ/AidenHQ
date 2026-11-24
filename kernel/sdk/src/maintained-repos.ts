@@ -61,7 +61,7 @@ export interface MaintainedRepo {
 
 const whole = (v: unknown, min: number) => typeof v === "number" && Number.isInteger(v) && v >= min;
 const labelList = (where: string, k: string, v: unknown): string[] => {
-  if (!Array.isArray(v) || v.some((l) => typeof l !== "string" || !/^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,49}$/.test(l))) throw new Error(`${where}: ${k} is a list of labels`);
+  if (!Array.isArray(v) || v.some((l) => typeof l !== "string" || !/^[^\p{Cc}$]{1,50}$/u.test(l))) throw new Error(`${where}: ${k} is a list of labels`);
   return [...new Set(v as string[])];
 };
 

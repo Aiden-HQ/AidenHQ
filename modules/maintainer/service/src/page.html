@@ -79,9 +79,9 @@
   const reset = (r, k) => set(r, k, null);
 
   // One drawer field: a help label, its control, then Default and the overridden mark with Reset.
-  const field = (r, k, label, text, ctl, more = {}) => {
+  const field = (r, k, label, text, ctl, more = {}, onReset = () => reset(r, k)) => {
     const d = dflt(setOf(r), k), o = over(r, k);
-    return fld(label, text, more, ctl, h("span", { className: "dflt", textContent: `Default: ${shownDefault(d, k)}` }), o ? h("span", { className: "ovr", textContent: "Overridden" }) : null, o ? linkBtn("Reset to default", () => reset(r, k)) : null);
+    return fld(label, text, more, ctl, h("span", { className: "dflt", textContent: `Default: ${shownDefault(d, k)}` }), o ? h("span", { className: "ovr", textContent: "Overridden" }) : null, o ? linkBtn("Reset to default", onReset) : null);
   };
   const sw = (r, k, label, text, extra) => { const on = !!val(r, k), b = toggle(on, `${label} on ${r.repo}`, () => set(r, k, !on)); b.classList.toggle("unsaved", k in (pending[r.repo] ?? {})); return b; };
   const num = (r, k, label, ph) => { const ed = editor({ kind: "num", label: `${label} (${r.repo})`, f: `${r.repo}|${k}`, value: val(r, k) === null ? "" : String(val(r, k)), set: (v, live) => set(r, k, v, live) }); ed.placeholder = ph; return ed; };
@@ -112,7 +112,7 @@
         fld("Exempt labels", "Issues carrying any of these labels are never nudged or closed. One per line.", {}, exempt("stale", stale.exempt_labels, (v, live) => staleSet({ exempt_labels: v }, live))),
       ] : []),
       h("div", { className: "grp", textContent: "Already-fixed check" }),
-      field(r, "resolved_check", "Closes per daily run", "The daily sweep closes issues that recently merged work already fixed, citing the commit. This is the most it closes in one run; 0 switches the sweep off.", editor({ kind: "num", label: `Closes per run (${r.repo})`, f: `${r.repo}|rc.max`, value: String(rc.max_closes), set: (v, live) => v === null ? (live || rcSet({ max_closes: D.base.resolved_check.max_closes }, live)) : rcSet({ max_closes: v }, live) })),
+      field(r, "resolved_check", "Closes per daily run", "The daily sweep closes issues that recently merged work already fixed, citing the commit. This is the most it closes in one run; 0 switches the sweep off.", editor({ kind: "num", label: `Closes per run (${r.repo})`, f: `${r.repo}|rc.max`, value: String(rc.max_closes), set: (v, live) => v === null ? (live || rcSet({ max_closes: D.base.resolved_check.max_closes }, live)) : rcSet({ max_closes: v }, live) }), {}, () => rcSet({ max_closes: D.base.resolved_check.max_closes })),
       fld("Exempt labels", "Issues carrying any of these labels are left alone by the sweep. One per line.", {}, exempt("resolved", rc.exempt_labels, (v, live) => rcSet({ exempt_labels: v }, live))),
       h("div", { className: "grp", textContent: "Pull requests" }),
       field(r, "stale_days", "Quiet PR days", "With Contributor PRs on: days without activity before a nudge, and again before the close. Drafts get double.", num(r, "stale_days", "Quiet PR days", "7")),

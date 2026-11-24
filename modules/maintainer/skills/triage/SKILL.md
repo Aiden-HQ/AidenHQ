@@ -14,7 +14,7 @@ Read the repo's `settings` in `github_issue_list` first; they are the owner's ru
   request: a question, a usage problem, an upstream project's behaviour), `empty` (still an empty body or untouched template
   after you asked once, with no reply for a week) and `incorrect` (the code disproves the claim). A verdict whose reason is not
   listed is a comment, and the issue stays open. Close with `not_planned`, and the reason as the note's first line.
-- `triage_labels` false: add no label; the verdict is the comment alone, and a fix-worthy issue is named for the owner.
+- `triage_labels` false: add no label, `feature-request` included; the verdict is the comment alone, and a fix-worthy issue is named for the owner.
 
 ## What to weigh
 
