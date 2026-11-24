@@ -63,7 +63,7 @@ export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]
 
 /** Takes a listed repo off ship, the Maintainer and code review in one change: no ship entry is left outside the scope. Only the owner's Fleet page calls it. */
 export function removeRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string) {
-  if (!d.scope.listed.some((x) => x.toLowerCase() === repo.toLowerCase())) throw new Error(`${repo} isn't a listed repo (a fleet repo stays covered)`);
+  if (!d.scope.listed.some((x) => x.toLowerCase() === repo.toLowerCase()) || covers(repo, { fleet: d.scope.fleet, listed: [] })) throw new Error(`${repo} isn't a listed repo (a fleet repo stays covered)`);
   const ship = structuredClone(d.raw), repos = (ship.repos ?? {}) as Dict;
   for (const k of Object.keys(repos)) if (same(k, repo)) delete repos[k];
   const watched = ((d.codeReview.repos as unknown[]) ?? []).filter((x) => !same(x, repo));
