@@ -18,6 +18,19 @@ roles:
   requests: [ kernel.settings, kernel.tasks, kernel.wake, kernel.work-read ]
   declares:
     - { id: ship-admin, description: "Reads ship's settings and changes one repo's entry (ship_config, ship_configure) when the owner asks in words; a change that loosens anything is the owner's." }
+# The deterministic repair (recipe/repair.ts), no model and no credential: the PR's head merged with its base, generated paths
+# and conflicted lockfiles regenerated; it keeps the files that change, which github's `repair` effect (filed by ship) asks for
+# and writes as the App. base: the base branch's tip; merge_base: the head's merge base with it; base_ref: its name; plan:
+# { globs, commands } (rounds.ts repairPlan).
+check_jobs:
+  ship-repair:
+    dir: recipe
+    argv: [ node, /aidenhq-out/recipe/repair.ts ]
+    timeout_min: 30
+    title: ship's repair
+    spec: { base: sha, merge_base: sha, base_ref: text, plan: json }
+    result: true
+    keep: true
 # The report: one comment per adopted PR, edited in place (report.ts), on the repos ship covers.
 codehost:
   comment: { repos: [ "@agents/*", "@product", "@maintained" ] }

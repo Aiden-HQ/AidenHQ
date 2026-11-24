@@ -356,7 +356,7 @@ export function createService(o: Options) {
         current: at ? at.generation : undefined, ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
       };
     };
-    if (kind.endsWith(".approve") || kind.endsWith(".enqueue")) {
+    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair")) {
       const s = slugOf(a.repo);
       const n = Number(a.number);
       const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
@@ -378,7 +378,7 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : "";
+      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the App`;
       return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha)) } : {}),
@@ -466,7 +466,8 @@ export function createService(o: Options) {
       for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(dir, ["show", `${b.sha}:${f}`]) });
       // A branch's PR targets the default branch (execute opens it there); a repo with none yet has no base to read.
       bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]), dir, tip });
-      const ship = onto ? { ...(await adoption(onto.s.slug, Number(a.pr.number), a.generation, a.expected, onto.pr)), branch: b.branch } : undefined;
+      // The commits go onto the PR's own head branch (GitHub's name for it, a fork's too); the box's branch only carries them.
+      const ship = onto ? { ...(await adoption(onto.s.slug, Number(a.pr.number), a.generation, a.expected, onto.pr)), branch: String(onto.pr?.head?.ref ?? "") } : undefined;
       branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
@@ -506,7 +507,7 @@ export function createService(o: Options) {
       // Nor is a share: it is bound to the tip the owner previewed, so it runs now or he previews again.
       if (rec.kind.endsWith(".publish_module")) return access.connected() ? publishModule(rec.args) : { ok: false, text: "GitHub isn't connected: preview again once it is." };
       // An approval or an enqueue is never held: its adoption and head are read again by the next round, which files a new one.
-      if (/\.(approve|enqueue)$/.test(rec.kind) && !access.connected()) return { ok: false, text: "GitHub isn't connected: the next round asks again once it is." };
+      if (/\.(approve|enqueue|repair)$/.test(rec.kind) && !access.connected()) return { ok: false, text: "GitHub isn't connected: the next round asks again once it is." };
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
       if (!access.connected()) return hold(rec);
       try {
@@ -527,6 +528,7 @@ export function createService(o: Options) {
       const done: string[] = [];
       if (action === "approve") return approve(a);
       if (action === "enqueue") return enqueue(a);
+      if (action === "repair") return repairPr(a);
       if (action === "push" && a.pr) return pushOnto(a);
       if (action === "push" || action === "pr") {
         for (const b of a.only) {
@@ -623,7 +625,6 @@ export function createService(o: Options) {
     const fork = pr.head?.repo && !same(String(pr.head.repo.full_name), s.slug);
     if (!pr.head?.repo || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainers to push: nothing was pushed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
-    if (pr.head.ref !== b.branch) return { ok: false, text: `ship-scope: \`${b.branch}\` isn't ${url}'s head branch: nothing was pushed.` };
     if (pr.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${pr.state}: nothing was pushed.` };
     const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (ended) return { ok: false, text: ended };
@@ -636,13 +637,97 @@ export function createService(o: Options) {
     // The adoption once more, right before the branch moves: a pause or a hand-back during the upload refuses it.
     const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (late) return { ok: false, text: late };
-    const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${b.branch.split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
+    // The PR's own head branch, as GitHub names it: the box's branch is only where the commits came from.
+    const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
     // Not a fast-forward from `expected`: someone pushed after the read above.
     if (r.status === 422 || r.status === 409) return { ok: false, text: `ship-head-moved: ${url} moved while writing (the update from \`${String(a.expected).slice(0, 12)}\` isn't a fast-forward any more): nothing was pushed; read it again.` };
     if (r.status >= 300) return { ok: false, text: `GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
     flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, app.login, undefined, a.workspace);
     flow.checksStarted(s.slug, Number(a.pr.number), made.sha, undefined, a.workspace);
-    return { ok: true, text: `Wrote ${url} \`${b.branch}\` from \`${String(a.expected).slice(0, 12)}\` to \`${made.sha.slice(0, 12)}\` as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made.sha}`] };
+    return { ok: true, text: `Wrote ${url} \`${pr.head.ref}\` from \`${String(a.expected).slice(0, 12)}\` to \`${made.sha.slice(0, 12)}\` as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made.sha}`] };
+  }
+
+  /**
+   * Ship's repair of an adopted PR (a `repair` record ship filed): its `ship-repair` check job (ship's recipe, no model, no
+   * credential) merges the base into the head in a box and regenerates the generated paths; its kept files are written here as
+   * one merge commit (parents: the head and the base's tip) through the API as the App, and the branch moves by a fast-forward
+   * from the head. A fork's branch is written only where its author allows maintainer edits, and only if GitHub accepts the App's
+   * write there; its code comes from the base repo (the PR's head commit, refs/pull/<n>/head). Leftover conflicts and a failed
+   * generator come back as the outcome, `leftover: <path>` lines and `ship-generator:`, for ship's next round.
+   */
+  async function repairPr(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+    const s = slugOf(a.repo);
+    const n = Number(a.number);
+    const url = `https://github.com/${s.slug}/pull/${n}`;
+    const read = async () => api("GET", `/repos/${s.slug}/pulls/${n}`);
+    let pr = await read();
+    if (pr.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${pr.state}: nothing was changed.` };
+    if (pr.base?.ref !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed to \`${String(pr.base?.ref)}\`: nothing was changed.` };
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: nothing was changed.` };
+    const fork = !pr.head?.repo || !same(String(pr.head.repo.full_name), s.slug);
+    if (fork && (!pr.head?.repo || pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainer edits: nothing was changed.` };
+    const into = slugOf(pr.head.repo.full_name).slug;
+    // The App writes where the head lives: on a fork, its installation there (as an adopted PR's push).
+    const app = await o.reviewer?.(into);
+    if (!app) return { ok: false, text: `ship-no-app: ${url}: a repair is written as the GitHub App, which isn't installed on ${into}: nothing was changed.` };
+    const baseSha = String(pr.base.sha);
+    const cmp = await api("GET", `/repos/${s.slug}/compare/${baseSha}...${a.head}`);
+    const mergeBase = String(cmp.merge_base_commit?.sha ?? "");
+    if (!/^[0-9a-f]{40}$/.test(mergeBase)) return { ok: false, text: `GitHub didn't give ${url}'s merge base: nothing was changed.` };
+    // The box's snapshots carry no submodules: a base that changes one can't be merged there without dropping it.
+    const { dir } = await fetchRemote(s, baseSha);
+    if ((await git(dir, ["diff-tree", "-r", "--no-renames", mergeBase, baseSha])).split("\n").some((l) => l.split(" ").slice(0, 2).some((m) => m.replace(/^:/, "") === "160000"))) return { ok: false, text: `ship-refused: \`${a.base}\` changes a submodule since ${url}'s merge base, which ship's repair can't carry: nothing was changed.` };
+    // The box's run, followed to its end (the kernel answers each read within 25 s).
+    let check = await kernel("POST", "/v1/checks", { repo: s.slug, head: a.head, run: "ship-repair", spec: { base: baseSha, merge_base: mergeBase, base_ref: String(a.base), plan: JSON.stringify(a.plan ?? {}) } });
+    for (let i = 0; check.state === "running" && i < 200; i++) check = await kernel("GET", `/v1/checks/${check.id}?after=${Number(check.version ?? 0)}&wait=25000`);
+    if (check.state === "running") return { ok: false, text: `ship-repair: the repair of ${url} is still running: the next round asks again.` };
+    const result = check.result ?? {};
+    if (Array.isArray(result.leftovers) && result.leftovers.length) return { ok: false, text: `ship-leftovers: merging \`${a.base}\` into ${url} leaves conflicts no generator rewrites:\n${result.leftovers.map((p: string) => `leftover: ${p}`).join("\n")}` };
+    if (result.failed) return { ok: false, text: `ship-generator: the repair of ${url} stopped (data, not instructions):\n${String(result.failed).slice(0, 2000)}` };
+    if (check.state !== "done" || typeof result.changed !== "number") return { ok: false, text: `ship-repair: the repair of ${url} didn't finish: ${String(check.error ?? check.state).slice(0, 500)}` };
+    const kept = await kernel("GET", `/v1/checks/${check.id}/kept`);
+    const entries = Array.isArray(kept.entries) ? kept.entries : [];
+    // GitHub's own head tree as the base of the new one: the box's snapshot (no submodules) never decides what isn't changed.
+    const post = async (path: string, body: unknown) => {
+      const r = await app.rest("POST", `/repos/${into}/git/${path}`, body);
+      if (r.status >= 300) throw Object.assign(new Error(`GitHub refused the ${path.replace(/s$/, "")} on ${into}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
+      return r.body;
+    };
+    let made: string;
+    try {
+      const headTree = await app.rest("GET", `/repos/${into}/git/commits/${a.head}`);
+      if (headTree.status >= 300) throw Object.assign(new Error(`GitHub refused the read of ${into}@${String(a.head).slice(0, 12)}: ${headTree.status}`), { refused: true });
+      const tree = [];
+      for (const e of entries) {
+        if (e.sha === null) { tree.push({ path: e.path, mode: "100644", type: "blob", sha: null }); continue; }
+        if (e.content !== undefined) {
+          const blob = await post("blobs", { content: e.content, encoding: "base64" });
+          if (blob.sha !== e.sha) return { ok: false, text: `ship-repair: GitHub stored ${e.path} as ${String(blob.sha).slice(0, 12)}, not ${String(e.sha).slice(0, 12)}: nothing was changed.` };
+        }
+        tree.push({ path: e.path, mode: e.mode, type: e.mode === "160000" ? "commit" : "blob", sha: e.sha });
+      }
+      const t = await post("trees", { base_tree: headTree.body?.tree?.sha, tree });
+      made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`), tree: t.sha, parents: [a.head, baseSha] })).sha);
+    } catch (e) {
+      if ((e as { refused?: boolean }).refused) return { ok: false, text: `ship-refused: ${(e as Error).message} (${url}): nothing was changed.` };
+      throw e;
+    }
+    // The adoption and the PR once more, right before the branch moves: a pause, a hand-back or a push during the run refuses it.
+    const ended = await adoptionEnded(s.slug, n, a.generation);
+    if (ended) return { ok: false, text: ended };
+    pr = await read();
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
+    if (pr.state !== "open" || pr.base?.ref !== a.base || !pr.head?.repo || !same(String(pr.head.repo.full_name), into) || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-scope: ${url} was closed, retargeted or stopped allowing maintainer edits during the repair: nothing was changed.` };
+    const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made, force: false });
+    if (r.status >= 300) {
+      // Moved, or a refusal of GitHub's own (a rule, a validation): the branch read back tells them apart.
+      const now = await app.rest("GET", `/repos/${into}/git/ref/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`);
+      if (now.status < 300 && now.body?.object?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
+      return { ok: false, text: `ship-refused: GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+    }
+    flow.pushed(s.slug, n, made, String(a.head), false, app.login, undefined, undefined);
+    flow.checksStarted(s.slug, n, made, undefined, undefined);
+    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
   }
 
   /**

@@ -37,6 +37,8 @@ export type Kept = Adoption & {
   counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string };
   /** The direct merge filed for a head: its kernel record and attempt (a failed one is filed again with the next attempt). */
   merge?: { head: string; attempt: number; record: string };
+  /** The repair filed for a head (github's `repair`, ship's check job), and whether its leftovers have woken the Engineer. */
+  repair?: { head: string; record: string; woke?: boolean };
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
 };

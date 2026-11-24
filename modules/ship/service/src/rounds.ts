@@ -1,6 +1,6 @@
 // Rounds (spec §3): one decision per pass for an adopted PR, from merge-gate's decide. A round is a settled head: each (head,
-// action) is acted on once. Ship's own effects come first (update-branch, the direct merge); the PR's Engineer task (the same task
-// across rounds) is woken only for a conflict to repair, a red required check or open review findings. Past a cap, or on a step
+// action) is acted on once. Ship's own effects come first (update-branch, the repair check job, the direct merge); the PR's
+// Engineer task (the same task across rounds) is woken only for what the repair leaves, a red required check or review findings. Past a cap, or on a step
 // the repo's settings exclude, the PR goes on hold with the reason, its author assigned once, and the report says so.
 // The loop (loop.ts) calls round() after intake() for each adopted PR it read, with decide's answer and this pass's facts.
 import type { Discovered } from "./discover.ts";
@@ -39,7 +39,6 @@ export interface RoundDeps {
 }
 
 const OPEN = ["review", "owner", "approved", "claimed", "done"];
-const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
 
 /** The repair's plan for the box: the repo's `generated` setting, else what discovery found on the target branch. */
 export function repairPlan(s: ShipSettings, d?: Discovered) {
@@ -86,10 +85,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     await save("on hold");
     return "acted" as const;
   };
-  // A fork's branch can't be fetched into the task's computer yet: work that needs a push to it waits for its author.
-  const forkNote = pr.canModify
-    ? "it needs a change on its fork's branch, which ship can't fetch into the task's computer yet: the contributor can rebase or fix it"
-    : "it needs a change on its fork's branch, and the fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\", rebase or fix it";
+  // A fork's branch takes ship's commits only where its author allows maintainer edits (and GitHub accepts the App's write).
+  const noEdits = "it needs a change on its fork's branch, and the fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\", rebase or fix it";
   const wake = async (kind: string, text: string) => {
     if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`);
     // The kernel keeps 2,000 characters of a wake: a longer one (a very long repair plan) would reach the task cut.
@@ -108,13 +105,16 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   };
 
   const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
-  // A round is a settled head: each (head, action) is taken once; a merge is followed by its record instead.
+  // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
   const key = `${pr.head}:${v.do}`;
-  if (v.do !== "merge" && c.lastRound === key) return "nothing";
+  const followed = v.do === "merge" || (v.do === "repair" && f.dirty === true);
+  if (!followed && c.lastRound === key) return "nothing";
+  // Each new action spends a round; past `rounds` the PR holds.
+  const spend = () => (over(c.rounds, caps.rounds) ? hold(`${c.rounds} rounds (rounds)`) : (c.rounds++, undefined));
   const step = async (): Promise<"acted" | "nothing"> => {
-    if (["repair", "fix_ci", "fix_review"].includes(v.do)) {
-      if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`);
-      c.rounds++;
+    if (["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty)) {
+      const held = spend();
+      if (held) return held;
     }
     switch (v.do) {
       case "repair": {
@@ -124,19 +124,38 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           a = { ...a!, did: [...(a!.did ?? []), `updated the branch with \`${pr.defaultBranch}\``] };
           return "acted";
         }
-        if (pr.fork) return hold(forkNote);
-        const plan = repairPlan(s, f.discovered);
-        return wake("repair", [
-          `${pr.url} conflicts with \`${pr.defaultBranch}\` at head ${pr.head}. Repair it as the \`ship\` skill says: first run`,
-          "",
-          `    aidenhq ship repair ${pr.url} ${pr.head} ${a!.generation} ${pr.defaultBranch} ${b64(plan)}`,
-          "",
-          "It merges the base, takes the base side of generated paths, regenerates them and pushes. Exit 3 lists the conflicts left for you (`leftover: <path>`); exit 4 is a generator failure.",
-        ].join("\n"));
+        if (pr.fork && !pr.canModify) return hold(noEdits);
+        // A conflict: ship's repair check job (no model) first, as github's `repair` effect; the Engineer gets only what it leaves.
+        if (a!.repair?.head === pr.head) {
+          const r = await d.kernel.call("GET", `/v1/writes/${a!.repair.record}`);
+          if (OPEN.includes(String(r.state))) return "nothing";
+          const text = String(r.outcome?.text ?? r.reason ?? "");
+          // Done (or the PR moved meanwhile): the next head is the next round's.
+          if (r.state === "done" || /^ship-head-moved/.test(text)) return "nothing";
+          if (r.state !== "failed") return hold(`ship's repair was ${r.state}: ${text.slice(0, 300)}`);
+          const left = text.split("\n").filter((l) => l.startsWith("leftover: ")).length;
+          if (/^ship-leftovers/.test(text) || /^ship-generator/.test(text)) {
+            if (a!.repair.woke) return "nothing";
+            a = { ...a!, repair: { ...a!.repair, woke: true } };
+            return wake("repair", [
+              /^ship-leftovers/.test(text)
+                ? `${pr.url} conflicts with \`${pr.defaultBranch}\` at head ${pr.head}, and ship's repair left ${left} conflict(s) no generator rewrites (its outcome is on record ${a!.repair!.record}).`
+                : `${pr.url} conflicts with \`${pr.defaultBranch}\` at head ${pr.head}, and ship's repair stopped on a generator (its outcome is on record ${a!.repair!.record}).`,
+              `Resolve it as the \`ship\` skill says: merge \`origin/${pr.defaultBranch}\` in, resolve, regenerate the generated files, one commit.`,
+              push(),
+            ].join("\n"));
+          }
+          return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`);
+        }
+        const held = spend();
+        if (held) return held;
+        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.repair", ...(a!.task ? { task: a!.task } : {}), args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, plan: repairPlan(s, f.discovered) } });
+        a = { ...a!, repair: { head: pr.head, record: String(r.id) }, did: [...(a!.did ?? []), `ran the repair (merge \`${pr.defaultBranch}\`, regenerate) at \`${pr.head.slice(0, 12)}\``] };
+        return "acted";
       }
       case "fix_ci": {
         if (!s.fix.includes("ci")) return hold("a required check is red, and this repo's `fix` setting excludes CI");
-        if (pr.fork) return hold(forkNote);
+        if (pr.fork && !pr.canModify) return hold(noEdits);
         const failing = f.failing ?? [];
         const onBase = new Set(f.onBase ?? []);
         const own = failing.filter((n) => !onBase.has(n));
@@ -157,7 +176,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "fix_review": {
         if (!s.fix.includes("review")) return hold("review findings are open, and this repo's `fix` setting excludes review");
-        if (pr.fork) return hold(forkNote);
+        if (pr.fork && !pr.canModify) return hold(noEdits);
         if (over(c.review, caps.review_rounds)) return hold(`${c.review} review fix rounds (review_rounds)`);
         c.review++;
         return wake("fix_review", `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.\n${push()}`);

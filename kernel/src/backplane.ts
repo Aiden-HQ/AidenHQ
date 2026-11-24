@@ -391,7 +391,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
   precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
   /** A repo's bundle for a job's `aidenhq clone`, under its dispatcher's clone grant (codehost.ts bundle): the code host's answer. */
-  repoBundle?: (module: string, repo: string) => Promise<Answer>;
+  repoBundle?: (module: string, repo: string, head?: string) => Promise<Answer>;
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
   healthProbe?: (b: Record<string, unknown>) => Promise<{ ok: boolean; ms: number; error?: string }>;
   healthKey?: () => string;
@@ -621,13 +621,13 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (m[0] === "clone") {
             // The repo as a git bundle; the box clones it, or fetches it into the clone it has, itself.
             if (!repoBundle) throw fail(503, "unavailable", "aidenhq clone is off");
-            let c: { repo: string; module: string };
+            let c: { repo: string; module: string; head?: string };
             try { c = jobTools.clone(bearer(req), b); } catch (e) {
               const j = e as { name?: string; status?: number; code?: string; message: string };
               if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
               throw e;
             }
-            const out = await repoBundle(c.module, c.repo).catch((e: { status?: number; message: string }) => { throw fail(e.status ?? 500, "no-repo", e.message); });
+            const out = await repoBundle(c.module, c.repo, c.head).catch((e: { status?: number; message: string }) => { throw fail(e.status ?? 500, "no-repo", e.message); });
             if ((out.statusCode ?? 502) >= 300) {
               let said = "";
               for await (const x of out) said += x;
