@@ -158,18 +158,30 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
     if (req.url === "/v1/writes") { merges.push(JSON.parse(body)); const [status, answer] = merge(); return res.writeHead(status).end(JSON.stringify(answer)); }
     if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify(record()));
+    // A task close is recorded, and its task's status changes, exactly as the kernel's own close would: an assertion that a task
+    // was not closed must observe the request, never only a readback the fake would answer from its seed.
+    const close = String(req.url).match(/^\/v1\/tasks\/([^/]+)\/close$/);
+    if (close) {
+      closed.push(decodeURIComponent(close[1]));
+      const t = tasks?.[decodeURIComponent(close[1])];
+      if (t) t.status = String(JSON.parse(body)?.status ?? "done");
+      return res.writeHead(200).end(JSON.stringify({}));
+    }
     // `tasks` is the kernel's task table for the tests that need a second, real task (a successor): one task's own status and
-    // brief, by identifier. Without it every task read is the one `taskStatus` under test.
+    // brief, by identifier. A miss under a table answers as the kernel's work read does for no task (a null status), so a test
+    // whose watcher read the wrong identifier cannot pass on the default. Without a table every read is the `taskStatus` under test.
     const asked = String(req.url).match(/^\/v1\/work\?task=([^&]+)/)?.[1];
     if (req.url.startsWith("/v1/work")) {
       const t = tasks && asked ? tasks[decodeURIComponent(asked)] : undefined;
-      return res.writeHead(200).end(JSON.stringify({ status: t?.status ?? taskStatus, ...(t?.description ? { description: t.description } : {}), records }));
+      if (tasks) return res.writeHead(200).end(JSON.stringify({ status: t?.status ?? null, ...(t?.description ? { description: t.description } : {}), records }));
+      return res.writeHead(200).end(JSON.stringify({ status: taskStatus, records }));
     }
     res.writeHead(200).end(JSON.stringify({}));
   });
   t.after(() => kernel.s.close());
   let open = [];
   const sent = []; // every call's body: a close names the task it was decided for, a delete carries no such field
+  const closed = []; // task ids the kernel was asked to close: an assertion about one must see the request, not a readback
   const reran = new Set(); // job ids this head's re-run was asked for: GitHub posts their next attempt
   const jobProbeOpts = []; // the opts of each Actions job read: a probe must carry a deadline
   const headRunsOpts = []; // the opts of each REST check-runs listing: the recovery paths' first read carries one too
@@ -240,7 +252,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate, ...(settings ? { settings } : {}) });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, merges, sent, watch, cacheDir, kernelUrl: kernel.url, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
+  return { woke, gh, merges, sent, closed, watch, cacheDir, kernelUrl: kernel.url, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -671,9 +683,11 @@ test("a cancelled task's PR with a successor task naming it is neither closed no
   assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/12").length, 0, "no close for the successor's PR, this tick or the next");
   assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b12"), "no branch delete for the successor's PR");
   assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/issues/12/comments").length, 1, "left open for the successor, noted once");
-  // And the successor's own task is untouched: nothing closed it or woke it to explain a PR that is no longer there.
+  // And the successor's own task is untouched: no close request named it, it is still open, and it was not woken about a PR
+  // that is no longer there. The close is asserted as the request the kernel received, not only as a readback.
+  assert.deepEqual(c.closed, [], "no task was asked to close");
   const still = await (await fetch(`${c.kernelUrl}/v1/work?task=ACME-13`)).json();
-  assert.equal(still.status, "in_progress");
+  assert.equal(still.status, "in_progress", "the successor is still open");
   assert.deepEqual(c.woke.filter((w) => w.task === "ACME-13").length, 0, "the successor is not woken about its own open PR");
 });
 
