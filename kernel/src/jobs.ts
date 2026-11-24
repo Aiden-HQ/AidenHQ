@@ -164,14 +164,16 @@ const beforeHeader = (text: string, from: number, to: number) => {
  * A line's prefix is capped at QUOTE_PREFIX, so a long line costs the same as a short one.
  */
 const QUOTE_PREFIX = 256;
-const quoted = (text: string, from: number, to: number, lineStart: number, lineEnd: number, limit = text.length) => {
+const quoted = (text: string, from: number, to: number, lineStart: number, lineEnd: number,
+  firstText: number, lastText: number, limit = text.length) => {
   if (from - lineStart > QUOTE_PREFIX) return false;
   const prefix = text.slice(lineStart, from);
   if (!/^[ \t>]*$/.test(prefix) || !(prefix.includes(">") || /^(?:\t| {4})/.test(prefix))) return false;
   const end = Math.min(lineEnd, limit);
   let i = to;
   while (i < end && PAD.test(text[i]!)) i++;
-  return i === end;
+  // A quote line shows something else too: a marker that is the whole reply is a leak, whatever its indentation.
+  return i === end && (firstText < from || lastText > to);
 };
 /** The index at which each line starts, so a line start costs a lookup rather than a scan. */
 const lineStarts = (text: string) => {
@@ -189,6 +191,7 @@ const lineStarts = (text: string) => {
 export function stripSentinels(text: string): string {
   let from = 0, to = text.length;
   const starts = lineStarts(text);
+  const firstText = skipStart(text, 0, text.length), lastText = skipEnd(text, 0, text.length);
   const endOf = (line: number) => line + 1 < starts.length ? starts[line + 1]! - 1 : text.length;
   let line = 0;
   // The line that holds `at`, as its start and end; both edges only move inward, so one cursor serves each.
@@ -202,18 +205,19 @@ export function stripSentinels(text: string): string {
     const reach = after ?? hit?.length;
     if (reach === undefined) break;
     // A reply that opens by showing a marker or header on a quoted line ("    <|im_end|>") is text, not a leak.
-    if (quoted(text, at, at + reach, ...leadLine(at), to)) break;
+    if (quoted(text, at, at + reach, ...leadLine(at), firstText, lastText, to)) break;
     from = at + reach;
   }
   // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
   for (;;) {
     const head = beforeHeader(text, from, to);
     // A header and role a quoted line shows ("> <|im_start|>assistant") are the reply's example, not a leak.
-    if (head !== undefined && !quoted(text, head, skipEnd(text, from, to), ...tailLine(head), to)) to = head;
+    if (head !== undefined && !quoted(text, head, skipEnd(text, from, to), ...tailLine(head), firstText, lastText, to)) to = head;
     else {
       const end = skipEnd(text, from, to);
       const hit = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length)
-        && text[end - s.length - 1] !== "\\" && !quoted(text, end - s.length, end, ...tailLine(end - s.length), to));
+        && text[end - s.length - 1] !== "\\"
+        && !quoted(text, end - s.length, end, ...tailLine(end - s.length), firstText, lastText, to));
       if (!hit) break;
       to = end - hit.length;
     }
@@ -222,7 +226,11 @@ export function stripSentinels(text: string): string {
   // character as the model wrote it, and one a sentinel opened keeps its first line's indentation (a code block it sat above).
   const start = skipStart(text, from, to), end = skipEnd(text, from, to);
   if (start >= end) return "";
+  // Nothing removed at either edge: the reply as the model wrote it, padding and all.
   if (from === 0 && to === text.length) return text;
+  // Only the trailing edge changed: the reply's own start, its first line's indentation included, is left as written.
+  if (from === 0) return text.slice(0, end);
+  // A leading sentinel went: the reply starts at its first line, so a code block it sat above keeps its indentation.
   const nl = text.lastIndexOf("\n", start - 1);
   return text.slice(nl >= from ? nl + 1 : start, end);
 }
