@@ -60,7 +60,7 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
   const covered = (p: string) => commands.some((c) => c.dir === "." || p.startsWith(`${c.dir.replace(/\/+$/, "")}/`));
   const generated = globs.length ? g(["diff", "--name-only", "--diff-filter=U", "-z", "--", ...globs.map((x) => `:(glob)${x}`)]).split("\0").filter(Boolean) : [];
-  const relock: { dir: string; cmd: string }[] = [];
+  const relock: { dir: string; cmd: string; path: string }[] = [];
   // Every path the repair decides (a conflict it resolved, a file a generator touched) is named in the result, even when it ends
   // as the head had it: github re-makes the merge itself and takes these, and only these, from the box.
   const decided = new Set<string>();
@@ -69,7 +69,7 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
     if (lock ? !LOCK_CMD[name(p)] : !(generated.includes(p) && covered(p))) continue;
     if (ok(["checkout", "--theirs", "--", p])) g(["add", "--", p]); else g(["rm", "-q", "--", p]);
     decided.add(p);
-    if (lock) relock.push({ dir: dirOf(p), cmd: LOCK_CMD[name(p)]! });
+    if (lock) relock.push({ dir: dirOf(p), cmd: LOCK_CMD[name(p)]!, path: p });
   }
   const left = unmerged();
   if (left.length) return { result: { leftovers: left } };
@@ -82,9 +82,11 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
     }
   }
   g(["add", "-A"]);
-  // A lockfile the generators only re-spaced is put back: whitespace churn is noise in the PR.
+  // A lockfile the generators changed is put back unless it conflicted (github takes a lockfile only then), and so is one they
+  // only re-spaced: whitespace churn is noise in the PR.
+  const relocked = new Set(relock.map((r) => r.path));
   for (const p of g(["diff", "--cached", "--name-only", "-z", before]).split("\0").filter((p) => LOCKS.includes(name(p)))) {
-    if (ok(["diff", "--quiet", "--ignore-all-space", "--ignore-blank-lines", before, "--", p])) g(["checkout", before, "--", p]);
+    if (!relocked.has(p) || ok(["diff", "--quiet", "--ignore-all-space", "--ignore-blank-lines", before, "--", p])) g(["checkout", before, "--", p]);
   }
   g(["add", "-A"]);
   const after = g(["write-tree"]);

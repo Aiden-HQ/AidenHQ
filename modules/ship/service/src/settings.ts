@@ -2,7 +2,7 @@
 // loosens. Every knob is a per-repo setting with no floor in code; `null` caps are unlimited (owner, 2026-11-24).
 type Dict = Record<string, unknown>;
 
-export const CAP_KEYS = ["wakes_per_head", "ci_rounds", "same_check_heads", "review_rounds", "rounds", "usd", "requeue_on_timeout"] as const;
+export const CAP_KEYS = ["wakes_per_head", "ci_rounds", "same_check_heads", "rounds", "usd", "requeue_on_timeout"] as const;
 export type Caps = Record<(typeof CAP_KEYS)[number], number | null>;
 export const HANDOFF = ["none", "label", "all"] as const;
 export const REBASE = ["conflict", "behind"] as const;
@@ -30,7 +30,7 @@ const PROTECTED = ["**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", 
 
 const CAUTIOUS: ShipSettings = {
   enabled: true, handoff: "label", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
-  caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, review_rounds: 3, rounds: 30, usd: 5, requeue_on_timeout: 1 },
+  caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, rounds: 30, usd: 5, requeue_on_timeout: 1 },
   approve: "observe", safe: { max_lines: 1200, max_files: 50, deny: [...PROTECTED, "**/migrations/**", "**/auth/**", "**/Dockerfile*", "**/docker-compose*", "**/*.tf", "infra/**", "**/.env*", "**/config/**"] }, merge: "ready", stop_label: "ship:stop",
 };
 const FULL: ShipSettings = {

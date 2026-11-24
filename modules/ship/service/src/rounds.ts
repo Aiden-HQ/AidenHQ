@@ -186,7 +186,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       case "fix_review": {
         if (!s.fix.includes("review")) return hold("review findings are open, and this repo's `fix` setting excludes review");
         if (pr.fork && !pr.canModify) return hold(noEdits);
-        if (over(c.review, caps.review_rounds)) return hold(`${c.review} review fix rounds (review_rounds)`);
+        // How many review and fix cycles a PR gets is code review's (its push_rounds): ship fixes what each review finds.
         c.review++;
         return wake("fix_review", `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.\n${push()}`);
       }

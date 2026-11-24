@@ -171,6 +171,9 @@ export function decide(data: Json, head: string, ship?: ShipContext): { do: Acti
     });
     const red = judged.filter((c) => !(c.ok ?? c.success) && !c.pending);
     if (red.length) return { do: "fix_ci", why: `${red.length} required check(s) failed on its head` };
+    // A required name nothing reported on this head (renamed, path-filtered) is named: GitHub won't merge until it reports.
+    const missing = ship.required.filter((name) => !ship.checks.some((c) => c.name === name));
+    if (missing.length && !ship.checks.some((c) => c.pending)) return { do: "wait", why: `required check(s) never reported on its head: ${missing.map((m) => `\`${m.replace(/`/g, "")}\``).join(", ")} (a person reruns or fixes the workflow)` };
     if (judged.some((c) => c.pending)) return { do: "wait", why: `${judged.filter((c) => c.pending).length} required check(s) still running on its head` };
   } else {
     const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
