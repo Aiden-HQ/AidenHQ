@@ -53,4 +53,6 @@ test("ship-repair: generated conflicts regenerated into the files on top of the 
   assert.deepEqual(run(clash, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "cat src/*.txt > gen/out.txt" }] }).result, { leftovers: ["src/a.txt"] });
   // A failed generator stops it, with the command's own words.
   assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "echo broken >&2; exit 3" }] }).result as any).failed), /exited 3: broken/);
+  // A tool the box doesn't have is said first, plainly (ship holds and suggests the repo's own workflow).
+  assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "webrpc-gen-not-here -schema x.ridl" }] }).result as any).failed), /^toolchain missing: webrpc-gen-not-here\n/);
 });

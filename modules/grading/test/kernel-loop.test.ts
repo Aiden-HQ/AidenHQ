@@ -64,8 +64,8 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   assert.equal(grades.get("t1").state, "satisfied");
   // Flow: each attempt is a requested/verdict pair on its own subject, and the reopen is a grade_retry wait that the next attempt ends.
   assert.deepEqual(facts.map((f) => [f.type, f.subject, f.version, f.data.pass ?? f.data.reason]), [
-    ["grade.requested", "grade:t1:1", "1", undefined], ["grade.verdict", "grade:t1:1", "1", false], ["work.waiting", "task:t1", "1", "grade_retry"],
-    ["work.resumed", "task:t1", "1", "grade_retry"], ["grade.requested", "grade:t1:2", "2", undefined], ["grade.verdict", "grade:t1:2", "2", true],
+    ["grade.requested", "grade:t1:1:1", "1:1", undefined], ["grade.verdict", "grade:t1:1:1", "1:1", false], ["work.waiting", "task:t1", "1", "grade_retry"],
+    ["work.resumed", "task:t1", "1", "grade_retry"], ["grade.requested", "grade:t1:3:2", "3:2", undefined], ["grade.verdict", "grade:t1:3:2", "3:2", true],
   ]);
   assert.ok(facts.every((f) => f.task === "t1"));
 });
@@ -401,33 +401,216 @@ function heldKernel(issue, calls) {
 
 test("a grader that keeps failing keeps its hold, then closes the task done, ungraded, and tells its parent", async (t) => {
   let n = 0;
+  const models = [];
   const gateway = http.createServer(async (req, res) => {
-    for await (const _ of req);
+    let body = "";
+    for await (const c of req) body += c;
+    models.push(JSON.parse(body).model);
     n++;
     res.writeHead(502).end("upstream down");
   }).listen(0);
   t.after(() => gateway.close());
   const issue = { id: "t4", identifier: "WOR-4", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
-  const calls = { resolve: [], wake: [] };
+  const calls = { resolve: [], wake: [] }, facts = [];
   const { kernel } = heldKernel(issue, calls);
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
   grades.file("t4", ["says it"], { kind: "report", ref: "" });
   completionGate(grades, "t4", "finish_turn");
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
   const realNow = Date.now;
   let skew = 10_000;
   Date.now = () => realNow() + skew;
   t.after(() => { Date.now = realNow; });
-  for (let i = 0; i < 5; i++) { await loop.runGrades(); skew += 2 * 60 * 60_000; }
-  assert.equal(n, 5, "a 5xx is never retried on the next model, and every pass got its token");
+  for (let i = 0; i < 5; i++) {
+    await loop.runGrades();
+    const posted = calls.wake.length;
+    await loop.runGrades(); // the row is not due again before its retry wait: nothing is asked or posted
+    assert.equal(calls.wake.length, posted, `pass ${i + 1}: a row waiting out its retry ladder posts nothing more`);
+    assert.equal(models.length, 2 * (i + 1), `pass ${i + 1}: one failed pass asks both models once`);
+    skew += 2 * 60 * 60_000;
+  }
+  assert.equal(n, 10, "a 5xx falls over to the next model: both are asked on every one of the 5 passes");
+  assert.deepEqual(models.slice(0, 2), ["~openai/gpt-luna-latest", "~z-ai/glm-flash-latest"], "Luna first, then GLM Flash");
+  // Each of the first four failed passes leaves one note on the task, saying why and when the ladder asks again; the fifth
+  // settles the row satisfied and closes it, so its note is the close's, not a retry note.
+  const notes = calls.wake.filter((w) => w.task === "t4");
+  assert.equal(notes.length, 4, "one note per failed pass, and none for the pass that closes");
+  assert.ok(notes.every((w) => /Grading failed; retrying/.test(w.text) && /OpenRouter 502/.test(w.text)), "the note names the grader's reason");
+  assert.deepEqual(notes.map((w) => /the grader runs again in (\d+) minutes?/.exec(w.text)?.[1]), ["1", "5", "15", "60"], "and the retry ladder's wait");
+  assert.equal(new Set(notes.map((w) => w.id)).size, 4, "each pass's note carries its own id, so a retried post lands once");
+  assert.ok(notes.every((w) => w.quiet === true), "the note wakes nobody: a failed pass has nothing for the agent to act on");
+  assert.ok(notes.every((w) => !w.text.includes("aidenhq:grader")), "the kernel writes the grader's marker itself; the note's text carries no escaped copy");
+  // Each failed pass is a grade_retry wait on the task, as a rejected version is: one fact per pass, not one per subject version.
+  const waits = facts.filter((f) => f.type === "work.waiting" && f.task === "t4" && f.data.reason === "grade_retry");
+  assert.equal(waits.length, 4);
+  assert.equal(new Set(waits.map((f) => f.subject)).size, 1, "all four waits are on the task's one subject");
+  assert.equal(new Set(waits.map((f) => f.version)).size, 4, "and each pass has its own version, so the log keeps all four");
+  // A retry after a failed pass keeps the attempt (nothing was rejected) but moves the round, so its stage facts are their own:
+  // keyed by the attempt alone they would reuse the failed pass's ids and Flow would drop them as duplicates.
+  const requested = facts.filter((f) => f.type === "grade.requested" && f.task === "t4");
+  assert.equal(requested.length, 5, "every pass asks the grader once");
+  assert.equal(new Set(requested.map((f) => f.subject)).size, 5, "and each pass's request is its own stage");
+  assert.equal(new Set(requested.map((f) => f.version)).size, 5, "the log keeps all five");
+  const verdicts = facts.filter((f) => f.type === "grade.verdict" && f.task === "t4");
+  assert.equal(new Set(verdicts.map((f) => f.subject)).size, 5, "so is each verdict");
+  // Each wait is ended by the next pass's resumed fact on the same subject: a retrying task is not counted as waiting while it
+  // is being graded again.
+  const resumed = facts.filter((f) => f.type === "work.resumed" && f.task === "t4");
+  assert.equal(resumed.length, 4, "passes 2-5 each resume the wait the pass before them left");
+  assert.ok(waits.slice(0, 4).every((w, i) => resumed[i].version === w.version), "each resume names the wait it ends");
   assert.deepEqual(calls.resolve, ["ok"]);
   assert.equal(issue.status, "done");
-  assert.equal(calls.wake.length, 1);
-  assert.equal(calls.wake[0].task, "p1");
-  assert.match(calls.wake[0].text, /WOR-4 .* is done, ungraded: /);
+  assert.equal(calls.wake.length, 5, "four failed-pass notes and one parent notice");
+  assert.equal(calls.wake.at(-1).task, "p1");
+  assert.match(calls.wake.at(-1).text, /WOR-4 .* is done, ungraded: /);
   await loop.runGrades();
-  assert.equal(n, 5, "a closed task is not graded again");
+  assert.equal(n, 10, "a closed task is not graded again");
+});
+
+test("a grading-failed note is posted for the pass it reports, and dropped once the row has moved on", async () => {
+  const issue = { id: "t9", identifier: "WOR-9", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["says it"];
+  grades.file("t9", rubric, { kind: "report", ref: "" });
+  const row = grades.record("t9", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "report", ref: "" }, 0) });
+  assert.equal(row.state, "grading_failed");
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const step = (round) => JSON.stringify([{ do: "note", note: "**Grading failed; retrying.** (the grader failed).", id: "grade-retry-t9-1", round }]);
+  // A note queued for a round the row has moved past (a later pass, or an amendment) is stale: it is dropped, not posted.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t9', ?)").run(step(row.round + 5));
+  await loop.runGrades();
+  assert.equal(calls.wake.length, 0, "a note for another round is not posted");
+  // The row's own pass is still grading_failed: its note lands, carrying the id a retried post is deduped on.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t9', ?)").run(step(row.round));
+  await loop.runGrades();
+  assert.equal(calls.wake.length, 1);
+  assert.equal(calls.wake[0].task, "t9");
+  assert.equal(calls.wake[0].id, "grade-retry-t9-1");
+  assert.equal(calls.wake[0].quiet, true, "posted as a quiet note, never a wake");
+});
+
+test("a deferred failed-pass note says what is left of the retry when it is posted, not when it was queued", async () => {
+  // The note's post can be delayed (a 502 from the kernel). Its text is rendered when it lands, from the ladder's due time, so a
+  // note that waited out the first minute does not promise a retry that has already happened.
+  const issue = { id: "t32", identifier: "WOR-32", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["says it"];
+  grades.file("t32", rubric, { kind: "report", ref: "" });
+  const row = grades.record("t32", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "report", ref: "" }, 0) });
+  const realNow = Date.now;
+  let now = Date.parse(row.failedAt!);
+  Date.now = () => now;
+  try {
+    const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+    const step = (retryAt) => JSON.stringify([{ do: "note", note: "**Grading failed; retrying.** (stale).", id: "grade-retry-t32-1", round: row.round, retryAt,
+      render: { g: { model: "m", criteria: [], reason: "the grader failed (OpenRouter 502)" }, rubric, version: "v1" } }]);
+    // The post was tried when the note was queued, failed, and is retried 50 s into the ladder's one-minute wait.
+    now += 50_000;
+    db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t32', ?)").run(step(new Date(Date.parse(row.failedAt!) + 60_000).toISOString()));
+    await loop.runGrades();
+    assert.equal(calls.wake.length, 1);
+    assert.match(calls.wake[0].text, /the grader runs again in 1 minute/, "50 s left of the wait, not the 1 minute the note was queued with");
+    // Posted after the wait is spent: it says the retry is due now rather than promising a minute that has passed.
+    now += 30_000;
+    db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t32', ?)").run(step(new Date(Date.parse(row.failedAt!) + 60_000).toISOString()));
+    await loop.runGrades();
+    assert.equal(calls.wake.length, 2);
+    assert.match(calls.wake[1].text, /the grader runs again shortly/);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("an amendment that replaces the failed round ends its retry wait", async () => {
+  // The owner amends the rubric while the grader waits out the ladder. The row restarts `open` at a new round, so the failed
+  // round's pass is never retried; without this, Flow reports grade_retry for the task forever. The amended pass here finds its
+  // evidence unavailable (an app that is not deployed), which is exactly the branch that leaves the row waiting on something
+  // other than the retry ladder.
+  const issue = { id: "t33", identifier: "WOR-33", title: "app", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] }, facts = [];
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["the app is deployed"];
+  grades.file("t33", rubric, { kind: "app", ref: "roadmap-keeper" });
+  const row = grades.record("t33", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "app", ref: "roadmap-keeper" }, 0) });
+  // No row is due: the amended row is open and not resumed (the agent is still working), so no pass will look at it. The wait
+  // must end anyway.
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
+  // The failed pass left its wait (the loop recorded it when it queued the note).
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('grade-wait:t33', ?)").run(JSON.stringify({ round: row.round }));
+  grades.amend("t33", ["the app is deployed", "and it serves the page", "and the page loads"], { by: "agent:cos", delegator: "agent:cos" });
+  assert.equal(grades.get("t33").state, "open");
+  assert.equal(grades.get("t33").resume, false, "not resumed: nothing grades it until the agent finishes");
+  await loop.runGrades();
+  const resumed = facts.filter((f) => f.type === "work.resumed" && f.task === "t33");
+  assert.equal(resumed.length, 1, "the failed round's wait is resumed");
+  assert.equal(resumed[0].version, `round:${row.round}`, "naming the round the failed pass left");
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'grade-wait:t33'").get()?.v ?? "", "", "and the marker is cleared");
+  // A row still on the failed round keeps its wait: the ladder has not asked again yet.
+  const again = grades.record("t33", { version: "v2", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(["the app is deployed", "and it serves the page", "and the page loads"], { kind: "app", ref: "roadmap-keeper" }, 1) });
+  assert.equal(again.state, "grading_failed");
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('grade-wait:t33', ?)").run(JSON.stringify({ round: again.round }));
+  await loop.runGrades();
+  assert.equal(facts.filter((f) => f.type === "work.resumed" && f.task === "t33").length, 1, "a row still failed keeps its wait open");
+  assert.ok(db.prepare("SELECT v FROM loop_state WHERE k = 'grade-wait:t33'").get()?.v, "and its marker stays");
+});
+
+test("a failed pass whose verdict the store dropped posts no note and no wait", async () => {
+  // The store drops a verdict computed on a filing or round that moved while the pass ran, and answers the row as it stands.
+  // The note is worded from this pass's verdict and keyed on the round it produced, so a dropped pass must not post it or
+  // claim a wait: the next pass grades what the row holds now, and its own note reports that pass.
+  const issue = { id: "t30", identifier: "WOR-30", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] }, facts = [];
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["says it"];
+  grades.file("t30", rubric, { kind: "report", ref: "" });
+  const row = grades.record("t30", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "report", ref: "" }, 0) });
+  assert.equal(row.state, "grading_failed");
+  const gateway = http.createServer(async (req, res) => { for await (const _ of req); res.writeHead(502).end("upstream down"); }).listen(0);
+  const drop = async (m, p, b) => {
+    // The store took nothing: its answer is the row as it stood before the pass, and says so.
+    if (m === "POST" && p === "/internal/grades/t30/verdict") return { ...grades.get("t30"), applied: false };
+    return runner(m, p, b);
+  };
+  const loop = createKernelGradeLoop({ db, runner: drop, due: () => ({ grades: [grades.get("t30")], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
+  try {
+    await loop.runGrades();
+  } finally {
+    gateway.close();
+  }
+  assert.deepEqual(calls.wake, [], "a dropped pass posts no note");
+  assert.equal(facts.filter((f) => f.type === "work.waiting").length, 0, "and claims no wait");
+  assert.equal(grades.get("t30").round, row.round, "the row is where it was");
+});
+
+test("a retry that finds its evidence unavailable still ends the failed pass's wait", async () => {
+  // The resumed fact is emitted before the pass can branch: a retry whose evidence is not there yet goes back to
+  // awaiting_evidence, and a wait left open would have Flow report grade_retry for a task that left the ladder.
+  const issue = { id: "t31", identifier: "WOR-31", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] }, facts = [];
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["the app is deployed"];
+  grades.file("t31", rubric, { kind: "app", ref: "roadmap-keeper" });
+  const row = grades.record("t31", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "app", ref: "roadmap-keeper" }, 0) });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [grades.get("t31")], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
+  await loop.runGrades();
+  const resumed = facts.filter((f) => f.type === "work.resumed" && f.task === "t31");
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0].version, `round:${row.round}`, "it names the wait the failed pass left");
+  assert.equal(grades.get("t31").state, "awaiting_evidence", "the retry is waiting for evidence, not on the retry ladder");
+  assert.deepEqual(calls.wake, [], "nothing is posted on the task for a wait");
 });
 
 /**

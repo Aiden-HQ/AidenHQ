@@ -59,6 +59,8 @@ export interface Auth {
   status(): AuthStatus;
   /** Verifies the sign-in with the vendor before its status is read (a token's cheap authenticated read, kept briefly). */
   check?(): Promise<void>;
+  /** Whether the vendor refuses the current token right now (its own cheap authenticated read): a 401 or a refused refresh proves nothing alone. Absent: the connection can't tell. */
+  refused?(): Promise<boolean>;
   mark(state: "ok" | "expired", detail?: string): void;
   signedIn(): boolean;
   signIn?: SignInFlow;
@@ -100,6 +102,10 @@ export interface OAuthOptions {
    */
   device?: { endpoint: string; client_id: string; scopes?: string[] };
   fetchImpl?: typeof fetch;
+  /** Whether the vendor still answers this access token (false only when it refuses it). With it, a refused refresh or a stray 401 never marks a working token expired, and an expired mark heals itself once the token answers. */
+  accepts?: (accessToken: string) => Promise<boolean>;
+  /** How often an expired mark re-asks `accepts` (default 30 s). */
+  healMs?: number;
   /** How a device sign-in waits between polls (tests: no wait). */
   wait?: (ms: number) => Promise<void>;
 }
@@ -179,9 +185,28 @@ export function oauth(o: OAuthOptions): Auth {
     };
   }
 
+  /** The vendor refuses the current token: true when `accepts` says so, or can't be asked (the old rule); a vendor that errors isn't a refusal. */
+  async function refused(): Promise<boolean> {
+    if (!o.accepts) return true;
+    try {
+      return !(await o.accepts(load().access_token));
+    } catch {
+      return false;
+    }
+  }
+
+  // An expired mark is a claim about the token: while it stands, ask the vendor again, and a token that answers is signed in
+  // (no container restart). A reconnect marks ok itself.
+  let healer: ReturnType<typeof setInterval> | undefined;
   function mark(state: "ok" | "expired", detail?: string) {
+    if (state === "ok" && healer) { clearInterval(healer); healer = undefined; }
     if (status.state === state && status.detail === detail) return;
     status = { state, since: new Date().toISOString(), ...(detail ? { detail } : {}) };
+    if (state === "expired" && o.accepts && !healer) {
+      // Only a confirmed answer heals: a timeout or a vendor 5xx (accepts throws) leaves the mark.
+      healer = setInterval(() => void Promise.resolve().then(() => o.accepts!(load().access_token)).then((ok) => { if (ok && status.state === "expired") mark("ok"); }, () => undefined), o.healMs ?? 30_000);
+      healer.unref?.();
+    }
   }
 
   function load(): StoredToken {
@@ -205,7 +230,9 @@ export function oauth(o: OAuthOptions): Auth {
     const endpoint = t.token_endpoint ?? o.endpoints?.token;
     const clientId = t.client_id ?? o.client?.()?.id;
     if (!t.refresh_token || !endpoint || !clientId) {
-      mark("expired", "the sign-in has no refresh token");
+      const gone = await refused();
+      if (token !== t) return token!;
+      if (gone) mark("expired", "the sign-in has no refresh token");
       throw new AuthError(`${o.name} token expired and can't be refreshed (Reconnect on the board)`);
     }
     const body = new URLSearchParams({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: clientId });
@@ -222,7 +249,13 @@ export function oauth(o: OAuthOptions): Auth {
       next = parse(answer);
     } catch (err) {
       // A refusal (invalid_grant and the like) needs the owner; a 5xx is the vendor's problem and may pass.
-      if (res.status < 500) mark("expired", String((err as Error).message));
+      // A refused refresh on a token the vendor still answers (a rotated refresh token reused after a restart) is not an expiry.
+      if (res.status < 500) {
+        const gone = await refused();
+        // A reconnect saved a newer grant while the probe was in flight: its verdict is on the old token.
+        if (token !== t) return token!;
+        if (gone) mark("expired", String((err as Error).message));
+      }
       throw err;
     }
     save({ ...t, ...next, refresh_token: next.refresh_token ?? t.refresh_token, scope: next.scope ?? t.scope });
@@ -417,7 +450,15 @@ export function oauth(o: OAuthOptions): Auth {
   return {
     async headers() {
       const t = load();
-      const access = !t.expires_at || t.expires_at - 120_000 > Date.now() ? t.access_token : (await refresh()).access_token;
+      let access = t.access_token;
+      if (t.expires_at && t.expires_at - 120_000 <= Date.now()) {
+        try {
+          access = (await refresh()).access_token;
+        } catch (err) {
+          // A refused refresh is no reason to drop a token that has not run out and still answers.
+          if (status.state === "expired" || t.expires_at <= Date.now()) throw err;
+        }
+      }
       return { ...o.headers, authorization: `Bearer ${access}` };
     },
     async refresh() {
@@ -429,6 +470,7 @@ export function oauth(o: OAuthOptions): Auth {
       return { ...status, ...(scope ? { scope } : {}) };
     },
     mark,
+    ...(o.accepts ? { refused } : {}),
     signedIn: () => existsSync(tokenPath),
     signIn,
     ...(device ? { device } : {}),

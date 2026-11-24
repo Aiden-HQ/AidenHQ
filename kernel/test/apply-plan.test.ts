@@ -217,3 +217,37 @@ test("the owner's settings change is capped like anyone's, unless saved in his b
   await settle();
   assert.equal(k.h.lands.length, 1, "landed on his save");
 });
+
+// The test-user sign-in identity (docs/design/access.md, "Test-user sign-in"): the apply that names one is the owner's own
+// Tier 2 card (WOR-11491), and its card says in plain language which email and apps it adds. Nothing else gets either.
+test("an apply that adds or changes settings.edge.test_user plans a Tier 2 raise and says on its card which identity it adds", async () => {
+  const edge = (testUser) => `${yaml(OLD)}settings:\n  edge:\n${testUser ? `    test_user: { email: ${testUser.email}, apps: [${testUser.apps.join(", ")}] }\n` : ""}`;
+  const add = { base: edge(), head: edge({ email: "canary@aidenhq.test", apps: ["roadmap-keeper"] }) };
+  // The plan itself: the raise the planner returns (writes.ts reads it for the tier).
+  const plan = (texts) => createApplyPlanner({ instanceRepo: () => "acme/aidenhq-instance", read: async () => ({ files: ["instance.yaml"], texts: { base: { "instance.yaml": texts.base }, head: { "instance.yaml": texts.head } }, diff: "x" }), product: { onMain: async () => true, isAncestor: async () => false, log: async () => "" }, modules: () => ({ modules: {}, marketplaces: [] }) })({ args: BUMP });
+  assert.deepEqual((await plan(add)).raise, { tier: 2, rule: "test-user-identity", reason: "adds or changes the instance's agent sign-in identity (settings.edge.test_user)" });
+  const r = await kernel({ texts: add }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+  assert.deepEqual([r.merit, r.rule], [2, "test-user-identity"], "the plan's raise");
+  assert.match(r.card.reason!, /adds or changes the instance's agent sign-in identity \(settings\.edge\.test_user\)/);
+  assert.match(r.card.changes, /Adds a test sign-in identity: canary@aidenhq\.test as a member of roadmap-keeper; 15-minute sessions; every mint and revoke audited\.\nAn apply doesn't install the canary network: on an upgraded host, install ops\/vm\/canary-net\.sh and its aidenhq-canary-net\.service once/);
+  // Changing the setting (another email, another app) raises it too, the line naming the new values.
+  const changed = { base: add.head, head: edge({ email: "canary2@aidenhq.test", apps: ["roadmap-keeper", "notes"] }) };
+  const c = await kernel({ texts: changed }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+  assert.deepEqual([c.merit, c.rule], [2, "test-user-identity"]);
+  assert.match(c.card.changes, /canary2@aidenhq\.test as a member of roadmap-keeper, notes/);
+  // Another instance.yaml setting (or none at all): no raise, no line.
+  for (const texts of [{ base: `${yaml(OLD)}settings: { timezone: UTC }\n`, head: `${yaml(OLD)}settings: { timezone: Europe/London }\n` }, { base: `${yaml(OLD)}settings: { timezone: UTC }\n`, head: `${yaml(OLD)}settings: { timezone: UTC }\n` }]) {
+    const plain = await kernel({ texts }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+    assert.deepEqual([plain.tier, plain.merit, plain.rule], [1, 1, null]);
+    assert.doesNotMatch(plain.card.changes, /test sign-in identity/);
+  }
+  // Rewriting the setting without changing the identity (key order, app order): no change, so no raise and no line.
+  const reordered = { base: add.head, head: `${yaml(OLD)}settings:\n  edge:\n    test_user: { apps: [roadmap-keeper], email: canary@aidenhq.test }\n` };
+  const same = await kernel({ texts: reordered }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+  assert.deepEqual([same.tier, same.merit, same.rule], [1, 1, null]);
+  assert.deepEqual((await plan(reordered)).raise, undefined);
+  // Removing it: the head has no test_user, so neither the raise nor the line.
+  const removed = await kernel({ texts: { base: add.head, head: edge() } }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+  assert.deepEqual([removed.tier, removed.merit, removed.rule], [1, 1, null]);
+  assert.doesNotMatch(removed.card.changes, /test sign-in identity/);
+});
