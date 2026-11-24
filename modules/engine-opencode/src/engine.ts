@@ -43,7 +43,9 @@ async function run() {
   const ocEnv = { ...env, OPENCODE_CONFIG: join(state, "opencode.json"), OPENCODE_CONFIG_DIR: state, XDG_DATA_HOME: join(state, "data"), OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_AUTOUPDATE: "1",
     // Only the engine's config: a workspace's own opencode.json, agents or plugins cannot change the gateway, connections or plugin set.
     OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
-  const server = await serve({ bin: env.AIDENHQ_OPENCODE_BIN, port, password, env: ocEnv });
+  // The terminal's credential is ttyd's alone: the server, and the shell its agent runs, never hold it.
+  const { AIDENHQ_TERM_CREDENTIAL: _term, ...serverEnv } = ocEnv;
+  const server = await serve({ bin: env.AIDENHQ_OPENCODE_BIN, port, password, env: serverEnv });
 
   process.on("exit", () => server.child.kill("SIGKILL"));   // a failure past this point never leaves the server behind
   let session = spec.session ?? "";
@@ -71,9 +73,11 @@ async function run() {
   try { for (const text of JSON.parse(readFileSync(pendingFile, "utf8")) as string[]) queue.push({ text, comment: true }); } catch {}
   queue.push({ text: spec.prompt, comment: false });
   const save = () => { writeFileSync(`${pendingFile}.tmp`, JSON.stringify(queue.filter((q) => q.comment).map((q) => q.text))); renameSync(`${pendingFile}.tmp`, pendingFile); };
+  // A failed loop ends the job loudly (the kernel reads a non-zero exit as a failure and retries), never an unhandled rejection.
+  const fail = (e: unknown) => { console.error(`engine failed: ${(e as Error)?.message ?? e}`); process.exit(1); };
   void (async () => {
     for await (const c of io.comments()) { queue.push({ text: c.text, comment: true }); save(); }
-  })();
+  })().catch(fail);
   void (async () => {
     for (;;) {
       const next = queue[0];
@@ -85,7 +89,7 @@ async function run() {
       for (let i = 0; i < 20 && !(await busy()); i++) await sleep(150);
       while (await busy()) await sleep(300);
     }
-  })();
+  })().catch(fail);
 
   const lease = basename(leaseDir);
   const ttyd = startTerminal({ lease, leaseDir, port: Number(need("AIDENHQ_TERM_PORT")), sessionPort: port, session, credential: need("AIDENHQ_TERM_CREDENTIAL"), cwd: process.cwd(), env: ocEnv });
