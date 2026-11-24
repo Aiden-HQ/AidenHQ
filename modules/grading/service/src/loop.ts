@@ -4,6 +4,7 @@
 // (evidence-woken) is rows in the grades database (kernel-loop.ts). Unstarted until the switch.
 // The injected collaborators (the kernel's api client, Paperclip's client, the grade store) and the rows they return are loosely typed.
 import { openCard } from "./grader/cards.ts";
+import { graderRetryDelay } from "./grades.ts";
 
 type Json = any;
 export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, presentNow, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, rubricHash, graderMarker, emit = () => {} }: {
@@ -244,6 +245,20 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           }
         }
         else if (s.do === "block") await pc.block(task, s.note);
+        else if (s.do === "note") {
+          // A failed pass's note. It is only true of a row still on the retry ladder: one amended, re-graded or settled since is a
+          // different pass, whose own note (or close) says what happened. A read that fails says nothing either way, so the step
+          // stays queued for the next pass. The notice's id makes a retried post land once.
+          let row: Json;
+          try {
+            row = await api.get(`/internal/grades/${encodeURIComponent(task)}`);
+          } catch (err: Json) {
+            return log("a grading-failed note waits: the grade state could not be read", { issue: task, err: String(err?.message ?? err).slice(0, 200) });
+          }
+          const same = row?.state === "grading_failed" && (typeof s.round !== "number" || (row.round ?? 0) === s.round);
+          if (!same) log("a grading-failed note is stale: the row moved on", { issue: task, state: row?.state ?? "unread" });
+          else await pc.comment(task, s.note, s.id);
+        }
         else if (s.do === "tell") {
           // A notice that waited this long may describe a grade the row no longer holds: an amendment or a re-submission can
           // land between the close and the deferred notice. It names the filing and round it was queued for, and is dropped
@@ -468,7 +483,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     // A satisfied row without a satisfied verdict is a close the grader could not check: done, with "ungraded: <reason>".
     const unmet = (v.criteria ?? []).some((c: Json) => c.met === "no");
     const ungraded = row.state === "satisfied" && (v.outcome !== "satisfied" || unmet) ? (unmet ? `criteria were still unmet after ${row.attempts} rejected version${row.attempts === 1 ? "" : "s"}` : v.outcome === "needs_revision" ? "its criteria were not shown by the evidence" : v.outcome === "cannot_judge" ? "the grader couldn't judge it" : String(v.reason || "the grader failed").slice(0, 300)) : "";
-    const note = gradeNote(v, rubric, ungraded ? "ungraded" : row.state, { version: ev.version, reason: ungraded || undefined });
+    // A failed pass's note says when the ladder asks again; `gradeNote` words the rest from the outcome's own reason.
+    const note = gradeNote(v, rubric, ungraded ? "ungraded" : row.state, { version: ev.version, reason: ungraded || undefined, ...(row.state === "grading_failed" ? { retryInMs: graderRetryDelay(row.failures) } : {}) });
     if (row.state === "satisfied") {
       // The row is satisfied now, so the close and the notice are owed steps: retried until they land, even across a restart.
       // The notice keeps its parts, not only the rendered sentence: a later close that changes the reason rewrites the reason and
@@ -481,6 +497,15 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
       // The reopen wakes the task's agent through the kernel: nothing to dispatch here.
+    } else if (row.state === "grading_failed") {
+      // A failed pass says so on the task, once per pass: the grader's reason and when the ladder asks again. It is a note, not a
+      // verdict move: the task keeps its grading hold, and the ladder (never the note) is what asks the grader again. The note's
+      // id is the pass it reports (the row's round), so a retried post lands once and a later pass gets its own.
+      const id = `grade-retry-${issue.id}-${row.round}`.replace(/[^\w.-]/g, "-").slice(0, 80);
+      await owe(issue.id, [{ do: "note", note, id, round: row.round }]);
+      // The wait's version is the round this pass graded: `attempts` counts rejected versions, not failed passes, so it stays
+      // the same here and two failed passes would collapse into one fact (the log keys on type, subject and version).
+      fact("work.waiting", `task:${issue.id}`, row.round, issue.id, { reason: "grade_retry" });
     }
   }
 

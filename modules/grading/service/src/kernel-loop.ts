@@ -79,8 +79,9 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     setStatus: async (id: string, status: string, note: string, { expectStatus }: { expectStatus?: string } = {}) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: status === "done" ? "ok" : "reopen", comment: note, ...(expectStatus ? { expectStatus } : {}) })),
     // A grader that keeps failing: the task ends blocked with the error (no wake), and its delegator is told.
     block: async (id: string, note: string) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: "block", comment: note })),
-    // A note on a task: a labelled wake notice (the kernel posts it and wakes the assignee).
-    comment: async (id: string, text: string) => void (await kernel("POST", "/v1/wakes", { task: id, text })),
+    // A note on a task: a labelled wake notice (the kernel posts it and wakes the assignee). `key`: the producer's own id for it,
+    // so a retried post (its answer lost) lands once: the kernel reads the thread for that id before it posts again.
+    comment: async (id: string, text: string, key?: string) => void (await kernel("POST", "/v1/wakes", { task: id, text, ...(key ? { id: key } : {}) })),
     attachments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/attachments`),
     // One attachment's bytes, only one listed on the task (the kernel refuses another, and anything over 25 MB).
     attachmentContent: (task: string, id: string) => kernelBytes(`/v1/cp/read/attachments/${encodeURIComponent(id)}/content${q({ task })}`),

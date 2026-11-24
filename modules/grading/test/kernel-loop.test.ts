@@ -401,33 +401,80 @@ function heldKernel(issue, calls) {
 
 test("a grader that keeps failing keeps its hold, then closes the task done, ungraded, and tells its parent", async (t) => {
   let n = 0;
+  const models = [];
   const gateway = http.createServer(async (req, res) => {
-    for await (const _ of req);
+    let body = "";
+    for await (const c of req) body += c;
+    models.push(JSON.parse(body).model);
     n++;
     res.writeHead(502).end("upstream down");
   }).listen(0);
   t.after(() => gateway.close());
   const issue = { id: "t4", identifier: "WOR-4", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
-  const calls = { resolve: [], wake: [] };
+  const calls = { resolve: [], wake: [] }, facts = [];
   const { kernel } = heldKernel(issue, calls);
   const db = new DatabaseSync(":memory:");
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
   grades.file("t4", ["says it"], { kind: "report", ref: "" });
   completionGate(grades, "t4", "finish_turn");
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
   const realNow = Date.now;
   let skew = 10_000;
   Date.now = () => realNow() + skew;
   t.after(() => { Date.now = realNow; });
-  for (let i = 0; i < 5; i++) { await loop.runGrades(); skew += 2 * 60 * 60_000; }
-  assert.equal(n, 5, "a 5xx is never retried on the next model, and every pass got its token");
+  for (let i = 0; i < 5; i++) {
+    await loop.runGrades();
+    const posted = calls.wake.length;
+    await loop.runGrades(); // the row is not due again before its retry wait: nothing is asked or posted
+    assert.equal(calls.wake.length, posted, `pass ${i + 1}: a row waiting out its retry ladder posts nothing more`);
+    assert.equal(models.length, 2 * (i + 1), `pass ${i + 1}: one failed pass asks both models once`);
+    skew += 2 * 60 * 60_000;
+  }
+  assert.equal(n, 10, "a 5xx falls over to the next model: both are asked on every one of the 5 passes");
+  assert.deepEqual(models.slice(0, 2), ["~openai/gpt-luna-latest", "~z-ai/glm-flash-latest"], "Luna first, then GLM Flash");
+  // Each of the first four failed passes leaves one note on the task, saying why and when the ladder asks again; the fifth
+  // settles the row satisfied and closes it, so its note is the close's, not a retry note.
+  const notes = calls.wake.filter((w) => w.task === "t4");
+  assert.equal(notes.length, 4, "one note per failed pass, and none for the pass that closes");
+  assert.ok(notes.every((w) => /Grading failed; retrying/.test(w.text) && /OpenRouter 502/.test(w.text)), "the note names the grader's reason");
+  assert.deepEqual(notes.map((w) => /the grader runs again in (\d+) minutes?/.exec(w.text)?.[1]), ["1", "5", "15", "60"], "and the retry ladder's wait");
+  assert.equal(new Set(notes.map((w) => w.id)).size, 4, "each pass's note carries its own id, so a retried post lands once");
+  // Each failed pass is a grade_retry wait on the task, as a rejected version is: one fact per pass, not one per subject version.
+  const waits = facts.filter((f) => f.type === "work.waiting" && f.task === "t4" && f.data.reason === "grade_retry");
+  assert.equal(waits.length, 4);
+  assert.equal(new Set(waits.map((f) => f.subject)).size, 1, "all four waits are on the task's one subject");
+  assert.equal(new Set(waits.map((f) => f.version)).size, 4, "and each pass has its own version, so the log keeps all four");
   assert.deepEqual(calls.resolve, ["ok"]);
   assert.equal(issue.status, "done");
-  assert.equal(calls.wake.length, 1);
-  assert.equal(calls.wake[0].task, "p1");
-  assert.match(calls.wake[0].text, /WOR-4 .* is done, ungraded: /);
+  assert.equal(calls.wake.length, 5, "four failed-pass notes and one parent notice");
+  assert.equal(calls.wake.at(-1).task, "p1");
+  assert.match(calls.wake.at(-1).text, /WOR-4 .* is done, ungraded: /);
   await loop.runGrades();
-  assert.equal(n, 5, "a closed task is not graded again");
+  assert.equal(n, 10, "a closed task is not graded again");
+});
+
+test("a grading-failed note is posted for the pass it reports, and dropped once the row has moved on", async () => {
+  const issue = { id: "t9", identifier: "WOR-9", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["says it"];
+  grades.file("t9", rubric, { kind: "report", ref: "" });
+  const row = grades.record("t9", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "report", ref: "" }, 0) });
+  assert.equal(row.state, "grading_failed");
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const step = (round) => JSON.stringify([{ do: "note", note: "**Grading failed; retrying.** (the grader failed).", id: "grade-retry-t9-1", round }]);
+  // A note queued for a round the row has moved past (a later pass, or an amendment) is stale: it is dropped, not posted.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t9', ?)").run(step(row.round + 5));
+  await loop.runGrades();
+  assert.equal(calls.wake.length, 0, "a note for another round is not posted");
+  // The row's own pass is still grading_failed: its note lands, carrying the id a retried post is deduped on.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t9', ?)").run(step(row.round));
+  await loop.runGrades();
+  assert.equal(calls.wake.length, 1);
+  assert.equal(calls.wake[0].task, "t9");
+  assert.equal(calls.wake[0].id, "grade-retry-t9-1");
 });
 
 /**
