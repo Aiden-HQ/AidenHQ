@@ -87,6 +87,8 @@ export type ReviewSpec = {
   option?: string; lens?: string;
   /** A pending deepsec setup branch's files (path → text): deepsec scans with them instead of setting up. */
   setup_files?: Record<string, string>;
+  /** deepsec's records of the repo from earlier runs: their uploaded input's sha256 (ReviewRunner.input). */
+  deepsec_data?: string;
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
@@ -111,6 +113,10 @@ export interface ReviewRunner {
   start(spec: ReviewSpec): Promise<{ check: string }>;
   /** Where it is now (never waits long). */
   result(check: string): Promise<RunResult>;
+  /** Uploads a file a later check's spec names (deepsec's records): its sha256. */
+  input(data: Buffer): Promise<string>;
+  /** The file a finished check left for this service (deepsec's changed records), or undefined when it left none. */
+  kept(check: string): Promise<Buffer | undefined>;
 }
 
 /** The one acknowledgement per PR, updated in place. */

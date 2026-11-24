@@ -5,7 +5,8 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { deepsec, said } from "../recipe/deepsec.ts";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { deepsec, layCarried, leave, resetChanged, said } from "../recipe/deepsec.ts";
 import { review } from "../recipe/review.ts";
 
 const A = "a".repeat(40), E = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -102,6 +103,30 @@ test("deepsec scans when INFO.md is committed and sets up (init) when it isn't; 
   const r4 = await withEnv({ ...gw, PATH: `${bin4}:${process.env.PATH}` }, () => deepsec({ root: repoRoot(), target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", max_cost_usd: 7, scratch }));
   assert.deepEqual([r4.review.covered, r4.review.findings.length, !!r4.setup], [["src/a.js"], 2, true]);
   assert.match(r4.review.incomplete, /^deepsec init: the engine stopped \(exit 1\); it said «AI processing completed with 1 failed batch\(es\)»/);
+});
+
+test("deepsec starts from the records earlier runs left, analyses a file again once its content changed, and leaves only what it changed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cr-ds-carry-")), files = join(dir, "files"), keep = join(dir, "keep"), root = repoRoot({ "src/d.js": "d\n" });
+  const rec = (p, o) => ({ filePath: p, status: "analyzed", fileHash: `h-${p}`, findings: [{ severity: "HIGH", title: `old in ${p}` }], lastScannedAt: "t0", ...o });
+  writeFileSync(join(dir, "carried"), gzipSync(JSON.stringify({ records: { "src/a.js": rec("src/a.js"), "src/b.js": rec("src/b.js"), "src/c.js": rec("src/c.js", { status: "processing", lockedByRunId: "r0" }), "../evil.js": rec("../evil.js") } })));
+  const was = layCarried(join(dir, "carried"), files);
+  // A path out of the data folder is never laid; a record a stopped run left mid-processing is pending again.
+  assert.deepEqual([...was.keys()].sort(), ["src/a.js", "src/b.js", "src/c.js"]);
+  assert.equal(JSON.parse(readFileSync(join(files, "src/c.js.json"), "utf8")).status, "pending");
+  // deepsec's scan stamps every record and its new fileHash, and keeps an analysed one analysed: a changed file is reset here.
+  const write = (p, r) => writeFileSync(join(files, `${p}.json`), JSON.stringify(r));
+  write("src/a.js", { ...rec("src/a.js"), lastScannedAt: "t1" });
+  write("src/b.js", { ...rec("src/b.js"), fileHash: "h-b2", lastScannedAt: "t1" });
+  resetChanged(was, files);
+  const read = (p) => JSON.parse(readFileSync(join(files, `${p}.json`), "utf8"));
+  assert.deepEqual([read("src/a.js").status, read("src/b.js").status, read("src/b.js").findings], ["analyzed", "pending", []]);
+  // process analyses it again and a new file; a tree's records of files gone (src/c.js) are named, the unchanged one isn't left.
+  write("src/b.js", { ...read("src/b.js"), status: "analyzed", findings: [{ severity: "LOW", title: "new" }] });
+  mkdirSync(join(files, "src"), { recursive: true });
+  write("src/d.js", rec("src/d.js"));
+  leave(was, files, keep, root, true);
+  const left = JSON.parse(gunzipSync(readFileSync(keep)).toString("utf8"));
+  assert.deepEqual([Object.keys(left.records).sort(), left.removed], [["src/b.js", "src/d.js"], ["src/c.js"]]);
 });
 
 test("a failed deepsec says why in the run's reason: its own error, from its jsonl on stdout, as data", async () => {

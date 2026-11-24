@@ -72,6 +72,8 @@
 //   POST /v1/checks, GET /v1/checks/:check, POST /v1/receipts/verify  (a module with role kernel.checks) a credential-free check
 //                              job of repo@head and its signed receipt (?after=<version>&wait=<ms>), a receipt checked against
 //                              {repo, head, run, judge?, policy?} (checkjobs.ts)
+//   POST /v1/checks/inputs, GET /v1/checks/:check/kept  (the same) a file a later check's spec names by its sha256 (raw bytes in,
+//                              {sha256} out), and the file a keep recipe left after its run (raw bytes; 404 when none)
 //   POST /v1/checkout          (a kernel job's own token) {repo, sha?}: a code host snapshot (tar.gz) for a job holding the
 //                              repo-checkout role, an agents-org repo only: GitHub's, or local/… from codehost-local (jobtools.ts checkout)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
@@ -113,7 +115,7 @@ import type { Idle } from "./idle.ts";
 import type { Brake } from "./brake.ts";
 import type { Checks } from "./checks.ts";
 import type { Lane } from "./lane.ts";
-import type { Checks as CheckJobs } from "./checkjobs.ts";
+import { INPUT_MAX, type Checks as CheckJobs } from "./checkjobs.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Identity, Whoami } from "./identity.ts";
 import type { Jobs } from "./jobs.ts";
@@ -214,7 +216,9 @@ export const ROUTES = [
   { method: "POST", path: "/v1/work/grader-token", auth: "module" },
   { method: "POST", path: "/v1/jobs/:job/post", auth: "module" },
   { method: "POST", path: "/v1/checks", auth: "module" },
+  { method: "POST", path: "/v1/checks/inputs", auth: "module" },
   { method: "GET", path: "/v1/checks/:check", auth: "module" },
+  { method: "GET", path: "/v1/checks/:check/kept", auth: "module" },
   { method: "POST", path: "/v1/receipts/verify", auth: "module" },
   { method: "POST", path: "/v1/jobtools/:cmd", auth: "job" },
   { method: "POST", path: "/v1/checkout", auth: "job" },
@@ -252,6 +256,14 @@ const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved", "claimed"], live: ["review", "owner", "approved", "claimed"], recent: ALL, finished: ["done", "failed", "unknown"] };
+
+/** A raw body of at most `max` bytes. */
+async function bytes(req: IncomingMessage, max: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let n = 0;
+  for await (const c of req) { n += c.length; if (n > max) throw fail(413, "too_large", "too large"); chunks.push(c); }
+  return Buffer.concat(chunks);
+}
 
 async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   const chunks: Buffer[] = [];
@@ -1021,13 +1033,19 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           throw e;
         }
       }
-      if (hit && (hit.path === "/v1/checks" || hit.path === "/v1/checks/:check" || hit.path === "/v1/receipts/verify")) {
+      if (hit && ["/v1/checks", "/v1/checks/inputs", "/v1/checks/:check", "/v1/checks/:check/kept", "/v1/receipts/verify"].includes(hit.path)) {
         const w = await moduleOf(req);
         if (!w.roles.includes("kernel.checks")) throw fail(403, "forbidden", `${w.module} may not run checks (role kernel.checks)`);
         if (!checkJobs) throw fail(503, "unavailable", "check jobs are off");
         try {
           if (hit.path === "/v1/checks") return send(res, 200, checkJobs.start(w.module!, await json(req)));
           if (hit.path === "/v1/receipts/verify") { const b = await json(req); return send(res, 200, checkJobs.verify(b.receipt, b.for ?? {})); }
+          if (hit.path === "/v1/checks/inputs") return send(res, 200, checkJobs.putInput(w.module!, await bytes(req, INPUT_MAX)));
+          if (hit.path === "/v1/checks/:check/kept") {
+            const data = checkJobs.kept(w.module!, m[0]!);
+            if (!data) throw fail(404, "not_found", "the check kept no file");
+            return void res.writeHead(200, { "content-type": "application/octet-stream", "content-length": data.length }).end(data);
+          }
           const p = new URLSearchParams(q ?? "");
           return send(res, 200, await checkJobs.get(w.module!, m[0]!, { ...(p.has("after") ? { after: Number(p.get("after")) } : {}), waitMs: Number(p.get("wait") ?? 0) || 0 }));
         } catch (e) {

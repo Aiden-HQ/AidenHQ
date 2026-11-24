@@ -23,7 +23,8 @@
 // Primer (a new private document per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
 // that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
-// its own.
+// its own. Every deepsec run (a PR's or a repo review's) is handed the repo's deepsec records this service keeps (deepsec-store.ts)
+// and the records it changed are laid over them when it ends, so a later run resumes where earlier ones stopped.
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
@@ -32,6 +33,7 @@ import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullR
 import { detect, toolSpec, whyNot, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
+import { mergeRecords, type DeepsecStore } from "./deepsec-store.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 /** How a finding reopened by an unsafe answer says so in the post (fixed words). */
@@ -177,6 +179,8 @@ export type EngineDeps = {
   db: DatabaseSync; config: () => Config; source: PrSource; runner: ReviewRunner; poster: Poster;
   /** Repo reviews: the code host (snapshots, the deepsec setup PR), the option catalog, and Primer (the report's document). */
   codehost: CodeHost; catalog: () => Option[]; publisher: Publisher;
+  /** deepsec's records per repo (this service's /data). */
+  deepsec: DeepsecStore;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
 export class RequestError extends Error {
@@ -533,7 +537,7 @@ export function createEngine(d: EngineDeps) {
       const pr = await d.source.get(r.repo, r.number);
       const intent = pr.fork ? "" : [pr.title, pr.body].filter(Boolean).join("\n\n");
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", focus: r.focus, intent,
-        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5, ...await deepsecData(r) });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       // Nothing ran (no check job), so nothing was billed. One GitHub or the kernel couldn't answer now (a kernel restart, a 5xx)
@@ -591,7 +595,7 @@ export function createEngine(d: EngineDeps) {
       const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: tools ? "code-review-tools" : "code-review",
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skills: o.run.skills, tools: o.run.tools } : {}), ...(o?.run.max_cost_usd ? { max_cost_usd: o.run.max_cost_usd } : {}) },
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
-        ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}),
+        ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}), ...await deepsecData(r),
         focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -600,6 +604,21 @@ export function createEngine(d: EngineDeps) {
         return void log("repo review run couldn't start now; it waits for a later tick", { run: r.id, err: String((e as Error).message).slice(0, 200) });
       }
       await finish(runRow(r.id)!, { state: "failed", why: `couldn't start: ${String((e as Error).message).slice(0, 200)}`, billed_usd: 0 });
+    }
+  }
+
+  /** A deepsec run's records of its repo, uploaded for its check (none held yet: none). */
+  async function deepsecData(r: RunRow) {
+    const held = r.engine === "deepsec" ? d.deepsec.read(r.repo) : undefined;
+    return held ? { deepsec_data: await d.runner.input(held) } : {};
+  }
+  /** A deepsec run's check ended: the records it changed are laid over the repo's (a file it can't be read from is logged, never the run's failure). */
+  async function absorbDeepsec(r: RunRow) {
+    try {
+      const left = await d.runner.kept(r.check_job!);
+      if (left) d.deepsec.write(r.repo, mergeRecords(d.deepsec.read(r.repo), left, r.target === "tree"));
+    } catch (e) {
+      log("deepsec's records not kept", { run: r.id, err: String((e as Error).message).slice(0, 200) });
     }
   }
 
@@ -1526,6 +1545,7 @@ export function createEngine(d: EngineDeps) {
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
       if (res.box_at && !("err" in res)) run("UPDATE runs SET box_at = COALESCE(box_at, ?) WHERE id = ?", res.box_at, r.id);
       if (res.state !== "running") {
+        if (r.engine === "deepsec") await absorbDeepsec(r);
         // One run that can't be applied now (the catalog unreadable) is asked again next tick; it never stops the others.
         await finish(r, res).catch((e) => void log("a finished run couldn't be applied; the next tick asks again", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
       } else {

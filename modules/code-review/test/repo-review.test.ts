@@ -7,6 +7,7 @@ import { display, render, verdict, REPORT_MAX } from "../service/src/report.ts";
 import { loadCatalog, toolSpec } from "../service/src/catalog.ts";
 import { primerPublisher } from "../service/src/primer-client.ts";
 import { readFileSync } from "node:fs";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 const sha = (c) => c.repeat(40);
 const REPO = "acme/app";
@@ -23,10 +24,13 @@ function world({ db = new DatabaseSync(":memory:"), primer = true } = {}) {
   let t = Date.parse("2026-11-22T10:00:00Z");
   const heads = { HEAD: sha("1") };
   const started = [], results = new Map(), published = [], setups = [], branch = { setup: undefined, asked: [] };
+  const held = new Map(), inputs = [], kept = new Map();
   const engine = createEngine({
     db, config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
-    runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" } },
+    runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" },
+      input: async (data) => (inputs.push(data), `${inputs.length}`.padStart(64, "0")), kept: async (c) => kept.get(c) },
+    deepsec: { read: (repo) => held.get(repo), write: (repo, data) => held.set(repo, data) },
     poster: {},
     codehost: { tree: async (_r, ref) => ({ sha: ref === "HEAD" ? heads.HEAD : ref, paths: ["package.json", "src/a.ts"] }), setupBranch: async (_r, name) => (branch.asked.push(name), branch.setup), setup: async (b) => (setups.push(b), { pr_url: "https://github.com/acme/app/pull/1", branch: "aidenhq/setup-abcdef123456", tip: sha("7") }) },
     catalog: () => CATALOG,
@@ -37,7 +41,7 @@ function world({ db = new DatabaseSync(":memory:"), primer = true } = {}) {
   const finding = (id, o = {}) => ({ id, severity: "important", path: "src/a.ts", line: 3, title: `t ${id}`, why: "w", evidence: "e", fix_brief: "b", ...o });
   const finish = (i, o = {}, billed = 0) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed,
     review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null, ...(started[i].tools ? { options: Object.keys(started[i].tools) } : { counts: { eligible: 0, reviewed: 0 } }) }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
-  return { db, engine, heads, started, results, published, setups, branch, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
+  return { db, engine, heads, started, results, published, setups, branch, finish, finding, held, inputs, kept, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
 }
 
 test("options must fit the tree", async () => {
@@ -317,4 +321,28 @@ test("each model option runs its own catalog default model and effort; a combo i
   assert.deepEqual(models(a), { "sec.cloudflare": "openai/gpt-6.2-sol medium", "sec.deepsec": "anthropic/claude-haiku-5.5 medium" });
   const b = await w.engine.repoReview({ target: { repo: REPO, commit: sha("2") }, options: ["sec.cloudflare", "sec.deepsec"], combo: { model: "~a/b", effort: "low" } });
   assert.deepEqual(models(b), { "sec.cloudflare": "~a/b low", "sec.deepsec": "~a/b low" });
+});
+
+test("deepsec is handed the repo's records earlier runs left, and what a run changed is laid over them", async () => {
+  const w = world();
+  const gz = (j) => gzipSync(JSON.stringify(j));
+  const records = () => JSON.parse(gunzipSync(w.held.get(REPO)).toString("utf8")).records;
+  await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.deepsec"] });
+  await w.tick();
+  assert.equal(w.started[0].deepsec_data, undefined); // nothing held yet
+  w.kept.set("c-1", gz({ records: { "src/a.ts": { filePath: "src/a.ts", status: "analyzed" }, "../x.ts": { filePath: "../x.ts" }, "src/b.ts": { filePath: "src/other.ts" } }, removed: [] }));
+  w.finish(0);
+  await w.tick();
+  // Only a record under its own relative path is taken.
+  assert.deepEqual(Object.keys(records()), ["src/a.ts"]);
+  w.later(60_000);
+  await w.engine.repoReview({ target: { repo: REPO, commit: sha("2") }, options: ["sec.deepsec"] });
+  await w.tick();
+  assert.equal(w.started[1].deepsec_data, "1".padStart(64, "0"));
+  assert.deepEqual(Object.keys(JSON.parse(gunzipSync(w.inputs[0]).toString("utf8")).records), ["src/a.ts"]);
+  // A tree run's own records overlay the held ones, and the files gone are dropped.
+  w.kept.set("c-2", gz({ records: { "src/c.ts": { filePath: "src/c.ts", status: "analyzed" } }, removed: ["src/a.ts"] }));
+  w.finish(1);
+  await w.tick();
+  assert.deepEqual(Object.keys(records()), ["src/c.ts"]);
 });
