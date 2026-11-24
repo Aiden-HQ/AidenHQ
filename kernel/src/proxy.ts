@@ -24,8 +24,6 @@ const MAX_BODY = 14 * 1024 * 1024 + 64 * 1024;
 const MAX_ANSWER = 16 * 1024 * 1024;
 // What an agent may be handed back from one tools/call (a result with an image block, a screenshot, is exempt).
 const MAX_RESULT = 1024 * 1024;
-// Calls in flight to one connection's module; the rest queue.
-const CONN_LIMIT = 32;
 // A module's session-setup answers (initialize, tools/list) are kept this long per deployment.
 const SETUP_TTL_MS = 5 * 60_000;
 const SETUP_MAX = 500;
@@ -128,10 +126,12 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
   // answers with an `mcp-session-id` needs a real session: its deployment is pass-through, nothing cached.
   const setup = new Map<string, { at: number; result: Record<string, unknown> }>();
   const sessionful = new Set<string>();
+  const notified = new Set<string>();
   const deployed = new Map<string, string>();
   const forgetSetup = (connection: string) => {
     for (const k of setup.keys()) if (k.startsWith(`${connection}\0`)) setup.delete(k);
     for (const k of sessionful) if (k.startsWith(`${connection}\0`)) sessionful.delete(k);
+    for (const k of notified) if (k.startsWith(`${connection}\0`)) notified.delete(k);
     deployed.delete(connection);
   };
   const deployment = (connection: string, conn: Connection, to: { host: string; port: number }, key: string) => {
@@ -139,19 +139,6 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     if (deployed.get(connection) !== d) { forgetSetup(connection); deployed.set(connection, d); }
     return d;
   };
-  // Calls in flight per connection, live calls, replays and probes alike. A waiter whose caller has gone is skipped, so a
-  // timed-out call never runs after its caller retried it.
-  const slots = new Map<string, { n: number; queue: { go: () => void; gone: () => boolean }[] }>();
-  const acquire = async (connection: string, gone: () => boolean = () => false): Promise<(() => void) | undefined> => {
-    const s = slots.get(connection) ?? { n: 0, queue: [] };
-    slots.set(connection, s);
-    const release = () => { for (let next = s.queue.shift(); ; next = s.queue.shift()) { if (!next) { s.n--; return; } if (!next.gone()) return next.go(); } };
-    if (s.n >= CONN_LIMIT) await new Promise<void>((go) => s.queue.push({ go, gone }));
-    else s.n++;
-    if (gone()) { release(); return undefined; }
-    return release;
-  };
-
   /**
    * One tools/call sent once to a connection's module as `q` (no session): an approved conn.tool record's stored call, or the
    * host's health probe. A requester that is an agent's run acts at /v1/cp/agent/* as that agent, with its own key and the run it
@@ -160,13 +147,10 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
   async function callAs(q: Requester, connection: string, tool: string, args: unknown, task?: string): Promise<{ ok: boolean; text: string; objects?: unknown }> {
     const conn = connections()[connection];
     if (!conn) throw new Error(`no connection ${connection}`);
-    const release = (await acquire(connection))!;
-    let jti: string | undefined;
+    const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(task ? { task } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: q.kind });
+    // The module acts at /v1/cp/agent as the requester (cp.ts: a kernel job's agent on its task, with the kernel-held agent key).
+    asserter.begin(signed.jti, { credential: "", aud: conn.module, kind: q.kind }, conn.tool_timeout_s ?? 300);
     try {
-      const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(task ? { task } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: q.kind });
-      // The module acts at /v1/cp/agent as the requester (cp.ts: a kernel job's agent on its task, with the kernel-held agent key).
-      jti = signed.jti;
-      asserter.begin(signed.jti, { credential: "", aud: conn.module, kind: q.kind }, conn.tool_timeout_s ?? 300);
       const to = await resolver.resolve(conn.url);
       const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }));
       const { status, sse, text } = await new Promise<{ status: number; sse: boolean; text: string }>((resolve, reject) => {
@@ -192,8 +176,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       } catch (e) { log("connection state not updated", { connection, err: (e as Error).message }); }
       return { ok, text: answer, ...(objects !== undefined ? { objects } : {}) };
     } finally {
-      release();
-      if (jti) asserter.end(jti);
+      asserter.end(signed.jti);
     }
   }
   const replay = (r: Rec) => {
@@ -295,12 +278,13 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     headers.authorization = `Bearer ${key}`;
     const to = await resolver.resolve(conn.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
     // Session setup from the kernel's own copy, while the deployment needs no session of its own.
-    const setupCall = req.method === "POST" && typeof req.headers["mcp-session-id"] !== "string" && (method === "initialize" || method === "notifications/initialized" || (method === "tools/list" && hasId));
+    const setupCall = req.method === "POST" && !needs()?.down(connection) && typeof req.headers["mcp-session-id"] !== "string" && (method === "initialize" || method === "notifications/initialized" || (method === "tools/list" && hasId));
     let deploy = "", setupKey: string | undefined;
     if (setupCall) {
       deploy = deployment(connection, conn, to, key);
       if (!sessionful.has(deploy)) {
-        if (method === "notifications/initialized") { outcome("ok-local"); res.writeHead(202).end(); return; }
+        // The module hears one initialized per deployment; a stateless one has nothing to remember from the rest.
+        if (method === "notifications/initialized") { if (notified.has(deploy)) { outcome("ok-local"); res.writeHead(202).end(); return; } notified.add(deploy); }
         setupKey = `${deploy}\0${method}\0${method === "initialize" ? proto : String(req.headers["mcp-protocol-version"] ?? "")}\0${cursor}`;
         const hit = setup.get(setupKey);
         if (hit && Date.now() - hit.at < SETUP_TTL_MS) {
@@ -314,8 +298,6 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       }
     }
     let jti: string | undefined;
-    const release = await acquire(connection, () => req.destroyed && !req.complete || req.socket.destroyed);
-    if (!release) { done(false, "the caller went away before the call ran"); outcome("caller-gone"); return; }
     try {
     if (tool) {
       const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
@@ -411,14 +393,15 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             // need it had clears, and the tasks waiting on it wake. A tool that works signed out proves nothing.
             try { if (success && state?.down(connection, account)) state.ok(connection, { account, fullOnly: true }); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
             // A result too big for an agent's context is refused with its size, not truncated; the call itself ran and is recorded.
-            if (call && raw.length > MAX_RESULT && !image) {
-              const said = `oversized-result: ${connection}.${tool} answered ${raw.length} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
+            const sent = asIs ? raw.length : Buffer.byteLength(answer!);
+            if (call && sent > MAX_RESULT && !image) {
+              const said = `oversized-result: ${connection}.${tool} answered ${sent} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
               const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: said }], isError: true } });
               bytes = Buffer.byteLength(out);
               res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(out);
               return resolve();
             }
-            bytes = asIs ? raw.length : Buffer.byteLength(answer!);
+            bytes = sent;
             if (asIs) res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
             else res.writeHead(status, { ...hdrs, "content-length": bytes }).end(answer);
             resolve();
@@ -434,7 +417,6 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       outcome(String((e as { type?: string }).type ?? "error"));
       throw e;
     } finally {
-      release();
       if (jti) asserter.end(jti);
     }
   };

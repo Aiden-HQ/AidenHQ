@@ -167,7 +167,7 @@ test("session setup is answered by the kernel from the module's own answers; a s
     r = await k.call("docs", "run-jwt-ada", { method: "notifications/initialized" }, {});
     assert.ok(r.status < 300);
   }
-  assert.equal(forwarded(), 1); // one initialize reached the module; the second and both initialized were the kernel's
+  assert.equal(forwarded(), 2); // one initialize and one initialized reached the module; the repeats were the kernel's
   // tools/list is kept per deployment, but each caller's own grant filters it and the id is its own.
   let r = await k.call("docs", "run-jwt-ada", { id: 41, method: "tools/list" });
   assert.deepEqual(await r.json(), { jsonrpc: "2.0", id: 41, result: { tools: [{ name: "doc_read", inputSchema: { type: "object" } }, { name: "doc_write", inputSchema: { type: "object" } }] } });
