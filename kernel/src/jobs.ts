@@ -118,91 +118,99 @@ const START = /^(?:<\|im_start\|>|<\uff5cim_start\uff5c>|<\|start_header_id\|>|<
 const ROLE_START = /^(?:system|user|assistant|model|tool|ipython)(?=$|[\s\u200b\ufeff\u2060]*(?:\r?\n|<[|\uff5c]|<end_of_turn>))/;
 /** A turn's role as it ends a reply: checked as a suffix, so a long reply is not rescanned for a role it never had. */
 const ROLES = ["system", "user", "assistant", "model", "tool", "ipython"];
-/** `text` without the padding at either end. */
-const trim = (text: string) => {
-  let from = 0, to = text.length;
-  while (from < to && PAD.test(text[from]!)) from++;
-  while (to > from && PAD.test(text[to - 1]!)) to--;
-  return text.slice(from, to);
+/** The first index at or after `from` that is not padding, and the last before `to` that is not. */
+const skipStart = (text: string, from: number, to: number) => {
+  let i = from;
+  while (i < to && PAD.test(text[i]!)) i++;
+  return i;
 };
-const trimStart = (text: string) => {
-  let i = 0;
-  while (i < text.length && PAD.test(text[i]!)) i++;
-  return text.slice(i);
+const skipEnd = (text: string, from: number, to: number) => {
+  let i = to;
+  while (i > from && PAD.test(text[i - 1]!)) i--;
+  return i;
 };
-const trimEnd = (text: string) => {
-  let i = text.length;
-  while (i > 0 && PAD.test(text[i - 1]!)) i--;
-  return text.slice(0, i);
-};
-/** How much of `text` a leading header and its role take, or undefined when it opens with neither. */
-const afterHeader = (text: string) => {
-  const header = SENTINELS.find((s) => START.test(s) && text.startsWith(s) && text[0 - 1] !== "\\");
+/** How far a leading header and its role reach past `from`, or undefined when the text there opens with neither. */
+const afterHeader = (text: string, from: number, to: number) => {
+  const header = SENTINELS.find((s) => START.test(s) && text.startsWith(s, from) && text[from - 1] !== "\\");
   if (!header) return undefined;
-  const rest = text.slice(header.length);
-  let at = 0;
-  while (at < rest.length && /[ \t\u200b\ufeff\u2060]/.test(rest[at]!)) at++;
-  return header.length + at + (rest.slice(at).match(ROLE_START)?.[0].length ?? 0);
+  // Only padding, never a newline, may sit between a header and its role: a role on the next line is the reply's own word.
+  let at = from + header.length;
+  while (at < to && /[ \t\u200b\ufeff\u2060]/.test(text[at]!)) at++;
+  const role = text.slice(at, Math.min(to, at + ROLE_SLICE)).match(ROLE_START)?.[0].length ?? 0;
+  return at - from + role;
 };
-/** True when the sentinel at `at` stands alone on a quoted line ("> <|im_end|>", or an indented code block): text, not a leak. */
-const quoted = (text: string, at: number, lineStart: number) => {
-  const prefix = text.slice(lineStart, at);
-  return /^[\s>]*>$/.test(prefix.trimEnd()) || /^(?:\t| {4})/.test(prefix);
-};
+/** How much of the text after a header a role may occupy, so a long reply is not matched against in full. */
+const ROLE_SLICE = 64;
 /** Where the reply's own text ends before a trailing header and its role ("Done.<|im_end|><|im_start|>user"), or undefined. */
-const beforeHeader = (text: string) => {
-  const end = trimEnd(text).length;
-  const role = ROLES.find((r) => end >= r.length && text.startsWith(r, end - r.length));
+const beforeHeader = (text: string, from: number, to: number) => {
+  const end = skipEnd(text, from, to);
+  const role = ROLES.find((r) => end - r.length >= from && text.startsWith(r, end - r.length));
   if (!role) return undefined;
-  const at = end - role.length;
-  const head = trimEnd(text.slice(0, at));
-  const header = SENTINELS.find((s) => START.test(s) && head.endsWith(s) && head[head.length - s.length - 1] !== "\\");
-  return header ? head.length - header.length : undefined;
+  const head = skipEnd(text, from, end - role.length);
+  const header = SENTINELS.find((s) => START.test(s) && head - s.length >= from
+    && text.startsWith(s, head - s.length) && text[head - s.length - 1] !== "\\");
+  return header ? head - header.length : undefined;
+};
+/**
+ * True when the sentinel at `at` stands alone on a quoted line ("> <|im_end|>", or an indented code block): text, not a leak.
+ * The walk back stops at the line's start or after QUOTE_PREFIX characters, so a long line costs the same as a short one.
+ */
+const QUOTE_PREFIX = 256;
+const quoted = (text: string, at: number, lineStart: number) => {
+  let i = at;
+  while (i > lineStart && at - i < QUOTE_PREFIX && /[ \t>]/.test(text[i - 1]!)) i--;
+  if (i !== lineStart) return false;
+  const prefix = text.slice(lineStart, at);
+  return prefix.includes(">") || /^(?:\t| {4})/.test(prefix);
+};
+/** The index at which each line starts, so a line start costs a lookup rather than a scan. */
+const lineStarts = (text: string) => {
+  const starts = [0];
+  for (let nl = text.indexOf("\n"); nl !== -1; nl = text.indexOf("\n", nl + 1)) starts.push(nl + 1);
+  return starts;
 };
 /**
  * A final message without the model-format sentinels a tokenizer or chat template leaks as literal text. They leak at the edges
  * of a completion, so a sentinel at either end is removed, with the padding beside it and the role line its header carries: a
  * reply that was only sentinels is left empty, so its dispatcher reads it as one that ended without a reply, and a reply that
- * quotes a marker on purpose keeps it. Each removal shortens the text, so a long run of whitespace costs no more than its length.
+ * quotes a marker on purpose keeps it. Every step reads only the characters it needs, so a long reply or a run of sentinels
+ * costs its own length rather than its square.
  */
 export function stripSentinels(text: string): string {
   let from = 0, to = text.length;
-  // Each edge is settled once: a removal there shortens the text and never touches the other edge, so neither end is rescanned.
+  const starts = lineStarts(text);
+  let line = 0;
+  // The line that holds `at`; both edges only move inward, so one cursor serves each.
+  const leadLine = (at: number) => { while (line + 1 < starts.length && starts[line + 1]! <= at) line++; return starts[line]!; };
+  let back = starts.length - 1;
+  const tailLine = (at: number) => { while (back > 0 && starts[back]! > at) back--; return starts[back]!; };
   for (;;) {
-    const rest = text.slice(from);
-    const lead = rest.length - trimStart(rest).length;
-    const head = rest.slice(lead);
-    const after = afterHeader(head);
-    if (after !== undefined) from += lead + after;
+    const at = skipStart(text, from, to);
+    const after = afterHeader(text, at, to);
+    if (after !== undefined) from = at + after;
     else {
-      const hit = SENTINELS.find((s) => head.startsWith(s) && head[-1] !== "\\");
-      if (!hit) break;
-      from += lead + hit.length;
+      const hit = SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
+      // A reply that opens by showing a marker on a quoted line ("    <|im_end|>") is text, not a leak.
+      if (!hit || quoted(text, at, leadLine(at))) break;
+      from = at + hit.length;
     }
   }
   // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
-  // Its line start only moves back as the end does, so finding a blockquote line costs each character at most once.
-  let lineStart = text.length;
-  const lineStartAt = (at: number) => {
-    while (lineStart > at) lineStart = text.lastIndexOf("\n", lineStart - 2) + 1;
-    return lineStart;
-  };
   for (;;) {
-    const head = beforeHeader(text.slice(from, to));
+    const head = beforeHeader(text, from, to);
     // A header and role a quoted line shows ("> <|im_start|>assistant") are the reply's example, not a leak.
-    const before = head !== undefined && !quoted(text, from + head, lineStartAt(from + head)) ? from + head : undefined;
-    if (before !== undefined) to = before;
+    if (head !== undefined && !quoted(text, head, tailLine(head))) to = head;
     else {
-      const tail = trimEnd(text.slice(from, to));
-      const hit = SENTINELS.find((s) => tail.endsWith(s) && tail[tail.length - s.length - 1] !== "\\"
-        && !quoted(tail, tail.length - s.length, lineStartAt(from + tail.length - s.length) - from));
+      const end = skipEnd(text, from, to);
+      const hit = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length)
+        && text[end - s.length - 1] !== "\\" && !quoted(text, end - s.length, tailLine(end - s.length)));
       if (!hit) break;
-      to = from + tail.length - hit.length;
+      to = end - hit.length;
     }
   }
-  const body = trim(text.slice(from, to));
   // A reply of nothing but padding is no reply; anything else keeps its own text as the model wrote it.
-  return from === 0 && to === text.length ? (trim(text) === "" ? "" : text) : body;
+  if (from === 0 && to === text.length) return skipStart(text, 0, to) === to ? "" : text;
+  return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
 }
 export function firstError(logPath: string): string {
   let head = "";
