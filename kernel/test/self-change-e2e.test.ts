@@ -179,7 +179,7 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   await refused("chaser", [{ kind: "skill", name: "nudge2", text: "---\nname: other\ndescription: x\n---\n" }], /it doesn't compile: .*SKILL.md name must be its folder name/);
   await refused("chaser", [{ kind: "routine_def", key: "often", routine: { title: "Often", description: "Check, then close this task.", schedules: [{ cron: "*/5 * * * *", label: "x" }] } }], /it doesn't compile: .*at most hourly/);
   // The same change through a tool that isn't self_change is the setting path: refused.
-  await refused("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n" }], /tasks files settings changes only for its own agents/, "task_get");
+  await refused("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n" }], /tasks files settings changes only for agents holding a role/, "task_get");
   // Roles are the live grants row's: Aiden's row loses fleet-admin after its job started, and its profile change is refused.
   const g = JSON.parse(readFileSync(k.grantsFile, "utf8"));
   g.agents[COS].roles = [];

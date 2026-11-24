@@ -10,7 +10,7 @@ roles:
     # the Maintainer requests it (it files the Fleet Steward's product-bug reports).
     - { id: product-issues, description: "Product bugs as issues on the product repo, as the owner (github-mcp github_product_issue)." }
   # ops-key (the meetings module's): the Researcher runs the meeting scan, so ops-mcp acts as it, while meetings is on.
-  requests: [ ops-key? ]
+  requests: [ ops-key?, ship-admin? ]
 agents:
   chief-of-staff:
     skills: [ tasks.delegate-work ]
@@ -36,6 +36,8 @@ agents:
       apps: [ app_list, app_status, app_view, web_view, warehouse_query, source_new, source_ack ]
       # The host's live series (disk, memory, containers), read at brief time rather than copied from a note: reads only.
       grafana?: read
+      # ship's per-repo PR settings (role ship-admin), when the ship module is on: read them, change one repo's entry.
+      ship?: [ ship_config, ship_configure ]
       # The live product pin and the last applies, and the owner's stale todos for the brief (the fleet-steward module's connection, when it is on).
       fleet_steward?: [ fleet_generation_status, fleet_stale_followups, fleet_followup_snooze, flow_report ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_team, task_delegate, task_amend_rubric, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, app_request_from_owner ]
@@ -43,7 +45,7 @@ agents:
     heartbeat: true
     # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).
     # product-issues: product bugs upstream as the owner (github-mcp).
-    roles: [ fleet-admin, product-issues ]
+    roles: [ fleet-admin, product-issues, ship-admin? ]
   assistant:
     skills: [ chief-of-staff.recurring-reports, chief-of-staff.research-tasks, chief-of-staff.research-tools, chief-of-staff.task-replies, google.calendar-changes, google.gmail-writes, meetings.meeting-notes, primer.primer-docs, tasks.delegate-work ]
     department: leadership
