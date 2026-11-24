@@ -125,7 +125,7 @@ export function createRouting(d: RoutingDeps) {
         status: t.status === 200 ? String(t.json?.status ?? "unknown") : "missing",
         cycle_hours: done ? Math.round(((Date.parse(t.json.completedAt) - r.at) / 3_600_000) * 100) / 100 : null,
         reopens: (q("SELECT COUNT(*) AS n FROM wakes WHERE task = ? AND cause = 'reopen'").get(r.task) as { n: number }).n,
-        gate_reopens: (q("SELECT COUNT(*) AS n FROM facts WHERE type = 'finish.verdict' AND actor = 'kernel' AND task = ? AND json_extract(data, '$.verdict') = 'reopen'").get(r.task) as { n: number }).n,
+        gate_reopens: (q("SELECT COUNT(*) AS n FROM facts WHERE +type = 'finish.verdict' AND actor = 'kernel' AND task = ? AND json_extract(data, '$.verdict') = 'reopen'").get(r.task) as { n: number }).n,
       });
     }
     return out;
