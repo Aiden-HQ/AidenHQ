@@ -184,9 +184,11 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // The reference: the app's own intake response body, else the text the page shows. The request that carries it is the
     // intake, so its answer is the one that decides whether the feedback was saved.
     const shown = String((await within(ab("eval", "document.body.innerText"), 4000, {})).result ?? "");
-    // The intake is the POST whose answer carries the reference the page itself shows: a person reads that id, so it is the
-    // submission's. A body the page never displays (a telemetry id, say) is not taken for it, and a POST that failed keeps its
-    // own failure even when its body has an id.
+    // The intake is the POST whose answer carries a reference the page displays and did not display before the click: a
+    // person reads that id, so it is the submission's. A body the page never displays (a telemetry id, say) is not taken for
+    // it, a POST that failed keeps its own failure even when its body has an id, and an id already on the page (an earlier
+    // submission's ticket) is not proof that this POST saved anything.
+    const beforeShown = String(beforeText);
     let reference = null, intakeAnswer = null;
     for (const n of intake.filter((x) => x.id).slice(-4)) {
       try {
@@ -195,7 +197,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
         const json = JSON.parse(body);
         const v = json && (json.reference ?? json.ref ?? json.id ?? json.ticket ?? json.submission_id ?? json.submissionId);
         if (typeof v !== "string" && typeof v !== "number") continue;
-        if (shown.includes(String(v))) { reference = String(v); intakeAnswer = n; break; }
+        if (shown.includes(String(v)) && !beforeShown.includes(String(v))) { reference = String(v); intakeAnswer = n; break; }
       } catch {}
     }
     // No POST answered with a reference the page shows: the intake is that one only when there is exactly one non-notify POST

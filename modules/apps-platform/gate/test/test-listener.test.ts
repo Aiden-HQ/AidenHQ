@@ -4,6 +4,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
+import type { Duplex } from "node:stream";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -276,6 +277,38 @@ test("a revoked or expired session is 401 and no page; the app's own cookie is n
     cfg.hosts["roadmap.example.com"] = { app: "roadmap", port: publicPort };
     cfg.hosts[`roadmap.${CANARY_BASE}`] = { app: "roadmap", port: appPort };
     plant.close(); plant.closeAllConnections?.();
+  }
+});
+
+test("a live tunnel is dropped when the test user is disabled, and server.close takes the rest", async () => {
+  // A real upgraded socket through the listener: the fake app answers the upgrade and echoes one frame.
+  const echo = createServer();
+  echo.on("upgrade", (q, sock) => { sock.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"); sock.on("data", (d) => sock.write(d)); });
+  const echoPort = await listen(echo);
+  // One roadmap entry, so entryOf resolves the echo server (the shared cfg's roadmap.example.com would come first).
+  const c: any = { ...cfg, hosts: { "roadmap.example.com": { app: "roadmap", port: echoPort }, [`roadmap.${CANARY_BASE}`]: { app: "roadmap", port: echoPort } } };
+  const logs: any[] = [];
+  const l = createTestListener({ config: () => c, log: (o: any) => logs.push(o) });
+  const port = await listen(l);
+  c.test_listener = { address: "127.0.0.1", port };
+  try {
+    const open = () => new Promise<{ status: number; socket?: any }>((ok) => {
+      const q = request({ host: "127.0.0.1", port, path: "/ws", headers: { host: `roadmap.${CANARY_BASE}`, connection: "Upgrade", upgrade: "websocket", origin: `http://roadmap.${CANARY_BASE}:${port}`, cookie: `${CANARY_COOKIE}=${COOKIE}` } });
+      q.on("upgrade", (r, sock) => ok({ status: r.statusCode ?? 0, socket: sock }));
+      q.on("response", (r) => ok({ status: r.statusCode ?? 0 }));
+      q.on("error", () => ok({ status: 0 }));
+      q.end();
+    });
+    const a = await open();
+    assert.equal(a.status, 101, "a live session opens the tunnel");
+    // The setting goes away while it is open: the reconciler's closeTunnels drops it (the tunnel is closure-scoped, so a
+    // fresh listener is the same path a reconcile takes).
+    const closed = new Promise<boolean>((ok) => { a.socket!.once("close", () => ok(true)); setTimeout(() => ok(false), 1000); });
+    (l as any).closeTunnels?.();
+    assert.equal(await closed, true);
+  } finally {
+    echo.close();
+    await new Promise<void>((ok) => { l.close(() => ok()); l.closeAllConnections?.(); });
   }
 });
 

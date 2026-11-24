@@ -192,6 +192,8 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     req.pipe(up);
   }
 
+  /** Open WebSocket tunnels and the app each one serves: closed when the listener is disabled or the app leaves the setting. */
+  const sockets = new Map<Duplex, string>();
   const server = createServer((req, res) => {
     serve(req, res).catch((e) => {
       log({ msg: "test listener request failed", err: String((e as Error).message).slice(0, 300) });
@@ -207,10 +209,15 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     void socket.end(`HTTP/1.1 ${status} ${{ 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 503: "Service Unavailable" }[status] ?? "Error"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${msg.length + 1}\r\n\r\n${msg}\n`);
   const upgrade = async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
+    // A tunnel outlives the request that opened it and `server.close()` does not close it: it is tracked here so the
+    // reconciler can drop every one when the test user (or the listener) goes away, rather than riding an old session.
+    sockets.set(socket, ""); // the app is known once the request's host resolves, just below
+    socket.on("close", () => sockets.delete(socket));
     const c = cfg();
     if (!c.test_user || !c.test_listener) return refuse(socket, 404, "not found");
     const t = target(c, hostOf(req));
     if (!t) return refuse(socket, 404, "not found");
+    sockets.set(socket, t.app);
     // Same checks as a write: the exact origin, never a cross-site socket, and the listener's own live session.
     if (!sameOrigin(req, t.origin)) return refuse(socket, 403, "forbidden: cross-origin");
     const who = await session(req, c, t.app, t.publicHost);
@@ -253,7 +260,12 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
       socket.destroy();
     });
   });
-  return server;
+  // The reconciler closes the tunnels with the listener: `server.close()` leaves an upgraded socket open.
+  return Object.assign(server, {
+    closeTunnels: (allowed?: (app: string) => boolean) => {
+      for (const [s, app] of sockets) if (!allowed || !allowed(app)) { s.destroy(); sockets.delete(s); }
+    },
+  });
 }
 
 /** Whether this build's settings let the listener bind at all (both the test user and its address). */
@@ -278,8 +290,11 @@ export function createTestListenerReconciler({ config, log = (o) => console.log(
     }
     const want = c && testListenerOn(c) ? c.test_listener! : undefined;
     const key = want ? `${want.address}:${want.port}` : "";
+    // An app removed from settings.edge.test_user keeps no open tunnel either, even while the listener stays on its address.
+    (server as (Server & { closeTunnels?: (allowed?: (app: string) => boolean) => void }) | undefined)?.closeTunnels?.((app) => Boolean(c?.test_user?.apps.includes(app)));
     if (key === at) return;
     if (server) {
+      (server as Server & { closeTunnels?: () => void }).closeTunnels?.();
       server.close();
       server = undefined;
       log({ msg: "test listener closed", address: at });
