@@ -229,11 +229,11 @@ async function retireOrg(store: SourceStore, org: string, scopes: string[], log:
 }
 
 /**
- * Every 15 minutes, each org in turn, each pass recorded in src_meta.ingest_run (an org the owner can't read records its
- * error). The configured list is authoritative: before the first pass, every org the writer still holds scope rows for that
- * is no longer in it is retired (retireOrg), an org already orphaned when this first runs included.
+ * One sync pass (the change feed's scheduler runs it every 15 minutes, feed.ts): each org in turn, each pass recorded in
+ * src_meta.ingest_run (an org the owner can't read records its error). The configured list is authoritative: first, every org
+ * the writer still holds scope rows for that is no longer in it is retired (retireOrg), an org already orphaned included.
  */
-export function startSync(store: SourceStore, gh: Gh, orgs: string[], log: Logger, everyMs = 15 * 60_000): void {
+export function syncPass(store: SourceStore, gh: Gh, orgs: string[], log: Logger): () => Promise<void> {
   const configured = new Set(orgs.map((o) => o.toLowerCase()));
   const retireRemoved = async () => {
     const held = new Map<string, string[]>(); // org (as the scope row spells it) -> its scope rows
@@ -243,7 +243,7 @@ export function startSync(store: SourceStore, gh: Gh, orgs: string[], log: Logge
     }
     for (const [org, scopes] of held) if (!configured.has(org.toLowerCase())) await retireOrg(store, org, scopes, log);
   };
-  const tick = async () => {
+  return async () => {
     // The scope table (src_github.scope) exists only after migrate: the sweep and the pre-request scope row need it first,
     // even on a fresh warehouse where no pass has run yet.
     await store.migrate(DDL).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_github migration failed"));
@@ -259,7 +259,5 @@ export function startSync(store: SourceStore, gh: Gh, orgs: string[], log: Logge
         log.warn({ org, err: String(err).slice(0, 300) }, "src_github sync failed");
       }
     }
-    setTimeout(tick, everyMs).unref();
   };
-  setTimeout(tick, 30_000).unref();
 }

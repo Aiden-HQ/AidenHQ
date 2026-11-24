@@ -11,17 +11,19 @@
 // "owner" for the signed-in owner's login without them, GitHub's author_association OWNER, MEMBER or COLLABORATOR, or anyone with
 // write on the repo (GitHub shows a private org member as CONTRIBUTOR), "outside" for anyone else. A push (`pr.pushed`, version = the new head) is a head change after the PR opened.
 //
-// The churn pass (every 15 minutes, a cursor per repo in the data dir) reads each repo's merged commits from its cache clone,
-// never the GitHub API. The first pass also runs the GitHub backfill once (no route, no button): the managed repos' history through
-// the API within the owner's rate budget. It stops when GitHub says little is left and the next pass goes on; done is recorded in the data dir.
+// The churn pass (every 15 minutes on the change feed's scheduler, feed.ts; a cursor per repo in the data dir) reads each repo's
+// merged commits from its cache clone, never the GitHub API. The first pass also runs the GitHub backfill once (no route, no
+// button): the managed repos' history through the API within the owner's rate budget. It stops when GitHub says little is left and
+// the next pass goes on; done is recorded in the data dir.
 //
-// Routines' events (kernel events.ts): the same pass reads each subscribed repo's events feed (GET /v1/events/sources) and sends
-// the kinds routines may take to the kernel (POST /v1/events). Best-effort: GitHub can delay its feed, and the pass runs every 15 minutes.
+// Live PR and issue facts come from the change feed's events (feed.ts's in-process hook, `observe` below), with the ids the
+// backfill uses, so a repeat records once.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { churnFromGit, DEFAULT_CHURN_EXCLUDE } from "./aidenhq-sdk/churn.ts";
 import { factEmitter, kernelClient, type FactIn, type KernelError } from "./aidenhq-sdk/kernel-client.ts";
 import { hasFooter, hasTrailer } from "./aidenhq-sdk/attribution.ts";
+import type { Hook } from "./feed.ts";
 
 type Json = any;
 /** GitHub as the owner, background (git-auth.ts Gh). */
@@ -42,23 +44,8 @@ const MAX_COMMITS = 60;
 export const utc = (at: string | number | Date): string => new Date(at).toISOString();
 /** A GitHub login as bots appear in REST (`slug[bot]`), GraphQL (`slug`) and gh (`app/slug`): one lower-case name. */
 const login = (l?: string | null) => String(l ?? "").toLowerCase().replace(/^app\//, "").replace(/\[bot\]$/, "");
-type Kind = "agent" | "owner" | "outside";
+export type Kind = "agent" | "owner" | "outside";
 const FAILED = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure"]);
-/** Repos whose events feed one pass reads. */
-const EVENT_REPOS = 30;
-/** A repo events-feed entry as a routine's event (kernel events.ts SourceEvent), or undefined for a kind routines don't take. */
-export function sourceEvent(repo: string, e: Json): Json | undefined {
-  const p = e.payload ?? {}, issue = p.issue ?? p.pull_request ?? {};
-  const kind = e.type === "IssuesEvent" && p.action === "opened" ? "issues.opened"
-    : e.type === "IssueCommentEvent" && p.action === "created" ? "issue_comment.created"
-    : e.type === "PullRequestEvent" && p.action === "opened" ? "pull_request.opened" : undefined;
-  if (!kind) return undefined;
-  const text = kind === "issue_comment.created" ? String(p.comment?.body ?? "") : `${issue.title ?? ""}\n\n${issue.body ?? ""}`;
-  const url = String((kind === "issue_comment.created" ? p.comment?.html_url : issue.html_url) ?? "");
-  const labels = (issue.labels ?? []).map((l: Json) => String(l.name ?? l)).filter(Boolean).slice(0, 10);
-  return { connection: "github", resource: repo, id: String(e.id), kind, author: String(e.actor?.login ?? "ghost"), text: text.slice(0, 2000), ...(text.length > 2000 ? { truncated: true } : {}), ...(labels.length ? { labels } : {}), ...(url.startsWith("https://") ? { url: url.slice(0, 500) } : {}) };
-}
-
 export const prSubject = (repo: string, n: number | string) => `pr:${repo.toLowerCase()}#${n}`;
 const issueSubject = (repo: string, n: number) => `issue:${repo.toLowerCase()}#${n}`;
 const readJson = (f: string, empty: Json): Json => { try { return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : empty; } catch { return empty; } };
@@ -150,6 +137,10 @@ export function createFlow(d: FlowDeps) {
       const rv = revertOf(repo, title, body);
       if (rv) emit({ type: "pr.reverted", subject: prSubject(repo, n), version: head, at, task, data: rv, ...(source ? { source } : {}) });
     },
+    issueOpened: (repo: string, i: { number: number; created_at: string; labels: string[]; state: string; author: string; author_kind: Kind }, source?: "backfill") =>
+      emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: repo.toLowerCase(), number: i.number, labels: i.labels, state: i.state, author: i.author, author_kind: i.author_kind }, ...(source ? { source } : {}) }),
+    issueLabeled: (repo: string, n: number, eventId: string | number, label: string, by: string, at: string, source?: "backfill") =>
+      emit({ type: "issue.labeled", subject: issueSubject(repo, n), version: `${OPENED_VERSION}:${eventId}`, at, task: null, data: { label, by }, ...(source ? { source } : {}) }),
     /** A merge that went without code review's verdict: code review was unreachable too long (review-gate.ts DOWN_MS). */
     reviewBypassed: (repo: string, n: number, head: string, why: string) => emit({ type: "pr.review_bypassed", subject: prSubject(repo, n), version: head, at: now().toISOString(), task: taskOf(repo, n), data: { head, why: why.slice(0, 300) } }),
     waiting: (repo: string, n: number, reason: string, since: string) => emit({ type: "work.waiting", subject: prSubject(repo, n), version: since, at: since, task: taskOf(repo, n), data: { reason } }),
@@ -191,116 +182,14 @@ export function createFlow(d: FlowDeps) {
     if (out.last) writeJson(cursorFile, { ...readJson(cursorFile, {}), [slug]: out.last });
     return facts.length;
   }
-  // ---- live issues ----
-  const issuesFile = join(d.cacheDir, "issues.json");
-  /**
-   * One repo's issues changed since its cursor (a day back on the first pass after the backfill): issue.opened for each and
-   * issue.labeled for each label event, with the ids the backfill uses, so a repeat records once. Stops under the API budget and
-   * keeps its cursor, so the next pass goes on.
-   */
-  async function issuesRepo(repo: string) {
-    if (!d.gh) return;
-    const key = repo.toLowerCase(), startedAt = now().toISOString();
-    const since = String(readJson(issuesFile, {})[key] ?? utc(now().getTime() - DAY));
-    lowBudget = "";
-    const facts: FactIn[] = [];
-    const emit = (x: FactIn) => void facts.push({ ...x, at: utc(x.at) });
-    for (let page = 1; ; page++) {
-      const items: Json[] = (await gh(repo, `/repos/${repo}/issues?state=all&since=${since}&sort=updated&direction=asc&per_page=100&page=${page}`)).body ?? [];
-      for (const i of items) if (!i.pull_request && Date.parse(i.created_at) >= Date.parse(since)) emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: key, number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo, { number: i.number, body: i.body })) } });
-      if (lowBudget) return postFacts(facts);
-      if (items.length < 100) break;
-    }
-    // Events come newest first: read back to the cursor.
-    for (let page = 1, more = true; more; page++) {
-      const events: Json[] = (await gh(repo, `/repos/${repo}/issues/events?per_page=100&page=${page}`)).body ?? [];
-      for (const e of events) {
-        if (Date.parse(e.created_at) <= Date.parse(since)) { more = false; continue; }
-        if (e.event === "labeled" && e.issue && !e.issue.pull_request) emit({ type: "issue.labeled", subject: issueSubject(repo, e.issue.number), version: `${OPENED_VERSION}:${e.id}`, at: e.created_at, task: null, data: { label: String(e.label?.name ?? ""), by: String(e.actor?.login ?? "ghost") } });
-      }
-      if (lowBudget) return postFacts(facts);
-      if (events.length < 100) more = false;
-    }
-    await postFacts(facts);
-    writeJson(issuesFile, { ...readJson(issuesFile, {}), [key]: startedAt });
-  }
   let churning = false;
   async function churnPass() {
     if (churning || !d.repos) return;
     churning = true;
     try {
       await backfill();
-      // Issues go on from the backfill's end (an unfinished backfill reads them itself).
-      if (status.state === "done") for (const repo of await d.repos()) await issuesRepo(repo).catch((e) => d.log("issue pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
       for (const repo of await d.repos()) await churnRepo(repo).catch((e) => d.log("churn pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
-      await eventsPass();
     } finally { churning = false; }
-  }
-
-  // ---- routines' events ----
-  const eventsFile = join(d.cacheDir, "events.json");
-  /** The repos routines subscribe to (`*`: the managed repos), at most EVENT_REPOS, each read from its events feed. */
-  async function eventsPass() {
-    if (!d.gh) return;
-    const wanted: string[] = (await client.call("GET", "/v1/events/sources?connection=github").catch((e: Error) => { d.log("events: sources unreadable", { err: String(e.message).slice(0, 200) }); return {}; })).resources ?? [];
-    const repos = [...new Set([...(wanted.includes("*") && d.repos ? await d.repos() : []), ...wanted.filter((r) => r !== "*")].map((r) => r.toLowerCase()))];
-    // At most EVENT_REPOS a pass, starting where the last pass stopped, so every subscribed repo is read in turn.
-    const state = readJson(eventsFile, {});
-    const from = repos.length ? Number(state["@next"] ?? 0) % repos.length : 0;
-    const turn = [...repos.slice(from), ...repos.slice(0, from)].slice(0, EVENT_REPOS);
-    lowBudget = "";
-    let visited = 0;
-    for (const repo of turn) {
-      await eventsRepo(repo).catch((e) => d.log("events pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
-      visited++;
-      if (lowBudget) { d.log("events: the pass stops under the API budget", { repo, why: lowBudget }); break; }
-    }
-    // The next pass starts after the last repo this one read.
-    if (repos.length) writeJson(eventsFile, { ...readJson(eventsFile, {}), "@next": (from + visited) % repos.length });
-  }
-  /**
-   * One repo's new events, oldest first, to the kernel. Page one is a conditional read (its ETag); later pages run back to the
-   * cursor (the newest event sent). A repo's first read (not yet started) marks it started, at its newest event if it has one
-   * (an empty feed starts at 0), and sends nothing: a subscription starts from now. A cursor the feed no longer reaches reads page one only: a logged gap.
-   * The cursor moves with each event the kernel answered 2xx (it does for skipped and dropped ones too); a 429, a 5xx or no answer
-   * stops here and the next pass goes on. The ETag is kept only once every event of the read was sent.
-   */
-  async function eventsRepo(repo: string) {
-    const saved = readJson(eventsFile, {})[repo] ?? {};
-    const fresh: Json[] = [];
-    let etag: string | undefined, reached = false;
-    for (let page = 1; page <= 3 && !reached; page++) {
-      const r = await d.gh!("GET", `/repos/${repo}/events?per_page=100&page=${page}`, page === 1 && saved.etag ? { etag: saved.etag } : undefined);
-      if (page === 1 && r.status === 304) return;
-      if (r.status >= 300) throw new Error(`GitHub GET /repos/${repo}/events: ${r.status}`);
-      if (page === 1) etag = r.headers?.get("etag") ?? undefined;
-      const remaining = Number(r.headers?.get("x-ratelimit-remaining")), limit = Number(r.headers?.get("x-ratelimit-limit"));
-      if (limit > 0 && remaining < limit * LOW_SHARE) lowBudget = `GitHub's rate limit is nearly used (${remaining} left)`;
-      const items: Json[] = Array.isArray(r.body) ? r.body : [];
-      for (const e of items) { if (saved.cursor && BigInt(e.id) <= BigInt(saved.cursor)) { reached = true; break; } fresh.push(e); }
-      if (!saved.cursor || items.length < 100) break;
-    }
-    if (!saved.cursor) {
-      writeJson(eventsFile, { ...readJson(eventsFile, {}), [repo]: { cursor: fresh[0] ? String(fresh[0].id) : "0", ...(etag ? { etag } : {}) } });
-      return;
-    }
-    // A repo started on an empty feed (cursor 0) has no gap: everything read since is new.
-    if (saved.cursor === "0") reached = true;
-    const batch = reached ? fresh : fresh.slice(0, 100);
-    if (!reached) d.log("events: a gap in the feed; read its newest page only", { repo, cursor: saved.cursor ?? null });
-    let cursor = saved.cursor as string | undefined, sent = 0;
-    for (const e of batch.reverse()) {
-      const ev = sourceEvent(repo, e);
-      if (ev) {
-        const r = await client.raw("POST", "/v1/events", ev).catch(() => ({ status: 0, json: {} }));
-        // The kernel answers 2xx for an event it skipped or dropped: any other answer keeps the cursor before it, for the next pass.
-        if (r.status === 0 || r.status >= 300) { if (r.status >= 300 && r.status < 500) d.log("events: the kernel refused an event; tried again next pass", { repo, id: ev.id, status: r.status }); break; }
-      }
-      cursor = String(e.id);
-      sent++;
-    }
-    const all = sent === batch.length;
-    writeJson(eventsFile, { ...readJson(eventsFile, {}), [repo]: { ...(cursor ? { cursor } : {}), ...(all && etag ? { etag } : {}) } });
   }
 
   // ---- backfill ----
@@ -382,11 +271,11 @@ export function createFlow(d: FlowDeps) {
     status.repo = repo;
     await pages(repo, `/repos/${repo}/issues?state=all&sort=created&direction=asc`, async (i) => {
       if (i.pull_request) return;
-      emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, source: "backfill", data: { repo: repo.toLowerCase(), number: i.number, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo, { number: i.number, body: i.body })) } });
+      f.issueOpened(repo, { number: i.number, created_at: i.created_at, labels: (i.labels ?? []).map((l: Json) => String(l.name ?? l)), state: i.state, ...(await authored(i.user?.login, i.author_association, repo, { number: i.number, body: i.body })) }, "backfill");
     });
     await pages(repo, `/repos/${repo}/issues/events`, (e) => {
       if (e.event !== "labeled" || !e.issue || e.issue.pull_request) return;
-      emit({ type: "issue.labeled", subject: issueSubject(repo, e.issue.number), version: `${OPENED_VERSION}:${e.id}`, at: e.created_at, task: null, source: "backfill", data: { label: String(e.label?.name ?? ""), by: String(e.actor?.login ?? "ghost") } });
+      f.issueLabeled(repo, e.issue.number, e.id, String(e.label?.name ?? ""), String(e.actor?.login ?? "ghost"), e.created_at, "backfill");
     });
     const key = repo.toLowerCase();
     await pages(repo, `/repos/${repo}/pulls?state=all&sort=created&direction=asc`, async (p) => {
@@ -433,16 +322,32 @@ export function createFlow(d: FlowDeps) {
     })();
     return running;
   }
-  return Object.assign(f, {
-    churnPass, churnRepo, issuesRepo, backfill, eventsPass,
-    /** The churn loop: a first pass shortly after start, then every 15 minutes. */
-    startChurn() {
-      const pass = () => churnPass().catch((e) => d.log("churn pass failed", { err: String(e?.message ?? e).slice(0, 300) }));
-      const t = setInterval(pass, 15 * 60_000);
-      t.unref?.();
-      setTimeout(pass, 60_000).unref?.();
-      return () => clearInterval(t);
-    },
-  });
+  /**
+   * The change feed's events as Flow's facts (feed.ts hooks): issues opened and labelled, PRs opened, pushed, closed or merged,
+   * and a PR head's CI completed (its start comes from the feed's `started` callback; its check runs, newest per suite and name, as the feed holds them).
+   */
+  const observe = (feed: { runs(repo: string, sha: string): { name: string; status: string; conclusion: string | null; started: string | null; completed: string | null }[] }): Hook => async (e, ctx) => {
+    const repo = e.resource, x = e.data ?? {}, n = Number(x.number), head = String(x.head ?? "");
+    const t = now().toISOString();
+    if (e.kind === "issues.opened") f.issueOpened(repo, { number: n, created_at: String(x.created_at ?? t), labels: (x.labels as string[]) ?? [], state: "open", author: e.author ?? "ghost", author_kind: x.author_kind as Kind });
+    else if (e.kind === "issues.labeled") f.issueLabeled(repo, n, e.id.replace(/^ev:/, ""), String(x.label ?? ""), String(x.actor ?? "ghost"), String(ctx.pr?.created_at ?? t));
+    else if (e.kind === "pull_request.opened") f.opened(repo, n, head, String(x.head_ref ?? ""), t, taskOf(repo, n), undefined, { title: String(e.text ?? "").split("\n")[0], author: e.author ?? "ghost", author_kind: x.author_kind });
+    else if (e.kind === "pull_request.synchronize") {
+      // The feed waits on this hook: a comparison held up by the rate-limit reserve is given 10 s, then the push counts as not forced.
+      const cmp = d.gh ? await Promise.race([d.gh("GET", `/repos/${repo}/compare/${x.before}...${head}`).catch(() => undefined), new Promise<undefined>((r) => setTimeout(r, 10_000, undefined).unref())]) : undefined;
+      f.pushed(repo, n, head, String(x.before ?? ""), cmp && cmp.status < 300 ? !["ahead", "identical"].includes(String(cmp.body?.status)) : false, e.author ?? "ghost", t);
+    } else if (e.kind === "pull_request.closed") {
+      const pr = ctx.pr ?? {};
+      if (pr.merged_at) f.merged(repo, n, head, String(pr.merge_commit_sha ?? ""), pr.merged_at, String(pr.title ?? ""), String(pr.body ?? ""));
+      else f.closed(repo, n, head, pr.closed_at ?? t);
+    } else if (e.kind === "check_run.completed") {
+      const runs = feed.runs(repo, head);
+      const ends = runs.map((r) => Date.parse(r.completed ?? "")).filter(Number.isFinite);
+      for (const pr of (x.prs as number[]) ?? []) {
+        if (runs.every((r) => r.status === "completed")) f.checksCompleted(repo, pr, head, runs.filter((r) => FAILED.has(String(r.conclusion))).map((r) => r.name).slice(0, 20), ends.length ? utc(Math.max(...ends)) : t);
+      }
+    }
+  };
+  return Object.assign(f, { churnPass, churnRepo, backfill, observe });
 }
 export type Flow = ReturnType<typeof createFlow>;

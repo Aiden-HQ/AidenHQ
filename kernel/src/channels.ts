@@ -17,7 +17,7 @@ import { actionOf, type RecDetail, type RecRow, type Records } from "./records.t
 import type { Writes } from "./writes.ts";
 
 /** config/kernel/modules.json (compile): modules with kernel roles, a privileged entry, a token of their own or a channel. */
-export type ModuleInfo = { label?: string; roles?: string[]; privileged?: string[]; token?: string; channel?: { transport?: string }; settings?: Record<string, unknown>; facts?: Record<string, { subject?: string; reasons?: string[] }>; stages?: StageDecl[]; journeys?: JourneyDecl[] };
+export type ModuleInfo = { label?: string; roles?: string[]; privileged?: string[]; token?: string; channel?: { transport?: string }; settings?: Record<string, unknown>; facts?: Record<string, { subject?: string; reasons?: string[] }>; stages?: StageDecl[]; journeys?: JourneyDecl[]; subscribes?: Record<string, { kinds: string[]; resources: string[] | "*" }> };
 export type ModulesFile = { modules?: Record<string, ModuleInfo>; owner?: { name?: string; email?: string; timezone?: string }; commit_domain?: string; repos?: { orgs?: string[]; maintained?: string[]; fleet_org?: string; review_code?: string; code_review_mandatory?: string[] } };
 export type Api = (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>;
 type Log = (msg: string, f?: Record<string, unknown>) => void;

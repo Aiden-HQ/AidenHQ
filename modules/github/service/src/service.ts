@@ -33,6 +33,7 @@ import { MIGRATION_WAIT, createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
+import type { Feed } from "./feed.ts";
 import { LOCAL_ORG, plan as planRules, type Ship } from "./plan.ts";
 import { fileContext, numstat } from "./review-files.ts";
 /** One changed file as git counts it (review-files.ts numstat; a binary file has no line counts). */
@@ -1421,23 +1422,20 @@ export function createService(o: Options) {
     });
     return { sha };
   }
+  // The change feed (feed.ts, started by main.ts): the train's product tip comes from its snapshot.
+  let feed: Pick<Feed, "tip"> | undefined;
   // The train lands the bump through GitHub: an instance repo on this server (local/…, codehost-local's) is not its to move.
   const train = o.productRepo && o.instanceRepo && slugOf(o.instanceRepo).org.toLowerCase() !== LOCAL_ORG ? createReleaseTrain({
     dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
     commit: trainCommit,
     github: {
-      async tip(repo) {
-        const s = slugOf(repo);
-        const def = await defaultBranch(s.slug);
-        const tip = String((await api("GET", `/repos/${s.slug}/commits/${def}`)).sha ?? "");
-        const checks = await checksAt(s, tip);
-        return { tip: /^[0-9a-f]{40}$/.test(tip) ? tip : undefined, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };
-      },
-      async text(repo, path) {
+      async tip(repo) { return feed?.tip(repo); },
+      async text(repo, path, at) {
         const s = slugOf(repo);
         const ref = await defaultBranch(s.slug);
         const { dir, sha } = await fetchRemote(s, ref);
-        return fileAt(dir, sha, path);
+        // At the commit a push named (the branch's tip may already be past it): the fetch brings it.
+        return fileAt(dir, at && /^[0-9a-f]{40}$/.test(at) ? at : sha, path);
       },
       async commits(repo, from, to) {
         const s = slugOf(repo);
@@ -1498,11 +1496,13 @@ export function createService(o: Options) {
     startReleases: () => train?.start(),
     /** The superseded design reviews' sweep (design-review.ts). */
     startDesignReviews: () => startDesignReviewSweep(designReviews, { log }),
+    designReviews, train, managedRepos: () => (access.connected() ? managedRepos() : Promise.resolve([] as string[])),
+    /** The change feed this service's train reads its product tip from. */
+    useFeed: (f: Pick<Feed, "tip">) => { feed = f; },
     /** Held writes run once GitHub is connected again: checked every 30 s. */
     startHeld: () => { const t = setInterval(() => void stepHeld(), 30_000); t.unref?.(); return () => clearInterval(t); },
     stepHeld,
-    /** Flow: the churn loop (flow.ts), and the fact queue sent now (tests, shutdown). */
-    startFlow: () => flow.startChurn(),
+    /** Flow's fact queue sent now (tests, shutdown). */
     flushFacts: () => flow.flush(),
     flow,
     stepReleases: () => train?.step(),

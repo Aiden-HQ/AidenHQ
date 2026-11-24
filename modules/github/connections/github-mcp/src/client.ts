@@ -23,7 +23,7 @@ export type Need =
   | { cause: "sso"; org: string; url: string; /** GitHub's own words, in full, when it gave them (a GraphQL refusal). */ message?: string }
   | { cause: "restricted"; org: string; url: string; message?: string }
   | { cause: "unreachable"; repo: string }
-  | { cause: "rate_limited"; until: string }
+  | { cause: "rate_limited"; until: string; /** GitHub itself refused the request (not this process's reserve). */ by?: "github" }
   | { cause: "write_busy" };
 
 const OWNER_FIXABLE = new Set<Need["cause"]>(["not_connected", "expired", "scope", "sso", "restricted"]);
@@ -89,7 +89,12 @@ export type Identity = {
 };
   /** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
 type CallOpts = {
-  background?: boolean; accept?: string; as?: Identity; etag?: string;
+  background?: boolean; accept?: string; as?: Identity;
+  /** A conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
+  etag?: string;
+  /** Who is calling, for the hourly count of calls by caller and status (the change feed, the sync, …). The change feed ("feed")
+   * skips the background reserve down to a small floor: its 304s are free and its 200s are the changes every consumer needs. */
+  caller?: string;
   /** The latest this call may spend waiting out a rate limit (a read) or waiting out a quota before its write is retried.
    * Past it the call refuses at once as a typed rate_limited need instead of sleeping until the reset, which is what a
    * background scan wants for work it can defer to its next pass. On a read it bounds the wait, not the request: a read that
@@ -109,6 +114,8 @@ export interface GitHubAccess {
   graphql(query: string, variables: Record<string, unknown>, o?: { background?: boolean; as?: Identity }): Promise<any>;
   scopes(): string[];
   status(): GitHubStatus;
+  /** Calls `fn` after each content-creating write this process sends (any identity): the change feed reads that repo again soon. */
+  onWrite(fn: (method: string, path: string) => void): void;
 }
 
 /** Scopes that include others (GitHub's OAuth scope tree). */
@@ -147,6 +154,8 @@ type Sleep = (ms: number) => Promise<void>;
 /** Calls `fire` after `ms`; the returned function cancels it. */
 type Timer = (ms: number, fire: () => void) => () => void;
 
+/** The change feed's reads stop only this close to empty (the rest of the reserve is theirs). */
+const FEED_FLOOR = 100;
 /** GitHub: content-creating requests go serially, at least this far apart (its secondary-limit guidance). */
 const WRITE_GAP_MS = 1000;
 /** A secondary-limit refusal without retry-after waits this long, doubling per refusal in a row. */
@@ -244,11 +253,11 @@ export function createAccess(o: {
    * A background call sleeps on the reserve and on a refusal alike, but only where a write can still see its attempt through
    * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. A read's `deadline` bounds
    * the wait itself (`read`), never the attempt: a read that starts just before it still gets its own fetch timeout. */
-  async function admit(p: Pace, resource: string, background: boolean, deadline?: number, read = false): Promise<void> {
+  async function admit(p: Pace, resource: string, background: boolean, deadline?: number, read = false, feed = false): Promise<void> {
     for (;;) {
       const t = now();
       const r = p.rates.get(resource);
-      const low = r && r.limit > 0 && r.remaining < r.limit * reserve && r.reset > t ? r.reset : 0;
+      const low = r && r.limit > 0 && r.remaining < (feed ? Math.min(FEED_FLOOR, r.limit * reserve) : r.limit * reserve) && r.reset > t ? r.reset : 0;
       const until = Math.max(p.blockedUntil > t ? p.blockedUntil : 0, background ? low : 0);
       if (!until) return;
       const canWait = read ? deadline === undefined || until <= deadline : fits(deadline, until);
@@ -324,16 +333,16 @@ export function createAccess(o: {
     fail({ cause: "write_busy" });
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number) {
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number, caller?: string) {
     const p = paceOf(as);
-    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, readDeadline, as, false, etag);
+    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, readDeadline, as, false, etag, caller);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
     // the patience it always had and waits a limit out, inside the queue like every other write — unless its caller gave one
     // (a recovery write that must not hold the scan), which bounds that wait the same way a tool's budget does.
     const deadline = readDeadline ?? (background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS);
-    return queued(p, deadline, () => paced(p, deadline, () => attempt(p, method, path, body, resource, background, accept, deadline, as)));
+    return queued(p, deadline, () => paced(p, deadline, () => attempt(p, method, path, body, resource, background, accept, deadline, as, false, undefined, caller)));
   }
 
   /** Runs a write behind its identity's queue: one at a time, a gap apart, and the whole queue waits out a refusal. A write that is
@@ -386,13 +395,25 @@ export function createAccess(o: {
     }
   }
 
-  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string): Promise<{ status: number; body: any; headers: Headers }> {
+  const writeListeners: ((method: string, path: string) => void)[] = [];
+  /** Calls answered this hour, by caller and status ("feed 304"), logged as the hour turns: what each reader really costs. */
+  let calls = { at: now(), n: new Map<string, number>() };
+  const count = (caller: string | undefined, status: number) => {
+    if (now() - calls.at >= 3_600_000) {
+      if (calls.n.size) o.log?.("github calls this hour", { since: new Date(calls.at).toISOString(), calls: Object.fromEntries([...calls.n].sort((a, b) => b[1] - a[1])) });
+      calls = { at: now(), n: new Map() };
+    }
+    const k = `${caller ?? "other"} ${status}`;
+    calls.n.set(k, (calls.n.get(k) ?? 0) + 1);
+  };
+
+  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string, caller?: string): Promise<{ status: number; body: any; headers: Headers }> {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
     // A read's `deadline` bounds only its rate-limit wait (admit): the attempt that follows has its own timeout, and a read
     // creates nothing, so nothing lands after a caller was told it failed.
     const read = !createsContent(method, path, body);
-    await admit(p, resource, background, deadline, read);
+    await admit(p, resource, background, deadline, read, caller === "feed");
     const t = as ? await as.token(retried) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();
@@ -408,15 +429,18 @@ export function createAccess(o: {
       // Counted as sent, per identity: how much of the owner's write limit the App takes off it.
       if (now() - p.hour.at >= 3_600_000) p.hour = { at: now(), writes: 0 };
       p.hour.writes++;
+      for (const fn of writeListeners) { try { fn(method, path); } catch { /* a listener never breaks the write */ } }
       o.log?.("github write", { identity: as ? "app" : "owner", key: as?.key ?? "owner", method, path: path.replace(/[0-9a-f]{40}/g, ":sha").replace(/\/[0-9]+/g, "/:n").split("?")[0], status: res.status, writes_this_hour: p.hour.writes });
     }
     observe(p, res, sentFor);
+    count(caller, res.status);
     const text = await res.text();
     let parsed: any = text;
     try { parsed = text ? JSON.parse(text) : {}; } catch { /* a non-JSON answer (a diff, a log) stays text */ }
     // Another identity's token GitHub refused (revoked, or the installation changed): once more with a new token.
-    if (as && res.status === 401 && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag);
+    if (as && res.status === 401 && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
     const need = classify(p, path, res, parsed, Boolean(as));
+    if (need?.cause === "rate_limited") need.by = "github";
     if (need?.cause === "expired") o.auth.mark("expired", "GitHub refused the token (401)");
     if (need) fail(need);
     if (as) {
@@ -443,9 +467,10 @@ export function createAccess(o: {
 
   return {
     connected,
+    onWrite: (fn) => void writeListeners.push(fn),
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline),
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline, opts.caller),
     graphql: async (query, variables, opts = {}) => {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
       const body = res.body;

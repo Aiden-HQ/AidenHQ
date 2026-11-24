@@ -8,6 +8,12 @@ license: MIT
 # finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
 requires:
   - github # PR reads (github-mcp) and the poster
+  - board # contributes.board.pages
+contributes:
+  # The Reviews page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules"). Its
+  # settings change is the module's own setting, code_review; a run's dismiss and a one-off ask are the owner's own calls.
+  board.pages:
+    - { id: code-review, title: Reviews, icon: reviews, order: 5, connection: code_review, view: "ui://code-review/page", tools: [ code_review_overview, code_review_run_detail, code_review_report, code_review_catalog, code_review_available, code_review_run, code_review_dismiss, code_review_configure ] }
 roles:
   # kernel.tasks: one task per reviewed PR for the Reviewer Manager (role reviewer-manager), where its posts' approvals land.
   # kernel.wake, kernel.owner-notice: a one-off ask's one summary, as a wake notice on the task that asked for it (its agent
@@ -122,15 +128,14 @@ connections:
     auth: code_review_service_key
     returns: untrusted
     tools:
-      read: [ code_review_config, code_review_runs, code_review_findings ]
-      write: [ code_review_run, code_review_configure, code_review_resolve ]
+      read: [ code_review_config, code_review_runs, code_review_findings, code_review_overview, code_review_run_detail, code_review_report, code_review_catalog, code_review_available ]
+      write: [ code_review_run, code_review_configure, code_review_resolve, code_review_dismiss ]
 # Posting: this service files a record per post, per acknowledgement and per status and executes it (executor@1) through
 # github-mcp's /internal/review routes (the github module's poster, as the owner's sign-in). A post and a reply are Tier 0: no
 # AI reviewer reads them (the instance-details check below refuses a host, home path or address in either, before it runs); a
 # notice is Tier 0 (fixed words: phase and reason only), and so is a status (the commit status aidenhq/review on a gated repo's PR
 # head, mirroring the merge verdict in fixed words). Plan refuses a record this service didn't file for one of its runs.
 providers:
-  board: { url: "http://code-review:8098", auth: code_review_api_token }
   executor:
     url: http://code-review:8098/aidenhq/v1/executor
     auth: code_review_service_key
@@ -181,11 +186,9 @@ services:
         CODE_REVIEW_SETTINGS: "${settings.code_review}"
         CODE_REVIEW_POLL_SECONDS: "${settings.code_review_poll_seconds}"
         CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
-        CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}
         CODE_REVIEW_SERVICE_KEY_FILE: ${secrets.code_review_service_key}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - code_review_token
-  - code_review_api_token
   - code_review_service_key
 data_version: 3 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

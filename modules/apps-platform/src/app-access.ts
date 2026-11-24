@@ -37,6 +37,16 @@ export interface AppAccessDeps {
   gate: () => { password: boolean; apps?: Record<string, SharedApp> } | undefined;
   /** The account with this (lowercase) email, if any. */
   account: (email: string) => MemberAccount | undefined;
+  /**
+   * Whether this email is the instance's test user (settings.edge.test_user) and this app one it names. The test account is
+   * never in accounts.json, so its role is resolved here: a member of exactly those apps, never admin and never blocked.
+   */
+  testMember?: (app: string, email: string) => boolean;
+  /**
+   * Whether this email is any of the kernel's own test accounts, whatever the app. One is never an ordinary account: an app
+   * the setting does not name resolves to blocked, never to that app's default or an assignment.
+   */
+  testAccount?: (email: string) => boolean;
   /** apps-mcp's manifest endpoint for one app; throws when it can't answer. */
   manifest?: (app: string) => Promise<Manifest>;
   /** Writes accounts.json and resolves once the gate's file has every change made before the call; throws if it can't. */
@@ -102,6 +112,11 @@ export function createAppAccess(d: AppAccessDeps) {
    */
   function effectiveRole(app: string, email: string): string {
     appOf(app);
+    // The test user is a member of the apps the owner named, and nothing else: it is not in accounts.json, so a default of
+    // blocked (or an assignment) never decides for it.
+    if (d.testMember?.(app, email)) return "member";
+    // A test account on an app the setting does not name is blocked outright: app defaults and stored rows never apply to it.
+    if (d.testAccount?.(email)) return "blocked";
     const acct = d.account(email);
     if (acct?.disabled || (d.gate()?.password && !acct)) return "blocked";
     if (acct?.role === "admin") return "admin";
@@ -139,6 +154,10 @@ export function createAppAccess(d: AppAccessDeps) {
     try {
       check?.();
       if (d.account(email)?.role === "admin") throw new AccessError(400, "that's an AidenHQ admin: they're an admin of every app");
+      // The test user is a member of exactly the apps settings.edge.test_user names, resolved before any assignment (above),
+      // so a row here could never take effect: refuse it rather than logging a block the listener does not honour. Revoking
+      // its access is the owner's setting, not an app admin's row.
+      if (d.testMember?.(app, email) || d.testAccount?.(email)) throw new AccessError(400, "the test user's access is settings.edge.test_user: change that setting, not this app's roles");
       if (role !== null && !known(app, role)) throw new AccessError(400, `${app} has no role ${role}`);
       before = (db.prepare("SELECT role FROM app_roles WHERE app = ? AND email = ?").get(app, email) as { role: string } | undefined)?.role ?? null;
       if (role === null) db.prepare("DELETE FROM app_roles WHERE app = ? AND email = ?").run(app, email);

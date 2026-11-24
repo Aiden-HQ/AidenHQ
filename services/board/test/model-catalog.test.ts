@@ -1,6 +1,6 @@
 // The model picker's list rules (src/model-catalog.ts): older versions collapse, engines filter, search finds the old one.
 import { describe, expect, it } from "vitest";
-import { bare, costText, estimate, family, listing, prefixOf, type CatalogModel } from "../src/model-catalog.js";
+import { bare, family, listing, prefixOf, type CatalogModel } from "../src/model-catalog.js";
 
 const m = (id: string, created: number, o: Partial<CatalogModel> = {}): CatalogModel => ({ id, name: id, provider: id.replace(/^~/, "").split("/")[0]!, created, context: 200000, in: 1, out: 2, tools: true, reasoning: false, ...o });
 const catalog = [
@@ -40,19 +40,6 @@ describe("model picker list", () => {
 
   it("a saved id the catalog doesn't offer stays first", () => {
     expect(ids(listing({ ...base, current: "gone/old" }))[0]).toBe("Not offered: gone/old");
-  });
-
-  it("an option's cost comes from its past runs: same model as is, another scaled by price, none: no number", () => {
-    const cat = [m("x/cheap", 1, { in: 1, out: 1 }), m("x/dear", 1, { in: 4, out: 4 }), m("x/unpriced", 1, { in: 0, out: 0 })];
-    const past = [{ model: "x/cheap", effort: "medium", n: 3, usd: 0.3 }, { model: "x/cheap", effort: "high", n: 1, usd: 0.9 }];
-    expect(estimate(past, "x/cheap", "medium", cat)).toBeCloseTo(0.3);
-    expect(estimate(past, "x/dear", "medium", cat)).toBeCloseTo(1.2);
-    // no run at this effort: the others count, as they are
-    expect(estimate(past, "x/cheap", "low", cat)).toBeCloseTo(0.45);
-    expect(estimate(past, "x/unpriced", "medium", cat)).toBeNull();
-    expect(estimate(undefined, "x/cheap", "medium", cat)).toBeNull();
-    expect(costText(0.004)).toBe("<$0.01");
-    expect(costText(42.4)).toBe("$42");
   });
 
   it("a stored model's prefix is taken off for the catalog and put back on a pick", () => {

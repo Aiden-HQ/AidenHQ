@@ -105,7 +105,9 @@ test("only the kernel calls the action: unsigned, tampered, stale or replayed re
   assert.equal(pc.issues[TASK].status, "in_progress");
   assert.equal((await pc.direct("agent-key", good)).data.status, "done");
   assert.match((await pc.direct("agent-key", good)).data.refused, /already used/, "a replay");
-  // The kernel's own calls carry a signature, never the key.
+  // The kernel's own calls carry a signature, never the key. (The `done` above closed the task, and a closed task takes no new
+  // comment: reopen it, as this test is about the signature, not the status.)
+  pc.issues[TASK].status = "in_progress";
   await kernelOf(pc.url).post(JOB, { kind: "reply", body: "hello" });
   const last = pc.seen().at(-1);
   assert.ok(/^[0-9a-f]{64}$/.test(last.sig));
@@ -118,4 +120,56 @@ test("done needs the kernel's finish gate: refused without gated; the kernel sen
   assert.equal(pc.issues[TASK].status, "in_progress");
   const r = await kernelOf(pc.url).post(JOB, { kind: "status", body: "Finished.", status: "done" });
   assert.equal(r.status, "done");
+});
+
+test("a reply on a closed task is neither posted nor relayed: the kernel reads the task before it writes", async (t) => {
+  const pc = await paperclip(t);
+  let relayed = 0;
+  const status = { now: "in_progress" };
+  const o = kernelOf(pc.url, { relay: async () => void relayed++, task: async () => ({ status: status.now }) });
+  status.now = "done";
+  const r = await o.post(JOB, { kind: "reply", body: "Done." });
+  assert.equal(r.comment, null, "nothing is posted");
+  assert.deepEqual(pc.comments, [], "no comment on the closed task");
+  assert.equal(relayed, 0, "and nothing to the owner's channel");
+  assert.deepEqual(pc.seen(), [], "the plugin was never asked: the decision is made before the write");
+  // A cancelled task is the same.
+  status.now = "cancelled";
+  assert.equal((await o.post({ ...JOB, id: "j-0123456789abcde1" }, { kind: "reply", body: "Done." })).comment, null);
+  assert.deepEqual(pc.comments, []);
+  // An open task posts, and its relay runs.
+  status.now = "in_progress";
+  const open = await o.post({ ...JOB, id: "j-0123456789abcde2" }, { kind: "reply", body: "Done properly." });
+  assert.ok(open.comment, "an open task takes its reply");
+  assert.equal(relayed, 1, "and the relay runs");
+});
+
+test("a reply's failed relay keeps its record, so the retry finds its comment instead of posting a second", async (t) => {
+  const pc = await paperclip(t);
+  const db = new DatabaseSync(":memory:");
+  const relayed: string[] = [];
+  const status = { now: "in_progress" };
+  const task = async () => ({ status: status.now });
+  const before = kernelOf(pc.url, { db, task, relay: async (_j, body) => { relayed.push(body); throw Object.assign(new Error("channel down"), { status: 502 }); } });
+  await assert.rejects(before.post(JOB, { kind: "reply", body: "Posted, relay pending." }), { status: 502, code: "unknown" });
+  assert.equal(relayed.length, 1, "posted once, and the relay was attempted");
+  assert.equal(pc.comments.length, 1, "the comment is written");
+  relayed.length = 0;
+  const after = kernelOf(pc.url, { db, task, relay: async (_j, body) => void relayed.push(body) });
+  const r = await after.post(JOB, { kind: "reply", body: "Posted, relay pending." });
+  assert.ok(r.comment, "the already-posted reply comes back");
+  assert.deepEqual(relayed, ["Posted, relay pending."], "and its relay is finished on the retry");
+  assert.equal(pc.comments.length, 1, "never a second comment");
+});
+
+test("a reply is not posted when the task cannot be read, and one read that fails is retried, never dropped", async (t) => {
+  const pc = await paperclip(t);
+  // A read that fails is a 502, so the dispatcher decides later: it never silently drops an open task's reply.
+  const o = kernelOf(pc.url, { task: async () => { throw new Error("control plane GET task → 502"); } });
+  await assert.rejects(o.post(JOB, { kind: "reply", body: "Done." }), { status: 502, code: "unknown" });
+  assert.deepEqual(pc.comments, []);
+  // A task gone (404) is closed enough: nothing to tell.
+  const gone = kernelOf(pc.url, { task: async () => undefined });
+  assert.equal((await gone.post(JOB, { kind: "reply", body: "Done." })).comment, null);
+  assert.deepEqual(pc.comments, []);
 });

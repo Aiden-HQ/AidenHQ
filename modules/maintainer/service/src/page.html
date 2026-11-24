@@ -11,6 +11,8 @@
 /*kit:css*/
   .row { grid-template-columns: minmax(150px, 1.6fr) repeat(4, minmax(84px, 1fr)) 72px; }
   .duty { display: grid; gap: 4px; justify-items: start; }
+  .repo .link { display: flex; margin-top: 2px; font-weight: 400; }
+  .row .repo { align-self: start; }
   .trig { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; }
   .trig p { margin: 2px 0 0; color: var(--soft); max-width: 62ch; }
   @media (max-width: 860px) { .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; } .row .repo { grid-column: 1 / -1; } }
@@ -30,36 +32,53 @@
 <script>
 /*kit:js*/
   // Plain words for each duty: what the Maintainer does on a repo when it is on.
+  // Each entry field beyond the duty switches, and the value it has when the entry doesn't set it.
+  const OTHER = { label: ["Fix label", "The label that asks for a fix on this repo. An issue carrying it is validated and worked.", "agent-fix", "text"], trusted: ["Trusted roles", "Who may vouch for a label: a label or comment from a collaborator with one of these roles counts.", ["admin", "maintain"], "checks"], stale_days: ["Quiet days", "With Contributor PRs on: days without activity before a nudge, and again before the close. Drafts get double.", 7, "num"] };
+  const ROLES = { admin: "Repo admins.", maintain: "Maintainers.", write: "Anyone with write access." };
+  const open = new Set();
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  function drawer(raw) {
+    const r = shown(raw), set = (k, v, live) => propose(raw.repo, { [k]: v }, live);
+    return h("div", { className: "drawer", id: `drawer-${raw.repo}` }, ...Object.entries(OTHER).map(([k, [label, text, dflt, kind]]) => {
+      const over = !eq(r[k], dflt), ed = editor({ kind, label: `${label} (${raw.repo})`, f: `${raw.repo}|${k}`, value: kind === "num" ? String(r[k]) : r[k], values: Object.keys(ROLES), titles: ROLES, set: (v, live) => set(k, kind === "num" ? v ?? dflt : v, live) });
+      return fld(label, text, kind === "checks" ? { options: ROLES, current: "" } : {}, ed, h("span", { className: "dflt", textContent: `Default: ${Array.isArray(dflt) ? dflt.join(", ") : dflt}` }), over ? h("span", { className: "ovr", textContent: "Overridden" }) : null, over ? linkBtn("Reset to default", () => set(k, null)) : null);
+    }), h("div", { className: "fld" }, h("div", { className: "fl", textContent: "Duties" }), h("div", { className: "meta", textContent: "Fix issues, Features, Dependabot and Contributor PRs are the switches in the row above." })));
+  }
   const DUTIES = [["issues", "Fix issues", "Checks each issue carrying the repo's fix label, hands the fix to an engineer and follows it to a merged PR that closes the issue. Labelled issues are worked only while this is on for the repo."], ["features", "Features", "Labels feature requests and builds the ones you mark agent-build."], ["dependabot", "Dependabot", "Takes Dependabot's dependency-update PRs on this repo and sees them through to a merge."], ["contributor_prs", "Contributor PRs", "Nudges, then closes, a person's PR that has gone quiet."]];
   let cfg = { repos: [], external_triage: false };
   // The edits the owner hasn't saved yet, one proposal for the page: duty changes per repo, and the triage switch. Each edit merges into it.
   let pending = { repos: {}, external_triage: undefined };
   const fresh = () => ({ repos: {}, external_triage: undefined });
-  const shown = (r) => ({ ...r, ...(pending.repos[r.repo] ?? {}) });
+  const shown = (r) => { const m = { ...r, ...(pending.repos[r.repo] ?? {}) }; for (const [k, [, , d]] of Object.entries(OTHER)) if (m[k] === null) m[k] = d; return m; };
 
-  async function propose(repo, duties) {
+  // The last proposal the host accepted: a refused edit drops back to it, so one bad value never blocks the next proposal.
+  let lastGood = fresh();
+  async function propose(repo, duties, live) {
     const next = { repos: { ...pending.repos }, external_triage: pending.external_triage };
     if (repo) next.repos[repo] = { ...(next.repos[repo] ?? {}), ...duties };
     else next.external_triage = duties.external_triage;
     pending = next; // at once, so a second edit before the answer comes back keeps this one
-    render();
+    if (!live) render();
     const edits = { ...(Object.keys(next.repos).length ? { repos: next.repos } : {}), ...(next.external_triage === undefined ? {} : { external_triage: next.external_triage }) };
-    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits })); } catch (e) { say(e.message, true); } });
+    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits })); lastGood = next; } catch (e) { if (live) say(`${e.message} Correct the value to go on.`, true); else { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } } });
   }
 
-  function render() {
+  const redraw = () => keepFocus(draw);
+  function render() { soon(redraw); }
+  function draw() {
     closeHelp();
     $("trighelp").replaceChildren(help("Triage unlabelled issues", "Whether the Maintainer also looks at issues nobody labelled.", { options: { on: "Each new issue from someone outside is triaged within minutes; the backlog gets a daily run.", off: "Only issues carrying the fix label are worked." }, current: (pending.external_triage ?? cfg.external_triage) ? "on" : "off", note: "Triage runs cost money, so it starts off. The backlog is triaged by the daily routine, which must be switched on too (routines start off on a new install)." }));
     $("count").textContent = cfg.repos.length ? `${cfg.repos.length}` : "";
     const rows = cfg.repos.map((raw) => {
       const r = shown(raw);
       const remove = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
-      remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { remove: r.repo }); pending = fresh(); proposed(x); render(); } catch (e) { say(e.message, true); } });
-      return h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
-        h("div", { className: "repo" }, r.repo, h("i", { textContent: `label ${r.label}` })),
+      remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { remove: r.repo }); pending = lastGood = fresh(); proposed(x); render(); } catch (e) { say(e.message, true); } });
+      const row = h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
+        h("div", { className: "repo" }, r.repo, h("i", { textContent: `label ${r.label}` }), (() => { const b = linkBtn("Settings", () => { open.has(raw.repo) ? open.delete(raw.repo) : open.add(raw.repo); render(); }); b.className = "link toggle"; b.setAttribute("aria-expanded", String(open.has(raw.repo))); b.setAttribute("aria-controls", `drawer-${raw.repo}`); return b; })()),
         ...DUTIES.map(([k, label, tip]) => { const sw = toggle(r[k], `${label} on ${r.repo}`, () => propose(r.repo, { [k]: !r[k] })); sw.classList.toggle("unsaved", k in (pending.repos[raw.repo] ?? {})); return h("div", { className: "duty" }, h("span", { className: "lab" }, help(label, tip)), sw); }),
         remove);
-    });
+      return open.has(raw.repo) ? [row, drawer(raw)] : [row];
+    }).flat();
     const cols = h("div", { className: "row cols" }, ...["Repo", ...DUTIES.map(([, label, tip]) => help(label, tip)), ""].map((t) => typeof t === "string" ? h("span", { textContent: t }) : t));
     $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Add one from the Ship page (Add repo); if the page is missing, add the Ship module under Fleet, Modules first. Then switch on the duties you want here.")]));
     setSwitch($("triage"), pending.external_triage ?? cfg.external_triage);

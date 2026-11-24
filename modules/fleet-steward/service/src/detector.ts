@@ -10,8 +10,8 @@ const MIN = 60_000;
 const DAY_MS = 24 * 60 * MIN;
 const DOWN_MS = 15 * MIN; // an app incident open this long (the app-incident loop had its chance)
 const STALE_MS = 60 * MIN; // a source with no good pass this long
-/** Sources that pass on their own slower cadence: the security scanner runs daily. */
-const STALE_FOR: Record<string, number> = { security: 26 * 60 * MIN };
+/** Sources on their own cadence: the security scanner runs daily; the GitHub change feed records a run every 5 minutes. */
+const STALE_FOR: Record<string, number> = { security: 26 * 60 * MIN, github_feed: 15 * MIN };
 const age = (t: string | null | undefined, now: number) => (t ? now - Date.parse(t) : Infinity);
 const mins = (ms: number) => `${Math.round(ms / MIN)} min`;
 
@@ -32,6 +32,14 @@ type FailingScope = { source: string; scope: string; error: string; since: strin
  */
 export function failingScopes(rows: FailingScope[]): { key: string; reason: string }[] {
   return rows.filter((x) => !PER_TARGET_ERRORS.has(x.source)).map((x) => ({ key: `${x.source}:${x.scope}`, reason: `source src_${x.source}, scope ${x.scope}: every pass has failed since ${x.since ? `its last good pass at ${x.since}` : "it started"}; the latest error:\n${fence(x.error, "ingest.error")}` }));
+}
+
+type Reader = { module: string; connection: string; after: number | null; read_at: string | null; waiting: number; oldest: string | null };
+const LAG_MS = 10 * MIN;
+/** A module that subscribes to a connection's event log and hasn't committed past events waiting over 10 minutes (kernel GET /v1/events/readers). */
+export function feedLag(readers: Reader[], t: number): { key: string; reason: string }[] {
+  return readers.filter((r) => r.waiting > 0 && age(r.oldest, t) > LAG_MS)
+    .map((r) => ({ key: `${r.module}:${r.connection}`, reason: `${r.module} hasn't committed ${r.connection} events for ${mins(age(r.oldest, t))} (${r.waiting} waiting${r.read_at ? `; last read ${mins(age(r.read_at, t))} ago` : ""})` }));
 }
 
 type SpendTop = { day: string; name: string; cost_usd: number; calls: number };
@@ -912,6 +920,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
       if (!r.sources) return undefined; // the warehouse isn't set up
       return [...staleSources(r.sources, now()), ...failingScopes(r.failing_scopes ?? []), ...shortScopes(r.short_scopes ?? [])];
     },
+    // A code service behind on the kernel's event log (its handler failing, or it stopped reading).
+    async feedLag() { return feedLag(((await d.kernel.call("GET", "/v1/events/readers")) as { readers?: Reader[] }).readers ?? [], now()); },
     // Billed spend today far above the recent days' (the kernel's one work read, which carries the day's top components and subjects).
     async spend() {
       const t = now();

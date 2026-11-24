@@ -23,6 +23,7 @@ function rig() {
   const events = createEvents({
     db: new DatabaseSync(":memory:"), grants: () => grants,
     connections: () => ({ slack: { module: "slack", events: { reads: ["slack_read_channel"] } } as any, github: { module: "github", events: { reads: ["github_issue_read"] } } as any }),
+    subscriptions: () => ({ "code-review": { github: { kinds: ["pull_request.opened"], resources: ["org/a"] } }, ship: { github: { kinds: ["pull_request.opened", "push"], resources: "*" } } }),
     run: async (routine, key, vars) => { runs.push({ routine, key, vars }); return answer(key); },
     routine: async (id) => { const r = routines[id]; if (r === "timeout") throw new Error("timeout"); return r; },
     now: () => t, log: (m, f) => void logs.push([m, f]),
@@ -36,13 +37,14 @@ test("drain, caps, gates and binding", async () => {
   const { events } = r;
   // Intake: only the connection's module; a duplicate id is dropped; a bot post misses R1's filter; R2's filter is its own.
   assert.equal(await refused(() => events.ingest("github", ev("e1"))), 403);
-  assert.deepEqual(events.ingest("slack", ev("e1")), { queued: 1 });
-  assert.deepEqual(events.ingest("slack", ev("e1")), { queued: 0 });
-  assert.deepEqual(events.ingest("slack", ev("b1", { bot: true })), { queued: 0 });
-  assert.deepEqual(events.ingest("slack", ev("e2", { text: "Deploy is red" })), { queued: 2 });
-  // An invalid envelope is a 2xx skip, counted, and permanent.
-  assert.deepEqual(events.ingest("slack", { connection: "slack", resource: "C1", kind: "message" }), { skipped: "invalid", why: "connection, resource, id and kind are short strings" });
-  assert.ok(r.logs.some(([m]) => m === "events: skipped an invalid event"));
+  assert.deepEqual(events.ingest("slack", ev("e1")), { accepted: true, queued: 1 });
+  assert.deepEqual(events.ingest("slack", ev("e1")), { accepted: true, queued: 0 });
+  assert.deepEqual(events.ingest("slack", ev("b1", { bot: true })), { accepted: true, queued: 0 });
+  assert.deepEqual(events.ingest("slack", ev("e2", { text: "Deploy is red" })), { accepted: true, queued: 2 });
+  // An invalid envelope is a 422: final, never a 2xx the emitter would take as accepted.
+  assert.equal(await refused(() => events.ingest("slack", { connection: "slack", resource: "C1", kind: "message" })), 422);
+  assert.equal(await refused(() => events.ingest("slack", ev("d1", { data: { a: { nested: 1 } } }))), 422);
+  assert.ok(r.logs.some(([m]) => m === "events: refused an invalid event"));
   assert.deepEqual(events.resources("slack", "slack").sort(), ["*", "C1"]);
 
   // Nothing fires inside the window; at its end one sealed batch per routine, its id the stable key.
@@ -101,7 +103,7 @@ test("drain, caps, gates and binding", async () => {
   r.tick(60_000);
   await events.drain();
   r.routines[R1] = { status: "active", assignee: "a1" };
-  assert.deepEqual(events.ingest("slack", ev("p2")), { queued: 1 });
+  assert.deepEqual(events.ingest("slack", ev("p2")), { accepted: true, queued: 1 });
   r.tick(60_000);
   r.grants.agents.a1.tools = {};
   await events.drain();
@@ -113,7 +115,7 @@ test("drain, caps, gates and binding", async () => {
 
   // An id seen before (its batch long fired) opens no empty batch: no run.
   r.runs.length = 0;
-  assert.deepEqual(events.ingest("slack", ev("e1")), { queued: 0 });
+  assert.deepEqual(events.ingest("slack", ev("e1")), { accepted: true, queued: 0 });
   r.tick(60_000);
   await events.drain();
   assert.equal(r.runs.length, 0);
@@ -148,7 +150,7 @@ test("the global cap and the pending cap: dropped and counted, still a 2xx answe
   // Over the pending cap an event is acknowledged as dropped (overflow).
   const p = rig();
   for (let i = 0; i < PENDING_MAX; i++) p.events.ingest("slack", ev(`q${i}`));
-  assert.deepEqual(p.events.ingest("slack", ev("over")), { dropped: 1, reason: "overflow" });
+  assert.deepEqual(p.events.ingest("slack", ev("over")), { accepted: true, queued: 0, dropped: { n: 1, reason: "overflow" } });
   assert.ok(p.logs.some(([m]) => m === "events: dropped on overflow"));
 });
 
@@ -166,7 +168,7 @@ test("a batch belongs to the subscription that accepted it; resources match in a
   const r = rig();
   const { events } = r;
   r.grants.routine_events[R1]!.resource = "c1";
-  assert.deepEqual(events.ingest("slack", ev("t1", { thread: "1700000000.000100" })), { queued: 1 });
+  assert.deepEqual(events.ingest("slack", ev("t1", { thread: "1700000000.000100" })), { accepted: true, queued: 1 });
   // The routine moves to another agent while the batch waits: the batch is dropped, never handed to the new assignee.
   r.grants.routine_events[R1]!.agent = "a2";
   r.routines[R1] = { status: "active", assignee: "a2" };
@@ -218,4 +220,31 @@ test("a batch read after its text is gone answers expired; its task stays marked
   r.tick(8 * 24 * 3600_000);
   await events.drain();
   assert.equal(events.fired(job.task), true);
+});
+
+test("the log: module subscribers read their own kinds and repos from a committed cursor", async () => {
+  const r = rig();
+  const { events } = r;
+  const gh = (id: string, resource: string, kind = "pull_request.opened") => ({ connection: "github", resource, id, kind, text: "title", data: { number: 1, head: "abc", draft: false, prs: [1, 2] } });
+  // A fresh reader starts at the watermark; a module with no subscription is refused.
+  assert.deepEqual(events.log("code-review", "github"), { events: [], next: 0, gap: false });
+  assert.equal(await refused(() => events.log("maintainer", "github")), 403);
+  assert.deepEqual(events.ingest("github", gh("a1", "Org/A")), { accepted: true, seq: 1, queued: 0 });
+  assert.deepEqual(events.ingest("github", gh("a1", "Org/A")), { accepted: true, duplicate: true, queued: 0 });
+  assert.deepEqual(events.ingest("github", gh("b1", "org/b")), { accepted: true, seq: 2, queued: 0 });
+  // A kind no module reads isn't logged (it still reaches routines).
+  assert.deepEqual(events.ingest("github", gh("c1", "org/a", "issues.opened")), { accepted: true, queued: 0 });
+  // code-review is compiled for org/a only: it never reads org/b's text; its cursor moves past it.
+  const cr = events.log("code-review", "github", 0);
+  assert.deepEqual(cr.events.map((e) => [e.id, e.resource, e.data?.head]), [["a1", "Org/A", "abc"]]);
+  assert.equal(cr.next, 2);
+  assert.deepEqual(events.log("ship", "github", 0).events.map((e) => e.id), ["a1", "b1"]);
+  assert.deepEqual(events.readers().find((x) => x.module === "code-review")?.waiting, 1);
+  events.log("code-review", "github", cr.next);
+  assert.deepEqual(events.readers().find((x) => x.module === "code-review")?.waiting, 0);
+  // Past the 3-day retention, a reader behind the pruned rows is told so.
+  r.tick(4 * 24 * 3600_000);
+  await events.drain();
+  assert.deepEqual(events.log("ship", "github", 0), { events: [], next: 2, gap: true });
+  assert.deepEqual(events.resources("github", "github").sort(), ["*", "org/a"]);
 });
