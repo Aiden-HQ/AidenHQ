@@ -24,6 +24,7 @@ import { createHealthProbe } from "../src/health.ts";
 import { createProxy } from "../src/proxy.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
+import { createTaskIdentifier } from "../src/task-identifier.ts";
 import { createWork } from "../src/work.ts";
 import { check as productGate } from "../../modules/platform/src/check.ts";
 import { check as instanceDetailsCheck } from "../src/instance-details-check.ts";
@@ -125,7 +126,9 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, planners, repos: () => repos,
     checks: typeof checkTable === "function" ? checkTable : () => checkTable ?? {}, filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck },
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text, o) => { const to = o?.parent ? parents[task] : task; if (to && !closed.includes(to)) notices.push({ task: to, text }); },
-      scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; } } });
+      scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; } },
+    // The same reader main.ts wires in (task-identifier.ts), over the fake control plane: one contract, never a copy.
+    taskIdentifier: createTaskIdentifier(async (method, path) => { const r = await fetch(new URL(path, cpServer.url), { method, headers: { authorization: "Bearer board-key" } }); return { status: r.status, json: await r.json().catch(() => ({})) }; }) });
   // `connect`: connect on first use wired as main.ts wires it (facts, the wake inbox, waits, the connection state).
   let connectionState;
   const proxy = createProxy({ whoami, grants: () => grantsTable().agents ?? {}, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, needs: () => connectionState, log: logf });
