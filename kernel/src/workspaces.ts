@@ -24,7 +24,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { npmCacheDir } from "../../services/computer/lib.ts";
 import { checkAttempt } from "./checkjobs.ts";
-import { removeTree, trashAway } from "./trash.ts";
+import { emptyTrash, removeTree, trashAway } from "./trash.ts";
 
 export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8, CACHE_DAYS = 7;
 /** How long the closed rule waits on the control plane's answer before it counts as none. */
@@ -145,7 +145,8 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
       try { statSync(trash); } catch { continue; }
       await removeTree(trash).catch((e: Error) => log("trash not removed", { trash, err: e.message }));
     }
-    // The shared npm cache, started afresh (the next job's box makes it again).
+    // The shared npm cache, started afresh (the next job's box makes it again); an earlier one a restart left half removed goes.
+    emptyTrash(join(workDir, ".cache", ".trash"), log);
     const cache = npmCacheDir(workDir), born = (() => { try { return statSync(cache).birthtimeMs; } catch { return undefined; } })();
     if (born !== undefined && (pressure || now() - born > CACHE_DAYS * DAY) && !stopping() && !db.prepare("SELECT 1 FROM jobs WHERE state IN ('admitted', 'running') LIMIT 1").get()) {
       try { trashAway(cache, join(workDir, ".cache", ".trash"), log); log("shared npm cache started afresh", { cache, ...(pressure ? { pressure: true } : {}) }); } catch (e) { log("shared npm cache not removed", { cache, err: (e as Error).message }); }
@@ -165,6 +166,7 @@ export function pruneSkillRuntimes({ companiesDir, log = () => {}, now = Date.no
   const ls = (d: string) => { try { return readdirSync(d); } catch { return []; } };
   const newest = (d: string): number => Math.max(statSync(d).mtimeMs, ...ls(d).map((n) => statSync(join(d, n)).mtimeMs));
   for (const company of ls(companiesDir)) {
+    emptyTrash(join(companiesDir, company, "codex-home", ".trash"), log);
     const root = join(companiesDir, company, "codex-home", "skill-runtimes");
     for (const agent of ls(root)) for (const hash of ls(join(root, agent))) {
       const dir = join(root, agent, hash);

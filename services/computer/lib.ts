@@ -19,7 +19,7 @@ export interface Box { busy: number; lastUsed: number; agentId?: string }
  * its task's jobs the box is parked (`parked`: when): no job, no token, kept warm for the task's next job when that job's box
  * would be the same (`compat`, compatKey).
  */
-export interface JobRec { container: string; agentId?: string; issueId?: string; identifier?: string; workspace?: string; codexHome?: string; kernel?: boolean; check?: string; tokenHash?: string; roles?: string[]; leaseUntil: number; job?: string; gen?: number; compat?: string; parked?: number }
+export interface JobRec { container: string; agentId?: string; issueId?: string; identifier?: string; workspace?: string; codexHome?: string; kernel?: boolean; check?: string; tokenHash?: string; roles?: string[]; leaseUntil: number; job?: string; gen?: number; compat?: string; parked?: number; retired?: boolean }
 
 const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
 const MCP_BLOCK_ENV = "AIDENHQ_MCP_B64";
@@ -169,15 +169,27 @@ export class Jobs {
   /** The job's lease ends and the box is parked: its token opens nothing from now on. */
   park(container: string, now = Date.now()) {
     const r = this.#by.get(container);
-    if (!r) return false;
+    if (!r || r.retired) return false;
     delete r.tokenHash; delete r.job;
     r.parked = now; r.leaseUntil = 0;
     return true;
   }
   /** Revokes the box's token now (its job is over), before the box is parked or goes. */
   revoke(container: string) { const r = this.#by.get(container); if (r) { delete r.tokenHash; delete r.job; } }
+  /**
+   * The box is going: no token, no lease, never leased again. The record stays (holding the task) until Docker has removed the
+   * box, so the task's next job waits for that rather than starting beside it.
+   */
+  retire(container: string) {
+    const r = this.#by.get(container);
+    if (!r) return false;
+    this.revoke(container);
+    delete r.parked;
+    r.retired = true; r.leaseUntil = 0;
+    return true;
+  }
   /** A parked box leased to the task's next job: a new generation, the new job's token and roles. */
-  lease(container: string, { job, tokenHash, roles }: { job: string; tokenHash: string; roles: string[] }, now = Date.now()) {
+  lease(container: string, { job, tokenHash, roles }: { job?: string; tokenHash: string; roles: string[] }, now = Date.now()) {
     const r = this.#by.get(container)!;
     delete r.parked;
     Object.assign(r, { job, tokenHash, roles, gen: (r.gen ?? 0) + 1, leaseUntil: now + LEASE_MS });
@@ -201,7 +213,7 @@ export class Jobs {
     return r;
   }
   /** Jobs whose lease ran out: the kernel has been gone too long. */
-  lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => !r.parked && r.leaseUntil <= now).map((r) => r.container); }
+  lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => !r.parked && !r.retired && r.leaseUntil <= now).map((r) => r.container); }
   dump() { return [...this.#by.values()]; }
   load(rows: JobRec[] | undefined) { for (const r of rows ?? []) if (r?.container && r.issueId) this.#by.set(r.container, r); }
 }

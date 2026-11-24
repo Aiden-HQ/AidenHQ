@@ -168,23 +168,25 @@ async function remove(name: string, why: string) {
   return true;
 }
 
-/** A box that is not to be reused goes: its record first, so no lease can pick it while Docker removes it. */
+/** A box that is not to be reused goes: retired first, so no lease picks it and the task's next job waits for its removal. */
 function retire(name: string, why: string) {
-  if (jobs.delete(name)) saveJobs();
+  if (jobs.retire(name)) saveJobs();
   return destroy(name, why);
 }
 
-/** What a released job leaves in its box's out folder goes (the folder itself is the box's mount, so it stays). */
+/**
+ * What a released job left in its box's out folder goes (the folder itself is the box's mount, so it stays), off the event
+ * loop. Throws unless the folder is then empty.
+ */
 const outTrash = path.join(stateDir, "trash");
 function emptyOut(outDir: string) {
-  let names: string[] = [];
-  try { names = readdirSync(outDir); } catch { return; }
   mkdirSync(outTrash, { recursive: true, mode: 0o700 });
-  for (const n of names) {
-    const to = path.join(outTrash, `${n}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-    try { renameSync(path.join(outDir, n), to); } catch { continue; }
+  for (const n of readdirSync(outDir)) {
+    const to = path.join(outTrash, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    renameSync(path.join(outDir, n), to);
     void rm(to, { recursive: true, force: true }).catch(() => {});
   }
+  if (readdirSync(outDir).length) throw new Error("its out folder isn't empty");
 }
 
 /**
@@ -202,9 +204,10 @@ function park(name: string) {
       jobs.revoke(name); saveJobs();
       try {
         rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
-        emptyOut(path.join(jobEnvDir, name));
+        // The restart first, so nothing of the job still writes while its out folder is cleared.
         const r = await docker(["restart", "-t", "0", name], { timeoutMs: 60_000 });
         if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `docker restart ${r.exitCode ?? r.signal}`);
+        emptyOut(path.join(jobEnvDir, name));
         if (draining || !jobs.park(name)) throw new Error(draining ? "the launcher is restarting" : "its record went");
         saveJobs();
         log("parked", name);
@@ -259,9 +262,9 @@ const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** The job and check routes (lib.ts controlAllowed). */
 const jobControl = {
-  async "/job"({ job, agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }: { job: string; agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown; agent?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
+  async "/job"({ job, agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }: { job?: string; agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown; agent?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!kernel) throw fail(403, "job boxes are the kernel's");
-    if (typeof job !== "string" || !job) throw fail(400, "the kernel sends its job id");
+    if (job !== undefined && (typeof job !== "string" || !job)) throw fail(400, "a job id is a string");
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
     if (typeof identifier !== "string" || !IDENTIFIER.test(identifier)) throw fail(400, "identifier must be the task's, e.g. PEN-7");
     if (typeof token !== "string" || !token.startsWith("ahqj_") || /\s/.test(token) || typeof mcp !== "string") throw fail(400, "the kernel sends the job's token and its MCP config");
@@ -282,6 +285,9 @@ const jobControl = {
     // One box per task, leased to one job at a time. A box still parking is waited for; a box leased to a job is never shared.
     let before = jobs.byIssue(issueId);
     if (before && parking.has(before.container)) { await parking.get(before.container); before = jobs.byIssue(issueId); }
+    // A box going (retired) holds the task until Docker has removed it; one Docker couldn't remove is still up.
+    if (before?.retired) { await removing.get(before.container); before = jobs.byIssue(issueId); }
+    if (before?.retired) throw fail(409, `the task's last box ${before.container} is still being removed`);
     // A record whose box is gone (a draining launcher gave it back) holds nothing: it goes.
     if (before && !before.parked && (await jobState(before.container)) === "missing") { await destroy(before.container, "gone before the task's next box"); before = undefined; }
     else if (before && !before.parked) throw fail(409, `the task's last box ${before.container} is still up: release it first`);
@@ -290,9 +296,10 @@ const jobControl = {
       const name = before.container;
       const fits = before.compat === compat && !removing.has(name) && !draining && (await jobState(name)) === "running";
       if (fits && jobs.get(name) === before && before.parked) {
-        jobs.lease(name, { job, tokenHash: tokenHash(token), roles }); saveJobs();
+        // The env file first: a lease is only ever committed with a box the kernel can run in.
         const envFile = path.join(jobEnvDir, `${name}.env`);
         writeFileSync(`${envFile}.tmp`, envText, { mode: 0o600 }); renameSync(`${envFile}.tmp`, envFile);
+        jobs.lease(name, { job, tokenHash: tokenHash(token), roles }); saveJobs();
         const b = boxes.get(name);
         if (b) b.lastUsed = Date.now();
         return { container: name, envFile, outDir: path.join(jobEnvDir, name), gen: before.gen, warm: true };
@@ -304,7 +311,7 @@ const jobControl = {
     const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
     // The job's only credential is the kernel's job token: the launcher keeps only its hash.
-    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, kernel: true, tokenHash: tokenHash(token), roles, job, gen: 1, compat }); saveJobs();
+    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, kernel: true, tokenHash: tokenHash(token), roles, ...(job ? { job } : {}), gen: 1, compat }); saveJobs();
     const envFile = path.join(jobEnvDir, `${name}.env`);
     // The job's last message lands here, outside the workspace: a folder of the launcher's, mounted at /aidenhq-out.
     const outDir = path.join(jobEnvDir, name);
@@ -376,7 +383,7 @@ const jobControl = {
     const rec = jobs.get(container);
     // A kernel job's box: an earlier lease's release touches nothing (the box is its successor's now, or parked for it).
     if (rec && !rec.check && !jobs.current(container, gen)) return { released: true, state: "superseded" };
-    if (rec && !rec.check && wipe !== true && !draining && (rec.parked || (await park(container)))) return { released: true, state: "parked" };
+    if (rec && !rec.check && !rec.retired && wipe !== true && !draining && (rec.parked || (await park(container)))) return { released: true, state: "parked" };
     if (jobs.has(container) || (await jobState(container)) !== "missing") await retire(container, "released");
     const state = await jobState(container);
     return { released: state === "missing", state };
@@ -395,6 +402,8 @@ async function checkout(who: { container: string }, token: string, raw: string) 
   if (!r.ok) throw fail(r.status, String(await r.json().then((j) => j.error ?? j.message, () => "")).slice(0, 300) || `the kernel answered ${r.status}`);
   const sha = r.headers.get("x-aidenhq-commit") ?? "";
   if (p.sha && sha !== String(p.sha).toLowerCase()) throw fail(502, `the snapshot is of ${sha.slice(0, 12)}, not ${String(p.sha).slice(0, 12)}`);
+  // The snapshot took a while: the box must still be this job's (a parked and re-leased box is the next job's).
+  if (liveBox(token)?.container !== who.container) throw fail(409, "the job's lease on its box has ended");
   const b = boxes.get(who.container);
   if (b) { b.busy++; b.lastUsed = Date.now(); }
   try {
@@ -514,13 +523,17 @@ const orphans = [];
 for (const name of existing.stdout.trim().split("\n").filter(Boolean)) {
   if (!ours(name)) continue;
   // A box without its job record has lost its binding: nothing may run in it.
-  if (jobs.has(name)) boxes.set(name, { agentId: jobs.get(name)!.agentId, lastUsed: Date.now(), busy: 0 });
+  // A parked box keeps its idle age (its WARM_MS runs from when it was parked); a retired one goes.
+  const rec = jobs.get(name);
+  if (rec && !rec.retired) boxes.set(name, { agentId: rec.agentId, lastUsed: rec.parked ?? Date.now(), busy: 0 });
   else orphans.push(name);
 }
 // A job record whose box is gone never comes back; its lease goes with it.
 for (const name of jobs.containers()) if (!boxes.has(name)) jobs.delete(name);
 saveJobs();
-for (const name of orphans) await destroy(name, "a box without its job record");
+for (const name of orphans) await retire(name, "a box without a live job record");
+// What a launcher stopped mid-removal left in its trash goes.
+for (const n of (() => { try { return readdirSync(outTrash); } catch { return []; } })()) void rm(path.join(outTrash, n), { recursive: true, force: true }).catch(() => {});
 if (boxes.size) log(`found ${boxes.size} job box(es) from before`);
 // Listen only now: a call answered before the boxes from before are known would miss them.
 // The bridge's address can come up after the launcher starts (a fresh install): wait for it quietly, no crash loop.

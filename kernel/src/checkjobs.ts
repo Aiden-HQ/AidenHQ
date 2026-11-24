@@ -61,8 +61,8 @@
 // /aidenhq-out/keep, which the kernel keeps after the run (a regular file of at most INPUT_MAX, never through a link) for its
 // module to fetch (GET /v1/checks/:check/kept). Both are the box's data, never read by the kernel; both go after FILES_DAYS.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { readdir, rm, stat } from "node:fs/promises";
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { missKind, passes } from "../sdk/src/pass-rule.ts";
@@ -424,7 +424,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       const old = now() - FILES_DAYS * 86_400_000;
       const ls = (d: string) => readdir(d).catch(() => [] as string[]);
       for (const dir of [join(workDir, "check-kept"), ...(await ls(join(workDir, "check-inputs"))).map((m) => join(workDir, "check-inputs", m))])
-        for (const f of await ls(dir)) { try { if ((await stat(join(dir, f))).mtimeMs < old) await rm(join(dir, f), { force: true }); } catch {} }
+        // The age check and the unlink in one synchronous step, so an upload replacing the file in between is never removed.
+        for (const f of await ls(dir)) { await new Promise((ok) => setImmediate(ok)); try { if (statSync(join(dir, f)).mtimeMs < old) rmSync(join(dir, f), { force: true }); } catch {} }
     })().finally(() => { sweeping = undefined; });
   };
   /** An attempt's folder (or a part of one) out of the way now, removed off the event loop. */
