@@ -62,6 +62,10 @@
       "source": "./engine-codex"
     },
     {
+      "name": "engine-opencode",
+      "source": "./engine-opencode"
+    },
+    {
       "name": "engineering",
       "source": "./engineering"
     },

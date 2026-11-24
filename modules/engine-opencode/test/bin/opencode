@@ -1,0 +1,41 @@
+#!/usr/bin/env node
+// A stand-in `opencode serve` (1.19.6's routes): sessions, prompt_async with a busy window, abort, status, and an SSE stream of the
+// events the real server emits (captured from 1.19.6).
+import { createServer } from "node:http";
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const port = Number(args[args.indexOf("--port") + 1]);
+const log = (o) => appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
+const known = new Set((process.env.FAKE_SESSIONS ?? "").split(",").filter(Boolean));
+const busyMs = Number(process.env.FAKE_BUSY_MS ?? 100);
+const busy = new Set();
+const streams = new Set();
+const send = (ev) => { for (const r of streams) r.write(`data: ${JSON.stringify(ev)}\n\n`); };
+log({ serve: args, env: { config: process.env.OPENCODE_CONFIG, dir: process.env.OPENCODE_CONFIG_DIR, data: process.env.XDG_DATA_HOME, pw: process.env.OPENCODE_SERVER_PASSWORD, token: process.env.AIDENHQ_RUN_TOKEN } });
+createServer((req, res) => {
+  let b = "";
+  req.on("data", (d) => (b += d));
+  req.on("end", () => {
+    if (req.headers.authorization !== "Basic " + Buffer.from(`opencode:${process.env.OPENCODE_SERVER_PASSWORD}`).toString("base64")) { res.writeHead(401); return res.end(); }
+    const json = (o, code = 200) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
+    const m = req.url.match(/^\/session\/([^/]+)(?:\/(\w+))?$/);
+    if (req.method === "GET" && req.url === "/event") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(`data: ${JSON.stringify({ type: "server.connected", properties: {} })}\n\n`); streams.add(res); return res.on("close", () => streams.delete(res)); }
+    if (req.method === "GET" && req.url === "/session/status") return json(Object.fromEntries([...busy].map((s) => [s, { type: "busy" }])));
+    if (req.method === "POST" && req.url === "/session") { const id = "ses_new"; known.add(id); log({ create: JSON.parse(b) }); return json({ id }); }
+    if (m && req.method === "GET" && !m[2]) return known.has(m[1]) ? json({ id: m[1] }) : json({ name: "NotFoundError" }, 404);
+    if (m && m[2] === "abort") { log({ abort: m[1] }); busy.delete(m[1]); return json(true); }
+    if (m && m[2] === "prompt_async") {
+      const text = JSON.parse(b).parts[0].text;
+      log({ prompt: m[1], text, busy: busy.has(m[1]) });
+      busy.add(m[1]);
+      send({ type: "message.part.updated", properties: { sessionID: m[1], part: { id: "p" + text, type: "tool", tool: "bash", state: { status: "running", input: { command: "echo " + text } } } } });
+      setTimeout(() => {
+        send({ type: "message.part.updated", properties: { sessionID: m[1], part: { id: "t" + text, type: "text", text: "done " + text, time: { start: 1, end: 2 } } } });
+        send({ type: "message.updated", properties: { sessionID: m[1], info: { id: "m" + text, role: "assistant", modelID: "m1", tokens: { input: 10, output: 3, reasoning: 0, cache: { read: 4, write: 0 } }, time: { created: 1, completed: 2 } } } });
+        busy.delete(m[1]);
+      }, busyMs);
+      res.writeHead(204); return res.end();
+    }
+    res.writeHead(404); res.end();
+  });
+}).listen(port, "127.0.0.1");

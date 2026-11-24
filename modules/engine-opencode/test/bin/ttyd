@@ -1,0 +1,3 @@
+#!/bin/sh
+[ -n "$FAKE_LOG" ] && echo "ttyd $*" >> "$FAKE_LOG"
+exec sleep 300

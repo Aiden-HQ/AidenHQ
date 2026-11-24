@@ -1,0 +1,4 @@
+#!/bin/sh
+# A stand-in setsid (macOS has none): the engine runs as the one process.
+[ "$1" = "-w" ] && shift
+exec "$@"
