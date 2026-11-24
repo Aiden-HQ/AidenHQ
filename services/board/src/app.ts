@@ -52,7 +52,7 @@ import { createMcp, WRITE_TOOLS } from "./mcp.js";
 import { FRAME_CSP, FRAME_TYPE, ViewError, mayPropose, type ViewHost } from "./module-views.js";
 import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
-import { createTerminals, isSessionPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
+import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, lastWord, pickAgent, type Message, type Question } from "./chats.js";
 import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
@@ -2832,7 +2832,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         await handleInternal(req, res, url, internal);
       } catch (err) {
         const status = statusOf(err);
-        if (status >= 500 || status === 401) log[status === 401 ? "warn" : "error"]({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "internal request failed");
+        if (status >= 500 || status === 401) log[status === 401 ? "warn" : "error"]({ err: String((err as Error).message ?? err).slice(0, 500), path: loggedPath(url.pathname) }, "internal request failed");
         if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error" }), "application/json");
       }
       return;
@@ -2843,7 +2843,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         await handleMcp(req, res, url);
       } catch (err) {
         const status = statusOf(err);
-        if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "request failed");
+        if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: loggedPath(url.pathname) }, "request failed");
         if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error" }), "application/json");
       }
       return;
@@ -2851,7 +2851,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     // A session's page and its requests carry a signed path, not the board's cookie or header (sessions.ts checks the Host itself).
     const rejected = terminals && isSessionPath(url.pathname) ? undefined : checkRequest(req, opts.allowedHosts);
     if (rejected) {
-      log.warn({ method: req.method, path: url.pathname, reason: rejected }, "request rejected");
+      log.warn({ method: req.method, path: loggedPath(url.pathname), reason: rejected }, "request rejected");
       return send(res, 403, JSON.stringify({ error: rejected }), "application/json");
     }
     // Local mode (the kernel's sign-in is on localhost): a page opened at 127.0.0.1 moves to localhost first. Sign-in
@@ -2875,7 +2875,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       else throw new HttpError(405, "method not allowed");
     } catch (err) {
       const status = statusOf(err);
-      if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "request failed");
+      if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: loggedPath(url.pathname) }, "request failed");
       if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error", ...(err instanceof HttpError && err.errors ? { errors: err.errors } : {}), ...(err instanceof ViewConflict ? { current: err.current } : {}) }), "application/json");
     }
   });

@@ -5,6 +5,7 @@
 // here and never reach the board. An unknown or released lease is a 404.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { request } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { connect } from "node:net";
 import type { Duplex } from "node:stream";
 
@@ -18,7 +19,9 @@ export const isSessionRoute = (url: string | undefined) => ROUTE.test(url ?? "")
 const basic = (which: "term" | "web", secrets: LeaseTarget["secrets"]) => `Basic ${Buffer.from(which === "term" ? `aidenhq:${secrets.term}` : `opencode:${secrets.serve}`).toString("base64")}`;
 
 export function createSessionProxy({ key, lease }: { key: string; lease: (id: string) => Promise<LeaseTarget | undefined> }) {
-  const keyed = (req: IncomingMessage) => Boolean(key) && req.headers.authorization === `Bearer ${key}`;
+  // Compared as equal-length digests, in constant time.
+  const digest = (v: string) => createHash("sha256").update(v).digest();
+  const keyed = (req: IncomingMessage) => Boolean(key) && timingSafeEqual(digest(String(req.headers.authorization ?? "")), digest(`Bearer ${key}`));
   const aim = async (req: IncomingMessage) => {
     const m = ROUTE.exec(req.url ?? "");
     const t = m && (await lease(m[1]!));

@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Issue, Paperclip } from "../src/paperclip.js";
 import { PaperclipError } from "../src/paperclip.js";
-import type { KernelSession } from "../src/sessions.js";
+import { loggedPath, type KernelSession } from "../src/sessions.js";
 import { Store } from "../src/store.js";
 
 const KEY = "s".repeat(48);
@@ -37,12 +37,12 @@ describe("a session's terminal and phone UI", () => {
     seen = {};
     launcher = createServer((req, res) => {
       seen = { path: req.url, auth: req.headers.authorization, cookie: req.headers.cookie };
-      res.writeHead(200, { "content-type": "text/html", "x-frame-options": "DENY", "content-security-policy": "default-src *", "set-cookie": "a=b" }).end("<h1>ttyd</h1>");
+      res.writeHead(200, { "content-type": "text/html", "x-frame-options": "DENY", "content-security-policy": "default-src *", "set-cookie": "a=b", "clear-site-data": "\"cache\"", etag: "v1" }).end("<h1>ttyd</h1>");
     });
     launcher.on("upgrade", (req, socket) => {
       ws = { path: req.url, auth: req.headers.authorization };
       const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
-      socket.write(`HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: ${accept}\r\n\r\n`);
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nset-cookie: a=b\r\nsec-websocket-accept: ${accept}\r\n\r\n`);
       socket.end();
     });
     await new Promise<void>((r) => launcher.listen(0, "127.0.0.1", r));
@@ -78,7 +78,7 @@ describe("a session's terminal and phone UI", () => {
     new Promise<string>((resolve, reject) => {
       // A sandboxed page's origin is "null": the token in the path is the credential.
       const req = request({ host: "127.0.0.1", port: boardPort, path, headers: { host: "localhost:3120", origin: "null", connection: "Upgrade", upgrade: "websocket", "sec-websocket-key": WS_NONCE, "sec-websocket-version": "13" } });
-      req.on("upgrade", (res) => resolve(String(res.statusCode)));
+      req.on("upgrade", (res) => resolve(res.headers["set-cookie"] ? "cookie" : String(res.statusCode)));
       req.on("response", (res) => resolve(String(res.statusCode)));
       req.on("error", reject);
       req.end();
@@ -98,6 +98,9 @@ describe("a session's terminal and phone UI", () => {
     expect(page.headers["content-security-policy"]).toBe("sandbox allow-scripts allow-forms allow-popups allow-downloads; frame-ancestors 'self'");
     expect(page.headers["x-frame-options"]).toBe("SAMEORIGIN");
     expect(page.headers["set-cookie"]).toBeUndefined();
+    expect(page.headers["clear-site-data"]).toBeUndefined();
+    expect(page.headers.etag).toBe("v1");
+    expect(loggedPath(got.term)).toBe("/sessions/own/[token]/term/");
     // Another task's path, a forged token and a signed-out browser with no token get nothing.
     expect((await call(got.web.replace("/own/", "/agent-made/"))).status).toBe(401);
     expect((await call(got.web.replace(/\.[\w-]{43}/, `.${"A".repeat(43)}`))).status).toBe(401);

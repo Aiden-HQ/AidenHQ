@@ -35,13 +35,13 @@ The console stays dark in both themes (`--term-*` tokens). Everything else is th
 Opening is two steps. `POST /api/sessions/<task>/open` (board sign-in) passes `mayOpen`: the account that created the task, or
 for an agent-made task the creator of its nearest person-made ancestor (the board's `authored` record; a failed Paperclip read
 is a 502, never "someone else's"). It returns paths `/sessions/<task>/<token>/term/` and `/web/`, where the token is an HMAC
-of the task and an expiry (30 minutes; the console re-mints on every reload, and a probe that gets a 401 reloads the frame).
+of the task and an expiry (10 minutes; the console re-mints on every reload, and a probe that gets a 401 reloads the frame).
 
 `/sessions/<task>/<token>/…` (HTTP and WebSocket) is authorised by that token alone, never by the board cookie. Harness content
 (ttyd's page, opencode's web UI, anything a process in the box serves) must not run with the board's origin: responses carry
 `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-downloads` (an opaque origin, even when the page
 is opened on its own for the phone), the board frames them in an iframe with the same `sandbox` and never `allow-same-origin`,
-upstream cookies and CSP are dropped, and the requests' `Origin: null` is allowed because the token is the credential. The
+only an allowlist of upstream headers is kept (no cookies, no Clear-Site-Data, no CSP; a redirect stays under the proxy path), and the requests' `Origin: null` is allowed because the token is the credential. The
 board adds its key (`computer_session_key`) for the launcher, which adds the box-side credentials
 (`services/computer/session-proxy.ts`). Neither credential reaches the browser.
 

@@ -272,7 +272,7 @@ function StopDialog({ open, row, onClose, onStopped }: { open: boolean; row: Ses
 function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; setMode: (m: Mode) => void; mobile: boolean }) {
   const [nonce, setNonce] = useState(0);
   const [link, setLink] = useState<Link>("connecting");
-  /** The signed paths the frame loaded with (they last 30 minutes: a 401 below loads the frame again with new ones). */
+  /** The signed paths the frame loaded with (they last 10 minutes: a 401 below loads the frame again with new ones). */
   const [frame, setFrame] = useState<{ term: string; web: string } | null>(null);
   const down = useRef(0);
   const usable = row.mine && live(row) && row.state !== "starting";
@@ -345,7 +345,7 @@ function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; 
         {usable && <Button size="sm" variant="quiet" onClick={fullScreen} title="Open in its own tab" aria-label="Full screen"><span className="ses-lbl">Full screen</span> <Icon name="external" size={14} /></Button>}
       </div>
       <div className="ses-screen">
-        {usable && src && link !== "lost" && <iframe key={`${src}|${nonce}`} title={mode === "term" ? "Session terminal" : "Session web view"} src={src} sandbox="allow-scripts allow-forms allow-popups allow-downloads" allow="clipboard-read; clipboard-write" />}
+        {usable && src && link !== "lost" && <iframe key={`${src}|${nonce}`} title={mode === "term" ? "Session terminal" : "Session web view"} src={src} sandbox="allow-scripts allow-forms allow-popups allow-downloads" allow="clipboard-write" />}
         {usable && link === "reconnecting" && <div className="ses-veil soft" role="status"><i />Reconnecting to the {mode === "term" ? "terminal" : "web view"}…</div>}
         {usable && link === "lost" && (
           <div className="ses-veil" role="alert">

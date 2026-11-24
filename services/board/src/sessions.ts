@@ -115,6 +115,8 @@ export interface Terminals {
 
 const PATH = /^\/sessions\/([\w-]{1,64})\/([A-Za-z0-9_-]{20,400}\.[A-Za-z0-9_-]{43})\/(term|web)(\/.*)?$/;
 export const isSessionPath = (pathname: string) => PATH.test(pathname);
+/** A path for the logs: a session path's token is a credential, so it never reaches one. */
+export const loggedPath = (pathname: string) => pathname.replace(/^(\/sessions\/[\w-]{1,64}\/)[^/]+(\/)/, "$1[token]$2");
 
 export class SessionError extends Error {
   constructor(public status: number, message: string) {
@@ -126,11 +128,16 @@ export class SessionError extends Error {
 const SANDBOX = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
 /** The headers every proxied answer gets. `*` for CORS: a sandboxed page's requests carry Origin: null, and the URL's token is the only credential. */
 const FRAMED = { "x-frame-options": "SAMEORIGIN", "content-security-policy": `${SANDBOX}; frame-ancestors 'self'`, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "private, no-store", "access-control-allow-origin": "*" };
-const DROP = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization", "te", "trailer", "x-frame-options", "content-security-policy", "set-cookie", "authorization", "www-authenticate", "access-control-allow-origin", "access-control-allow-credentials"]);
+/** The only upstream headers a proxied answer keeps: nothing from the box sets a cookie, clears site data or widens the page's rights. */
+const KEEP = new Set(["content-type", "content-length", "content-encoding", "content-range", "accept-ranges", "etag", "last-modified"]);
+/** A WebSocket's 101 answer keeps only the handshake. */
+const KEEP_UPGRADE = new Set(["upgrade", "connection", "sec-websocket-accept", "sec-websocket-protocol", "sec-websocket-extensions"]);
+/** The request headers that stay the browser's (the rest of the hop-by-hop and credential ones are dropped). */
+const DROP = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization", "te", "trailer", "authorization"]);
 
 export function createTerminals(t: Terminals) {
   const secret = randomBytes(32);
-  const ttl = t.ttl ?? 30 * 60_000;
+  const ttl = t.ttl ?? 10 * 60_000;
   const sign = (payload: string) => createHmac("sha256", secret).update(payload).digest("base64url");
   /** A token for `task`: only the board can make one, it names the task and ends after `ttl`. */
   const mint = (task: string) => {
@@ -196,7 +203,10 @@ export function createTerminals(t: Terminals) {
       const id = await lease(m[1]!);
       const up = httpRequest({ host: launcher.hostname, port: launcher.port, method: req.method, path: target(id, m, url.search), headers: forward(req, l.key, launcher.host) }, (r) => {
         const headers: Record<string, string | string[]> = { ...FRAMED };
-        for (const [k, v] of Object.entries(r.headers)) if (v !== undefined && !DROP.has(k)) headers[k] = v;
+        for (const [k, v] of Object.entries(r.headers)) if (v !== undefined && KEEP.has(k)) headers[k] = v;
+        // A redirect stays under the proxy's own path; one to another host is dropped.
+        const to = r.headers.location;
+        if (to?.startsWith("/") && !to.startsWith("//")) headers.location = `/sessions/${m[1]}/${m[2]}/${m[3]}${to}`;
         res.writeHead(r.statusCode ?? 502, headers);
         r.pipe(res);
         // The stream ends, or breaks, on either side: the other side goes too.
@@ -223,8 +233,21 @@ export function createTerminals(t: Terminals) {
         const headers = forward(req, l.key, launcher.host, true);
         up.write([`${req.method} ${target(id, m, url.search)} HTTP/1.1`, ...Object.entries(headers).map(([k, v]) => `${k}: ${[v].flat().join(", ")}`), "", ""].join("\r\n"));
         if (head.length) up.write(head);
-        up.pipe(socket);
-        socket.pipe(up);
+        // The 101 answer is read to its end and cut down to the handshake before it reaches the browser.
+        let head101 = Buffer.alloc(0);
+        const onData = (chunk: Buffer) => {
+          head101 = Buffer.concat([head101, chunk]);
+          const end = head101.indexOf("\r\n\r\n");
+          if (end < 0) return head101.length > 16_384 ? fail() : undefined;
+          up.off("data", onData);
+          const [status, ...lines] = head101.subarray(0, end).toString("latin1").split("\r\n");
+          socket.write([status, ...lines.filter((l) => KEEP_UPGRADE.has(l.slice(0, l.indexOf(":")).toLowerCase())), "", ""].join("\r\n"));
+          const rest = head101.subarray(end + 4);
+          if (rest.length) socket.write(rest);
+          up.pipe(socket);
+          socket.pipe(up);
+        };
+        up.on("data", onData);
       });
     },
   };
