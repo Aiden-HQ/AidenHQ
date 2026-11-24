@@ -760,7 +760,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
      */
     retryApproved() {
       const now = Date.now();
-      const open = records.list(["approved"], null);
+      const open = records.list(["approved"], null, { light: true });
       for (const id of runRetries.keys()) if (!open.some((r) => r.id === id)) runRetries.delete(id);
       for (const r of open) if ((runRetries.get(r.id)?.next ?? 0) <= now) void run(r.id);
     },

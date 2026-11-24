@@ -20,6 +20,10 @@ test("an approved record expires 7 days after its approval, not its filing; clai
   assert.ok(records.review(late.id, l.digest, { decision: "approve", by: "reviewer:m/x", note: "ok" }));
   clock += 2 * 86_400_000;
   assert.deepEqual(records.list(["review", "owner", "approved"], null).map((r) => r.id), [late.id], "filed 8 days ago, approved 2 days ago: still open");
+  // Nothing acts on an expired record before the timer cancels it (main.ts): claim and the owner's decision refuse it.
+  assert.equal(records.claim(old.id), false);
+  assert.match(String(records.decide(waiting.id, waiting.digest, "approve", "account:a", "board")), /expired|reviewer/);
+  assert.equal(records.expire(), 2);
   assert.equal(records.get(waiting.id)!.state, "cancelled");
   assert.equal(records.get(old.id)!.state, "cancelled");
   assert.equal(records.claim(late.id), true);

@@ -282,12 +282,14 @@ export function createReviewLoop({ records, writes, task, reviews, log = () => {
       // backoff once this sweep lets go of it. Asked alongside the sweep, never ahead of it.
       void reviews?.check().catch((e: Error) => log("reviewer health unread", { err: String(e.message ?? e).slice(0, 200) }));
       const now = Date.now();
-      const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200);
+      const due = records.list(["review"], null, { light: true }).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200);
       if (!due.length) return Promise.resolve();
       for (const r of due) inFlight.add(r.id);
       return Promise.all(due.map(async (r) => {
         try {
-          await reviewOne(r);
+          // The reviewer's input (context: the whole diff and files) is read whole, one record at a time.
+          const whole = records.get(r.id);
+          if (whole) await reviewOne(whole);
         } catch (e) {
           log("review failed", { record: r.id, err: String((e as Error).message ?? e).slice(0, 300) });
         } finally {
