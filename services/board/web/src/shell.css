@@ -91,6 +91,14 @@
 .attn-head { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
 .attn-order { margin-left: auto; font-size: var(--text-xs); color: var(--faint); }
 .attn-list { max-height: 32vh; overflow-y: auto; border-radius: var(--radius); }
+.attn-list.asks { max-height: min(60vh, 34rem); }
+.attn-row { display: grid; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border); }
+.attn-row:first-child { border-top: 0; }
+.attn-q { font-size: var(--text-row); font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.attn-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--text-xs); color: var(--muted); }
+.attn-meta a { color: inherit; text-decoration: underline; text-decoration-color: var(--border); }
+.attn-meta a:hover { color: var(--text); }
+.attn-row .qform { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; max-width: none; gap: 8px; }
 .page-tools h1 { margin: 0 8px 0 0; font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.02em; }
 .page-tools .search { position: relative; display: flex; align-items: center; }
 .page-tools .search input { padding-right: 30px; }

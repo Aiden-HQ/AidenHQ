@@ -1,0 +1,9 @@
+{
+  "name": "ship",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "description": "Ship: the PR lifecycle service (per-repo settings, admission, config tools).",
+  "scripts": { "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts" }
+}

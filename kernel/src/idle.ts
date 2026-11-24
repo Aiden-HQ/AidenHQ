@@ -407,7 +407,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       if (after && !CLOSED.has(String(after.status))) await reconcileOne(after, parkOf(caller.task)).catch((e: Error) => log("task wait park failed", { task: caller.task, err: e.message }));
       log("task wait", { task: caller.task, agent: caller.key, until: iso(until), ...(who ? { to } : {}) });
       const chief = to === "steward" ? { note: "Your question went to the Fleet Steward, who settles it from the owner's decisions (and has it brought to the owner only when the call is theirs). Its answer comes as a comment on this task and wakes you." } : to === "chief_of_staff" ? { note: "Your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Its answer comes as a comment on this task and wakes you." } : {};
-      return { waiting: true, until: iso(until), ...(who ? { to } : {}), ...(r?.sent === "asked" ? { asked: true } : {}), ...chief };
+      return { waiting: true, until: iso(until), since: iso(t), ...(who ? { to } : {}), ...(r?.sent === "asked" ? { asked: true } : {}), ...chief };
     },
 
     /** One sweep: the tasks whose holders it woke, and those idle in review it sent to their delegator. */

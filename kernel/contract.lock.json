@@ -117,6 +117,8 @@
     "route GET /v1/writes/:id/chain": {"state":"experimental","fp":"auth=board"},
     "route POST /c/:connection/mcp": {"state":"stable","fp":"auth=bearer"},
     "route POST /v1/accounts/:op": {"state":"experimental","fp":"auth=board+session"},
+    "route POST /v1/answers/claim": {"state":"experimental","fp":"auth=module|board"},
+    "route POST /v1/answers/release": {"state":"experimental","fp":"auth=module|board"},
     "route POST /v1/apps/:op": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/auth/:op": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/auth/mcp/:op": {"state":"experimental","fp":"auth=board"},

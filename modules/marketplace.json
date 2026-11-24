@@ -142,6 +142,10 @@
       "source": "./security"
     },
     {
+      "name": "ship",
+      "source": "./ship"
+    },
+    {
       "name": "slack",
       "source": "./slack"
     },
@@ -186,6 +190,7 @@
     "platform",
     "primer",
     "security",
+    "ship",
     "slack",
     "tasks",
     "warehouse"

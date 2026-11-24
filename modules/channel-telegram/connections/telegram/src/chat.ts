@@ -13,7 +13,7 @@ import { COMMANDS, type QuickReply } from "./commands.js";
 import { approvalPress, decideByReply, decideCard, decideList, decidedText, parseReply, type DecideSetting } from "./approvals.js";
 import type { Kernel } from "./kernel.js";
 import { KernelError } from "./aidenhq-sdk/kernel-client.js";
-import { fromTelegramCallback } from "./telegram.js";
+import { fromAnswerCallback, fromTelegramCallback, type AnswerPress } from "./telegram.js";
 import { chatAgentOf, routeOwnerMessage, type AgentLite } from "./threads.js";
 import { markOwnerMessage } from "./send.js";
 
@@ -27,6 +27,7 @@ export interface ChatMessage {
   forward?: { from: string; date: string };
   voice?: boolean; // transcribed from a voice note: words may be misheard
   replyTo?: string; // Telegram: the id of the message this one replies to
+  task?: string; // delivered to exactly this task (an answer bound to its wait), whatever replyTo maps to
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -138,7 +139,7 @@ export function makeChat(cfg: ChatConfig, store: Store, kernel: Pick<Kernel, "ow
     return (agentCache = { at: Date.now(), list: await kernel.read(`/api/companies/${await companyId()}/agents`) }).list;
   };
   const deliver = async (m: ChatMessage): Promise<void> => {
-    const route = m.source === "telegram" && !m.forward ? routeOwnerMessage(m.text, m.replyTo ? { chatId: cfg.telegramChatId, messageId: m.replyTo } : undefined, store, await agents()) : ({ kind: "aiden" } as const);
+    const route = m.task ? ({ kind: "reply", issueId: m.task } as const) : m.source === "telegram" && !m.forward ? routeOwnerMessage(m.text, m.replyTo ? { chatId: cfg.telegramChatId, messageId: m.replyTo } : undefined, store, await agents()) : ({ kind: "aiden" } as const);
     const body = { sender: "owner", text: m.text, ...(m.voice ? { voice: true as const } : {}), ...(m.forward ? { forward: m.forward } : {}) };
     if (route.kind === "reply") {
       // The chat's recorded agent takes it back if nobody holds it now (the kernel reassigns only an unassigned chat).
@@ -172,9 +173,24 @@ export interface TelegramExtras {
   reply: (r: QuickReply) => Promise<unknown>;
   stop?: (replyTo: string | undefined) => Promise<string>;
   /** Approval cards' buttons and exact typed replies, decided with the tokens the kernel sent this channel. */
-  approvals?: { kernel: Pick<Kernel, "decide" | "cards">; setting: DecideSetting };
+  approvals?: { kernel: Pick<Kernel, "decide" | "cards" | "claimAnswer" | "releaseAnswer">; setting: DecideSetting };
   /** `/start <code>` from any chat (pair.ts): true when the update was a pairing attempt, handled there. */
   start?: (update: unknown) => Promise<boolean>;
+}
+
+/**
+ * A press on an answer button: claimed at the kernel first. "sent": delivered to the claimed task. "stale": the question is no
+ * longer the open one (nothing delivered, the button retires). "taken": another answer holds the claim now (nothing delivered,
+ * the button comes back: that answer may still fail). A claim or delivery that fails gives the claim and the button back and
+ * rethrows, so the update is retried.
+ */
+export async function pressAnswer(a: AnswerPress, kernel: Pick<Kernel, "claimAnswer" | "releaseAnswer">, store: Store, deliver: (m: ChatMessage) => Promise<void>): Promise<"sent" | "stale" | "taken"> {
+  const undo = () => store.setKv(`ans:${a.data}`, a.stored);
+  const claimed = await kernel.claimAnswer(a.task, a.since).catch((err) => (undo(), Promise.reject(err)));
+  if (claimed === "taken") undo();
+  if (claimed !== "ok") return claimed;
+  await deliver({ ...a.message, task: a.task }).catch(async (err) => { await kernel.releaseAnswer(a.task, a.since).catch(() => {}); undo(); throw err; });
+  return "sent";
 }
 
 export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: (m: ChatMessage) => Promise<void>, log: Logger, extras?: TelegramExtras): Promise<void> {
@@ -245,8 +261,16 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
           // Confirm, and swap the buttons for the choice, so it can't be pressed twice.
           await tg("editMessageReplyMarkup", { chat_id: press.chatId, message_id: press.messageId, reply_markup: { inline_keyboard: [[{ text: `✓ ${press.label}`, callback_data: "done" }]] } });
         }
+        // An answer to a task's open question (claimed first, see pressAnswer).
+        const answer = card || press || !extras?.approvals ? null : fromAnswerCallback(u, cfg.telegramChatId, store);
+        let said = press ? `Sent: ${press.label}` : undefined;
+        if (answer) {
+          const claimed = await pressAnswer(answer, extras!.approvals!.kernel, store, deliver);
+          if (claimed !== "taken") await tg("editMessageReplyMarkup", { chat_id: answer.chatId, message_id: answer.messageId, reply_markup: { inline_keyboard: [[{ text: claimed === "sent" ? `✓ ${answer.label}` : "Already answered", callback_data: "done" }]] } });
+          said = claimed === "sent" ? `Sent: ${answer.label}` : claimed === "stale" ? "Already answered, or the question changed." : "Another answer is being sent; try again in a moment.";
+        }
         const cbId = (u as { callback_query?: { id?: string } }).callback_query?.id;
-        if (cbId) await tg("answerCallbackQuery", { callback_query_id: cbId, ...(press ? { text: `Sent: ${press.label}` } : {}) });
+        if (cbId) await tg("answerCallbackQuery", { callback_query_id: cbId, ...(said ? { text: said } : {}) });
         store.setKv("tg_offset", String(u.update_id + 1));
       }
     } catch (err) {
