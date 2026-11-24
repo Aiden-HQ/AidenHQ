@@ -82,6 +82,8 @@ for c in $containers; do
   field 3 | grep -q 'ALL' && pass "$c: all capabilities dropped" || fail "$c keeps capabilities"
   if [ "$service" = "gate" ]; then
     pass "$c: host networking allowed (the gate binds only the addresses checked below)"
+  elif [ "$service" = "caddy" ] || [ "$service" = "cloudflared" ]; then
+    pass "$c: host networking allowed (the front door: caddy in public mode, cloudflared for the tunnel to the gate)"
   else
     [ "$(field 5)" != "host" ] && pass "$c: not host networking" || fail "$c uses host networking"
   fi

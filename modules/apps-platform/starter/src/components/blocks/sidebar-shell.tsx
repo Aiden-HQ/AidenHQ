@@ -93,15 +93,15 @@ export function SidebarShell({
       </SidebarInset>
       <nav
         aria-label="Primary"
-        className="fixed inset-x-0 bottom-0 z-20 flex h-16 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+        className="fixed inset-x-0 bottom-0 z-20 flex h-16 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden overflow-x-auto"
       >
-        {nav.slice(0, 5).map((n) => (
+        {nav.map((n) => (
           <Link
             key={n.href}
             href={n.href}
             aria-current={n.href === path ? "page" : undefined}
             className={cn(
-              "flex flex-1 flex-col items-center justify-center gap-1 text-xs font-medium text-muted-foreground",
+              "flex min-w-16 flex-1 shrink-0 flex-col items-center justify-center gap-1 text-xs font-medium text-muted-foreground",
               n.href === path && "text-link"
             )}
           >
