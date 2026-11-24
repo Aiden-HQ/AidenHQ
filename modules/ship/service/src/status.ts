@@ -4,6 +4,8 @@ import { effective, presetOf, PRESETS, type Scope } from "./settings.ts";
 import type { State } from "./state.ts";
 
 type Dict = Record<string, unknown>;
+/** The fields an entry sets itself (everything but its preset), for the Fleet page's overridden marks. */
+const own = (e: unknown): Dict => (e && typeof e === "object" && !Array.isArray(e) ? Object.fromEntries(Object.entries(e).filter(([k]) => k !== "preset")) : {});
 
 export function status(raw: Dict, scope: Scope, state: State, repo?: string) {
   const same = (r: string) => !repo || r.toLowerCase() === repo.toLowerCase();
@@ -13,10 +15,10 @@ export function status(raw: Dict, scope: Scope, state: State, repo?: string) {
     repos: [...new Set([...Object.keys((raw.repos as Dict) ?? {}), ...scope.fleet.filter((f) => !f.includes("*"))])].filter(same).map((r) => {
       const s = effective(raw, r, scope), entry = Object.entries((raw.repos as Dict) ?? {}).find(([k]) => k.toLowerCase() === r.toLowerCase())?.[1];
       // `over`: the fields this repo's entry sets itself, which a preset change doesn't move.
-      return { repo: r, preset: presetOf(raw, r), enabled: !!s?.enabled, handoff: s?.handoff, approve: s?.approve, merge: s?.merge, settings: s, over: entry && typeof entry === "object" ? Object.keys(entry).filter((k) => k !== "preset") : [] };
+      return { repo: r, preset: presetOf(raw, r), enabled: !!s?.enabled, handoff: s?.handoff, approve: s?.approve, merge: s?.merge, settings: s, own: own(entry), inherits: !(entry && typeof entry === "object" && "preset" in entry) && typeof entry !== "string", over: entry && typeof entry === "object" ? Object.keys(entry).filter((k) => k !== "preset") : [] };
     }),
     // What new and fleet repos inherit (the defaults entry), for the page's Defaults drawer.
-    defaults: { preset: presetOf(raw, "*/*"), settings: effective(raw, "*/*", { fleet: ["*/*"], listed: [] }) },
+    defaults: { preset: presetOf(raw, "*/*"), own: own(raw.defaults), inherits: false, settings: effective(raw, "*/*", { fleet: ["*/*"], listed: [] }) },
     held: state.all().filter((a) => a.hold && same(a.repo)).slice(0, 100),
   };
 }

@@ -61,7 +61,8 @@
     await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits })); } catch (e) { say(e.message, true); } });
   }
 
-  function render() { keepFocus(draw); }
+  const redraw = () => keepFocus(draw);
+  function render() { soon(redraw); }
   function draw() {
     closeHelp();
     $("trighelp").replaceChildren(help("Triage unlabelled issues", "Whether the Maintainer also looks at issues nobody labelled.", { options: { on: "Each new issue from someone outside is triaged within minutes; the backlog gets a daily run.", off: "Only issues carrying the fix label are worked." }, current: (pending.external_triage ?? cfg.external_triage) ? "on" : "off", note: "Triage runs cost money, so it starts off. The backlog is triaged by the daily routine, which must be switched on too (routines start off on a new install)." }));

@@ -61,14 +61,17 @@ const help = (label, text, more = {}) => {
 // "3 hours ago" for an ISO time, or "" when there is none.
 const ago = (iso) => { const s = (Date.now() - Date.parse(iso)) / 1000; if (!(s >= 0)) return ""; const [n, u] = s < 90 ? [0, ""] : s < 5400 ? [Math.round(s / 60), "minute"] : s < 172800 ? [Math.round(s / 3600), "hour"] : [Math.round(s / 86400), "day"]; return u ? `${n} ${u}${n === 1 ? "" : "s"} ago` : "just now"; };
 // The Settings drawers: one field = a help label, an editor and a meta line. editor({ kind: select | checks | list | num | text, label, value, values, titles, f, set })
-// builds the control (list: one item per line; num: blank = null, else a whole number); set(value) runs after the change, once the focus has moved on, and
+// builds the control (list: one item per line; num: blank = null, else a whole number); set(value) runs on the change, and
 // keepFocus(render) puts the focus back on the control with the same data-f after a render replaced it.
-const later = (fn) => setTimeout(fn, 0);
+// soon(fn): run fn after the current event, and after a pressed pointer is released (a redraw between a press and its click would lose the click); a newer soon(fn) of the same fn replaces a pending one.
+let pointerDown = false, queued = null;
+for (const [e, v] of [["pointerdown", true], ["pointerup", false], ["pointercancel", false]]) addEventListener(e, () => { pointerDown = v; }, true);
+const soon = (fn) => { queued = fn; const go = () => setTimeout(() => { if (queued === fn) { queued = null; fn(); } }, 0); if (pointerDown) addEventListener("pointerup", go, { once: true }); else go(); };
 const keepFocus = (fn) => { const f = document.activeElement?.dataset?.f; fn(); if (f) document.querySelector(`[data-f="${CSS.escape(f)}"]`)?.focus(); };
 const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
 const editor = (k) => {
-  const fire = (el, ev, get) => el.addEventListener(ev, () => { const v = get(); if (v !== undefined) later(() => k.set(v)); });
-  if (k.kind === "checks") return h("div", { className: "checks" }, ...k.values.map((v) => { const c = h("input", { type: "checkbox", checked: (k.value ?? []).includes(v), title: k.titles?.[v] }); c.dataset.f = `${k.f}:${v}`; c.addEventListener("change", () => later(() => k.set(k.values.filter((x) => x === v ? c.checked : (k.value ?? []).includes(x))))); return h("label", {}, c, v); }));
+  const fire = (el, ev, get) => el.addEventListener(ev, () => { const v = get(); if (v !== undefined) k.set(v); });
+  if (k.kind === "checks") return h("div", { className: "checks" }, ...k.values.map((v) => { const c = h("input", { type: "checkbox", checked: (k.value ?? []).includes(v), title: k.titles?.[v] }); c.dataset.f = `${k.f}:${v}`; c.addEventListener("change", () => k.set(k.values.filter((x) => x === v ? c.checked : (k.value ?? []).includes(x)))); return h("label", {}, c, v); }));
   const el = k.kind === "select" ? h("select", { ariaLabel: k.label }, ...k.values.map((v) => h("option", { value: v, textContent: v, title: k.titles?.[v], selected: v === k.value })))
     : k.kind === "list" ? h("textarea", { rows: Math.min(6, Math.max(2, (k.value ?? []).length)), value: (k.value ?? []).join("\n"), ariaLabel: k.label, spellcheck: false })
     : h("input", { type: "text", value: k.value ?? "", ariaLabel: k.label, autocomplete: "off", spellcheck: false, placeholder: k.kind === "num" ? "unlimited" : "" });

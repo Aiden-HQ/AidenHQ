@@ -104,18 +104,20 @@
   const target = (key) => (key === "defaults" ? status.defaults : status.repos.find((r) => r.repo === key));
   const presetFor = (key) => pending.repos[key]?.preset ?? target(key).preset;
   // The settings as they would stand with the pending edits: the preset's change moves what wasn't overridden, edits apply, resets return the preset's value.
+  // The value a field returns to: the preset's, or, for an entry with no preset of its own, the defaults' (what effective() applies).
+  const dflt = (key, path) => (key !== "defaults" && target(key).inherits && !pending.repos[key]?.preset ? get(status.defaults.settings, path) : get(presets[presetFor(key)], path));
   function view(key) {
     const t = target(key), p = pending.repos[key] ?? {}, old = presets[t.preset], now = presets[presetFor(key)] ?? old;
     const s = structuredClone(t.settings ?? {});
-    for (const path of PATHS) if (now !== old && eq(get(s, path), get(old, path))) put(s, path, structuredClone(get(now, path)));
+    // A new preset moves the fields the entry doesn't set itself (an explicit value stays, as it does when saved).
+    for (const path of PATHS) if (now !== old && get(t.own, path) === undefined) put(s, path, structuredClone(get(now, path)));
     for (const [k, v] of Object.entries(p)) if (k === "caps" || k === "safe") s[k] = { ...s[k], ...v }; else if (!["preset", "reset"].includes(k)) s[k] = v;
-    for (const path of p.reset ?? []) { const roots = PATHS.filter((x) => x === path || x.startsWith(`${path}.`)); for (const x of roots) put(s, x, structuredClone(get(now, x))); }
+    for (const path of p.reset ?? []) for (const x of PATHS.filter((x) => x === path || x.startsWith(`${path}.`))) put(s, x, structuredClone(dflt(key, x)));
     return s;
   }
-  const rootOf = (path) => (/^(generated|actions)\./.test(path) ? path.split(".")[0] : path);
   function edit(key, path, value) {
     const p = { ...(pending.repos[key] ?? {}) }, [root, sub] = path.split(".");
-    p.reset = (p.reset ?? []).filter((x) => x !== path && x !== rootOf(path));
+    p.reset = (p.reset ?? []).filter((x) => x !== path && x !== root);
     if (root === "caps" || root === "safe") p[root] = { ...p[root], [sub]: value };
     else if (sub) p[root] = { ...(view(key)[root] ?? {}), [sub]: value };
     else p[root] = value;
@@ -123,9 +125,9 @@
     propose(p, key, true);
   }
   function reset(key, path) {
-    const p = { ...(pending.repos[key] ?? {}) }, [root, sub] = path.split("."), r = rootOf(path);
-    if ((root === "caps" || root === "safe") && sub) { const m = { ...p[root] }; delete m[sub]; if (Object.keys(m).length) p[root] = m; else delete p[root]; } else delete p[r];
-    p.reset = [...new Set([...(p.reset ?? []), r === path || root === "caps" || root === "safe" ? path : r])];
+    const p = { ...(pending.repos[key] ?? {}) }, [root, sub] = path.split(".");
+    if (sub) { const m = { ...p[root] }; delete m[sub]; if (Object.keys(m).length) p[root] = m; else delete p[root]; } else delete p[root];
+    p.reset = [...new Set([...(p.reset ?? []), path])];
     propose(p, key, true);
   }
   // Loosening: a higher or removed cap, more paths fixed or less protected, a branch rebased whenever it is behind.
@@ -145,7 +147,7 @@
     const field = (path) => {
       const stage = path.startsWith("actions.") ? path.slice(8) : null, kind = stage ? "list" : KIND[path] ?? "num";
       const [label, text, options] = stage ? [STAGES[stage], `Steps Ship takes ${STAGES[stage].toLowerCase()}.`, null] : T[path];
-      const v = get(s, path), d = get(preset, path), over = !eq(v, d), touched = over || eq(p.reset?.includes(rootOf(path)), true) || get(p, path) !== undefined || p[rootOf(path)] !== undefined;
+      const v = get(s, path), d = dflt(key, path), over = !eq(v, d), touched = over || !!p.reset?.includes(path) || get(p, path) !== undefined;
       const ed = editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : v, values: kind === "select" ? ["conflict", "behind"] : ["conflicts", "ci", "review"], titles: options, set: (x) => edit(key, path, stage ? x.map(readAction) : x) });
       const loose = pending.repos[key] && looser(path, get(base, path), v);
       return fld(label, text, options ? { options, current: v } : { note: LOOSE.has(path) ? "Loosening this is the owner's call: an agent's change is refused, your Save applies it." : undefined }, ed,
@@ -153,7 +155,7 @@
         loose ? h("span", { className: "warn", textContent: "Loosens this guard: it needs the owner's Save." }) : null);
     };
     const head = extra ? [h("div", { className: "grp" }, "Headline settings"), ...HEAD.map((k) => { const [label, text, options] = COLS[k]; const cur = k === "preset" ? presetFor(key) : s[k]; return fld(label, text, { options, current: cur }, editor({ kind: "select", label: `${label} (${key})`, f: `${key}|${k}`, value: cur, values: controls[k].values, titles: options, set: (x) => propose({ [k]: x }, key) }), k === "preset" ? null : h("span", { className: "dflt", textContent: `Default: ${fmt(k, preset[k])}` }), k !== "preset" && cur !== preset[k] ? h("span", { className: "ovr", textContent: "Overridden" }) : null); })] : [];
-    return h("div", { className: "drawer", id: `drawer-${key}` }, ...head, ...GROUPS.flatMap(([g, paths, note]) => [h("div", { className: "grp" }, g, note ? help(g, note, { bare: true }) : null), ...paths.map(field)]));
+    return h("div", { className: "drawer", id: `drawer-${key}` }, ...head, ...GROUPS.filter(([g]) => g !== "Actions" || "actions" in base).flatMap(([g, paths, note]) => [h("div", { className: "grp" }, g, note ? help(g, note, { bare: true }) : null), ...paths.map(field)]));
   }
   const LOOSE = new Set(["generated.globs"]);
   const open = new Set();
@@ -166,7 +168,8 @@
     return h("div", {}, h("span", { className: "lab" }, hd(key, shown(r)[key])), sel);
   }
 
-  function render() { keepFocus(draw); }
+  const redraw = () => keepFocus(draw);
+  function render() { soon(redraw); }
   function draw() {
     closeHelp();
     $("pausehelp").replaceChildren(help("Pause", "The kill switch. While paused, Ship adopts, pushes, approves and merges nothing, and PRs resume where they were when you switch it back on.", { note: "It works whatever each repo is set to." }));
