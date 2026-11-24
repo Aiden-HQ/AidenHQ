@@ -44,6 +44,8 @@ agents:
                  github_issue_comment, github_issue_label, github_issue_state,
                  github_repo_tree, github_repo_file, github_release_graduate ]
       apps: [ app_status, app_logs, app_view, web_view ]
+      # ship's settings (role ship-admin), when the ship module is on: read them, change one repo's entry.
+      ship?: [ ship_config, ship_configure ]
       grafana?: read
       # fleet_generation_status: the host's apply generations, from the fleet-steward module's connection (named: only agents that name it hold it).
       fleet_steward?: [ fleet_generation_status ]
@@ -51,7 +53,7 @@ agents:
                          task_approvals, task_team, fleet_catalog,
                          task_comment, task_handoff, task_file_upload, task_finish, task_block, task_cancel,
                          task_delegate, task_amend_rubric, task_create ]
-    roles: [ maintainer, product-issues ]
+    roles: [ maintainer, product-issues, ship-admin? ]
 routines:
   maintainer-triage:
     title: "Maintainer: external triage"

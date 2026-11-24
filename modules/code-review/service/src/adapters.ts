@@ -410,3 +410,32 @@ export function githubReview(base: string, token: () => string, fetcher: typeof 
     return j;
   };
 }
+
+/**
+ * Admission before spend: the ship module's answer (GET /v1/admitted, this module's token) for a PR, given what this service read
+ * (a fork, whether its author can write: asked of GitHub once per author for ten minutes). No ship on the network (its name doesn't
+ * resolve) admits every PR; ship installed but not answering defers the PR to the next tick.
+ */
+export function shipAdmission(url: string, token: () => string, member: (repo: string, author: string) => Promise<boolean>, log: (msg: string, f?: Record<string, unknown>) => void, fetcher: typeof fetch = fetch) {
+  const known = new Map<string, { member: boolean; at: number }>();
+  const isMember = async (repo: string, author: string) => {
+    const k = `${repo}\n${author}`.toLowerCase(), hit = known.get(k);
+    if (hit && Date.now() - hit.at < 600_000) return hit.member;
+    const m = await member(repo, author);
+    known.set(k, { member: m, at: Date.now() });
+    return m;
+  };
+  return async (repo: string, p: { number: number; fork: boolean; author: string }): Promise<boolean> => {
+    try {
+      const m = !p.fork && (await isMember(repo, p.author));
+      const r = await fetcher(`${url}/v1/admitted?repo=${encodeURIComponent(repo)}&pr=${p.number}&fork=${p.fork ? 1 : 0}&member=${m ? 1 : 0}`, { headers: { authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) throw new Error(`ship answered ${r.status}`);
+      return ((await r.json()) as { admitted?: boolean }).admitted === true;
+    } catch (e) {
+      const code = String(((e as { cause?: { code?: string } }).cause?.code) ?? "");
+      if (code === "ENOTFOUND" || code === "EAI_AGAIN") return true;
+      log("ship's admission not answered; the PR waits for the next tick", { repo, pr: p.number, err: String((e as Error).message).slice(0, 200) });
+      return false;
+    }
+  };
+}

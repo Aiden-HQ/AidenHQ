@@ -142,6 +142,10 @@
       "source": "./security"
     },
     {
+      "name": "ship",
+      "source": "./ship"
+    },
+    {
       "name": "slack",
       "source": "./slack"
     },
@@ -186,6 +190,7 @@
     "platform",
     "primer",
     "security",
+    "ship",
     "slack",
     "tasks",
     "warehouse"
@@ -202,7 +207,9 @@
         "google_client_secret": "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",
         "slack_client_id": "301802573169.12659948265169"
       },
-      "read_only": ["slack"],
+      "read_only": [
+        "slack"
+      ],
       "note": "Google Desktop (installed-app) client: a public client whose secret Google documents as not confidential (https://developers.google.com/identity/protocols/oauth2/native-app); the OAuth client is Internal to Polygon Labs' Workspace, so only polygon.technology accounts can sign in, and Desktop clients redirect only to loopback. Slack: an internal PKCE public client in Polygon Labs' workspace (no secret exists), user scopes only, read-only."
     }
   ]

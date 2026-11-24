@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
-import { githubReview, githubSource, kernelCodeHost, kernelPoster, kernelRunner, reviewExecutor } from "./adapters.ts";
+import { githubReview, githubSource, shipAdmission, kernelCodeHost, kernelPoster, kernelRunner, reviewExecutor } from "./adapters.ts";
 import { loadCatalog } from "./catalog.ts";
 import { primerPublisher } from "./primer-client.ts";
 import { serveExecutor } from "./aidenhq-sdk/executor.ts";
@@ -31,12 +31,15 @@ const config = readConfig(env.CODE_REVIEW_SETTINGS);
 for (const e of config.errors) log("WARNING: settings.code_review", { error: e });
 const facts = factEmitter(kernel, log);
 const dbFile = env.CODE_REVIEW_DB ?? "/data/code-review.sqlite";
+const source = githubSource(env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086", token);
 const engine = createEngine({
   db: new DatabaseSync(dbFile),
   // deepsec's records per repo, beside the database (never in the repo).
   deepsec: deepsecStore(join(dirname(dbFile), "deepsec")),
   config: () => config,
-  source: githubSource(env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086", token),
+  source,
+  // Ship, when installed, admits a PR before anything is spent on it (an outside contributor's waits for a trusted hand-off).
+  admit: shipAdmission(env.CODE_REVIEW_SHIP_URL ?? "http://ship:8101", token, async (repo, author) => ["admin", "maintain", "write"].includes(await source.permission(repo, author)), log),
   runner: kernelRunner(kernel),
   poster: kernelPoster(kernel, log),
   codehost: kernelCodeHost(kernelUrl, token, kernel),
