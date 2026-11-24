@@ -14,14 +14,14 @@ config.
 it when the PR lands; `task_finish` is for that moment only). Code review's summary of a fork arrives here as information:
 read it, and wait for ship's wake.
 
-**Repair** (the PR conflicts with its base). Run the `aidenhq ship repair …` line from the wake exactly as written. It merges
-the base, takes the base side of generated paths, runs the generators and pushes one commit.
-- Exit 0: done. Say so on the task in one line.
-- Exit 3: each `leftover: <path>` is a real conflict. Resolve each one in the clone, keeping both sides' intent, then
-  `git add` it. Run the same line again; it finishes the merge, regenerates and pushes.
-- Exit 4: a generator failed. If the command is wrong for this repo, propose the right one with `ship_configure`
-  (`generated: { globs, command }`), then run the line again.
-- A clone without the PR's branch (a fork): say so on the task. Ship holds the PR.
+**Conflicts** (ship's repair left some). Ship has already tried the deterministic repair: merging the base, taking the base
+side of generated paths and regenerating them. Its wake says what it left.
+- Check out the PR with the wake's `aidenhq ship checkout …` line, then `git merge origin/<base>`.
+- Resolve each real conflict, keeping both sides' intent. For generated paths, take the base side and run the repo's generate
+  command (its AGENTS.md or CI says which).
+- If the generator command ship used is wrong for this repo, propose the right one with `ship_configure`
+  (`generated: { globs, command }`).
+- Commit the merge and push it with the wake's `aidenhq ship push …` line.
 
 **Red required checks.** Read each failed job's log with `github_job_log`.
 - Ship marks which checks also fail on the base. If a failure is the same there, it is pre-existing. Post on the task the run

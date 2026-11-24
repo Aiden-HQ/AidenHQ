@@ -170,7 +170,8 @@ codehost:
 # whose process is gone. That listing reads no other source and closes no other family (kernel/src/modtasks.ts).
 # All of them go with the code host's own token (codehost_github_token), never with github-mcp's service key.
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice, kernel.events ]
+  # kernel.checks: ship's repair check job (the `repair` write).
+  requests: [ kernel.tasks, kernel.wake, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice, kernel.events, kernel.checks ]
 # Flow (docs/design/flow.md): the facts the code host emits through the kernel (service/src/flow.ts), each carrying the task that opened
 # the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside, from GitHub's author_association); pr.pushed is a head
 # change after opening (version = the head); pr.closed is a close without a merge. CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
@@ -329,6 +330,8 @@ writes:
   # their args, so a new try at the same head is a new record.
   approve: { args: schemas/approve.json, floor: 0, filed_by: [ ship ], card: *card }
   enqueue: { args: schemas/enqueue.json, floor: 0, filed_by: [ ship ], card: *card }
+  # repair: ship's deterministic repair of one adopted PR (its `ship-repair` check job, no model), written as the App.
+  repair: { args: schemas/repair.json, floor: 0, filed_by: [ ship ], card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
   # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).
   setup: { args: schemas/setup.json, floor: 1, card: *card }

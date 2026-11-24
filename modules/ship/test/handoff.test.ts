@@ -17,14 +17,14 @@ const ROLES: Record<string, string> = { admin1: "admin", writer: "write", reader
 function world(raw: Record<string, unknown> = { repos: { "a/b": "cautious" } }) {
   const state = openState(join(mkdtempSync(join(tmpdir(), "ship-")), "state.json"));
   const calls: { what: string; [k: string]: unknown }[] = [];
-  const records: Record<string, string> = {};
+  const records: Record<string, string | { state: string; outcome?: { text: string } }> = {};
   let n = 0;
   const kernel = {
     async call(method: string, path: string, body?: any) {
       calls.push({ what: `${method} ${path}`, body });
       if (path === "/v1/tasks") return { id: `task-${body.source}`, identifier: "WOR-1" };
       if (path === "/v1/writes") { const id = `rec-${++n}`; records[id] = "claimed"; return { id, state: "claimed" }; }
-      if (path.startsWith("/v1/writes/")) return { state: records[path.split("/").pop()!] };
+      if (path.startsWith("/v1/writes/")) { const r = records[path.split("/").pop()!]; return typeof r === "string" ? { state: r } : r; }
       return {};
     },
   };
@@ -120,16 +120,23 @@ test("a person assigned pauses the loop; past ci_rounds the PR holds with its au
   assert.equal(u.state.get("a/b", 7)?.hold, null);
 });
 
-test("a conflict wakes the task with the repair command; a fork without maintainer edits holds instead; a ready PR merges directly at its head", async () => {
+test("a conflict runs ship's repair job first and wakes the Engineer only for what it leaves; a ready PR merges directly at its head", async () => {
   const w = world();
   const on = w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z");
   await intake(w.deps, w.pr({ events: [on] }));
-  // GitHub ran no checks on the conflicting head: decide says repair at once.
-  await round(w.deps, w.pr(), { do: "repair", why: "it conflicts with `main`" }, { dirty: true, discovered: { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }], ambiguous: [] } });
-  const text = w.jobs()[0]!;
-  const line = /aidenhq ship repair (\S+) (\S+) (\d+) (\S+) (\S+)/.exec(text)!;
-  assert.deepEqual(line.slice(1, 5), ["https://github.com/a/b/pull/7", H1, "1", "main"]);
-  assert.deepEqual(JSON.parse(Buffer.from(line[5]!, "base64url").toString()), { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }] });
+  // GitHub ran no checks on the conflicting head: decide says repair at once. No model: github's repair effect runs the check job.
+  const dirty = { dirty: true, discovered: { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }], ambiguous: [] } };
+  await round(w.deps, w.pr(), { do: "repair", why: "it conflicts with `main`" }, dirty);
+  await round(w.deps, w.pr(), { do: "repair", why: "it conflicts with `main`" }, dirty);
+  assert.deepEqual(w.of("POST /v1/writes").map((c) => c.body), [{ kind: "github.repair", args: { repo: "a/b", number: 7, head: H1, generation: 1, base: "main", plan: { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }] } } }]);
+  assert.equal(w.jobs().length, 0, "the repair runs before any Engineer");
+  // It left real conflicts: the Engineer is woken once, with no path from the PR in the text.
+  w.records["rec-1"] = { state: "failed", outcome: { text: "ship-leftovers: merging `main` into … leaves conflicts no generator rewrites:\nleftover: src/a.ts" } };
+  await round(w.deps, w.pr(), { do: "repair" }, dirty);
+  await round(w.deps, w.pr(), { do: "repair" }, dirty);
+  assert.equal(w.jobs().length, 1);
+  assert.match(w.jobs()[0]!, /left 1 conflict\(s\)/);
+  assert.doesNotMatch(w.jobs()[0]!, /src\/a\.ts/);
   // Behind only: GitHub's update-branch, no wake.
   await round(w.deps, w.pr({ head: H2 }), { do: "repair", why: "it is behind `main`" }, { dirty: false });
   assert.deepEqual(w.of("update").map((c) => c.head), [H2]);
@@ -137,22 +144,27 @@ test("a conflict wakes the task with the repair command; a fork without maintain
 
   await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
   await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
-  const merges = w.of("POST /v1/writes");
+  const merges = w.of("POST /v1/writes").filter((c) => (c.body as any).kind === "github.merge");
   assert.equal(merges.length, 1, "one merge record while it is open");
   assert.deepEqual(merges[0]!.body, { kind: "github.merge", task: "task-ship:a/b/7:1", args: { prs: [{ repo: "a/b", number: 7, head: H3, base: "main" }], generation: 1, attempt: 1 } });
   // Its record failed: the next round files a new attempt at the same head.
-  w.records["rec-1"] = "failed";
+  w.records["rec-2"] = "failed";
   await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
-  assert.equal((w.of("POST /v1/writes")[1]!.body as any).args.attempt, 2);
+  assert.equal((w.of("POST /v1/writes").filter((c) => (c.body as any).kind === "github.merge")[1]!.body as any).args.attempt, 2);
   // Landed: the hand-off's task closes once.
   await round(w.deps, w.pr({ head: H3, state: "merged" }), { do: "done", why: "already merged" });
   await round(w.deps, w.pr({ head: H3, state: "merged" }), { do: "done", why: "already merged" });
   assert.equal(w.of("POST /v1/tasks/task-ship:a/b/7:1/close").length, 1);
 
+  // A fork that allows maintainer edits is repaired like any PR; one that doesn't holds with a note.
   const f = world();
-  await intake(f.deps, f.pr({ fork: true, events: [on] }));
-  await round(f.deps, f.pr({ fork: true }), { do: "repair" }, { dirty: true });
-  assert.match(String((f.state.get("a/b", 7) as any).hold.reason), /maintainer edits/);
-  assert.equal(f.of("POST /v1/wakes").length, 0);
-  assert.equal(f.jobs().length, 1, "only the fork's adoption task: its review summary lands there");
+  await intake(f.deps, f.pr({ fork: true, canModify: true, events: [on] }));
+  await round(f.deps, f.pr({ fork: true, canModify: true }), { do: "repair" }, { dirty: true });
+  assert.equal((f.of("POST /v1/writes")[0]!.body as any).kind, "github.repair");
+  const g = world();
+  await intake(g.deps, g.pr({ fork: true, events: [on] }));
+  await round(g.deps, g.pr({ fork: true }), { do: "repair" }, { dirty: true });
+  assert.match(String((g.state.get("a/b", 7) as any).hold.reason), /maintainer edits/);
+  assert.equal(g.of("POST /v1/writes").length, 0);
+  assert.equal(g.jobs().length, 1, "only the fork's adoption task: its review summary lands there");
 });
