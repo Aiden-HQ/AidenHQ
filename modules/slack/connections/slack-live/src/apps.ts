@@ -41,6 +41,19 @@ function withoutBotName(manifest: unknown): unknown {
 }
 
 /**
+ * The bot display name, which Slack builds the @handle from (21 at most). A slug that fits is used whole
+ * (`aidenhq-acme`); a longer one keeps its head and adds a short hash of the whole slug, so two instances whose names share a
+ * long head (`acme-finance-eu` and `acme-finance-us`) still ask for different handles — a plain cut would make them equal.
+ */
+export function botName(slug: string): string {
+  const full = `aidenhq-${slug}`.replace(/[-_.]+$/, "");
+  if (full.length <= BOT_NAME_MAX) return full;
+  const room = BOT_NAME_MAX - "aidenhq-".length - "-".length - 4;
+  const head = slug.slice(0, room).replace(/[-_.]+$/, "");
+  return `aidenhq-${head}-${createHash("sha256").update(slug).digest("hex").slice(0, 4)}`;
+}
+
+/**
  * The manifest for an app's first bot install: ours with the instance's own names, so several AidenHQ bots in one workspace
  * don't all want `@AidenHQ` (Slack fixes the @handle at that first install; renaming later changes only the label). The update
  * path keeps the app's own display_information and an existing bot, and Slack won't change a handle after install, so a name is
@@ -51,11 +64,10 @@ export function named(manifest: unknown, slug: string): unknown {
   // A name with no a-z0-9 left (an owner name in another script, no instance name) keeps the manifest's own labels.
   if (!slug) return manifest;
   // Cut the slug, not the finished name, and drop a separator the cut left at the end: `AidenHQ (<slug>)` keeps its closing
-  // parenthesis and the handle keeps its prefix. The bot display name is what Slack builds the @handle from (21 at most).
+  // parenthesis.
   const appSlug = slug.slice(0, APP_NAME_MAX - "AidenHQ ()".length).replace(/-+$/, "");
-  const botSlug = slug.slice(0, BOT_NAME_MAX - "aidenhq-".length).replace(/[-_.]+$/, "");
   const app = `AidenHQ (${appSlug})`;
-  const bot = `aidenhq-${botSlug}`;
+  const bot = botName(slug);
   return {
     ...manifest,
     display_information: isMap(manifest.display_information) ? { ...manifest.display_information, name: app } : { name: app },

@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { apps, MANIFESTS, named, slugOf } from "../src/apps.js";
+import { apps, botName, MANIFESTS, named, slugOf } from "../src/apps.js";
 import { openStore } from "../src/store.js";
 
 // Built at run time, so no secret scanner takes a test value for a real token.
@@ -81,10 +81,11 @@ it("slugs an instance name: lowers it, turns anything outside a-z0-9- into -, an
   expect(m.display_information.name).toBe("AidenHQ");
 });
 
-it("cuts the bot name to Slack's 21 characters and the app name to 35, keeping both well formed", () => {
+it("keeps the bot name within Slack's 21 characters and the app name within 35, and both well formed", () => {
   const long = "a".repeat(40);
   const m = named(MANIFESTS.advanced, long) as { display_information: { name: string }; features: { bot_user: { display_name: string } } };
-  expect(m.features.bot_user.display_name).toBe(`aidenhq-${"a".repeat(13)}`);
+  // Too long to fit whole: the head plus a 4-character hash of the whole slug, still within 21.
+  expect(m.features.bot_user.display_name).toBe(`aidenhq-${"a".repeat(8)}-${botName(long).slice(-4)}`);
   expect(m.features.bot_user.display_name).toHaveLength(21);
   expect(m.display_information.name).toBe(`AidenHQ (${"a".repeat(25)})`);
   expect(m.display_information.name).toHaveLength(35);
@@ -93,6 +94,19 @@ it("cuts the bot name to Slack's 21 characters and the app name to 35, keeping b
   const trimmed = named(MANIFESTS.advanced, `${"a".repeat(12)}-`) as { features: { bot_user: { display_name: string } } };
   expect(trimmed.features.bot_user.display_name).toBe(`aidenhq-${"a".repeat(12)}`);
   expect(trimmed.features.bot_user.display_name).not.toMatch(/[-_.]$/);
+});
+
+it("keeps bot names distinct when two instance names share a long head (a plain cut would collide)", () => {
+  for (const [a, b] of [["acme-finance-eu", "acme-finance-us"], ["acme-platform-prod", "acme-platform-dev"], ["production-east-1", "production-east-2"]]) {
+    const na = botName(slugOf(a)), nb = botName(slugOf(b));
+    expect(na).not.toBe(nb);
+    expect(na.length).toBeLessThanOrEqual(21);
+    expect(nb.length).toBeLessThanOrEqual(21);
+    expect(na).toMatch(/^[a-z0-9-_.]+$/);
+  }
+  // A name that fits whole stays whole, and the same name always gives the same handle (Slack fixes it once).
+  expect(botName(slugOf("Acme Inc."))).toBe("aidenhq-acme-inc");
+  expect(botName(slugOf("acme-finance-eu"))).toBe(botName(slugOf("acme-finance-eu")));
 });
 
 it("names the bot when an app first gains one, and never renames a bot the app already has", async () => {
