@@ -151,7 +151,7 @@ export async function waitForCertificate(ip: string | undefined, seconds = 180) 
 /** The `caddy` compose service for a Caddyfile (compile writes the file to config/Caddyfile). */
 export function caddyService(file: string) {
   return {
-    build: "./services/caddy", image: "aidenhq/caddy:local", network_mode: "host", restart: "unless-stopped",
+    build: "./services/caddy", image: "aidenhq/caddy:local", network_mode: "host", restart: "unless-stopped", logging: LOG_ROTATION,
     user: "${PUID:-1000}:${PGID:-100}", read_only: true, security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], cap_add: ["NET_BIND_SERVICE"],
     // Caddy reads its config once (admin is off): the hash makes compose recreate it exactly when the Caddyfile changes.
     labels: { "aidenhq.caddyfile-sha256": createHash("sha256").update(file).digest("hex") },

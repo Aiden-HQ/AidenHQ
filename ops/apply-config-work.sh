@@ -936,7 +936,12 @@ switchOver() {
   [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
   # validate built the images; a switch nothing validated (--generation, a product from before staging) builds them here.
   if [ "$staged" = 0 ]; then build_files="$(composeFiles)"; stepRun images imageInputs env COMPOSE_FILE="$build_files" docker compose build; fi
+  # Paperclip's embedded Postgres settings (jit, random_page_cost, shared_buffers) are read only at start: a changed file restarts
+  # Paperclip once after the recreate (a fresh host has no file until its first start, so its second apply restarts it).
+  pgtuned=0; ops/paperclip-pg-tune.sh || pgtuned=$?
+  [ "$pgtuned" = 0 ] || [ "$pgtuned" = 10 ] || exit "$pgtuned"
   ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
+  if [ "$pgtuned" = 10 ]; then docker compose restart paperclip; fi
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune
   # In tailscale exposure the host's name also carries the module door (8447 → the gate; docs/design/app-doors.md).
