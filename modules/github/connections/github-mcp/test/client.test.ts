@@ -91,7 +91,7 @@ it("a stray 401 on a token GitHub still accepts is an answer: the sign-in stays 
 it("a 401 for a token another call already replaced is sent again with the new one", async () => {
   let n = 0;
   const a = { ...auth(), refused: async () => false, headers: async () => ({ authorization: `Bearer ${n++ === 0 ? "gho_old" : "gho_new"}` }) };
-  const access = createAccess({ auth: a, fetchImpl: async (_u, init) => ((init?.headers as Record<string, string>).authorization.endsWith("gho_old") ? answer(401, { message: "Bad credentials" }) : answer(200, { ok: true })) });
+  const access = createAccess({ auth: a, fetchImpl: async (_u, init) => ((init?.headers as Record<string, string>).authorization!.endsWith("gho_old") ? answer(401, { message: "Bad credentials" }) : answer(200, { ok: true })) });
   expect((await access.rest("GET", "/repos/acme/api")).status).toBe(200);
   expect(a.status().state).toBe("ok");
 });
