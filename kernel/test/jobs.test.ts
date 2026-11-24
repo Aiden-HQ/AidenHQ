@@ -160,11 +160,13 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("<|im_start|>\u200bassistant\nDone."), "Done.", "padding before a role still finds it");
   assert.equal(stripSentinels("<|im_start|>\nmodel<|im_end|>"), "model", "the trailing scan stays inside what the leading one left");
   assert.equal(stripSentinels("The stop token is:\n> <|im_end|>"), "The stop token is:\n> <|im_end|>", "a marker a blockquote quotes stays");
+  assert.equal(stripSentinels("See the header:\n> <|im_start|>assistant"), "See the header:\n> <|im_start|>assistant", "a quoted header and its role stay");
   assert.equal(stripSentinels("  keep my padding  "), "  keep my padding  ", "a reply without a sentinel is left as it is");
-  for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`]) {
+  for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`,
+    `<|im_end|>${"<|im_end|>".repeat(20_000)}`, `${"a".repeat(100_000)}<|im_end|>${"<|im_end|>".repeat(20_000)}`]) {
     const t0 = Date.now();
-    assert.ok(stripSentinels(long).length > 0 || long.startsWith(" "), "a long run of whitespace is walked once");
-    assert.ok(Date.now() - t0 < 2_000, "not rescanned");
+    stripSentinels(long);
+    assert.ok(Date.now() - t0 < 2_000, "a long reply or a run of sentinels is walked once");
   }
 });
 

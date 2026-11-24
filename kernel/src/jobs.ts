@@ -116,7 +116,8 @@ const PAD = /[\s\u200b\ufeff\u2060]/;
 const START = /^(?:<\|im_start\|>|<\uff5cim_start\uff5c>|<\|start_header_id\|>|<start_of_turn>)$/;
 /** A turn's role, and the same at the end of a reply: what a template leaves when its turn held no reply body. */
 const ROLE_START = /^(?:system|user|assistant|model|tool|ipython)(?=$|[\s\u200b\ufeff\u2060]*(?:\r?\n|<[|\uff5c]|<end_of_turn>))/;
-const ROLE_END = /(?:system|user|assistant|model|tool|ipython)$/;
+/** A turn's role as it ends a reply: checked as a suffix, so a long reply is not rescanned for a role it never had. */
+const ROLES = ["system", "user", "assistant", "model", "tool", "ipython"];
 /** `text` without the padding at either end. */
 const trim = (text: string) => {
   let from = 0, to = text.length;
@@ -148,7 +149,7 @@ const blockquoted = (text: string, at: number, lineStart: number) => /^[\s>]*>$/
 /** Where the reply's own text ends before a trailing header and its role ("Done.<|im_end|><|im_start|>user"), or undefined. */
 const beforeHeader = (text: string) => {
   const end = trimEnd(text).length;
-  const role = text.slice(0, end).match(ROLE_END)?.[0];
+  const role = ROLES.find((r) => end >= r.length && text.startsWith(r, end - r.length));
   if (!role) return undefined;
   const at = end - role.length;
   const head = trimEnd(text.slice(0, at));
@@ -184,8 +185,10 @@ export function stripSentinels(text: string): string {
     return lineStart;
   };
   for (;;) {
-    const before = beforeHeader(text.slice(from, to));
-    if (before !== undefined) to = from + before;
+    const head = beforeHeader(text.slice(from, to));
+    // A header and role a blockquote quotes ("> <|im_start|>assistant") are the reply's example, not a leak.
+    const before = head !== undefined && !blockquoted(text, from + head, lineStartAt(from + head)) ? from + head : undefined;
+    if (before !== undefined) to = before;
     else {
       const tail = trimEnd(text.slice(from, to));
       const hit = SENTINELS.find((s) => tail.endsWith(s) && tail[tail.length - s.length - 1] !== "\\"
