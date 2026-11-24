@@ -19,15 +19,14 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
 ## Declare, and the board and the owner's Claude both drive it
 
 - **Everything the owner configures is declared in `module.yaml`:** settings (typed, with `values` and a comment that
-  explains them), `board.signins`, `board.setup_flows` and `providers.board` (the module's Fleet page, below). The board draws them with its kit and theme
+  explains them), `board.signins`, `board.setup_flows` and its Fleet page (below). The board draws them with its kit and theme
   ([board-ui.md](../docs/design/board-ui.md)). The owner's MCP reads and sets the same declarations
   ([design](../docs/superpowers/specs/2026-11-20-owner-mcp-design.md)), so a module adds no owner-facing code of its own.
 - **Secrets go through a board field, never chat.** Declare each with `setup:`. The board stores it in the vault and the
   module reads it as a file.
 - **A richer page is a module view.** When declarations can't express a page, a module ships it as a view in the MCP Apps
   format: a sandboxed HTML resource on the design system that calls only the module's own tools, so it works on the board
-  and in the owner's Claude alike. No module has needed one yet; the first module that does builds the board's view host
-  (owner, 2026-11-20). Board code stays the board's.
+  and in the owner's Claude alike. A module's Fleet page is one (below). Board code stays the board's.
 - **Every setting is explained.** Put a comment above each setting in `module.yaml`; it is the help the board and the MCP
   show. Add `pattern` for a value's shape, and `when` for a setting that applies only in one mode.
 - **Every sign-in can be tested.** Its service answers `/auth/check` with ok, or what's wrong and how to fix it. The SDK
@@ -45,25 +44,18 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
   generic module-settings screen (`ModulePage.tsx`, and the General pane in `Settings.tsx`) is for advanced settings: values
   an owner rarely touches. A feature (what the module reviews, watches, sends or runs, and its on/off) is a page the owner
   opens from Fleet.
-- **How to add one:**
-  1. Declare `providers: board: { url: "http://<service>:<port>", auth: <one of the module's own secrets> }` in
-     `module.yaml` (`modules/code-review/module.yaml`). The url is a compose service; `scripts/modules.ts` checks both keys.
-  2. The module's service serves the page's data and actions as plain HTTP routes. The kernel carries them
-     (`GET|POST /v1/board-api/<module>/<path>`, `kernel/src/board-api.ts`) and adds the secret as the bearer.
-  3. The board has one client for it (`services/board/src/reviews-client.ts`) and routes in `services/board/src/app.ts` that
-     the browser calls, so the board's key never reaches the browser.
-  4. The page is a board view (`services/board/web/src/Reviews.tsx` is the model): `App.tsx` maps its hash to the view and
-     `Shell.tsx` lists it in the Fleet section. It uses the board's kit ([board-ui.md](../docs/design/board-ui.md)).
-  5. It shows the module's state (what it is doing, what it cost, what needs the owner) and edits its settings. An empty,
-     unconnected module says how to connect ("The owner's experience").
-- **One editor per setting.** Moving a feature setting to its page removes it from the generic screens in the same change,
-  so the owner sees it in one place (CLAUDE.md "One way to do each thing").
+- **How to add one:** declare the page in `module.yaml`, and ship it as a module view the module serves (a sandboxed MCP
+  Apps resource that calls only the module's own tools). The board builds its Fleet sidebar from the compiled registry, so a
+  module never edits board code. The declaration's shape and the view host are in [board-ui.md](../docs/design/board-ui.md)
+  "Modules".
+- **The page shows** the module's state (what it is doing, what it cost, what needs the owner) and **edits its settings**. An
+  empty, unconnected module says how to connect ("The owner's experience").
+- **One editor per setting.** Moving a feature setting to its page removes it from the generic screens in the same change
+  (CLAUDE.md "One way to do each thing").
 - **The page edits settings through the settings-change path** the module's agent tools use: a typed `setting` change,
   written to `instance.yaml` and applied by the kernel ([settings-changes.md](../docs/design/settings-changes.md)). A setting
   with structure (like `code_review`) is checked by the module's own validator before the change is filed, and the page and
   the agent tools share that one check ("Validate at the module" above).
-- **Native page or module view.** A Fleet page is a board view as above, reading the module's API. A module view (MCP Apps,
-  above) is the choice only when the page must also work in the owner's Claude.
 
 ## Connections are MCP servers
 
