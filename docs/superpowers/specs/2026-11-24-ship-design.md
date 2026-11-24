@@ -387,10 +387,8 @@ Exact record shapes, the state file's layout, and these end-to-end tests:
 - a merge-queue ejection looped back;
 - a restart between filing the task and saving the adoption;
 - a contributor's push during a repair refused by the lease;
-- the pr-watch cutover, an upgrade from persisted state, not a fresh start:
-  - seed old opener mappings, accepted re-runs, breaker counts, a live Dependabot task, and a claimed merge with an
-    unanswered PUT;
-  - stop the old writer and start ship with its real module grants;
-  - restart after GitHub accepted a call but before ship saved it;
-  - assert one writer, no duplicate wake, re-run or merge, correct task credit and closure, and that cancelling a
-    handed-over task leaves the contributor's PR and ref intact.
+- cancelling a handed-over task leaves the contributor's PR and ref intact.
+
+**Rollout (owner).** No separate cutover test. Ship is dogfooded on AidenHQ's own repos (the product repo, the distro, the
+instance repo, the agents org) from the moment it replaces pr-watch, and breakage is fixed forward. The pilot repo follows
+once hand-offs ship.
