@@ -654,8 +654,9 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (the recorded base ref commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}${byName ? "; named by the deliverable's own ref" : ""}`);
     // Code review's status is advisory in the named checks (the merge gate asks its verdict itself), so it is left out of that
     // list and stated as one fact of its own when the head carries it: a rubric that names `aidenhq/review` has something to
-    // read. An absent status is no fact at all, and it never holds the grade (`checks` and `gateOn` above decide that).
-    const review = (pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).find((n: any) => (n.name ?? n.context) === CODE_REVIEW_STATUS);
+    // read. It is read only from a commit status: code review publishes the status, and a check run wearing the same name is
+    // not its verdict. An absent status is no fact at all, and it never holds the grade (`checks` and `gateOn` decide that).
+    const review = (pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).find((n: any) => n.__typename === "StatusContext" && n.context === CODE_REVIEW_STATUS);
     if (review) {
       const status = contextStatus(review);
       const state = ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(status) ? "still running" : status === "SUCCESS" ? "green" : status === "NEUTRAL" ? "not green (neutral)" : "not green (failed)";

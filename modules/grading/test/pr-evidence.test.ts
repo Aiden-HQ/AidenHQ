@@ -635,3 +635,13 @@ test("a head with no aidenhq/review status adds no such fact", async () => {
   assert.ok(ev.facts.some((f) => f.startsWith(`${url(1503)}: merged`)), "the PR's own fact line is present");
   assert.ok(ev.facts.every((f) => !f.includes("aidenhq/review")), "an absent status stays not shown");
 });
+
+test("a check run merely named aidenhq/review is not code review's status", async () => {
+  // Code review publishes a commit status; a check run wearing the name is something else and proves nothing about its verdict.
+  const pr = { ...merged(1504, "g", "h"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    { __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" },
+    { __typename: "CheckRun", name: "aidenhq/review", status: "COMPLETED", conclusion: "SUCCESS" },
+  ] } } } }] } };
+  const ev = await prEvidence([{ repo: REPO, number: 1504, url: url(1504), heads: ["branch-g"] }], "", depsFor([pr]));
+  assert.ok(ev.facts.every((f) => !f.includes("code review's")), ev.facts.join("\n"));
+});
