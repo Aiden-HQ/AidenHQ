@@ -61,7 +61,7 @@ const help = (label, text, more = {}) => {
 // "3 hours ago" for an ISO time, or "" when there is none.
 const ago = (iso) => { const s = (Date.now() - Date.parse(iso)) / 1000; if (!(s >= 0)) return ""; const [n, u] = s < 90 ? [0, ""] : s < 5400 ? [Math.round(s / 60), "minute"] : s < 172800 ? [Math.round(s / 3600), "hour"] : [Math.round(s / 86400), "day"]; return u ? `${n} ${u}${n === 1 ? "" : "s"} ago` : "just now"; };
 // The Settings drawers: one field = a help label, an editor and a meta line. editor({ kind: select | checks | list | num | text, label, value, values, titles, f, set })
-// builds the control (list: one item per line; num: blank = null, else a whole number); set(value) runs on the change, and
+// builds the control (list: one item per line; num: blank = null, else a whole number); set(value, live) runs as you type (live: no redraw) and on the change, and
 // keepFocus(render) puts the focus back on the control with the same data-f after a render replaced it.
 // soon(fn): run fn after the current event, and after a pressed pointer is released (a redraw between a press and its click would lose the click); a newer soon(fn) of the same fn replaces a pending one.
 let pointerDown = false, queued = null;
@@ -76,7 +76,10 @@ const editor = (k) => {
     : k.kind === "list" ? h("textarea", { rows: Math.min(6, Math.max(2, (k.value ?? []).length)), value: (k.value ?? []).join("\n"), ariaLabel: k.label, spellcheck: false })
     : h("input", { type: "text", value: k.value ?? "", ariaLabel: k.label, autocomplete: "off", spellcheck: false, placeholder: k.kind === "num" ? "unlimited" : "" });
   el.dataset.f = k.f;
-  fire(el, "change", () => k.kind === "list" ? lines(el.value) : k.kind === "num" ? (el.value.trim() === "" ? null : Number.isInteger(Number(el.value)) && Number(el.value) >= 0 ? Number(el.value) : (say("Use a whole number, or leave it blank.", true), undefined)) : el.value);
+  // A text control proposes as you type (after a short pause, without a redraw, so the caret stays) and again on change, so the proposal the host shows is the latest by the time Save is pressed.
+  const read = (quiet) => k.kind === "list" ? lines(el.value) : k.kind === "num" ? (el.value.trim() === "" ? null : Number.isInteger(Number(el.value)) && Number(el.value) >= 0 ? Number(el.value) : (quiet || say("Use a whole number, or leave it blank.", true), undefined)) : el.value;
+  let typing; if (k.kind !== "select") el.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { const v = read(true); if (v !== undefined) k.set(v, true); }, 200); });
+  el.addEventListener("change", () => { clearTimeout(typing); const v = read(false); if (v !== undefined) k.set(v); });
   return el;
 };
 // One labelled field of a drawer: help label, editor, then a meta line (default, overridden mark, reset).

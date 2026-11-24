@@ -56,16 +56,18 @@
   let controls = {}, presets = {}, status = { paused: false, repos: [], held: [] };
   // The edits the owner hasn't saved yet, one proposal for the page: field changes per repo, and the pause. Each edit merges into it.
   let pending = { repos: {}, paused: undefined };
-  // A proposed preset moves every field the repo's entry doesn't set itself to that preset's value, before Save.
-  const shown = (r) => { const p = pending.repos[r.repo] ?? {}, base = p.preset && presets[p.preset] ? Object.fromEntries(["enabled", "handoff", "approve", "merge"].filter((k) => !(r.over ?? []).includes(k)).map((k) => [k, presets[p.preset][k]])) : {}; return { ...r, ...base, ...p }; };
+  // What the proposal shows of a repo's headline fields: its preset, and the effective on, hand-off, approve and merge with the pending edits and resets.
+  const shown = (r) => { const s = view(r.repo); return { ...r, preset: presetFor(r.repo), enabled: s.enabled, handoff: s.handoff, approve: s.approve, merge: s.merge }; };
 
-  async function propose(fields, repo, whole) {
+  // The last proposal the host accepted: a refused edit drops back to it, so one bad value never blocks the next proposal (and the page is what the Save bar holds).
+  let lastGood = { repos: {}, paused: undefined };
+  async function propose(fields, repo, whole, live) {
     const next = { repos: { ...pending.repos }, paused: pending.paused };
     if (repo) next.repos[repo] = whole ? fields : { ...(next.repos[repo] ?? {}), ...fields };
     else next.paused = fields.paused;
     pending = next; // at once, so a second edit before the answer comes back keeps this one
-    render();
-    await inOrder(async () => { try { proposed(await tool("ship_configure", { edits: next })); } catch (e) { say(e.message, true); } });
+    if (!live) render();
+    await inOrder(async () => { try { proposed(await tool("ship_configure", { edits: next })); lastGood = next; } catch (e) { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } });
   }
   const own = (r) => ({ ...pending.repos[r.repo] });
 
@@ -95,39 +97,46 @@
     ["Other", ["stop_label"]],
     ["Actions", Object.keys(STAGES).map((s) => `actions.${s}`), "Extra steps Ship takes at a stage: post a comment or run a workflow. One per line: comment: text, or workflow: file.yml key=value."],
   ];
-  const HEAD = ["preset", "handoff", "approve", "merge"];
-  const PATHS = [...GROUPS.flatMap((g) => g[1]), "handoff", "approve", "merge"];
+  
   const KIND = { rebase: "select", fix: "checks", "generated.globs": "list", "generated.command": "text", protected: "list", "safe.deny": "list", stop_label: "text" };
   const get = (o, path) => path.split(".").reduce((x, k) => x?.[k], o);
   const put = (o, path, v) => { const ks = path.split("."); const last = ks.pop(); const t = ks.reduce((x, k) => (x[k] ??= {}), o); t[last] = v; };
   const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   const target = (key) => (key === "defaults" ? status.defaults : status.repos.find((r) => r.repo === key));
   const presetFor = (key) => pending.repos[key]?.preset ?? target(key).preset;
-  // The settings as they would stand with the pending edits: the preset's change moves what wasn't overridden, edits apply, resets return the preset's value.
-  // The value a field returns to: the preset's, or, for an entry with no preset of its own, the defaults' (what effective() applies).
-  const dflt = (key, path) => (key !== "defaults" && target(key).inherits && !pending.repos[key]?.preset ? get(status.defaults.settings, path) : get(presets[presetFor(key)], path));
+  // Generated and actions are one setting each (an entry's value replaces the inherited one whole), so a reset takes the whole of it.
+  const rootOf = (path) => (/^(generated|actions)\./.test(path) ? path.split(".")[0] : path);
+  // What a field returns to: the defaults' settings for an entry with no preset of its own (what effective() applies), else its preset's.
+  const baseOf = (key) => (key !== "defaults" && target(key).inherits && !pending.repos[key]?.preset ? view("defaults") : presets[presetFor(key)] ?? {});
+  const dflt = (key, path) => get(baseOf(key), path);
+  // The settings as the proposal would leave them: the base, then the fields the entry sets (minus the pending resets), then the pending edits.
   function view(key) {
-    const t = target(key), p = pending.repos[key] ?? {}, old = presets[t.preset], now = presets[presetFor(key)] ?? old;
-    const s = structuredClone(t.settings ?? {});
-    // A new preset moves the fields the entry doesn't set itself (an explicit value stays, as it does when saved).
-    for (const path of PATHS) if (now !== old && get(t.own, path) === undefined) put(s, path, structuredClone(get(now, path)));
-    for (const [k, v] of Object.entries(p)) if (k === "caps" || k === "safe") s[k] = { ...s[k], ...v }; else if (!["preset", "reset"].includes(k)) s[k] = v;
-    for (const path of p.reset ?? []) for (const x of PATHS.filter((x) => x === path || x.startsWith(`${path}.`))) put(s, x, structuredClone(dflt(key, x)));
+    const t = target(key), p = pending.repos[key] ?? {}, resets = new Set(p.reset ?? []), s = structuredClone(baseOf(key));
+    const apply = (src, skipReset) => { for (const [k, v] of Object.entries(src ?? {})) {
+      if (["preset", "reset"].includes(k)) continue;
+      if (k === "caps" || k === "safe") { for (const [sub, x] of Object.entries(v ?? {})) if (!skipReset || !resets.has(`${k}.${sub}`)) (s[k] ??= {})[sub] = x; }
+      else if (!skipReset || !resets.has(k)) s[k] = k === "generated" ? (v ? { globs: v.globs ?? [], command: v.command ?? "" } : null) : v;
+    } };
+    apply(t.own, true); apply(p, false);
     return s;
   }
-  function edit(key, path, value) {
+  // Whether the entry itself sets the field: an own field not being reset, or a pending edit.
+  const owns = (key, path) => { const p = pending.repos[key] ?? {}, r = rootOf(path), has = (o, x) => get(o, x) !== undefined;
+    if (has(p, r)) return true;
+    return !(p.reset ?? []).includes(r) && has(target(key).own, r); };
+  function edit(key, path, value, live) {
     const p = { ...(pending.repos[key] ?? {}) }, [root, sub] = path.split(".");
     p.reset = (p.reset ?? []).filter((x) => x !== path && x !== root);
     if (root === "caps" || root === "safe") p[root] = { ...p[root], [sub]: value };
     else if (sub) p[root] = { ...(view(key)[root] ?? {}), [sub]: value };
     else p[root] = value;
     if (!p.reset.length) delete p.reset;
-    propose(p, key, true);
+    propose(p, key, true, live);
   }
   function reset(key, path) {
-    const p = { ...(pending.repos[key] ?? {}) }, [root, sub] = path.split(".");
+    const p = { ...(pending.repos[key] ?? {}) }, r = rootOf(path), [root, sub] = r.split(".");
     if (sub) { const m = { ...p[root] }; delete m[sub]; if (Object.keys(m).length) p[root] = m; else delete p[root]; } else delete p[root];
-    p.reset = [...new Set([...(p.reset ?? []), path])];
+    p.reset = [...new Set([...(p.reset ?? []), r])];
     propose(p, key, true);
   }
   // Loosening: a higher or removed cap, more paths fixed or less protected, a branch rebased whenever it is behind.
@@ -142,20 +151,22 @@
   const showAction = (a) => a.workflow ? `workflow: ${a.workflow}${Object.entries(a.inputs ?? {}).map(([k, v]) => ` ${k}=${v}`).join("")}` : `comment: ${a.comment ?? ""}`;
   const readAction = (l) => { const m = l.match(/^(comment|workflow):\s*(.*)$/); if (!m || m[1] === "comment") return { comment: m ? m[2] : l }; const [name, ...kv] = m[2].split(/\s+/); return { workflow: name, inputs: Object.fromEntries(kv.map((x) => x.split(/=(.*)/s).slice(0, 2))) }; };
 
-  function drawer(key, extra) {
-    const s = view(key), base = target(key).settings ?? {}, preset = presets[presetFor(key)] ?? {}, p = pending.repos[key] ?? {};
+  function drawer(key) {
+    const s = view(key), base = target(key).settings ?? {}, defaults = key === "defaults";
     const field = (path) => {
-      const stage = path.startsWith("actions.") ? path.slice(8) : null, kind = stage ? "list" : KIND[path] ?? "num";
-      const [label, text, options] = stage ? [STAGES[stage], `Steps Ship takes ${STAGES[stage].toLowerCase()}.`, null] : T[path];
-      const v = get(s, path), d = dflt(key, path), over = !eq(v, d), touched = over || !!p.reset?.includes(path) || get(p, path) !== undefined;
-      const ed = editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : v, values: kind === "select" ? ["conflict", "behind"] : ["conflicts", "ci", "review"], titles: options, set: (x) => edit(key, path, stage ? x.map(readAction) : x) });
+      const head = ["enabled", "handoff", "approve", "merge"].includes(path), stage = path.startsWith("actions.") ? path.slice(8) : null;
+      const kind = head ? "select" : stage ? "list" : KIND[path] ?? "num";
+      const [label, text, options] = path === "enabled" ? ["On or off", ON[1], { on: "Ship works this repo's PRs.", off: "Ship leaves it alone." }] : head ? COLS[path] : stage ? [STAGES[stage], `Steps Ship takes ${STAGES[stage].toLowerCase()}.`, null] : T[path];
+      const v = get(s, path), d = dflt(key, path), over = owns(key, path);
+      const show = (x) => (path === "enabled" ? (x ? "on" : "off") : x);
+      const ed = editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : head ? show(v) : v, values: head ? (path === "enabled" ? ["on", "off"] : controls[path].values) : kind === "select" ? ["conflict", "behind"] : ["conflicts", "ci", "review"], titles: options, set: (x, live) => edit(key, path, stage ? x.map(readAction) : path === "enabled" ? x === "on" : x, live) });
       const loose = pending.repos[key] && looser(path, get(base, path), v);
-      return fld(label, text, options ? { options, current: v } : { note: LOOSE.has(path) ? "Loosening this is the owner's call: an agent's change is refused, your Save applies it." : undefined }, ed,
-        h("span", { className: "dflt", title: stage ? "" : fmt(path, d), textContent: `Default: ${stage ? "none" : fmt(path, d)}` }), over ? h("span", { className: "ovr", textContent: "Overridden" }) : null, over || touched ? linkBtn("Reset to preset", () => reset(key, path)) : null,
+      return fld(label, text, options ? { options, current: show(v) } : { note: LOOSE.has(path) ? "Loosening this is the owner's call: an agent's change is refused, your Save applies it." : undefined }, ed,
+        h("span", { className: "dflt", title: stage ? "" : fmt(path, show(d)), textContent: `Default: ${stage ? "none" : fmt(path, show(d))}` }), over ? h("span", { className: "ovr", textContent: "Overridden" }) : null, over ? linkBtn(defaults || !target(key).inherits ? "Reset to preset" : "Reset to default", () => reset(key, path)) : null,
         loose ? h("span", { className: "warn", textContent: "Loosens this guard: it needs the owner's Save." }) : null);
     };
-    const head = extra ? [h("div", { className: "grp" }, "Headline settings"), ...HEAD.map((k) => { const [label, text, options] = COLS[k]; const cur = k === "preset" ? presetFor(key) : s[k]; return fld(label, text, { options, current: cur }, editor({ kind: "select", label: `${label} (${key})`, f: `${key}|${k}`, value: cur, values: controls[k].values, titles: options, set: (x) => propose({ [k]: x }, key) }), k === "preset" ? null : h("span", { className: "dflt", textContent: `Default: ${fmt(k, preset[k])}` }), k !== "preset" && cur !== preset[k] ? h("span", { className: "ovr", textContent: "Overridden" }) : null); })] : [];
-    return h("div", { className: "drawer", id: `drawer-${key}` }, ...head, ...GROUPS.filter(([g]) => g !== "Actions" || "actions" in base).flatMap(([g, paths, note]) => [h("div", { className: "grp" }, g, note ? help(g, note, { bare: true }) : null), ...paths.map(field)]));
+    const headline = [...(defaults ? ["preset"] : []), "enabled", "handoff", "approve", "merge"].map((k) => k === "preset" ? (() => { const [label, text, options] = COLS.preset; const cur = presetFor(key); return fld(label, text, { options, current: cur }, editor({ kind: "select", label: `${label} (${key})`, f: `${key}|preset`, value: cur, values: controls.preset.values, titles: options, set: (x) => edit(key, "preset", x) })); })() : field(k));
+    return h("div", { className: "drawer", id: `drawer-${key}` }, h("div", { className: "grp" }, "Headline settings"), ...headline, ...GROUPS.filter(([g]) => g !== "Actions" || "actions" in base).flatMap(([g, paths, note]) => [h("div", { className: "grp" }, g, note ? help(g, note, { bare: true }) : null), ...paths.map(field)]));
   }
   const LOOSE = new Set(["generated.globs"]);
   const open = new Set();
@@ -164,7 +175,7 @@
     const c = controls[key];
     const sel = h("select", { ariaLabel: `${c.label} for ${r.repo}` });
     for (const v of c.values) sel.append(h("option", { value: v, textContent: v, title: COLS[key][2][v], selected: shown(r)[key] === v }));
-    sel.addEventListener("change", () => propose({ [key]: sel.value }, r.repo));
+    sel.addEventListener("change", () => edit(r.repo, key, sel.value));
     return h("div", {}, h("span", { className: "lab" }, hd(key, shown(r)[key])), sel);
   }
 
@@ -184,10 +195,10 @@
     $("pausebox").className = paused ? "pause on" : "pause";
     const rows = status.repos.map((raw) => {
       const r = shown(raw);
-      const sw = toggle(r.enabled, `Ship on ${r.repo}`, () => propose({ enabled: !r.enabled }, r.repo));
+      const sw = toggle(r.enabled, `Ship on ${r.repo}`, () => edit(r.repo, "enabled", !r.enabled));
       sw.classList.toggle("unsaved", "enabled" in own(raw));
       const rm = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
-      rm.addEventListener("click", async () => { try { const x = await tool("ship_configure", { repo: r.repo, remove: true }); pending = { repos: {}, paused: undefined }; proposed(x); render(); } catch (e) { say(e.message, true); } });
+      rm.addEventListener("click", async () => { try { const x = await tool("ship_configure", { repo: r.repo, remove: true }); pending = lastGood = { repos: {}, paused: undefined }; proposed(x); render(); } catch (e) { say(e.message, true); } });
       const row = h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
         h("div", { className: "repo" }, r.repo, (() => { const b = linkBtn("Settings", () => { open.has(r.repo) ? open.delete(r.repo) : open.add(r.repo); render(); }); b.className = "link toggle"; b.setAttribute("aria-expanded", String(open.has(r.repo))); b.setAttribute("aria-controls", `drawer-${r.repo}`); return b; })()), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: ON[0] }), sw),
         choice(raw, "preset"), choice(raw, "handoff"), choice(raw, "approve"), choice(raw, "merge"), rm);
@@ -196,7 +207,7 @@
     $("defcard").hidden = !status.defaults;
     $("defhead").replaceChildren(help("Defaults", "The settings a new repo and the fleet's own repos start from until a repo's own entry changes them. The same fields as a repo's Settings.", { note: "A repo's own value wins over the default." }));
     $("deftoggle").setAttribute("aria-expanded", String(open.has("defaults")));
-    $("defdrawer").replaceChildren(...(open.has("defaults") && status.defaults ? [drawer("defaults", true)] : []));
+    $("defdrawer").replaceChildren(...(open.has("defaults") && status.defaults ? [drawer("defaults")] : []));
     const cols = h("div", { className: "row cols" }, h("span", { textContent: "Repo" }), help(ON[0], ON[1]), ...["preset", "handoff", "approve", "merge"].map((k) => hd(k)), h("span", {}));
     $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Type owner/name below and choose Add repo to start. Ship stays quiet until a repo is on.")]));
     $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { className: "repo", textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", title: HOLDS[x.hold?.kind], textContent: String(x.hold?.kind ?? "").replace("_", " ").replace(/^./, (c) => c.toUpperCase()) }), h("span", { className: "why", textContent: x.hold?.reason || HOLDS[x.hold?.kind] || "" }), h("span", { className: "soft when", textContent: x.hold?.at ? ago(x.hold.at) : "" }))) : [h("div", { className: "empty" }, h("b", { textContent: "No holds. " }), "Nothing is waiting on you.")]));
@@ -217,7 +228,7 @@
     e.preventDefault();
     const repo = $("newrepo").value.trim();
     if (!repo) return;
-    try { proposed(await tool("ship_configure", { repo, add: true })); pending = { repos: {}, paused: undefined }; render(); } catch (err) { say(err.message, true); }
+    try { proposed(await tool("ship_configure", { repo, add: true })); pending = lastGood = { repos: {}, paused: undefined }; render(); } catch (err) { say(err.message, true); }
   });
   start("ship", load);
 </script>

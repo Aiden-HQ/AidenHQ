@@ -2,12 +2,14 @@
 // repo, `ship_configure` changes one repo's entry. Built like code-review's: the change is applied to the raw value, the whole
 // result validated, and one typed settings change filed as the calling job (POST /v1/settings/agent).
 // A change that loosens anything (loosens()) is the owner's: the tool refuses it and the owner makes it from the board.
-import { CONTROLS, covers, effective, FIELDS, loosens, PRESETS, validate, type Scope } from "./settings.ts";
+import { CAP_KEYS, CONTROLS, covers, effective, FIELDS, loosens, PRESETS, validate, type Scope } from "./settings.ts";
 import { status } from "./status.ts";
 import type { State } from "./state.ts";
 import type { Tool } from "./mcp.ts";
 
 type Dict = Record<string, unknown>;
+/** What a change's `reset` may name: a field (not the preset), a cap, or one of safe's three fields. `actions` is allowed ahead of its validation landing. */
+const RESETTABLE = new Set([...FIELDS.filter((k) => !["preset", "caps", "safe"].includes(k)), "actions", ...CAP_KEYS.map((k) => `caps.${k}`), "safe.max_lines", "safe.max_files", "safe.deny"]);
 export interface Change {
   /** `owner/name`, or `defaults` for the entry every uncovered-by-entry repo takes. */
   repo: string;
@@ -33,9 +35,10 @@ export function applyShipChange(raw: Dict, c: Change): { value: Dict; summary: s
     // caps and safe merge field by field: lowering one cap keeps the others.
     const entry: Dict = { ...base, ...ch, ...Object.fromEntries(["caps", "safe"].filter((k) => ch[k] && typeof ch[k] === "object").map((k) => [k, { ...((base as Dict)[k] as Dict), ...(ch[k] as Dict) }])) };
     // `reset: ["caps.usd", "approve"]` drops those fields from the entry, so the preset's value applies again.
-    for (const p of Array.isArray(reset) ? reset : []) {
+    if (reset !== undefined && !Array.isArray(reset)) throw new Error("reset is a list of fields, such as [\"caps.usd\", \"approve\"]");
+    for (const p of reset ?? []) {
+      if (!RESETTABLE.has(String(p))) throw new Error(`can't reset ${String(p).slice(0, 40)} (one of ${[...RESETTABLE].join(", ")})`);
       const [k, sub] = String(p).split(".");
-      if (!k || k === "preset" || !(FIELDS.includes(k) || k === "actions")) throw new Error(`can't reset ${String(p).slice(0, 40)}`);
       if (sub && entry[k] && typeof entry[k] === "object") { const m = { ...(entry[k] as Dict) }; delete m[sub]; if (Object.keys(m).length) entry[k] = m; else delete entry[k]; } else if (!sub) delete entry[k];
     }
     next = entry;

@@ -108,4 +108,7 @@ test("a cap edit and a reset make the right proposal: caps merge field by field,
   assert.deepEqual(r._aidenhq.settings_change, [{ kind: "setting", key: "ship", value: { repos: { "a/b": { preset: "cautious", caps: { usd: 2 } } } } }]);
   assert.match(r.changes[0], /caps, reset approve, caps\.rounds/);
   assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { reset: ["preset"] }, scope }), /can't reset/);
+  assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { reset: ["caps.usd_"] }, scope }), /can't reset/);
+  assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { reset: ["caps.usd.x"] }, scope }), /can't reset/);
+  assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { caps: { usd: 1 }, reset: "caps.usd" }, scope }), /list of fields/);
 });
