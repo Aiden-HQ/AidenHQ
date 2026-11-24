@@ -87,7 +87,8 @@ export function effective(raw: unknown, repo: string, covered: string[]): ShipSe
   if (!key) return resolve(d.preset, d.over);
   const e = entryOf((r.repos as Dict)[key], d.preset);
   // An entry spelled with only fields sits over the defaults' preset and overrides.
-  return resolve(e.preset, isMap((r.repos as Dict)[key]) && !("preset" in ((r.repos as Dict)[key] as Dict)) ? { ...d.over, ...e.over } : e.over);
+  const inherits = isMap((r.repos as Dict)[key]) && !("preset" in ((r.repos as Dict)[key] as Dict));
+  return resolve(e.preset, inherits ? { ...d.over, ...e.over, caps: { ...(d.over.caps as Dict), ...(e.over.caps as Dict) }, safe: { ...(d.over.safe as Dict), ...(e.over.safe as Dict) } } : e.over);
 }
 
 const oneOf = (errors: string[], at: string, v: unknown, list: readonly string[]) => { if (!list.includes(v as string)) errors.push(`${at}: one of ${list.join(", ")}`); };
@@ -95,7 +96,7 @@ const strings = (errors: string[], at: string, v: unknown) => { if (!Array.isArr
 const count = (errors: string[], at: string, v: unknown) => { if (v !== null && !(Number.isInteger(v) && (v as number) >= 0)) errors.push(`${at}: a whole number, or null for unlimited`); };
 
 function checkEntry(errors: string[], at: string, e: unknown) {
-  if (typeof e === "string") return void (e in PRESETS || errors.push(`${at}: preset ${e} (cautious or full)`));
+  if (typeof e === "string") return void (Object.hasOwn(PRESETS, e) || errors.push(`${at}: preset ${e} (cautious or full)`));
   if (!isMap(e)) return void errors.push(`${at}: a preset name or a map of fields`);
   for (const k of Object.keys(e)) if (!FIELDS.includes(k)) errors.push(`${at}.${k}: unknown field (known: ${FIELDS.join(", ")})`);
   if ("preset" in e) oneOf(errors, `${at}.preset`, e.preset, ["cautious", "full"]);

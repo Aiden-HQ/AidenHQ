@@ -17,6 +17,8 @@ test("applyShipChange sets one repo's entry and reports what it loosens; an unco
   const r = applyShipChange(raw, { repo: "a/b", change: "full", covered });
   assert.deepEqual([r.summary, r.value.repos], [["a/b: ship full"], { "a/b": "full" }]);
   assert.ok(r.loosens.includes("a/b.approve"));
+  const kept = applyShipChange({ repos: { "a/b": { caps: { usd: 1, rounds: 10 } } } }, { repo: "a/b", change: { caps: { rounds: 5 } }, covered });
+  assert.deepEqual((kept.value.repos as any)["a/b"].caps, { usd: 1, rounds: 5 });
   assert.throws(() => applyShipChange(raw, { repo: "a/c", change: "full", covered }), /isn't a repo ship covers/);
 });
 

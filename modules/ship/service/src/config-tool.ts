@@ -30,10 +30,12 @@ export function applyShipChange(raw: Dict, c: Change): { value: Dict; summary: s
   let next: unknown;
   let summary: string;
   if (c.change === null) { next = undefined; summary = `${c.repo}: back to the defaults`; }
-  else if (typeof c.change === "string") { if (!(c.change in PRESETS)) throw new Error(`${c.change} isn't a preset (cautious or full)`); next = c.change; summary = `${c.repo}: ship ${c.change}`; }
+  else if (typeof c.change === "string") { if (!Object.hasOwn(PRESETS, c.change)) throw new Error(`${c.change} isn't a preset (cautious or full)`); next = c.change; summary = `${c.repo}: ship ${c.change}`; }
   else if (c.change && typeof c.change === "object" && !Array.isArray(c.change)) {
     const base = typeof old === "string" ? { preset: old } : (old as Dict) ?? {};
-    next = { ...base, ...(c.change as Dict) };
+    const ch = c.change as Dict;
+    // caps and safe merge field by field: lowering one cap keeps the others.
+    next = { ...base, ...ch, ...Object.fromEntries(["caps", "safe"].filter((k) => ch[k] && typeof ch[k] === "object").map((k) => [k, { ...((base as Dict)[k] as Dict), ...(ch[k] as Dict) }])) };
     summary = `${c.repo}: ${Object.keys(c.change).join(", ")} changed`;
   } else throw new Error("change is a preset name, a map of fields, or null");
   const target = isDefaults ? value : repos;
