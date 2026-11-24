@@ -261,6 +261,9 @@ export function startPrWatch(o: PrWatchOptions) {
       catch (e) {
         const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: string }).cause;
         if (cause === "rate_limited") return undefined;
+        // The client answers a 404 on `/repos/...` as a typed "unreachable" need, not as a status: the job (or the repo) is gone
+        // for good, so it is reported as that 404 rather than rethrown (a rethrow would defer this head on every tick forever).
+        if (cause === "unreachable") return { status: 404, body: {} };
         throw e;
       }
     }
@@ -767,6 +770,9 @@ export function startPrWatch(o: PrWatchOptions) {
       const held = holdsPending ? due.filter((w) => !!w.nodeId && pendingIds.has(w.nodeId)) : [];
       const optional = due.filter((w) => !held.includes(w));
       const redNow = named.filter((c) => !c.ok && !c.pending).map((c) => c.name);
+      // A wedged check the rollup no longer shows (an old run replaced by a newer one) does not establish that this head has a
+      // wedged check: only one the head itself shows pending counts for the mixed-state report.
+      const wedgedOnHead = due.some((w) => !!w.nodeId && pendingIds.has(w.nodeId));
       if (taskLive && held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
         const how = held.every((w) => w.accepted)
           ? "after its Actions job completed and the job had been re-run"
@@ -780,7 +786,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (taskLive && optional.length && redNow.length && !pr.isDraft && pr.mergeable === "MERGEABLE" && pr.mergeStateStatus !== "BEHIND") {
+      } else if (taskLive && wedgedOnHead && redNow.length && !pr.isDraft && pr.mergeable === "MERGEABLE" && pr.mergeStateStatus !== "BEHIND") {
         // A head behind main is the update rule's (GitHub updates the branch below), so it is not told to publish a head that is
         // about to be replaced: only a head this watcher will not move is the task's to fix.
         // The same eligibility the red-head path requires: a draft (or a head the watcher cannot merge) is not told to publish,

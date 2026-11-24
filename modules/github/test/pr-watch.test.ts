@@ -1132,3 +1132,30 @@ test("a behind head with a red and a wedged check is not told to publish", async
   await c.watch.tick();
   assert.ok(!c.woke.some((w) => /Fix the failure on the PR's branch/.test(w.text ?? "")), "the update rule owns a behind head");
 });
+
+// self-review: the client answers a 404 as a typed "unreachable" need, not a status: a deleted job must not defer forever.
+test("a typed unreachable need on a deleted job's read reports the red head", async (t) => {
+  const c = await rig(t, { jobRead: () => Object.assign(new Error("acme/app isn't reachable with your GitHub account"), { need: { cause: "unreachable", repo: "acme/app" } }) });
+  c.set([c.agentPr(85, redPr(85))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a job gone for good is not this rule's: the failure is reported");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a wedged REST check the head's rollup no longer shows does not make the mixed-state report fire.
+test("a stale REST wedged check absent from the rollup does not wake a red head", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_90", databaseId: 90, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  // REST lists an old check (77) that the rollup no longer has; the head's own check is 90.
+  const c = await rig(t, { steps: [{ name: "Build" }], restRuns: () => [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" }] });
+  c.set([c.agentPr(86, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h86:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h86:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(!c.woke.some((w) => /Fix the failure on the PR's branch/.test(w.text ?? "")), "a stale wedged check is not this head's");
+});
