@@ -394,15 +394,48 @@ const runDetail = (id: string) => {
   const r = reviewRuns().find((x) => x.id === id) ?? reviewRuns()[0]!;
   const done = r.status === "done";
   const review = done ? { version: 1, repo: r.repo, pr: r.number, base: "0".repeat(40), head: r.head, engine: r.engine, model: r.model, effort: r.effort, incremental_from: null, full: false, coverage: { reviewed: ["src/billing/charge.ts", "src/billing/retry.ts", "test/charge.test.ts"], excluded: ["package-lock.json"], incomplete: null }, findings: r.important ? FINDINGS : [], withheld: { important: 0, nit: 1, pre_existing: 0 }, cost_usd: r.cost_usd, stale_guidance: [] } : null;
-  const gate = r.number === 42 ? { verdict: dismissed ? "pass" : "wait", reasons: dismissed ? [] : [{ code: "findings", text: "1 important finding open: A retried charge can post twice (src/billing/charge.ts:88, id f1)", unblock: "fix and push, or record each outcome with code_review_resolve" }], head: r.head, open: dismissed ? [] : [{ id: "f1", path: "src/billing/charge.ts", line: 88, title: "A retried charge can post twice" }] } : null;
+  const gate = r.number === 42 ? { tier: { state: "classified", tier: "trivial", rule: 7, why: "by a member, 8 lines, 1 file" }, verdict: dismissed ? "pass" : "wait", reasons: dismissed ? [] : [{ code: "findings", text: "1 important finding open: A retried charge can post twice (src/billing/charge.ts:88, id f1)", unblock: "fix and push, or record each outcome with code_review_resolve" }], head: r.head, open: dismissed ? [] : [{ id: "f1", path: "src/billing/charge.ts", line: 88, title: "A retried charge can post twice" }] } : null;
   return { run: { ...r, url: `https://github.com/${r.repo}/pull/${r.number}`, review_url: done ? `https://github.com/${r.repo}/pull/${r.number}#pullrequestreview-1` : undefined }, review, findings: review ? review.findings.map((f) => ({ id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title, outcome: f.id === "f1" && dismissed ? "dismissed" : null })) : [], gate };
 };
 // The Reviews page's tools (modules/code-review/service/src/config-tool.ts), as the kernel would relay them.
-let watched: any[] = [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "low" }], push_rounds: 1, drafts: false, forks: "manual", max_nits: 5, ignore: ["**/*.lock"], day_spent_usd: 3.2, error: null, identity: "owner" }, { repo: "acme/web", on_open: [REVIEW_COMBO, { engine: "claude-code", model: "anthropic/claude-haiku-5.5", effort: "low", mandatory: true }], on_push: [], push_rounds: null, drafts: true, forks: "auto", max_nits: 3, ignore: [], day_spent_usd: 0.8, error: null, identity: "app" }];
+// The presets and default rules as modules/code-review/service/src/config.ts and kernel/sdk/src/tiers.ts serve them (trimmed lists).
+const M = (engine: string, model: string, effort: string) => ({ engine, model, effort, mandatory: true });
+const FLASH = "~deepseek/deepseek-flash-latest", SOL = "openai/gpt-6.2-sol", SONNET = "anthropic/claude-sonnet-5.5";
+const NO = { on_open: [], on_push: [], push_rounds: 0 };
+const PRESETS = {
+  light: { skip: NO, trivial: { on_open: [M("codex", FLASH, "low")], on_push: [], push_rounds: 0 }, standard: { on_open: [M("codex", FLASH, "medium")], on_push: [], push_rounds: 0 }, sensitive: { on_open: [M("codex-native", SOL, "medium")], on_push: [M("codex-native", SOL, "low")], push_rounds: 1 } },
+  standard: { skip: NO, trivial: { on_open: [M("codex", FLASH, "medium")], on_push: [], push_rounds: 0 }, standard: { on_open: [M("codex", FLASH, "medium")], on_push: [M("codex-native", SOL, "low")], push_rounds: 1 }, sensitive: { on_open: [M("codex-native", SOL, "medium"), M("claude-code", SONNET, "medium")], on_push: [M("codex-native", SOL, "low")], push_rounds: 2 } },
+  thorough: { skip: NO, trivial: { on_open: [M("codex", FLASH, "medium")], on_push: [M("codex-native", SOL, "low")], push_rounds: 1 }, standard: { on_open: [M("codex-native", SOL, "medium"), M("codex", FLASH, "medium")], on_push: [M("codex-native", SOL, "low")], push_rounds: 2 }, sensitive: { on_open: [M("codex-native", SOL, "high"), M("claude-code", SONNET, "high")], on_push: [M("codex-native", SOL, "medium")], push_rounds: 3 } },
+};
+const DEFAULT_RULES = [
+  { when: { repo_class: "critical" }, tier: "sensitive" },
+  { when: { author: "bot", only_paths: ["**/package.json", "**/go.mod", "**/package-lock.json", "**/*.lock"] }, tier: "standard" },
+  { when: { paths: [".github/**", "**/Dockerfile*", "**/package.json", "**/AGENTS.md", "**/*auth*", "**/*auth*/**", "**/*token*", "**/migrations/**", "**/config/**"] }, tier: "sensitive" },
+  { when: { author: "outsider" }, tier: "sensitive" },
+  { when: { repo_class: "sandbox" }, tier: "trivial" },
+  { when: { lines_max: 0 }, tier: "sensitive" },
+  { when: { lines_min: 600 }, tier: "sensitive" },
+  { when: { author: "member", lines_max: 10, files_max: 20 }, tier: "trivial" },
+  { tier: "standard" },
+];
+const SETTING = { repos: [
+  { repo: "acme/payments", preset: "standard", by_tier: { sensitive: { on_open: [M("codex-native", SOL, "high"), M("claude-code", SONNET, "medium")], on_push: [M("codex-native", SOL, "low")], push_rounds: 3 } }, max_nits: 5, ignore: ["**/*.lock"] },
+  { repo: "acme/web", preset: "light", repo_class: "sandbox", rules: [{ when: { base: ["release/*"] }, tier: "sensitive" }, { when: { lines_max: 3 }, tier: "skip" }, { tier: "trivial" }], drafts: true, forks: "auto", max_nits: 3 },
+] };
+let watched: any[] = [
+  { ...SETTING.repos[0], preset: "standard", repo_class: "standard", rules: DEFAULT_RULES, custom: false, drafts: false, forks: "manual", day_spent_usd: 3.2, error: null, identity: "owner", prs: [
+    { number: 44, title: "Rotate the session signing key", head: "f".repeat(40), tier: "sensitive", rule: 2, why: "touches src/auth/session.ts", facts: { lines: 84, files: 3, author: "member" } },
+    { number: 43, title: "Add idempotency keys to refunds", head: "b".repeat(40), tier: "standard", rule: 8, why: "no earlier rule matched (142 lines in 6 files, by a member)", facts: { lines: 142, files: 6, author: "member" } },
+    { number: 42, title: "Retry failed charges", head: "a".repeat(40), tier: "trivial", rule: 7, why: "by a member, 8 lines, 1 file", facts: { lines: 8, files: 1, author: "member" } },
+    { number: 41, title: "Bump stripe from 14.2.0 to 14.3.1", head: "c".repeat(40), tier: "standard", rule: 1, why: "by a bot, only 2 matching files", facts: { lines: 0, files: 0, author: "bot" } },
+    { number: 40, title: "Docs: explain refunds", head: "d".repeat(40), tier: null },
+  ] },
+  { ...SETTING.repos[1], custom: true, ignore: [], day_spent_usd: 0.8, error: null, identity: "app", prs: [{ number: 9, title: "Fix a typo in the footer", head: "e".repeat(40), tier: "skip", rule: 1, why: "1 line", facts: { lines: 1, files: 1, author: "member" } }] },
+];
 function reviewCall(name: string, a: any): any {
   const sc = (v: unknown) => ({ result: { content: [{ type: "text", text: "ok" }], structuredContent: v } });
   switch (name) {
-    case "code_review_overview": return sc({ runs: mock.empty ? [] : reviewRuns(), batches: mock.empty ? [] : reviewBatches(), repos: { day_spent_usd: 4, errors: [], repos: mock.empty ? [] : watched }, engines: ENGINES, setting: { repos: watched }, problems: [] });
+    case "code_review_overview": return sc({ runs: mock.empty ? [] : reviewRuns(), batches: mock.empty ? [] : reviewBatches(), repos: { day_spent_usd: 4, errors: [], repos: mock.empty ? [] : watched }, engines: ENGINES, presets: PRESETS, default_rules: DEFAULT_RULES, setting: mock.empty ? { repos: [] } : SETTING, problems: [] });
     case "code_review_run_detail": return sc(runDetail(a.id));
     case "code_review_report": return sc({ markdown: REPORT });
     case "code_review_catalog": return sc({ repo: a.repo, ...catalog() });

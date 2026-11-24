@@ -251,9 +251,9 @@ export function configTools(d: {
     },
     {
       name: "code_review_overview",
-      description: "The Reviews page's first read: the recent PR runs, the repo reviews, the watched repos (as run, with today's spend), the engines a combo may name, the setting and any problem with it.",
+      description: "The Reviews page's first read: the recent PR runs, the repo reviews, the watched repos (as run, with today's spend and their open PRs' tiers), the engines a combo may name, the presets and default tier rules, the setting and any problem with it.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
-      run: async () => ({ runs: d.runs({ target: "pr", limit: 300 }), batches: d.batches({ limit: 100 }), repos: d.repos(), engines: ENGINES, setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors }),
+      run: async () => ({ runs: d.runs({ target: "pr", limit: 300 }), batches: d.batches({ limit: 100 }), repos: d.repos(), engines: ENGINES, presets: PRESETS, default_rules: DEFAULT_RULES, setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors }),
     },
     {
       name: "code_review_run_detail",
