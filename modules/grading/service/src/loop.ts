@@ -480,11 +480,11 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         const filed = await stillFiled(g.issueId, filing);
         if (filed.verdict !== "ok") return;
         await wake(issue, ev.awaiting);
-        if (g.state !== "awaiting_evidence") endRetryWait((await api.post(verdictPath, { version: "", outcome: "awaiting_evidence", rubric: filing, round: g.round }))?.round === g.round + 1);
+        if (g.state !== "awaiting_evidence") endRetryWait((await api.post(verdictPath, { version: "", outcome: "awaiting_evidence", rubric: filing, round: g.round }))?.applied === true);
         return;
       }
       if (!waitOver && nudge !== "give_up") {
-        if (g.state !== "awaiting_evidence") endRetryWait((await api.post(verdictPath, { version: "", outcome: "awaiting_evidence", rubric: filing, round: g.round }))?.round === g.round + 1);
+        if (g.state !== "awaiting_evidence") endRetryWait((await api.post(verdictPath, { version: "", outcome: "awaiting_evidence", rubric: filing, round: g.round }))?.applied === true);
         log("grading waits for evidence", { issue: issue.identifier, why: ev.awaiting });
         return;
       }
@@ -517,17 +517,21 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     // re-bound while the pass ran. The row's own list (g.rubric) and deliverable, not the template the pass falls back to, are
     // what the store compares against.
     const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: filing, round: g.round, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
-    // Whether the store took this pass's verdict. A verdict on a filing or round that moved while the pass ran is dropped, and the
-    // store answers the row as it now stands: its round is unchanged (the drop writes nothing), or a later pass or amendment has
-    // already moved it on. The side effects below are this pass's (a note worded from its verdict, keyed on the round it produced),
-    // so they are only taken when the round it produced is the one that came back.
-    const applied = row?.round === g.round + 1;
+    // Whether the store took this pass's verdict, as the store says: a verdict on a filing or round that moved while the pass ran
+    // is dropped, and the row comes back untouched. The round alone cannot say — an amendment advances it too — so the route
+    // reports `applied`, and everything below (the verdict fact, the wait, the note, the close) is this pass's only when it did.
+    const applied = row?.applied === true;
     // A pass the store took ends the wait the round before it left; a dropped verdict leaves it, so the next pass still reports
     // the retry it is waiting on.
     endRetryWait(applied);
-    if (asked) fact("grade.verdict", `grade:${issue.id}:${g.round}:${attempt}`, `${g.round}:${attempt}`, issue.id, { pass: v.outcome === "satisfied", attempt, round: g.round, reason_code: String(v.outcome) });
+    // A dropped verdict is no verdict: publishing one would let Flow record a first passing grade (and the board show "graded")
+    // for a rubric the store never applied.
+    if (asked && applied) fact("grade.verdict", `grade:${issue.id}:${g.round}:${attempt}`, `${g.round}:${attempt}`, issue.id, { pass: v.outcome === "satisfied", attempt, round: g.round, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
-    log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
+    log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}), ...(applied ? {} : { dropped: true }) });
+    // The row moved while the pass ran, so this verdict is about work it no longer holds: no close, no reopen, no note, no
+    // wait. The next pass grades what the row holds now, and its own verdict speaks for it.
+    if (!applied) return;
     // A satisfied row without a satisfied verdict is a close the grader could not check: done, with "ungraded: <reason>".
     const unmet = (v.criteria ?? []).some((c: Json) => c.met === "no");
     const ungraded = row.state === "satisfied" && (v.outcome !== "satisfied" || unmet) ? (unmet ? `criteria were still unmet after ${row.attempts} rejected version${row.attempts === 1 ? "" : "s"}` : v.outcome === "needs_revision" ? "its criteria were not shown by the evidence" : v.outcome === "cannot_judge" ? "the grader couldn't judge it" : String(v.reason || "the grader failed").slice(0, 300)) : "";

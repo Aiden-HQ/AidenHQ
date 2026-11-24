@@ -578,8 +578,8 @@ test("a failed pass whose verdict the store dropped posts no note and no wait", 
   assert.equal(row.state, "grading_failed");
   const gateway = http.createServer(async (req, res) => { for await (const _ of req); res.writeHead(502).end("upstream down"); }).listen(0);
   const drop = async (m, p, b) => {
-    // The store took nothing: its answer is the row as it stood before the pass.
-    if (m === "POST" && p === "/internal/grades/t30/verdict") return grades.get("t30");
+    // The store took nothing: its answer is the row as it stood before the pass, and says so.
+    if (m === "POST" && p === "/internal/grades/t30/verdict") return { ...grades.get("t30"), applied: false };
     return runner(m, p, b);
   };
   const loop = createKernelGradeLoop({ db, runner: drop, due: () => ({ grades: [grades.get("t30")], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
