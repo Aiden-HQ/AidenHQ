@@ -36,8 +36,9 @@ export async function advance(gh: Gh, pr: PrView, stage: Stage, steps: ActionSte
   const mine = rec?.stage === stage && rec.steps === sig ? rec : undefined;
   if (mine?.made === pr.head) return { go: "skip", rec };
   // The head moved while a conflict or behind step was in flight: the repo's bot pushed it, and ship's own step follows there (it
-  // is ship's anyway, so a push by someone else loses nothing). Before a merge a new head proves nothing: the stage runs again.
-  if (mine && mine.head !== pr.head && !mine.outcome && stage !== "before_merge") return { go: "skip", rec: { ...mine, made: pr.head } };
+  // is ship's anyway, so a push by someone else loses nothing). The run ends there, so a later head runs the stage again. Before a
+  // merge a new head proves nothing: the stage runs again.
+  if (mine && mine.head !== pr.head && !mine.outcome && stage !== "before_merge") return { go: "skip", rec: { ...mine, made: pr.head, outcome: "ok" } };
   if (mine && mine.head === pr.head) {
     if (mine.outcome) return { go: mine.outcome, rec };
     const s = steps[mine.step];

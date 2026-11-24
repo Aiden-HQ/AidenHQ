@@ -90,7 +90,7 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   for (const c of [...relock, ...commands]) {
     try { execFileSync("sh", ["-c", c.cmd], { cwd: join(repo, c.dir), env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 << 20 }); } catch (e) {
       const x = e as { status?: number; stderr?: Buffer; stdout?: Buffer; message: string };
-      const said = String(x.stderr || x.stdout || x.message);
+      const said = [x.stderr, x.stdout].map((b) => String(b ?? "")).join("\n").trim() || x.message;
       // A tool this box doesn't have (the shell's "not found", Go's exec error, or exit 127): said first, plainly, so ship can
       // suggest the repo's own workflow instead.
       const tool = missingTool(said) ?? (x.status === 127 ? c.cmd.trim().split(/\s+/)[0] : undefined);
