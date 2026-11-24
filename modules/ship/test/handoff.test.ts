@@ -77,7 +77,7 @@ test("a fork waits for a member: then it is adopted and code review is asked onc
   assert.equal((await intake(w.deps, p))?.trigger.actor, "writer");
   await intake(w.deps, p);
   assert.deepEqual(w.of("ask").map((c) => [c.url, c.task]), [["https://github.com/a/b/pull/7", "task-ship:a/b/7:1"]]);
-  assert.deepEqual(w.of("POST /v1/tasks").map((c) => [(c.body as any).source, (c.body as any).role]), [["ship:a/b/7:1", "platform-engineer"]]);
+  assert.deepEqual(w.of("POST /v1/tasks").map((c) => [(c.body as any).source, (c.body as any).role, (c.body as any).quiet]), [["ship:a/b/7:1", "platform-engineer", true]]);
 });
 
 test("a hand-back is sticky with the label still on; re-adding it starts generation 2", async () => {

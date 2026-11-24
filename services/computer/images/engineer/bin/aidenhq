@@ -434,8 +434,10 @@ if (command === "publish" || command === "review") {
   // who resolves it and runs this again (the merge still in progress).
   if (!merging() && !ok(["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"])) {
     ok(["merge", "--quiet", "--no-commit", "--no-ff", "--no-verify", `origin/${base}`]);
-    // Only where a generator will rewrite them: a lockfile (no generator rewrites one here) or a repo with no command stays a leftover.
-    const generated = globs.length && commands.length ? g(["diff", "--name-only", "--diff-filter=U", "-z", "--", ...globs.map((x) => `:(glob)${x}`)]).split("\0").filter((p) => p && !LOCKS.includes(p.split("/").pop())) : [];
+    // Only where a generator will rewrite them (a command at the root, or in the path's own package dir): a lockfile (no generator
+    // rewrites one here) or a path no command covers stays a leftover.
+    const covered = (p) => commands.some((c) => c.dir === "." || p.startsWith(`${c.dir.replace(/\/+$/, "")}/`));
+    const generated = globs.length && commands.length ? g(["diff", "--name-only", "--diff-filter=U", "-z", "--", ...globs.map((x) => `:(glob)${x}`)]).split("\0").filter((p) => p && !LOCKS.includes(p.split("/").pop()) && covered(p)) : [];
     for (const p of generated) { if (ok(["checkout", "--theirs", "--", p])) g(["add", "--", p]); else g(["rm", "--quiet", "--", p]); }
   }
   if (unmerged().length) leftovers(unmerged());
