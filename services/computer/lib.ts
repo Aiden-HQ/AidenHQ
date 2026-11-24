@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 import { mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { MODEL_BODY_MAX } from "../../kernel/src/gateway/token.ts";
+
+export { MODEL_BODY_MAX };
 
 /** The longest run a check may ask for (minutes): the launcher's /check limit and the module compiler's timeout_min ceiling. */
 export const MAX_CHECK_MIN = 180;
@@ -284,8 +287,6 @@ export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -xz --no-same-o
 /** How long a box's model call waits for a model gateway that isn't listening (a kernel restart: the old one has closed its
  * listener and the next one hasn't bound it yet, a minute or more under load). */
 export const GATEWAY_WAIT_MS = 2 * 60_000;
-/** The largest model request the launcher holds to send again: the kernel gateway's own limit (gateway/lib.ts MAX_BODY). */
-export const MODEL_BODY_MAX = 32 * 1024 * 1024;
 
 /**
  * A box's model call, passed on to the model gateway (kernel/src/gateway) with the job token as its credential: the gateway

@@ -12,6 +12,8 @@ export interface TokenPayload { k: string; a: string | null; i: string | null; c
 export type VerifiedToken = Brand<TokenPayload, "VerifiedToken">;
 
 export const JOB_TOKEN_PREFIX = "ahqj_";
+/** The largest model request the gateway takes, and the most a computer launcher holds of one to send again. */
+export const MODEL_BODY_MAX = 32 * 1024 * 1024;
 /** What the kernel mints; a verified token may also be a lane's (agent), which only the gateway's lane check accepts. */
 const MINTED = new Set(["job", "reviewer", "grader", "check"]);
 const KINDS = new Set([...MINTED, "agent"]);
