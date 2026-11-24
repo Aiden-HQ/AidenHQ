@@ -13,8 +13,8 @@ const REPO = "acme/app";
 const CATALOG = [
   { id: "maint.lint", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "acme/lint", version: "5.0.0", licence: "ISC" }, run: { cmd: "lint" }, when: ["package.json"], output: "sarif", runs_code: false, cost: "free" },
   { id: "sec.gitleaks", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "gitleaks/gitleaks", version: "8.0.0", licence: "MIT" }, run: { cmd: "gitleaks" }, when: [], output: "sarif", runs_code: false, cost: "free" },
-  { id: "sec.cloudflare", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code", skills: [{ skill: "cloudflare/security-audit-skill:security-audit", args: "{base}..HEAD" }] }, when: [], output: "findings", runs_code: false, cost: "low" },
-  { id: "sec.deepsec", lens: "security", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "vercel-labs/deepsec", version: "1.0.0", licence: "Apache-2.0" }, run: { engine: "deepsec", max_cost_usd: 150 }, when: [], output: "findings", runs_code: true, cost: "high" },
+  { id: "sec.cloudflare", model: "openai/gpt-6.2-sol", effort: "medium", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code", skills: [{ skill: "cloudflare/security-audit-skill:security-audit", args: "{base}..HEAD" }] }, when: [], output: "findings", runs_code: false, cost: "low" },
+  { id: "sec.deepsec", model: "anthropic/claude-haiku-5.5", effort: "medium", lens: "security", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "vercel-labs/deepsec", version: "1.0.0", licence: "Apache-2.0" }, run: { engine: "deepsec", max_cost_usd: 150 }, when: [], output: "findings", runs_code: true, cost: "high" },
   { id: "maint.vulture", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "jendrikseipp/vulture", version: "2.0", licence: "MIT" }, run: {}, when: ["**/*.py"], output: "vulture", runs_code: false, cost: "free" },
 ];
 
@@ -308,4 +308,13 @@ test("a report trimmed to fit still has the verdict of every finding", () => {
   assert.match(out.markdown, /Not shown, to keep the report within Primer's size/);
   assert.equal(out.verdict, "blocked");
   assert.ok(out.markdown.length <= REPORT_MAX);
+});
+
+test("each model option runs its own catalog default model and effort; a combo in the request overrides every option", async () => {
+  const w = world();
+  const models = (b) => Object.fromEntries(b.runs.filter((r) => r.option !== "sec.gitleaks").map((r) => [r.option, `${r.model} ${r.effort}`]));
+  const a = await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.cloudflare", "sec.deepsec"] });
+  assert.deepEqual(models(a), { "sec.cloudflare": "openai/gpt-6.2-sol medium", "sec.deepsec": "anthropic/claude-haiku-5.5 medium" });
+  const b = await w.engine.repoReview({ target: { repo: REPO, commit: sha("2") }, options: ["sec.cloudflare", "sec.deepsec"], combo: { model: "~a/b", effort: "low" } });
+  assert.deepEqual(models(b), { "sec.cloudflare": "~a/b low", "sec.deepsec": "~a/b low" });
 });
