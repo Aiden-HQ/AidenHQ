@@ -164,7 +164,11 @@ export function decide(data: Json, head: string, ship?: ShipContext): { do: Acti
   if (ship && (pr.mergeStateStatus === "DIRTY" || pr.mergeStateStatus === "BEHIND")) return { do: "repair", why: pr.mergeStateStatus === "DIRTY" ? `it conflicts with \`${def}\`` : `it is behind \`${def}\`` };
   if (ship) {
     // Only the checks the rules require: an optional red check doesn't hold the PR, and a required one not reported yet is running.
-    const judged = ship.required.map((name) => ship.checks.find((c) => c.name === name) ?? { name, pending: true });
+    // A name may report more than once (a check run and a status): the worst of them counts.
+    const judged = ship.required.map((name) => {
+      const all = ship.checks.filter((c) => c.name === name);
+      return all.find((c) => !(c.ok ?? c.success) && !c.pending) ?? all.find((c) => c.pending) ?? all[0] ?? { name, pending: true };
+    });
     const red = judged.filter((c) => !(c.ok ?? c.success) && !c.pending);
     if (red.length) return { do: "fix_ci", why: `${red.length} required check(s) failed on its head` };
     if (judged.some((c) => c.pending)) return { do: "wait", why: `${judged.filter((c) => c.pending).length} required check(s) still running on its head` };
@@ -201,7 +205,8 @@ export function decide(data: Json, head: string, ship?: ShipContext): { do: Acti
       return { do: "fail", why: `it is behind \`${def}\`: rebase it and ask for its merge again` };
     case "BLOCKED":
       // With the head's approval in, a code owner (or another required review) is what GitHub still waits for.
-      return ship ? { do: "wait", why: pr.reviewDecision === "REVIEW_REQUIRED" ? reviewWait(pr) : "GitHub won't merge it yet (a branch rule)" } : { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
+      // Any other rule (conversations to resolve, signed commits, a deployment) is one ship doesn't handle: a visible stall.
+      return ship ? (pr.reviewDecision === "REVIEW_REQUIRED" ? { do: "wait", why: reviewWait(pr) } : { do: "stall", why: "blocked by a branch rule ship doesn't handle" }) : { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
     default:
       return { do: "wait", why: "GitHub is still working out whether it can merge" };
   }

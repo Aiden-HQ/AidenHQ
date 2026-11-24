@@ -587,6 +587,15 @@ export function createService(o: Options) {
     }
   }
   /**
+   * The adoption, read once more right before an effect runs (one call to ship): a hand-back, a stop, a pause (hold) or a newer
+   * generation since the filing refuses it, as the direct merge does before its PUT. Undefined while it holds.
+   */
+  async function adoptionEnded(repo: string, n: number, generation: number): Promise<string | undefined> {
+    const at = o.ship ? await o.ship.generation(repo, n).catch(() => undefined) : undefined;
+    return at?.generation === generation ? undefined : `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
+  }
+
+  /**
    * A push onto an adopted PR's branch (ship): the PR is read again here (a Tier 0 push runs right after its plan, with no
    * revalidation), and the push carries a lease on the head the write expects, so a contributor's push in between wins and
    * this one is refused (ship-head-moved), never forced over it. The commit is not noted as the runner's own head: the branch
@@ -602,6 +611,8 @@ export function createService(o: Options) {
     if (!pr.head?.repo || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainers to push: nothing was pushed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
     if (pr.head.ref !== b.branch) return { ok: false, text: `ship-scope: \`${b.branch}\` isn't ${url}'s head branch: nothing was pushed.` };
+    const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
+    if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
     try {
       await push(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${a.expected}`, remote(into), `${b.sha}:refs/heads/${b.branch}`]);
@@ -626,6 +637,8 @@ export function createService(o: Options) {
     const url = `https://github.com/${s.slug}/pull/${n}`;
     const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not approved.` };
+    const ended = await adoptionEnded(s.slug, n, a.generation);
+    if (ended) return { ok: false, text: ended };
     const app = await o.reviewer?.(s.slug);
     if (!app) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App isn't installed on this repo).` };
     if (same(String(pr.user?.login ?? ""), app.login)) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App opened it).` };
@@ -670,6 +683,8 @@ export function createService(o: Options) {
     if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
     if (pr.baseRefName !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed: it now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
     if (review && "bypass" in review) bypass = review.bypass;
+    const ended = await adoptionEnded(s.slug, n, a.generation);
+    if (ended) return { ok: false, text: ended };
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     let r: { status: number; body: any } | undefined;
     try { r = await gh("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head: a.head } }); } catch (e) { log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }

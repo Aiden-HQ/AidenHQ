@@ -71,7 +71,8 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
     graphql: async () => ({}),
   };
-  const ship = { generation: async () => ({ generation, task: "t1" }) };
+  const adoption = { generation };
+  const ship = { generation: async () => ({ generation: adoption.generation, task: "t1" }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg: "acme-agents", productRepo: "acme/aidenhq",
@@ -91,7 +92,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, c1, fix, pr, queue, calls, call, run };
+  return { root, ws, origin, c1, fix, pr, queue, calls, call, run, adoption };
 }
 
 test("a push onto an adopted PR's branch is leased on the head it expects; a contributor's push in between wins", async (t) => {
@@ -131,7 +132,7 @@ test("a push onto an adopted PR's branch is leased on the head it expects; a con
 });
 
 test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts as the App", async (t) => {
-  const { c1, pr, calls, call, run } = await setup(t);
+  const { c1, pr, calls, call, run, adoption } = await setup(t);
   const a = { repo: REPO, number: 7, head: c1, generation: 2, base: "main" };
   assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: { kind: "job", roles: ["platform-engineer"] }, task: "t1" })).json.error, /only the ship module/);
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: SHIP, task: "t1" });
@@ -146,6 +147,12 @@ test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts
   assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: SHIP, task: "t1" })).json.error, /base changed/);
   pr.base = undefined;
 
+  // Handed back (or paused) after the filing: the effect reads the adoption once more and does nothing.
+  adoption.generation = null;
+  const late = await run("k-00000000000000c0", "github.approve", a);
+  assert.match(late.text, /^ship-generation/);
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/reviews")).length, 0);
+  adoption.generation = 2;
   const out = await run("k-00000000000000c1", "github.approve", a);
   assert.equal(out.ok, true, out.text);
   assert.deepEqual(calls.find((c) => c.method === "POST" && c.path.endsWith("/reviews")).body, { event: "APPROVE", commit_id: c1, as: "app" }, "as the App, never the owner");
@@ -200,6 +207,8 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.equal(go({}, { checks: red, required: ["build", "lint"] }).do, "fix_ci");
   assert.equal(go({}, { checks: [], required: ["build"] }).do, "wait", "a required check not reported yet is running");
   assert.equal(go({}, { checks: [], required: [] }).do, "merge", "none required, none run: green");
+  assert.equal(go({}, { checks: [...ok, { name: "build", ok: false, pending: false }] }).do, "fix_ci", "a red status hides behind no green run of the same name");
+  assert.equal(go({ mergeStateStatus: "BLOCKED" }).do, "stall", "a branch rule ship doesn't handle is a visible stall");
   // Without ship's context: the merge queue's rule, unchanged.
   assert.deepEqual(decide(data({}), H), { do: "merge" });
   assert.equal(decide(data({ mergeStateStatus: "DIRTY" }), H).do, "fail");

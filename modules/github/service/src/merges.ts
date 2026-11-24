@@ -160,7 +160,7 @@ export function createMerges(d: {
   }
   /** Every check on a head, every page (REST check runs and statuses): ship's readiness past the query's first 100. */
   async function allChecks(repo: string, sha: string) {
-    const out: { name: string; ok: boolean; pending: boolean }[] = [];
+    const out: { name: string; ok: boolean; pending: boolean; status?: true }[] = [];
     for (const [path, key] of [["check-runs", "check_runs"], ["statuses", "statuses"]] as const) {
       for (let page = 1; page <= 20; page++) {
         const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);
@@ -168,12 +168,13 @@ export function createMerges(d: {
         const items: any[] = Array.isArray(r.body) ? r.body : r.body?.[key] ?? [];
         for (const x of items) out.push(key === "check_runs"
           ? { name: String(x.name ?? ""), pending: x.status !== "completed", ok: x.status === "completed" && ["success", "skipped", "neutral"].includes(x.conclusion) }
-          : { name: String(x.context ?? ""), pending: x.state === "pending", ok: x.state === "success" });
+          : { name: String(x.context ?? ""), pending: x.state === "pending", ok: x.state === "success", status: true });
         if (items.length < 100) break;
       }
     }
-    // A status context reports again on every update: the newest (first listed) is its state.
-    return out.filter((c, i) => out.findIndex((x) => x.name === c.name) === i);
+    // Every entry is kept: a check run and a status may share a name, and the red one must hold the PR. A status context that
+    // reported again on every update keeps only its newest (first listed) state.
+    return out.filter((c, i) => !c.status || out.findIndex((x) => x.status && x.name === c.name) === i);
   }
   /** The checks the branch requires (its rulesets and classic protection; merge-gate.ts requiredChecks): none is a confirmed answer. */
   async function requiredOf(repo: string, branch: string) {
@@ -263,7 +264,8 @@ export function createMerges(d: {
       const open = q.ship && data.repository.pullRequest?.state === "OPEN";
       // Merged or open, the PR must still be on the base it was filed against: a retarget-and-merge elsewhere is no merge of this one.
       if (q.ship && p.base && data.repository.pullRequest && data.repository.pullRequest.baseRefName !== p.base) return fail(`its base changed to \`${data.repository.pullRequest.baseRefName}\` since the merge was filed`);
-      const ship = open ? { queue: false, approve: false, required: await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")), checks: await allChecks(p.repo, p.head) } : undefined;
+      // On a repo code review gates, an approval on the head is needed before the merge (the gate answers undefined elsewhere).
+      const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required: await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")), checks: await allChecks(p.repo, p.head) } : undefined;
       const v = decide(data, p.head, ship);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
       const pull = data.repository.pullRequest;
