@@ -7,8 +7,7 @@ through three declared points, so a module adds no board code of its own:
 
 - `board.signins`: a vendor sign-in shown as a banner, connected in one click.
 - `board.setup_flows`: a guided setup for what you must do elsewhere first.
-- `board.pages`: a page in the Fleet sidebar, the module's own sandboxed view ([board-ui.md](../../docs/design/board-ui.md)
-  "Modules").
+- `board.pages`: a Fleet page ([board-ui.md](../../docs/design/board-ui.md) "Modules").
 
 Its schemas are in `schemas/`. It also contributes the task labels `needs-review`, `daily-brief`, `todo`,
 `needs-response` and `recurring`.

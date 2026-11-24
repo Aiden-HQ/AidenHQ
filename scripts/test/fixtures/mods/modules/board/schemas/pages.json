@@ -1,15 +1,15 @@
 {
-  "title": "board.pages: a module's page in the board's Fleet sidebar (docs/design/board-ui.md \"Modules\"). The page is a module view: an MCP Apps resource (ui://<module>/…, text/html;profile=mcp-app) its own connection serves, shown in a sandboxed frame that calls only the tools listed here, as the owner. The same view opens in the owner's Claude through the owner MCP. Compile adds `module`.",
+  "title": "board.pages: a module's Fleet page (docs/design/board-ui.md \"Modules\"). Compile adds `module`.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "title", "icon", "order", "connection", "view", "tools"],
   "properties": {
-    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,30}$", "description": "the page's address, #/fleet/<id>; unique across modules" },
-    "title": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9 .&-]{0,30}$", "description": "its name in the sidebar and the page header" },
-    "icon": { "enum": ["agents", "apps", "modules", "reviews", "costs", "flow", "tasks", "approvals", "chat", "brief", "bell", "settings", "rocket", "list", "shield"], "description": "one of the board's icons" },
-    "order": { "type": "integer", "minimum": 1, "maximum": 999, "description": "its place after the core entries (Agents, Apps, Modules, Reviews), ascending" },
-    "connection": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$", "description": "one of this module's own MCP connections: it serves the view and the tools" },
-    "view": { "type": "string", "pattern": "^ui://[a-z][a-z0-9-]{0,62}/[a-z0-9][a-z0-9/_.-]{0,100}$", "description": "the view's resource, ui://<this module>/<path>" },
-    "tools": { "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }, "description": "the tools the view calls: read or write tools of `connection` (never destructive), each named <module>_… (dashes as underscores). A write tool called by the owner returns its typed settings change for the board to save as the owner's own" }
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,30}$", "description": "the page's address, #/fleet/<id>; unique across modules"},
+    "title": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9 .&-]{0,30}$", "description": "its name in the sidebar and the page header"},
+    "icon": {"enum": ["agents", "apps", "modules", "reviews", "costs", "flow", "tasks", "approvals", "chat", "brief", "bell", "settings", "rocket", "list", "shield"], "description": "one of the board's icons"},
+    "order": {"type": "integer", "minimum": 1, "maximum": 999, "description": "its place after the core entries (Agents, Apps, Modules, Reviews), ascending"},
+    "connection": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$", "description": "one of this module's own MCP connections: it serves the view and the tools"},
+    "view": {"type": "string", "pattern": "^ui://[a-z][a-z0-9-]{0,62}/[a-z0-9][a-z0-9/_.-]{0,100}$", "description": "the view, ui://<this module>/<path>, served by `connection`"},
+    "tools": {"type": "array", "maxItems": 20, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}, "description": "the tools the view calls: read or write tools of `connection`, each named <module>_…"}
   }
 }

@@ -8,17 +8,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: light dark; font-family: var(--font-sans, system-ui, sans-serif); font-size: var(--font-text-md-size, 14px); color: var(--color-text-primary, CanvasText); background: transparent; }
+  :root { color-scheme: light dark; font-family: var(--font-sans, system-ui, sans-serif); font-size: 14px; color: var(--color-text-primary, CanvasText); background: transparent; }
   body { margin: 0; padding: 0; display: grid; gap: 20px; }
   h2 { margin: 0 0 8px; font-size: 15px; }
   p { margin: 0; color: var(--color-text-secondary, GrayText); }
-  section { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--color-border-primary, GrayText); border-radius: var(--border-radius-lg, 10px); background: var(--color-background-secondary, Canvas); }
+  section { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--color-border-primary, GrayText); border-radius: var(--border-radius-md, 8px); background: var(--color-background-secondary, Canvas); }
   ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
   li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: var(--border-radius-md, 8px); background: var(--color-background-primary, Canvas); border: 1px solid var(--color-border-primary, GrayText); }
-  li span { color: var(--color-text-tertiary, GrayText); white-space: nowrap; }
+  li span { color: var(--color-text-secondary, GrayText); white-space: nowrap; }
   form { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
   label { display: grid; gap: 4px; color: var(--color-text-secondary, GrayText); }
-  input { font: inherit; padding: 6px 10px; width: 8em; border-radius: var(--border-radius-md, 8px); border: 1px solid var(--color-border-secondary, GrayText); background: var(--color-background-primary, Canvas); color: inherit; }
+  input { font: inherit; padding: 6px 10px; width: 8em; border-radius: var(--border-radius-md, 8px); border: 1px solid var(--color-border-primary, GrayText); background: var(--color-background-primary, Canvas); color: inherit; }
   button { font: inherit; padding: 6px 14px; border-radius: var(--border-radius-md, 8px); border: 0; background: var(--color-ring-primary, Highlight); color: var(--color-text-inverse, HighlightText); cursor: pointer; }
   .error { color: var(--color-text-danger, red); }
 </style>
@@ -47,8 +47,6 @@
   addEventListener("message", (e) => {
     if (e.source !== parent) return;
     const m = e.data;
-    if (m?.method === "ui/notifications/host-context-changed") return theme(m.params);
-    if (m?.method === "ui/resource-teardown") return parent.postMessage({ jsonrpc: "2.0", id: m.id, result: {} }, "*");
     const w = waiting.get(m?.id);
     if (!w) return;
     waiting.delete(m.id);

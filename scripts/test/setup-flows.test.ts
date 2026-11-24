@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, organisations } from "../modules.ts";
+import { compile, modulePages, organisations } from "../modules.ts";
 import { MANIFESTS_JSON, manifestsJson } from "../slack-manifest.ts";
 
 const mods = join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods");
@@ -48,5 +48,6 @@ test("board.pages: a module's Fleet page compiles onto its own connection, and a
   const out = compile(mods, inst(["pageok"]));
   assert.deepEqual(out.points.board.pages, [{ id: "notes", title: "Notes", icon: "list", order: 10, connection: "pageok-mcp", view: "ui://pageok/page", tools: ["pageok_notes", "pageok_configure"], module: "pageok" }]);
   assert.deepEqual(out.connections["pageok-mcp"].views, { "ui://pageok/page": ["pageok_notes", "pageok_configure"] });
-  assert.throws(() => compile(mods, inst(["pagebad"])), /pagebad_wipe isn't a read or write tool of pagebad-mcp/);
+  const conns = () => ({ "pageok-mcp": { module: "pageok", tools: { read: ["pageok_notes"], write: [], destructive: ["pageok_wipe"] } } });
+  assert.throws(() => modulePages([{ id: "notes", module: "pageok", connection: "pageok-mcp", view: "ui://pageok/page", tools: ["pageok_wipe"] }], conns()), /pageok_wipe isn't a read or write tool/);
 });

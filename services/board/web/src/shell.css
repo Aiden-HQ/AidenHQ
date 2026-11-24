@@ -82,9 +82,6 @@
   .subnav { width: 56px; padding: 16px 8px; }
   .sn-name, .sn-label, .sn-sub { display: none; }
   .sn-item { justify-content: center; padding: 0; }
-  /* The phone's More sheet lists every section by name, the sidebar's rail notwithstanding. */
-  .bb-sheet .sn-label { display: block; }
-  .bb-sheet .sn-item { justify-content: flex-start; padding: 0 12px; }
 }
 
 /* ------------------------------------------------------------ a page's own tools under the bar (Tasks) */

@@ -25,19 +25,21 @@ const ITEMS: Item[] = [
   { view: "flow", name: "Flow", icon: "flow" },
 ];
 const item = (v: NavView) => ITEMS.find((i) => i.view === v)!;
+/** The section that lists the modules' pages (board.pages) after its own. */
+const FLEET = "Fleet";
 /** The top bar's sections; one of several pages opens on its first and lists the rest on its left (SubNav). */
 const SECTIONS: { name: string; views: NavView[] }[] = [
   { name: "Chat", views: ["chat"] },
   { name: "Approvals", views: ["approvals"] },
   { name: "Tasks", views: ["board"] },
-  { name: "Fleet", views: ["agents", "apps", "modules", "reviews"] },
+  { name: FLEET, views: ["agents", "apps", "modules", "reviews"] },
   { name: "Insight", views: ["costs", "flow"] },
 ];
 export const hrefOf = (v: NavView) => `#/${v}`;
 /** A module's page (board.pages): Fleet lists them after its own, from the modules' declarations. */
 export const pageHref = (p: PageRow) => `#/fleet/${p.id}`;
 /** A module page's view is "fleet": its section is Fleet. */
-const sectionOf = (view: string) => SECTIONS.find((t) => t.views.includes(view as NavView) || (view === "fleet" && t.name === "Fleet"));
+const sectionOf = (view: string) => SECTIONS.find((t) => t.views.includes(view as NavView) || (view === "fleet" && t.name === FLEET));
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 export const paletteKey = isMac ? "⌘K" : "Ctrl K";
@@ -80,7 +82,7 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
             >
               {sec.name}
               {first === "approvals" && approvals > 0 && <span className="tn-badge" key={approvals}>{approvals}</span>}
-              {sec.name === "Fleet" && agentsActive > 0 && (
+              {sec.name === FLEET && agentsActive > 0 && (
                 <span className="tn-live" title={`${agentsActive} working now`}>
                   <i />
                   {agentsActive}
@@ -156,7 +158,7 @@ export function SubNav({ view, onNav, panels, pages, page, go }: { view: string;
           </div>
         );
       })}
-      {sec.name === "Fleet" &&
+      {sec.name === FLEET &&
         pages.map((p) => {
           const on = view === "fleet" && page === p.id;
           return (

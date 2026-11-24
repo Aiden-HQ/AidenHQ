@@ -124,10 +124,11 @@ contributes:
   allow-forms` only): an opaque origin with no network, no cookies, no navigation and nothing loaded from outside. Inline
   script and style only; `_meta.ui.csp` domains aren't honoured.
 - **The bridge** is MCP Apps over postMessage, from that frame only: `ui/initialize` (the host context carries `theme` and
-  `styles.variables`, the board's tokens resolved for the current theme), `ui/notifications/initialized`, `tools/call`,
-  `ui/notifications/size-changed` (the frame's height), `ping`; `ui/notifications/host-context-changed` when the theme
-  changes and `ui/resource-teardown` on leaving. Anything else is refused. A web host should use a sandbox proxy on a second
-  origin; the board has one origin in every exposure mode, so the single sandboxed frame stands in for it.
+  `styles.variables`: `--color-background-primary|secondary`, `--color-text-primary|secondary|danger|inverse`,
+  `--color-border-primary`, `--color-ring-primary`, `--font-sans`, `--border-radius-md`, as the board's tokens write them, so
+  the view sets `color-scheme` to `theme`), `ui/notifications/initialized`, `tools/call` and `ui/notifications/size-changed`
+  (the frame's height). Nothing else is answered. A web host should use a sandbox proxy on a second origin; the board has one
+  origin in every exposure mode, so the single sandboxed frame stands in for it.
 - **A tool call** goes board → kernel (`POST /v1/views/<module>/mcp`, the board's key), which lets through only that view's
   resource and its page's tools, and calls the module with a caller assertion of kind `owner` (no agent, no roles, no
   control-plane reach).

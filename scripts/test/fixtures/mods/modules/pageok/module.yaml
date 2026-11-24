@@ -2,7 +2,7 @@ name: pageok
 description: declares a Fleet page served by its own connection
 requires: [board]
 connections:
-  pageok-mcp: { url: "http://pageok-mcp:1/mcp", auth: pageok_service_key, tools: { read: [pageok_notes], write: [pageok_configure], destructive: [pageok_wipe] } }
+  pageok-mcp: { url: "http://pageok-mcp:1/mcp", auth: pageok_service_key, tools: { read: [pageok_notes], write: [pageok_configure] } }
 contributes:
   board.pages:
     - { id: notes, title: Notes, icon: list, order: 10, connection: pageok-mcp, view: "ui://pageok/page", tools: [pageok_notes, pageok_configure] }

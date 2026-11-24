@@ -11,6 +11,7 @@ import { validate } from "../kernel/src/writes.ts";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.ts";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
+import { OWNER_TOOLS } from "../services/board/src/mcp-tools.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { current, MANIFEST_KEYS, moduleName } from "./compiler/authority.ts";
@@ -663,8 +664,8 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
  */
 export function modulePages(pages: Obj[], connections: Obj) {
   // One page per view, and one page per MCP name (the owner MCP serves each page's tools and its `<id>_page` opener side by side).
-  const views = new Set<string>(), names = new Map<string, string>();
-  const name = (n: string, p: Obj) => (names.has(n) ? fail(`module ${p.module}: board.pages ${p.id}: the name ${n} is already page ${names.get(n)}'s`) : names.set(n, p.id));
+  const views = new Set<string>(), names = new Map<string, string>(OWNER_TOOLS.map((t) => [t, "the owner MCP"]));
+  const name = (n: string, p: Obj) => (names.has(n) ? fail(`module ${p.module}: board.pages ${p.id}: the name ${n} is already ${names.get(n)}'s`) : names.set(n, `page ${p.id}`));
   for (const p of pages) {
     const where = `module ${p.module}: board.pages ${p.id}`;
     const c = Object.hasOwn(connections, p.connection) ? connections[p.connection] : undefined;
