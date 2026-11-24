@@ -821,7 +821,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));' "$rplan" \
   && [ "$(cat "$rm_" "$rq" | grep -c 'mutation')" = 0 ] \
   && grep -qF 'if (pr.headRefOid !== head) return { do: "fail"' "$rm_" \
-  && grep -qF 'if (!def || pr.baseRefName !== def) return ship ? { do: "stall"' "$rm_" && grep -qF ': { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch' "$rm_" \
+  && grep -qF 'if (!def || pr.baseRefName !== def) return ship ? { do: "wait"' "$rm_" && grep -qF ': { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch' "$rm_" \
   && grep -qF 'if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail"' "$rm_" \
   && grep -qF 'if (!named.length) return { do: "wait"' "$rm_" \
   && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW_CHECK,' "$rdr" \
