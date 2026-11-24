@@ -22,7 +22,7 @@ function setup(session?: string, known = session ?? "") {
   const child = spawn(engine, [job], { cwd: work, stdio: ["ignore", "inherit", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: log, AIDENHQ_OPENCODE_BIN: join(bin, "opencode"), AIDENHQ_OPENCODE_PLUGINS: plug, AIDENHQ_SESSION_PORT: String(port++), AIDENHQ_TERM_PORT: String(port++), OPENCODE_SERVER_PASSWORD: "pw", AIDENHQ_TERM_CREDENTIAL: "u:p", AIDENHQ_RUN_TOKEN: "ahqj_tok", FAKE_SESSIONS: known, FAKE_BUSY_MS: "1500" } });
   let stderr = "";
   child.stderr!.on("data", (d) => (stderr += d));
-  const exited = new Promise<{ code: number | null }>((r) => child.on("exit", (code) => r({ code })));
+  const exited = new Promise<{ code: number | null }>((r) => child.on("close", (code) => r({ code })));
   const lines = (f: string) => readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l.startsWith("{") ? l : JSON.stringify({ raw: l })));
   const events = () => { try { return lines(join(job, "events.jsonl")); } catch { return []; } };
   const calls = () => lines(log);
