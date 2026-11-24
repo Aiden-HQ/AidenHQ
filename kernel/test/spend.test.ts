@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
-import { createGateway, monthSpend, openLedger, ownerOf } from "../src/gateway/lib.ts";
+import { createGateway, openLedger, ownerOf, spendOf } from "../src/gateway/lib.ts";
 import { mintToken } from "../src/gateway/token.ts";
 import { modelsList } from "./models-list.ts";
 
@@ -259,44 +259,73 @@ test("prices come from OpenRouter's models list: a new model runs and is recorde
   assert.equal((await call("~acme/brand-new-latest")).status, 200);
 });
 
-test("the month's spend from the closed days' cache equals a full sum, across another connection's writes and a day rollover", () => {
-  const file = join(mkdtempSync(join(tmpdir(), "spend-month-")), "kernel.db");
+test("the spend totals equal a full sum: another process's writes, a hold ageing out with no write, a rehold, a day rollover, the prune", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "spend-totals-")), "kernel.db");
+  const old = new DatabaseSync(file); // calls written before the totals existed: the backfill counts them
+  old.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, run_key TEXT NOT NULL, run_id TEXT, agent_id TEXT, issue_id TEXT, task_subject TEXT, rev TEXT, kind TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL DEFAULT 0, cached INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0, cost_usd REAL, ms INTEGER, status TEXT NOT NULL, owner TEXT, gen TEXT, changed TEXT)");
+  old.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, task_subject, kind, component, model, cost_usd, status) VALUES ('pre', '2026-11-09T12:00:00.000Z', '2026-11-09', 'r', 'ag', 'WOR-1', 'agent', 'c', 'm', 0.5, 'ok')").run();
+  old.close();
   const { db } = openLedger(file);
-  const peer = new DatabaseSync(file); // a draining peer kernel's connection: its writes reach the cache through calls_final
+  const spend = spendOf(db);
+  const peer = new DatabaseSync(file); // a draining peer kernel's bare connection: the database keeps the totals for its writes too
   let clock = Date.parse("2026-11-16T10:00:00Z");
-  const spend = monthSpend(db, () => clock);
-  const add = (key, day, status, usd, at = `${day}T12:00:00.000Z`, gen = null) => peer.prepare("INSERT INTO calls (key, at, day, run_key, kind, component, model, cost_usd, status, gen) VALUES (?, ?, ?, 'r', 'agent', 'c', 'm', ?, ?, ?)").run(key, at, day, usd, status, gen);
-  add("a", "2026-11-10", "ok", 1);
-  add("b", "2026-11-15", "reserved", 2);
-  add("c", "2026-11-14", "unsettled", 4, "2026-11-16T09:50:00.000Z", "g1"); // closed inside the true-up window
-  add("d", "2026-11-13", "unsettled", 8, "2026-11-16T08:00:00.000Z", "g2"); // outside it
-  add("e", "2026-11-16", "ok", 16);
-  add("f", "2026-11-16", "reserved", 32);
-  add("g", "2026-10-31", "ok", 64);
-  const check = (m) => {
-    const open = new Date(clock - 30 * 60_000).toISOString();
-    const spent = db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ?").get(`${m}-01`, `${m}-31`).s;
-    const settled = db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ? AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)").get(`${m}-01`, `${m}-31`, open).s;
-    const got = spend(m, open);
-    assert.ok(Math.abs(got.spent - spent) < 1e-9 && Math.abs(got.settled - settled) < 1e-9, `${m}: ${JSON.stringify(got)} vs ${spent}/${settled}`);
+  const add = (key, day, status, usd, { at = `${day}T12:00:00.000Z`, gen = null, agent = "ag", task = "WOR-1" } = {}) => peer.prepare("INSERT INTO calls (key, at, day, run_key, agent_id, task_subject, kind, component, model, cost_usd, status, gen) VALUES (?, ?, ?, 'r', ?, ?, 'agent', 'c', 'm', ?, ?, ?)").run(key, at, day, agent, task, usd, status, gen);
+  const sums = (where, args, open) => {
+    const s = (extra) => db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE ${where}${extra}`).get(...args, ...(extra ? [open] : [])).s;
+    return { spent: s(""), settled: s(" AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)") };
   };
-  check("2026-11");
-  peer.prepare("UPDATE calls SET status = 'ok', cost_usd = 1.5, at = ? WHERE key = 'b' AND status = 'reserved'").run("2026-11-16T10:00:00.000Z"); // settled after its day
-  check("2026-11");
-  peer.prepare("UPDATE calls SET status = 'interrupted', cost_usd = 0.5, changed = ? WHERE key = 'd' AND status = 'unsettled'").run("2026-11-16T10:00:00.000Z"); // trued up
-  check("2026-11");
-  add("h", "2026-11-12", "stream_error", 0.25); // a final row written late on a closed day
-  check("2026-11");
-  clock = Date.parse("2026-11-17T00:05:00Z"); // today's rows become a closed day's
-  check("2026-11");
-  add("i", "2026-11-30", "ok", 128);
-  clock = Date.parse("2026-12-01T00:05:00Z"); // a call that started last month is still checked against last month
-  check("2026-11");
-  check("2026-12");
-  // Parts whose float sum falls just under a cap still meet it: $0.2 closed + $0.7 today + $0.1 held for good is $1.
-  add("j", "2026-12-02", "ok", 0.2);
-  add("k", "2026-12-03", "ok", 0.7);
-  add("l", "2026-12-02", "unsettled", 0.1, "2026-12-02T12:00:00.000Z");
-  clock = Date.parse("2026-12-03T12:00:00Z");
-  assert.equal(spend("2026-12", "2026-12-03T11:30:00.000Z").settled, 1);
+  const near = (got, want, what) => assert.ok(Math.abs(got.spent - want.spent) < 1e-9 && Math.abs(got.settled - want.settled) < 1e-9, `${what}: ${JSON.stringify(got)} vs ${JSON.stringify(want)}`);
+  const check = () => {
+    const open = new Date(clock - 30 * 60_000).toISOString(), d = new Date(clock).toISOString().slice(0, 10), m = d.slice(0, 7);
+    for (const [from, to] of [[d, d], [`${m}-01`, `${m}-31`], ["2026-11-01", "2026-11-31"]]) near(spend.days(from, to, open), sums("day >= ? AND day <= ?", [from, to], open), `${from}..${to}`);
+    for (const t of ["WOR-1", "WOR-2"]) near(spend.task(t, open), sums("task_subject = ? AND agent_id IS NOT NULL", [t], open), t);
+  };
+  add("a", "2026-11-10", "ok", 1);
+  add("b", "2026-11-16", "reserved", 2);
+  add("c", "2026-11-16", "unsettled", 4, { at: "2026-11-16T09:50:00.000Z", gen: "g1" }); // inside the true-up window
+  add("d", "2026-11-16", "unsettled", 8, { at: "2026-11-16T08:00:00.000Z", gen: "g2" }); // outside it
+  add("e", "2026-11-16", "unsettled", 0.25, { at: "2026-11-16T09:55:00.000Z" }); // no generation: a hold for good
+  add("f", "2026-11-16", "cap_reached", null, { task: "WOR-2" });
+  add("g", "2026-11-16", "ok", 16, { agent: null }); // no agent: the install's spend, no task's
+  add("h", "2026-10-31", "ok", 64);
+  check();
+  // A hold ages past the true-up window with no write at all: settled changes, the totals don't need to.
+  clock = Date.parse("2026-11-16T10:25:00Z");
+  check();
+  // A rehold (the call's hold replaced), a settle, a true-up and a late final row on a closed day.
+  peer.prepare("UPDATE calls SET cost_usd = 3 WHERE key = 'b' AND status = 'reserved'").run();
+  check();
+  peer.prepare("UPDATE calls SET status = 'ok', cost_usd = 1.5, at = ? WHERE key = 'b'").run("2026-11-16T10:26:00.000Z");
+  peer.prepare("UPDATE calls SET status = 'interrupted', cost_usd = 0.5, changed = ? WHERE key = 'c'").run("2026-11-16T10:26:00.000Z");
+  add("i", "2026-11-12", "stream_error", 0.125);
+  check();
+  // The next day, and a call that started last month still counted against it.
+  clock = Date.parse("2026-12-01T00:05:00Z");
+  add("j", "2026-11-30", "ok", 128);
+  check();
+  // The prune (40 days) takes rows and their share of the totals; a total with no call left goes.
+  clock = Date.parse("2026-12-20T00:00:00Z");
+  peer.prepare("DELETE FROM calls WHERE at < ?").run("2026-11-11T00:00:00.000Z");
+  check();
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM spend_day WHERE day IN ('2026-10-31', '2026-11-09', '2026-11-10')").get().n, 0);
+  // Parts whose float sum falls just under a cap still meet it: whole nano-dollars add exactly.
+  add("k", "2026-12-02", "ok", 0.2);
+  add("l", "2026-12-03", "ok", 0.7);
+  add("n", "2026-12-02", "unsettled", 0.1, { at: "2026-12-02T12:00:00.000Z" });
+  assert.equal(spend.days("2026-12-01", "2026-12-31", "2026-12-20T00:00:00.000Z").settled, 1);
+});
+
+test("a rate limit cools the model down for every kernel on the file, Retry-After honoured; a new call waits it out before it holds anything", async (t) => {
+  let limited = 1;
+  const r = await rig(t, { answer: (body, res, n) => (limited-- > 0 ? res.writeHead(429, { "content-type": "application/json", "retry-after": "1" }).end("{}") : usage(0.001)(body, res, n)) });
+  assert.equal((await r.call({ model: "flat", messages: [] })).status, 200); // retried past the 429 inside the call
+  assert.deepEqual({ ...r.gw.db.prepare("SELECT model, until, step FROM model_cooldown").get() }, { model: "flat", until: Date.parse("2026-11-16T10:00:00Z") + 1000, step: 0 });
+  // A peer kernel's cooldown on a model holds a new call to it back, with nothing reserved, until the cooldown ends.
+  const before = r.rows().length;
+  r.gw.db.prepare("INSERT INTO model_cooldown (model, until, step) VALUES ('priced', ?, 0)").run(Date.parse("2026-11-16T10:00:30Z"));
+  const waiting = r.call({ model: "priced", messages: [] });
+  await sleep(300);
+  assert.equal(r.rows().length, before);
+  r.gw.db.prepare("UPDATE model_cooldown SET until = 0 WHERE model = 'priced'").run(); // the rig's clock stands still: ended here
+  assert.equal((await waiting).status, 200);
 });

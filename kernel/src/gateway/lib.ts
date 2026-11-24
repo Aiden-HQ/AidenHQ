@@ -49,8 +49,9 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
 import { createPrices, type Price } from "./prices.ts";
 import { MODEL_BODY_MAX, verifyToken } from "./token.ts";
@@ -80,6 +81,7 @@ type CallRow = {
 };
 type CiTokenRow = { hash: string; repo: string; pr: number; head: string | null; gh_run: string; attempt: string; exp: string; at: string };
 type Sum = { s: number };
+type Nano = { n: number };
 /** A limit a call counts against: the install's day or month (subject: that day or month), or its task's cap (subject: the task), with what is spent on it. */
 type Limit = { scope: "day" | "month" | "task"; subject: string; cap: number; spent: number };
 /** What OpenRouter billed for one call. */
@@ -144,22 +146,36 @@ export function watched<T>(file: string, pick: (j: Record<string, unknown>) => T
   };
 }
 
+/** A held call: in flight (`reserved`) or cut off (`unsettled`). Queries on held rows name this verbatim, so the planner uses calls_held. */
+const HELD = "status IN ('reserved', 'unsettled')";
+/** A row's cost in whole nano-dollars: totals add and subtract integers, so they never drift and meet a cap exactly. */
+const NANO = (r: "NEW" | "OLD" | "") => `CAST(ROUND(COALESCE(${r ? `${r}.` : ""}cost_usd, 0) * 1e9) AS INTEGER)`;
+/** A row's billed share (what the metrics count as spend): not a hold, not a refusal. */
+const BILLED = (r: "NEW" | "OLD" | "") => `CASE WHEN ${r ? `${r}.` : ""}status NOT IN ('reserved', 'unsettled', 'cap_reached') THEN ${NANO(r)} ELSE 0 END`;
+const REFUSED = (r: "NEW" | "OLD" | "") => `CASE WHEN ${r ? `${r}.` : ""}status = 'cap_reached' THEN 1 ELSE 0 END`;
+const addDay = (r: "NEW" | "OLD") => `INSERT INTO spend_day (day, agent, kind, n, nano, billed, refused) VALUES (${r}.day, COALESCE(${r}.agent_id, ''), ${r}.kind, 1, ${NANO(r)}, ${BILLED(r)}, ${REFUSED(r)})
+  ON CONFLICT (day, agent, kind) DO UPDATE SET n = n + 1, nano = nano + excluded.nano, billed = billed + excluded.billed, refused = refused + excluded.refused;`;
+const addTask = (r: "NEW" | "OLD") => `INSERT INTO spend_task (subject, n, nano) SELECT ${r}.task_subject, 1, ${NANO(r)} WHERE ${r}.agent_id IS NOT NULL AND ${r}.task_subject IS NOT NULL
+  ON CONFLICT (subject) DO UPDATE SET n = n + 1, nano = nano + excluded.nano;`;
+// A row leaving a total is a plain update (never an upsert, so a late prune can't recreate a total), and a total with no row left goes.
+const subDay = `UPDATE spend_day SET n = n - 1, nano = nano - ${NANO("OLD")}, billed = billed - ${BILLED("OLD")}, refused = refused - ${REFUSED("OLD")} WHERE day = OLD.day AND agent = COALESCE(OLD.agent_id, '') AND kind = OLD.kind;
+  DELETE FROM spend_day WHERE day = OLD.day AND agent = COALESCE(OLD.agent_id, '') AND kind = OLD.kind AND n = 0;`;
+const subTask = `UPDATE spend_task SET n = n - 1, nano = nano - ${NANO("OLD")} WHERE subject = OLD.task_subject AND OLD.agent_id IS NOT NULL;
+  DELETE FROM spend_task WHERE subject = OLD.task_subject AND n = 0;`;
+
 /** The ledger's tables in kernel.db; `legacy` (the gateway's old data/gateway/usage.db) is merged in first (moveLedger). */
 export function openLedger(file: string, legacy?: string): { db: DatabaseSync; moved: number } {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
+  // This connection's own tuning. synchronous FULL: an acknowledged reservation, settle or CI token survives a power loss. Its
+  // page cache is 16 MB of the kernel's heap; the mmap window maps the OS page cache every handle on the file shares, so it
+  // costs no extra memory per handle.
+  db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA synchronous = FULL; PRAGMA cache_size = -16384;
+    PRAGMA mmap_size = 268435456; PRAGMA temp_store = MEMORY; PRAGMA journal_size_limit = 67108864;`);
   db.exec(`
-    PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, run_key TEXT NOT NULL, run_id TEXT, agent_id TEXT,
       issue_id TEXT, task_subject TEXT, rev TEXT, kind TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL DEFAULT 0,
       cached INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0, cost_usd REAL, ms INTEGER, status TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS calls_run ON calls (run_key);
-    CREATE INDEX IF NOT EXISTS calls_task ON calls (agent_id, task_subject);
-    CREATE INDEX IF NOT EXISTS calls_subject ON calls (task_subject);
-    CREATE INDEX IF NOT EXISTS calls_day ON calls (agent_id, day);
-    CREATE INDEX IF NOT EXISTS calls_all_day ON calls (day);
-    CREATE INDEX IF NOT EXISTS calls_at ON calls (at);
-    CREATE INDEX IF NOT EXISTS calls_status ON calls (status);
     -- Who a run key is: settled at its first call (a gateway restart or the JWT's expiry never re-derives it), with its rev.
     CREATE TABLE IF NOT EXISTS runs (run_key TEXT PRIMARY KEY, agent_id TEXT, run_id TEXT, issue_id TEXT, rev TEXT, perpetual INTEGER NOT NULL, at TEXT NOT NULL);
     -- A limit's notice sent: one per limit (scope), period or task (subject) and value; agent_id 'install', or the task's agent.
@@ -169,57 +185,88 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
     -- here, so a replayed OIDC token gets nothing, across restarts too (a re-run is a new attempt).
     CREATE TABLE IF NOT EXISTS ci_tokens (hash TEXT PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT, gh_run TEXT NOT NULL, attempt TEXT NOT NULL,
       exp TEXT NOT NULL, at TEXT NOT NULL, UNIQUE (repo, gh_run, attempt));
+    -- A model's rate-limit cooldown, shared by every kernel on the file (a draining one too): no new call to it before \`until\`
+    -- (ms); \`step\` is the backoff ladder's rung.
+    CREATE TABLE IF NOT EXISTS model_cooldown (model TEXT PRIMARY KEY, until INTEGER NOT NULL, step INTEGER NOT NULL);
   `);
   // A call's kernel process (`<boot id>:<pid>`), OpenRouter's generation id (the true-up's handle on a cut-off call) and when a
   // true-up changed it (`changed`: the board's pull reads it; `at` stays the call's time).
   const have = new Set((db.prepare("PRAGMA table_info(calls)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["owner", "gen", "changed"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
-  db.exec("DROP INDEX IF EXISTS calls_changed; CREATE INDEX IF NOT EXISTS calls_pull ON calls (COALESCE(changed, at), key)");
-  // A count per day of the writes that left a call final (any status but `reserved` or `unsettled`, which never changes again),
-  // kept by the database for every connection and process (a draining peer kernel's too): monthSpend's cache of the closed days'
-  // final calls is good while their counts are unchanged.
+  // The indexes a query reads: a run key's calls (spentRun, tokensRun, refusedRun), the prune and work.ts's window (at), the
+  // board's pull, a job's calls (jobs.ts at its end), and the held rows (sweep, inflight, true-ups, holds). Totals come from
+  // spend_day and spend_task below, so no index serves a day or a task.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS calls_run ON calls (run_key);
+    CREATE INDEX IF NOT EXISTS calls_at ON calls (at);
+    DROP INDEX IF EXISTS calls_changed; CREATE INDEX IF NOT EXISTS calls_pull ON calls (COALESCE(changed, at), key);
+    CREATE INDEX IF NOT EXISTS calls_job ON calls (run_id) WHERE run_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS calls_held ON calls (status, task_subject) WHERE ${HELD};
+    DROP INDEX IF EXISTS calls_task; DROP INDEX IF EXISTS calls_subject; DROP INDEX IF EXISTS calls_day; DROP INDEX IF EXISTS calls_all_day; DROP INDEX IF EXISTS calls_status;
+  `);
+  // TODO(next PR): drop calls_final, its triggers and calls_open. Only the kernel before this one reads them (its monthSpend,
+  // INDEXED BY calls_open), and it may still be draining beside this one for one deploy; they stay until then.
   db.exec(`
     CREATE TABLE IF NOT EXISTS calls_final (day TEXT PRIMARY KEY, n INTEGER NOT NULL);
-    CREATE INDEX IF NOT EXISTS calls_open ON calls (day) WHERE status IN ('reserved', 'unsettled');
+    CREATE INDEX IF NOT EXISTS calls_open ON calls (day) WHERE ${HELD};
     CREATE TRIGGER IF NOT EXISTS calls_final_add AFTER INSERT ON calls WHEN NEW.status NOT IN ('reserved', 'unsettled') BEGIN
       INSERT INTO calls_final (day, n) VALUES (NEW.day, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1; END;
     CREATE TRIGGER IF NOT EXISTS calls_final_set AFTER UPDATE ON calls WHEN NEW.status NOT IN ('reserved', 'unsettled') BEGIN
       INSERT INTO calls_final (day, n) VALUES (NEW.day, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1; END;
   `);
+  spendTotals(db);
   return { db, moved: moveLedger(db, legacy) };
 }
 
 /**
- * Month `m`'s spend (`spent`: every call; `settled`: without holds that may still shrink, as limits() counts them), exact and
- * cheap: the closed days' final calls (days before today; a final call never changes, and the ledger keeps 40 days, so none
- * leaves the month) are summed once and kept while their calls_final counts stand; calls not yet final (few: on calls_open, a partial
- * index) and today's are read each time. `open`: cut-off calls closed at or after it may still be trued up.
+ * The spend totals, kept by the database for every connection and process (a draining peer kernel's too, whatever code it
+ * runs): per UTC day (the call's start day), agent ('' for none) and kind, every call's cost (`nano`), its billed part and
+ * its refusals; and per task subject, an agent's calls only. Integer nano-dollars, NEW − OLD on every insert, update and
+ * delete (the prune included), with a row count so a total with no call left goes. Made and filled from the ledger once,
+ * in one write transaction with its triggers, so no call is counted twice or missed.
  */
-export function monthSpend(db: DatabaseSync, now: () => number) {
-  const FINAL = "status NOT IN ('reserved', 'unsettled')";
+function spendTotals(db: DatabaseSync) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spend_task'").get()) {
+      db.exec(`
+        CREATE TABLE spend_day (day TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL, nano INTEGER NOT NULL,
+          billed INTEGER NOT NULL, refused INTEGER NOT NULL, PRIMARY KEY (day, agent, kind));
+        CREATE TABLE spend_task (subject TEXT PRIMARY KEY, n INTEGER NOT NULL, nano INTEGER NOT NULL);
+        INSERT INTO spend_day SELECT day, COALESCE(agent_id, ''), kind, COUNT(*), SUM(${NANO("")}), SUM(${BILLED("")}),
+          SUM(${REFUSED("")}) FROM calls GROUP BY 1, 2, 3;
+        INSERT INTO spend_task SELECT task_subject, COUNT(*), SUM(${NANO("")}) FROM calls WHERE agent_id IS NOT NULL AND task_subject IS NOT NULL GROUP BY 1;
+        CREATE TRIGGER spend_add AFTER INSERT ON calls BEGIN ${addDay("NEW")} ${addTask("NEW")} END;
+        CREATE TRIGGER spend_del AFTER DELETE ON calls BEGIN ${subDay} ${subTask} END;
+        CREATE TRIGGER spend_set AFTER UPDATE OF cost_usd, status, day, agent_id, kind, task_subject ON calls BEGIN ${subDay} ${subTask} ${addDay("NEW")} ${addTask("NEW")} END;
+      `);
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/**
+ * Spend from the totals (spendTotals), in USD: `spent` is every call's cost, holds included; `settled` leaves out the holds
+ * that may still shrink, read at decision time from the held rows (calls_held), since a hold ages out of the true-up window
+ * with no write: calls in flight (`reserved`) and cut-off ones a true-up may still settle (`unsettled` with a generation id,
+ * closed at or after `open`). task: an agent's calls on one task subject, whoever held it (a hand-off or a re-route keeps what
+ * it spent). days: the install's from `from` to `to` (one day, or a month: at most 31 days of rows).
+ */
+export function spendOf(db: DatabaseSync) {
   const q = {
-    count: db.prepare("SELECT COALESCE(SUM(n), 0) AS n FROM calls_final WHERE day >= ? AND day < ?"),
-    final: db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day < ? AND ${FINAL}`),
-    finalDay: db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND ${FINAL}`),
-    open: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS spent, COALESCE(SUM(CASE WHEN status = 'unsettled' AND (gen IS NULL OR at < ?) THEN cost_usd END), 0) AS settled FROM calls INDEXED BY calls_open WHERE status IN ('reserved', 'unsettled') AND day >= ? AND day <= ?"),
+    task: db.prepare("SELECT COALESCE(SUM(nano), 0) AS n FROM spend_task WHERE subject = ?"),
+    days: db.prepare("SELECT COALESCE(SUM(nano), 0) AS n FROM spend_day WHERE day >= ? AND day <= ?"),
+    heldTask: db.prepare(`SELECT COALESCE(SUM(${NANO("")}), 0) AS n FROM calls WHERE ${HELD} AND task_subject = ? AND agent_id IS NOT NULL AND (status = 'reserved' OR (gen IS NOT NULL AND at >= ?))`),
+    heldDays: db.prepare(`SELECT COALESCE(SUM(${NANO("")}), 0) AS n FROM calls WHERE ${HELD} AND day >= ? AND day <= ? AND (status = 'reserved' OR (gen IS NOT NULL AND at >= ?))`),
   };
-  let kept: { key: string; s: number } | undefined;
-  // Whole nano-dollars, so the parts' float sum meets a cap exactly where one SUM would.
-  const usd = (n: number) => Math.round(n * 1e9) / 1e9;
-  const read = (m: string, open: string) => {
-    const today = day(now()), from = `${m}-01`, until = month(now()) === m ? today : `${m}-32`;
-    // The count is read before the sum: a write between them only costs one more sum next time.
-    const key = `${from}|${until}|${(q.count.get(from, until) as { n: number }).n}`;
-    if (kept?.key !== key) kept = { key, s: (q.final.get(from, until) as Sum).s };
-    const live = q.open.get(open, from, `${m}-31`) as { spent: number; settled: number };
-    const todays = until === today ? (q.finalDay.get(today) as Sum).s : 0;
-    return { spent: usd(kept.s + todays + live.spent), settled: usd(kept.s + todays + live.settled) };
-  };
-  // One snapshot: limits() reads inside its reservation's transaction; the spend summary gets its own.
-  return (m: string, open: string): { spent: number; settled: number } => {
-    if (db.isTransaction) return read(m, open);
-    db.exec("BEGIN");
-    try { return read(m, open); } finally { db.exec("COMMIT"); }
+  const n = (s: StatementSync, ...a: string[]) => (s.get(...a) as Nano).n;
+  const of = (total: number, held: number) => ({ spent: total / 1e9, settled: (total - held) / 1e9 });
+  return {
+    task: (subject: string, open: string) => of(n(q.task, subject), n(q.heldTask, subject, open)),
+    days: (from: string, to: string, open: string) => of(n(q.days, from, to), n(q.heldDays, from, to, open)),
   };
 }
 
@@ -384,6 +431,16 @@ function alive(owner: string | null): boolean {
 const TRUE_UP_MS = 30 * 60_000;
 
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504, 524]);
+/** An in-band error reason (streamError) that is a rate limit. */
+const RATE_LIMITED = /^(?:429|rate_limit_error|rate_limit_exceeded)$|error event: (?:429|rate_limit_error|rate_limit_exceeded)$/;
+/** The longest a model's cooldown runs from one rate limit, and the longest a new call waits one out. */
+const COOLDOWN_MAX_MS = 60_000;
+/** A Retry-After header in ms from `t`: delay-seconds or an HTTP-date; undefined when absent, unreadable or not in the future. */
+const retryAfterMs = (h: string | null, t: number): number | undefined => {
+  if (!h) return undefined;
+  const ms = /^\s*\d+(?:\.\d+)?\s*$/.test(h) ? Number(h) * 1000 : Date.parse(h) - t;
+  return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+};
 const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
 /** How much of a stream, and for how long, is held back while looking for its first output before it is passed through. */
 const PEEK_BYTES = 64 * 1024;
@@ -395,7 +452,7 @@ const NO_OUTPUT = { reason: "ended before any output", transient: true };
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
@@ -406,6 +463,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   githubJwksUrl?: string; log?: Log; now?: () => number;
   /** Waits between attempts at a transient OpenRouter failure (tests pass zeros). */
   retryDelaysMs?: number[];
+  /** A rate-limited model's cooldown ladder without Retry-After (cool): the retry waits by default. */
+  cooldownMs?: number[];
   /** How long an answer's stream may go quiet before it is cut (OpenRouter sends keep-alives while a model thinks). */
   streamIdleMs?: number;
   /** Waits between tries of a job's task read when the control plane doesn't answer. */
@@ -424,9 +483,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * mark are a dead one's whose pid came round again.
    */
   const sweep = (start = false) => {
-    for (const { owner } of db.prepare("SELECT DISTINCT owner FROM calls WHERE status = 'reserved'").all() as { owner: string | null }[]) {
+    for (const { owner } of db.prepare(`SELECT DISTINCT owner FROM calls WHERE ${HELD} AND status = 'reserved'`).all() as { owner: string | null }[]) {
       if (owner === me ? !start : alive(owner)) continue;
-      db.prepare("UPDATE calls SET status = 'unsettled', at = ? WHERE status = 'reserved' AND owner IS ?").run(new Date(now()).toISOString(), owner);
+      db.prepare(`UPDATE calls SET status = 'unsettled', at = ? WHERE ${HELD} AND status = 'reserved' AND owner IS ?`).run(new Date(now()).toISOString(), owner);
     }
   };
   sweep(true);
@@ -447,35 +506,33 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     add: db.prepare("INSERT OR IGNORE INTO calls (key, at, day, run_key, run_id, agent_id, issue_id, task_subject, rev, kind, component, model, input, cached, output, cost_usd, ms, status, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
     spentRun: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE run_key = ?"),
     tokensRun: db.prepare("SELECT COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached, COALESCE(SUM(output), 0) AS output FROM calls WHERE run_key = ?"),
-    // A task's spend, whoever held it (a hand-off or a re-route keeps what it spent).
-    spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL"),
-    spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
-    spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
-    // The same without holds that may still shrink: calls in flight (`reserved`) and cut-off ones a true-up may still settle
-    // (`unsettled` with a generation id, inside TRUE_UP_MS of their close): what is spent for good. And one call's hold.
-    settledTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)"),
-    settledAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)"),
+    // Each agent's spend on a day (the totals, nano-dollars). And one call's hold.
+    agentsDay: db.prepare("SELECT agent, SUM(nano) AS n FROM spend_day WHERE day = ? AND agent != '' GROUP BY agent"),
     holdOf: db.prepare("SELECT cost_usd AS s FROM calls WHERE key = ? AND status = 'reserved'"),
     rehold: db.prepare("UPDATE calls SET cost_usd = ? WHERE key = ? AND status = 'reserved'"),
-    spenders: db.prepare("SELECT DISTINCT agent_id FROM calls WHERE day = ? AND agent_id IS NOT NULL"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
     unfile: db.prepare("DELETE FROM filed WHERE scope = ? AND agent_id = ? AND subject = ? AND cap = ?"),
     // A row changes after its call ends only by a true-up (`changed`), which keeps the call's own time (`at`).
     // In (time, key) order, from after a cursor: a page boundary never splits or repeats rows of one time.
     since: db.prepare(`SELECT * FROM calls WHERE COALESCE(changed, at) >= ?1 AND (COALESCE(changed, at), key) > (?1, ?2) AND status != 'reserved' ORDER BY COALESCE(changed, at), key LIMIT ${USAGE_PAGE}`),
-    settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ? WHERE key = ? AND status = 'reserved'"),
-    inflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved'"),
+    // The generation id rides along (a non-streamed answer's, a discarded attempt's): one write per call, not two.
+    settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ?, gen = COALESCE(?, gen) WHERE key = ? AND status = 'reserved'"),
+    inflight: db.prepare(`SELECT COUNT(*) AS n FROM calls WHERE ${HELD} AND status = 'reserved'`),
     gen: db.prepare("UPDATE calls SET gen = ? WHERE key = ? AND status = 'reserved'"),
-    cutOff: db.prepare("SELECT key, gen FROM calls WHERE status = 'unsettled' AND gen IS NOT NULL AND at >= ? LIMIT 100"),
+    cutOff: db.prepare(`SELECT key, gen FROM calls WHERE ${HELD} AND status = 'unsettled' AND gen IS NOT NULL AND at >= ? LIMIT 100`),
     trueUp: db.prepare("UPDATE calls SET status = 'interrupted', changed = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ? WHERE key = ? AND status = 'unsettled'"),
     ciToken: db.prepare("SELECT * FROM ci_tokens WHERE hash = ?"),
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
     ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
-    ciSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ?"),
+    ciSpent: db.prepare("SELECT COALESCE(SUM(nano), 0) AS n FROM spend_day WHERE kind = 'ci-code-review' AND day = ?"),
+    // Today's billed spend and refusals by agent and kind (the metrics).
+    dayRows: db.prepare("SELECT agent, kind, billed, refused FROM spend_day WHERE day = ?"),
+    cooldown: db.prepare("SELECT until, step FROM model_cooldown WHERE model = ?"),
+    setCooldown: db.prepare("INSERT INTO model_cooldown (model, until, step) VALUES (?, ?, ?) ON CONFLICT (model) DO UPDATE SET until = excluded.until, step = excluded.step"),
     // A cap refusal's ledger row: its key is `cap:<run key>:<scope>:<subject>:<cap>`.
     refusedRun: db.prepare("SELECT key, rowid AS n FROM calls WHERE run_key = ? AND status = 'cap_reached' ORDER BY rowid"),
   };
-  const spentMonth = monthSpend(db, now);
+  const spend = spendOf(db);
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
     db.prepare("DELETE FROM calls WHERE at < ?").run(cut);
@@ -499,8 +556,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const key = secret("openrouter_key");
     if (!key) return;
     for (const row of q.cutOff.all(new Date(now() - TRUE_UP_MS).toISOString()) as { key: string; gen: string }[]) {
+      // A drain ends the pass: what is left is the next kernel's (its true-ups read the same rows).
+      if (stopping.signal.aborted) return;
       try {
-        const res = await fetch(`${upstream}/generation?id=${encodeURIComponent(row.gen)}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
+        const res = await fetch(`${upstream}/generation?id=${encodeURIComponent(row.gen)}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.any([AbortSignal.timeout(15_000), stopping.signal]) });
         if (!res.ok) continue;
         const g = ((await res.json()) as { data?: Record<string, unknown> }).data ?? {};
         if (typeof g.total_cost !== "number") continue;
@@ -513,9 +572,57 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
     }
   }
-  const trueUps = setInterval(() => void trueUp().catch((e: Error) => log("true-up failed", { err: String(e?.message ?? e).slice(0, 200) })), 60_000);
+  // One true-up at a time; stop() waits for the one in flight before the ledger closes.
+  let truing: Promise<void> | undefined;
+  const trueUps = setInterval(() => { truing ??= trueUp().catch((e: Error) => log("true-up failed", { err: String(e?.message ?? e).slice(0, 200) })).finally(() => (truing = undefined)); }, 60_000);
   trueUps.unref();
-  let live = 0; // this process's model calls in flight (main.ts drains on them)
+  let live = 0; // this process's model calls in flight, those waiting out a cooldown included (main.ts drains on them)
+  // A drain: calls still waiting out a cooldown are answered (retryable) so the next kernel takes them.
+  const stopping = new AbortController();
+
+  /**
+   * A rate limit (an HTTP 429, or an in-band rate-limit error) on `model`: no new call to it until the cooldown ends, for
+   * every kernel on the file. Retry-After when OpenRouter sends one, else the backoff ladder's rung: the rung climbs when the
+   * model is limited again within a minute of its last cooldown ending, holds while one runs, and restarts after a quiet
+   * minute. The deadline only ever moves later.
+   */
+  function cool(model: string, retryAfter: string | null) {
+    const t = now(), after = retryAfterMs(retryAfter, t);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      const row = q.cooldown.get(model) as { until: number; step: number } | undefined;
+      const step = !row || row.until <= t - 60_000 ? 0 : row.until > t ? row.step : Math.min(row.step + 1, cooldownMs.length - 1);
+      const wait = after ?? cooldownMs[step] ?? 0;
+      q.setCooldown.run(model, Math.max(row?.until ?? 0, t + Math.min(wait, COOLDOWN_MAX_MS)), step);
+      db.exec("COMMIT");
+    } catch (e) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      log("cooldown not recorded", { model, err: String((e as Error).message).slice(0, 200) });
+    }
+  }
+  /** Waits out `model`'s cooldown (re-read after each wait: a peer may extend it), at most COOLDOWN_MAX_MS; a caller that hangs
+   *  up or a drain ends the wait. → whether it waited (the call then takes a fresh time for its periods). */
+  async function cooledDown(model: string, res: ServerResponse): Promise<boolean> {
+    const gone = new AbortController();
+    const hangUp = () => gone.abort();
+    res.once("close", hangUp);
+    const signal = AbortSignal.any([gone.signal, stopping.signal]);
+    let waited = 0;
+    live++;
+    try {
+      for (;;) {
+        const left = ((q.cooldown.get(model) as { until: number } | undefined)?.until ?? 0) - now();
+        if (left <= 0) return waited > 0;
+        if (waited >= COOLDOWN_MAX_MS) throw fail(429, "rate_limited", `${model} is rate limited upstream; try again shortly`);
+        const ms = Math.min(left + Math.random() * 250, 1000, COOLDOWN_MAX_MS - waited); // a second at a time: re-read
+        try { await sleep(ms, undefined, { signal }); } catch { throw fail(503, "unavailable", stopping.signal.aborted ? "the gateway is restarting; try again" : "the caller hung up"); }
+        waited += ms;
+      }
+    } finally {
+      live--;
+      res.off("close", hangUp);
+    }
+  }
 
   async function paperclip(path: string, token: string): Promise<unknown> {
     const res = await fetch(new URL(path, paperclipUrl), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
@@ -601,11 +708,18 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   function limits(who: { agentId: string | null; issueId: string | null; perpetual: boolean }, t: number): (Limit & { settled: number })[] {
     const set = limitsSet(), d = day(t), m = month(t), task = who.agentId ? taskSubject(who, t) : null;
     const open = new Date(now() - TRUE_UP_MS).toISOString();
-    return [
-      ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, spent: (q.spentTask.get(task) as Sum).s, settled: (q.settledTask.get(task, open) as Sum).s }] : []),
-      ...(set.day ? [{ scope: "day" as const, subject: d, cap: set.day, spent: (q.spentAll.get(d) as Sum).s, settled: (q.settledAll.get(d, open) as Sum).s }] : []),
-      ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, ...spentMonth(m, open) }] : []),
-    ];
+    // Totals and holds from one snapshot (reserve() reads inside its own transaction).
+    return snapshot(() => [
+      ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, ...spend.task(task, open) }] : []),
+      ...(set.day ? [{ scope: "day" as const, subject: d, cap: set.day, ...spend.days(d, d, open) }] : []),
+      ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, ...spend.days(`${m}-01`, `${m}-31`, open) }] : []),
+    ]);
+  }
+  /** `f` on one read snapshot: inside the caller's transaction when there is one. */
+  function snapshot<T>(f: () => T): T {
+    if (db.isTransaction) return f();
+    db.exec("BEGIN");
+    try { return f(); } finally { db.exec("COMMIT"); }
   }
 
   /**
@@ -754,8 +868,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   }
 
   async function model(req: IncomingMessage, res: ServerResponse, routeKind: string, path: string, ci = false) {
-    const t0 = now();
-    const who = await identify((!ci && (await asCaller?.(req))) || bearer(req), routeKind, ci);
+    let t0 = now();
+    const cred = (!ci && (await asCaller?.(req))) || bearer(req);
+    let who = await identify(cred, routeKind, ci);
     let body: Record<string, unknown>, raw = "";
     try { body = JSON.parse((raw = await readBody(req, ci ? CI_MAX_BODY : MAX_BODY))); } catch (e) { throw (e as GatewayError).status ? e : fail(400, "bad_request", "the body must be JSON"); }
     if (!body || typeof body !== "object" || typeof body.model !== "string") throw fail(400, "bad_request", "a model call needs a model");
@@ -778,6 +893,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const field = path === "responses" ? "max_output_tokens" : "max_tokens";
     const asked = [body[field], body.max_completion_tokens].filter((n): n is number => Number.isInteger(n) && (n as number) > 0);
     const id = `gw:${randomUUID()}`;
+    // A model cooling down after a rate limit: waited out before the call holds anything; its periods are the time it goes.
+    // A wait may outlive the credential (a job that ended meanwhile): it is checked again.
+    if (await cooledDown(body.model, res)) { t0 = now(); who = await identify(cred, routeKind, ci); }
     const inUsd = (Math.ceil(Buffer.byteLength(raw) / 3) * price.in) / 1e6;
     const r = reserve(who, t0, id, body.model, inUsd, path === "embeddings" ? 0 : price.out / 1e6, Math.min(price.max_output, ...asked));
     if ("over" in r) {
@@ -809,7 +927,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const settle = (status: string, u?: Usage, free = false) => {
       live--;
       const billed = u ? (u.costUsd ?? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6) : free ? 0 : up && !up.ok ? inUsd : hold;
-      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, !u && !free && up?.ok ? "unsettled" : status, id];
+      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, !u && !free && up?.ok ? "unsettled" : status, gen || null, id];
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
@@ -880,6 +998,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         } catch (e) { err = e; }
         clearTimeout(idle);
         const failed = peeked?.failed;
+        if (up?.status === 429 || (failed && RATE_LIMITED.test(failed.reason))) cool(body.model, up?.headers.get("retry-after") ?? null);
         const transient = err ? !["ECONNREFUSED", "ENOTFOUND"].includes(String(((err as Error).cause as { code?: string } | undefined)?.code)) : failed ? failed.transient && !rerun : RETRY_STATUS.has(up.status);
         if (!transient || n >= retryDelaysMs.length) { if (err) throw err; break; }
         if (failed) {
@@ -899,14 +1018,23 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
           tk.feed(peeked?.text ?? "");
           const ku = tk.done();
           const g = billable ? genOf(up, peeked?.text ?? "") : "";
-          if (g) q.gen.run(g, held);
-          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, spent, now() - t0, billable ? "unsettled" : "stream_error", held);
+          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, spent, now() - t0, billable ? "unsettled" : "stream_error", g || null, held);
         }
-        const after = Number(up?.headers.get("retry-after"));
-        const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
+        const after = retryAfterMs(up?.headers.get("retry-after") ?? null, now());
+        // Never sooner than the model's shared cooldown (this answer's own, or one a peer kernel extended).
+        const cooled = String(body.model);
+        const deadline = () => (q.cooldown.get(cooled) as { until: number } | undefined)?.until ?? 0;
+        let until = deadline();
+        const wait = Math.min(Math.max(Math.min(after ?? retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000), until - now()), COOLDOWN_MAX_MS);
         log("upstream retry", { model: body.model, attempt: n + 1, ...(failed ? { stream_error: failed.reason } : { status: up?.status ?? String((err as Error).message).slice(0, 100) }), wait_ms: Math.round(wait) });
         await reader?.cancel().catch(() => {});
         await new Promise((r) => setTimeout(r, wait));
+        // A deadline another call or kernel extended meanwhile is waited out too (by how far it moved, at most COOLDOWN_MAX_MS in all).
+        for (let more = 0, next = deadline(); next > until && wait + more < COOLDOWN_MAX_MS; until = next, next = deadline()) {
+          const ms = Math.min(next - until, COOLDOWN_MAX_MS - wait - more);
+          more += ms;
+          await new Promise((r) => setTimeout(r, ms));
+        }
       }
     } catch (e) {
       // Refused before the request left (nothing reached OpenRouter): free. Any other failure may have been billed.
@@ -914,8 +1042,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       throw fail(502, "upstream_error", `OpenRouter unreachable (${(e as Error).message})`);
     }
     // The generation id is a cut-off call's handle (an Anthropic-format answer's own id is a `msg_` one: the header names it).
-    if ((gen = genOf(up, peeked?.text ?? ""))) q.gen.run(gen, id);
+    // A stream's is written the moment it is seen, so a kernel that dies mid-stream leaves the true-up its handle; any other
+    // answer's rides on the settle write.
     const sse = isSse(up);
+    if ((gen = genOf(up, peeked?.text ?? "")) && sse) q.gen.run(gen, id);
     const tap = usageTap(sse);
     const text = new TextDecoder();
     const rd = reader, head = peeked?.chunks ?? [], pending = peeked?.pending;
@@ -940,7 +1070,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         if (!res.destroyed) res.write(c);
         const s = text.decode(c, { stream: true });
         tap.feed(s);
-        if (!gen && (gen = /"id"\s*:\s*"(gen-[\w-]{1,190})"/.exec(s)?.[1] ?? "")) q.gen.run(gen, id);
+        if (!gen && (gen = /"id"\s*:\s*"(gen-[\w-]{1,190})"/.exec(s)?.[1] ?? "") && sse) q.gen.run(gen, id);
       }
       status = up.ok ? "ok" : `upstream_${up.status}`;
     } finally {
@@ -950,6 +1080,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       // usage, such as message_start's input alone, would under-bill it).
       const failed = sse ? tap.failure() : undefined;
       if (failed) log("upstream stream error", { model: body.model, gen, reason: failed.reason });
+      if (failed && RATE_LIMITED.test(failed.reason)) cool(body.model, null);
       if (failed?.inBand && status === "ok") settle("stream_error", u && { ...u, costUsd: 0 }, true);
       else if (failed) settle(status);
       else settle(status, u, !up.ok && !sse && status !== "upstream_aborted"); // free: a definite error answer, no stream started
@@ -983,14 +1114,22 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       out.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`);
       for (const [labels, v] of rows) out.push(`${name}${Object.keys(labels).length ? `{${Object.entries(labels).map(([k, x]) => `${k}="${esc(x)}"`).join(",")}}` : ""} ${Math.round(v * 1e4) / 1e4}`);
     };
-    const spend = db.prepare("SELECT agent_id, kind, COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status NOT IN ('cap_reached', 'reserved', 'unsettled') GROUP BY agent_id, kind").all(today) as { agent_id: string | null; kind: string; s: number }[];
-    metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", spend.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.s]));
+    // Summed by the labels shown (ids no grant names all read `unknown`): one sample per series.
+    const by = (pick: (r: { billed: number; refused: number }) => number) => {
+      const m = new Map<string, [Record<string, unknown>, number]>();
+      for (const r of q.dayRows.all(today) as { agent: string; kind: string; billed: number; refused: number }[]) {
+        if (!pick(r)) continue;
+        const labels = { agent: keyOf(r.agent || null), kind: r.kind }, k = JSON.stringify(labels);
+        m.set(k, [labels, (m.get(k)?.[1] ?? 0) + pick(r)]);
+      }
+      return [...m.values()];
+    };
+    metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", by((r) => r.billed / 1e9));
     const install = limits({ agentId: null, issueId: null, perpetual: false }, now());
     metric("aidenhq_gateway_install_spend_usd", "The install's spend in the limit's period (UTC day or month), in flight included.", install.map((l) => [{ period: l.scope }, l.spent]));
     metric("aidenhq_gateway_install_limit_usd", "The install's spend limit for the period (settings.spend_day_usd, spend_month_usd).", install.map((l) => [{ period: l.scope }, l.cap]));
-    const refused = db.prepare("SELECT agent_id, kind, COUNT(*) AS n FROM calls WHERE day = ? AND status = 'cap_reached' GROUP BY agent_id, kind").all(today) as { agent_id: string | null; kind: string; n: number }[];
-    metric("aidenhq_gateway_cap_refusals_today", "Runs refused over a spend limit or task cap since 00:00 UTC (one per run, limit and period).", refused.map((r) => [{ agent: keyOf(r.agent_id), kind: r.kind }, r.n]));
-    metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, (q.ciSpent.get(today) as Sum).s]]);
+    metric("aidenhq_gateway_cap_refusals_today", "Runs refused over a spend limit or task cap since 00:00 UTC (one per run, limit and period).", by((r) => r.refused));
+    metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, (q.ciSpent.get(today) as Nano).n / 1e9]]);
     metric("aidenhq_gateway_inflight", "Model calls in flight.", [[{}, (q.inflight.get() as { n: number }).n]]);
     return out.join("\n") + "\n";
   }
@@ -1022,10 +1161,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         // other that spent today), most first.
         boardKeyed(req);
         const t = now(), today = day(t), r4 = (n: number) => Math.round(n * 1e4) / 1e4, set = limitsSet();
-        const ids = new Set([...Object.keys(grants()), ...(q.spenders.all(today) as { agent_id: string }[]).map((r) => r.agent_id)]);
-        const agents = [...ids].map((agent_id) => ({ agent_id, spent: r4((q.spentDay.get(agent_id, today) as Sum).s) })).sort((a, b) => b.spent - a.spent);
-        const m = month(t), monthSpent = spentMonth(m, new Date(t - TRUE_UP_MS).toISOString()).spent;
-        return send(res, 200, { day: today, month: m, install: { day: { spent: r4((q.spentAll.get(today) as Sum).s), cap: set.day }, month: { spent: r4(monthSpent), cap: set.month } }, agents });
+        const m = month(t);
+        const { byAgent, daySpent, monthSpent } = snapshot(() => ({
+          byAgent: new Map((q.agentsDay.all(today) as { agent: string; n: number }[]).map((r) => [r.agent, r.n / 1e9])),
+          daySpent: spend.days(today, today, "").spent,
+          monthSpent: spend.days(`${m}-01`, `${m}-31`, "").spent,
+        }));
+        const agents = [...new Set([...Object.keys(grants()), ...byAgent.keys()])].map((agent_id) => ({ agent_id, spent: r4(byAgent.get(agent_id) ?? 0) })).sort((a, b) => b.spent - a.spent);
+        return send(res, 200, { day: today, month: m, install: { day: { spent: r4(daySpent), cap: set.day }, month: { spent: r4(monthSpent), cap: set.month } }, agents });
       }
       if (req.method === "GET" && path === "/v1/models/catalog") {
         boardKeyed(req);
@@ -1056,6 +1199,15 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     if (spent.length) setImmediate(() => { for (const o of spent) void tell(who, o); });
     return over.map(({ settled: _, ...o }) => o);
   };
+  /** A drain's first step (main.ts): the ledger's timers stop and cooldown waits end; → the true-up in flight, which close() must follow. */
+  function stop(): Promise<void> {
+    clearInterval(pruner);
+    clearInterval(trueUps);
+    prices.close();
+    embeddingPrices.close();
+    stopping.abort();
+    return truing ?? Promise.resolve();
+  }
   /** What a run key (a credential's sha256) has spent; spentBy: the same, by the credential. */
   const spentByKey = (runKey: string) => (q.spentRun.get(runKey) as Sum).s;
   const spentBy = (cred: string) => spentByKey(sha256(cred));
@@ -1065,5 +1217,5 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    *  refuses and records them, so this is the limit event itself, never a caller's account of it. A refusal is never forgotten
    *  for the key: a call settling after it means the limit was raised, not that the case the limit cut was judged. */
   const refusedByKey = (runKey: string) => [...new Set((q.refusedRun.all(runKey) as { key: string }[]).map((r) => r.key.split(":")[2] ?? ""))];
-  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, refusedByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); embeddingPrices.close(); db.close(); } };
+  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, refusedByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), stop, close: () => { void stop(); db.close(); } };
 }

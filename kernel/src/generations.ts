@@ -2,7 +2,7 @@
 // and the Fleet Steward's `fleet_generation_status`: the current product pin and the last generations, so a fix that rolled back is
 // visible without the host. Read-only, and never a guess: a missing or unreadable file is an explicit error, not an empty list.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { hostOf } from "./codehost.ts";
 import { openFacts } from "./facts.ts";
@@ -60,20 +60,26 @@ const contains = (repo: string, a: string, b: string) => {
  * Flow's deploy facts from the host's generations (Task 5): `deploy.applied` for each generation that switched something
  * (good or failed; pending is unsettled, refused switched nothing), and `pr.deployed` for each merged product PR, once, at the
  * first good generation whose product commit contains its merge commit. The file is the shell's, so the kernel calls this at
- * start and then on a timer; every fact's id is deterministic, so a re-run records nothing new. The PRs are looked at only
+ * start and then on a timer; every fact's id is deterministic, so a re-run records nothing new. The file is read and its
+ * generations recorded again only when its size or mtime changed (the shell rewrites it in place). The PRs are looked at only
  * when a good generation newer than the last look exists (git runs on the kernel's thread). Each call returns how many facts
  * it recorded.
  */
 export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync; file: string; repo: string; days?: number }): () => number {
   const facts = openFacts(db);
-  let looked = "";
+  let looked = "", read = "", gens: Generation[] = [];
   return () => {
-  if (!existsSync(file)) return 0;
-  const gens = readFileSync(file, "utf8").split("\n").filter((l) => l.trim()).flatMap((l) => { try { return [one(JSON.parse(l))]; } catch { return []; } }).filter((g) => g.n !== null && g.at);
+  let st;
+  try { st = statSync(file); } catch { return 0; }
   let n = 0;
-  for (const g of gens) {
-    if (g.health !== "good" && g.health !== "failed") continue;
-    if (facts.record({ type: "deploy.applied", subject: `deploy:${g.n}`, version: g.health, at: g.at!, actor: "kernel", source: "poll", data: { generation: g.n, product: g.product, health: g.health, revert_of: g.revert_of } })) n++;
+  const stamp = `${st.size}:${st.mtimeMs}`;
+  if (read !== stamp) {
+    gens = readFileSync(file, "utf8").split("\n").filter((l) => l.trim()).flatMap((l) => { try { return [one(JSON.parse(l))]; } catch { return []; } }).filter((g) => g.n !== null && g.at);
+    for (const g of gens) {
+      if (g.health !== "good" && g.health !== "failed") continue;
+      if (facts.record({ type: "deploy.applied", subject: `deploy:${g.n}`, version: g.health, at: g.at!, actor: "kernel", source: "poll", data: { generation: g.n, product: g.product, health: g.health, revert_of: g.revert_of } })) n++;
+    }
+    read = stamp; // only once every generation is recorded: a failure reads the file again next time
   }
   // What a look covers is the newest good generation and the newest merge fact: merges that arrive after it (a backfill still
   // running, a late poll) are looked at too, not only when the next generation lands.

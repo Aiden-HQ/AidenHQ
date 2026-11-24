@@ -26,10 +26,15 @@ main() {
     shift
   done
   unit="${unit:-aidenhq-apply-$(date +%Y%m%d-%H%M%S)-$$}"
+  # A plain apply (no arguments) waits a few seconds before it queues for the lock: instance commits that land seconds apart
+  # are then applied by the first one (it applies origin/main as it is once it holds the lock), and the ones queued behind it
+  # find that pair already applied, so a burst costs one apply and at most one kernel restart.
+  local settle=0
+  [ $# -gt 0 ] || settle="${AIDENHQ_APPLY_SETTLE_SECONDS:-5}"
   # The last line of the unit's output is the apply's status, which --wait reads (the unit itself is gone by then).
   systemd-run --user --quiet --collect --unit="$unit" --working-directory="$PWD" \
-    --setenv=PATH="$PATH" --setenv=HOME="$HOME" -- \
-    bash -c 'bash ops/apply-config.sh "$@"; rc=$?; echo "aidenhq-apply: exit $rc"; exit "$rc"' aidenhq-apply "$@"
+    --setenv=PATH="$PATH" --setenv=HOME="$HOME" --setenv=AIDENHQ_APPLY_SETTLE="$settle" -- \
+    bash -c 'sleep "$AIDENHQ_APPLY_SETTLE"; bash ops/apply-config.sh "$@"; rc=$?; echo "aidenhq-apply: exit $rc"; exit "$rc"' aidenhq-apply "$@"
   echo "apply queued as $unit; follow it with: journalctl --user -fu $unit"
   [ "$wait" = 1 ] || return 0
   follow "$unit"
