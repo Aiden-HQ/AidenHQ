@@ -171,58 +171,19 @@ const beforeHeader = (text: string, from: number, to: number) => {
   return undefined;
 };
 /**
- * True when the marker from `markerFrom` to `markerTo` sits on a line the reply shows on purpose: a Markdown blockquote
- * ("> <|im_end|>", with an optional list marker in front) or an indented code block ("    <|im_start|>assistant<|im_end|>").
- * Such a line holds only quote marks and model markers, and it needs the reply's own text beside it, so a reply that is
- * nothing but markers is still a run with no reply. A marker beside reply text, or at the start of a plain line, is a leak.
+ * True when the sentinel from `from` to `to` is the whole of a Markdown blockquote line ("> <|im_end|>"): the reply shows the
+ * marker on purpose, so it stays. A marker anywhere else is a leak, however it is indented.
  */
-const QUOTE_LINE = 512;
-const exampleLine = (text: string, markerFrom: number, markerTo: number, lineStart: number, lineEnd: number,
-  from: number, hasOther: boolean) => {
-  // A reply that opens with the example still has its explanation below it: the line itself is what it shows.
-  if (!hasOther) return false;
-  const begin = lineStart < from && from <= markerFrom ? from : lineStart;
-  if (lineEnd - begin > QUOTE_LINE) return false;
-  // A CRLF line's carriage return ends the line, not the content: the quote's marks end before it.
-  const line = text.slice(begin, lineEnd).replace(/\r$/, "");
-  const quote = line.match(/^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*>[ \t>]*|^[ \t]*(?:\t| {4})[ \t]*/);
-  if (!quote) return false;
-  // After the quote's own marks the line is a run of model markers only, up to its end.
-  let i = begin + quote[0].length;
-  for (;;) {
-    while (i < lineEnd && /[ \t\u200b\ufeff\u2060]/.test(text[i]!)) i++;
-    if (i >= lineEnd || (i === lineEnd - 1 && text[i] === "\r")) return true;
-    const header = HEADERS.find((h) => text.startsWith(h.text, i));
-    const hit = header
-      ? header.text.length + roleAt(text, i + header.text.length, lineEnd, header.roles)
-      : SENTINELS.find((s) => text.startsWith(s, i))?.length;
-    if (!hit) return false;
-    i += hit;
-  }
-};
-/** Where the run of sentinels and padding at each edge ends: what is left between them is the reply's own text. */
-const leadingRunEnd = (text: string) => {
-  let at = 0;
-  for (;;) {
-    at = skipStart(text, at, text.length);
-    const header = afterHeader(text, at, text.length);
-    if (header !== undefined) { at += header; continue; }
-    const hit = SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
-    if (!hit) return at;
-    at += hit.length;
-  }
-};
-const trailingRunStart = (text: string) => {
-  let at = text.length;
-  for (;;) {
-    const header = beforeHeader(text, 0, at);
-    if (header !== undefined) { at = header; continue; }
-    const end = skipEnd(text, 0, at);
-    const hit = SENTINELS.find((s) => end - s.length >= 0 && text.startsWith(s, end - s.length)
-      && text[end - s.length - 1] !== "\\");
-    if (!hit) return end;
-    at = end - hit.length;
-  }
+const QUOTE_PREFIX = 64;
+const quoted = (text: string, from: number, to: number, lineStart: number, limit: number) => {
+  // A blockquote's own marks are a handful of characters: a longer prefix is reply text, and is not walked at all.
+  if (from - lineStart > QUOTE_PREFIX) return false;
+  // A blockquote's own marks, with an optional list marker in front of them ("- > <|im_end|>"): a handful of characters.
+  const prefix = text.slice(lineStart, from);
+  if (!/^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*>[ \t>]*$/.test(prefix)) return false;
+  let i = to;
+  while (i < limit && PAD.test(text[i]!)) i++;
+  return i === limit;
 };
 /** The index at which each line starts, so a line start costs a lookup rather than a scan. */
 const lineStarts = (text: string) => {
@@ -240,13 +201,10 @@ const lineStarts = (text: string) => {
 export function stripSentinels(text: string): string {
   let from = 0, to = text.length;
   const starts = lineStarts(text);
-  // The reply's own text, past the sentinels and padding at both ends: what a quoted example has to sit beside.
-  const hasOther = skipStart(text, leadingRunEnd(text), trailingRunStart(text)) < skipEnd(text, leadingRunEnd(text), trailingRunStart(text));
-  const endOf = (l: number) => l + 1 < starts.length ? starts[l + 1]! - 1 : text.length;
   let line = 0;
-  const leadLine = (at: number) => { while (line + 1 < starts.length && starts[line + 1]! <= at) line++; return [starts[line]!, endOf(line)] as const; };
+  const leadLine = (at: number) => { while (line + 1 < starts.length && starts[line + 1]! <= at) line++; return starts[line]!; };
   let back = starts.length - 1;
-  const tailLine = (at: number) => { while (back > 0 && starts[back]! > at) back--; return [starts[back]!, endOf(back)] as const; };
+  const tailLine = (at: number) => { while (back > 0 && starts[back]! > at) back--; return starts[back]!; };
   // Each edge is settled once: a removal there shortens the text and never touches the other edge, so neither end is rescanned.
   for (;;) {
     const at = skipStart(text, from, to);
@@ -254,13 +212,7 @@ export function stripSentinels(text: string): string {
     const hit = after !== undefined ? undefined : SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
     const reach = after ?? hit?.length;
     // Only what the reply still has before the marker counts as its line's prefix: a sentinel just removed is not there.
-    if (reach === undefined) break;
-    const [lineStart, lineEnd] = leadLine(at);
-    if (exampleLine(text, at, at + reach, lineStart, lineEnd, from, hasOther)) {
-      // The reply starts at the example's own line, its indentation and quote marks included: they are what makes it one.
-      from = Math.max(lineStart, from);
-      break;
-    }
+    if (reach === undefined || quoted(text, at, at + reach, Math.max(leadLine(at), from), to)) break;
     from = at + reach;
   }
   // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
@@ -268,15 +220,12 @@ export function stripSentinels(text: string): string {
     const end = skipEnd(text, from, to);
     const head = beforeHeader(text, from, end);
     if (head !== undefined) {
-      const [lineStart, lineEnd] = tailLine(head);
-      if (exampleLine(text, head, end, lineStart, lineEnd, from, hasOther)) break;
+      if (quoted(text, head, end, Math.max(tailLine(head), from), to)) break;
       to = head;
       continue;
     }
     const hit = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length) && text[end - s.length - 1] !== "\\");
-    if (!hit) break;
-    const [lineStart, lineEnd] = tailLine(end - hit.length);
-    if (exampleLine(text, end - hit.length, end, lineStart, lineEnd, from, hasOther)) break;
+    if (!hit || quoted(text, end - hit.length, end, Math.max(tailLine(end - hit.length), from), to)) break;
     to = end - hit.length;
   }
   return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
