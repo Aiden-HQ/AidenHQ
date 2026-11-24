@@ -6,6 +6,7 @@
 // the loop itself (their task is the one that opened them); this file is the hand-off of everyone else's.
 // The adoption's Engineer task is filed when a round first needs it (fileTask), so a PR that merges clean never starts one; a fork's
 // is filed at adoption, as code review's summary of the fork goes there.
+import type { ActionRun } from "./actions.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { Adoption, State } from "./state.ts";
 
@@ -50,6 +51,8 @@ export type Kept = Adoption & {
   approve?: { head: string; attempt: number; record: string; why?: string };
   /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
   freshAsked?: string;
+  /** The repo's own steps at a stage (actions.ts): which step, at which head, and how it ended. */
+  action?: ActionRun;
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
 };

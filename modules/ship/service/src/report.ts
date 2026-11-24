@@ -22,6 +22,8 @@ export interface Facts {
   review?: { verdict: string; open: number };
   /** Failing required checks, and which of them fail on the target branch too (likely pre-existing). */
   failing?: string[]; onBase?: string[];
+  /** The repo's own regenerate commands or workflows discovery found, as `actions` steps to configure (none enabled). */
+  suggest?: string[];
   /** The repo's stop label (its `stop_label` setting). */
   stopLabel?: string;
 }
@@ -47,6 +49,7 @@ export function renderReport(a: Kept, pr: PrView, f: Facts): string {
   if (f.review) risk.push(`- Code review: ${f.review.verdict}${f.review.open ? `, ${f.review.open} open important finding(s)` : ", no open important findings"}`);
   if (f.failing?.length) risk.push(`- Failing required checks: ${list(f.failing)}${f.onBase?.length ? `; also failing on \`${pr.defaultBranch}\`: ${list(f.onBase)}` : ""}`);
   if (risk.length) lines.push("", "**Risk facts**", ...risk);
+  if (f.suggest?.length) lines.push("", "**Suggested** (not enabled: set it in ship's settings for this repo)", ...f.suggest.map((x) => `- ${x}`));
   if (a.counters) lines.push("", `<sub>rounds ${a.counters.rounds} · CI fixes ${a.counters.ci} · review fixes ${a.counters.review}</sub>`);
   lines.push("", `<sub>Stop with the \`${f.stopLabel ?? "ship:stop"}\` label; hand back by removing the \`ship\` label.</sub>`);
   return lines.join("\n");

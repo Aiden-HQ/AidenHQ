@@ -44,6 +44,12 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
   ["GET", new RegExp(`^/repos/${REPO}/collaborators/[\\w-]+/permission$`)],
   ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
   ["DELETE", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
+  // The repo's own steps and discovery (ship's actions.ts): the base branch's tree and its blobs, a workflow's dispatch on the PR's
+  // branch, and that workflow's runs.
+  ["GET", new RegExp(`^/repos/${REPO}/git/trees/[\\w.-]+\\?recursive=1$`)],
+  ["GET", new RegExp(`^/repos/${REPO}/git/blobs/[0-9a-f]{40}$`)],
+  ["POST", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/dispatches$`), (b) => typeof b?.ref === "string" && Object.keys(b).every((k) => k === "ref" || (k === "inputs" && typeof b.inputs === "object" && !Array.isArray(b.inputs)))],
+  ["GET", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/runs\\?[\\w=&%.-]*$`)],
 ];
 /** The loop's one GraphQL read: a repo's open PRs (a page of them) with their checks, and its default branch's. Ship names only the
  * variables, so no other query runs on the owner's sign-in. */

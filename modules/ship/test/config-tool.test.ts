@@ -37,7 +37,7 @@ test("ship_status reads headline settings and holds for the Fleet page", async (
   const tool = configTools({ raw: () => ({ repos: { "a/b": "full" } }), scope: () => scope, state: s, maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_status")!;
   const r = (await tool.run({}, { agent: "x", roles: [] })) as any;
   const { settings, own, inherits, ...row } = r.repos[0];
-  assert.deepEqual([r.paused, row, r.held.length, settings.caps.usd, r.defaults.preset, r.defaults.settings.caps.usd], [false, { repo: "a/b", preset: "full", enabled: true, handoff: "all", approve: "all", merge: "ready", over: [] }, 1, null, "cautious", 5]);
+  assert.deepEqual([r.paused, row, r.held.length, settings.caps.usd, r.defaults.preset, r.defaults.settings.caps.usd], [false, { repo: "a/b", preset: "full", enabled: true, handoff: "all", approve: "all", merge: "ready", actions: {}, over: [] }, 1, null, "cautious", 5]);
 });
 
 test("ship_configure for the owner returns the settings change and files nothing; a new repo covers its three settings", async () => {

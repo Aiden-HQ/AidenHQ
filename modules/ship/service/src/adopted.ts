@@ -2,6 +2,7 @@
 // once adopted, its round (handoff.ts, rounds.ts). This file turns the loop's GitHub reads into their PrView and facts, and supplies
 // the GitHub effects they need (a trigger author's role, assignees, update-branch) through github's /internal/ship/* routes. Where
 // the PR waits only on an approval, it reads the PR's own change and code review's verdict and judges the App's approval (safe.ts).
+import { discovered } from "./actions.ts";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { handBack, intake, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
 import { retryReport, round, type Decision, type RoundDeps } from "./rounds.ts";
@@ -76,7 +77,7 @@ export function adoptedPass(o: AdoptedOptions) {
     unassign: async (repo, n, logins) => void (await must("DELETE", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
   };
   const rounds: RoundDeps = {
-    state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, comment: o.effects.comment, askFresh: o.effects.askFresh, log: o.log,
+    state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, comment: o.effects.comment, askFresh: o.effects.askFresh, log: o.log, gh: o.gh,
     updateBranch: async (repo, n, head) => void (await must("PUT", `/repos/${repo}/pulls/${n}/update-branch`, { expected_head_sha: head })),
     assign: async (repo, n, logins) => void (await must("POST", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
   };
@@ -89,7 +90,9 @@ export function adoptedPass(o: AdoptedOptions) {
     // The reviewed head may be gone (a force-push): its change can't be read, so nothing carries and a fresh review is asked for.
     const reviewedChange = async (h: string) => { const r = await o.gh("GET", `/repos/${view.repo}/compare/${base}...${h}`); if (r.status === 404 || r.status === 422) return undefined; if (r.status >= 300) throw new Error(`GitHub GET compare: ${r.status}`); return (r.body?.files ?? []) as ChangedFile[]; };
     const reviewedFiles = verdict.verdict === "pass" && verdict.kind !== "completed" && verdict.reviewed ? await reviewedChange(verdict.reviewed) : undefined;
-    return judge(s, { files, generated: s.generated?.globs ?? [], verdict, ...(reviewedFiles ? { reviewedFiles } : {}) });
+    // The generated paths: the repo's setting, else discovery on the target branch (as the repair's plan reads them).
+    const generated = s.generated?.globs ?? (await discovered(o.gh, view.repo, view.base)).globs;
+    return judge(s, { files, generated, verdict, ...(reviewedFiles ? { reviewedFiles } : {}) });
   };
   return {
     /** A new pass: roles are read again. */
