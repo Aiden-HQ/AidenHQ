@@ -56,12 +56,21 @@ async function next(gh: Gh, pr: PrView, stage: Stage, steps: ActionStep[], from:
     const s = steps[i]!;
     // A workflow runs in the base repo: a fork's branch isn't there.
     if ("workflow" in s && pr.fork) { why = `\`${s.workflow}\` can't run on a fork's branch`; continue; }
-    if (!start()) return { go: "capped" };
     const at = new Date(now).toISOString();
     try {
+      let ref = "";
+      if ("workflow" in s) {
+        const p = await must(gh, "GET", `/repos/${pr.repo}/pulls/${pr.number}`);
+        ref = String(p.head?.ref ?? "");
+        // The workflow runs from the PR's branch with the repo's secrets: never one the PR itself changes (anything under
+        // .github/, its workflows and their actions), or whose change can't be read whole. Checked before the step spends a round.
+        const changed = await must(gh, "GET", `/repos/${pr.repo}/compare/${p.base?.sha}...${p.head?.sha}`);
+        const files: { filename: string; previous_filename?: string }[] = changed?.files ?? [];
+        if (files.length >= 300 || files.some((f) => f.filename.startsWith(".github/") || f.previous_filename?.startsWith(".github/"))) { why = `\`${s.workflow}\` not run: the PR changes files under .github/ (or more than GitHub lists), so its workflows aren't the repo's own yet`; continue; }
+      }
+      if (!start()) return { go: "capped" };
       if ("comment" in s) await must(gh, "POST", `/repos/${pr.repo}/issues/${pr.number}/comments`, { body: s.comment });
       else {
-        const ref = String((await must(gh, "GET", `/repos/${pr.repo}/pulls/${pr.number}`)).head?.ref ?? "");
         await must(gh, "POST", `/repos/${pr.repo}/actions/workflows/${s.workflow}/dispatches`, { ref, ...(s.inputs ? { inputs: s.inputs } : {}) });
       }
       return { go: "started", rec: { stage, head: pr.head, step: i, at, steps: JSON.stringify(steps) }, did: `${label(s)} (${stage.replace("_", " ")}) at \`${pr.head.slice(0, 12)}\`` };
@@ -103,7 +112,9 @@ export async function discovered(gh: Gh, repo: string, branch: string, now = Dat
   const k = `${repo.toLowerCase()}@${branch}`;
   const hit = cache.get(k);
   if (hit && now - hit.at < RECHECK_MS) return hit.d;
-  const tree = await must(gh, "GET", `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+  // The branch's tip by its ref (any branch name), then its tree by commit: a name never goes into the tree's path.
+  const tip = String((await must(gh, "GET", `/repos/${repo}/git/ref/heads/${branch}`)).object?.sha ?? "");
+  const tree = await must(gh, "GET", `/repos/${repo}/git/trees/${tip}?recursive=1`);
   const files = ((tree.tree ?? []) as { path: string; type: string; sha: string }[]).filter((e) => e.type === "blob" && WANTED(e.path)).slice(0, 80);
   const fp = files.map((f) => `${f.path}:${f.sha}`).join("\n");
   if (hit && hit.fp === fp) { cache.set(k, { ...hit, at: now }); return hit.d; }
