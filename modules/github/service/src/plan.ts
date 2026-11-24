@@ -114,9 +114,10 @@ export function shipRefusal(x: Ship, ref: string): Part | undefined {
  */
 function shipEffectParts(action: "approve" | "enqueue", p: Pr, s: State): Part[] {
   const part = shipEffectPart(action, p, s);
-  if (part.reject || action !== "enqueue" || p.ownHead) return [part];
-  const listed = inMaintained(p.repo, s);
-  return [T(1, listed ? "maintained-merge-foreign-head" : same(p.repo, s.productRepo) ? "product-merge-foreign-head" : "agents-org-merge-foreign-head", `${p.repo}#${p.number}: its head isn't a commit the runner pushed (the reviewer reads that exact head before the queue merges it)`), part];
+  // An enqueue is the queue's merge: it takes every merge rule's tier (a foreign head, .github/, the product's eligibility).
+  if (part.reject || action !== "enqueue") return [part];
+  const merge = mergeParts({ ...p, ship: undefined }, s);
+  return merge.some((m) => m.reject) ? merge : [part, ...merge];
 }
 function shipEffectPart(action: "approve" | "enqueue", p: Pr, s: State): Part {
   const ref = `${p.repo}#${p.number ?? "?"}`;

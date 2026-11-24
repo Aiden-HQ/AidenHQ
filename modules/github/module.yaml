@@ -300,7 +300,7 @@ services:
         # own token, which code review checks with the kernel.
         GITHUB_REVIEW_GATED: "${settings.code_review_gated}"
         # `1` while the ship module is on (compile derives it): writes for an adopted PR (a leased push, approve, enqueue, an
-        # adoption's merge) are checked against ship's GET /v1/generation at ship:8102 with this module's own token. Empty:
+        # adoption's merge) are checked against ship's GET /v1/generation at ship:8101 with this module's own token. Empty:
         # every such write is refused.
         GITHUB_SHIP: "${settings.ship_enabled}"
 # The board's Connect/Reconnect for GitHub: its sign-in token, only while this module is on.

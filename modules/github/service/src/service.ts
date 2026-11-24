@@ -93,13 +93,13 @@ export type Options = {
    */
   ship?: ShipAdoptions;
   /**
-   * The reviewer App's REST on a repo where it is installed (github_reviewer_app, github-mcp's github-app.ts over its own vault
-   * dir), and its bot login; undefined where it isn't (approvals then go as the owner, never on a PR the owner opened).
+   * The reviewer App's REST on a repo where it is installed (the owner's one GitHub App, the identity code review posts as), and
+   * its bot login; undefined where it isn't (approvals then go as the owner, never on a PR the owner opened).
    */
   reviewer?: (repo: string) => Promise<{ login: string; rest: Gh } | undefined>;
 };
 /**
- * The reviewer App (github-mcp's gitHubApp over its own vault dir, `<state>/github-reviewer-app/`) as `Options.reviewer`: its
+ * The reviewer App (github-mcp's gitHubApp over the owner's one App, `<state>/github-app/`, the identity code review posts as) as `Options.reviewer`: its
  * REST with an installation token on a repo it is installed on, and its bot login; undefined where it isn't (or isn't set up).
  */
 export function reviewerOf(app: { installation(repo: string): Promise<number | null>; token(installation: number, fresh?: boolean): Promise<string>; slug(): string | undefined }, fetchFn: typeof fetch = fetch): (repo: string) => Promise<{ login: string; rest: Gh } | undefined> {
@@ -114,7 +114,8 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
     return { login: `${slug}[bot]`, rest };
   };
 }
-/** Ship's answer for one PR (its GET /v1/generation?repo&pr): `generation` null when it isn't adopted now. */
+/** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
+ * now or is on hold (stalled, handed back, stopped or paused): nothing is written for it then. */
 export type ShipAdoptions = { generation(repo: string, number: number): Promise<{ generation: number | null; task?: string }> };
 /** Ship's adoptions read from its service with this module's own token (`url`: compiled only when the ship module is on). */
 export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typeof fetch }): ShipAdoptions {
@@ -124,8 +125,8 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
       const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number) });
       const r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/generation?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
-      const j = (await r.json()) as { generation?: unknown; task?: unknown };
-      const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 ? (j.generation as number) : null;
+      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown };
+      const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 && (j.hold === null || j.hold === undefined) ? (j.generation as number) : null;
       return { generation, ...(typeof j.task === "string" && j.task ? { task: j.task } : {}) };
     },
   };
@@ -622,6 +623,7 @@ export function createService(o: Options) {
     const moved = (sha: unknown) => ({ ok: false, text: `ship-head-moved: ${url} is at \`${String(sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not approved.` });
     const before = await api("GET", `/repos/${s.slug}/pulls/${n}`);
     if (before.head?.sha !== a.head) return moved(before.head?.sha);
+    if (before.base?.ref !== a.base) return { ok: false, text: `ship-target: ${url} now targets \`${before.base?.ref}\`, not \`${a.base}\`: not approved.` };
     const app = await o.reviewer?.(s.slug);
     const as = app ?? { login: String((await ownerLogin()) ?? ""), rest: gh };
     const dismiss = (id: unknown) => as.rest("PUT", `/repos/${s.slug}/pulls/${n}/reviews/${id}/dismissals`, { message: "Superseded: the PR has a new head.", event: "DISMISS" })
@@ -632,7 +634,8 @@ export function createService(o: Options) {
     if (after.head?.sha !== a.head) { await dismiss(r.body?.id); return moved(after.head?.sha); }
     const reviews = await api("GET", `/repos/${s.slug}/pulls/${n}/reviews?per_page=100`).catch(() => []);
     for (const x of Array.isArray(reviews) ? reviews : []) if (same(String(x.user?.login ?? ""), as.login) && x.state === "APPROVED" && x.commit_id !== a.head) await dismiss(x.id);
-    return { ok: true, text: `Approved ${url} at \`${String(a.head).slice(0, 12)}\`${app ? ` as ${app.login}` : ""}.`, objects: [`github:${s.slug.toLowerCase()}#${n}`] };
+    // No object: an approval makes nothing the fleet owns (the PR stays its author's).
+    return { ok: true, text: `Approved ${url} at \`${String(a.head).slice(0, 12)}\`${app ? ` as ${app.login}` : ""}.` };
   }
 
   /**
@@ -652,13 +655,17 @@ export function createService(o: Options) {
     };
     const settled = (pr: any) => {
       if (pr.state === "MERGED" && pr.headRefOid === a.head) return { ok: true, text: `${url} is merged at \`${String(a.head).slice(0, 12)}\`.` };
-      if (pr.isInMergeQueue && pr.mergeQueueEntry?.headCommit?.oid === a.head) return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
+      if (pr.isInMergeQueue && pr.baseRefName === a.base && pr.mergeQueueEntry?.headCommit?.oid === a.head) return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
       return undefined;
     };
     const pr = await read();
     const now = settled(pr);
     if (now) return now;
     if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
+    if (pr.baseRefName !== a.base) return { ok: false, text: `ship-target: ${url} now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
+    // Code review's gate holds a queued merge as it holds a direct one (merges.ts): only its pass (or its audited bypass) queues.
+    const review = await o.reviewGate(s.slug, n, a.head);
+    if (review && "wait" in review) return { ok: false, text: `not queued: ${review.wait}` };
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     let r: { status: number; body: any } | undefined;
     try { r = await gh("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head: a.head } }); } catch (e) { log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
@@ -805,6 +812,7 @@ export function createService(o: Options) {
     git: (dir, args) => git(dir, args),
   });
   const merges = createMerges({
+    ship: o.ship,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
     // A queue persisted before it kept the task's identifier: the record itself has it (kernel work read).
     identifierOf: async (record) => {

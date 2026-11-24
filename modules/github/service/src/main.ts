@@ -54,8 +54,9 @@ const handle = createService({
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   reviewGate,
   // The ship module's adoptions, only while it is on (compiled): absent, every write naming an adoption is refused.
-  ...(env.GITHUB_SHIP === "1" ? { ship: shipAdoptions({ url: "http://ship:8102", key: () => key }) } : {}),
-  reviewer: reviewerOf(gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "github-reviewer-app") })),
+  ...(env.GITHUB_SHIP === "1" ? { ship: shipAdoptions({ url: "http://ship:8101", key: () => key }) } : {}),
+  // The reviewer identity is the owner's one GitHub App (the one code review posts as), where it is installed.
+  reviewer: reviewerOf(gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "github-app") })),
   log,
 });
 log("starting", { connected: access.connected(), tasks: Boolean(env.TASKS_DIR), fleetOrg });

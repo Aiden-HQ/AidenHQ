@@ -211,3 +211,34 @@ test("plan: an adopted PR's merge is refused when the generation is stale or shi
   assert.deepEqual(planParts("merge", { ...st, prs: [pr({ ...ship, current: 3 })] })[0].map((p) => p.rule), ["ship-generation"]);
   assert.deepEqual(planParts("merge", { ...st, prs: [pr({ ...ship, current: undefined })] })[0].map((p) => p.rule), ["ship-generation"]);
 });
+
+test("an adoption's direct merge: no checks and none required merges at its bound target; a hand-back before the call ends it", async () => {
+  const H = "a".repeat(40);
+  const run = async (adopted) => {
+    const calls = [];
+    const gh = async (method, path) => {
+      calls.push(`${method} ${path}`);
+      if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
+        number: 7, state: calls.some((c) => c.startsWith("PUT")) ? "MERGED" : "OPEN", headRefOid: H, baseRefName: "main", isDraft: false, mergeStateStatus: "CLEAN", reviewDecision: null, isInMergeQueue: false,
+        mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] },
+      } } } } };
+      if (path.includes("/rules/branches/")) return { status: 200, body: [] };
+      if (path.endsWith("/required_status_checks")) return { status: 404, body: {} };
+      if (method === "PUT") return { status: 200, body: { sha: "c".repeat(40) } };
+      return { status: 404, body: {} };
+    };
+    const outcomes = [];
+    const { createMerges } = await import("../service/src/merges.ts");
+    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) } });
+    void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H, base: "main" }], generation: 2, attempt: 1 });
+    await m.step();
+    return { calls, outcomes };
+  };
+  const merged = await run(true);
+  assert.equal(merged.calls.filter((c) => c.startsWith("PUT")).length, 1, merged.calls.join("\n"));
+  assert.equal(merged.outcomes[0]?.ok, true);
+  const ended = await run(false);
+  assert.equal(ended.calls.filter((c) => c.startsWith("PUT")).length, 0);
+  assert.equal(ended.outcomes[0]?.ok, false);
+  assert.match(ended.outcomes[0].text, /adoption ended/);
+});
