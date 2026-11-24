@@ -51,8 +51,8 @@ agents:
       github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_product_issue_status, github_pr_threads, github_pr_thread_reply ]
       # Closing a code review finding in code review's own store (write-code skill, Checks): no GitHub write.
       code_review?: [ code_review_findings, code_review_resolve ]
-      # A ship task's generator command when discovery couldn't settle it (ship skill), when the ship module is on.
-      ship?: [ ship_config, ship_configure ]
+      # A ship task's generate command, proposed when discovery couldn't settle it (ship skill; role ship-admin), when ship is on.
+      ship?: [ ship_configure ]
       # Its own task only, never another's text: a `file` deliverable's file goes on it, task_approvals reads this task's
       # approval cards (the merge card `publish` checks before waiting), and task_finish closes it through the kernel's finish
       # gate (graded: held for the grader) once its work has landed; task_wait records what it waits on.

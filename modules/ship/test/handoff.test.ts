@@ -137,8 +137,10 @@ test("a conflict runs ship's repair job first and wakes the Engineer only for wh
   assert.equal(w.jobs().length, 1);
   assert.match(w.jobs()[0]!, /left 1 conflict\(s\)/);
   assert.doesNotMatch(w.jobs()[0]!, /src\/a\.ts/);
-  // Behind only: GitHub's update-branch, no wake.
+  // Behind only, under `rebase: conflict`: only the PR at the front of the merge order gets update-branch, and no wake.
   await round(w.deps, w.pr({ head: H2 }), { do: "repair", why: "it is behind `main`" }, { dirty: false });
+  assert.equal(w.of("update").length, 0);
+  await round(w.deps, w.pr({ head: H2 }), { do: "repair", why: "it is behind `main`" }, { dirty: false, front: true });
   assert.deepEqual(w.of("update").map((c) => c.head), [H2]);
   assert.equal(w.jobs().length, 1);
 

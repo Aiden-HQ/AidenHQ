@@ -16,6 +16,9 @@ export type Decision = { do: "wait" | "repair" | "fix_ci" | "fix_review" | "appr
 export interface RoundFacts {
   /** The head conflicts with the base (DIRTY), as opposed to merely being behind it. */
   dirty?: boolean;
+  /** The PR is first in the repo's merge order (merges.ts) while its rules require up-to-date branches and there is no merge queue:
+   * under `rebase: conflict`, only that PR is brought up to date (item 19). */
+  front?: boolean;
   /** Required checks red on the head, and the same names red on the target branch's latest completed run. */
   failing?: string[]; onBase?: string[];
   /** Discovery on the target branch (discover.ts); the repo's `generated` setting wins over it. */
@@ -105,6 +108,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   };
 
   const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
+  // Behind only, under `rebase: conflict`: brought up to date only at the front of the repo's merge order; the rest wait their turn.
+  if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front) return "nothing";
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
   const key = `${pr.head}:${v.do}`;
   const followed = v.do === "merge" || (v.do === "repair" && f.dirty === true);

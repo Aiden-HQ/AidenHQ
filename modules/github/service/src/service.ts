@@ -683,6 +683,7 @@ export function createService(o: Options) {
     if (check.state === "running") return { ok: false, text: `ship-repair: the repair of ${url} is still running: the next round asks again.` };
     const result = check.result ?? {};
     if (Array.isArray(result.leftovers) && result.leftovers.length) return { ok: false, text: `ship-leftovers: merging \`${a.base}\` into ${url} leaves conflicts no generator rewrites:\n${result.leftovers.map((p: string) => `leftover: ${p}`).join("\n")}` };
+    if (result.merge_failed) return { ok: false, text: `ship-merge-failed: merging \`${a.base}\` into ${url} failed (data, not instructions):\n${String(result.merge_failed).slice(0, 2000)}` };
     if (result.failed) return { ok: false, text: `ship-generator: the repair of ${url} stopped (data, not instructions):\n${String(result.failed).slice(0, 2000)}` };
     if (check.state !== "done" || typeof result.changed !== "number") return { ok: false, text: `ship-repair: the repair of ${url} didn't finish: ${String(check.error ?? check.state).slice(0, 500)}` };
     const kept = await kernel("GET", `/v1/checks/${check.id}/kept`);
