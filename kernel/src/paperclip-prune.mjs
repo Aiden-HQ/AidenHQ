@@ -92,10 +92,19 @@ while (!out()) {
 // Run logs no run names any more (a crash between a commit and its unlinks), a day old at least.
 if (!out()) {
   const named = new Set((await c.query("SELECT log_ref FROM heartbeat_runs WHERE log_ref IS NOT NULL")).rows.map((r) => r.log_ref));
-  const walk = (dir, rel = "") => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name), join(rel, e.name)) : [join(rel, e.name)]));
-  let files = [];
-  try { files = walk(LOGS); } catch (e) { if (e.code !== "ENOENT") throw e; }
-  for (const f of files) if (!named.has(f) && Date.now() - statSync(join(LOGS, f)).mtimeMs > 864e5) { try { unlinkSync(join(LOGS, f)); stats.logs++; } catch (e) { console.error(`log ${f}: ${e.message}`); } }
+  // One folder at a time, the deadline checked between files; a file that vanished or can't be read is skipped.
+  const dirs = [""];
+  while (dirs.length && !out()) {
+    const rel = dirs.pop();
+    let entries = [];
+    try { entries = readdirSync(join(LOGS, rel), { withFileTypes: true }); } catch (e) { if (e.code === "ENOENT") continue; throw e; }
+    for (const e of entries) {
+      const f = join(rel, e.name);
+      if (e.isDirectory()) { dirs.push(f); continue; }
+      if (out()) break;
+      try { if (!named.has(f) && Date.now() - statSync(join(LOGS, f)).mtimeMs > 864e5) { unlinkSync(join(LOGS, f)); stats.logs++; } } catch (err) { if (err.code !== "ENOENT") console.error(`log ${f}: ${err.message}`); }
+    }
+  }
 }
 
 // 2. Execution workspaces nothing references: any foreign key into one counts (an issue, a lease, a derived workspace...). Only

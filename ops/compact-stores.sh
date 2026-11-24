@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # One-time compaction by hand, AFTER retention's first runs have freed space (kernel/src/retention.ts): clearing rows and pruning
 # Paperclip makes pages reusable but never shrinks the files. Nothing here runs from apply or a timer.
-#   flock data/apply.lock ops/compact-stores.sh kernel      stop the kernel, VACUUM INTO a compact copy, verify it, swap it in, start the kernel
-#   flock data/apply.lock ops/compact-stores.sh paperclip   VACUUM FULL the pruned Paperclip tables, one at a time, with Paperclip running
+#   ops/compact-stores.sh kernel      stop the kernel, VACUUM INTO a compact copy, verify it, swap it in, start the kernel
+#   ops/compact-stores.sh paperclip   VACUUM FULL the pruned Paperclip tables, one at a time, with Paperclip running
 # The kernel takes a short outage (its model gateway and tool proxy are down while it is stopped: agents' calls fail and retry;
 # running jobs run on and the next kernel adopts them). Do it when the fleet shows no important jobs (aidenhq MCP `fleet`).
 # The old kernel.db is kept as kernel.db.precompact until you delete it.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 what="${1:-}"
-# Under the apply lock (docs/operations.md "Host one-offs"), so an apply that starts meanwhile waits and none restarts the kernel
-# between the stop and the swap:   flock data/apply.lock ops/compact-stores.sh kernel
-# A free lock means this was not run that way.
-if ( exec 8>>data/apply.lock; flock -n 8 ); then echo "compact-stores: run it under the apply lock: flock data/apply.lock ops/compact-stores.sh $*" >&2; exit 1; fi
+# Under the apply lock (ops/lib/apply-lock.sh), held for the whole run, so an apply that starts meanwhile waits and none restarts
+# the kernel between the stop and the swap. This takes it itself (waiting for a running apply), on the lock's fixed descriptor.
+# shellcheck source=ops/lib/apply-lock.sh
+. ops/lib/apply-lock.sh
+exec 9>>"$APPLY_LOCK"
+flock 9
 # The data dir as the kernel resolves it (kernel/src/env.ts: the process env over the checkout's .env).
 data="$(node --disable-warning=ExperimentalWarning --input-type=module -e 'import("./kernel/src/env.ts").then((m) => console.log(m.dataDir))')"
 die() { echo "compact-stores: $*" >&2; exit 1; }
