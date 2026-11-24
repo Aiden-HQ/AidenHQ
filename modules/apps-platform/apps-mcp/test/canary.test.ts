@@ -118,6 +118,9 @@ describe("app_page_canary", () => {
     expect(script).toContain('new URL(n.url).pathname === "/.aidenhq/notify"');
     expect(script).toContain("document.body.innerText");
     // The feedback form is chosen by its own wording, never "the first textbox and the first button".
+    // Only a reference from the intake POST's own answer counts for ok; one printed by the page is reported, not proven.
+    expect(script).toContain("const proven = Boolean(intakeAnswer);");
+    expect(script).toContain("intake: proven");
     expect(script).toContain("const FEEDBACK =");
     // "message" and bare "comment" are not feedback wording: a chat composer must never be taken for the intake.
     expect(script).not.toMatch(/const FEEDBACK = \/[^/]*message/);

@@ -13,6 +13,7 @@
 // The cookie is checked with the kernel's session check through the sign-in listener's gate secret (no new shared secret), and
 // the handoff code is redeemed there once. Nothing here is trusted from the browser but the cookie it was given.
 import { createServer, request as httpRequest, type IncomingMessage, type OutgoingHttpHeaders, type Server, type ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import { readFileSync } from "node:fs";
 import { IDENTITY_HEADER, hostOf, mint, sameOrigin, signerFor, subOf, upstreamHeaders, type GateConfig, type IdentityClaims, type IdentityToken, type VerifiedEmail } from "./gate.ts";
 
@@ -92,19 +93,26 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
   const entryOf = (c: GateConfig, app: string) =>
     Object.entries(c.hosts ?? {}).find(([h, x]) => x.app === app && !x.door && h !== `${app}.${CANARY_BASE}`);
 
+  /** The app this request names, its one compiled entry and the listener's origin for it; undefined refuses with 404. */
+  function target(c: GateConfig, host: string | undefined) {
+    const m = APP.exec(String(host ?? ""));
+    if (!m) return undefined;
+    const app = m[1]!;
+    if (!c.test_user?.apps.includes(app)) return undefined;
+    const entry = entryOf(c, app);
+    const site = entry?.[1];
+    const publicHost = entry?.[0];
+    if (!site || !publicHost) return undefined;
+    return { app, site, publicHost, origin: originOf(c, app) };
+  }
+
   async function serve(req: IncomingMessage, res: ServerResponse) {
     const c = cfg();
     // Fail closed: with no test user there is nothing this listener may serve, whatever it was asked.
     if (!c.test_user || !c.test_listener) return plain(res, 404, "not found");
-    const m = APP.exec(hostOf(req));
-    if (!m) return plain(res, 404, "not found");
-    const app = m[1]!;
-    if (!c.test_user.apps.includes(app)) return plain(res, 404, "not found");
-    const entry = entryOf(c, app);
-    const site = entry?.[1];
-    const publicHost = entry?.[0];
-    if (!site || !publicHost) return plain(res, 404, "not found");
-    const origin = originOf(c, app);
+    const t = target(c, hostOf(req));
+    if (!t) return plain(res, 404, "not found");
+    const { app, site, publicHost, origin } = t;
     const url = new URL(String(req.url ?? "/"), "http://x");
     const path = url.pathname;
 
@@ -189,6 +197,60 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
       log({ msg: "test listener request failed", err: String((e as Error).message).slice(0, 300) });
       if (res.headersSent) res.destroy();
       else plain(res, 503, "unavailable");
+    });
+  });
+
+  // A page's own WebSocket (a live feedback box, say) upgrades the connection, which `createServer`'s request handler never
+  // sees. The gate proxies one through the same checks; so does this listener, with the same session and the same per-request
+  // identity, so a canary page behaves as it does for a signed-in person and never gets a raw socket without a session.
+  const refuse = (socket: Duplex, status: number, msg: string) =>
+    void socket.end(`HTTP/1.1 ${status} ${{ 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 503: "Service Unavailable" }[status] ?? "Error"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${msg.length + 1}\r\n\r\n${msg}\n`);
+  const upgrade = async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    socket.on("error", () => socket.destroy());
+    const c = cfg();
+    if (!c.test_user || !c.test_listener) return refuse(socket, 404, "not found");
+    const t = target(c, hostOf(req));
+    if (!t) return refuse(socket, 404, "not found");
+    // Same checks as a write: the exact origin, never a cross-site socket, and the listener's own live session.
+    if (!sameOrigin(req, t.origin)) return refuse(socket, 403, "forbidden: cross-origin");
+    const who = await session(req, c, t.app, t.publicHost);
+    if (who === "other-app") return refuse(socket, 404, "not found");
+    if (who === "down") return refuse(socket, 503, "unavailable: the session may still be valid; try again");
+    if (!who) return refuse(socket, 401, "sign in first");
+    let token: IdentityToken;
+    try {
+      const iat = Math.floor(Date.now() / 1000);
+      const claims: IdentityClaims = { iss: "aidenhq-gate", aud: t.app, sub: subOf(who.email), kind: "person", email: who.email, name: "AidenHQ test user", role: "member", idp: "test", iat, exp: iat + IDENTITY_TTL_S };
+      token = mint(signerFor(c.identity_key_file)(), claims);
+    } catch (e) {
+      log({ msg: "can't sign a test identity", app: t.app, err: String((e as Error).message) });
+      return refuse(socket, 503, "unavailable");
+    }
+    const headers = upstreamHeaders(req, token, { upgrade: true, proto: "http" });
+    for (const k of Object.keys(headers)) if (STRIP.test(k) && k.toLowerCase() !== IDENTITY_HEADER) delete headers[k];
+    const up = httpRequest({ host: "127.0.0.1", port: t.site.port, method: req.method, path: req.url, headers });
+    up.on("upgrade", (r, usock, uhead) => {
+      usock.on("error", () => socket.destroy());
+      usock.on("close", () => socket.destroy());
+      socket.on("close", () => usock.destroy());
+      let s2 = `HTTP/1.1 ${r.statusCode} ${r.statusMessage}\r\n`;
+      for (let i = 0; i < r.rawHeaders.length; i += 2) if (r.rawHeaders[i]!.toLowerCase() !== "set-auth-token") s2 += `${r.rawHeaders[i]}: ${r.rawHeaders[i + 1]}\r\n`;
+      socket.write(`${s2}\r\n`);
+      if (uhead.length) socket.write(uhead);
+      if (head.length) usock.write(head);
+      usock.pipe(socket).pipe(usock);
+    });
+    up.on("response", (r) => { // the app declined the upgrade: pass its status on, nothing more
+      r.resume();
+      socket.end(`HTTP/1.1 ${r.statusCode} ${r.statusMessage}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    });
+    up.on("error", () => socket.destroy());
+    up.end();
+  };
+  server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    upgrade(req, socket, head).catch((e) => {
+      log({ msg: "test listener upgrade failed", err: String((e as Error).message).slice(0, 300) });
+      socket.destroy();
     });
   });
   return server;

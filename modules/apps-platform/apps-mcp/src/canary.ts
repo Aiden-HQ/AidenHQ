@@ -203,9 +203,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // own answer is the first hop when it redirected, never the redirect target's 200; a request that never answered is none.
     const last = intakeAnswer ?? (intake.length === 1 ? intake[0] : null);
     const intakeStatus = last ? (last.hop ?? last.status) : null;
-    // A reference read off the page only counts when the page did not already show it before the click: an earlier
-    // submission's "Reference ABC-123" would otherwise make a broken save look successful. A response body's reference (above)
-    // is already tied to this submission's own POST.
+    // The reference belongs to the intake only when it came from that POST's own answer: an id the page renders itself is no
+    // evidence of a save (a broken handler can print a new one while its analytics call answers 200 and notify still fires).
+    // So a reference picked out of the page's text is reported, never counted for ok; only intakeAnswer sets proven.
+    const proven = Boolean(intakeAnswer);
     const before = String(beforeText);
     if (!reference) {
       const fromPage = (shown.match(/(?:reference|ref(?:erence)?\s*(?:id|no\.?)?)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9_.:-]{2,80})/i) || [])[1] || null;
@@ -218,7 +219,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const notifyStatus = notify && !notify.synthetic ? (notify.hop ?? notify.status) : null;
     const notifyState = notifyStatus === 204 ? "fired" : notifyStatus ? "not-fired" : notify ? "unknown" : "not-fired";
     out({
-      status: intakeStatus ?? 0, intake: Boolean(last), finalUrl: scrub(finalUrl), pageTitle, notify: notifyState,
+      status: intakeStatus ?? 0, intake: proven, finalUrl: scrub(finalUrl), pageTitle, notify: notifyState,
       notifyStatus, reference, submittedAt: new Date(submittedAt).toISOString(), png,
     });
   } catch (e) {

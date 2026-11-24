@@ -278,3 +278,22 @@ test("a revoked or expired session is 401 and no page; the app's own cookie is n
     plant.close(); plant.closeAllConnections?.();
   }
 });
+
+test("a WebSocket upgrade needs the listener's own origin and a live session, and is never forwarded otherwise", async () => {
+  const ask = (origin: string | undefined, cookie?: string) => new Promise<string>((ok) => {
+    const headers: Record<string, string> = { host: `roadmap.${CANARY_BASE}`, connection: "Upgrade", upgrade: "websocket" };
+    if (origin) headers.origin = origin;
+    if (cookie) headers.cookie = cookie;
+    const q = request({ host: "127.0.0.1", port: lPort, path: "/ws", headers });
+    q.on("upgrade", (r) => ok(`upgraded ${r.statusCode}`));
+    q.on("response", (r) => ok(String(r.statusCode)));
+    q.on("error", (e) => ok(`error ${(e as Error).message}`));
+    q.end();
+  });
+  const before = appSeen.length;
+  // Another site's socket is refused before the session is even read.
+  assert.equal(await ask("http://evil.example"), "403");
+  // The right origin but no session: 401, and nothing reaches the app.
+  assert.equal(await ask(`http://roadmap.${CANARY_BASE}:${lPort}`), "401");
+  assert.equal(appSeen.length, before, "no upgrade reaches the app without a live session");
+});
