@@ -11,6 +11,8 @@ export type Mode = "one_off" | "continuous";
 export type SkillRef = { skill: string; args: string; also?: string[]; uncommitted?: boolean; tree?: string | false };
 export type Option = {
   id: string; name: string; description: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: "tool" | "skill" | "engine";
+  /** A model option's default model (an OpenRouter id) and effort in a repo review; unset: the repo-review default (DEFAULT_MODEL, medium). */
+  model?: string; effort?: string;
   source: { repo: string; version: string; licence: string };
   run: { cmd?: string; harness?: string; skills?: SkillRef[]; tools?: string[]; engine?: string; /** exit codes a tool may end with and still have run (default [0]) */ exits?: number[]; /** an engine's own spend cap (deepsec) */ max_cost_usd?: number };
   when: string[]; output: "sarif" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; unavailable?: string; needs?: string; severity?: "nit";

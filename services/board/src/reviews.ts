@@ -124,6 +124,9 @@ export interface CatalogOption {
   /** The words the form shows: a proper name, and what it finds. */
   name: string;
   description: string;
+  /** The model and effort a repo review runs this option on unless the owner overrides them, as the service resolves them (a model option; absent for a tool). */
+  model?: string;
+  effort?: string;
   /** What past repo reviews of this option cost, by model and effort: the average of `n` finished runs (absent: none yet). */
   past?: { model: string; effort: string; n: number; usd: number }[];
   /** Why it can't run on this repo (listed last, greyed); absent: it can. */
@@ -166,7 +169,8 @@ export const TreeRequestSchema = z
   .object({
     target: z.object({ tree: z.literal(true), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repo is owner/name"), commit: z.string().regex(/^[0-9a-f]{40}$/i, "a commit is a full 40-character SHA").optional() }).strict(),
     options: z.array(z.string().regex(/^[\w.-]{1,64}$/)).min(1, "tick at least one option").max(60),
-    combo: z.object({ model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id"), effort: z.string().regex(/^[a-z]{3,8}$/) }).strict(),
+    /** Absent: each option runs its own default model and effort. */
+    combo: z.object({ model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id"), effort: z.string().regex(/^[a-z]{3,8}$/) }).strict().optional(),
   })
   .strict();
 export type TreeRequest = z.infer<typeof TreeRequestSchema>;

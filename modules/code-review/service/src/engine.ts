@@ -1939,17 +1939,19 @@ export function createEngine(d: EngineDeps) {
         past.set(r.option, [...(past.get(r.option) ?? []), { model: r.model, effort: r.effort, n: r.n, usd: r.usd }]);
       }
       // Every option, the ones that can't run here with why (the board lists them last, greyed).
-      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(past.has(o.id) ? { past: past.get(o.id) } : {}), ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
+      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(o.kind !== "tool" ? optionCombo(o) : {}), ...(past.has(o.id) ? { past: past.get(o.id) } : {}), ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
     },
     /**
      * A repo review: `target` { repo, commit? } (no commit: the default branch's head, resolved once now and kept), its options
-     * (default: the recommended ones the tree fits), and the combo for the model options.
+     * (default: the recommended ones the tree fits), and an optional combo that overrides every model option's own default (model, effort).
      */
     async repoReview(b: { target?: unknown; options?: unknown; combo?: unknown; author?: unknown }) {
       const t = (b.target ?? {}) as { repo?: unknown; commit?: unknown };
       const c = (b.combo ?? {}) as { model?: unknown; effort?: unknown };
-      const combo = { model: c.model ?? DEFAULT_MODEL, effort: c.effort ?? "medium" };
-      if (typeof combo.model !== "string" || !/^~?[\w.-]+\/[\w.:~-]+$/.test(combo.model) || !EFFORTS.includes(combo.effort as string)) throw new RequestError(`combo is { model: an OpenRouter id, effort: ${EFFORTS.join("|")} }`);
+      // An explicit combo overrides every model option; without one each option runs its own catalog default.
+      const asked = { ...(c.model !== undefined ? { model: c.model } : {}), ...(c.effort !== undefined ? { effort: c.effort } : {}) };
+      const comboFor = (o: Option) => ({ ...optionCombo(o), ...asked });
+      if ((asked.model !== undefined && (typeof asked.model !== "string" || !/^~?[\w.-]+\/[\w.:~-]+$/.test(asked.model))) || (asked.effort !== undefined && !EFFORTS.includes(asked.effort as string))) throw new RequestError(`combo is { model: an OpenRouter id, effort: ${EFFORTS.join("|")} }`);
       if (b.options !== undefined && !(Array.isArray(b.options) && b.options.length <= 50 && b.options.every((o) => typeof o === "string"))) throw new RequestError("options lists catalog option ids");
       const { repo, tree } = await readTree(t.repo, t.commit);
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
@@ -1963,8 +1965,11 @@ export function createEngine(d: EngineDeps) {
       for (const o of picked.filter((o) => o.kind !== "tool")) {
         const key = o.kind === "engine" ? o.run.engine : o.run.harness;
         const efforts: readonly string[] = key === "deepsec" ? DEEPSEC_EFFORTS : (ENGINES[key as keyof typeof ENGINES]?.efforts ?? []);
-        if (!efforts.includes(combo.effort as string)) throw new RequestError(`${o.id} takes an effort of ${efforts.join(", ")}, not ${String(combo.effort)}`);
+        const effort = comboFor(o).effort as string;
+        if (!efforts.includes(effort)) throw new RequestError(`${o.id} takes an effort of ${efforts.join(", ")}, not ${effort}`);
       }
+      // What the batch runs, per model option: what a duplicate ask is looked up by, whether the combo was given or defaulted.
+      const resolved = Object.fromEntries(picked.filter((o) => o.kind !== "tool").map((o) => [o.id, comboFor(o)]));
       const asBatch = (batch: string) => ({ batch, repo, sha: tree.sha, options: ids, runs: all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", batch).map((r) => view(r)) });
       const id = `b-${randomBytes(6).toString("hex")}`;
       const author = String(b.author ?? "").toLowerCase().slice(0, 100);
@@ -1974,15 +1979,15 @@ export function createEngine(d: EngineDeps) {
       const made = tx(() => {
         // The same review asked again while it runs (a request the board gave up on, asked once more) is that review, never a second
         // one: looked for in the same step as the insert, after every await above.
-        const same = one<{ id: string }>("SELECT id FROM batches WHERE repo = ? AND sha = ? AND options = ? AND combo = ? AND status = 'running'", repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo));
+        const same = one<{ id: string }>("SELECT id FROM batches WHERE repo = ? AND sha = ? AND options = ? AND combo = ? AND status = 'running'", repo, tree.sha, JSON.stringify(ids), JSON.stringify(resolved));
         if (same) return same.id;
-        run("INSERT INTO batches (id, repo, sha, options, combo, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo), now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
+        run("INSERT INTO batches (id, repo, sha, options, combo, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(resolved), now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
         const add = (engine: string, model: string, effort: string, option: string, profile: string) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, full, due, created, author, batch, target, option, profile)
           VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'oneoff', 'queued', 1, ?, ?, ?, ?, 'tree', ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, repo, tree.sha, tree.sha, engine, model, effort, now(), now(), author, id, option, profile);
         // The tools first (free), then each model option in the catalog's order.
         const tools = picked.filter((o) => o.kind === "tool").map((o) => o.id);
         if (tools.length) add("tools", "", "", tools.join(","), "code-review-tools");
-        for (const o of picked.filter((o) => o.kind !== "tool")) add(o.kind === "engine" ? String(o.run.engine ?? o.id) : `skill:${o.id}`, combo.model as string, combo.effort as string, o.id, "code-review");
+        for (const o of picked.filter((o) => o.kind !== "tool")) { const c = comboFor(o); add(o.kind === "engine" ? String(o.run.engine ?? o.id) : `skill:${o.id}`, c.model as string, c.effort as string, o.id, "code-review"); };
         return id;
       });
       return asBatch(made);
@@ -2008,6 +2013,8 @@ export function createEngine(d: EngineDeps) {
 }
 export type Engine = ReturnType<typeof createEngine>;
 
+/** The model and effort a repo review runs a model option on unless the request names its own: the one resolver for the run and the catalog. */
+const optionCombo = (o: Option) => ({ model: o.model ?? DEFAULT_MODEL, effort: o.effort ?? "medium" });
 const round = (n: number) => Math.round(n * 10_000) / 10_000;
 /** A run as the API shows it: the contract's fields (its engine, model and effort, billed cost, tokens, duration), the PR's title (a stranger's words:
  * plain text only) and, once posted, the review's link and the threads it resolved. */
