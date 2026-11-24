@@ -204,6 +204,9 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if ((y.generated?.globs ?? []).some((g) => !(x.generated?.globs ?? []).includes(g))) add("generated.globs");
     // Back from an explicit list to discovery: the discovered paths may reach past the list, so that is a loosening too.
     if (x.generated && !y.generated) add("generated");
+    // A new step of the repo's own (a workflow it dispatches with the owner's credentials, a command it posts) is the owner's.
+    const count = (l: ActionStep[] | undefined, v: string) => (l ?? []).filter((u) => JSON.stringify(u) === v).length;
+    for (const st of STAGES) if ((y.actions[st] ?? []).some((v) => count(y.actions[st], JSON.stringify(v)) > count(x.actions[st], JSON.stringify(v)))) add(`actions.${st}`);
   };
   const dx = resolve(defaultsOf(b).preset, defaultsOf(b).over), dy = resolve(defaultsOf(a).preset, defaultsOf(a).over);
   diff("defaults", dx, dy);

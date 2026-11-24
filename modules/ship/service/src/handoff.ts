@@ -192,7 +192,7 @@ async function ask(d: HandoffDeps, pr: PrView, a: Kept): Promise<Kept> {
 }
 
 /** The adoption's tasks ship filed (never the task a task-owned PR belongs to). */
-export const tasksOf = (a: Kept) => (a.owner?.kind === "task" ? [] : [a.task, a.holder].filter((t): t is string => Boolean(t)));
+export const tasksOf = (a: Kept) => (a.owner?.kind === "task" || (!a.owner && a.trigger.kind === "fleet") ? [] : [a.task, a.holder].filter((t): t is string => Boolean(t)));
 
 /**
  * The task the adoption's records go on: its Engineer task when it has one, else its quiet records task (source

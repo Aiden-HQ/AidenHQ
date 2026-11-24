@@ -178,12 +178,18 @@ export function adoptedPass(o: AdoptedOptions) {
       // The task as the kernel keeps it, read once a pass: its id names the adoption's task, its state the PR's lifecycle.
       const work = ctx.opener ? await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(ctx.opener)}`).catch((e: Error) => (o.log("task read failed", { pr: view.url, err: String(e.message).slice(0, 200) }), undefined)) : undefined;
       const taskId = ctx.opener && work ? String(work.jobs?.find((j: Json) => typeof j.task === "string" && j.task)?.task ?? ctx.opener) : undefined;
+      // A task's PR whose task couldn't be read waits a pass: never taken in as a member's meanwhile.
+      if (ctx.opener && !work) return;
       let a = await intake(handoff, view, taskId) as Kept | undefined;
       if (!a) { await ctx.recover?.(); return; }
       if (a.owner?.kind === "task") {
         // Closed by ship (a stop): nothing more until a successor publishes to it.
         if (a.hold?.kind === "stopped") return;
         if (work && await lifecycle(a, view, pr, work, ctx.opener!, ctx.newer)) return;
+        // A done task starts nothing new (its leftover PR waits for its close); a merge of it its task filed itself is left to run.
+        if (work?.status === "done") return;
+        const own = new Set([a.merge?.record, (a as Kept & { queue?: { record: string } }).queue?.record].filter(Boolean).map(String));
+        if ((work?.records ?? []).some((r: Json) => !own.has(String(r.id)) && ["github.merge", "github.enqueue"].includes(r.kind) && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? [r.args ?? {}]).some((p: Json) => String(p.repo).toLowerCase() === repo.toLowerCase() && p.number === view.number))) return;
       } else if (a.task && !a.hold) {
         // A ship task cancelled outside a wake ends the adoption (a hold): never a close of the PR or a touch of its ref.
         const w = await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(a.task)}`).catch(() => undefined);
