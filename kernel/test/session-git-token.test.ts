@@ -17,7 +17,7 @@ const setup = () => {
   const ins = db.prepare("INSERT INTO jobs VALUES (?, 'ag1', ?, 'running', ?)");
   ins.run("j-session", "t1", JSON.stringify({ profile: "session", roles: ["session"] }));
   ins.run("j-crew", "t2", JSON.stringify({ profile: "crew", roles: ["session"] }));
-  const tools = createJobTools({ db, secret: () => "s", engines: () => [], reach: (r) => covers(r, ["@agents/*", "@product", "@instance", "@maintained"], repos) });
+  const tools = createJobTools({ db, secret: () => "s", engines: () => [], reach: (r) => covers(r, ["@agents/*", "@product", "@maintained"], repos) });
   const tok = (job: string, task: string) => mintToken("s", { kind: "job", job, agentId: "ag1", issueId: task });
   return { tools, session: tok("j-session", "t1"), crew: tok("j-crew", "t2") };
 };

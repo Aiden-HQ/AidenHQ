@@ -33,7 +33,7 @@ export function createJobTools({ db, secret, engines, orgs = () => [], reach = (
   engines: () => string[];
   /** The agents orgs (one per enabled code host): the only orgs a job's `repo-checkout` may name. */
   orgs?: () => string[];
-  /** Whether the code host's merge rules reach this repo (the agents orgs, the product, the instance, `maintainer_repos`): the repos a session may push. */
+  /** Whether the code host's merge rules reach this repo (the agents orgs, the product, `maintainer_repos`; never the instance repo, which only Apply writes): the repos a session may push. */
   reach?: (repo: string) => boolean;
   now?: () => number;
 }) {

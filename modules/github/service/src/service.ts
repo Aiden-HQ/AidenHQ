@@ -1629,7 +1629,7 @@ export function createService(o: Options) {
         const b = await body(req, ap[1] === "write" ? 1_000_000 : 100_000);
         return send(res, 200, ap[1] === "read" ? await applyRead(b) : ap[1] === "land" ? await applyLand(b) : await applyWrite(b));
       }
-      const m = /^\/ops\/(snapshot|bundle|fetch|head|read|comment|commit|setup|runner_token)$/.exec(String(req.url ?? ""));
+      const m = /^\/ops\/(snapshot|bundle|fetch|head|read|comment|commit|setup|runner_token|app_token)$/.exec(String(req.url ?? ""));
       if (m?.[1] === "setup" && req.method === "POST") {
         if (!keyed(req)) throw fail(401, "the kernel only");
         // The kernel's own cap on an op's body (backplane.ts json: 1 MB), so whatever the kernel forwards fits.

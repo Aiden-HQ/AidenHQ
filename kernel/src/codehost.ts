@@ -271,6 +271,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
   }
   /** The GitHub code host's call: the kernel's executor key, the op's validated body, the answer as it came. */
   async function forward(k2: Kind, module: string, op: string, out: Record<string, unknown>): Promise<Answer> {
+    // app_token is the App's, not the owner's sign-in: its success proves nothing about the owner's need, so it never clears one.
     const key = secret(k2.executor!.auth_secret);
     if (!key) throw fail(503, `${CODEHOST}'s key is missing`);
     const url = new URL(`/ops/${op}`, k2.executor!.url).toString();
@@ -280,7 +281,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10 * 60_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } },
       // The code host answers as the owner: a 2xx proves the sign-in worked, so a full need an earlier refusal recorded clears
       // (a scope need is partial and stays until the owner grants it). The answer itself is untouched.
-      (r) => { if ((r.statusCode ?? 500) < 300) clearNeed(module); ok(r); });
+      (r) => { if ((r.statusCode ?? 500) < 300 && op !== "app_token") clearNeed(module); ok(r); });
       req.on("timeout", () => req.destroy(fail(504, `${CODEHOST} didn't answer`)));
       req.on("error", (e) => { resolver.forget(url); reject((e as { status?: number }).status ? e : fail(502, `${CODEHOST} is unreachable (${e.message})`)); });
       req.end(data);

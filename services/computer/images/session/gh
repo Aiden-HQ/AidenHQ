@@ -7,9 +7,10 @@ repo="${GH_REPO:-}"
 prev=
 for a in "$@"; do
   case "$prev" in -R|--repo) repo="$a";; esac
-  case "$a" in --repo=*) repo="${a#--repo=}";; -R?*) repo="${a#-R}";; esac
+  case "$a" in --repo=*) repo="${a#--repo=}";; -R?*) repo="${a#-R}";; https://github.com/*/*/*) [ -n "$repo" ] || repo=$(printf '%s' "$a" | sed -n 's#^https://github.com/\([^/]*/[^/]*\)/.*#\1#p');; esac
   prev="$a"
 done
+repo="${repo#github.com/}"
 if [ -z "$repo" ]; then
   url=$(git remote get-url origin 2>/dev/null || true)
   repo=$(printf '%s' "$url" | sed -n 's#^https://github.com/\([^/]*/[^/]*\)$#\1#p; s#^git@github.com:\(.*\)$#\1#p' | sed 's#\.git$##')

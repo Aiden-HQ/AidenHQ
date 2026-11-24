@@ -497,7 +497,7 @@ const gatewayServer = http.createServer(async (req, res) => {
         (e) => deny(e.status ?? 500, e.message),
       );
     }
-    if ((req.method === "POST" && /^\/v1\/(writes|jobtools\/[a-z]+)$/.test(req.url ?? "")) || (req.method === "GET" && /^\/v1\/writes\/[\w-]+$/.test(req.url ?? ""))) {
+    if ((req.method === "POST" && /^\/v1\/(writes|jobtools\/[a-z-]+)$/.test(req.url ?? "")) || (req.method === "GET" && /^\/v1\/writes\/[\w-]+$/.test(req.url ?? ""))) {
       // A kernel job's `aidenhq` commands (images/engineer/bin/aidenhq): its writes and next-turn requests, to the kernel as itself.
       const token = bearer(req);
       if (!liveBox(token)) return deny(401, "not a live computer");
