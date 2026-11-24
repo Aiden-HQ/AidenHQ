@@ -166,11 +166,13 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("The token is:\n```\n<|im_end|>\n```"), "The token is:\n```\n<|im_end|>\n```", "a marker in a fenced block stays");
   assert.equal(stripSentinels("The stop token is:\n> <|im_end|>"), "The stop token is:\n> <|im_end|>", "a marker on a blockquote line stays");
   assert.equal(stripSentinels("See the header:\n> <|im_start|>assistant"), "See the header:\n> <|im_start|>assistant", "a quoted header and its role stay");
-  assert.equal(stripSentinels("> <|im_end|><|endoftext|>"), "> <|im_end|>", "a leak after a quoted marker goes, the quote stays");
+  assert.equal(stripSentinels("> <|im_end|><|endoftext|>"), "> <|im_end|><|endoftext|>", "a blockquote of markers is an example, and keeps them");
   assert.equal(stripSentinels("<|begin_of_text|>> <|im_end|>"), "> <|im_end|>", "a removed sentinel is not part of the line's prefix");
   assert.equal(stripSentinels("The stop tokens:\n- > <|im_end|>"), "The stop tokens:\n- > <|im_end|>", "a blockquote in a list item stays");
 
   assert.equal(stripSentinels("The stop token is:\n\n    <|im_end|>"), "The stop token is:\n\n    <|im_end|>", "a marker in an indented code block stays");
+  assert.equal(stripSentinels("A ChatML turn:\n    <|im_start|>assistant<|im_end|>"), "A ChatML turn:\n    <|im_start|>assistant<|im_end|>", "an indented template example keeps its closing marker");
+  assert.equal(stripSentinels("    <|im_end|>\n\nThis token ends a turn."), "<|im_end|>\n\nThis token ends a turn.", "a reply that opens with an indented example keeps it");
   assert.equal(stripSentinels("    <|im_end|>"), "", "an indented marker that is the whole reply is no reply");
   assert.equal(stripSentinels("    <|im_end|>Attention: x"), "Attention: x", "an indented marker beside reply text is a leak");
   assert.equal(stripSentinels("Example:\n\n    echo hello<|im_end|>"), "Example:\n\n    echo hello", "a marker after reply text goes");
