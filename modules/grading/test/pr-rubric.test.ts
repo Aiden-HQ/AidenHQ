@@ -3,13 +3,11 @@
 // is sent back for evidence no agent could have put in its body.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gradePrompt, template } from "../service/src/grader/grade.ts";
 import { parseRubric } from "../service/src/grades.ts";
 
-const RUBRICS = fileURLToPath(new URL("../rubrics", import.meta.url));
-const SERVICE_RUBRICS = fileURLToPath(new URL("../service/rubrics", import.meta.url));
+const RUBRICS = fileURLToPath(new URL("../service/rubrics", import.meta.url));
 
 // A product PR merges on its approved card, so its merge is the deliverable: the standard template must never be read as
 // asking for an open PR there, or a merged PR fails its only unmet criterion and the task cannot close.
@@ -38,10 +36,6 @@ test("the pr template's Evidence criterion accepts proof in the task's completio
   assert.match(evidence, /before\/after screenshots/);
   assert.match(evidence, /before\/after numbers/);
   assert.match(evidence, /gap to note in the grade, not a failed criterion/);
-});
-
-test("both rubric copies are byte-identical", () => {
-  assert.equal(readFileSync(`${SERVICE_RUBRICS}/pr.md`, "utf8"), readFileSync(`${RUBRICS}/pr.md`, "utf8"));
 });
 
 test("the grader prompt says a merged PR's body cannot be edited and names where post-merge facts are judged", () => {

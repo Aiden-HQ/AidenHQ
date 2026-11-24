@@ -756,12 +756,15 @@ export class MeetingService {
 
     if (meeting.canonical_note_path && this.vault.exists(meeting.canonical_note_path)) {
       let n = 0;
+      // The stored hash marks the generated version: advance it only if the owner had not edited the note, so their
+      // edits are still seen (kept_user_edits) by the next transcript revision.
+      const ours = this.vault.read(meeting.canonical_note_path).version === meeting.canonical_note_hash;
       const snap = this.vault.editNote(meeting.canonical_note_path, (content) => {
         n = count(content);
         return content.split(find).join(replace);
       });
       if (snap) {
-        this.setCanonical(meeting.id, snap.path, snap.version);
+        if (ours) this.setCanonical(meeting.id, snap.path, snap.version);
         changed.push({ path: snap.path, replacements: n });
       }
     }
