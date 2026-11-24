@@ -1,8 +1,5 @@
 // The ship service: its state (SHIP_STATE_FILE), the watch loop (loop.ts) and the contributor-PR pass (contributor.ts), the HTTP
 // API and the MCP connection `ship` on :8101.
-//   GET /v1/generation?repo&pr   (the github module's token) -> { generation, hold, task? }: a PR's adoption, for github's write
-//                                checks. `generation` null when it isn't adopted; `hold` non-null when it is held, its repo is off
-//                                or ship is paused (github then writes nothing for it).
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
@@ -15,6 +12,8 @@ import { startLoop, type Flow } from "./loop.ts";
 import { createMcp, serveMcp } from "./mcp.ts";
 import { effective, scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
+import { generationOf } from "./handoff.ts";
+import { isModule } from "./module-caller.ts";
 
 const env = process.env;
 const file = (p: string | undefined) => { try { return p ? readFileSync(p, "utf8").trim() : ""; } catch { return ""; } };
@@ -41,18 +40,6 @@ const mcp = serveMcp(createMcp(configTools({
     return r.json;
   },
 })), () => file(env.SHIP_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "ship")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
-
-/** Whether a bearer is the named module's own token, asked of the kernel (undefined: the kernel couldn't say now). */
-async function isModule(authorization: string, module: string): Promise<boolean | undefined> {
-  const bearer = authorization.replace(/^Bearer\s+/i, "").trim();
-  if (!bearer) return false;
-  try {
-    const r = await fetch(new URL("/v1/whoami", kernelUrl), { headers: { authorization: `Bearer ${bearer}` }, signal: AbortSignal.timeout(5_000) });
-    if (!r.ok) return r.status === 401 || r.status === 403 ? false : undefined;
-    const who = (await r.json()) as { kind?: string; module?: string };
-    return who.kind === "module" && who.module === module;
-  } catch { return undefined; }
-}
 
 // github's routes for ship (github service/src/ship-routes.ts), with this module's token.
 const githubUrl = (env.SHIP_GITHUB_URL ?? "http://github:8100").replace(/\/+$/, "");
@@ -108,14 +95,12 @@ setInterval(() => { if (!paused() && token()) void prTick({ prs, firePr, store: 
 
 createServer(async (req, res) => {
   if (await mcp(req, res)) return;
-  const url = new URL(req.url ?? "/", "http://x");
-  if (req.method === "GET" && url.pathname === "/v1/generation") {
-    const ok = await isModule(String(req.headers.authorization ?? ""), "github");
+  // github's check before each adopted-PR write: the adoption's generation, hold and task, to the github module's token only.
+  if (req.method === "GET" && req.url?.startsWith("/v1/generation?")) {
+    const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "github");
     if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end();
-    const repo = String(url.searchParams.get("repo") ?? ""), n = Number(url.searchParams.get("pr"));
-    const a = Number.isInteger(n) && n > 0 ? state.get(repo, n) : undefined;
-    const hold = paused() ? { reason: "paused" } : !settingsOf(repo) ? { reason: "off" } : a?.hold ?? null;
-    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ generation: a?.generation ?? null, hold, ...(a?.task ? { task: a.task } : {}) }));
+    const q = new URL(req.url, "http://x").searchParams;
+    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(generationOf(state, raw().paused === true, q.get("repo") ?? "", Number(q.get("pr")))));
   }
-  res.writeHead(url.pathname === "/healthz" ? 200 : 404).end();
+  res.writeHead(req.url === "/healthz" ? 200 : 404).end();
 }).listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101 }));

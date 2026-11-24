@@ -320,15 +320,15 @@ writes:
   # platform check on them (writes.ts).
   push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
   pr: { args: schemas/pr.json, floor: 0, card: *card }
-  # merge: the ship module files an adopted PR's merge itself (its watch loop, with `generation`), so it is named in `filed_by`.
-  merge: { args: schemas/merge.json, floor: 0, filed_by: [ship], card: *card }
+  # ship files an adopted PR's merge (args `generation`, `attempt`) on the adoption's task; plan.ts checks the adoption.
+  merge: { args: schemas/merge.json, floor: 0, filed_by: [ ship ], card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
   # approve and enqueue: the ship module's effects on one adopted PR, each bound to its head, target and generation (plan.ts
   # refuses any other filer and any mismatch). An adoption's records carry `generation` (and `attempt` for enqueue and merge) in
   # their args, so a new try at the same head is a new record.
-  approve: { args: schemas/approve.json, floor: 0, filed_by: [ship], card: *card }
-  enqueue: { args: schemas/enqueue.json, floor: 0, filed_by: [ship], card: *card }
+  approve: { args: schemas/approve.json, floor: 0, filed_by: [ ship ], card: *card }
+  enqueue: { args: schemas/enqueue.json, floor: 0, filed_by: [ ship ], card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
   # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).
   setup: { args: schemas/setup.json, floor: 1, card: *card }

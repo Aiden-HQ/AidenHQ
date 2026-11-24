@@ -63,6 +63,22 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
+    // GitHub's git data API, as the App, over the bare origin: blobs, trees, commits, and a ref update that refuses a non-fast-forward.
+    const git = (args, o = {}) => execFileSync("git", args, { cwd: origin, encoding: "utf8", ...o, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_COMMITTER_NAME: "app", GIT_COMMITTER_EMAIL: "app@example.com", GIT_AUTHOR_NAME: "app", GIT_AUTHOR_EMAIL: "app@example.com", ...o.env } }).trim();
+    if (method === "POST" && path === `/repos/${REPO}/git/blobs`) return { status: 201, body: { sha: git(["hash-object", "-w", "--stdin"], { input: Buffer.from(body.content, "base64") }) } };
+    if (method === "POST" && path === `/repos/${REPO}/git/trees`) {
+      const env = { GIT_INDEX_FILE: join(root, `idx-${Math.random()}`) };
+      git(["read-tree", body.base_tree], { env });
+      for (const e of body.tree) git(e.sha === null ? ["update-index", "--force-remove", e.path] : ["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`], { env });
+      return { status: 201, body: { sha: git(["write-tree"], { env }) } };
+    }
+    if (method === "POST" && path === `/repos/${REPO}/git/commits`) return { status: 201, body: { sha: git(["commit-tree", body.tree, ...body.parents.flatMap((p) => ["-p", p]), "-m", body.message]) } };
+    if (method === "PATCH" && path === `/repos/${REPO}/git/refs/heads/contrib`) {
+      const cur = git(["rev-parse", "refs/heads/contrib"]);
+      try { git(["merge-base", "--is-ancestor", cur, body.sha]); } catch { return { status: 422, body: { message: "Update is not a fast forward" } }; }
+      git(["update-ref", "refs/heads/contrib", body.sha]);
+      return { status: 200, body: {} };
+    }
     return { status: 404, body: { message: "fake GitHub: no route" } };
   };
   const access = {
@@ -95,7 +111,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   return { root, ws, origin, c1, fix, pr, queue, calls, call, run, adoption };
 }
 
-test("a push onto an adopted PR's branch is leased on the head it expects; a contributor's push in between wins", async (t) => {
+test("a push onto an adopted PR's branch is written through the API as the App, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
   const { ws, origin, c1, fix, pr, call, run } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
@@ -111,7 +127,7 @@ test("a push onto an adopted PR's branch is leased on the head it expects; a con
   assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).json.error, /fork/);
   pr.fork = false;
 
-  // A contributor pushes after the read: GitHub's API still says c1 (it lags), the lease refuses, and their commit stays.
+  // A contributor pushes after the read: GitHub's API still says c1 (it lags), the fast-forward update refuses, and their commit stays.
   const scratch = `${ws}-contrib`;
   sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, scratch);
   writeFileSync(join(scratch, "c.txt"), "c\n");
@@ -124,11 +140,13 @@ test("a push onto an adopted PR's branch is leased on the head it expects; a con
   assert.match(lost.text, /^ship-head-moved/);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), theirs, "the contributor's push is never overwritten");
 
-  // Back at c1, the leased push lands.
+  // Back at c1, the App's commit lands: the repair's tree on top of c1, made by the App (GitHub signs it), not the box's commit.
   sh(scratch, "push", "--quiet", "--force", origin, `${c1}:refs/heads/contrib`);
   const ok = await run("k-00000000000000b2", "github.push", args);
   assert.equal(ok.ok, true, ok.text);
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), fix);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^{tree}"), sh(ws, "rev-parse", `${fix}^{tree}`));
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^"), c1);
+  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "app");
 });
 
 test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts as the App", async (t) => {

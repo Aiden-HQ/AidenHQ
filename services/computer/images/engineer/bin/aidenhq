@@ -31,6 +31,16 @@
 //   aidenhq reset                                    start the next turn with a fresh session
 //   aidenhq engine <kind> [model]                    run the next turn on another engine or model
 //   aidenhq cleanup                                  remove the workspace when this turn ends
+//   aidenhq ship repair <PR link> <head> <generation> <base> <plan>
+//                                                    ship's deterministic repair of an adopted PR, copied from its wake: merge the
+//                                                    base, take the base side of conflicted generated paths, run the generators,
+//                                                    revert whitespace-only lockfile changes, commit, and push onto the PR's branch
+//                                                    from <head> (one codehost.push write). Exit 0: pushed, or nothing to do; 3: the
+//                                                    conflicts left for you, one `leftover: <path>` line each (resolve and `git add`
+//                                                    them, then run it again); 4: a generator failed
+//   aidenhq ship checkout <PR link> <head>           the adopted PR's branch checked out at <head> in this workspace's clone
+//   aidenhq ship push <PR link> <head> <generation>  push the checked-out branch's commits on top of <head> onto the adopted PR's
+//                                                    branch (a fix ship woke you for): one codehost.push write, refused if the PR moved
 //
 // Every git write waits for its record to end: done prints its outcome; failed, rejected or stale prints the reason and exits 1;
 // waiting on the AI reviewer or the owner is said plainly and exits 0 (not an error).
@@ -45,8 +55,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
-const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup | ship repair <PR link> <head> <generation> <base> <plan> | ship checkout <PR link> <head> | ship push <PR link> <head> <generation>`;
+const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup", "ship"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -369,6 +379,88 @@ if (command === "publish" || command === "review") {
   const question = words.join(" ").trim();
   if (!question) fail('usage: aidenhq advise "<question>" [--file <brief>]', 2);
   lines.push(await tool("advisor_ask", { question, ...(flags.file ? { context: readFileSync(flags.file, "utf8") } : {}) }));
+} else if (command === "ship") {
+  const [sub, link, head, gen, base, planText] = words;
+  const shape = sub === "repair" ? words.length === 6 && /^(?!-)[\w./-]{1,200}$/.test(base) && /^[1-9]\d{0,8}$/.test(gen) : sub === "push" ? words.length === 4 && /^[1-9]\d{0,8}$/.test(gen) : sub === "checkout" && words.length === 3;
+  if (!shape || !/^[0-9a-f]{40}$/.test(head)) fail("usage: aidenhq ship repair <PR link> <head> <generation> <base> <plan> | ship checkout <PR link> <head> | ship push <PR link> <head> <generation> (copy the line from ship's wake)", 2);
+  const { repo, number } = pr(link);
+  // The PR's branch at <head>: the clone's origin/* refreshed from the code host, then the one origin branch at <head> (a fork's
+  // branch isn't there), checked out at <head> unless the branch already builds on it (a run again after resolving leftovers).
+  const onBranch = () => {
+    execFileSync(process.execPath, [process.argv[1], "clone", repo], { stdio: ["ignore", "ignore", "inherit"] });
+    const dir = cloneOf(repo).have;
+    const g = (args) => execFileSync("git", ["-C", dir, "-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const ok = (args) => { try { g(args); return true; } catch { return false; } };
+    const branches = g(["for-each-ref", "--format=%(refname:strip=3)", "--points-at", head, "refs/remotes/origin/"]).split("\n").filter((b) => b && b !== "HEAD");
+    const current = (() => { try { return g(["symbolic-ref", "--short", "HEAD"]); } catch { return ""; } })();
+    const branch = branches.length === 1 ? branches[0] : current && ok(["merge-base", "--is-ancestor", head, "HEAD"]) ? current : undefined;
+    if (!branch) fail(`${link}'s head ${head.slice(0, 12)} isn't a branch of ${repo} in this clone (a fork's branch, or it moved since the wake): nothing was done`);
+    if (current !== branch || !ok(["merge-base", "--is-ancestor", head, "HEAD"])) g(["checkout", "--quiet", "--force", "-B", branch, head]);
+    return { dir, branch };
+  };
+  if (sub === "checkout") {
+    const { dir, branch } = onBranch();
+    console.log(`${link}: \`${branch}\` is checked out at ${head.slice(0, 12)} in ${dir}`);
+    process.exit(0);
+  }
+  if (sub === "push") {
+    const dir = cloneOf(repo).have;
+    if (!dir) fail(`this workspace has no clone of ${repo}`, 2);
+    const g = (args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    let branch = "";
+    try { branch = g(["symbolic-ref", "--short", "HEAD"]); } catch {}
+    try { g(["merge-base", "--is-ancestor", head, "HEAD"]); } catch { branch = ""; }
+    if (!branch) fail(`check out the PR's branch with your commit on top of ${head.slice(0, 12)} in ${dir} first`, 2);
+    const sha = g(["rev-parse", "HEAD"]);
+    if (sha === head) fail("no commit on top of the PR's head to push", 2);
+    bundle(repo, branch, sha);
+    lines.push(`${link}: ${(await write("codehost.push", { only: [{ repo, branch, sha }], pr: { repo, number }, expected: head, generation: Number(gen) }))}`);
+    console.log(lines.join("\n"));
+    process.exit(bad.length ? 1 : 0);
+  }
+  let plan;
+  try { plan = JSON.parse(Buffer.from(planText, "base64url").toString("utf8")); } catch { fail("<plan> isn't ship's (copy the line from ship's wake)", 2); }
+  const globs = (plan.globs ?? []).filter((x) => typeof x === "string" && x);
+  const commands = (plan.commands ?? []).filter((c) => typeof c?.cmd === "string" && typeof c?.dir === "string" && !c.dir.split("/").includes(".."));
+  const { dir, branch } = onBranch();
+  const ID = ["-c", "user.name=AidenHQ ship", "-c", "user.email=ship@aidenhq.invalid", "-c", "core.hooksPath=/dev/null"];
+  const g = (args, o = {}) => execFileSync("git", ["-C", dir, ...ID, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...o }).trim();
+  const ok = (args) => { try { g(args); return true; } catch { return false; } };
+  const LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
+  const unmerged = () => g(["diff", "--name-only", "--diff-filter=U", "-z"]).split("\0").filter(Boolean);
+  const leftovers = (paths) => { for (const p of paths) console.log(`leftover: ${p}`); process.exit(3); };
+  const merging = () => existsSync(join(g(["rev-parse", "--absolute-git-dir"]), "MERGE_HEAD"));
+  // The base merged in, uncommitted: generated paths take the base side (regenerated below); any other conflict is the Engineer's,
+  // who resolves it and runs this again (the merge still in progress).
+  if (!merging() && !ok(["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"])) {
+    ok(["merge", "--quiet", "--no-commit", "--no-ff", "--no-verify", `origin/${base}`]);
+    // Only where a generator will rewrite them (a command at the root, or in the path's own package dir): a lockfile (no generator
+    // rewrites one here) or a path no command covers stays a leftover.
+    const covered = (p) => commands.some((c) => c.dir === "." || p.startsWith(`${c.dir.replace(/\/+$/, "")}/`));
+    const generated = globs.length && commands.length ? g(["diff", "--name-only", "--diff-filter=U", "-z", "--", ...globs.map((x) => `:(glob)${x}`)]).split("\0").filter((p) => p && !LOCKS.includes(p.split("/").pop()) && covered(p)) : [];
+    for (const p of generated) { if (ok(["checkout", "--theirs", "--", p])) g(["add", "--", p]); else g(["rm", "--quiet", "--", p]); }
+  }
+  if (unmerged().length) leftovers(unmerged());
+  g(["add", "--all"]);
+  const before = g(["write-tree"]);
+  for (const c of commands) {
+    try { execFileSync("sh", ["-c", c.cmd], { cwd: join(dir, c.dir), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 << 20 }); } catch (e) {
+      console.error(`aidenhq: \`${c.cmd}\` in ${c.dir} failed (exit ${e.status ?? "?"}):\n${String(e.stderr || e.stdout || e.message).slice(-3000)}`);
+      process.exit(4);
+    }
+  }
+  g(["add", "--all"]);
+  // A lockfile the generator only re-spaced is put back: whitespace churn is noise in the PR.
+  for (const p of g(["diff", "--cached", "--name-only", "-z", before]).split("\0").filter((p) => LOCKS.includes(p.split("/").pop()))) {
+    if (ok(["diff", "--quiet", "--ignore-all-space", "--ignore-blank-lines", before, "--", p])) g(["checkout", before, "--", p]);
+  }
+  // One commit: the merge with its regenerated files, or the regeneration alone.
+  if (merging()) g(["commit", "--quiet", "--no-edit", "--no-verify"]);
+  else if (!ok(["diff", "--cached", "--quiet", "HEAD"])) g(["commit", "--quiet", "--no-verify", "-m", "chore: regenerate generated files"]);
+  const sha = g(["rev-parse", "HEAD"]);
+  if (sha === head) { console.log(`${link}: nothing to repair at ${head.slice(0, 12)}`); process.exit(0); }
+  bundle(repo, branch, sha);
+  lines.push(`${link}: ${(await write("codehost.push", { only: [{ repo, branch, sha }], pr: { repo, number }, expected: head, generation: Number(gen) }))}`);
 } else {
   if (command === "engine" ? !words.length || words.length > 2 : words.length) fail(usage, 2);
   const body = command === "engine" ? { engine: words[0], ...(words[1] ? { model: words[1] } : {}) } : {};
