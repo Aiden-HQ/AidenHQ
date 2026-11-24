@@ -1,0 +1,182 @@
+// The test-user page canary's listener (docs/design/access.md, Test-user sign-in): the one door a headless browser reaches
+// without a person. It is deliberately not the gate:
+//
+// - It listens on its own address (settings.edge.test_listener: a bridge gateway only the canary browser's network reaches),
+//   never on the gate's port, the front door's socket or the tailnet address. With no settings.edge.test_user nothing binds it.
+// - It serves nothing without a live test session. No front-door header, no Access token, no anonymous request: a request
+//   without the listener's own cookie gets 401 and no page.
+// - The cookie is host-only (`__Host-`) on the listener's own origin, per app: `<app>.canary.localhost`. A session for one app
+//   presented under another app's host is refused, and the cookie never reaches the app's public URL (a different host).
+// - Every request's identity is the test user as a `member` of that one app, minted per request by the gate's own signer; the
+//   page's own JavaScript runs, and its own same-origin `POST /.aidenhq/notify` is the gate's real notify handler.
+//
+// The cookie is checked with the kernel's session check through the sign-in listener's gate secret (no new shared secret), and
+// the handoff code is redeemed there once. Nothing here is trusted from the browser but the cookie it was given.
+import { createServer, request as httpRequest, type IncomingMessage, type OutgoingHttpHeaders, type Server, type ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
+import { IDENTITY_HEADER, hostOf, mint, sameOrigin, signerFor, subOf, upstreamHeaders, type GateConfig, type IdentityClaims, type IdentityToken, type VerifiedEmail } from "./gate.ts";
+
+/** The listener's own host suffix: an origin Chrome treats as secure over plain http, and one the front door never names. */
+export const CANARY_BASE = "canary.localhost";
+/** The listener's one cookie: host-only, and never accepted by the gate, the front door or the sign-in host. */
+export const CANARY_COOKIE = "__Host-aidenhq-canary.session";
+const APP = /^([a-z][a-z0-9-]{1,30})\.canary\.localhost$/;
+const CODE = /^[A-Za-z0-9_-]{16,200}$/;
+const STATE = /^[0-9a-f]{32}$/;
+const IDENTITY_TTL_S = 300;
+const RESERVED = "/.aidenhq";
+const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"];
+const STRIP = /^(x-aidenhq-|tailscale-|cf-access-)/;
+
+export interface TestListenerDeps {
+  config: () => GateConfig;
+  fetch?: typeof fetch;
+  log?: (o: Record<string, unknown>) => void;
+}
+
+const cookiesOf = (req: IncomingMessage) => String(req.headers.cookie ?? "").split(";").map((c) => c.trim()).filter(Boolean);
+const cookieName = (c: string) => c.split("=")[0]!.trim();
+
+/**
+ * The listener. It exists only with both settings; with either missing, `listen` returns undefined and nothing is bound.
+ */
+export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o) => console.log(JSON.stringify(o)) }: TestListenerDeps): Server {
+  const cfg = () => config();
+  const gateSecret = (c: GateConfig) => {
+    try { return c.auth_secret_file ? readFileSync(c.auth_secret_file, "utf8").trim() : ""; } catch { return ""; }
+  };
+  const plain = (res: ServerResponse, status: number, msg: string, headers: OutgoingHttpHeaders = {}) =>
+    void res.writeHead(status, { "content-type": "text/plain", "cache-control": "no-store", "referrer-policy": "no-referrer", ...headers }).end(`${msg}\n`);
+  const json = (res: ServerResponse, status: number, body: unknown) =>
+    void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "referrer-policy": "no-referrer" }).end(JSON.stringify(body));
+
+  /** One call to the kernel's sign-in listener, with the gate's own secret (the same one password mode uses). */
+  async function kernel(c: GateConfig, path: string, body: Record<string, unknown>): Promise<{ status: number; body: any }> {
+    const secret = gateSecret(c);
+    const r = await fetchImpl(new URL(path, c.auth_url), {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-proto": "https", ...(secret ? { "x-aidenhq-gate": secret } : {}) },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    });
+    const text = await r.text();
+    let parsed: unknown = null;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
+    return { status: r.status, body: parsed };
+  }
+
+  /** The session behind this request's cookie, or a refusal: no cookie is 401 and no page. */
+  async function session(req: IncomingMessage, c: GateConfig, app: string, host: string): Promise<{ email: VerifiedEmail; expires: string } | "other-app" | undefined> {
+    const found = cookiesOf(req).filter((x) => cookieName(x) === CANARY_COOKIE);
+    if (found.length !== 1) return undefined;
+    const cookie = found[0]!.slice(CANARY_COOKIE.length + 1).trim();
+    if (!cookie) return undefined;
+    // A kernel that can't answer is a refusal too: fail closed, never serve a page on an unchecked cookie.
+    const r = await kernel(c, "/.auth/api/test-session/check", { cookie, host }).catch(() => ({ status: 503, body: null }));
+    // A live session for another app is its own refusal (404: there is no page for it here), never a sign-in prompt.
+    if (r.status === 409) return "other-app";
+    if (r.status !== 200 || typeof r.body?.email !== "string" || r.body?.app !== app) return undefined;
+    return { email: String(r.body.email).trim().toLowerCase() as VerifiedEmail, expires: String(r.body.expires ?? "") };
+  }
+
+  /** The app's own origin on this listener, exactly. */
+  const originOf = (c: GateConfig, app: string) => `http://${app}.${CANARY_BASE}${c.test_listener?.port ? `:${c.test_listener.port}` : ""}`;
+  /**
+   * The app's own (public) host from the compiled config: the kernel's session and handoff are bound to the app's host, while
+   * the cookie is host-only on this listener's origin. Both name the same one app, so a session for one app is never the other's.
+   */
+  const publicHostOf = (c: GateConfig, app: string) =>
+    Object.entries(c.hosts ?? {}).find(([h, x]) => x.app === app && !x.door && h !== `${app}.${CANARY_BASE}`)?.[0];
+
+  async function serve(req: IncomingMessage, res: ServerResponse) {
+    const c = cfg();
+    // Fail closed: with no test user there is nothing this listener may serve, whatever it was asked.
+    if (!c.test_user || !c.test_listener) return plain(res, 404, "not found");
+    const m = APP.exec(hostOf(req));
+    if (!m) return plain(res, 404, "not found");
+    const app = m[1]!;
+    if (!c.test_user.apps.includes(app)) return plain(res, 404, "not found");
+    const site = c.hosts?.[`${app}.${CANARY_BASE}`] ?? Object.values(c.hosts ?? {}).find((h) => h.app === app && !h.door);
+    const publicHost = publicHostOf(c, app);
+    if (!site || site.door || !publicHost) return plain(res, 404, "not found");
+    const origin = originOf(c, app);
+    const url = new URL(String(req.url ?? "/"), "http://x");
+    const path = url.pathname;
+
+    // The handoff: redeem the one-time code with the kernel, then set this origin's host-only cookie.
+    if (path === "/.auth/handoff" && (req.method === "GET" || req.method === "HEAD")) {
+      const code = url.searchParams.get("code") ?? "";
+      const state = url.searchParams.get("state") ?? "";
+      if (!CODE.test(code) || !STATE.test(state)) return plain(res, 400, "bad request");
+      const r = await kernel(c, "/.auth/api/test-session/redeem", { code, host: publicHost, state });
+      if (r.status !== 200 || typeof r.body?.token !== "string") {
+        log({ msg: "test handoff refused", app, status: r.status });
+        return plain(res, 401, "this sign-in is used or expired");
+      }
+      const next = url.searchParams.get("next") ?? "/";
+      const safe = next.startsWith("/") && !next.startsWith("//") && !/[\x00-\x20\\]/.test(next) ? next : "/";
+      return plain(res, 302, "signed in", {
+        location: safe,
+        "set-cookie": [`${CANARY_COOKIE}=${r.body.token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=900`],
+      });
+    }
+
+    const who = await session(req, c, app, publicHost);
+    if (who === "other-app") return plain(res, 404, "not found");
+    if (!who) return plain(res, 401, "sign in first");
+
+    // The gate's own path on an app host, as the gate serves it: the page says people sent something into the app's intake.
+    if (path === RESERVED || path.startsWith(`${RESERVED}/`)) {
+      if (req.method !== "POST" || path !== `${RESERVED}/notify`) return plain(res, 404, "not found");
+      if (!sameOrigin(req, origin)) return plain(res, 403, "forbidden: cross-origin");
+      req.resume();
+      const r = await kernel(c, "/.auth/api/app-feedback/new", { email: who.email, app });
+      return void res.writeHead(r.status === 200 ? 204 : r.status >= 500 ? 503 : r.status, { "cache-control": "no-store" }).end();
+    }
+    // A write or an upgrade needs the listener's own origin, exactly (as the gate does for an app host).
+    if (req.method !== "GET" && req.method !== "HEAD" && !sameOrigin(req, origin)) return plain(res, 403, "forbidden: cross-origin");
+
+    // The app's identity for this request: the test user, a member of this app only, minted by the gate's own key.
+    let token: IdentityToken;
+    try {
+      const iat = Math.floor(Date.now() / 1000);
+      const claims: IdentityClaims = { iss: "aidenhq-gate", aud: app, sub: subOf(who.email), kind: "person", email: who.email, name: "AidenHQ test user", role: "member", idp: "test", iat, exp: iat + IDENTITY_TTL_S };
+      token = mint(signerFor(c.identity_key_file)(), claims);
+    } catch (e) {
+      log({ msg: "can't sign a test identity", app, err: String((e as Error).message) });
+      return plain(res, 503, "unavailable");
+    }
+    const headers: OutgoingHttpHeaders = upstreamHeaders(req, token, { proto: "http" });
+    // The token just minted is the only x-aidenhq-* the app may see; everything else of that shape came from the browser.
+    for (const k of Object.keys(headers)) if (STRIP.test(k) && k.toLowerCase() !== IDENTITY_HEADER) delete headers[k];
+    const up = httpRequest({ host: "127.0.0.1", port: site.port, method: req.method, path: req.url, headers });
+    up.on("response", (r) => {
+      const h = { ...r.headers };
+      for (const k of HOP) delete h[k];
+      delete h["set-auth-token"];
+      // No app may set a cookie the listener would accept: it has one cookie, and only the handoff sets it.
+      if (h["set-cookie"]) {
+        const kept = [h["set-cookie"]].flat().filter((x) => cookieName(x).toLowerCase() !== CANARY_COOKIE.toLowerCase() && !/^__host-/i.test(cookieName(x)));
+        if (kept.length) h["set-cookie"] = kept;
+        else delete h["set-cookie"];
+      }
+      res.writeHead(r.statusCode ?? 502, r.statusMessage, h);
+      r.pipe(res);
+    });
+    up.on("error", () => (res.headersSent ? res.destroy() : plain(res, 502, "bad gateway")));
+    res.on("close", () => up.destroy());
+    req.pipe(up);
+  }
+
+  const server = createServer((req, res) => {
+    serve(req, res).catch((e) => {
+      log({ msg: "test listener request failed", err: String((e as Error).message).slice(0, 300) });
+      if (res.headersSent) res.destroy();
+      else plain(res, 503, "unavailable");
+    });
+  });
+  return server;
+}
+
+/** Whether this build's settings let the listener bind at all (both the test user and its address). */
+export const testListenerOn = (c: GateConfig) => Boolean(c.test_user && c.test_listener);

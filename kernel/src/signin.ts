@@ -8,11 +8,15 @@
 //                  → that session ends. All server-side only, under the listener's own names: the gate never forwards them.
 //   App access:    /.auth/api/app-access/{page, role, default} (the gate, server-side, with gate_board_secret and the asking
 //                  email as `by`): an app's roles, default and log, for its admins (AidenHQ admins are admins of every app).
+//   Test user:     /.auth/api/test-session/{check, redeem} (the gate's test listener, server-side, with gate_board_secret): a
+//                  canary cookie → its live session, and a one-time handoff code → that session's cookie. Both refuse with no
+//                  settings.edge.test_user; the listener itself is the gate's, never this one.
 //   Requests:      /.auth/api/app-request/{new, mine}, /.auth/api/app-feedback/new (the gate, with the visitor's verified
 //                  email): in-app requests.
 // No admin route is here: no page, no approval, no account admin.
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { AccountError, type Accounts, type GateInfo } from "./accounts.ts";
+import { TestSessionError } from "./test-session.ts";
 import { AccessError } from "../../modules/apps-platform/src/app-access.ts";
 import { forwardedProto, type Log } from "./auth-rules.ts";
 
@@ -105,6 +109,23 @@ export function createSignin(o: { accounts: Accounts; hosts: string[]; gate: () 
       // App access and in-app requests (spec 2026-11-12-app-access-rbac-design.md): the gate, server-side, with its shared
       // secret, names who is asking (`by` / `email`, the email it signed in or verified through Access); the kernel checks the
       // rest (an app admin for the Access page; a member who isn't blocked for a request).
+      if (path.startsWith("/.auth/api/test-session/")) {
+        if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+        if (!o.hosts.includes(String(req.headers.host ?? "").toLowerCase()) || !o.accounts.fromGate(req)) return json(res, 403, { error: "only the gate" });
+        const input = await body(req);
+        if (path === "/.auth/api/test-session/check") {
+          const f = fields(input, { cookie: str(1, 1024), host: str(1, 253) });
+          try {
+            const r = await o.accounts.test.check({ cookie: f.cookie, host: f.host });
+            return json(res, r ? 200 : 401, r ?? { error: "no test session" });
+          } catch (e) {
+            if (e instanceof TestSessionError) return json(res, e.status, { error: e.message });
+            throw e;
+          }
+        }
+        const f = fields(input, { code: str(16, 200), host: str(1, 253), state: STATE });
+        return json(res, 200, await o.accounts.test.redeem({ code: f.code, host: f.host, state: f.state }));
+      }
       if (path.startsWith("/.auth/api/app-access/") || path.startsWith("/.auth/api/app-request/") || path === "/.auth/api/app-feedback/new") {
         if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
         if (!o.hosts.includes(String(req.headers.host ?? "").toLowerCase()) || !o.accounts.fromGate(req)) return json(res, 403, { error: "only the gate" });
@@ -156,7 +177,7 @@ export function createSignin(o: { accounts: Accounts; hosts: string[]; gate: () 
         return await o.accounts.handle(req, res, path.slice("/.auth/api".length), url.search, o.hosts[0]);
       return json(res, 404, { error: "not found" });
     } catch (err) {
-      const status = err instanceof AccountError || err instanceof AccessError ? err.status : 500;
+      const status = err instanceof AccountError || err instanceof AccessError || err instanceof TestSessionError ? err.status : 500;
       if (status >= 500) o.log.error({ err: String((err as Error).message ?? err).slice(0, 300), path }, "sign-in request failed");
       if (!res.headersSent) json(res, status, { error: (err as Error).message ?? "error" });
     }

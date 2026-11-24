@@ -512,6 +512,8 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const qualityFor = (a: App): Quality => quality.get(a.name) ?? { state: "unknown", why: "not probed yet" };
   /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
   const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
-  return { previewUrl, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  // The test-user canary's one-shot browser (canary.ts): the same image and hardening as a view, on the canary network.
+  const canaryRun = (network: string, script: string, input: object, timeout: number) => renderWith(network, script, input, timeout);
+  return { previewUrl, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, canaryRun, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;

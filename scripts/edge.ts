@@ -17,6 +17,10 @@
 // pr-<n>.<host> under each share.host, through the gate, with the parent's access: one ingress rule *.<host> per shared
 // app behind the parent's own aud (its Access application must cover *.<host> too). apps-mcp writes which previews run
 // (data/previews/previews.json); the gate takes only ports in PREVIEW_PORTS from it.
+// settings.edge.test_user ({ email, apps }): the one non-owner identity an allowlisted agent may sign in as, for page-level
+// checks at exactly these shared apps (docs/design/access.md, Test-user sign-in). Compile validates it (its own email, at
+// least one app, no repeats, each a shared app with a host) and writes it with the test listener's own bridge address and
+// port. Naming no test user writes neither: the capability is inert, and the gate binds nothing for it.
 // App doors (docs/design/app-doors.md): without `edge`, on exposure local or public, compile still runs the gate, serving
 // every exposed app to AidenHQ admins at <app>.<base> (`localhost` over http on loopback; <ip-with-dashes>.sslip.io behind
 // Caddy, scripts/front-door.ts), with each app's port from apps-mcp's doors file and sign-in only on the kernel's admin
@@ -40,6 +44,12 @@ export const GATE_SOCKET = "/run/gate/gate.sock";
 export const GATE_SOCKET_URL = `unix:${GATE_SOCKET}`;
 const SOCKET_MOUNT = `\${AIDENHQ_DATA_DIR:-./data}/gate/socket:${dirname(GATE_SOCKET)}`;
 export const AUTH_PORT = 3129; // the kernel's sign-in listener: sign-in (password mode) and app access (both modes); apps-mcp reserves it too
+/** The test-user canary's listener: its own address, never the gate's port, the front door's socket or the tailnet. */
+export const TEST_LISTENER_PORT = 3132;
+/** The bridge gateway the canary browser's network has, and the only address the test listener binds (ops/vm/canary-net.sh).
+ * Its own subnet (10.231.6.0/24), never the CI runners' (10.231.4.0/24) or the computers' (10.231.2.0/24). */
+export const TEST_LISTENER_ADDRESS = "10.231.6.1";
+export const TEST_NETWORK = "aidenhq-canary";
 export const AUTH_URL = `http://127.0.0.1:${AUTH_PORT}`;
 export const ACCOUNTS_FILE = "/accounts/accounts.json"; // the kernel's account map (email, role, disabled), mounted read-only
 export const AUTH_SECRET_FILE = "/secrets/auth_listener"; // gate_board_secret in the gate: X-AidenHQ-Gate to 3129 (sign-in, app access)
@@ -83,7 +93,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
   if (!LOGINS.includes(login)) fail(`settings.app_login must be ${LOGINS.join(" or ")}`);
   const front = login === "header-jwt";
   if (!front && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(edge.tunnel_id ?? ""))) fail("settings.edge.tunnel_id must be the tunnel's UUID");
-  for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps", "previews", "identity", "front"].includes(k)) fail(`settings.edge.${k} is not a setting`);
+  for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps", "previews", "identity", "front", "test_user"].includes(k)) fail(`settings.edge.${k} is not a setting`);
   // An Access application's audience tag: required on every host with app_login access, optional with password.
   const audOf = (aud: unknown, where: string) => {
     if (aud == null && login === "password") return undefined;
@@ -140,6 +150,26 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
     if (!Number.isInteger(f.port) || f.port < 1024 || f.port > 65535 || f.port === AUTH_PORT || f.port === GATE_PORT) fail(`settings.edge.front.port must be 1024-65535, never ${AUTH_PORT} or ${GATE_PORT}`);
     frontDoor = { address: f.address, port: f.port };
   } else for (const k of ["identity", "front"]) if (edge[k] !== undefined) fail(`settings.edge.${k} is only for app_login header-jwt`);
+  // The test user: its own account (never the owner's or any existing one), and only apps this instance really shares.
+  let testUser: Obj | undefined;
+  if (edge.test_user !== undefined) {
+    const t = edge.test_user;
+    if (!t || typeof t !== "object" || Array.isArray(t)) fail("settings.edge.test_user must be { email, apps }");
+    for (const k of Object.keys(t)) if (!["email", "apps"].includes(k)) fail(`settings.edge.test_user.${k} is not a setting`);
+    const email = typeof t.email === "string" ? t.email.trim().toLowerCase() : "";
+    if (!/^[^@\s]+@[^@\s]+$/.test(email) || email.length > 200) fail("settings.edge.test_user.email must be an email address");
+    if (email === owner) fail("settings.edge.test_user.email must not be the owner's");
+    if (!Array.isArray(t.apps) || !t.apps.length) fail("settings.edge.test_user.apps must list at least one shared app");
+    const seen = new Set<string>();
+    for (const a of t.apps) {
+      if (typeof a !== "string" || !/^[a-z][a-z0-9-]{1,30}$/.test(a)) fail(`settings.edge.test_user.apps: ${a} is not an app name`);
+      if (seen.has(a)) fail(`settings.edge.test_user.apps names ${a} twice`);
+      seen.add(a);
+      const shared = instanceApps.find((x: Obj) => x.name === a && x.share?.host);
+      if (!shared) fail(`settings.edge.test_user.apps: ${a} isn't a shared app with a share.host`);
+    }
+    testUser = { email, apps: [...seen] };
+  }
   const gateHosts = [...Object.entries(hosts), ...(myApps ? [[myApps.host, myApps]] : [])];
   const anyAud = gateHosts.some(([, h]) => h.aud);
   const team = /^([a-z0-9-]+)\.cloudflareaccess\.com$/.exec(String(edge.team_domain ?? ""))?.[1];
@@ -151,6 +181,8 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
     ...(identity ? { identity, front: frontDoor } : { socket: GATE_SOCKET }),
     auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE, owner_email: owner,
     ...(myApps ? { my_apps: myApps } : {}), hosts, ...(previews ? { previews } : {}),
+    // Both or neither: a test user with no listener (or the reverse) would be a half-open door, so compile never writes one.
+    ...(testUser ? { test_user: testUser, test_listener: { address: TEST_LISTENER_ADDRESS, port: TEST_LISTENER_PORT } } : {}),
   };
   // Previews: *.<host> for each shared app, behind that app's aud, after every exact host (cloudflared takes the first match).
   const wild = previews ? Object.entries(hosts).map(([h, x]) => [`*.${h}`, x]) : [];

@@ -12,6 +12,8 @@ import type { App } from "./registry.js";
  * ops/computer-images.sh, which points this name at the current build. Local only: `--pull never`. */
 export const BROWSER_IMAGE = "aidenhq/computer-browser:current";
 export const WEB_NETWORK = "aidenhq-computers";
+/** The one-shot canary browser's own bridge (ops/vm/canary-net.sh): only the gate's test listener is reachable from it. */
+export const CANARY_NETWORK = "aidenhq-canary";
 /** Replace the identity token wherever the page could have echoed it back (or an error quoted it). */
 const redact = (s: string, secret?: string) => (secret ? s.replaceAll(secret, "***") : s);
 export const SNAPSHOT_CAP = 20_000;
@@ -138,7 +140,7 @@ export async function webView(url: string, caller: { key: string }, req: { width
 
 /** `docker run` argv for one render: no mounts, env or secrets beyond HOME; non-root, no capabilities, read-only, limited. */
 export function renderArgs(network: string, image: string, script = VIEW_SCRIPT): string[] {
-  if (!/^container:[0-9a-f]{64}$/.test(network) && network !== WEB_NETWORK) throw new Error(`bad render network ${network}`);
+  if (!/^container:[0-9a-f]{64}$/.test(network) && network !== WEB_NETWORK && network !== CANARY_NETWORK) throw new Error(`bad render network ${network}`);
   return [
     "run", "--rm", "-i", "--init", "--pull", "never", "--network", network,
     "--user", "65534:65534", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m", "-e", "HOME=/tmp",

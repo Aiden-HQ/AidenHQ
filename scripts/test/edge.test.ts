@@ -8,7 +8,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.ts";
-import { checkIngress, GATE_SOCKET_URL, GATE_URL } from "../edge.ts";
+import { checkIngress, AUTH_PORT, GATE_PORT, GATE_SOCKET_URL, GATE_URL, TEST_LISTENER_ADDRESS, TEST_LISTENER_PORT } from "../edge.ts";
 
 const mods = join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods");
 const TUNNEL = "6ff42ae2-765d-4adf-8112-31c55c1551ef";
@@ -61,3 +61,26 @@ test("apply refuses ingress whose target isn't the gate", () => {
   assert.throws(() => checkIngress({ ...ok, "warp-routing": { enabled: true } }), /unexpected key warp-routing/);
 });
 
+test("the test user compiles into the gate's test block, with its own listener; absent writes neither", () => {
+  const off = compile(mods, inst({ edge }, [roadmap]));
+  assert.equal(off.edge.gate.test_user, undefined);
+  assert.equal(off.edge.gate.test_listener, undefined);
+
+  const on = compile(mods, inst({ edge: { ...edge, test_user: { email: "Canary@AidenHQ.Test", apps: ["roadmap"] } } }, [roadmap]));
+  assert.deepEqual(on.edge.gate.test_user, { email: "canary@aidenhq.test", apps: ["roadmap"] });
+  assert.deepEqual(on.edge.gate.test_listener, { address: TEST_LISTENER_ADDRESS, port: TEST_LISTENER_PORT });
+  // The listener's own port is reserved, and never one of the gate's or the sign-in listener's.
+  assert.notEqual(TEST_LISTENER_PORT, GATE_PORT);
+  assert.notEqual(TEST_LISTENER_PORT, AUTH_PORT);
+});
+
+test("a test user that isn't a real, separate, once-named shared app is refused", () => {
+  const bad = (test_user) => assert.throws(() => compile(mods, inst({ edge: { ...edge, test_user } }, [roadmap, { name: "notes", repo: "acme/notes", owner: "a", description: "d", port: 4200 }])));
+  bad({ email: "owner@acme.com", apps: ["roadmap"] }); // the owner's own address
+  bad({ email: "canary@aidenhq.test", apps: [] }); // no app
+  bad({ email: "canary@aidenhq.test", apps: ["notes"] }); // not shared: no share.host
+  bad({ email: "canary@aidenhq.test", apps: ["ghost"] }); // no such app
+  bad({ email: "canary@aidenhq.test", apps: ["roadmap", "roadmap"] }); // named twice
+  bad({ email: "not an email", apps: ["roadmap"] });
+  bad({ email: "canary@aidenhq.test", apps: ["roadmap"], extra: true });
+});
