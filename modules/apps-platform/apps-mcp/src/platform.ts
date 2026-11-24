@@ -326,7 +326,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const c = await resolveCommit(cfg.git, app, sha);
     // Only the app's own directory: that is all the deploy rebuilds. A diff that can't be read (too big, an object
     // missing) never blocks the card: it just can't be reviewed (Tier 2).
-    return { ...c, ...(await diffForDeploy(cfg.git, app, store.running(app.name), c.sha).catch(() => ({ diff: "", truncated: true }))) };
+    return { ...c, ...(await diffForDeploy(cfg.git, app, store.running(app.name) ?? store.goodDeploys(app.name)[0]?.sha, c.sha).catch(() => ({ diff: "", truncated: true }))) };
   };
 
   /** What an app_run would run now: the healthy deployed commit, the service, and the script's command at that commit. */
