@@ -163,7 +163,7 @@ describe("app_page_canary", () => {
     // The intake is the POST whose reference the page shows, not any POST with an id.
     // A whole token only: a body's id 42 is not shown by "142" or "4200" the page prints for something else.
     expect(script).toContain("shows(shown, v) && !shows(beforeShown, v)");
-    expect(script).toContain('split(/[^A-Za-z0-9_.:-]+/).includes(String(v))');
+    expect(script).toContain("t.replace(/[.:]+$/, '')");
     expect(script).toContain("intake.some((x) => x.status == null)");
     // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
     expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);

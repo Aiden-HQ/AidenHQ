@@ -190,8 +190,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // submission's ticket) is not proof that this POST saved anything.
     const beforeShown = String(beforeText);
     // A whole token in the page's text, never a substring of one: an answer's id 42 is not shown by "142" or "4200", so a
-    // telemetry body can't borrow a number the page prints for something else.
-    const shows = (text, v) => String(text).split(/[^A-Za-z0-9_.:-]+/).includes(String(v));
+    // telemetry body can't borrow a number the page prints for something else. A sentence's full stop or colon is not part
+    // of the reference, so "your reference is FB-123." shows FB-123.
+    const tokens = (text) => new Set((String(text).match(/[A-Za-z0-9][A-Za-z0-9_.:-]*/g) || []).flatMap((t) => [t, t.replace(/[.:]+$/, '')]));
+    const shows = (text, v) => tokens(text).has(String(v));
     let reference = null, intakeAnswer = null;
     for (const n of intake.filter((x) => x.id).slice(-4)) {
       try {
