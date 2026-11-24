@@ -130,7 +130,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
       case "job.ended":
         job!.ended = f; silent = undefined;
         if (FAILED.has(String(f.data.state))) failure = f;
-        else if (isChat && f.data.state === "done" && f.data.acted !== true) silent = f;
+        else if (isChat && f.data.state === "done" && f.data.acted !== true && f.data.no_reply !== true) silent = f;
         break;
       case "task.assignee_changed": if (f.subject === self) failure = silent = undefined; break;
       case "task.status_changed": if (f.subject === self && f.data.to !== "in_review") holds.clear(); break;
