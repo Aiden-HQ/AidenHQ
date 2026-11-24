@@ -109,7 +109,8 @@ outside them is adopted only once it has an explicit `ship` entry, so quiet star
 **`full` is unguarded at the ship layer.** The host's rules, human code-owner requirements and the kernel's authority still
 apply.
 
-**Parity with today.** `cautious` carries today's `pr-watch.ts` constants unchanged:
+**Parity with today.** `cautious` carries today's `pr-watch.ts` constants unchanged. `rounds` and `usd` are new backstops that
+pr-watch never had; raise or clear them per repo:
 
 | setting | today's constant |
 |---|---|
@@ -117,7 +118,7 @@ apply.
 | `ci_rounds: 3` | `BREAKER_ROUNDS` |
 | `same_check_heads: 2` | the breaker's same named check red on two heads |
 
-The fleet's own PRs behave the same after the move.
+Within those three limits the fleet's own PRs behave the same after the move.
 
 **Loosening goes to the owner.** The validator (`modules/ship/src/settings.ts`) compares the effective settings before and
 after the change, with presets resolved. A change is a loosening if it:
@@ -238,7 +239,7 @@ one PR.
 - the report says what was tried and what is left;
 - the author, or the first code owner, is assigned once.
 
-A fresh trigger resumes it.
+A fresh trigger resumes it, and clears the assignment ship added.
 
 **Generated files (zero config).** Globs come from three sources:
 
@@ -267,7 +268,7 @@ refuses it when the head has moved or the repo is `paused`.
 | Commit to an adopted PR's branch | The runner's patch is written through the GitHub API by the code host's existing installation of the instance's GitHub App (the identity its fleet commits already use; not the reviewer App): create the blobs, tree and commit, then update the ref as a fast-forward from `expected_head`. A moved ref fails the update, so commits are verified with no signing key. A fork is written to only when it allows maintainer edits and GitHub accepts the App's write; a refused write becomes a `hold`. The push planner (`plan.ts`) allows this one adopted ref. Foreign-head tiering stays. |
 | Update branch | Existing update-branch with `expected_head_sha`. |
 | Approve | `github.approve` as the reviewer identity (§5), with `commit_id` set to the head. On a new head its earlier review is dismissed. |
-| Enqueue | `enqueuePullRequest` with `expectedHeadOid`. |
+| Enqueue | `enqueuePullRequest` with `expectedHeadOid`, tiered exactly like Merge. |
 | Merge | `github.merge`, bound to the head. A handed-over PR's merge is filed by its task, with `{ generation, attempt }` in the record. |
 
 **At the effect.** github checks only that the head is unchanged and the repo isn't `paused`.
