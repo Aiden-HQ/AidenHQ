@@ -135,7 +135,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -160,6 +160,8 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
       headRunsOpts.push(opts ?? {});
       const refused = listingStatus?.();
       if (refused) return { status: refused, body: {} };
+      const thrown = listingThrow?.();
+      if (thrown) throw thrown;
       // The tests that need REST and the rollup to disagree (an old wedged run the rollup no longer lists) name the runs.
       if (restRuns) { const runs = restRuns(headRuns[1]); return { status: 200, body: { total_count: runs.length, check_runs: runs } }; }
       const head = open.find((p) => p.headRefOid === headRuns[1]);
@@ -1158,4 +1160,13 @@ test("a stale REST wedged check absent from the rollup does not wake a red head"
   } }));
   await c.watch.tick();
   assert.ok(!c.woke.some((w) => /Fix the failure on the PR's branch/.test(w.text ?? "")), "a stale wedged check is not this head's");
+});
+
+// self-review: a listing the client refuses as a typed need (404) is permanent too, so the red head is reported.
+test("a typed unreachable need on the check-runs listing still reports the red head", async (t) => {
+  const c = await rig(t, { listingThrow: () => Object.assign(new Error("acme/app isn't reachable"), { need: { cause: "unreachable", repo: "acme/app" } }) });
+  c.set([c.agentPr(87, redPr(87))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent listing refusal does not defer the failure forever");
+  assert.match(c.woke[0].text, /checks failed at/);
 });

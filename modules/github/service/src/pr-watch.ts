@@ -241,7 +241,12 @@ export function startPrWatch(o: PrWatchOptions) {
           total = Number(listed.body.total_count ?? 0);
           if (runs.length >= total || listed.body.check_runs.length < 100) break;
         }
-      } catch { return null; }
+      } catch (e) {
+        // The client answers a refused listing (a 404 for a head it cannot see, a 403 without Checks read) as a typed need, not a
+        // status, so a permanent one is "not this rule's" here too rather than an unread head deferred on every tick.
+        const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: string }).cause;
+        return cause === "unreachable" ? "permanent" : null;
+      }
       return { runs, complete: !total || runs.length >= total };
     }
     /** The REST check run a rollup node names: REST's `node_id` is the rollup's `id`, its numeric `id` the rollup's `databaseId`. */
@@ -786,7 +791,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (taskLive && wedgedOnHead && redNow.length && !pr.isDraft && pr.mergeable === "MERGEABLE" && pr.mergeStateStatus !== "BEHIND") {
+      } else if (taskLive && wedgedOnHead && redNow.length && opener && opener.branch === pr.headRefName && !pr.isDraft && pr.mergeable === "MERGEABLE" && pr.mergeStateStatus !== "BEHIND") {
         // A head behind main is the update rule's (GitHub updates the branch below), so it is not told to publish a head that is
         // about to be replaced: only a head this watcher will not move is the task's to fix.
         // The same eligibility the red-head path requires: a draft (or a head the watcher cannot merge) is not told to publish,
