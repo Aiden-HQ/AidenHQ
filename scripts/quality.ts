@@ -24,7 +24,8 @@ const gh = (...a: string[]) => JSON.parse(execFileSync("gh", a, { encoding: "utf
 function github() {
   const file = flag("github");
   if (file) return JSON.parse(readFileSync(file, "utf8"));
-  const repos = [...new Set(changesFrom(rows).map((c) => c.id.split("#")[0]!).filter((r) => r.includes("/")))];
+  // local/<repo>: this server's own change requests, not on GitHub.
+  const repos = [...new Set(changesFrom(rows).map((c) => c.id.split("#")[0]!).filter((r) => r.includes("/") && !r.startsWith("local/")))];
   const out: { reverts: Text[]; incidents: Text[] } = { reverts: [], incidents: [] };
   for (const repo of repos) {
     const item = (i: { url: string; title: string; body?: string; number: number }) => ({ id: i.url, url: i.url, title: i.title, body: i.body ?? "", repo, number: i.number });

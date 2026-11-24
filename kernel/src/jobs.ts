@@ -587,7 +587,16 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     /** The owner's Stop (the board, as `by`, an account id): every running job of a task, or of an agent, whatever module runs it; or one job (the Steward's reviewed stop). */
     stopRunning(f: { task: string } | { agent: string } | { job: string }, by: string) {
       const [col, v] = "task" in f ? ["task", f.task] : "agent" in f ? ["agent", f.agent] : ["id", f.job];
-      return (db.prepare(`SELECT * FROM jobs WHERE state = 'running' AND ${col} = ?`).all(v) as Record<string, any>[]).flatMap((r) => {
+      return (db.prepare(`SELECT * FROM jobs WHERE state IN ('admitted', 'running') AND ${col} = ?`).all(v) as Record<string, any>[]).flatMap((r) => {
+        if (r.state === "admitted") {
+          // Still launching (its computer or clones): ended now, so runAdmitted refuses to start it ("isn't waiting to start").
+          inTx(db, "job_stopped_early", () => {
+            if (!db.prepare("UPDATE jobs SET state = 'cancelled', final = 'Stopped before it started.', why = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(JSON.stringify({ cancelled: true, by }), Date.now(), r.id).changes) return;
+            queued(r);
+            jobFact(r, "job.ended", { state: "cancelled", exit: null, why: `stopped by ${by}` });
+          });
+          return [view(row(r.id)!)];
+        }
         const w = watchers.get(r.id);
         if (!w) return [];
         w.cancel(by);

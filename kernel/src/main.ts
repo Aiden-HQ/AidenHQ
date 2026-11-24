@@ -31,7 +31,7 @@ import { doorSource, readGate } from "./accounts.ts";
 import { routineWake, webhookWake, type Manifest } from "../../modules/apps-platform/src/app-access.ts";
 import { createSignin } from "./signin.ts";
 import { createAsserter, loadKey } from "./assert.ts";
-import { chiefOfStaff, createBackplane } from "./backplane.ts";
+import { chiefOfStaff, createBackplane, STOPPED_NOTE } from "./backplane.ts";
 import { createProjects } from "./projects.ts";
 import { createOutcomes, createPluginPost, delegateIds, lanePoster } from "./outcomes.ts";
 import { createBrake } from "./brake.ts";
@@ -256,7 +256,7 @@ const ownerApi = asApi(cpApi);
 // Projects (projects.ts): repos map into products; a PR's repo fills in its task's project, agents tag one by name.
 const projects = createProjects({ db: records.db, owner: ownerApi, products: () => (grantsTable().projects ?? {}) as Record<string, string[]>, log });
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
-const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, ownerTyped: asApi((p, init) => cpApi(p, init, true)), modules: modulesFile, facts, log });
+const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, ownerTyped: asApi((p, init) => cpApi(p, init, true)), modules: modulesFile, facts, log, stopJobs: async (task, by) => { const stopped = jobs.stopRunning({ task }, by); for (const j of stopped) await outcomes.post(j, { kind: "notice", body: STOPPED_NOTE }).catch((e: Error) => log("stop note failed", { job: j.id, err: e.message })); return stopped.length; } });
 // The owner's messages: the kernel's own (alerts, the approvals digest) and the board's and the runner's, queued for
 // owner-channel's notify (notify.ts).
 const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log, extra: () => [channels.digest()].filter((t): t is string => t !== null).map((text) => ({ kind: "digest" as const, text })) });

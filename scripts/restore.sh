@@ -115,5 +115,13 @@ if grep -q '^paperclip_running=yes' "$work/MANIFEST"; then
   echo "      Restore Paperclip's DB from its dump under $data/paperclip/instances/*/data/backups/"
   echo "      (see Paperclip docs: database backups), or use a backup taken with the stack stopped."
 fi
+if compgen -G "$work/primer.sql*" >/dev/null; then
+  # Primer's database directory is a bind mount: made here as this user (a missing one is created by Docker as root, and the
+  # database, running as this user, can't initialise in it).
+  mkdir -p "$data/modules/primer/db"
+  echo "NOTE: Self-hosted Primer was running, so its database came as a dump, not a data directory. After the stack is up (an installer-driven"
+  echo "      restore has already started Primer on an empty database, which this replaces), import it:"
+  echo "      zcat -f \"$work\"/primer.sql* >/dev/null && docker compose stop primer-server && docker compose up -d --wait primer-db && docker compose exec -T primer-db psql -U primer -d postgres -c 'DROP DATABASE IF EXISTS primer WITH (FORCE)' -c 'CREATE DATABASE primer' && zcat -f \"$work\"/primer.sql* | docker compose exec -T primer-db psql -v ON_ERROR_STOP=1 -U primer -d primer && docker compose up -d primer-server"
+fi
 echo "Restored. Start with: docker compose up -d (then systemctl --user start aidenhq-kernel)"
 echo "A live Postgres cluster skipped by the backup (the warehouse) comes back from its app's dumps: see its AGENTS.md."

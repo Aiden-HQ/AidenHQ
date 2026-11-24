@@ -293,6 +293,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const scheduled = /^(routine|scheduled)(:|$)/.test(w.cause);
     const said = (who: string) => fresh.filter((f) => f.who === who).map((f) => (who === "agent" ? `${agents.get(f.by!)?.name ?? "An agent"} (an agent, not ${owner}) wrote:\n${fence("AGENT", f.text)}` : f.text));
     const words: Words = { owner: said("owner"), agent: said("agent"), notice: said("notice") };
+    // A module's scheduled wake with a note (kernel wakes.ts schedule: cause `scheduled: <note>`): the note is the notice the agent is woken with.
+    const note = /^scheduled: (.+)$/s.exec(w.cause)?.[1];
+    if (note && !RESUME[w.cause]) words.notice.unshift(note);
     if (first && ownRequest(task)) words.task = "owner";
     else if (first && agentMade(task) && stripHidden(task.description).trim()) words.task = "agent";
     else if (first && moduleMade(task)) words.task = "module";

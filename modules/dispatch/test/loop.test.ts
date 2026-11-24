@@ -292,3 +292,11 @@ test("a run its machinery ended (lost, or killed by a signal) comes back as a re
   assert.equal(k.scheduled.length, 2, "its own error: not retried");
   assert.match(k.posts[0].body, /^\*\*Failed\*\* \(exit code 1\)/);
 });
+
+test("a scheduled wake's note reaches the agent as a notice", async () => {
+  const comments = [{ id: "a1", authorType: "agent", authorAgentId: "eng", body: "On it.", createdAt: "2026-11-18T10:00:00Z" }];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("wake_at:chat.r1", "scheduled: check the deploy"));
+  await k.dispatch.tick();
+  assert.match(k.started[0].prompt, /check the deploy/);
+});

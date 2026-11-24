@@ -150,7 +150,7 @@ const DIRECTORY = ["key", "name", "model", "roles", "profile", "description", "d
 /** The tool calls that record a wait on their job's task (POST /v1/wait, idle.ts). */
 const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];
 /** What a task shows when the owner stops its run: the kernel's own words, the dispatcher posts nothing else for it. */
-const STOPPED_NOTE = "**Stopped by the owner.** Say **continue** to pick up where it stopped.";
+export const STOPPED_NOTE = "**Stopped by the owner.** Say **continue** to pick up where it stopped.";
 /** What the listener serves: the router dispatches from this table and scripts/lean/contract-lock.ts reads it, so the lock can't miss a route. */
 export const ROUTES = [
   { method: "GET", path: "/healthz", auth: "none" },

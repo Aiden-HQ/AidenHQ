@@ -3,6 +3,7 @@
 #   data      the whole data dir: Paperclip, the board, the accounts (data/kernel/auth: auth.db and auth.secret), the gateway ledger,
 #             apps-mcp, ops-mcp, slack-live, the apps node's state and the rest. While Paperclip runs, its live database
 #             folder is left out; its hourly dumps (paperclip/instances/*/data/backups) carry it.
+#             Self-hosted Primer's Postgres (data/modules/primer/db) is left out while it runs: primer.sql[.gz] is its dump.
 #   runner    the runner's state dir (config/runner.yaml `state_dir`).
 #   volumes   every app volume (app-*), with its labels so the app's next deploy adopts it. A Postgres cluster that a
 #             running container uses is skipped: its app's dumps carry it (the warehouse dumps nightly into
@@ -113,13 +114,23 @@ snapshot() { # name dir [tar --exclude patterns...]
   echo "  $name: $dir ($(find "$work/$name.sqlite" -type f 2>/dev/null | wc -l | tr -d ' ') SQLite databases copied online)"
 }
 
+# Self-hosted Primer's Postgres cluster is a bind mount in the data dir: while it runs it is dumped (primer.sql) and its
+# raw directory left out of the data snapshot, as Paperclip's is; stopped, the directory is consistent and travels as is.
+skip=()
+if [ "$paperclip_running" = yes ]; then skip+=('./paperclip/instances/*/db'); fi
+primer_db="$(echo "$running" | grep -x 'primer-db' || true)"
+if [ -n "$primer_db" ]; then
+  docker compose --env-file "$env_file" exec -T "$primer_db" pg_dump -U primer -d primer | pack >"$work/primer.sql$ext"
+  skip+=('./modules/primer/db')
+  echo "  Primer is running: its database is dumped to primer.sql$ext"
+fi
 if [ "$paperclip_running" = yes ]; then
-  snapshot data "$data" './paperclip/instances/*/db'
+  snapshot data "$data" ${skip[@]+"${skip[@]}"}
   latest_dump="$(ls -1t "$data"/paperclip/instances/*/data/backups/* 2>/dev/null | head -1 || true)"
   [ -n "$latest_dump" ] && echo "  Paperclip is running: its database comes from dump $(basename "$latest_dump")" \
     || echo "  WARNING: Paperclip is running and has no DB dump yet; stop the stack for a full backup"
 else
-  snapshot data "$data"
+  snapshot data "$data" ${skip[@]+"${skip[@]}"}
 fi
 snapshot runner "$state"
 

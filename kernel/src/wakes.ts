@@ -904,7 +904,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (r.status !== 200 || !issue.assigneeAgentId) return { error: `no assigned task ${task}` };
       if (b.agent !== undefined && b.agent !== issue.assigneeAgentId) return { error: "the agent isn't the task's assignee" };
       const key = `wake_at:${module}.${id}`;
-      insert(key, issue.id, issue.assigneeAgentId, typeof b.cause === "string" ? `scheduled: ${b.cause.slice(0, 200)}` : "scheduled", at, at, `module:${module}`);
+      insert(key, issue.id, issue.assigneeAgentId, typeof b.cause === "string" ? `scheduled: ${b.cause.slice(0, 1000)}` : "scheduled", at, at, `module:${module}`);
       return { key };
     },
     /**
