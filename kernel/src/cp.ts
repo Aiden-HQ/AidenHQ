@@ -158,10 +158,14 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const settleScope = (t: Issue) =>
       roles.includes(SETTLE) && !isLogTask(t, logs) && !t.createdByUserId && (t.createdByAgentId || (isRoutineRun(t) && t.assigneeAgentId)) ? "settle" : undefined;
     /** A settler is told the state that blocks it, not to ask itself to pass the task on. */
-    const refuse = (t: Issue): never => {
+    const refuse = (t: Issue, child = false): never => {
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
-      if (roles.includes(SETTLE) && !isLogTask(t, logs)) {
-        const blocked = t.createdByUserId ? "it is the owner's own task" : isRoutineRun(t) ? "it has no agent to hold it" : "no agent made it";
+      if (roles.includes(SETTLE)) {
+        // A log task never reaches here: a status or patch write on one is refused above, naming itself.
+        const blocked = child ? "only its holder or the agent that made it adds a child under it"
+          : isRoutineRun(t) && !t.assigneeAgentId ? "it has no agent to hold it"
+          : t.createdByUserId ? "it is the owner's own task"
+          : "no agent made it";
         throw fail(403, "forbidden", `${t.identifier ?? t.id} can't be settled: ${blocked}`);
       }
       throw fail(403, "forbidden", `${t.identifier ?? t.id} isn't yours to change: ask ${who} or the Fleet Steward to pass it on`);
@@ -231,7 +235,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       if (leavesNoHolder(undefined, b)) throw fail(400, "bad_request", NO_HOLDER);
       const parent = typeof b.parentId === "string" && b.parentId ? await issue(b.parentId) : undefined;
       if (parent && isLogTask(parent, logs)) throw fail(403, "forbidden", `${parent.identifier ?? parent.id} is a log task: it takes comments only`);
-      const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
+      const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent, true)) : "own";
       const child: Record<string, unknown> = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
       const tag = tagOf("created", op);
       // A named project goes on the projects chain (projects.ts serial); an inherited one is read as it is, and a create never
