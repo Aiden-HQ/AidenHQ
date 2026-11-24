@@ -309,9 +309,12 @@ every(sendNotices, 5_000);
 // Facts are kept 400 days (docs/design/flow.md §8).
 every(() => { try { facts.prune(); } catch (e) { log("facts prune failed", { error: String((e as Error).message) }); } }, 864e5);
 // A drain ends the wake inbox's control-plane reads at once (the poll in flight stops at its next read; the next kernel polls).
-// Its writes (a reopen, an unblock) are never cut mid-flight: they may already have landed.
+// A write (a reopen, an unblock) already sent is never cut mid-flight (it may have landed); none starts once the drain has.
 const drainSignal = new AbortController();
-const wakeOwner = asApi((p, init) => cpApi(p, (init.method ?? "GET") === "GET" ? { ...init, signal: AbortSignal.any([AbortSignal.timeout(15_000), drainSignal.signal]) } : init));
+const wakeOwner = asApi((p, init) => {
+  if ((init.method ?? "GET") !== "GET") return drainSignal.signal.aborted ? Promise.reject(new Error("draining: the next kernel takes it")) : cpApi(p, init);
+  return cpApi(p, { ...init, signal: AbortSignal.any([AbortSignal.timeout(15_000), drainSignal.signal]) });
+});
 // Who owns a row across a restart. A restart drains the old kernel beside this one for at most DRAIN_MS (below): the old one
 // starts no job and no write after its drain begins, but finishes the launches and executions it had in flight. So a row this
 // process didn't make (a job still `admitted`, a write still `claimed`) is the previous kernel's until that process has exited
