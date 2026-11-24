@@ -362,15 +362,18 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const haveImage = () => exec(["image", "inspect", BROWSER_IMAGE]).then(() => true, () => false);
   const NO_IMAGE = `the browser image (${BROWSER_IMAGE}) isn't built on this host yet: ops/computer-images.sh builds it on every apply`;
   /** One run of a renderer script (view.ts's image and hardening) on a docker network: its stdout. */
-  const renderWith = async (network: string, script: string, input: object, timeout: number): Promise<string> => {
+  const renderWith = async (network: string, script: string, input: object, timeout: number, before?: () => Promise<object>): Promise<string> => {
     if (!(await haveImage())) throw new Error(NO_IMAGE);
     if (renders >= 2) await new Promise<void>((ok) => queue.push(ok)); // a finishing render hands its slot over
     else renders++;
     const name = `aidenhq-view-${randomBytes(6).toString("hex")}`;
     try {
+      // `before` runs once the slot is this render's, so a one-time code (the canary's handoff) is minted as the browser
+      // starts rather than when it joined the queue.
+      const full = before ? { ...input, ...(await before()) } : input;
       const args = renderArgs(network, BROWSER_IMAGE, script);
       args.splice(1, 0, "--name", name);
-      return await exec(args, { input: JSON.stringify(input), timeout });
+      return await exec(args, { input: JSON.stringify(full), timeout });
     } catch (e) {
       await exec(["rm", "-f", name]).catch(() => undefined); // a killed `docker run` leaves its container running
       throw e;
@@ -513,7 +516,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
   const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
   // The test-user canary's one-shot browser (canary.ts): the same image and hardening as a view, on the canary network.
-  const canaryRun = (network: string, script: string, input: object, timeout: number) => renderWith(network, script, input, timeout);
+  const canaryRun = (network: string, script: string, input: object, timeout: number, before?: () => Promise<object>) => renderWith(network, script, input, timeout, before);
   return { previewUrl, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, canaryRun, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;

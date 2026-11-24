@@ -165,8 +165,10 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
       if (typeof a !== "string" || !/^[a-z][a-z0-9-]{1,30}$/.test(a)) fail(`settings.edge.test_user.apps: ${a} is not an app name`);
       if (seen.has(a)) fail(`settings.edge.test_user.apps names ${a} twice`);
       seen.add(a);
-      const shared = instanceApps.find((x: Obj) => x.name === a && x.share?.host);
-      if (!shared) fail(`settings.edge.test_user.apps: ${a} isn't a shared app with a share.host`);
+      const shared = instanceApps.find((x: Obj) => x.name === a && x.share?.host) ?? fail(`settings.edge.test_user.apps: ${a} isn't a shared app with a share.host`);
+      // A module service shared through the gate (services.run.<svc>.share, `service` set by the compiler) is not an app
+      // apps-mcp's registry can resolve: the canary would fail before minting, so the setting is refused here.
+      if (shared.service) fail(`settings.edge.test_user.apps: ${a} is a module service, not an app app_page_canary can open`);
     }
     testUser = { email, apps: [...seen] };
   }

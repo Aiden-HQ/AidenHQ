@@ -28,7 +28,8 @@ docker network inspect "$NET" >/dev/null 2>&1 || docker network create --driver 
   -o com.docker.network.bridge.name="$BRIDGE" -o com.docker.network.bridge.enable_icc=false "$NET" >/dev/null
 
 # Our own nft table: an accept elsewhere never overrides a drop here. Input = anything addressed to the host itself; forward =
-# anywhere else. The one way in is the gate's test listener on the bridge gateway.
+# anywhere else. The one way in is the gate's test listener on the bridge gateway, and there is no way out at all: a signed-in
+# page's external request must not be able to carry anything off the host.
 nft -f - <<EOF
 table inet $TABLE
 delete table inet $TABLE
@@ -41,8 +42,9 @@ table inet $TABLE {
   }
   chain forward {
     type filter hook forward priority filter - 1; policy accept;
-    iifname "$BRIDGE" meta nfproto ipv6 counter drop
-    iifname "$BRIDGE" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } counter drop
+    # The canary browser reaches the test listener only, and nothing beyond it: no Internet, no LAN, no tailnet, no other
+    # container. Access to the listener is host input (the chain above), never a forwarded packet, so everything here drops.
+    iifname "$BRIDGE" counter drop
   }
 }
 EOF

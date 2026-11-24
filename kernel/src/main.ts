@@ -791,8 +791,11 @@ const accounts = await import("./accounts.ts").then((a) => a.openAccounts({
   feedbackWake: routineWake(ownerApi, accountLog),
   // The canary sessions' task read: a task as the control plane has it now, for the mint's and check's own assignment test.
   task: async (id: string) => {
+    // A task gone (404) is closed; any other failed read throws, so a control-plane blip never reads as "closed" and never
+    // ends a live test session (test-session.ts keeps it on a failed lookup).
     const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(id)}`);
-    if (r.status !== 200) return undefined;
+    if (r.status === 404) return undefined;
+    if (r.status !== 200) throw new Error(`control plane GET task ${id} → ${r.status}`);
     const i = r.json as { id?: string; identifier?: string; status?: string; assigneeAgentId?: string | null };
     return typeof i?.id === "string" ? { id: i.id, identifier: i.identifier ?? null, status: i.status, assigneeAgentId: i.assigneeAgentId ?? null } : undefined;
   },
