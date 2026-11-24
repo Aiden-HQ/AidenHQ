@@ -6,6 +6,7 @@
 // Every tools/call answer is read before it goes back: a module's needs_owner answer (sdk/src/vendor/needs.ts) goes to the
 // connection state (connection-state.ts), which routes it, and the agent gets the kernel's own words instead; a trusted
 // connection's other answers go back byte for byte.
+import { createHash } from "node:crypto";
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fence } from "../sdk/src/fence.ts";
@@ -21,6 +22,13 @@ type Log = (msg: string, fields?: Record<string, unknown>) => void;
 // A 10 MB task file as base64 (~13.4 MB), inside its tools/call JSON (tasks-mcp task_file_upload).
 const MAX_BODY = 14 * 1024 * 1024 + 64 * 1024;
 const MAX_ANSWER = 16 * 1024 * 1024;
+// What an agent may be handed back from one tools/call (a result with an image block, a screenshot, is exempt).
+const MAX_RESULT = 1024 * 1024;
+// Calls in flight to one connection's module; the rest queue.
+const CONN_LIMIT = 32;
+// A module's session-setup answers (initialize, tools/list) are kept this long per deployment.
+const SETUP_TTL_MS = 5 * 60_000;
+const SETUP_MAX = 500;
 const FORWARDED = new Set(["initialize", "notifications/initialized", "ping", "tools/list", "tools/call"]);
 // Request headers passed on: the MCP transport's own. Nothing else (the caller's bearer above all) leaves.
 const PASS = ["accept", "content-type", "mcp-session-id", "mcp-protocol-version", "last-event-id"];
@@ -113,6 +121,33 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
   needs?: () => Pick<ConnectionState, "hit" | "ok" | "down"> | undefined;
   log?: Log;
 }) {
+  // Session setup is the same for every caller of a deployment: the module's real initialize result (per requested protocol)
+  // and its upstream tools/list (per protocol and cursor) are kept, and each hit is answered with the caller's own id and, for a
+  // list, filtered by the caller's current grant. A deployment is the connection's manifest entry, its resolved address and its
+  // service key: a redeploy, a new address or a replaced credential makes a new one, and the old one's entries go. A module that
+  // answers with an `mcp-session-id` needs a real session: its deployment is pass-through, nothing cached.
+  const setup = new Map<string, { at: number; result: Record<string, unknown> }>();
+  const sessionful = new Set<string>();
+  const deployed = new Map<string, string>();
+  const forgetSetup = (connection: string) => {
+    for (const k of setup.keys()) if (k.startsWith(`${connection}\0`)) setup.delete(k);
+    for (const k of sessionful) if (k.startsWith(`${connection}\0`)) sessionful.delete(k);
+    deployed.delete(connection);
+  };
+  const deployment = (connection: string, conn: Connection, to: { host: string; port: number }, key: string) => {
+    const d = `${connection}\0${createHash("sha256").update(`${JSON.stringify(conn)}\0${to.host}:${to.port}\0${key}`).digest("hex")}`;
+    if (deployed.get(connection) !== d) { forgetSetup(connection); deployed.set(connection, d); }
+    return d;
+  };
+  const slots = new Map<string, { n: number; queue: (() => void)[] }>();
+  const acquire = async (connection: string): Promise<() => void> => {
+    const s = slots.get(connection) ?? { n: 0, queue: [] };
+    slots.set(connection, s);
+    if (s.n >= CONN_LIMIT) await new Promise<void>((go) => s.queue.push(go));
+    else s.n++;
+    return () => { const next = s.queue.shift(); if (next) next(); else s.n--; };
+  };
+
   /**
    * One tools/call sent once to a connection's module as `q` (no session): an approved conn.tool record's stored call, or the
    * host's health probe. A requester that is an agent's run acts at /v1/cp/agent/* as that agent, with its own key and the run it
@@ -132,7 +167,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
           try { resolve({ status: ur.statusCode ?? 502, sse: String(ur.headers["content-type"] ?? "").includes("text/event-stream"), text: (await readAll(ur, MAX_ANSWER)).toString("utf8") }); } catch (e) { reject(e); }
         });
         out.on("timeout", () => out.destroy(new Error(`${connection} didn't answer in time`)));
-        out.on("error", reject);
+        out.on("error", (e) => { resolver.forget(conn.url); forgetSetup(connection); reject(e); });
         out.end(body);
       });
       if (status >= 300) return { ok: false, text: `${connection} answered ${status}: ${text.slice(0, 2000)}` };
@@ -182,7 +217,8 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     let method = req.method, tool: string | undefined, body = Buffer.alloc(0), reqId: unknown = null, rec: Rec | undefined;
     // ms: the kernel's own time before the call goes on (identity, checks, signing); total: with the module's answer.
     let forwarded: number | undefined;
-    const outcome = (o: string) => log("proxy", { connection, ...(tool ? { tool } : {}), method, agent: who.key || who.module || null, ms: (forwarded ?? Date.now()) - t0, total: Date.now() - t0, outcome: o });
+    let bytes = 0, hasId = false, proto = "", cursor = "";
+    const outcome = (o: string) => log("proxy", { connection, ...(tool ? { tool } : {}), method, agent: who.key || who.module || null, ms: (forwarded ?? Date.now()) - t0, total: Date.now() - t0, bytes, outcome: o });
     if (req.method === "POST") {
       let msg: { method?: unknown; id?: unknown; params?: Record<string, unknown> };
       try { msg = JSON.parse(raw.toString("utf8")); } catch { throw fail(400, "bad_request", "the body must be one JSON-RPC message"); }
@@ -190,6 +226,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       method = typeof msg.method === "string" ? msg.method : "";
       const id = msg.id ?? null;
       reqId = id;
+      hasId = "id" in msg;
       const params = msg.params && typeof msg.params === "object" && !Array.isArray(msg.params) ? msg.params : undefined;
       const refuse = (code: number, message: string) => {
         outcome(message);
@@ -235,7 +272,8 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
           }
         }
         fwd = { name: tool, ...(params?.arguments !== undefined ? { arguments: params.arguments } : {}), ...(params?._meta !== undefined ? { _meta: params._meta } : {}) };
-      } else if (method === "tools/list") fwd = typeof params?.cursor === "string" ? { cursor: params.cursor } : undefined;
+      } else if (method === "tools/list") { cursor = typeof params?.cursor === "string" ? params.cursor : ""; fwd = cursor ? { cursor } : undefined; }
+      else if (method === "initialize") proto = typeof params?.protocolVersion === "string" ? params.protocolVersion : "";
       body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...("id" in msg ? { id } : {}), method, ...(fwd ? { params: fwd } : {}) }));
     }
     // A conn.tool record's outcome: the module's answer as it came (capped), once.
@@ -248,7 +286,28 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     if (!key) { done(false, "the service key is missing"); throw fail(503, "no_service_key", `${connection}'s service key is missing`); }
     headers.authorization = `Bearer ${key}`;
     const to = await resolver.resolve(conn.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
+    // Session setup from the kernel's own copy, while the deployment needs no session of its own.
+    const setupCall = req.method === "POST" && typeof req.headers["mcp-session-id"] !== "string" && (method === "initialize" || method === "notifications/initialized" || (method === "tools/list" && hasId));
+    let deploy = "", setupKey: string | undefined;
+    if (setupCall) {
+      deploy = deployment(connection, conn, to, key);
+      if (!sessionful.has(deploy)) {
+        if (method === "notifications/initialized") { outcome("ok-local"); res.writeHead(202).end(); return; }
+        setupKey = `${deploy}\0${method}\0${method === "initialize" ? proto : String(req.headers["mcp-protocol-version"] ?? "")}\0${cursor}`;
+        const hit = setup.get(setupKey);
+        if (hit && Date.now() - hit.at < SETUP_TTL_MS) {
+          const result = method === "tools/list" && Array.isArray(hit.result.tools) ? { ...hit.result, tools: hit.result.tools.filter((t: { name?: unknown }) => allowed.has(String(t?.name))) } : hit.result;
+          const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result });
+          bytes = Buffer.byteLength(out);
+          res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(out);
+          outcome("ok-cached");
+          return;
+        }
+      }
+    }
     let jti: string | undefined;
+    const release = await acquire(connection);
+    try {
     if (tool) {
       const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
       jti = signed.jti;
@@ -257,7 +316,6 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     }
     headers.host = new URL(conn.url).host;
     const timeoutMs = (timeout + 30) * 1000;
-    try {
       forwarded = Date.now();
       await new Promise<void>((resolve, reject) => {
         const out = http.request({ host: to.host, port: to.port, path: to.path, method: req.method, headers, timeout: timeoutMs }, async (ur) => {
@@ -270,13 +328,15 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
               // An untrusted connection's failure: its body reaches the agent only fenced, as a JSON-RPC error.
               const text = (await readAll(ur, MAX_ANSWER).catch(() => Buffer.alloc(0))).toString("utf8").slice(0, 4000);
               const err = JSON.stringify({ jsonrpc: "2.0", id: reqId, error: { code: -32603, message: fence(`${connection} answered ${status}: ${text}`, source(tool)) } });
-              res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(err) }).end(err);
+              bytes = Buffer.byteLength(err);
+              res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(err);
               return resolve();
             }
             const call = method === "tools/call";
-            const rewrite = status < 300 && (method === "tools/list" || call || !!rec);
+            const rewrite = status < 300 && (method === "tools/list" || method === "initialize" || call || !!rec);
             if (!rewrite) {
               res.writeHead(status, { ...hdrs, ...(ur.headers["content-length"] ? { "content-length": ur.headers["content-length"] } : {}) });
+              ur.on("data", (c: Buffer) => { bytes += c.length; });
               ur.pipe(res);
               ur.on("end", resolve);
               ur.on("error", reject);
@@ -284,15 +344,32 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             }
             const sse = String(ur.headers["content-type"] ?? "").includes("text/event-stream");
             const raw = await readAll(ur, MAX_ANSWER);
-            const text = raw.toString("utf8");
+            // A result too big for an agent's context is refused with its size, not truncated: the call itself did run.
+            if (call && raw.length > MAX_RESULT && !raw.includes('"type":"image"')) {
+              const said = `oversized-result: ${connection}.${tool} answered ${raw.length} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
+              done(true, said);
+              const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: said }], isError: true } });
+              bytes = Buffer.byteLength(out);
+              res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(out);
+              return resolve();
+            }
             // A trusted connection's answer (no record) is only read here: it goes back as it came unless it is a need.
             const asIs = call && !fenced && !rec;
+            // ...and parsed only if it carries what the kernel reads: a need or a sign-in marker.
+            if (asIs && !raw.includes("needs_owner") && !raw.includes(SIGNED_IN)) {
+              bytes = raw.length;
+              res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
+              return resolve();
+            }
+            const text = raw.toString("utf8");
+            let captured: Record<string, unknown> | undefined;
             let need: Need | undefined, success = false, account: string | undefined;
             let answer: string | undefined;
             try {
               answer = mapMessages(text, sse, (m) => {
               // Read before fencing strips structuredContent: the module's own answer, never upstream text inside it.
               if (call && m.id === reqId && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); account = success ? servedAccount(m.result) : undefined; }
+              if (setupKey && m.id === reqId && !("method" in m) && m.result && typeof m.result === "object" && (method === "initialize" || Array.isArray(m.result.tools))) captured = structuredClone(m.result);
               if (method === "tools/list" && Array.isArray(m.result?.tools)) m.result.tools = m.result.tools.filter((t: { name?: unknown }) => allowed.has(String(t?.name)));
               if (rec && m.id === reqId && !("method" in m)) { okAnswer = !m.error && m.result?.isError !== true; objects = m.result?.structuredContent?._aidenhq?.objects; }
               if (!fenced) return true;
@@ -302,13 +379,15 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             } catch (e) {
               // A trusted answer was never parsed before: one the kernel can't read still goes back as it came.
               if (asIs) {
+                bytes = raw.length;
                 res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
                 return resolve();
               }
               // Fail closed: an answer the kernel can't read strictly reaches the caller as an error naming no upstream text.
               done(false, `${connection}'s answer isn't well-formed JSON-RPC`);
               const err = JSON.stringify({ jsonrpc: "2.0", id: reqId, error: { code: -32603, message: `${connection}: ${(e as Error).message}` } });
-              res.writeHead(502, { "content-type": "application/json", "content-length": Buffer.byteLength(err) }).end(err);
+              bytes = Buffer.byteLength(err);
+              res.writeHead(502, { "content-type": "application/json", "content-length": bytes }).end(err);
               return resolve();
             }
             const state = call ? needs() : undefined;
@@ -317,20 +396,26 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
               const said = await state.hit(who, connection, need).catch((e: Error) => { log("connection need not routed", { connection, err: e.message }); return `${connection} isn't connected: only the owner can fix it. Don't retry.`; });
               done(false, said);
               const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: said }], isError: true } });
-              res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(out) }).end(out);
+              bytes = Buffer.byteLength(out);
+              res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(out);
               return resolve();
             }
             if (rec) done(okAnswer, text);
+            if (setupCall && status === 200) {
+              if (ur.headers["mcp-session-id"]) sessionful.add(deploy);
+              else if (setupKey && captured) { if (setup.size >= SETUP_MAX) setup.clear(); setup.set(setupKey, { at: Date.now(), result: captured }); }
+            }
             // A call the connection's sign-in served (its answer says so: needs.ts SIGNED_IN) proves the module connected: a full
             // need it had clears, and the tasks waiting on it wake. A tool that works signed out proves nothing.
             try { if (success && state?.down(connection, account)) state.ok(connection, { account, fullOnly: true }); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
+            bytes = asIs ? raw.length : Buffer.byteLength(answer!);
             if (asIs) res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
-            else res.writeHead(status, { ...hdrs, "content-length": Buffer.byteLength(answer!) }).end(answer);
+            else res.writeHead(status, { ...hdrs, "content-length": bytes }).end(answer);
             resolve();
           } catch (e) { reject(e); }
         });
         out.on("timeout", () => out.destroy(fail(504, "timeout", `${connection} didn't answer in time`)));
-        out.on("error", (e) => { resolver.forget(conn.url); reject((e as { status?: number }).status ? e : fail(502, "bad_upstream", `${connection} is unreachable (${e.message})`)); });
+        out.on("error", (e) => { resolver.forget(conn.url); forgetSetup(connection); reject((e as { status?: number }).status ? e : fail(502, "bad_upstream", `${connection} is unreachable (${e.message})`)); });
         out.end(body);
       });
       outcome("ok");
@@ -339,6 +424,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       outcome(String((e as { type?: string }).type ?? "error"));
       throw e;
     } finally {
+      release();
       if (jti) asserter.end(jti);
     }
   };

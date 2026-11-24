@@ -18,3 +18,10 @@ test("a connection's key holds no role of a module that has its own token; the t
   // A module with no token of its own keeps its roles on its connection's key.
   assert.deepEqual((await whoami("chat")).roles, ["kernel.wake"]);
 });
+
+test("a job token is checked before any connection secret is read", async () => {
+  const reads = [];
+  const whoami = createIdentity({ grants: () => ({}), jobcaps: () => ({}), connections: () => ({ a: { url: "http://a:1/mcp", auth_secret: "a_key", module: "a" } }), secret: (n) => { reads.push(n); return "x"; } });
+  await assert.rejects(whoami("ahqj_nonsense"));
+  assert.deepEqual(reads, ["gateway_job_secret"]);
+});

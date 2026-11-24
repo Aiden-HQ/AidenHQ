@@ -84,11 +84,7 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
   return async function whoami(token: string): Promise<Identity> {
     if (!token) throw new Unknown("no credential");
     const mod = (m: string, own = false): Identity => ({ kind: "module", module: m, roles: modules()[m]?.roles ?? [], tools: {}, credential: "", ...(own ? { own } : {}) });
-    // A module with a token of its own holds its roles, and speaks as itself, by that token alone: its connections' service key (a
-    // server that reads untrusted text, github-mcp beside the github module's code host, slack-mcp beside the Slack channel) is the
-    // module with no role.
-    for (const [, c] of Object.entries(connections())) if (same(token, secret(c.auth_secret))) return modules()[c.module]?.token ? { ...mod(c.module), roles: [], connection: new URL(c.url).hostname } : mod(c.module);
-    for (const [m, d] of Object.entries(modules())) if (d.token && same(token, secret(d.token))) return mod(m, true);
+    // A job token is told by its prefix and its HMAC alone: a job call reads no connection secret.
     if (token.startsWith("ahqj_")) {
       const p = verifyToken(secret("gateway_job_secret"), token, now());
       if (p?.k === "job") {
@@ -103,6 +99,11 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
       }
       throw new Unknown("a job's token is invalid or expired");
     }
+    // A module with a token of its own holds its roles, and speaks as itself, by that token alone: its connections' service key (a
+    // server that reads untrusted text, github-mcp beside the github module's code host, slack-mcp beside the Slack channel) is the
+    // module with no role.
+    for (const [, c] of Object.entries(connections())) if (same(token, secret(c.auth_secret))) return modules()[c.module]?.token ? { ...mod(c.module), roles: [], connection: new URL(c.url).hostname } : mod(c.module);
+    for (const [m, d] of Object.entries(modules())) if (d.token && same(token, secret(d.token))) return mod(m, true);
     throw new Unknown("not a credential the kernel knows");
   };
 }
