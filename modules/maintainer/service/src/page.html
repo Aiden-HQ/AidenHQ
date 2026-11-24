@@ -60,7 +60,7 @@
     pending = next; // at once, so a second edit before the answer comes back keeps this one
     if (!live) render();
     const edits = { ...(Object.keys(next.repos).length ? { repos: next.repos } : {}), ...(next.external_triage === undefined ? {} : { external_triage: next.external_triage }) };
-    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits })); lastGood = next; } catch (e) { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } });
+    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits })); lastGood = next; } catch (e) { if (live) say(`${e.message} Correct the value to go on.`, true); else { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } } });
   }
 
   const redraw = () => keepFocus(draw);

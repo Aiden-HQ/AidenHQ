@@ -67,7 +67,7 @@
     else next.paused = fields.paused;
     pending = next; // at once, so a second edit before the answer comes back keeps this one
     if (!live) render();
-    await inOrder(async () => { try { proposed(await tool("ship_configure", { edits: next })); lastGood = next; } catch (e) { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } });
+    await inOrder(async () => { try { proposed(await tool("ship_configure", { edits: next })); lastGood = next; } catch (e) { if (live) say(`${e.message} Correct the value to go on.`, true); else { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } } });
   }
   const own = (r) => ({ ...pending.repos[r.repo] });
 
@@ -103,7 +103,8 @@
   const put = (o, path, v) => { const ks = path.split("."); const last = ks.pop(); const t = ks.reduce((x, k) => (x[k] ??= {}), o); t[last] = v; };
   const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   const target = (key) => (key === "defaults" ? status.defaults : status.repos.find((r) => r.repo === key));
-  const presetFor = (key) => pending.repos[key]?.preset ?? target(key).preset;
+  // An entry with no preset of its own follows the defaults' preset, pending change included.
+  const presetFor = (key) => pending.repos[key]?.preset ?? (key !== "defaults" && target(key).inherits ? presetFor("defaults") : target(key).preset);
   // Generated and actions are one setting each (an entry's value replaces the inherited one whole), so a reset takes the whole of it.
   const rootOf = (path) => (/^(generated|actions)\./.test(path) ? path.split(".")[0] : path);
   // What a field returns to: the defaults' settings for an entry with no preset of its own (what effective() applies), else its preset's.
