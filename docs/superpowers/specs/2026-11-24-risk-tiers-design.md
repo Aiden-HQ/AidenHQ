@@ -453,8 +453,8 @@ moves once all three have merged (§11).
 **Lane 2: ship.**
 
 - `settings.ts`: `by_tier`, `unwatched`, the presets, refusals, `loosens()`. `safe.ts` trimmed to `carries()` and `judge()`
-  reading the tier and policy; `decide`'s merge per tier; `merges.ts`'s `requires_review` and the final tier check before a
-  merge or enqueue; the report's tier line; the Ship page grid.
+  reading the tier and policy; `decide`'s merge per tier; `merges.ts`'s `requires_review` and the final tier check before an
+  approve, merge or enqueue (github); `productMergeEligible()` needing `requires_review`; the report's tier line; the Ship page grid.
 - Tests: `judge()` per tier; a skip-tier PR on a gated repo with no GitHub approval rule merges; a carry refused when the
   policy differs; a pending tier waits.
 
