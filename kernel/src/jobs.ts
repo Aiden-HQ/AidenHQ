@@ -143,9 +143,11 @@ const afterHeader = (text: string) => {
   while (at < rest.length && /[ \t\u200b\ufeff\u2060]/.test(rest[at]!)) at++;
   return header.length + at + (rest.slice(at).match(ROLE_START)?.[0].length ?? 0);
 };
+/** True when the sentinel at `at` stands alone on a Markdown blockquote line ("> <|im_end|>"): quoted text, not a leak. */
+const blockquoted = (text: string, at: number, lineStart: number) => /^[\s>]*>$/.test(text.slice(lineStart, at).trimEnd());
 /** Where the reply's own text ends before a trailing header and its role ("Done.<|im_end|><|im_start|>user"), or undefined. */
 const beforeHeader = (text: string) => {
-  const end = text.length - (text.length - trimEnd(text).length);
+  const end = trimEnd(text).length;
   const role = text.slice(0, end).match(ROLE_END)?.[0];
   if (!role) return undefined;
   const at = end - role.length;
@@ -174,14 +176,22 @@ export function stripSentinels(text: string): string {
       from += lead + hit.length;
     }
   }
+  // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
+  // Its line start only moves back as the end does, so finding a blockquote line costs each character at most once.
+  let lineStart = text.length;
+  const lineStartAt = (at: number) => {
+    while (lineStart > at) lineStart = text.lastIndexOf("\n", lineStart - 2) + 1;
+    return lineStart;
+  };
   for (;;) {
-    const before = beforeHeader(text.slice(0, to));
-    if (before !== undefined) to = before;
+    const before = beforeHeader(text.slice(from, to));
+    if (before !== undefined) to = from + before;
     else {
-      const tail = trimEnd(text.slice(0, to));
-      const hit = SENTINELS.find((s) => tail.endsWith(s) && tail[tail.length - s.length - 1] !== "\\");
+      const tail = trimEnd(text.slice(from, to));
+      const hit = SENTINELS.find((s) => tail.endsWith(s) && tail[tail.length - s.length - 1] !== "\\"
+        && !blockquoted(tail, tail.length - s.length, lineStartAt(from + tail.length - s.length) - from));
       if (!hit) break;
-      to = tail.length - hit.length;
+      to = from + tail.length - hit.length;
     }
   }
   const body = trim(text.slice(from, to));

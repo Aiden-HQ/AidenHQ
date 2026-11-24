@@ -158,6 +158,8 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("<|im_end|>\n    "), "", "trailing whitespace does not hide a sentinel");
   assert.equal(stripSentinels("<\uff5cUser\uff5c>"), "", "DeepSeek's own turn marker is a sentinel");
   assert.equal(stripSentinels("<|im_start|>\u200bassistant\nDone."), "Done.", "padding before a role still finds it");
+  assert.equal(stripSentinels("<|im_start|>\nmodel<|im_end|>"), "model", "the trailing scan stays inside what the leading one left");
+  assert.equal(stripSentinels("The stop token is:\n> <|im_end|>"), "The stop token is:\n> <|im_end|>", "a marker a blockquote quotes stays");
   assert.equal(stripSentinels("  keep my padding  "), "  keep my padding  ", "a reply without a sentinel is left as it is");
   for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`]) {
     const t0 = Date.now();
