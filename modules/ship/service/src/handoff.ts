@@ -158,7 +158,7 @@ async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger:
   for (const t of was ? tasksOf(was) : []) await closeTask(d, t, `${pr.url} was handed over again (generation ${generation}).`);
   // A fresh trigger resumes a hold and clears the assignment ship added.
   if (was?.assigned?.length) await d.unassign(pr.repo, pr.number, was.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
-  const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(was?.report ? { report: was.report } : {}), did: [] };
+  const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(was?.report ? { report: was.report } : {}), ...(was?.approve ? { approve: was.approve } : {}), did: [] };
   // A fork's review starts with its adoption (code review holds forks until a member asks), its summary on the records task.
   if (pr.fork) a.holder = await recordTask(d.kernel, pr, a);
   d.state.put(a);

@@ -14,6 +14,11 @@ test("cautious carries today's pr-watch constants; full is unlimited; overrides 
   assert.deepEqual([d.by_tier.trivial.merge, d.by_tier.sensitive.merge, d.by_tier.standard.approve], ["off", "off", "on"], "an entry sits over the defaults' tiers");
 });
 
+test("an entry still in the old shape is never half-read: ship leaves the repo alone", () => {
+  assert.equal(effective({ repos: { "a/b": { preset: "full", merge: "off" } } }, "a/b", scope), null);
+  assert.equal(effective({ defaults: { approve: "safe" }, repos: { "a/b": "cautious" } }, "a/b", scope), null);
+});
+
 test("quiet until enabled: a fleet repo is worked, a maintainer_repos repo only with its own entry", () => {
   assert.ok(effective({}, "acme-agents/anything", scope));
   assert.equal(effective({}, "a/b", scope), null);

@@ -36,7 +36,7 @@ export function applyShipChange(raw: Dict, c: Change): { value: Dict; summary: s
     // caps, unwatched and each tier of by_tier merge field by field: lowering one cap, or one tier's merge, keeps the others.
     const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Dict) : undefined);
     const entry: Dict = { ...base, ...ch, ...Object.fromEntries(["caps", "unwatched"].filter((k) => obj(ch[k])).map((k) => [k, { ...obj((base as Dict)[k]), ...obj(ch[k]) }])) };
-    if (obj(ch.by_tier)) entry.by_tier = Object.fromEntries([...new Set([...Object.keys(obj((base as Dict).by_tier) ?? {}), ...Object.keys(obj(ch.by_tier)!)])].map((t) => [t, { ...obj(obj((base as Dict).by_tier)?.[t]), ...(obj(obj(ch.by_tier)![t]) ?? {}) }]));
+    if (obj(ch.by_tier)) entry.by_tier = Object.fromEntries([...new Set([...Object.keys(obj((base as Dict).by_tier) ?? {}), ...Object.keys(obj(ch.by_tier)!)])].map((t) => [t, (obj(ch.by_tier)![t] !== undefined && !obj(obj(ch.by_tier)![t]) ? obj(ch.by_tier)![t] : { ...obj(obj((base as Dict).by_tier)?.[t]), ...obj(obj(ch.by_tier)![t]) })]));
     // `reset: ["caps.usd", "by_tier.trivial.approve"]` drops those fields from the entry, so the preset's value applies again.
     if (reset !== undefined && !Array.isArray(reset)) throw new Error("reset is a list of fields, such as [\"caps.usd\", \"by_tier.trivial.approve\"]");
     for (const p of reset ?? []) {

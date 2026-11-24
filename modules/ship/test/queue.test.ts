@@ -32,7 +32,7 @@ function world() {
   };
   const deps = {
     state, kernel, log: () => {}, paused: () => false,
-    settings: (repo: string) => effective({ repos: { "a/b": { preset: "full", merge: "ready" } } }, repo, { fleet: ["a/b"], listed: [] }),
+    settings: (repo: string) => effective({ repos: { "a/b": { preset: "full" } } }, repo, { fleet: ["a/b"], listed: [] }),
     updateBranch: async () => {}, assign: async () => {}, comment: async (_r: string, _n: number, body: string) => (calls.push({ what: "comment", body }), 9),
   };
   const pr = (o: Partial<PrView> = {}): PrView => ({ repo: "a/b", number: 7, url: "https://github.com/a/b/pull/7", head: H1, base: "main", defaultBranch: "main", author: "me", authorBot: false, fork: false, canModify: false, draft: false, state: "open", labels: [], assignees: [], events: [], ...o });

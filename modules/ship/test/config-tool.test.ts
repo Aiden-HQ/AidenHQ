@@ -113,3 +113,7 @@ test("a cap edit and a reset make the right proposal: caps merge field by field,
   assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { reset: ["caps.usd.x"] }, scope }), /can't reset/);
   assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { caps: { usd: 1 }, reset: "caps.usd" }, scope }), /list of fields/);
 });
+
+test("a malformed tier cell is refused, never dropped", () => {
+  assert.throws(() => applyShipChange({ repos: { "a/b": "cautious" } }, { repo: "a/b", change: { by_tier: { sensitive: "off" } }, scope }), /by_tier\.sensitive/);
+});

@@ -89,14 +89,18 @@ export const staleApproval = (ap: Approved | undefined, head: string, r: Risk) =
 
 /**
  * The final check before the App approves, or ship merges or queues (github asks right before the write): the verdict read now, with
- * the live base and author. Why not, or undefined. A head not classified, or a verdict that can't be read, is a no.
+ * the live base and author. Why not, or undefined; `retry`: only for now (a head not classified yet, a verdict that can't be read),
+ * so the write is tried again rather than ended. An approval also needs the verdict's policy to be the one it was filed under and
+ * code review's pass to cover this head itself (a pass standing on an earlier head asks for its own judgement in the round).
  */
-export function effectRefusal(s: ShipSettings, v: Verdict, what: "approve" | "merge", app: Approved | undefined, head: string): string | undefined {
+export function effectRefusal(s: ShipSettings, v: Verdict, what: "approve" | "merge", app: Approved | undefined, head: string, policy?: string): { why: string; retry: boolean } | undefined {
   const r = riskOf(s, v);
-  if (r.state === "pending") return `${r.why}: try again once it is`;
-  if (what === "merge" && staleApproval(app, head, r)) return "an App approval under another policy stands on this head: ship dismisses it first";
-  if (what === "merge") return r.merge === "ready" ? undefined : r.state === "unwatched" ? "the repo's unwatched merge setting is off" : `tier \`${r.tier}\`: merge is off`;
-  if (r.state === "unwatched") return "code review doesn't watch this repo: nothing to approve on";
-  if (r.approve !== "on") return `tier \`${r.tier}\`: approval is ${r.approve}`;
-  return v.verdict === "pass" && v.kind !== "none" ? undefined : "code review hasn't passed this head";
+  const no = (why: string, retry = false) => ({ why, retry });
+  if (r.state === "pending") return no(`${r.why}: try again once it is`, true);
+  if (what === "merge" && staleApproval(app, head, r)) return no("an App approval under another policy stands on this head: ship dismisses it first");
+  if (what === "merge") return r.merge === "ready" ? undefined : no(r.state === "unwatched" ? "the repo's unwatched merge setting is off" : `tier \`${r.tier}\`: merge is off`);
+  if (r.state === "unwatched") return no("code review doesn't watch this repo: nothing to approve on");
+  if (r.approve !== "on") return no(`tier \`${r.tier}\`: approval is ${r.approve}`);
+  if (policy !== undefined && v.policy !== policy) return no("the head's review policy changed since the approval was filed", true);
+  return v.verdict === "pass" && v.kind === "completed" ? undefined : no("code review hasn't passed this head under its current policy", true);
 }

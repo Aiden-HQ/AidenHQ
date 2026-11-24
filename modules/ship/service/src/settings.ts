@@ -104,6 +104,8 @@ export function effective(raw: unknown, repo: string, scope: Scope): ShipSetting
   const key = Object.keys(isMap(r.repos) ? r.repos : {}).find((k) => k.toLowerCase() === repo.toLowerCase());
   if (!match(repo, scope.fleet) && !(key && match(repo, scope.listed))) return null;
   const d = defaultsOf(r);
+  // An entry still in the old shape (approve, merge or safe: refused by validate) is never half-read: ship leaves the repo alone.
+  if ([d.over, ...(key ? [entryOf((r.repos as Dict)[key], d.preset).over] : [])].some((o) => OLD.some((k) => k in o))) return null;
   if (!key) return resolve(d.preset, d.over);
   const entry = (r.repos as Dict)[key];
   const e = entryOf(entry, d.preset);

@@ -34,11 +34,14 @@ test("judge reads the head's tier: off never approves, observe reports, on appro
 test("the final check at the effect: the tier's approve and merge, a head not classified, and an App approval of another policy", () => {
   const off = effective({ repos: { "a/b": { preset: "full", by_tier: { sensitive: { approve: "off", merge: "off" } } } } }, "a/b", { fleet: [], listed: ["a/b"] })!;
   const sens = classified("sensitive");
-  assert.match(effectRefusal(off, sens, "approve", undefined, H1)!, /approval is off/);
-  assert.match(effectRefusal(off, sens, "merge", undefined, H1)!, /merge is off/);
+  assert.match(effectRefusal(off, sens, "approve", undefined, H1)!.why, /approval is off/);
+  assert.match(effectRefusal(off, sens, "merge", undefined, H1)!.why, /merge is off/);
   assert.equal(effectRefusal(off, classified("standard"), "merge", undefined, H1), undefined);
-  assert.match(effectRefusal(off, { ...PASS, tier: { state: "pending" } }, "merge", undefined, H1)!, /try again/);
-  assert.match(effectRefusal(off, classified("standard"), "merge", { head: H1, policy: "older" }, H1)!, /another policy/);
+  assert.deepEqual(effectRefusal(off, { ...PASS, tier: { state: "pending" } }, "merge", undefined, H1)!.retry, true, "not classified yet: tried again, not ended");
+  assert.match(effectRefusal(off, classified("standard"), "merge", { head: H1, policy: "older" }, H1)!.why, /another policy/);
+  assert.equal(effectRefusal(off, classified("standard"), "approve", undefined, H1, "p1"), undefined);
+  assert.match(effectRefusal(off, classified("standard"), "approve", undefined, H1, "older")!.why, /policy changed/);
+  assert.match(effectRefusal(off, classified("standard", { kind: "exhausted" }), "approve", undefined, H1)!.why, /under its current policy/);
   assert.equal(effectRefusal(off, classified("standard"), "merge", { head: H1, policy: "p1" }, H1), undefined);
 });
 

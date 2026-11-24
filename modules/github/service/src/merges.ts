@@ -379,7 +379,7 @@ export function createMerges(d: {
       // The same call asks ship's final tier check (the tier's merge, no App approval of another policy standing), with the live head, base and author.
       const at = q.ship || (q.byShip && d.ship) ? await d.ship?.generation(p.repo, p.number, { do: "merge", head: p.head, base: String(pull?.baseRefName ?? ""), association: String(pull?.authorAssociation ?? "") }) : undefined;
       if (q.ship && at?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
-      if (at?.refused) return fail(`ship's tier check refused the merge: ${at.refused}`);
+      if (at?.refused) return fail(`${at.retry ? "ship-tier-pending: " : ""}ship's tier check refused the merge: ${at.refused}`);
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
       if (q.byShip && !q.ship && d.ship && at?.generation === null) return fail("ship is paused, or this repo is switched off in ship: not merged");
       // The kernel files a module's write on any task: a fleet PR's merge ship filed stops when its task is cancelled.

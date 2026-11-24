@@ -115,18 +115,20 @@ createServer(async (req, res) => {
     if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end();
     const q = new URL(req.url, "http://x").searchParams;
     const repo = q.get("repo") ?? "", n = Number(q.get("pr")), what = q.get("do");
-    const gen = generationOf(state, paused() || !settingsOf(repo), repo, n);
+    let gen = generationOf(state, paused() || !settingsOf(repo), repo, n);
     // The final tier check before an approve, a merge or an enqueue (risk tiers §7), with github's live head, base and author: this
     // adoption's tier says whether the write may go; a verdict that can't be read, or a head not classified, is a no.
-    let refused: string | undefined;
+    let refused: { why: string; retry: boolean } | undefined;
     const s = settingsOf(repo);
     if ((what === "approve" || what === "merge") && s && gen.generation !== null && !gen.hold) {
       try {
         const v = await effects.verdict(repo, n, q.get("head") ?? "", { base: q.get("base") ?? undefined, association: q.get("association") ?? undefined });
-        refused = effectRefusal(s, v, what, (state.get(repo, n) as { approve?: { head: string; why?: string; policy?: string } } | undefined)?.approve, q.get("head") ?? "");
-      } catch (e) { refused = `code review's verdict couldn't be read (${String((e as Error).message).slice(0, 150)})`; }
+        refused = effectRefusal(s, v, what, (state.get(repo, n) as { approve?: { head: string; why?: string; policy?: string } } | undefined)?.approve, q.get("head") ?? "", q.get("policy") ?? undefined);
+      } catch (e) { refused = { why: `code review's verdict couldn't be read (${String((e as Error).message).slice(0, 150)})`, retry: true }; }
+      // The adoption is read again after the verdict: a hand-back, a stop or a re-adoption meanwhile ends the write.
+      gen = generationOf(state, paused() || !settingsOf(repo), repo, n);
     }
-    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...gen, ...(refused ? { refused } : {}) }));
+    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...gen, ...(refused ? { refused: refused.why, ...(refused.retry ? { retry: true } : {}) } : {}) }));
   }
   res.writeHead(req.url === "/healthz" ? 200 : 404).end();
 }).listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101 }));
