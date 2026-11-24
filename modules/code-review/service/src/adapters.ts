@@ -112,12 +112,12 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
     },
     async result(check): Promise<RunResult> {
       // billed_usd: the kernel's own billing of the check job's model token (so far, while it runs); the box's Review says what it spent too, never trusted.
-      const v = (await kernel.call("GET", `/v1/checks/${check}`)) as { state: string; receipt: { verdict: string; summary: string } | null; error: string | null; result?: Review; billed_usd?: number; waiting?: boolean; box_at?: string | null };
+      const v = (await kernel.call("GET", `/v1/checks/${check}`)) as { state: string; receipt: { verdict: string; summary: string } | null; error: string | null; result?: Review; expired?: boolean; billed_usd?: number; waiting?: boolean; box_at?: string | null };
       const billed = { ...(typeof v.billed_usd === "number" ? { billed_usd: v.billed_usd } : {}), ...(v.box_at ? { box_at: v.box_at } : {}) };
       if (v.state === "running") return { state: "running", ...billed, ...(v.waiting ? { waiting: true } : {}) };
       if (v.state === "done" && v.receipt?.verdict === "pass" && v.result?.version === 1) return { state: "done", review: v.result, ...billed };
       // A check that failed before it got a box (its snapshot couldn't be read, a restart) ran nothing, so spent nothing.
-      return { state: "failed", why: (v.error ?? v.receipt?.summary ?? `the check ended ${v.state}`).slice(0, 300), ...billed, ...(!v.box_at && billed.billed_usd === undefined ? { billed_usd: 0 } : {}) };
+      return { state: "failed", why: (v.error ?? (v.expired ? "the check's result expired (the kernel keeps results 14 days)" : v.receipt?.summary) ?? `the check ended ${v.state}`).slice(0, 300), ...billed, ...(!v.box_at && billed.billed_usd === undefined ? { billed_usd: 0 } : {}) };
     },
     async input(data) { return String((await kernel.upload("/v1/checks/inputs", data)).sha256); },
     async kept(check) {

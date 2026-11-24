@@ -22,11 +22,17 @@ test("records: details, context and big args clear; the veto key, summary, outco
   const young = records.file(filing({ task: "T-2" })), open = records.file(filing({ task: "T-3" }));
   records.decide(young.id, young.digest, "reject", "owner@x", "board");
   const stamp = (id: string, d: Date) => records.db.prepare("UPDATE records SET updated_at = ? WHERE id = ?").run(d.toISOString(), id);
+  const apply = records.file(filing({ kind: "kernel.apply", task: "T-4", args: { repo: "a/b", sha: "s".repeat(40), files: ["x"] } }));
+  records.decide(apply.id, apply.digest, "reject", "owner@x", "board");
+  stamp(apply.id, old());
   stamp(rejected.id, old());
   stamp(open.id, old(30));
   const out = await clearFinished(records.db, { pause: async () => {} });
-  assert.equal(out.records, 1);
+  assert.equal(out.records, 2);
   assert.ok(out.bytes > 9000);
+  // An apply's diff stays: it is the grader's evidence.
+  assert.ok(records.get(apply.id)!.card.details.startsWith("diff --git"));
+  assert.equal(records.get(apply.id)!.context, null);
   const r = records.get(rejected.id)!;
   assert.equal(r.card.details, EXPIRED_NOTE);
   assert.deepEqual([r.card.sentence, r.card.target, r.card.expired], ["Post to #eng", "#eng", true]);
@@ -47,6 +53,9 @@ test("records: details, context and big args clear; the veto key, summary, outco
 
 test("args keep every small key and drop a large value; progress keeps the last words and the step count", () => {
   assert.deepEqual(JSON.parse(keptArgs(JSON.stringify({ connection: "c", tool: "t", prs: [{ repo: "a/b", number: 1 }], text: "z".repeat(2000) }))), { connection: "c", tool: "t", prs: [{ repo: "a/b", number: 1 }] });
+  // A 30-PR batch's prs and only stay whatever their size.
+  const big = Array.from({ length: 30 }, (_, i) => ({ repo: "acme/app", number: i, head: "h".repeat(40), branch: "b".repeat(60) }));
+  assert.deepEqual(JSON.parse(keptArgs(JSON.stringify({ prs: big, only: big, note: "n".repeat(2000) }))), { prs: big, only: big });
   assert.equal(keptArgs("null"), "null");
   assert.deepEqual(JSON.parse(keptProgress(JSON.stringify({ said: "done", saidAt: "t", plan: [1], steps: [1, 2, 3] }))), { said: "done", saidAt: "t", stepCount: 3, expired: true });
   assert.equal(JSON.parse(keptProgress(keptProgress(JSON.stringify({ steps: [1, 2] })))).stepCount, 2);

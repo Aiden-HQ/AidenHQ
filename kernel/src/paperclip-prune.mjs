@@ -1,29 +1,36 @@
-// Runs INSIDE the Paperclip container (retention.ts pipes it to `node -`): the container has no psql, but its bundled `pg`
-// reaches the embedded Postgres. Prunes what Paperclip never prunes itself: heartbeat runs finished more than RUN_DAYS ago
-// with their dependents, and activity_log rows older than ACTIVITY_DAYS. The foreign keys are read from the live catalogue, so
-// a Paperclip upgrade that adds a referrer is handled (or fails loudly at the DELETE, never half-way: each batch is one
-// transaction).
-//   - run-owned rows (OWNED) are deleted with their run;
-//   - a nullable reference (activity_log.run_id, cost_events.heartbeat_run_id, ...) is set to NULL: the row outlives its run;
+// Runs INSIDE the Paperclip container (retention.ts pipes it to `node --input-type=module -`): the container has no psql, but its
+// bundled `pg` reaches the embedded Postgres. Prunes what Paperclip never prunes itself: heartbeat runs finished more than
+// RUN_DAYS ago with their dependents, and activity_log rows older than ACTIVITY_DAYS. The foreign keys are read from the live
+// catalogue, so a Paperclip upgrade that adds a referrer is handled (or fails loudly at the DELETE, never half-way: each batch is
+// one transaction). For a run:
+//   - run-owned rows (OWNED) are deleted with it, and its run log on disk;
+//   - a nullable NO ACTION reference (activity_log.run_id, cost_events.heartbeat_run_id, ...) is set to NULL: the row outlives its run;
 //   - a NOT NULL reference (decisions, native results, ...) keeps its run: a run something still depends on is never deleted;
-//   - ON DELETE CASCADE / SET NULL are the database's own.
-// Then the execution workspaces nothing references any more, and the run logs on disk of the deleted runs.
+//   - ON DELETE CASCADE / SET NULL are the database's own;
+//   - a run still owed its cost accounting, or holding a lease that is not released or expired (teardown or recovery pending), stays.
+// Then the execution workspaces nothing references any more. One pass at a time (an advisory lock), bounded in time (DEADLINE_MIN)
+// and per statement.
 import { createRequire } from "node:module";
 import { readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
-const RUN_DAYS = Number(process.env.RUN_DAYS), ACTIVITY_DAYS = Number(process.env.ACTIVITY_DAYS), BATCH = Number(process.env.BATCH || 500);
+const RUN_DAYS = Number(process.env.RUN_DAYS), ACTIVITY_DAYS = Number(process.env.ACTIVITY_DAYS), BATCH = Number(process.env.BATCH || 200);
+const deadline = Date.now() + Number(process.env.DEADLINE_MIN || 45) * 60_000;
 if (!(RUN_DAYS > 0) || !(ACTIVITY_DAYS > 0)) throw new Error("RUN_DAYS and ACTIVITY_DAYS are required");
 const OWNED = new Set(["heartbeat_run_events", "environment_leases", "workspace_operations"]);
 const LOGS = join(process.env.PAPERCLIP_HOME || "/paperclip", "instances/default/data/run-logs");
 const pgDir = process.env.PG_MODULE_DIR || "/app/node_modules/.pnpm/" + readdirSync("/app/node_modules/.pnpm").find((d) => d.startsWith("pg@")) + "/node_modules/pg";
-const { Client } = createRequire(import.meta.url)(pgDir);
+// import.meta.url of a module read from stdin is not a file URL: resolve `pg` from its own directory instead.
+const { Client } = createRequire(join(pgDir, "x.js"))(pgDir);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (name) => `"${String(name).replace(/"/g, '""')}"`;
+const bare = (t) => t.replace(/^public\./, "");
 
 const c = new Client({ host: process.env.PAPERCLIP_PG_HOST || "127.0.0.1", port: Number(process.env.PAPERCLIP_PG_PORT || 54329), user: process.env.PAPERCLIP_PG_USER || "paperclip", password: process.env.PAPERCLIP_PG_PASSWORD || "paperclip", database: process.env.PAPERCLIP_PG_DB || "paperclip" });
 await c.connect();
+if (!(await c.query("SELECT pg_try_advisory_lock(727274101) AS got")).rows[0].got) { console.log(JSON.stringify({ skipped: "another prune is running" })); await c.end(); process.exit(0); }
 await c.query("SET lock_timeout = '5s'");
+await c.query("SET statement_timeout = '120s'");
 
 /** Every foreign key into `parent`.id from another table, for the key columns that point at `id`: [{ table, col, notNull, del }]. */
 async function referrers(parent) {
@@ -34,23 +41,44 @@ async function referrers(parent) {
     JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.ck
     JOIN pg_attribute p ON p.attrelid = c.confrelid AND p.attnum = k.fk AND p.attname = 'id'
     WHERE c.contype = 'f' AND c.confrelid = $1::regclass`, [parent]);
-  return rows.map((r) => ({ table: r.tbl, col: r.col, notNull: r.notnull, del: r.del }));
+  return [...new Map(rows.map((r) => [`${r.tbl}.${r.col}`, { table: r.tbl, col: r.col, notNull: r.notnull, del: r.del }])).values()];
 }
-const dedupe = (rs) => [...new Map(rs.map((r) => [`${r.table}.${r.col}`, r])).values()];
 
-const stats = { runs: 0, owned: {}, nulled: {}, workspaces: 0, activity: 0, logs: 0 };
+const stats = { runs: 0, owned: {}, nulled: {}, workspaces: 0, activity: 0, logs: 0, stopped: null };
+const out = () => (stats.stopped = stats.stopped ?? (Date.now() > deadline ? "deadline" : null));
 
 // 1. Runs.
-const bare = (t) => t.replace(/^public\./, "");
-const runRefs = dedupe(await referrers("heartbeat_runs"));
+const runRefs = await referrers("heartbeat_runs");
 const owned = runRefs.filter((r) => OWNED.has(bare(r.table)));
-const nulls = runRefs.filter((r) => !OWNED.has(bare(r.table)) && (r.del === "a" || r.del === "r") && !r.notNull);
-const blockers = runRefs.filter((r) => !OWNED.has(bare(r.table)) && (r.del === "a" || r.del === "r") && r.notNull);
-const notBlocked = blockers.map((b) => `AND NOT EXISTS (SELECT 1 FROM ${b.table} x WHERE x.${q(b.col)} = r.id)`).join(" ");
-for (;;) {
-  const { rows } = await c.query(`SELECT r.id, r.log_store, r.log_ref FROM heartbeat_runs r WHERE r.status NOT IN ('queued', 'running') AND r.finished_at < now() - make_interval(days => $1) ${notBlocked} ORDER BY r.finished_at LIMIT $2`, [RUN_DAYS, BATCH]);
+const strict = (r) => !OWNED.has(bare(r.table)) && (r.del === "a" || r.del === "r");
+const nulls = runRefs.filter((r) => strict(r) && !r.notNull);
+const kept = [
+  ...runRefs.filter((r) => strict(r) && r.notNull).map((b) => `NOT EXISTS (SELECT 1 FROM ${b.table} x WHERE x.${q(b.col)} = r.id)`),
+  "r.cost_accounting_pending IS NOT TRUE",
+  "NOT EXISTS (SELECT 1 FROM environment_leases l WHERE l.heartbeat_run_id = r.id AND l.status NOT IN ('released', 'expired'))",
+].join(" AND ");
+const runWhere = `r.status NOT IN ('queued', 'running') AND r.finished_at < now() - make_interval(days => $1) AND ${kept}`;
+const wsRefs = await referrers("execution_workspaces");
+const unreferenced = wsRefs.map((b) => `NOT EXISTS (SELECT 1 FROM ${b.table} x WHERE x.${q(b.col)} = w.id)`).join(" AND ") || "TRUE";
+const wsWhere = `w.created_at < now() - make_interval(days => $1) AND ${unreferenced}`;
+// DRY=1 counts what a pass would delete and writes nothing.
+if (process.env.DRY) {
+  const n = async (sql, d) => Number((await c.query(sql, [d])).rows[0].n);
+  console.log(JSON.stringify({ dry: {
+    runs: await n(`SELECT count(*) AS n FROM heartbeat_runs r WHERE ${runWhere}`, RUN_DAYS),
+    workspaces: await n(`SELECT count(*) AS n FROM execution_workspaces w WHERE ${wsWhere}`, RUN_DAYS),
+    activity: await n("SELECT count(*) AS n FROM activity_log WHERE created_at < now() - make_interval(days => $1)", ACTIVITY_DAYS),
+    runsKept: { owned: owned.map((o) => o.table), nulled: nulls.map((o) => `${o.table}.${o.col}`) },
+  } }));
+  await c.end();
+  process.exit(0);
+}
+while (!out()) {
+  const { rows } = await c.query(`SELECT r.id, r.log_store, r.log_ref FROM heartbeat_runs r WHERE ${runWhere} ORDER BY r.finished_at LIMIT $2`, [RUN_DAYS, BATCH]);
   if (!rows.length) break;
   const ids = rows.map((r) => r.id);
+  // A log is only a file: removed first, so a failed batch leaves a run without its log, never a log nothing names.
+  for (const r of rows) if (r.log_store === "local_file" && r.log_ref && !r.log_ref.includes("..")) { try { unlinkSync(join(LOGS, r.log_ref)); stats.logs++; } catch (e) { if (e.code !== "ENOENT") console.error(`log ${r.log_ref}: ${e.message}`); } }
   await c.query("BEGIN");
   try {
     for (const o of owned) stats.owned[o.table] = (stats.owned[o.table] ?? 0) + (await c.query(`DELETE FROM ${o.table} WHERE ${q(o.col)} = ANY($1)`, [ids])).rowCount;
@@ -58,23 +86,20 @@ for (;;) {
     stats.runs += (await c.query("DELETE FROM heartbeat_runs WHERE id = ANY($1)", [ids])).rowCount;
     await c.query("COMMIT");
   } catch (e) { await c.query("ROLLBACK"); throw e; }
-  for (const r of rows) if (r.log_store === "local_file" && r.log_ref && !r.log_ref.includes("..")) { try { unlinkSync(join(LOGS, r.log_ref)); stats.logs++; } catch (e) { if (e.code !== "ENOENT") throw e; } }
   await sleep(200);
 }
 
-// 2. Execution workspaces nothing references (an issue, a surviving lease or operation, a derived workspace...). The self reference
-// counts, so a workspace someone was derived from stays. Only those older than RUN_DAYS.
-const wsRefs = dedupe(await referrers("execution_workspaces")).filter((r) => r.del !== "c");
-const unreferenced = wsRefs.map((b) => `NOT EXISTS (SELECT 1 FROM ${b.table} x WHERE x.${q(b.col)} = w.id)`).join(" AND ") || "TRUE";
-for (;;) {
-  const r = await c.query(`DELETE FROM execution_workspaces WHERE id IN (SELECT w.id FROM execution_workspaces w WHERE w.created_at < now() - make_interval(days => $1) AND ${unreferenced} LIMIT $2)`, [RUN_DAYS, BATCH]);
+// 2. Execution workspaces nothing references: any foreign key into one counts (an issue, a lease, a derived workspace...). Only
+// those older than RUN_DAYS.
+while (!out()) {
+  const r = await c.query(`DELETE FROM execution_workspaces WHERE id IN (SELECT w.id FROM execution_workspaces w WHERE ${wsWhere} LIMIT $2)`, [RUN_DAYS, BATCH]);
   stats.workspaces += r.rowCount;
   if (r.rowCount < BATCH) break;
   await sleep(200);
 }
 
 // 3. Activity.
-for (;;) {
+while (!out()) {
   const r = await c.query("DELETE FROM activity_log WHERE id IN (SELECT id FROM activity_log WHERE created_at < now() - make_interval(days => $1) LIMIT $2)", [ACTIVITY_DAYS, BATCH * 4]);
   stats.activity += r.rowCount;
   if (r.rowCount < BATCH * 4) break;

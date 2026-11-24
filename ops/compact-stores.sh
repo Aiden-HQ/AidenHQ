@@ -9,7 +9,11 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 what="${1:-}"
-data="${AIDENHQ_DATA_DIR:-$PWD/data}"
+# Under the apply lock (docs/operations.md "Host one-offs"): an apply that starts meanwhile waits, so none restarts the kernel
+# between the stop and the swap.
+if [ -z "${COMPACT_LOCKED:-}" ]; then exec env COMPACT_LOCKED=1 flock data/apply.lock "$0" "$@"; fi
+# The data dir as the kernel resolves it (kernel/src/env.ts: the process env over the checkout's .env).
+data="$(node --disable-warning=ExperimentalWarning --input-type=module -e 'import("./kernel/src/env.ts").then((m) => console.log(m.dataDir))')"
 die() { echo "compact-stores: $*" >&2; exit 1; }
 free_kb() { df -Pk "$1" | awk 'NR==2 {print $4}'; }
 confirm() { read -r -p "$1 Type 'compact' to continue: " a; [ "$a" = compact ] || die "not confirmed"; }
@@ -22,6 +26,7 @@ kernel() {
   confirm "This stops $unit (the gateway and tool proxy go down for about a minute) and replaces $db."
   started=0
   trap 'if [ "$started" = 0 ]; then systemctl --user start '"$unit"'; fi' EXIT
+  [ -z "$(systemctl --user list-units --no-legend 'aidenhq-apply-*' 2>/dev/null)" ] || die "an apply unit is active"
   systemctl --user stop "$unit"
   # The stopped unit's kernel drains: wait until no kernel process is left, then nothing holds the file.
   for _ in $(seq 1 300); do pgrep -f '[k]ernel/src/main\.ts' >/dev/null || break; sleep 2; done
@@ -46,9 +51,11 @@ const after = counts(dst);
 for (const t of Object.keys(before)) if (before[t] !== after[t]) throw new Error(`table ${t}: ${before[t]} rows before, ${after[t]} after`);
 console.log(`compact copy verified: ${Object.keys(before).length} tables, same row counts; ${Math.round(statSync(file).size / 1e6)} MB -> ${Math.round(statSync(out).size / 1e6)} MB`);
 JS
-  mv "$db" "$db.precompact"
+  # kernel.db never goes missing: the original is hard-linked aside, then the verified copy is renamed over it (one atomic step).
+  rm -f "$db.precompact"
+  ln "$db" "$db.precompact"
   rm -f "$db-wal" "$db-shm"
-  mv "$db.compact" "$db"
+  mv -f "$db.compact" "$db"
   systemctl --user start "$unit"
   started=1
   echo "kernel restarted on the compact database; the old one is $db.precompact (delete it once the board looks right)"

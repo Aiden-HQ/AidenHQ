@@ -2,11 +2,11 @@
 // Paperclip's run history and activity log are pruned (Paperclip prunes neither). One daily timer; small batches, each its own
 // transaction on the kernel's one connection, so the event loop is never held for long.
 //   records  finished (not review, owner, approved, claimed), by updated_at (each move sets it, so it is the terminal move):
-//            card.details -> an explicit note (card.expired), context -> NULL, args -> its small keys. The veto key (connection,
+//            card.details -> an explicit note (card.expired; an apply's stays: it is the grader's evidence), context -> NULL, args -> its small keys. The veto key (connection,
 //            tool), the PRs a write names (prs, only, repo, head...) are small and stay; `paths` is filled from the diff first
 //            (work.ts reads it), the summary lines of the card, the outcome and the reviewer's note stay.
 //   jobs     finished (not admitted, running), by ended: full_prompt -> NULL (only a running job resumes from it: jobs.ts
-//            adoptRestart), progress -> the last words, the plan, and the step count (work.ts shows it).
+//            adoptRestart), progress -> the last words and the step count (work.ts shows it).
 //   checks   finished (not running), by ended: spec -> '{}' (a re-ask writes it again: checkjobs.ts start), result -> the
 //            expired marker (a re-ask of a result recipe runs it again). The receipt, verdict, hash and cost stay.
 // `expired` (ms) marks a cleared row and leaves a partial index, so each day's scan reads only what is newly due.
@@ -35,10 +35,12 @@ function ensure(db: DatabaseSync) {
 
 const json = (s: unknown): any => { try { return JSON.parse(String(s)); } catch { return undefined; } };
 
-/** A record's args as they stay: each top-level key whose value is small. The connection and tool of a tool call (the veto's key), a PR's repo and head, a write's `prs` and `only` are; the body of a post is not. */
+/** The args keys readers bind to later whatever their size: a veto's connection and tool, a write's PRs (flow, quality and the kernel loop read `prs` and `only`; a 30-PR batch is several KB). */
+const ARG_KEYS = new Set(["connection", "tool", "prs", "only"]);
+/** A record's args as they stay: those keys, and every other top-level key whose value is small (a PR's repo and head, a path); the body of a post is not. */
 export function keptArgs(args: string): string {
   const a = json(args);
-  if (a && typeof a === "object" && !Array.isArray(a)) return JSON.stringify(Object.fromEntries(Object.entries(a).filter(([, v]) => JSON.stringify(v ?? null).length <= ARG_MAX)));
+  if (a && typeof a === "object" && !Array.isArray(a)) return JSON.stringify(Object.fromEntries(Object.entries(a).filter(([k, v]) => ARG_KEYS.has(k) || JSON.stringify(v ?? null).length <= ARG_MAX)));
   return args.length <= ARG_MAX ? args : "null";
 }
 /** A card with its details replaced by the note, and the files its diff names (the paths work.ts reads for a record that has none). */
@@ -63,7 +65,7 @@ export async function clearFinished(db: DatabaseSync, { now = Date.now(), stoppi
   const cutoff = now - KERNEL_DAYS * DAY, iso = new Date(cutoff).toISOString(), out: Cleared = { records: 0, jobs: 0, checks: 0, bytes: 0 };
   // Prepared per table when it exists (a statement on a missing table fails to prepare).
   const sel = {
-    records: () => db.prepare(`SELECT id, card, args, context, paths FROM records WHERE ${REC_DUE} AND updated_at < ? ORDER BY updated_at LIMIT ?`),
+    records: () => db.prepare(`SELECT id, kind, card, args, context, paths FROM records WHERE ${REC_DUE} AND updated_at < ? ORDER BY updated_at LIMIT ?`),
     jobs: () => db.prepare(`SELECT id, full_prompt, progress FROM jobs WHERE ${JOB_DUE} AND COALESCE(ended, at) < ? ORDER BY COALESCE(ended, at) LIMIT ?`),
     checks: () => db.prepare(`SELECT id, spec, result FROM checks WHERE ${CHECK_DUE} AND COALESCE(ended, at) < ? ORDER BY COALESCE(ended, at) LIMIT ?`),
   };
@@ -82,7 +84,8 @@ export async function clearFinished(db: DatabaseSync, { now = Date.now(), stoppi
       const work = () => {
         for (const r of rows) {
           if (table === "records") {
-            const card = keptCard(r.card), args = keptArgs(r.args);
+            // An apply's diff is the grader's evidence (work.ts, modules/grading) whenever the task is graded: its card stays (about 1 MB in all).
+            const card = r.kind === "kernel.apply" ? { card: r.card, paths: [] } : keptCard(r.card), args = keptArgs(r.args);
             out.bytes += size(r.card, r.args, r.context) - size(card.card, args);
             update.run(card.card, args, card.paths.length && !r.paths ? JSON.stringify(card.paths) : null, now, r.id);
           } else if (table === "jobs") {
@@ -108,9 +111,10 @@ export async function clearFinished(db: DatabaseSync, { now = Date.now(), stoppi
 export function pruneIn(container: string, run = spawn): Promise<string> {
   const script = readFileSync(new URL("./paperclip-prune.mjs", import.meta.url));
   return new Promise((ok, no) => {
-    const child = run("docker", ["exec", "-i", "-e", `RUN_DAYS=${PAPERCLIP_RUN_DAYS}`, "-e", `ACTIVITY_DAYS=${PAPERCLIP_ACTIVITY_DAYS}`, container, "node", "--input-type=module", "-"], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = run("docker", ["exec", "-i", "-e", `RUN_DAYS=${PAPERCLIP_RUN_DAYS}`, "-e", `ACTIVITY_DAYS=${PAPERCLIP_ACTIVITY_DAYS}`, "-e", "DEADLINE_MIN=45", container, "node", "--input-type=module", "-"], { stdio: ["pipe", "pipe", "pipe"] });
     let out = "", err = "";
-    const t = setTimeout(() => child.kill("SIGTERM"), 30 * 60_000);
+    // The worker bounds itself (DEADLINE_MIN) and holds an advisory lock against a second pass; this only ends a hung docker client.
+    const t = setTimeout(() => child.kill("SIGTERM"), 70 * 60_000);
     child.stdout!.on("data", (d) => (out += d));
     child.stderr!.on("data", (d) => (err += d));
     child.on("error", (e) => (clearTimeout(t), no(e)));

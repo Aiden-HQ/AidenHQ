@@ -260,15 +260,19 @@ tasks for the Fleet Steward; neither tells the owner.
 `kernel/src/retention.ts` runs ten minutes after the kernel starts and then daily (stopped by a drain, one batch of 100 rows at a time):
 
 - **Kernel rows.** A finished row loses its big text 14 days after its last move. Records: the card's details (replaced by an
-  "expired" note, `card.expired`), `context`, and every arg value over 1,000 characters (the connection and tool a veto binds to,
-  and a write's `prs` and `only`, stay; `paths` is filled from the diff first). Jobs (any state but admitted and running):
+  "expired" note, `card.expired`; an apply's stays, it is the grader's evidence), `context`, and every arg value over 1,000
+  characters (the connection and tool a veto binds to, and a write's `prs` and `only`, always stay; `paths` is filled from the
+  diff first). Jobs (any state but admitted and running):
   `full_prompt` and the step list (`progress` keeps the last words and `stepCount`). Checks (any state but running): `spec` and
   `result` (the receipt, verdict and cost stay; a result recipe asked again after expiry runs again and restores its spec).
   `expired` (ms) marks a cleared row. Live rows are never touched.
 - **Paperclip.** `kernel/src/paperclip-prune.mjs` runs inside the Paperclip container (`docker exec`, its bundled `pg`):
   heartbeat runs finished more than 7 days ago with their events, leases and operations, their run logs on disk, execution
   workspaces nothing references any more, and `activity_log` rows older than 30 days. Foreign keys are read from the live
-  catalogue: a nullable reference is set NULL, a NOT NULL reference keeps its run. Paperclip's own UI loses runs older than a week.
+  catalogue: a nullable reference is set NULL, a NOT NULL reference keeps its run, and so does a run still owed its cost
+  accounting or holding a lease that is not released or expired. One pass at a time (an advisory lock), stopped after 45
+  minutes; `DRY=1` (`docker exec -i -e DRY=1 -e RUN_DAYS=7 -e ACTIVITY_DAYS=30 <container> node --input-type=module - <
+  kernel/src/paperclip-prune.mjs`) counts what a pass would delete. Paperclip's own UI loses runs older than a week.
   The container is `AIDENHQ_PAPERCLIP_CONTAINER` (default `aidenhq-paperclip-1`).
 
 Clearing rows frees pages for reuse but never shrinks a file: `ops/compact-stores.sh kernel` (a short kernel stop, VACUUM INTO,
