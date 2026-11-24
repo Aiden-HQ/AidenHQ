@@ -37,6 +37,13 @@ data="$(cd "$data" && pwd)"
 grep -q '^format=3$' "$work/MANIFEST" || {
   echo "error: this backup was made by an older scripts/backup.sh; restore it with that version's restore.sh" >&2; exit 1; }
 cat "$work/MANIFEST"
+# An incomplete backup (scripts/backup.sh exit 1) holds a live copy of these databases, which may not start or may be inconsistent.
+lost="$(sed -n 's/^unrecoverable=//p' "$work/MANIFEST")"
+if [ -n "$lost" ] && [ "${AIDENHQ_RESTORE_INCOMPLETE:-}" != "yes" ]; then
+  echo "error: this backup is INCOMPLETE: no recoverable dump for: $lost" >&2
+  echo "       pick a complete backup, or salvage this one with AIDENHQ_RESTORE_INCOMPLETE=yes scripts/restore.sh $work" >&2
+  exit 1
+fi
 stamp="$(date +%Y%m%d-%H%M%S)"
 
 # <name>.tar into dir: move aside what it replaces, extract, then put each online SQLite copy over its file copy (with
