@@ -2,7 +2,7 @@
 // rubric (trusted storage on the board, never the task's description). Code gathers the evidence per deliverable kind; facts
 // code verified (merged, checks green, deployed SHA, an apply's outcome) go to the model as trusted, everything an agent wrote
 // is fenced as data. One schema-bound, tool-less call to a model of another family than the author's: GPT Luna, then GLM Flash
-// when Luna has no route (no ZDR endpoint).
+// when Luna cannot answer at all (no route for it, or any other failed call).
 // Missing evidence is never a pass, and pending evidence (checks running, a card open, nothing deployed yet) is never a
 // revision request: the row waits (awaiting_evidence) and the runner's poll looks again.
 import { existsSync, readFileSync } from "node:fs";
@@ -37,8 +37,6 @@ export const GRADE_SCHEMA = {
 /** The grader models in order (the owner's pick): GPT Luna, then GLM Flash, never the author's own family. */
 const GRADERS: [string, RegExp][] = [[LUNA, /openai|gpt/i], [GLM, /z-ai|glm/i]];
 export const graderModels = (authorModel = "") => GRADERS.filter(([, re]) => !re.test(String(authorModel))).map(([m]) => m);
-/** A call the model has no route for (OpenRouter's 404: no ZDR endpoint for it): the only failure the next model is asked after. */
-const NO_ROUTE = /^OpenRouter 404\b/;
 
 /** The standard criteria for a deliverable kind: the `- ` lines of rubrics/<kind>.md. */
 export function template(kind: string, dir: string = fileURLToPath(new URL("../../rubrics", import.meta.url))) {
@@ -428,25 +426,27 @@ function answerOf(raw: any, n: number): { verdict: string; criteria: { id: strin
 
 /**
  * The verdict on one deliverable version: { outcome: satisfied | needs_revision | cannot_judge | grading_failed | error, model, criteria }.
- * The next model is asked only when this one has no route (a 404). Any other call error (a timeout, a 5xx), or an answer that
- * cannot be parsed into the rubric's criteria, is `grading_failed` (retried on the ladder, not the owner's decision); a refusal
- * is `error`.
+ * A call that fails at all — no route for the model (a 404), a timeout, a 5xx, a provider's content-policy block — falls over to
+ * the next configured model, and only when every model has failed is the pass `grading_failed` (retried on the ladder, not the
+ * owner's decision). An answer that cannot be parsed into the rubric's criteria is `grading_failed` too, and a refusal is
+ * `error`: neither is a call error, so neither asks another model.
  */
 export async function grade({ rubric, deliverable, facts, data, request, images = [], authorModel = "", ask }: { rubric: string[]; deliverable: any; facts: string[]; data: Record<string, string>; request?: unknown; images?: { url: string; label?: string }[]; authorModel?: string; ask: (model: string, prompt: any) => Promise<any> }): Promise<any> {
   const models = graderModels(authorModel) as string[];
   if (!models.length) return { outcome: "error", model: "", criteria: [], reason: "no grader model independent of the author's" };
   if (!rubric.length) return { outcome: "grading_failed", model: "", criteria: [], reason: "the rubric has no criteria to grade" };
   const prompt = gradePrompt({ rubric, deliverable, facts, data, request: stripRubric(request), images });
-  let failure: { model: string; reason: string } | undefined;
+  const failures: { model: string; reason: string }[] = [];
   let cannotJudge: { model: string; criteria: any[] } | undefined;
   for (const model of models) {
     let raw: any;
     try {
       raw = await ask(model, prompt);
     } catch (err: any) {
-      failure = { model, reason: `the grader failed (${String(err.message ?? err).slice(0, 160)})` };
-      if (NO_ROUTE.test(String(err.message ?? err))) continue;
-      break;
+      // Any failed call asks the next model: the failure may be scoped to this model's provider (a content-policy block, a
+      // 5xx) as much as to its route (a 404). The gateway already retried the call in-process, so this is failover, not retry.
+      failures.push({ model, reason: `the grader failed (${String(err.message ?? err).slice(0, 160)})` });
+      continue;
     }
     const a = answerOf(raw, rubric.length);
     if (!a) return { outcome: "error", model, criteria: [], reason: "the grader refused" };
@@ -460,7 +460,8 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
     return { outcome: a.verdict, model, criteria: a.criteria };
   }
   if (cannotJudge) return { outcome: "cannot_judge", ...cannotJudge };
-  return { outcome: "grading_failed", model: failure!.model, criteria: [], reason: failure!.reason };
+  const last = failures.at(-1)!;
+  return { outcome: "grading_failed", model: last.model, criteria: [], reason: `every grader model failed (asked ${failures.map((f) => f.model).join(", ")}): ${last.reason}` };
 }
 
 
@@ -492,16 +493,20 @@ export async function escalationFor(ev: any, deliverable: any, deps: any): Promi
   return { reason: evidencePremise(ev.awaiting, now.facts), facts: now.facts };
 }
 
-/** The grader's note on the task: what it found, per criterion, and what follows. */
-export function gradeNote(g: any, rubric: string[], outcome: string, { version, reason }: { version?: unknown; reason?: string } = {}) {
+/**
+ * The grader's note on the task: what it found, per criterion, and what follows. `retryInMs` (the ladder's wait after this failed
+ * pass, `graderRetryDelay`) says when a `grading_failed` pass is asked again; without it the note keeps its general wording.
+ */
+export function gradeNote(g: any, rubric: string[], outcome: string, { version, reason, retryInMs }: { version?: unknown; reason?: string; retryInMs?: number } = {}) {
   const lines = g.criteria.map((c: any) => `- ${c.met === "yes" ? "met" : c.met === "no" ? "**not met**" : "**not shown**"}: ${rubric[Number(c.id) - 1] ?? `criterion ${c.id}`}. ${c.evidence}`);
+  const again = typeof retryInMs === "number" && retryInMs > 0 ? `the grader runs again in ${Math.max(1, Math.round(retryInMs / 60_000))} minute${Math.round(retryInMs / 60_000) === 1 ? "" : "s"}` : "the grader runs again shortly";
   const head =
     outcome === "satisfied"
       ? "**Graded: done.** The work meets its rubric."
       : outcome === "needs_revision"
         ? "**Graded: needs revision.** Fix the criteria below, then finish the task again; the grader checks the new version."
         : outcome === "grading_failed"
-          ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader failed or returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
+          ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader failed or returned no usable criteria"}). No rubric verdict yet: ${again}.`
           : `**Done, ungraded: ${reason}.** The task is closed as done rather than held; its delegator can reopen it with what to change.`;
   return [head, lines.join("\n"), `_Grader: ${g.model || "none"}; version ${String(version ?? "").slice(0, 80) || "(none)"}. The grader's words, not the owner's._`, GRADER_MARKER].filter(Boolean).join("\n\n");
 }

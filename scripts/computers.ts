@@ -7,12 +7,12 @@ import { join } from "node:path";
 
 /** The images, and the image each builds FROM (services/computer/images/<name>/Dockerfile). `browser` is the one browser image
  * (agent-browser and its pinned Chrome): every computer builds on it and apps-mcp renders its views in it, so it is always built. */
-export const COMPUTER_IMAGES = { browser: null, "agent-base": "browser", engineer: "agent-base" };
+export const COMPUTER_IMAGES = { browser: null, "agent-base": "browser", engineer: "agent-base", session: "engineer" };
 /** The fields of a compiled agent that this file reads. */
 export interface ComputerAgent { image?: string | null; profile?: string; enabled_tools?: Record<string, string[]>; roles?: string[] }
 
 /** The images an agent may name. */
-const AGENT_IMAGES = ["agent-base", "engineer"];
+const AGENT_IMAGES = ["agent-base", "engineer", "session"];
 
 function dirHash(dir: string) {
   const h = createHash("sha256");

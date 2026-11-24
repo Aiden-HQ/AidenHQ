@@ -13,7 +13,7 @@
 // The UI Reviewer's design review is advisory: it never holds a merge.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DESIGN_REVIEW_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
+import { DESIGN_REVIEW_CHECK, contextStatus, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
@@ -29,6 +29,16 @@ type Queue = { id: string; state: string; /** Filed by the ship module (a fleet 
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
+/** How long a branch's rules (required checks, merge queue) are kept before they are read again. */
+const RULES_MS = 10 * 60_000;
+/**
+ * decide's input from ship's list read (ship-routes.ts OPEN_PRS_QUERY: an open PR's node and its repo's default branch). The node
+ * has no compare to the base: GitHub's BEHIND stands in (the merge queue reads the real one before it merges).
+ */
+function listView(pr: any, main: { name: string; oid?: string; rollup?: any }) {
+  return { repository: { defaultBranchRef: { name: main.name }, pullRequest: { ...pr, state: "OPEN", reviews: pr.reviews ?? { nodes: [] },
+    baseRef: { compare: { behindBy: pr.mergeStateStatus === "BEHIND" ? 1 : 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } } } } };
+}
 /** What a PR's record-level wait says while GitHub is signed out: the reason the card shows for a merge that cannot move yet. */
 const CONNECTED_WAIT = "GitHub is signed out: waiting for the owner to reconnect it";
 /** The same while the App migration holds merges (migrate.ts): reconnecting GitHub cannot lift it, so it never claims a sign-out. */
@@ -67,6 +77,9 @@ export function createMerges(d: {
   flow?: Flow;
   /** The task that opened a PR (pr-tasks.json, pr-tasks.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
   taskOf?: (repo: string, n: number) => string | null;
+  /** A task's id from its identifier (WOR-12), as the kernel's work read resolves it (by its jobs): a module's record (ship's)
+   * names its task by id only, and pr-tasks.json keys a PR's owner by the identifier. */
+  taskIdOf?: (identifier: string) => Promise<string | undefined>;
   /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
   identifierOf?: (record: string) => Promise<string | undefined>;
   /** A task's status (GET /v1/work?task=): a merge ship filed on a task that has since ended is never called. */
@@ -190,15 +203,21 @@ export function createMerges(d: {
   async function requiredOf(repo: string, branch: string) {
     return (await rulesOf(repo, branch)).required;
   }
-  /** The branch's required checks (undefined: classic protection unreadable) and whether it merges through a merge queue. */
+  /** The branch's required checks (undefined: classic protection unreadable) and whether it merges through a merge queue, kept
+   * RULES_MS per repo and branch: ship asks for every open PR on every pass, and branch rules rarely change. */
+  const rulesCache = new Map<string, { at: number; v: { required: string[] | undefined; queue: boolean } }>();
   async function rulesOf(repo: string, branch: string) {
+    const k = `${repo.toLowerCase()}@${branch}`;
+    const hit = rulesCache.get(k);
+    if (hit && Date.now() - hit.at < RULES_MS) return hit.v;
     const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);
     if (rules.status >= 300) throw new Error(`GitHub GET rules: ${rules.status}`);
     const queue = mergePath(rules.body) === "queue";
     const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
-    if (classic.status === 403) return { required: undefined, queue };
-    if (classic.status >= 300 && classic.status !== 404) throw new Error(`GitHub GET required_status_checks: ${classic.status}`);
-    return { required: requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body), queue };
+    if (classic.status >= 300 && ![403, 404].includes(classic.status)) throw new Error(`GitHub GET required_status_checks: ${classic.status}`);
+    const v = { required: classic.status === 403 ? undefined : requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body), queue };
+    rulesCache.set(k, { at: Date.now(), v });
+    return v;
   }
   /** The required checks red on the PR's latest merge_group run (GitHub's `gh-readonly-queue/<base>/pr-<n>-…` branch). */
   async function groupFailing(repo: string, number: number, base: string, required: string[]) {
@@ -299,7 +318,8 @@ export function createMerges(d: {
       const rules = open ? await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")) : [];
       const required = rules ?? fallbackRequired(checks);
       if (open && !rules && !required.length) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
-      const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required, checks } : undefined;
+      // Code review's verdict is read below, once decide says merge (its wait is the record's reason there).
+      const ship = open ? { queue: false, approve: false, required, checks } : undefined;
       const v = decide(data, p.head, ship);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
       const pull = data.repository.pullRequest;
@@ -377,6 +397,12 @@ export function createMerges(d: {
         // The PR itself may have changed owners since the card was filed (a done task handed it to a successor): pr-tasks.json's
         // current row is the authority, and a row naming another task ends this card rather than merging the successor's PR.
         const now = d.taskOf?.(p.repo, p.number);
+        // A record a module filed (ship's) names its task by id: the row's identifier is resolved to its task's id once, and kept.
+        if (now && now !== q.task && !q.taskIdentifier && d.taskIdOf) {
+          const id = await d.taskIdOf(now).catch((e: Error) => { log("merge queue: task id not read (retrying)", { pr: p.url, task: now, err: says(e).slice(0, 300) }); return null; });
+          if (id === null) return wait("task-status");
+          if (id === q.task) { q.taskIdentifier = now; save(); }
+        }
         if (now && now !== q.task && now !== q.taskIdentifier) return fail(`${p.url} now belongs to ${now}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
@@ -638,19 +664,28 @@ export function createMerges(d: {
      * context, as an adoption's merge is judged here, and the required checks red on the head. On a merge queue branch (mergePath)
      * a ready PR is `enqueue`, with the required checks red on its latest merge_group run (a removal's cause). `approval`: the PR
      * waits only on an approval of its head (decide would answer `approve` if ship may approve), so ship judges its evidence.
+     * `view`: the PR as ship's list read already has it (ship-routes.ts OPEN_PRS_QUERY) with its default branch: no PR read, and
+     * the checks from its rollup unless that is cut at 100. Code review's verdict is read once and decided on (`findingsKey`
+     * names its findings, so new findings at one head are a new fix_review).
      */
-    async decision(repo: string, number: number, head: string) {
-      const data = await readPr(repo, number);
+    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number }) {
+      // A skipped image scan is judged on the PR's files, which only the full read has.
+      const listed = view && !skippedImageScan(view.pr);
+      const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);
       const g = await d.reviewGate(repo, number, head);
-      const checks = await allChecks(repo, head);
+      const rollup = data.repository.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+      // Every context by name, advisory ones included (a branch may require them), as the REST read gives them.
+      const fromRollup = () => (rollup?.contexts?.nodes ?? []).map((n: any) => ({ name: String(n.name ?? n.context ?? ""), status: contextStatus(n) })).filter((c: { name: string }) => c.name)
+        .map((c: { name: string; status: string | null | undefined }) => ({ name: c.name, ok: ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(String(c.status)), pending: ["PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS"].includes(String(c.status)) || c.status == null }));
+      const checks = listed && !rollup?.contexts?.pageInfo?.hasNextPage ? fromRollup() : await allChecks(repo, head);
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
-      const ctx = { queue, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks };
+      const ctx = { queue, verdict: g, required, checks, ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       const v = decide(data, head, { ...ctx, approve: false });
       const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
-      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
+      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "fix_review" && g && "findingsKey" in g && g.findingsKey ? { findingsKey: g.findingsKey } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
     enqueue(id: string, args: { prs: { repo: string; number: number; head: string; base?: string }[]; generation?: number }, task?: string, identifier?: string, tier?: number, byShip?: boolean): Promise<Outcome> {

@@ -7,10 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { convert, manifest, saveApp } from "../src/github-app.ts";
 
-test("the manifest is public and asks for pull requests and statuses only", () => {
+test("the manifest is public and asks for pull requests, statuses and contents only", () => {
   const m = manifest("AidenHQ review", "https://k.example/setup/github-app/s");
   assert.equal(m.public, true);
-  assert.deepEqual(m.default_permissions, { pull_requests: "write", statuses: "write", metadata: "read" });
+  assert.deepEqual(m.default_permissions, { pull_requests: "write", statuses: "write", contents: "write", metadata: "read" });
 });
 
 test("GitHub's answer becomes the vault's github-app/{app_id,key.pem}, 0600", async () => {

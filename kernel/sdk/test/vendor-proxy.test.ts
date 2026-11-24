@@ -156,6 +156,26 @@ describe("sign-in", () => {
 
 });
 
+describe("a working sign-in is never marked expired", () => {
+  it("a refused refresh (a reused single-use refresh token) keeps a token the vendor still answers; a real refusal marks expired and heals when the token answers", async () => {
+    const dir = tmp();
+    writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "at", refresh_token: "used", expires_at: Date.now() + 60_000, client_id: "cid", token_endpoint: "https://auth.example.com/token" }));
+    let accepted = true;
+    const fetchImpl = (async () => Response.json({ error: "bad_refresh_token" }, { status: 200 })) as unknown as typeof fetch;
+    const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir, scopes: { recommended: [] }, fetchImpl, accepts: async () => accepted, healMs: 10 });
+    // Within the refresh margin, the refresh is refused: the token still answers, so it is used and stays ok.
+    expect(await auth.headers()).toEqual({ authorization: "Bearer at" });
+    expect(auth.status().state).toBe("ok");
+    // Once the vendor refuses the token too, the sign-in is expired; the next good answer heals it without a restart.
+    accepted = false;
+    await expect(auth.refresh!()).rejects.toThrow();
+    expect(auth.status().state).toBe("expired");
+    accepted = true;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(auth.status().state).toBe("ok");
+  });
+});
+
 describe("device sign-in", () => {
   const endpoints = { authorize: "https://auth.example.com/authorize", token: "https://auth.example.com/token" };
   const device = { endpoint: "https://auth.example.com/device/code", client_id: "Iv1.acme", scopes: ["repo", "read:org"] };

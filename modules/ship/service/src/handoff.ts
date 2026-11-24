@@ -2,10 +2,11 @@
 // generation, one Engineer task (kernel module-task `source` key ship:<repo>/<n>:<generation>), and for a fork, code review's ask.
 // Only a member with write access counts, never a bot or the App; each event is consumed once. A hold or a hand-back is sticky: a
 // label still on the PR, or `handoff: all`, never adopts it again; only a newer trusted event starts a new generation.
-// The loop (loop.ts) reads each PR and calls intake() once per pass, before rounds.ts's round(). The fleet's own PRs are adopted by
-// the loop itself (their task is the one that opened them); this file is the hand-off of everyone else's.
+// The loop (loop.ts) reads each PR and calls intake() once per pass, before rounds.ts's round(). A PR the code host opened for a task
+// is adopted at first sight, owned by that task; everyone else's is a member's hand-off.
 // The adoption's Engineer task is filed when a round first needs it (fileTask), so a PR that merges clean never starts one; a fork's
 // is filed at adoption, as code review's summary of the fork goes there.
+import type { ActionRun } from "./actions.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { Adoption, State } from "./state.ts";
 
@@ -36,7 +37,7 @@ export type Kept = Adoption & {
   /** The head and facts of a report that failed to post or edit: the next pass at that head posts it again (the comment never stays stale). */
   reportStale?: { head: string; facts: import("./report.ts").Facts };
   /** Counters for the caps: per head (wakes), per PR (rounds, ci, review) and the heads each required check was red on. */
-  counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[] };
+  counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[]; /** The head GitHub was asked to update (red while behind a green base): once per head. */ updated?: string };
   /** The direct merge filed for a head: its kernel record and attempt (a failed one is filed again with the next attempt). */
   merge?: { head: string; attempt: number; record: string };
   /** A fork's code review was asked for (retried each pass until it was). */
@@ -50,6 +51,17 @@ export type Kept = Adoption & {
   approve?: { head: string; attempt: number; record: string; why?: string };
   /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
   freshAsked?: string;
+  /** The repo's own steps at a stage (actions.ts): which step, at which head, and how it ended. */
+  action?: ActionRun;
+  /** A task's PR: when this head was first seen (a done task's PR closes once its head is half an hour old). */
+  seen?: { head: string; at: string };
+  /** A stack: the open PR whose head branch (`branch`) is this PR's base, as last seen; and the retarget filed once it merged. */
+  stack?: { number: number; branch: string; /** The head it reached the default branch at, once its base was asked in. */ landed?: string };
+  retarget?: { head: string; record: string };
+  /** A task's PR: the cancelled task it was noted as left open for (a successor's cancellation is noted in its turn). */
+  kept?: string;
+  /** The head whose wedged check run its owner was told about. */
+  wedgedTold?: string;
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
 };
@@ -95,13 +107,28 @@ async function newest(d: HandoffDeps, pr: PrView, after?: { at: string; event: s
 
 /**
  * One pass's hand-off for one PR: adopts it on a fresh trusted trigger (a new generation, its task, code review's ask for a fork),
- * puts it on hold when a member hands it back, adopts a fleet PR at open and, under `handoff: all`, a writer's PR once. Returns the
- * adoption as it stands (undefined: not adopted).
+ * puts it on hold when a member hands it back, adopts a task's PR at first sight (`task`: the kernel id of the task the code host
+ * opened it for) and, under `handoff: all`, a writer's PR once. Returns the adoption as it stands (undefined: not adopted).
  */
-export async function intake(d: HandoffDeps, pr: PrView): Promise<Kept | undefined> {
+export async function intake(d: HandoffDeps, pr: PrView, task?: string): Promise<Kept | undefined> {
   const s = d.settings(pr.repo);
-  const was = d.state.get(pr.repo, pr.number) as Kept | undefined;
+  let was = d.state.get(pr.repo, pr.number) as Kept | undefined;
   if (!s?.enabled || d.paused() || pr.state !== "open") return was;
+  // A task's PR: adopted at first sight, generation 1, on the task that opened it (an adoption kept from before owners were
+  // recorded is given its owner here).
+  if (task && !was) {
+    const a: Kept = { repo: pr.repo, number: pr.number, generation: 1, trigger: { kind: "fleet", event: `opened:${pr.url.toLowerCase()}`, actor: task, at: new Date().toISOString(), head: pr.head }, task, owner: { kind: "task", task }, hold: null, did: [] };
+    d.state.put(a);
+    d.log("adopted", { pr: pr.url, generation: 1, trigger: "fleet", task });
+    return a;
+  }
+  // A successor that published to the PR's branch owns it now (and an adoption kept from before owners were recorded gets one).
+  if (task && was && (was.owner?.kind === "task" ? was.owner.task !== task : !was.owner && was.trigger.kind === "fleet")) {
+    was = { ...was, task, owner: { kind: "task", task }, ...(was.hold?.kind === "stopped" ? { hold: null } : {}) };
+    d.state.put(was);
+  }
+  // A task's PR stays its task's: a member's label or comment hands over nothing (github merges it only for that task).
+  if (was?.owner?.kind === "task") return was;
   const { trigger, handback } = await newest(d, pr, was ? { at: was.trigger.at, event: was.trigger.event } : undefined);
   if (trigger) {
     // `handoff: none` is the fleet's own PRs only; otherwise a member's trigger adopts any PR, a fork included.
@@ -130,7 +157,7 @@ async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger:
   for (const t of was ? tasksOf(was) : []) await closeTask(d, t, `${pr.url} was handed over again (generation ${generation}).`);
   // A fresh trigger resumes a hold and clears the assignment ship added.
   if (was?.assigned?.length) await d.unassign(pr.repo, pr.number, was.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
-  const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, hold: null, ...(was?.report ? { report: was.report } : {}), did: [] };
+  const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(was?.report ? { report: was.report } : {}), did: [] };
   // A fork's review starts with its adoption (code review holds forks until a member asks), its summary on the records task.
   if (pr.fork) a.holder = await recordTask(d.kernel, pr, a);
   d.state.put(a);
@@ -164,8 +191,8 @@ async function ask(d: HandoffDeps, pr: PrView, a: Kept): Promise<Kept> {
   return done;
 }
 
-/** The adoption's tasks ship filed (never a fleet PR's opener's). */
-export const tasksOf = (a: Kept) => (a.trigger.kind === "fleet" ? [] : [a.task, a.holder].filter((t): t is string => Boolean(t)));
+/** The adoption's tasks ship filed (never the task a task-owned PR belongs to). */
+export const tasksOf = (a: Kept) => (a.owner?.kind === "task" || (!a.owner && a.trigger.kind === "fleet") ? [] : [a.task, a.holder].filter((t): t is string => Boolean(t)));
 
 /**
  * The task the adoption's records go on: its Engineer task when it has one, else its quiet records task (source

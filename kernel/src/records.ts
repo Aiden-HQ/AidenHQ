@@ -347,6 +347,14 @@ export function openRecords(file: string, now = () => new Date()) {
       return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, cap: JSON.stringify(cap), decided_at: iso(), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true),
         () => fact(id, "record.held", "held", "kernel", () => ({ why })));
     },
+    /**
+     * An open record's identifier, once its task's is known (writes.ts, the module's same request filed again): it is the
+     * same request on the same task, so the record the caller gets back is the one this call would have filed. Only fills a
+     * missing one, only while the record is open: never a change to what it was approved to do (its digest is its own).
+     */
+    setIdentifier(id: string, identifier: string): boolean {
+      return db.prepare("UPDATE records SET identifier = ? WHERE id = ? AND identifier IS NULL AND state IN ('review','owner','approved')").run(identifier, id).changes === 1;
+    },
     /** approved → claimed, once, within its 7 days. */
     claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}, true), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
     /**

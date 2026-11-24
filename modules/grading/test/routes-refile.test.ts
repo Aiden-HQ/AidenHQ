@@ -235,12 +235,15 @@ test("a verdict computed on a rubric since amended is dropped, leaving the row o
   const stale = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: before });
   // The task was in review, so the amendment left the row open with its resume flag set; the stale verdict changed neither.
   assert.equal(stale.state, "open");
+  // The route says it took nothing: a round that also moved (an amendment) must not be read as proof the pass landed.
+  assert.equal(stale.applied, false);
   assert.equal(stale.attempts, 0);
   assert.deepEqual(stale.verdicts, []);
   assert.deepEqual(stale.rubric, corrected);
   // The same verdict on the rubric the row now holds is applied.
   const fresh = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(corrected, PR, 1) });
   assert.equal(fresh.state, "satisfied");
+  assert.equal(fresh.applied, true, "a verdict the store took says so");
 });
 
 test("the verdict route carries the round the pass read, and refuses a round that is not a round", async (t) => {

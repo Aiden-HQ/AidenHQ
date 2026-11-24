@@ -172,3 +172,58 @@ test("a covered PR waiting only on an approval is judged through the loop and ap
   const approve = calls.find((c) => c.path === "/v1/writes" && c.body.kind === "github.approve");
   assert.deepEqual(approve?.body.args, { repo: "acme/app", number: 11, head: H, generation: 1, base: "main" });
 });
+
+test("the loop's gh reaches the round: a conflict runs the repo's own /rebase step before ship's repair", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "d".repeat(40);
+  state.put({ repo: "acme/app", number: 12, generation: 1, trigger: { kind: "label", event: "e12", actor: "maria", at: "2026-11-24T09:00:00Z", head: H }, task: "T12", hold: null });
+  const posted = [];
+  const gh = async (method, path, body) => (method === "POST" && path.endsWith("/comments") && posted.push(body), { status: 200, body: path.includes("/git/trees/") ? { tree: [] } : {} });
+  const writes = [];
+  const pass = adoptedPass({
+    gh, state, settings: () => ({ ...PRESETS.cautious, actions: { conflict: [{ comment: "/rebase" }] } }), paused: () => false, log() {},
+    kernel: { call: async (m, path, body) => (path === "/v1/writes" && writes.push(body), path.startsWith("/v1/work") ? { status: "in_progress", records: [] } : { id: "r1" }) },
+    decision: async () => ({ do: "repair", why: "conflict", failing: [], dirty: true }),
+    effects: { comment: async () => 1, askReview: async () => {}, askFresh: async () => {}, verdict: async () => ({ verdict: "wait", reasons: [] }) },
+  });
+  const pr = { number: 12, url: "https://github.com/acme/app/pull/12", headRefOid: H, baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } };
+  await pass.open("acme/app", { name: "main", oid: "b".repeat(40), rollup: { contexts: { nodes: [] } } }, pr);
+  assert.deepEqual(posted, [{ body: "/rebase" }]);
+  assert.equal(writes.length, 0, "ship's own repair waits for the step");
+});
+
+test("a conflict with no generated setting files ship's repair with the globs discovery found on the base", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "e".repeat(40);
+  state.put({ repo: "acme/app", number: 13, generation: 1, trigger: { kind: "label", event: "e13", actor: "maria", at: "2026-11-24T09:00:00Z", head: H }, task: "T13", hold: null });
+  const writes = [];
+  const pass = adoptedPass({
+    gh: async (method, path) => ({ status: 200, body: path.includes("/git/trees/") ? { tree: [] } : {} }), state, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path, body) => (path === "/v1/writes" && writes.push(body), path.startsWith("/v1/work") ? { status: "in_progress", records: [] } : { id: "r1" }) },
+    decision: async () => ({ do: "repair", why: "conflict", failing: [], dirty: true }),
+    effects: { comment: async () => 1, askReview: async () => {}, askFresh: async () => {}, verdict: async () => ({ verdict: "wait", reasons: [] }) },
+  });
+  const pr = { number: 13, url: "https://github.com/acme/app/pull/13", headRefOid: H, baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } };
+  await pass.open("acme/app", { name: "main", oid: "b".repeat(40), rollup: { contexts: { nodes: [] } } }, pr);
+  const repair = writes.find((w) => w.kind === "github.repair");
+  assert.ok(repair?.args.plan.globs.includes("**/package-lock.json"), JSON.stringify(repair?.args.plan));
+});
+
+test("a task's PR that lands tells its task, and gets no report comment", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "f".repeat(40);
+  state.put({ repo: "acme/app", number: 14, generation: 1, trigger: { kind: "fleet", event: "opened:14", actor: "T14", at: "2026-11-24T09:00:00Z", head: H }, task: "T14", owner: { kind: "task", task: "T14" }, hold: null });
+  const wakes = [], comments = [];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: { merged_at: "2026-11-24T10:00:00Z", html_url: "https://github.com/acme/app/pull/14", head: { sha: H }, base: { ref: "main" }, user: { login: "dev", type: "User" } } }),
+    state, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path, body) => (path === "/v1/wakes" && wakes.push(body), {}) },
+    decision: async () => ({ do: "wait" }),
+    effects: { comment: async (r, n, body) => (comments.push(body), 1), askReview: async () => {}, askFresh: async () => {}, verdict: async () => ({ verdict: "wait", reasons: [] }) },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  await pass.gone("acme/app", "main", new Set());
+  assert.equal(wakes.length, 1, "told once");
+  assert.deepEqual([wakes[0].task, /Merged/.test(wakes[0].text)], ["T14", true]);
+  assert.equal(comments.length, 0, "a task's PR gets no report comment");
+});
