@@ -1,6 +1,7 @@
 # GitHub change feed: one reader instead of per-module polling
 
-Status: design for the owner's review (direction agreed by the owner 2026-11-24). Docs only; nothing is built yet.
+Status: design for the owner's review (direction agreed by the owner 2026-11-24; reviewed by Codex). Docs only; nothing is
+built yet.
 
 ## Why
 
@@ -8,539 +9,613 @@ Five loops read GitHub on their own timers. Each one re-reads the same repos whe
 
 | Loop | Where | Cadence | What it reads every tick |
 | --- | --- | --- | --- |
-| Code review's watcher | `modules/code-review/service/src/main.ts` (`setInterval(tick(true))`, `CODE_REVIEW_POLL_SECONDS`, default 60 s) → `engine.ts` `poll(cfg)` | 60 s | each configured repo's open PRs (`/internal/code-review/prs` → `GET /repos/:r/pulls?state=open`) and its conversation comments since a cursor (`GET /repos/:r/issues/comments?since=`), plus one `GET /pulls/:n` for each PR that left the open list |
-| The PR watch | `modules/github/service/src/pr-watch.ts` (`EVERY_MS` 60 s, backing off to `IDLE_MAX_MS` 30 min when nothing is open); moving to `modules/ship/service/src/loop.ts` in #1680 | 1 min | per watched repo one GraphQL `OPEN_PRS_QUERY` (50 PRs with their check rollups), then per PR `compare`, Actions job probes (up to `PROBES_PER_PASS` 10) and `pulls/:n` for PRs that left the list |
-| The merge queue | `modules/github/service/src/merges.ts` `start()` | 30 s | per in-flight PR: GraphQL `PR_QUERY`, check runs and statuses, and the branch's required checks |
-| The Maintainer's watcher | `modules/maintainer/service/src/watcher.ts` (`maintainer_poll_minutes`, default 5) → github-mcp `maintainer.ts` `issuesSince` | 5 min | per maintained repo: labelled issues (plus one timeline per updated labelled issue), agent-build issues, feature-request issues of the last day (plus one timeline each), new unlabelled issues; hourly, the contributor-PR pass (`prTick`, moving to ship in #1680) |
-| The github service's 15-minute pass | `modules/github/service/src/flow.ts` `startChurn` → `churnPass` | 15 min | `issuesRepo` (issues since a cursor and the repo's issue events, for Flow's `issue.opened` / `issue.labeled` facts) and `eventsPass` (each subscribed repo's `/events` feed, for routines' events) |
+| Code review's watcher | `modules/code-review/service/src/main.ts` (`setInterval(tick(true))`, `CODE_REVIEW_POLL_SECONDS`) → `engine.ts` `tickWork` → `poll(cfg)` and, on gated repos, `claims(cfg)` | 60 s | each configured repo's open PRs (`/internal/code-review/prs`), its conversation comments since a cursor (`/internal/code-review/comments`), one `GET /pulls/:n` per PR that left the open list, and the review threads of every open PR with findings (`/internal/review/threads`) |
+| The PR watch | `modules/github/service/src/pr-watch.ts` (`EVERY_MS` 60 s, backing off to `IDLE_MAX_MS` 30 min with nothing open); moves to `modules/ship/service/src/loop.ts` in #1680 | 1 min | per watched repo one GraphQL `OPEN_PRS_QUERY` (50 PRs with check rollups), then per PR `compare`, Actions job probes (up to `PROBES_PER_PASS` 10), `pulls/:n` for PRs that left the list, and the kernel's state of each PR's task |
+| The merge queue | `modules/github/service/src/merges.ts` `start()` | 30 s | per in-flight PR: GraphQL `PR_QUERY`, check runs and statuses, the branch's required checks |
+| The Maintainer's watcher | `modules/maintainer/service/src/watcher.ts` (`maintainer_poll_minutes`, 5) → github-mcp `maintainer.ts` `issuesSince` | 5 min | per maintained repo: labelled issues since a cursor (plus a timeline per updated one), agent-build issues, feature-request issues of the last day (plus a timeline each), new unlabelled issues; hourly the contributor-PR pass (`prTick`, moving to ship in #1680) |
+| The github service's 15-minute pass | `modules/github/service/src/flow.ts` `startChurn` → `churnPass` | 15 min | `issuesRepo` (issues since a cursor and the repo's issue events: Flow's `issue.opened` / `issue.labeled`) and `eventsPass` (each subscribed repo's `/events` feed: routines' events) |
 
-The warehouse writer `src_github` is a sixth reader. It runs in
-`modules/github/connections/github-mcp/src/sources.ts` `startSync`, not in `flow.ts`: org-scoped search every 15 minutes,
-and Projects boards hourly.
+The warehouse writer `src_github` is a sixth timer: github-mcp `sources.ts` `startSync`, which runs an org-scoped search
+every 15 minutes and reads Projects boards hourly. It is not in `flow.ts`.
 
-None of these loops sends `If-None-Match`, except `eventsRepo`'s first page. So a quiet repo costs the same as a busy one.
-The PR watch's read is GraphQL, which has no conditional requests at all. Every reply also takes a slot from the owner
-account's shared budget: 5,000 REST calls an hour, 5,000 GraphQL points an hour, and the secondary limits that stalled
-everything on 2026-11-22 (`project-github-rate-limit`).
+**Why this is costly.** Apart from `eventsRepo`'s first page, nothing sends `If-None-Match`, so a quiet repo costs the same as
+a busy one. The PR watch's read is GraphQL, which has no conditional requests. Every 200 response takes from the owner
+account's shared budgets: 5,000 REST an hour, 5,000 GraphQL points an hour, and the secondary limits that stalled everything
+on 2026-11-22.
 
 ## Goal
 
-The github module's code service (the one `github` process, `modules/github/module.yaml` `services.run.github`) becomes
-the only timer-driven reader of GitHub.
-- **Cheap when quiet.** It reads with conditional requests (ETags; a `304` is free of the primary limit) at a cadence that
-  follows activity.
-- **The warehouse stays.** It keeps writing `src_github`.
-- **Typed events.** It posts a typed event for each change to the kernel's event router (`POST /v1/events`, the path
-  slack-live already uses), plus a small structured `data` payload.
-- **Subscribers.** Routines, code review, ship and the Maintainer subscribe, and their GitHub timers are deleted.
-- **The one exception.** The merge queue's read of a PR it is merging stays a timer.
+The github module's code service becomes the only timer-driven reader of GitHub. That is the one `github` process
+(`modules/github/module.yaml` `services.run.github`), which already hosts github-mcp, the code host and the warehouse
+writer.
 
-**Poller, defined.** A poller is a timer-driven GitHub read that sweeps repos or lists. These stay:
-- **Reads an event triggers.** For example, code review reading a PR's merge base when it starts a review, or the Maintainer
-  reading one issue's label timeline to judge trust.
-- **A deadline a consumer sets for one object.** For example, "re-check this PR's stuck check in 20 minutes". It is one
-  read of one object, never a sweep.
+- It reads with conditional requests: ETags, and a `304` is free of the primary limit for an authenticated request.
+- Its cadence follows activity.
+- It keeps writing `src_github`.
+- It posts typed change events, each with a small structured `data` payload, to the kernel's event router
+  (`POST /v1/events`): the path slack-live uses (`modules/slack/connections/slack-live/src/main.ts`).
+- Routines, code review, ship and the Maintainer subscribe, and their GitHub timers are deleted.
+- The only timer left on GitHub elsewhere is the merge queue's read of a PR it is merging.
 
-Nothing in this design uses Intake or agents: agents never feed the warehouse.
+**Poller, defined.** A poller is a timer that sweeps GitHub repos or lists. Two kinds of read stay:
+- **Event-triggered reads through the github service.** Examples: code review reading a merge base when it starts a review,
+  the Maintainer reading one issue's label timeline to judge trust, ship's GraphQL read of the one PR an event named.
+- **One-object deadlines.** A consumer may read one object once at a deadline it set itself, e.g. "re-check this head's stuck
+  check in 20 minutes". This is never a sweep.
+
+Nothing here uses Intake or agents: agents never feed the warehouse.
 
 ## Non-goals
 
-- **Webhooks now.** They come later as an optional input that only wakes the same reader (see "Webhooks, later").
-- **Changing what a consumer decides.** Code review's triggers, ship's rounds and the Maintainer's trust rules stay as they
-  are. Only where their input comes from changes.
-- **Changing writes.** Pushes, PRs, merges, comments and statuses keep their current paths and gates.
-- **`codehost-local`.** Its own loop in `kernel/src/localmerge.ts` stays.
+- **Webhooks now.** They come later as an optional trigger of the same reader (§10).
+- **What consumers decide.** Code review's triggers, ship's rounds and the Maintainer's trust rules stay as they are. Only
+  where their input comes from changes.
+- **Writes.** Pushes, PRs, merges, comments and statuses keep their current paths and gates.
+- **codehost-local.** It keeps its own loop (`kernel/src/localmerge.ts`).
 
 ## 1. The reader
 
-A new file, `modules/github/service/src/feed.ts`, runs in the `github` process. It shares that process's one GitHub client:
-- the client sets `background: true` and keeps the 20% reserve;
-- it has the `etag` option (`connections/github-mcp/src/client.ts`, "a conditional read (If-None-Match)").
+`modules/github/service/src/feed.ts` runs in the `github` process. It is the one scheduler for GitHub reads: the change feed,
+the `src_github` sync (`sources.ts`, unchanged in what it reads: org search, Projects, scopes) and the Flow backfill
+(`flow.ts` `backfill`).
+
+Each is a job with its own due time on one queue, through the process's one GitHub client
+(`connections/github-mcp/src/client.ts`, `background: true`, `etag`). `startSync`'s own `setTimeout` and `startChurn`'s
+backfill trigger are deleted. Churn stays a 15-minute job on the same scheduler: it reads the cache clone with `git`, not the
+API.
 
 ### Watched repos
 
-The watched set is the union of every subscriber's resources. The reader reads it from `GET /v1/events/sources?connection=github`
-(kernel `events.ts` `resources()`), which this design extends to include module subscribers as well as routines (§3).
-- `*` means the repos the code host manages: the fleet org's repos, `product_repo`, the instance repo and `maintainer_repos`.
-- The reader re-reads the set every pass. A repo that leaves the set stops being read, and its state is dropped.
+The watched set is the union of two things:
+- **The repos the code host manages.** These are the fleet org's repos, `product_repo`, the instance repo and
+  `maintainer_repos`. The reader always watches them, because Flow's facts need them.
+- **Every subscriber's resources.** These come from `GET /v1/events/sources?connection=github` (kernel `events.ts`
+  `resources()`), which §3 extends to module subscribers.
+
+The set is re-read each pass. A repo that leaves it stops being read and loses its state.
 
 ### What it reads
 
-Every read below is REST and conditional. The reader keeps one ETag and one snapshot per URL in its state file,
-`/cache/feed.json`.
+Every read is REST and conditional. Each kind of event has exactly one source read, and each list is read to a durable
+boundary, oldest first, so nothing hides behind a page.
 
-**Each repo, every pass:**
-1. **The change probe.** `GET /repos/:r/issues?state=all&sort=updated&direction=desc&per_page=30`.
-   - Anything that bumps an issue's or a PR's `updated_at` changes this page and its ETag: an issue or PR opened, a comment,
-     a label, a close or reopen, a push to a PR, a review.
-   - On a `304`, steps 3 to 6 are skipped.
-2. **The default branch.** `GET /repos/:r/branches/:default`. It catches a push to the default branch, which never touches
-   the probe.
+**Every pass, for each repo:**
+1. **Open PRs.** `GET /repos/:r/pulls?state=open&per_page=100`, all pages. The snapshot is number, head sha, base sha and
+   ref, draft, title and labels.
+2. **New issues and PRs.** `GET /repos/:r/issues?state=all&sort=created&direction=desc&per_page=100`. Pages are read back to
+   the highest number already seen. This list is the boundary for `issues.opened`.
+3. **Issue events.** `GET /repos/:r/issues/events?per_page=100`. Pages are read back to the cursor, the newest event id
+   sent. Labels, issue closes and reopens come from here, each with its actor.
+4. **Conversation comments.** `GET /repos/:r/issues/comments?sort=created&direction=desc&per_page=100`, back to its cursor.
+5. **Review comments** (inline and thread replies). `GET /repos/:r/pulls/comments?sort=created&direction=desc&per_page=100`,
+   back to its cursor.
+6. **The default branch.** `GET /repos/:r/branches/:default`. Its head joins the heads below.
 
-**Only when the probe changed:**
-3. **Open PRs.** `GET /repos/:r/pulls?state=open&sort=updated&direction=desc&per_page=100`, paginated.
-4. **Issue events.** `GET /repos/:r/issues/events?per_page=100`, page 1, then back to the cursor (the newest event id sent),
-   at most 3 pages. Labels and issue closes come from here, each with its actor.
-5. **Comments.** `GET /repos/:r/issues/comments?sort=created&direction=desc&per_page=100`, back to the cursor the same way.
-6. **Reviews.** `GET /repos/:r/pulls/:n/reviews` for each open PR whose `updated_at` moved in the probe while its head did
-   not.
+**Heads, every pass while unsettled and every 5 minutes once settled.** These are each open PR's head and the default
+branch's head.
+7. **Check runs.** `GET /repos/:r/commits/:sha/check-runs?filter=all&per_page=100`, all pages. `filter=all` is needed
+   because GitHub's default, `latest`, hides re-runs.
+8. **Statuses.** `GET /repos/:r/commits/:sha/statuses?per_page=100`. This list carries each status's own id, where the
+   combined status does not.
+9. **Reviews.** `GET /repos/:r/pulls/:n/reviews?per_page=100` for open PRs. They are chronological, so pages are read to
+   the last.
 
-**Each head, on its own cadence (step 7):**
-- Every open PR's head, plus the default branch's head, gets `GET /repos/:r/commits/:sha/check-runs?per_page=100` and
-  `GET /repos/:r/commits/:sha/status`.
-- A head is **unsettled** while either of these holds:
-  - a check run is not completed, or a status is pending;
-  - it is under 10 minutes old.
-- Unsettled heads are read every pass. Settled heads are read every 5 minutes, which catches a re-run a human starts from
-  GitHub's UI.
-- A write the `github` process makes itself unsettles that head at once. That covers a status post (code review's
-  `aidenhq/review`, the design review), a re-run and an update-branch.
+**When a head is unsettled.** It is unsettled while any of its check runs is not completed, or its newest status in any
+context is pending, or the head is under 10 minutes old. A write the `github` process makes to a head unsettles it at once.
+Such writes include:
+- a status (code review's `aidenhq/review`, the design review);
+- a re-run;
+- an update-branch.
 
-**One source per kind.** Each event kind below has exactly one of these reads as its source. When steps 3 to 7 return
-nothing new, the pass emits nothing.
+A re-run a human starts in GitHub's UI is seen within 5 minutes.
 
-**Verify once, while building.** The build proves against a scratch repo that the probe's ETag moves for each trigger in
-step 1: a comment, a label, a push to a PR, a review and a close.
-- A trigger the probe doesn't see gets its own conditional read in the pass, and the spec is amended.
-- This is a decision made at build time, not a runtime fallback.
+**First page first.** Each list's first page is conditional. On a `304` that list has nothing new and later pages aren't
+read. Pages after the first are plain reads, needed only when more than 100 things changed between passes.
 
-### First read and restarts
+**More than 10 pages back to a boundary.** Past 10 pages the pass stops at page 10 for that list. It emits what it read and
+records the pass failed with "gap" (§7). That can't happen at this instance's volume, so it fails loudly rather than being
+handled.
 
-**A repo read for the first time is a baseline.**
-- It records its snapshots, ETags and cursors and emits nothing: a subscription starts from now.
-- `flow.ts` `eventsRepo` already does this. Consumers catch up on what was already open with their own one-off read
-  (§4, bootstrap).
+### The outbox: diff, save, then send
 
-**State is saved only after every event of the pass was accepted** (any 2xx from the kernel):
-- A crash, a kernel `5xx` or a timeout leaves the old ETags and snapshots in place, so the next read answers `200`, the same
-  diff comes out, and the same events go out again.
-- The kernel drops repeats by id (§3).
-- `eventsRepo` keeps its ETag only once every event of the read was sent; this is the same rule.
+A pass turns what changed into events and makes them durable before sending anything:
+1. **Read** the lists above.
+2. **Diff** each against its saved snapshot or cursor.
+3. **Save** the new snapshots, ETags, cursors and the new events (appended to an outbox) in one atomic write of
+   `/cache/feed.json` (tmp + rename).
+4. **Send** the outbox oldest first, removing each event the kernel accepted.
+
+This settles what happens when GitHub moves on before a send is accepted. Say a PR goes A → B, the send of "B" fails, and
+the PR then moves to C:
+- the "B" event already sits in the outbox;
+- the next diff is B → C;
+- no transition is lost and none is invented.
+
+**Kernel answers.**
+- **Accepted, or a repeated id.** Removed from the outbox.
+- **No answer, `5xx` or `429`.** The send stops and is retried next pass, oldest first.
+- **Any other `4xx`, or `skipped: "invalid"`.** The kernel refused it for good: the event breaks the schema or the module
+  isn't the connection's owner. A resend can't help. The event is dropped and logged, and the pass is recorded with that
+  error (§7) so the Fleet Steward sees it.
+
+**State.**
+- A repo read for the first time records its snapshots and emits nothing: a subscription starts from now, as `eventsRepo`
+  does.
+- A repo whose state was lost (the file missing or unreadable while the kernel still has events from this connection) does
+  the same and also emits `github.resync` for that repo. Every subscriber treats `resync` as a bootstrap of that repo (§4).
+- In both cases the pass is recorded with "baseline", so a lost state file is visible, never silent.
 
 ### Cadence
 
-There is one cadence per repo:
-- **15 s** after a pass that saw a change, after a write by the `github` process to that repo, or after a merge is queued
-  there;
-- then it **doubles each quiet pass, up to 60 s**.
+Each repo has one cadence:
+- **15 s** after a pass that emitted anything, a write by the `github` process to that repo, or a merge queued there;
+- **doubling** each quiet pass;
+- **at most 60 s.**
 
-Nothing is ever read less often than today's fastest consumer (code review and ship, 60 s), so no consumer gets slower.
-Unsettled heads ride their repo's pass, and settled heads are read every 5 minutes. Passes run one repo at a time,
-oldest-due first, through the same client queue as every other call.
+So no consumer is slower than today's fastest (code review and ship read every 60 s). Settled heads are read every 5
+minutes. One scheduler runs all jobs, oldest due first.
 
-**Rate budget.**
-- While the primary limit's remaining share is under the client's 20% background reserve, the cadence holds at 60 s, and the
-  pass records "low budget".
-- A `304` costs nothing, so the feed keeps working in a low-budget hour while the 200s slow down.
-- A secondary-limit refusal (`403`/`429` with `retry-after`) pauses the whole feed until the time GitHub gives.
+### Rate limits
+
+The client today waits out its 20% background reserve before it sends anything (`client.ts:287–297`). For the feed, a read
+that carries an ETag skips that wait:
+- a `304` costs nothing;
+- under the reserve, only the 200s spend the remaining budget, and those are changes the consumers need.
+
+Every other background job (the sync, the backfill) keeps the reserve.
+
+A secondary-limit answer (`403`/`429` with `retry-after`) pauses the whole scheduler until that time. The scheduler acts on
+GitHub's answer itself: the client's `writeBlockedUntil` holds back writes only (`client.ts:247–255`).
 
 ## 2. Event types and payloads
 
-Kinds use GitHub's webhook names (`<event>.<action>`), so later webhooks map one to one.
+Kinds are GitHub's webhook names (`<event>.<action>`), so webhooks map one to one later.
 
-**The envelope.**
-- It is the kernel's `SourceEvent` (`kernel/src/events.ts`): `connection: "github"`, `resource` (`owner/name`, lower case),
-  `id`, `kind`, `author`, `text`, `labels`, `bot`, `url`.
-- It gains one optional field, **`data`**:
-  - a flat object of at most 20 keys;
-  - each value a string of at most 200 characters, a number, a boolean or null;
-  - at most 2 KB as JSON.
-- `envelope()` validates `data` the way it validates `labels` and drops an event that breaks the rule as `invalid`.
+**The envelope** is the kernel's `SourceEvent` (`kernel/src/events.ts`):
+- `connection: "github"`;
+- `resource`: `owner/name`, lower case;
+- `id`, `kind`, `author`, `text`, `labels`, `bot` and `url`.
 
-**What travels.** `text` is the stranger's words: a title and body, or a comment. As today, it is clipped at 2,000
-characters with `truncated`. Everything a consumer keys on goes in `data`.
+It gains one optional field, **`data`**:
+- a flat object of at most 20 keys;
+- each value a string of at most 200 characters, a number, a boolean or null;
+- 2 KB of JSON at most.
 
-**Ids are deterministic** and built from GitHub's own ids or from state:
-- a re-read, a restart or a later webhook yields the same id;
-- the kernel keeps an id once per connection (§3).
+`envelope()` validates `data` as it validates `labels`.
 
-| Kind | Source read | `id` | `data` (besides `number`) | `text` |
+**`text`** holds a stranger's words (a title and body, or a comment), clipped at 2,000 characters with `truncated`, as today.
+Everything a consumer keys on is in `data`.
+
+**Ids** name one occurrence and are built from GitHub's own ids where they exist. Where they don't, the id is built from a
+per-object transition counter kept in the reader's state. A re-read, a restart, a resend or a later webhook gives the same id.
+
+| Kind | Source | `id` | `data` (besides `number`) | `text` |
 | --- | --- | --- | --- | --- |
-| `pull_request.opened` | open-PR list: a number not in the snapshot | `<repo>#<n>:opened` | `head`, `base`, `base_ref`, `head_ref`, `draft`, `fork`, `author_kind` | title, blank line, body |
-| `pull_request.synchronize` | open-PR list: the head changed | `<repo>#<n>:head:<sha>` | `head`, `before`, `base` | none |
-| `pull_request.ready_for_review` / `pull_request.converted_to_draft` | open-PR list: `draft` flipped | `<repo>#<n>:ready:<head>` / `:draft:<head>` | `head` | none |
-| `pull_request.closed` | open-PR list: the number left; one `GET /pulls/:n` | `<repo>#<n>:closed:<closed_at>` | `head`, `merged`, `merge_sha` | none |
-| `pull_request.reopened` | open-PR list: a closed number came back | `<repo>#<n>:reopened:<updated_at>` | `head` | none |
-| `pull_request.edited` | open-PR list: the title changed at the same head | `<repo>#<n>:title:<sha256(title)[0:12]>` | `head` | the title |
-| `issues.opened` | probe: a new non-PR number above the highest seen | `<repo>#<n>:opened` | `author_kind`, `created_at` | title, blank line, body |
-| `issues.labeled` / `issues.unlabeled`, `pull_request.labeled` / `.unlabeled` | issue events | `ev:<event id>` | `label`, `actor` | none |
-| `issues.closed` / `issues.reopened` | issue events (non-PR) | `ev:<event id>` | `actor`, `state_reason` | none |
-| `issue_comment.created` | comments | `comment:<id>` | `comment_id`, `pr` (bool), `author_kind`, `created_at` | the comment |
-| `pull_request_review.submitted` | reviews | `review:<id>` | `review_id`, `state`, `head` (`commit_id`) | none |
-| `check_run.completed` | check runs of a head | `check:<check run id>` | `head`, `name`, `conclusion`, `branch` (default branch only), `prs` (open PR numbers on that head, comma-separated) | none |
-| `status` | the combined status of a head | `status:<sha>:<context>:<state>` | `head`, `context`, `state`, `prs` | none |
-| `push` | default branch: its sha moved | `<repo>:push:<sha>` | `ref`, `before`, `after` | none |
+| `pull_request.opened` | open PRs: a new number | `<repo>#<n>:opened` | `head`, `base`, `base_ref`, `head_ref`, `draft`, `fork`, `author_kind` | title, blank line, body |
+| `pull_request.synchronize` | open PRs: the head changed | `<repo>#<n>:head:<sha>` | `head`, `before`, `base` | none |
+| `pull_request.ready_for_review` / `.converted_to_draft` | open PRs: `draft` flipped | `<repo>#<n>:draft:<k>` (k = the PR's draft-flip count) | `head` | none |
+| `pull_request.edited` | open PRs: the title changed | `<repo>#<n>:title:<k>` | `head` | the title |
+| `pull_request.closed` | open PRs: the number left; one `GET /pulls/:n` | `<repo>#<n>:closed:<closed_at>` | `head`, `merged`, `merge_sha` | none |
+| `pull_request.reopened` | open PRs: a closed number is back | `<repo>#<n>:reopened:<k>` | `head` | none |
+| `issues.opened` | new issues (non-PR) | `<repo>#<n>:opened` | `author_kind`, `created_at`, `labels` | title, blank line, body |
+| `issues.labeled` / `.unlabeled`, `pull_request.labeled` / `.unlabeled` | issue events | `ev:<event id>` | `label`, `actor` | none |
+| `issues.closed` / `.reopened` | issue events (non-PR) | `ev:<event id>` | `actor`, `state_reason` | none |
+| `issue_comment.created` | conversation comments | `comment:<id>` | `pr` (bool), `author_kind`, `created_at` | the comment |
+| `pull_request_review_comment.created` | review comments | `review_comment:<id>` | `in_reply_to`, `author_kind` | the comment |
+| `pull_request_review.submitted` | reviews | `review:<id>` | `state`, `head` (`commit_id`) | none |
+| `check_run.completed` | check runs of a head | `check:<check run id>` | `head`, `name`, `conclusion`, `prs` (open PR numbers on that head), `branch` (default branch only) | none |
+| `status` | statuses of a head | `status:<status id>` | `head`, `context`, `state`, `prs` | none |
+| `push` | the default branch moved | `<repo>:push:<sha>` | `ref`, `before`, `after` | none |
+| `github.resync` | the reader's state was lost (§1) | `<repo>:resync:<time>` | none | none |
 
-**`author_kind`.** It uses the rule `flow.ts` `kindOf` already applies (`agent`, `owner` or `outside`), from the same
-helpers. The reader computes it once, so consumers stop re-deriving it.
+**Field rules:**
+- **`author_kind`.** It uses the rule `flow.ts` `kindOf` already applies (`agent`, `owner`, `outside`), computed once here so
+  consumers stop re-deriving it.
+- **`author`.** The login.
+- **`bot`.** True for a `[bot]` login.
+- **`url`.** The object's `html_url`.
 
-**`author`** is the GitHub login, and `bot` is true for a `[bot]` login. `url` is the object's `html_url`.
+**Routines.** No routine subscribes to GitHub events today (the product and the instance repo hold no
+`event: { connection: github }`). The three existing kind names keep their meaning. `modules/github/module.yaml`
+`connections.github.events.kinds` lists all of the kinds above, and routines filter them with `kind`, `author` and `contains`
+as today.
 
-**One event per completed run.** A check re-run is a new check run id, so it makes a new event. Consumers coalesce per PR
-inside one read of the log (§4).
+## 3. Kernel: module subscribers beside routines
 
-**Routines.** No routine subscribes to GitHub events today: none in the product or the instance repo uses
-`event: { connection: github }`. So the three existing kind names (`issues.opened`, `issue_comment.created`,
-`pull_request.opened`) keep their meaning, and the rest are new. `modules/github/module.yaml` `connections.github.events.kinds`
-lists them all, and routine filters (`kind`, `author`, `contains`) work on every kind.
+**Why routines aren't enough.** Today the router (`kernel/src/events.ts`) only fans out to Paperclip routines: 60 s batch
+windows, at most 12 runs per routine and 120 in all per hour, a run through `/run`. That suits waking an agent. For code
+services it is wrong:
+- A cap drops a batch in `drain()` after `ingest` already answered 2xx.
+- `ingest` answers 2xx even for `skipped: "invalid"` (`backplane.ts:800`).
 
-## 3. Kernel: a module subscriber beside routines
+**What code services get instead.** A plain, generic second delivery: an append-only log they read with their own committed
+cursor. It is keyed only by connection, and one `POST /v1/events` feeds both kinds of subscriber.
 
-Today the router (`kernel/src/events.ts`) delivers only to Paperclip routines:
-- a 60 s batch window;
-- at most 12 runs an hour per routine and 120 in all;
-- a run through `/run`.
+### Ingest
 
-That suits waking an agent. It is wrong for code services: a cap would silently drop a "new head", and the kernel still
-answers 2xx (`{ dropped, reason: "cap" }`), so the emitter's cursor moves on. Code services get a second, plain delivery
-instead: **an append-only log they read with their own cursor.** It is generic, keyed by connection only, and the same
-`POST /v1/events` feeds both kinds of subscriber.
+`ingest` becomes one transaction. It inserts the event into the log (`event_log`) and enqueues its routine targets
+(`event_queue`) together.
 
-### The log
+**The log table.** `event_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, connection, resource, id, kind, body, at, UNIQUE(connection, id))`.
 
-- **Table.** `event_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, connection, resource, id, kind, body, at, UNIQUE(connection, id))`
-  in `kernel.db`, created in `createEvents`.
-- **What `ingest` appends.** Each valid event whose `(connection, kind)` some module subscribes to, before the routine fan-out.
-- **A repeated id.** `INSERT OR IGNORE`: it is neither appended again nor fanned out to routines again, and the answer
-  says `duplicate`. Routines' own `UNIQUE(routine, id)` stays as it is.
-- **Retention.** 3 days, cleaned in `drain()` with the other expiries.
-- **Subscribing.** A module subscribes in `module.yaml`:
-  ```yaml
-  subscribes:
-    github: [ pull_request.opened, pull_request.synchronize, issue_comment.created ]
-  ```
-  Compile checks each kind against that connection's `events.kinds` and writes the result to `config/modules.json`. The
-  declaration is the grant: no new role is needed.
+**Answers:**
+- `{ accepted: true, seq }` when the event is new;
+- `{ accepted: true, duplicate: true }` for an id the log already holds. Nothing is appended and nothing is fanned out again.
+- An invalid envelope gets **`422`**, not 2xx, so an emitter can tell a refusal from an acceptance. slack-live already
+  treats any 4xx as final (`main.ts:206`).
+- A caller that isn't the connection's module still gets `403` (`events.ts` `ownerOf`).
 
-### Reading it
+**What isn't logged.** A kind that no module subscribes to is not appended; it still reaches routines as today.
 
-`GET /v1/events/log?connection=github&after=<seq>&limit=200` is a module route, called with the module's own token.
-- **Answer.** `{ events: [{ seq, resource, id, kind, author?, text?, labels?, bot?, url?, data?, at }], next, gap }`, limited
-  to the kinds this module subscribes to.
-- **No `after`.** The answer is `{ events: [], next: <current max seq> }`: the starting point for a fresh consumer.
-- **`gap: true`.** When `after` is older than the oldest row kept: the consumer bootstraps (§4).
-- **Bookkeeping.** Each read records `(module, connection, next, at)` in `event_readers`, for the health signal (§7).
+**Routines are unchanged.** Their caps still apply in `drain()`. Routines wake agents, and dropping a batch under a cap is
+their existing, deliberate behaviour.
 
-### Resources
+**Retention.** 3 days, in `drain()` with the other expiries.
 
-`PUT /v1/events/watch { connection, resources }` is a module route that replaces that module's resource list. `resources()`
-then returns the union of routines' and modules' resources, and the reader polls exactly that.
-- **When a module calls it.** At start, and whenever its own settings change. Code review sends its configured repos, ship
-  `*`, and the Maintainer its `maintainer_repos`.
+### Subscribing
+
+A module declares what it reads in `module.yaml`:
+
+```yaml
+subscribes:
+  github: [ pull_request.opened, pull_request.synchronize, issue_comment.created ]
+```
+
+Compile checks each kind against that connection's `events.kinds` and writes the result to `config/modules.json`. The
+declaration is the grant. The new routes check it on their own path in `backplane.ts`, beside the existing
+`kernel.events` role, which stays the producer's.
+
+`PUT /v1/events/watch { connection, resources }` (module token) replaces that module's resource list:
+- **When.** At start and whenever its settings change.
+- **What each module sends.** Code review its configured repos, ship `*`, and the Maintainer its `maintainer_repos`.
+- **Effect.** `resources()` then returns the union of routines' and modules' resources.
+
+### Reading
+
+`GET /v1/events/log?connection=github&after=<seq>&limit=200` (module token) answers
+`{ events: [{ seq, resource, id, kind, author?, text?, labels?, bot?, url?, data?, at }], next, gap }`.
+
+**Filtering.** The answer is limited to the kinds the module subscribes to and to its registered resources (`*`: all), so a
+module configured for one repo never reads another repo's text.
+
+**Special answers:**
+- With no `after`, the answer is `{ events: [], next: <current max seq> }`: the watermark a fresh consumer starts from.
+- `gap: true` means `after` is older than the oldest row kept.
+
+**The committed cursor.** A consumer sends `after` = the last seq it **committed**, never one it has only read. The kernel
+records `(module, connection, after, at)` in `event_readers`, so a handler that keeps crashing shows as a cursor that never
+moves (§7).
 
 ### Delivery semantics
 
-**At least once.** The reader re-sends until the kernel takes the event. The kernel keeps each id once. A consumer moves its
-cursor only after it has handled the events it read, so a crash in between redelivers them. Every consumer is idempotent
-on keys it already has (§4).
+**At least once.**
+- The reader resends from its outbox until the kernel accepts.
+- The kernel keeps each id once.
+- A consumer commits its cursor only after its handlers' effects are committed, so a crash redelivers. Each handler is
+  idempotent (§4).
 
-**Latency.** A consumer reads the log every 5 s. That is a local call costing nothing on GitHub. End to end it adds up to
-about 5 s on top of the reader's 15 to 60 s.
-
-A long-poll could replace the 5 s read later if that latency ever matters. It isn't built now.
+**Latency.** A consumer reads the log every 5 s. That is a local call, with no GitHub cost. It adds at most 5 s to the
+reader's 15–60 s.
 
 ## 4. How each consumer switches
 
-Every consumer follows the same pattern:
-- a cursor in its own state;
-- a 5 s read of the log;
-- handlers that call the code its poller called;
-- a one-off **bootstrap** (its existing read, run once) at start, on `gap`, and when its settings add a repo.
+Every consumer gets the same five pieces:
+- `subscribes:`;
+- a cursor in its own store;
+- a 5 s log read;
+- handlers that call the code its poller called, with events coalesced per object within one read;
+- **a bootstrap**: its existing read, run once, at start, on `gap`, on `github.resync` for a repo, and when its settings
+  change.
 
-The bootstrap is not a second path: it is the catch-up a subscription needs, and its timer is deleted.
+**Bootstrap order.** A bootstrap first takes the watermark (`GET /v1/events/log` with no `after`), then reads, then handles
+events from the watermark. Events that overlap the read are handled idempotently. This is catch-up, not a second path: the
+timers are deleted.
 
-### Routines (first, with the reader)
+### Routines and Flow (lane 1, with the reader)
 
-- **The routine path.** `flow.ts` `eventsPass` / `eventsRepo` / `sourceEvent` and `/cache/events.json` are deleted. Routines
-  get their events from the reader through the same router path. Their latency goes from 15 minutes (best effort, and
-  GitHub's `/events` feed can lag for hours) to at most 60 s.
-- **Issue facts.** `flow.ts` `issuesRepo` and `/cache/issues.json` are deleted. The Flow facts `issue.opened` and
-  `issue.labeled` come from the reader's diff, through an in-process hook on `feed.ts`, with the same fact ids
-  (`OPENED_VERSION`, `${OPENED_VERSION}:<event id>`), so nothing is recorded twice.
-- **PR facts.** These also come from the reader's hook:
-  - from the open-PR diff and the head reads: `pr.opened`, `pr.pushed`, `pr.closed`, `pr.merged`, `pr.reverted`,
-    `pr.checks_started` and `pr.checks_completed`;
-  - they replace pr-watch's Flow observation (`pr-watch.ts` lines ~700–760; in #1680, ship's `/internal/ship/flow` route);
-  - the facts' ids are type, subject and version, so the code host's own emissions in `service.ts` and `merges.ts` still
-    record once.
-- **What stays.** Churn and the one-time backfill stay on their timer, because they read the cache clone with `git`, not the
-  API.
+**Routines.** Routines get their events from the reader. Deleted: `flow.ts` `eventsPass`, `eventsRepo` and `sourceEvent`,
+and `/cache/events.json`. Latency goes from 15 minutes (best effort; GitHub's `/events` feed can lag for hours) to at most 60 s.
 
-### The Maintainer
+**Issue facts.** Deleted: `flow.ts` `issuesRepo` and `/cache/issues.json`. Flow's `issue.opened` and `issue.labeled` come
+from the reader's diff through an in-process hook in `feed.ts`, with the same fact ids (`OPENED_VERSION`,
+`${OPENED_VERSION}:<event id>`).
 
-**Subscribes to** `issues.opened`, `issues.labeled`, `issues.closed`, and `pull_request.*` / `issue_comment.created` for
-`contributor_prs`, until that moves to ship.
+**PR facts.** The same hook emits `pr.opened`, `pr.pushed`, `pr.closed`, `pr.merged`, `pr.reverted`, `pr.checks_started` and
+`pr.checks_completed`, from the PR and head diffs. That replaces pr-watch's Flow observation (`pr-watch.ts` ~700–760; ship's
+`/internal/ship/flow` route in #1680). A fact's id is type, subject and version, so the code host's own emissions
+(`service.ts`, `merges.ts`) still record once.
 
-**Handlers:**
-- **The repo's fix label or `agent-build` on `issues.labeled`.** A one-off trust read through github-mcp's existing
-  `latestOrError` (the label timeline and the collaborator's role) for that one issue. A trusted label files the task as
-  today. The source `maintainer-issue:<repo>#<n>` means the kernel keeps one task per issue.
-- **`feature-request` on `issues.labeled`.** The trust read, then it joins the `featured` set.
-- **`issues.opened`** with `author_kind` not `agent` and no fix, `feature-request` or `agent-build` label goes to
-  `triageRepo`'s per-author limit, then files the triage task (`maintainer-triage:<repo>#<n>`).
-- **Held triage issues.** Today they are re-checked every tick. Now they are re-checked when a slot frees (a filing, or the
-  oldest `recent` entry turning a day old). That is a deadline, not a sweep.
+### The Maintainer (lane 2)
 
-**Deleted:**
-- the `setInterval` in `watcher.ts` `startWatcher`;
+**Subscribes to** `issues.opened`, `issues.labeled`, `issues.closed` and `github.resync`, plus the PR kinds for
+`contributor_prs` until #1680 moves that pass to ship.
+
+**Handlers.**
+- **A fix label or `agent-build` on `issues.labeled`.** One trust read for that issue: github-mcp's existing
+  `latestOrError`, which reads the label timeline and the actor's role. If trusted, the task is filed as today under source
+  `maintainer-issue:<repo>#<n>`, so the kernel keeps one task per issue.
+- **`feature-request` on `issues.labeled`.** The same trust read, then the issue joins the `featured` set.
+- **`issues.opened`** whose `author_kind` isn't `agent` and that carries none of the three labels. It goes through
+  `triageRepo`'s per-author limit, then the triage task is filed (`maintainer-triage:<repo>#<n>`).
+- **Held triage issues.** They are re-checked when a slot frees: a filing, or the oldest `recent` entry turning a day old.
+  That is a deadline, not a sweep.
+
+**Bootstrap.** For each maintained repo, the existing `issueList` for the fix label and, with `features` on, for
+`agent-build`. Each open, trusted, labelled issue is filed under its source key; the kernel dedupes. Labelled issues are
+reconciled from the start, as `repoSince` does today. Unlabelled triage starts at the watermark, as `untriaged` does today:
+issues already open are the daily triage's.
+
+**Deleted.**
+- `watcher.ts`'s timer;
 - the `cursor`, `triage_cursor` and `build_cursor` fields;
-- the `maintainer_poll_minutes` setting and `MAINTAINER_POLL_MINUTES`;
-- github-mcp's cursor reads behind `/internal/maintainer/issues` (`issuesSince`, `repoSince`, `untriaged`,
-  `recentFeatureRequests`). The trust read stays as a route for one issue.
+- `maintainer_poll_minutes` and `MAINTAINER_POLL_MINUTES`;
+- github-mcp `maintainer.ts`'s `issuesSince`, `repoSince`, `untriaged` and `recentFeatureRequests`, and their route.
 
-**Bootstrap:** none. As today, the first look sets a cursor and issues already open are the daily triage's.
+`issueList` and the trust read stay.
 
-### Code review
+### Code review (lane 3)
 
 **Subscribes to:**
 - `pull_request.opened`, `.synchronize`, `.ready_for_review`, `.converted_to_draft`, `.closed` and `.reopened`;
-- `issue_comment.created` (`pr: true`).
+- `issue_comment.created`;
+- `pull_request_review_comment.created`;
+- `github.resync`.
 
-**Handlers** (`engine.ts`, the bodies of today's `poll(cfg)`):
-- **opened, synchronize, ready or reopened.** `upsertPr` from `data` plus `text` (title and body, as stored today), then the
-  same `trigger` / `missing` decisions keyed on `(repo, number, head)`.
-- **converted to draft.** Updates the row.
-- **closed.** Uses `data.merged` for the findings' outcome (`open_at_merge` / `open_at_close`), skips queued runs, and sets
-  `close_due`. That replaces the extra `GET /pulls/:n`. `closeTasks` runs on the fast tick for every `close_due` row.
-- **issue_comment.created.** Goes to `command(cfg, c)`. The `seen` table already makes it once per comment id. A
-  `truncated` comment reads its full body through the existing route.
+**Handlers.** These are the bodies of today's `poll(cfg)` and `claims(cfg)` in `engine.ts`:
+- **opened, synchronize, ready, reopened.** `upsertPr` from `data` and `text` (the title and body, as stored today). Then the
+  same `trigger` and `missing` decisions, keyed on `(repo, number, head)`.
+- **converted_to_draft.** Updates the row.
+- **closed.** `data.merged` decides the findings' outcome (`open_at_merge` or `open_at_close`). Queued runs are skipped, and
+  `close_due` is set; that replaces the extra `GET /pulls/:n`. `closeTasks` runs on the fast tick for every `close_due` row.
+- **issue_comment.created** on a PR. Runs `command(cfg, c)`. Commands sit in the comment's first line, well inside the 2,000
+  characters carried. The `seen` row is now inserted in the same SQLite transaction as the command's local effects (a run
+  queued, a focus set), closing today's window where a crash after `command()` repeats it.
+- **pull_request_review_comment.created** on a gated repo. Runs `claims` for that one PR. Its existing `seen` (`reply:<id>`)
+  keeps each reply once. A reply that `claims` leaves unread on purpose (its finding's mandatory post hasn't settled) is read
+  again when that post settles: a local trigger inside code review, no GitHub event.
 
-**Deleted:**
-- `main.ts`'s `setInterval(() => void tick(true), CODE_REVIEW_POLL_SECONDS)` and that env var;
-- `tick({ github })` and the `wantGithub` flag (the 10 s tick becomes the only tick, and it reads the log);
-- the `cursors` table;
-- github-mcp's `/internal/code-review/comments` route.
+**Settings changes.** A changed gate, a repo added, a combo made mandatory: each runs the bootstrap for the affected repos.
+That is how `missing()` today reaches open heads with no new GitHub activity.
 
-**Bootstrap.** `source.open(repo)` (`/internal/code-review/prs`) once per repo: "the first look reviews what is open", which
-is today's behaviour, kept. That route stays for this one read. `get`, `compare`, `patch-id` and `merge-base` stay as reads
-an event triggers.
+**Bootstrap.** One `source.open(repo)` call: "the first look reviews what is open", which is today's behaviour, kept. Then
+`source.comments(repo, since)` from the newest comment already handled, so commands posted during a gap or resync are not lost.
 
-### Ship (last; after #1680 lands `modules/ship/service/src/loop.ts`)
+**Deleted.**
+- `main.ts`'s GitHub `setInterval` and `CODE_REVIEW_POLL_SECONDS`;
+- `tick({ github })` and `wantGithub`: the 10 s tick is the only tick, and it reads the log;
+- the timer-driven calls of `poll` and `claims` (their bodies become the handlers).
+
+The `prs`, `comments` and `threads` routes stay, for the bootstrap and the per-PR `claims` read.
+
+### Ship (lane 4, after #1680 lands `modules/ship/service/src/loop.ts`)
 
 **Subscribes to:**
 - every `pull_request.*` kind;
-- `pull_request_review.submitted`, `check_run.completed`, `status`, `issue_comment.created`,
-  `pull_request.labeled` / `.unlabeled`;
-- `push` (default branch).
+- `pull_request_review.submitted`, `check_run.completed`, `status` and `issue_comment.created`;
+- `push`;
+- `github.resync`.
 
 **Handlers.**
-- **Per PR.** Every PR named by an event in a read of the log, coalesced to one evaluation per PR, runs today's per-PR body
-  of `scan()`. Its one GraphQL read is narrowed from the repo's open list to that PR (mergeability and rollup are still
-  GraphQL: they have no REST equivalent at that cost).
-- **On `push`.** A push to the default branch re-evaluates the repo's open fleet PRs once. This is the "red while behind a
-  green main" and update-branch path.
+- **Per PR.** Each PR named in one read of the log, by `number` or by a head's `prs`, is evaluated once. The evaluation is
+  today's per-PR body of `scan()`, with its GraphQL read narrowed from the repo's open list to that one PR. Mergeability and
+  the rollup stay GraphQL.
+- **On `push`.** A push to the default branch evaluates the repo's open fleet PRs once.
+- **Task state.** Every minute ship asks the kernel for the state of its open PRs' tasks. That is a kernel read, not a GitHub
+  one, and today's scan already does it (`pr-watch.ts:759–763`). A PR whose task was cancelled, or is done, is evaluated even
+  when GitHub is quiet.
 
-**What happens to each pr-watch / loop duty:**
-
-| Duty | After |
+| pr-watch / loop duty | After |
 | --- | --- |
 | Agent PR green at a mergeable head → merge filed | on `check_run.completed` / `status` for its head |
-| Agent PR red on its own head → wake (and the CI breaker) | on `check_run.completed` |
+| Agent PR red on its own head → wake; the CI breaker | on `check_run.completed` |
 | Conflict, or red while behind main → update-branch or wake | on `push`, `synchronize` |
-| Update-branch transient-failure retry (5 min), lost update (`UPDATE_OK_WAIT_MIN` 10) | a deadline per PR in ship's state |
-| Never-started check → re-run once | on `check_run.completed` with `conclusion` in the failure set; the Actions job read is triggered by that event |
-| Wedged check: run not completed while its job finished (3 min grace, report at 20 min) | a deadline per unsettled head: one Actions job read at 3 min, one at 20 min |
-| Title gate (`policy` red, title now valid) | on `pull_request.edited` (see the note below) |
-| Dependabot task when checks finish; closed when merged or closed | on `check_run.completed`, `pull_request.closed` |
-| Close a cancelled task's PR; close a done task's unmerged PR after 30 min | the first on the kernel's task state when ship next evaluates the PR; the second as a deadline (head age + 30 min) |
-| Review-findings wake (code review's verdict waits on findings) | on `status` (`aidenhq/review`) for the head |
-| Half-hour ask cooldown (`HALF_HOUR`) | unchanged state; checked when the PR is next evaluated |
-| Contributor-PR nudge and close (`contributor.ts`, `stale_days`) | a deadline per PR at last activity + `stale_days`; activity is any event on the PR |
-| Flow observation | moves to the reader (above) |
+| Update-branch retry (5 min) and lost update (`UPDATE_OK_WAIT_MIN`) | a one-PR deadline in ship's state |
+| Never-started check → re-run once | on `check_run.completed` with a failure conclusion (the Actions job read is triggered by it) |
+| Wedged check (run not completed while its job finished; 3 min grace, report at 20 min) | a one-head deadline at 3 and 20 min after the head went unsettled |
+| Title gate (`policy` red, title now valid) | on `pull_request.edited` (a title-only edit starts no workflow, so no check event follows) |
+| Dependabot task when checks finish; closed on merge or close | on `check_run.completed`, `pull_request.closed` |
+| Close a cancelled task's PR | the task-state read above |
+| Close a done task's unmerged PR after 30 min | a one-PR deadline set by the task-state read |
+| Review-findings wake | on `status` (`aidenhq/review`) for the head |
+| Half-hour ask cooldown | unchanged state, checked when the PR is next evaluated |
+| Contributor-PR nudge and close (`stale_days`) | a one-PR deadline at last activity + `stale_days`; activity = any event on the PR |
 | Adopted PRs' rounds (`adopted.ts`) | the same events; the round runs on its PR's evaluation |
+| Flow observation | the reader (above) |
 
-**Deleted:**
-- the `next()` / `setTimeout` loop (`EVERY_MS`, `IDLE_MAX_MS`);
-- the every-minute full scan of each repo;
-- the Maintainer's hourly `prTick` gate (`PR_EVERY`), in its new home;
-- the `/internal/ship/flow` route.
+**Bootstrap.** One full `scan()` of each repo, which is today's tick, run once.
 
-**Bootstrap.** One full `scan()` of each repo at start and on `gap`: today's tick, run once.
+**Deleted.**
+- the loop's `next()` timer, `EVERY_MS` and `IDLE_MAX_MS`;
+- the every-minute full scan;
+- the contributor pass's hourly gate (`PR_EVERY`);
+- `/internal/ship/flow`.
 
-**Note on the title gate.** A title-only edit starts no workflow, so the red `policy` check stays and no check event
-follows. The reader therefore emits `pull_request.edited` (`data`: `head`) when the open-PR list shows a new title for the
-same head (§2). It is the one kind that only ship takes.
+### The merge queue (unchanged)
 
-### The merge queue (stays a poller)
-
-`merges.ts` keeps its 30 s read of each in-flight PR, as the owner decided. Two small things change:
-- **Nudge.** The reader calls `merges.step()` at once, in-process, when it emits `check_run.completed`, `status`,
-  `synchronize` or `closed` for a PR that is in a queue, so a merge doesn't wait out the 30 s.
-- **Cadence.** A queued PR's repo gets the 15 s cadence.
+`merges.ts` keeps its 30 s read of each in-flight PR, as the owner decided. While a PR is queued, its repo's feed cadence
+is 15 s.
 
 ## 5. API budget, before and after
 
-**Symbols:**
-- `R`: watched repos;
-- `P`: open PRs across them;
-- `Q`: PRs in the merge queue;
-- `H`: unsettled heads.
+**Symbols:** `R` is the watched repos, `P` the open PRs, `Q` the PRs in the merge queue. Today `R ≈ 8`:
+`Aiden-HQ/AidenHQ`, `aidenhq-distro`, the instance repo and 5 `aidenhq-alpha` repos. Code review watches 1, the PR watch 6,
+the Maintainer 2, and `P ≈ 7`.
 
-The instance today is `R ≈ 8`: `Aiden-HQ/AidenHQ`, `Aiden-HQ/aidenhq-distro`, the instance repo and the 5 `aidenhq-alpha`
-repos. Code review watches 1 repo, the PR watch 6 and the Maintainer 2; `P ≈ 7` on `AidenHQ`.
+These are estimates from the code paths above. Lane 1 adds a per-caller counter (by caller and status, logged hourly), and
+its first day replaces them.
 
-These are estimates from the code paths above, not measurements. Lane 1 adds a per-caller counter (§8) that replaces them
-within a day.
-
-### Before: the timer floor, paid every hour whether anything changed or not
+### Before: the floor of timer reads, paid every hour, quiet or not
 
 | Loop | REST calls/h | GraphQL queries/h |
 | --- | --- | --- |
-| Code review (1 repo, 2 reads/min) | 120 | 0 |
-| PR watch (6 repos, 1 query/min each while any PR is open; plus probes and compares) | ~30–100 | 360 (≈1 point each, ≈360 points) |
-| Maintainer (2 repos; `AidenHQ` with features: about 4 lists + timelines per tick, 12 ticks) | ~100–150 | 0 |
-| flow.ts `issuesRepo` (~7 managed repos × 2 reads × 4/h) | 56 | 0 |
-| flow.ts `eventsPass` (no routine subscribes today) | 0 | 0 |
-| **Total floor** | **~300–425** | **~360** |
+| Code review: 1 repo; 2 list reads/min, plus threads per PR with findings | ~120–300 | 0 (threads go through github-mcp; GraphQL there) |
+| PR watch: 6 repos, 1 query/min each while any PR is open, plus compares and probes | ~30–100 | ~360 (≈1 point each) |
+| Maintainer: 2 repos; ~4 lists plus timelines per tick, 12 ticks | ~100–150 | 0 |
+| flow.ts `issuesRepo`: ~7 repos × 2 × 4/h | ~56 | 0 |
+| **Floor** | **~300–600** | **~360** |
 
-**On top of the floor:**
-- the merge queue: about 5 calls per 30 s per in-flight PR, about 600/h per PR while it merges, which stays;
-- `src_github` sync, which stays;
-- event-driven reads.
+The merge queue (about 5 calls per 30 s per in-flight PR, roughly 600/h per PR while it merges) and the `src_github` sync
+are the same before and after, so they are left out.
 
-For scale, one `rate_limit` read of the owner's account on 2026-11-24 showed 1,320 core and 224 GraphQL used in that
-window. That is account-wide, writes and the owner's own `gh` included, so it is context, not the pollers' cost.
+For context only: one `rate_limit` read of the owner's account on 2026-11-24 showed 1,320 core and 224 GraphQL used in
+that window. That reading is account-wide, including writes and the owner's own `gh`.
 
 ### After
 
-**Idle hour.**
-- Counted against the primary limit: about 0. Every read is a `304`.
-- Sent, which matters only for the secondary limit: `R × 2 × 60` (the probe and the default branch at 60 s), plus the
-  settled heads' `P × 2 × 12` (every 5 min):
-  - `8 × 120 + 7 × 24` ≈ **1,130 conditional requests/h**, about 19 a minute;
-  - against the REST secondary limit of 900 points a minute, that is about 2%.
+**Quiet hour.**
+- **Counted against the primary limit:** about 0. Every read is a `304`.
+- **Sent**, which matters only for the secondary limit:
+  - `R × 6` lists at 60 s: 8 × 360 = 2,880;
+  - settled heads `(P + R) × 3` at 5 min: 15 × 36 = 540.
 
-**Busy hour, per change** (a 200 costs 1):
-- a new head about 1 (open-PR list) + ~10–15 (check-run lists changing while CI runs, sampled at 15–60 s) + ~2 (status);
-- a comment, a label or a close 1–2 (the probe plus its list);
-- a review 2.
+  That is about **3,400 conditional requests an hour, about 57 a minute**, against a REST secondary limit of 900 points a
+  minute.
 
-**Example busy hour.** 10 heads, 30 comments, 20 labels and closes, and 5 PRs opened or closed come to about
-150 + 30 + 30 + 10 ≈ **220 REST**. Add the reads events trigger:
-- code review's about 3 per reviewed head: about 30;
-- ship's one GraphQL per evaluated PR: about **40–60 queries**.
+**Busy hour.** Each 200 costs 1:
+- **A new head:** 1 (open PRs) + about 10–15 (check-run lists changing during CI, sampled at 15–60 s) + about 2 (statuses)
+  + 1 (reviews).
+- **A comment or label:** 1–2.
+- **A close:** 2.
 
-**Summary:**
+For example, 10 heads, 30 comments, 20 labels or closes and 5 PRs opened or closed come to about 170 + 30 + 30 + 10 ≈
+**240 REST**. Event-triggered consumer reads add about 30 for code review (merge base, patch id, threads per review) and about
+**40–60 GraphQL** for ship (one per evaluated PR).
 
 | | REST/h | GraphQL queries/h |
 | --- | --- | --- |
-| Idle, before → after | ~300–425 → ~0 | ~360 → 0 |
-| Busy, before → after | ~400–600 → ~250 | ~360–420 → ~40–60 |
+| Quiet: before → after | ~300–600 → ~0 | ~360 → 0 |
+| Busy: before → after | ~400–800 → ~270 | ~360–420 → ~40–60 |
 
-The merge queue and `src_github` are unchanged in both columns. The saving is about the whole floor when quiet, and about
-half the REST and 85–90% of the GraphQL when busy. Latency is better too:
-- routines go from 15 min to ≤60 s;
-- the Maintainer from 5 min to ≤60 s;
-- code review and ship from 60 s to 15–60 s, and 15 s right after a change.
+**Savings.** About the whole floor when quiet, and in a busy hour about half the REST and 85–90% of the GraphQL.
+
+**Latency.**
+- Routines: 15 min → 60 s or less.
+- The Maintainer: 5 min → 60 s or less.
+- Code review and ship: 60 s → 15–60 s (15 s right after a change).
+- A human re-run of a settled head: up to 5 min.
 
 ## 6. Failure modes
 
 | Failure | What happens |
 | --- | --- |
-| GitHub `5xx`, a timeout, or a `404` on one repo | That repo's pass fails, and its state is not saved. The next pass retries at its cadence, and the pass is recorded failed (§7). A repo deleted or renamed keeps failing until it leaves the watched set. |
-| Primary limit low | Cadence holds at 60 s. `304`s stay free, so changes are still seen, only their 200s compete. Recorded "low budget". |
-| Secondary limit (`403`/`429` + `retry-after`) | The whole feed pauses until then, through the client's existing pacing. |
-| The kernel down or refusing (`5xx`, `429`, no answer) | The pass stops before saving. The next pass re-reads and re-sends, and the kernel's `UNIQUE(connection, id)` drops what it already had. |
-| The kernel refuses one event (`4xx`) | Logged, and the pass goes on. The event is malformed, so a resend can't help; this is the same rule as `eventsRepo` today. |
-| The `github` process restarts | Its state file is written whole (tmp + rename), and the next pass resumes from it. A missing or corrupt file is a new baseline: nothing is emitted, and consumers are unaffected. |
-| A consumer down or crashing mid-batch | Its cursor didn't move, so it reads the same events again. Each handler is idempotent on keys it already has: code review on `(repo, number, head)` and `seen` comments; ship's per-head state (`greened`, `reded`, `pinged`); the Maintainer's task sources; routines' `UNIQUE(routine, id)`. |
-| A consumer behind for more than 3 days | `gap: true`, then its bootstrap read. |
-| More than 3 pages of new issue events or comments within one pass | The cursor isn't reached. The pass sends what it read, logs a gap and records the pass failed with "gap", so the Steward sees it. It can't happen at today's volume, so it fails loudly instead of being handled. |
-| A state change that reverses inside one interval (draft → ready → draft) | Not seen. The PR is in the same state as before, and no consumer acts on the round trip. |
-| A probe that misses a trigger | Excluded at build time by the one-off verification in §1. If GitHub changes behaviour later, the symptom is a consumer stall that the Steward's existing checks see (`reviewGateStalls`, `mergeDeadlocks`, `stalePrs`). |
-| ETags that churn without a content change | Costs 200s and nothing else. The per-caller counter (§8) shows it. |
-| GitHub signed out | The reader idles, and each pass is recorded failed "GitHub isn't connected". The merge queue already waits on `connected()`. |
-| Event text from strangers | Unchanged rules: `text` is data. Routines get it fenced in `routine_events`, and code services never put it in task text (the Maintainer's tasks name only repo and number). |
+| GitHub `5xx`, a timeout, or a `404` on one repo | That repo's pass fails before its save, and the next pass retries. The pass is recorded failed (§7). A repo deleted or renamed fails until it leaves the watched set. |
+| Primary limit under the reserve | Conditional reads go on (a 304 is free), and other background jobs wait. Only changes spend budget. |
+| Secondary limit (`403`/`429` + `retry-after`) | The whole scheduler pauses until then. |
+| The kernel down, `5xx` or `429` | Events wait in the outbox, and reads go on (state still advances, because events are durable). Sent oldest first once it answers. |
+| The kernel refuses an event for good (`422`, `403`) | Dropped, logged, and the pass recorded with the error. It can only be a bug, and the Steward sees it. |
+| The `github` process restarts | The state file is written whole, and passes resume from it. The outbox is sent first. |
+| The state file is lost | Baseline, plus `github.resync` per repo. Consumers bootstrap. Recorded "baseline". |
+| A consumer down or crashing mid-batch | Its committed cursor didn't move, so the batch is redelivered. Idempotent on keys it already has: code review's `(repo, number, head)` runs and `seen`; ship's per-head state (`greened`, `reded`, `pinged`); the Maintainer's task sources; routines' `UNIQUE(routine, id)`. |
+| A consumer behind by over 3 days | `gap: true`, then a bootstrap. |
+| More than 10 pages to a boundary in one pass | The pass sends what it read and is recorded failed with "gap". Fails loudly. |
+| A flip that reverses inside one interval (draft → ready → draft) | Not seen. The object ends where it started. |
+| A reply left unread by `claims` until its post settles | Re-read on code review's local post-settled trigger. |
+| ETags that change with no content change | They cost 200s and nothing else, and the per-caller counter shows it. |
+| GitHub signed out | Passes are recorded failed ("GitHub isn't connected"). The merge queue already waits on `connected()`. |
+| Stranger text in events | Data, as today. Routines get it fenced through `routine_events`. Code services never copy it into task text (the Maintainer's tasks name only repo and number). |
 
 ## 7. Health signal for the Fleet Steward
 
-The health signal reuses what the Steward already reads: `src_meta.ingest_run`, through apps-mcp `/internal/sources`, into
+This reuses what the Steward already reads: `src_meta.ingest_run`, through apps-mcp `/internal/sources`, into
 `fleet-steward/service/src/detector.ts` `source()`.
 
-- **Reader passes.** The reader writes one `ingest_run` per repo every 5 minutes, through github-mcp's `SourceStore.run`
-  (same process): source `github_feed`, scope `repo:<owner/name>`, `ok` when any pass in the window completed, otherwise
-  the last error, and rows = events sent. Five minutes, not every pass, keeps the table small: `R × 288` rows a day.
-- **Staleness.** `detector.ts` `STALE_FOR` gets `github_feed: 15 min`, so with no good pass on any repo for 15 minutes the
-  Steward raises it, instead of the 60-minute default. A single repo failing every pass for a day falls under the existing
-  `failingScopes`.
-- **Delivery lag.** The kernel's `event_readers` gives each subscribed module's last read and how many subscribed events are
-  newer than its cursor. A new read, `GET /v1/events/readers`, serves it to the Fleet Steward's module token. A new detector
-  check, `feedLag`, raises a module more than 50 events or 10 minutes behind, by name ("code-review hasn't read GitHub
-  events for 12 min").
+**Reader passes.**
+- The reader records one `ingest_run` per repo every 5 minutes, through github-mcp's `SourceStore.run` (same process). The
+  source is `github_feed` and the scope `repo:<owner/name>`.
+- A run is `ok` if any pass in the window completed. Otherwise it carries the last error ("gap", "baseline", a refused event,
+  GitHub's error), and rows = the events sent.
+- One run per 5 minutes rather than per pass keeps the table at `R × 288` rows a day.
+
+**Staleness.**
+- `detector.ts` `STALE_FOR` gets `github_feed: 15 min`, so no good pass on any repo for 15 minutes is raised, instead of the
+  60-minute default.
+- One repo failing every pass for a day falls under the existing `failingScopes`.
+- The outbox size also rides on the run (`rows` pending), so a kernel that keeps refusing to accept shows as a growing number.
+
+**Delivery lag.**
+- A new kernel read, `GET /v1/events/readers` (the Fleet Steward's module token), lists for each subscribed module its
+  committed cursor, when it last read, and how many of its subscribed events are newer.
+- A new detector check, `feedLag`, raises a module more than 10 minutes behind with events waiting, by name. For example:
+  "code-review hasn't committed GitHub events for 12 min (34 waiting)".
 
 ## 8. Rollout
 
-Each step is one PR that switches its consumer and deletes that consumer's poller in the same PR. Nothing runs both ways.
-Lane 1 lands first, and lanes 2 to 4 after it, side by side, with ship last because it waits on #1680.
+Each lane is one PR. It switches its consumer and deletes that consumer's poller in the same PR, so nothing ever runs both
+ways. Lane 1 lands first. Lanes 2 and 3 follow side by side. Lane 4 waits on #1680.
 
-**Lane 1. Kernel, reader and routines.**
-- `events.ts`: `data`, `event_log`, `event_readers`, `GET /v1/events/log`, `PUT /v1/events/watch`,
-  `GET /v1/events/readers`, and the `resources()` union.
-- Compile: `subscribes:` in `module.yaml` → `config/modules.json`, plus its `docs/configuration.md` row.
-- `feed.ts` in the github service, the in-process Flow facts hook, and the `merges.step()` nudge.
-- A per-caller GitHub call counter in the client, by caller and status, logged hourly. The first day's numbers replace §5's
-  estimates.
-- The `github_feed` ingest runs, and the Steward's `STALE_FOR` and `feedLag`.
-- **Deletes** `flow.ts` `eventsPass` / `eventsRepo` / `sourceEvent` / `issuesRepo` and their state files, and
-  `modules/github/test/events-poll.test.ts`. Routines switch here.
+**Lane 1: the kernel, the reader, routines and Flow.**
+- **Kernel** (`events.ts`): `data`, the transactional `ingest` with `422`, `event_log`, `event_readers`,
+  `GET /v1/events/log`, `PUT /v1/events/watch`, `GET /v1/events/readers`, and the `resources()` union.
+- **Compile:** `subscribes:` → `config/modules.json`, plus its `docs/configuration.md` row.
+- **The github service:**
+  - `feed.ts`, with its outbox and the one scheduler;
+  - the `sources.ts` sync and the backfill moved onto it;
+  - the Flow hook;
+  - a client change (ETag reads skip the reserve);
+  - the per-caller counter.
+- **Steward:** the `github_feed` runs, `STALE_FOR` and `feedLag`.
+- **Deletes:**
+  - in `flow.ts`: `eventsPass`, `eventsRepo`, `sourceEvent` and `issuesRepo`, with their state files;
+  - `startSync`'s timer;
+  - `modules/github/test/events-poll.test.ts`.
 
-**Lane 2. The Maintainer.**
-- `subscribes:`, the log read and the handlers.
-- **Deletes** the watcher's timer, its cursors, `maintainer_poll_minutes`, and github-mcp's `issuesSince` family.
+**Lane 2: the Maintainer.** Its subscription, handlers and bootstrap. Deletes its timer, cursors,
+`maintainer_poll_minutes` and the `issuesSince` family.
 
-**Lane 3. Code review.**
-- `subscribes:`, the log read, the handlers and the bootstrap.
-- **Deletes** the 60 s GitHub tick, `CODE_REVIEW_POLL_SECONDS`, the `cursors` table and `/internal/code-review/comments`.
+**Lane 3: code review.** Its subscription, handlers, bootstrap and settings trigger, plus the transactional `seen`. Deletes
+the GitHub tick and `CODE_REVIEW_POLL_SECONDS`.
 
-**Lane 4. Ship.** After #1680 merges.
-- `subscribes:`, the log read, the handlers, the per-PR deadlines and the bootstrap.
-- **Deletes** the loop timer, the full scan per minute, `PR_EVERY`, and `/internal/ship/flow`.
+**Lane 4: ship.** Its subscription, handlers, task-state read, deadlines and bootstrap. Deletes the loop timer, the
+per-minute scan, `PR_EVERY` and `/internal/ship/flow`.
 
-**End-to-end check per lane, by hand.** A TEST PR on a fleet repo: open, push, red check, green check, comment, label,
-close. The consumer must act within about 60 s of each, with no timer of its own left.
+**Each lane is checked by hand, end to end, once.** A TEST PR on a fleet repo goes through open, push, a red check, a green
+check, a comment, a review reply, a label and a close. The consumer must act within about 60 s of each, with no GitHub timer
+of its own left.
 
 ## 9. What gets deleted
 
 | Where | What |
 | --- | --- |
-| `modules/github/service/src/flow.ts` | `sourceEvent`, `EVENT_REPOS`, `eventsPass`, `eventsRepo`, `/cache/events.json`; `issuesRepo`, `/cache/issues.json`; the `issuesRepo` and `eventsPass` calls in `churnPass` |
-| `modules/github/test/events-poll.test.ts` | the whole file (its behaviour is the reader's now) |
-| `modules/github/module.yaml` | the `events` comment "polled from each subscribed repo's events feed on the code host's churn pass (best-effort…)"; `kinds` grows to §2's list |
+| `modules/github/service/src/flow.ts` | `sourceEvent`, `EVENT_REPOS`, `eventsPass`, `eventsRepo`, `/cache/events.json`; `issuesRepo`, `/cache/issues.json`; the backfill and issue and events calls in `churnPass` (churn moves to the scheduler) |
+| `modules/github/connections/github-mcp/src/sources.ts` | `startSync`'s own `setTimeout` loop (`syncOrg` and `retireOrg` stay, scheduled by the reader) |
+| `modules/github/test/events-poll.test.ts` | the whole file |
+| `modules/github/module.yaml` | the `events` comment "polled from each subscribed repo's events feed on the code host's churn pass"; `kinds` grows to §2's list |
 | `modules/code-review/service/src/main.ts` | the GitHub `setInterval`, `CODE_REVIEW_POLL_SECONDS`, `wantGithub` |
-| `modules/code-review/service/src/engine.ts` | the timer-driven call of `poll(cfg)` (its bodies become the handlers), the `cursors` table |
-| `modules/github/connections/github-mcp/src/code-review-read.ts` | the `comments` op |
-| `modules/maintainer/service/src/watcher.ts`, `module.yaml` | the `setInterval` / `setTimeout` in the watcher, the three cursors, `maintainer_poll_minutes`, `MAINTAINER_POLL_MINUTES` |
+| `modules/code-review/service/src/engine.ts` | the timer-driven calls of `poll` and `claims` in `tickWork` |
+| `modules/maintainer/service/src/watcher.ts`, `modules/maintainer/module.yaml` | the timer, the three cursors, `maintainer_poll_minutes`, `MAINTAINER_POLL_MINUTES` |
 | `modules/github/connections/github-mcp/src/maintainer.ts` | `issuesSince`, `repoSince`, `untriaged`, `recentFeatureRequests` and their route |
 | `modules/github/service/src/pr-watch.ts` → `modules/ship/service/src/loop.ts` | the `next()` timer, `EVERY_MS`, `IDLE_MAX_MS`, the per-minute full scan, Flow observation |
-| `modules/ship/service/src/contributor.ts` (from #1680) | the hourly `PR_EVERY` gate |
-| `modules/github/service/src/ship-routes.ts` (from #1680) | the `flow` route |
-| `kernel/src/events.ts` | the comment "GitHub's repo slugs come lower-cased from its poller" (now from the reader) |
+| `modules/ship/service/src/contributor.ts` (#1680) | the hourly `PR_EVERY` gate |
+| `modules/github/service/src/ship-routes.ts` (#1680) | the `flow` route |
+| `kernel/src/events.ts` | 2xx for an invalid event; the comment that GitHub's slugs come "from its poller" |
 
 **What stays:**
-- the merge queue's read of a PR it is merging;
-- `src_github` (`sources.ts` `startSync`);
-- churn and the one-time backfill (git, not the API);
-- every read an event triggers.
+- the merge queue's in-flight read;
+- what `src_github` reads;
+- churn (git);
+- reads an event triggers;
+- one-object deadlines;
+- the routes the bootstraps use (`/internal/code-review/prs`, `comments`, `threads`; github-mcp `issueList` and the trust
+  read).
 
 ## 10. Webhooks, later
 
-**What they would add.** In the `public` and `cloudflare` exposure modes, GitHub could reach a webhook at the
-`github` service: `POST /github/webhook`, HMAC-verified with a generated secret.
+**What would be added.** In the `public` and `cloudflare` exposure modes, GitHub could call `POST /github/webhook` on the
+`github` service, verified by HMAC with a generated secret.
 
-**One emission path.** A webhook never emits an event itself. It only makes the named repo, and the named head for
-`check_run` / `status`, due now. The conditional reads in §1 still produce every event, with the same ids. So there is no
-second path, and a lost or forged webhook can at most cause one early read.
+**One emission path.** A webhook never emits an event. It marks the named repo, and for `check_run` / `status` the named
+head, due now, and §1's conditional reads produce every event with the same ids. So:
+- there is still one emission path;
+- a lost or forged webhook costs at most one early read.
 
-**Without them** (`tailscale`, `local`) the reader works exactly as above.
+**In `tailscale` and `local` modes** the reader works exactly as above.
 
 ## Open questions for the owner
 
-None of these blocks lane 1. Each is a behaviour or authority call this design can't make alone.
-
-1. **Deadline reads.** Ship keeps a few deadline reads of one object: a wedged check at 3 and 20 minutes, update-branch
-   retries, and the 30-minute close of a done task's PR. These are one read of one PR when the deadline passes, not a sweep.
-   They sit inside "the only poller left is the merge queue" because they are not timers over repos. If the owner wants
-   none at all, those duties have to go.
-2. **A 60 s cap even when idle.** It keeps every consumer at least as fast as today, at about 1,100 free conditional
-   requests an hour. A 5-minute idle cap would cut that to about 250, but code review and ship would wait up to 5 minutes
-   on a quiet repo's first PR.
+1. **One-object deadlines.** Ship keeps a few one-PR deadline reads: a wedged check at 3 and 20 minutes, update-branch
+   retries, the 30-minute close of a done task's PR, and contributor-PR staleness. Each reads one PR once when its time
+   comes, never a sweep, so this design counts them as not polling. If "only the merge queue" means none at all, those
+   duties have to go.
+2. **A 60 s cap even when quiet.** This keeps every consumer at least as fast as today, at about 3,400 free conditional
+   requests an hour (about 6% of the REST secondary limit). A 5-minute quiet cap would cut that to about 700, but a quiet
+   repo's first PR or issue would then wait up to 5 minutes for code review and ship.
