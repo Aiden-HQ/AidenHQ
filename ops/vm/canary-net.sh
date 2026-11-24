@@ -59,8 +59,19 @@ table inet $TABLE {
 }
 EOF
 
-# No inter-container traffic: one canary browser never reaches another.
-docker network inspect "$NET" >/dev/null 2>&1 || docker network create --driver bridge --subnet "$SUBNET" --gateway "$GATEWAY" \
-  -o com.docker.network.bridge.name="$BRIDGE" -o com.docker.network.bridge.enable_icc=false "$NET" >/dev/null
+# The network: created here, or (a re-run after a reboot) proved to be this one. A network that merely carries the right name is
+# not enough: the rule above matches a bridge name, so a bridge of another name, subnet or gateway (or with inter-container
+# traffic on) is a network the rules never guarded. A mismatch stops the run instead of being adopted.
+if docker network inspect "$NET" >/dev/null 2>&1; then
+  got="$(docker network inspect --format '{{index .Options "com.docker.network.bridge.name"}}|{{index .Options "com.docker.network.bridge.enable_icc"}}|{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}{{end}}' "$NET")"
+  want="$BRIDGE|false|$SUBNET|$GATEWAY"
+  if [ "$got" != "$want" ]; then
+    echo "$NET exists but isn't the canary network (want $want, found $got): remove it and run this again" >&2
+    exit 1
+  fi
+else
+  docker network create --driver bridge --subnet "$SUBNET" --gateway "$GATEWAY" \
+    -o com.docker.network.bridge.name="$BRIDGE" -o com.docker.network.bridge.enable_icc=false "$NET" >/dev/null
+fi
 
 echo "canary network $NET ($BRIDGE, $SUBNET) and rule $TABLE in place"

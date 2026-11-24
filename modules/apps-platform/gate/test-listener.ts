@@ -82,11 +82,13 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
   /** The app's own origin on this listener, exactly. */
   const originOf = (c: GateConfig, app: string) => `http://${app}.${CANARY_BASE}${c.test_listener?.port ? `:${c.test_listener.port}` : ""}`;
   /**
-   * The app's own (public) host from the compiled config: the kernel's session and handoff are bound to the app's host, while
-   * the cookie is host-only on this listener's origin. Both name the same one app, so a session for one app is never the other's.
+   * The app's one entry in the compiled config: its public host and its upstream port, resolved together. The kernel's
+   * session and handoff are bound to that public host, while the cookie is host-only on this listener's origin; both name the
+   * same one app, so a session for one app is never another's. A door is not an app entry (and a module door must never be
+   * reachable this way), and the synthetic `<app>.canary.localhost` name is this listener's own, never an upstream.
    */
-  const publicHostOf = (c: GateConfig, app: string) =>
-    Object.entries(c.hosts ?? {}).find(([h, x]) => x.app === app && !x.door && h !== `${app}.${CANARY_BASE}`)?.[0];
+  const entryOf = (c: GateConfig, app: string) =>
+    Object.entries(c.hosts ?? {}).find(([h, x]) => x.app === app && !x.door && h !== `${app}.${CANARY_BASE}`);
 
   async function serve(req: IncomingMessage, res: ServerResponse) {
     const c = cfg();
@@ -96,9 +98,10 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     if (!m) return plain(res, 404, "not found");
     const app = m[1]!;
     if (!c.test_user.apps.includes(app)) return plain(res, 404, "not found");
-    const site = c.hosts?.[`${app}.${CANARY_BASE}`] ?? Object.values(c.hosts ?? {}).find((h) => h.app === app && !h.door);
-    const publicHost = publicHostOf(c, app);
-    if (!site || site.door || !publicHost) return plain(res, 404, "not found");
+    const entry = entryOf(c, app);
+    const site = entry?.[1];
+    const publicHost = entry?.[0];
+    if (!site || !publicHost) return plain(res, 404, "not found");
     const origin = originOf(c, app);
     const url = new URL(String(req.url ?? "/"), "http://x");
     const path = url.pathname;
@@ -195,8 +198,15 @@ export function createTestListenerReconciler({ config, log = (o) => console.log(
   let server: Server | undefined;
   let at = "";
   const reconcile = () => {
-    const c = config();
-    const want = testListenerOn(c) ? c.test_listener! : undefined;
+    let c: GateConfig | undefined;
+    try {
+      c = config();
+    } catch (e) {
+      // No readable config at all: nothing may be served, so the listener closes rather than outliving the policy it was
+      // bound under (a torn write is tolerated by the reader; this is a missing or unreadable file).
+      log({ msg: "test listener closed: gate config unreadable", err: String((e as Error).message) });
+    }
+    const want = c && testListenerOn(c) ? c.test_listener! : undefined;
     const key = want ? `${want.address}:${want.port}` : "";
     if (key === at) return;
     if (server) {
