@@ -167,10 +167,10 @@ const subTask = `UPDATE spend_task SET n = n - 1, nano = nano - ${NANO("OLD")} W
 export function openLedger(file: string, legacy?: string): { db: DatabaseSync; moved: number } {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
-  // This connection's own tuning (records.ts keeps synchronous FULL on its approvals connection). NORMAL in WAL: a power loss
-  // can drop the last acknowledged ledger writes, never corrupt the file. Its page cache is 16 MB of the kernel's heap; the
-  // mmap window maps the OS page cache every handle on the file shares, so it costs no extra memory per handle.
-  db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -16384;
+  // This connection's own tuning. synchronous FULL: an acknowledged reservation, settle or CI token survives a power loss. Its
+  // page cache is 16 MB of the kernel's heap; the mmap window maps the OS page cache every handle on the file shares, so it
+  // costs no extra memory per handle.
+  db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA synchronous = FULL; PRAGMA cache_size = -16384;
     PRAGMA mmap_size = 268435456; PRAGMA temp_store = MEMORY; PRAGMA journal_size_limit = 67108864;`);
   db.exec(`
     CREATE TABLE IF NOT EXISTS calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, run_key TEXT NOT NULL, run_id TEXT, agent_id TEXT,
@@ -435,6 +435,12 @@ const RETRY_STATUS = new Set([429, 500, 502, 503, 504, 524]);
 const RATE_LIMITED = /^(?:429|rate_limit_error|rate_limit_exceeded)$|error event: (?:429|rate_limit_error|rate_limit_exceeded)$/;
 /** The longest a model's cooldown runs from one rate limit, and the longest a new call waits one out. */
 const COOLDOWN_MAX_MS = 60_000;
+/** A Retry-After header in ms from `t`: delay-seconds or an HTTP-date; undefined when absent, unreadable or not in the future. */
+const retryAfterMs = (h: string | null, t: number): number | undefined => {
+  if (!h) return undefined;
+  const ms = /^\s*\d+(?:\.\d+)?\s*$/.test(h) ? Number(h) * 1000 : Date.parse(h) - t;
+  return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+};
 const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
 /** How much of a stream, and for how long, is held back while looking for its first output before it is passed through. */
 const PEEK_BYTES = 64 * 1024;
@@ -581,12 +587,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * minute. The deadline only ever moves later.
    */
   function cool(model: string, retryAfter: string | null) {
-    const t = now(), after = Number(retryAfter);
+    const t = now(), after = retryAfterMs(retryAfter, t);
     try {
       db.exec("BEGIN IMMEDIATE");
       const row = q.cooldown.get(model) as { until: number; step: number } | undefined;
       const step = !row || row.until <= t - 60_000 ? 0 : row.until > t ? row.step : Math.min(row.step + 1, cooldownMs.length - 1);
-      const wait = Number.isFinite(after) && after > 0 ? after * 1000 : (cooldownMs[step] ?? 0);
+      const wait = after ?? cooldownMs[step] ?? 0;
       q.setCooldown.run(model, Math.max(row?.until ?? 0, t + Math.min(wait, COOLDOWN_MAX_MS)), step);
       db.exec("COMMIT");
     } catch (e) {
@@ -1014,13 +1020,21 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
           const g = billable ? genOf(up, peeked?.text ?? "") : "";
           q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, spent, now() - t0, billable ? "unsettled" : "stream_error", g || null, held);
         }
-        const after = Number(up?.headers.get("retry-after"));
+        const after = retryAfterMs(up?.headers.get("retry-after") ?? null, now());
         // Never sooner than the model's shared cooldown (this answer's own, or one a peer kernel extended).
-        const cooling = ((q.cooldown.get(body.model) as { until: number } | undefined)?.until ?? 0) - now();
-        const wait = Math.min(Math.max(Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000), cooling), COOLDOWN_MAX_MS);
+        const cooled = String(body.model);
+        const deadline = () => (q.cooldown.get(cooled) as { until: number } | undefined)?.until ?? 0;
+        let until = deadline();
+        const wait = Math.min(Math.max(Math.min(after ?? retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000), until - now()), COOLDOWN_MAX_MS);
         log("upstream retry", { model: body.model, attempt: n + 1, ...(failed ? { stream_error: failed.reason } : { status: up?.status ?? String((err as Error).message).slice(0, 100) }), wait_ms: Math.round(wait) });
         await reader?.cancel().catch(() => {});
         await new Promise((r) => setTimeout(r, wait));
+        // A deadline another call or kernel extended meanwhile is waited out too (by how far it moved, at most COOLDOWN_MAX_MS in all).
+        for (let more = 0, next = deadline(); next > until && wait + more < COOLDOWN_MAX_MS; until = next, next = deadline()) {
+          const ms = Math.min(next - until, COOLDOWN_MAX_MS - wait - more);
+          more += ms;
+          await new Promise((r) => setTimeout(r, ms));
+        }
       }
     } catch (e) {
       // Refused before the request left (nothing reached OpenRouter): free. Any other failure may have been billed.

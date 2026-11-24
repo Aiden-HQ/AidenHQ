@@ -311,9 +311,13 @@ every(() => { try { facts.prune(); } catch (e) { log("facts prune failed", { err
 // A drain ends the wake inbox's control-plane reads at once (the poll in flight stops at its next read; the next kernel polls).
 // A write (a reopen, an unblock) already sent is never cut mid-flight (it may have landed); none starts once the drain has.
 const drainSignal = new AbortController();
-const wakeOwner = asApi((p, init) => {
-  if ((init.method ?? "GET") !== "GET") return drainSignal.signal.aborted ? Promise.reject(new Error("draining: the next kernel takes it")) : cpApi(p, init);
-  return cpApi(p, { ...init, signal: AbortSignal.any([AbortSignal.timeout(15_000), drainSignal.signal]) });
+// The writes in flight hold the drain open (bounded by DRAIN_MS, as every other in-flight count).
+let wakeWrites = 0;
+const wakeOwner = asApi(async (p, init) => {
+  if ((init.method ?? "GET") === "GET") return cpApi(p, { ...init, signal: AbortSignal.any([AbortSignal.timeout(15_000), drainSignal.signal]) });
+  if (drainSignal.signal.aborted) throw new Error("draining: the next kernel takes it");
+  wakeWrites++;
+  try { return await cpApi(p, init); } finally { wakeWrites--; }
 });
 // Who owns a row across a restart. A restart drains the old kernel beside this one for at most DRAIN_MS (below): the old one
 // starts no job and no write after its drain begins, but finishes the launches and executions it had in flight. So a row this
@@ -933,8 +937,8 @@ drain = () => {
   const done = () => {
     for (const s of servers) s.closeIdleConnections();
     const t = Date.now() - t0;
-    if ((gw.inflight() > 0 || !truedUp || admission.inflight() > 0 || writes.inflight() > 0 || checkJobs.inflight() > 0 || notices.inflight()) && t < DRAIN_MS) return;
-    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), writes: writes.inflight(), checks: checkJobs.inflight(), notices: notices.inflight(), ms: t });
+    if ((gw.inflight() > 0 || !truedUp || wakeWrites > 0 || admission.inflight() > 0 || writes.inflight() > 0 || checkJobs.inflight() > 0 || notices.inflight()) && t < DRAIN_MS) return;
+    log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), writes: writes.inflight(), wake_writes: wakeWrites, checks: checkJobs.inflight(), notices: notices.inflight(), ms: t });
     if (gw.inflight() === 0 && truedUp) gw.close();
     process.exit(0);
   };
