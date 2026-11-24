@@ -21,7 +21,8 @@ import { SESSION, buildJob, ensureStateDirs, observes, readEngines, type Box, ty
 export interface ControlPlane {
   task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string } | undefined>;
 }
-type Progress = { said?: string; saidAt?: string; plan?: unknown[]; steps?: unknown[] };
+/** `stepCount` and `expired`: a finished job's progress after retention (retention.ts) keeps the last words and how many steps there were. */
+type Progress = { said?: string; saidAt?: string; plan?: unknown[]; steps?: unknown[]; stepCount?: number; expired?: boolean };
 export interface JobView {
   id: string; module: string; agent: string; task: string; state: string; pid: number; log: string; dir: string; at: number;
   jobcaps: string[]; observing: boolean; live_input: boolean; exit: number | null; final: string; session: string | null;
@@ -358,7 +359,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the
         // job that started it, its frozen authority and routine), and boxes.ts's lease and release.
         const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"], ["saw", "TEXT"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"], ["saw", "TEXT"], ["expired", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
         db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
         db.exec("CREATE INDEX IF NOT EXISTS jobs_identifier ON jobs (identifier, state)"); // workspaces.ts: a folder's liveness
         db.exec("CREATE INDEX IF NOT EXISTS jobs_agent_at ON jobs (agent, at DESC)"); // work.ts: an agent's newest jobs first

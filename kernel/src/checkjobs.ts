@@ -68,6 +68,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { missKind, passes } from "../sdk/src/pass-rule.ts";
 import { noteFact, openFacts } from "./facts.ts";
 import { trashAway } from "./trash.ts";
+import { EXPIRED_RESULT } from "./retention.ts";
 
 /** A recipe's name (`fast`, `tests`, `eval`, `contract`, …): whatever the installed modules declare. */
 export type Run = string;
@@ -118,7 +119,7 @@ export type Receipt = { v: 1; check: string; repo: string; head: string; run: Ru
 export type Binding = { repo: string; head: string; run: Run; judge?: string; policy?: string; none?: boolean; result?: string };
 /** `result`: the recipe's result object (data: made from the repo's text); `billed_usd`: its model token's spend by the gateway's
  * ledger (a failed run's too; a running check's so far); both null for other recipes. */
-export type CheckView = { id: string; repo: string; head: string; run: Run; state: string; receipt: Receipt | null; error: string | null; version: number; result: Record<string, unknown> | null; billed_usd: number | null;
+export type CheckView = { /** The result was cleared by retention (retention.ts): a re-ask of a result recipe runs it again. */ expired?: true; id: string; repo: string; head: string; run: Run; state: string; receipt: Receipt | null; error: string | null; version: number; result: Record<string, unknown> | null; billed_usd: number | null;
   /** Its last end was a spend limit ("day", "month", …): a budget outcome, not the change's failure (a later ask runs it again);
    * null when it didn't end at one. A reader may wait on it; nothing refuses a merge for it. */
   capped: string | null;
@@ -372,6 +373,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   // A database from before result artifacts: the columns they need.
   const cols = new Set((db.prepare("PRAGMA table_info(checks)").all() as { name: string }[]).map((c) => c.name));
   if (!cols.has("result")) db.exec("ALTER TABLE checks ADD COLUMN result TEXT");
+  if (!cols.has("expired")) db.exec("ALTER TABLE checks ADD COLUMN expired INTEGER"); // retention.ts: when it cleared the row
   if (!cols.has("cost_usd")) db.exec("ALTER TABLE checks ADD COLUMN cost_usd REAL");
   if (!cols.has("tries")) db.exec("ALTER TABLE checks ADD COLUMN tries INTEGER NOT NULL DEFAULT 1");
   if (!cols.has("retry")) db.exec("ALTER TABLE checks ADD COLUMN retry INTEGER NOT NULL DEFAULT 0");
@@ -456,7 +458,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
   };
-  const view = (r: Record<string, any>): CheckView => ({ capped: r.capped ? String(r.capped) : null, waiting: r.state === "running" && boxless.has(r.id), box_at: r.box_at ? new Date(r.box_at).toISOString() : null, id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result ? JSON.parse(r.result) : null, billed_usd: r.state === "running" && r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : r.cost_usd ?? null });
+  const view = (r: Record<string, any>): CheckView => ({ capped: r.capped ? String(r.capped) : null, waiting: r.state === "running" && boxless.has(r.id), box_at: r.box_at ? new Date(r.box_at).toISOString() : null, id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result && r.result !== EXPIRED_RESULT ? JSON.parse(r.result) : null, ...(r.result === EXPIRED_RESULT ? { expired: true as const } : {}), billed_usd: r.state === "running" && r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : r.cost_usd ?? null });
 
   /** A run launched in a fresh box (its handle). `trees`: commit trees by spec field, moved into the out folder (the recipe's
    * history); `spec`: written to the out folder's spec.json. */
@@ -731,13 +733,14 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       // A check that couldn't run (error, lost) runs again when asked again; a result recipe that ended without its result runs
       // again only after a provider error or crash (not a timeout): spend is the gateway's limits', never a tries count.
       // A check restarts have lost MAX_LOST times runs no more (each lost run may have spent).
-      const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && had.lost < MAX_LOST;
+      const again = had && (had.state === "done" ? Boolean(recipe.result && (had.result === EXPIRED_RESULT || (!had.result && had.retry))) : had.state !== "running") && had.lost < MAX_LOST;
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       // The task is the latest asker's: a re-run for another task is that task's evidence from here on.
       rmSync(keptPath(id), { force: true });
       sweepFiles();
-      if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, capped = NULL, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
+      // A row retention cleared (retention.ts) gets its spec back: this run reads it.
+      if (had) db.prepare("UPDATE checks SET spec = ?, expired = NULL, task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, capped = NULL, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run(JSON.stringify(spec), (b.task as string | undefined) ?? null, now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now(), (b.task as string | undefined) ?? null);
       log("check started", { check: id, module, repo, head, run });
       execute(id, recipe).catch((e: Error) => log("WARNING: check run failed outside its own handling", { check: id, err: String(e?.message ?? e).slice(0, 300) }));

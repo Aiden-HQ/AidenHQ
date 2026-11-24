@@ -103,7 +103,7 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       const shown = rows(`SELECT * FROM jobs j WHERE agent = ?${o.shown ? " AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'job:' || j.id AND f.type = 'job.ended' AND json_extract(f.data, '$.quiet') = 1)" : ""} ORDER BY at DESC LIMIT 50`, id);
       return { jobs: shown.map((r) => {
         const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
-        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final), routine: r.routine ?? null, ...timeline(r) };
+        return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : (progress.stepCount ?? 0), has_final: Boolean(r.final), routine: r.routine ?? null, ...timeline(r) };
       }) };
     },
     since(from: string, to = new Date().toISOString()) {
@@ -153,7 +153,7 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       return {
         ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, cancelled: why.cancelled === true,
         usage: r.usage ? (JSON.parse(r.usage) as { input: number; cached: number; output: number }) : null,
-        progress: { said: progress.said ?? null, plan: progress.plan ?? [], steps: progress.steps ?? [] }, final: r.final || null,
+        progress: { said: progress.said ?? null, plan: progress.plan ?? [], steps: progress.steps ?? [], ...(progress.expired ? { expired: true, step_count: progress.stepCount ?? 0 } : {}) }, final: r.final || null,
       };
     },
     activity() {
