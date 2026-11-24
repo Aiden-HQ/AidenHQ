@@ -2,7 +2,7 @@
 // The browser and kernel are fakes here, so the whole contract runs in CI; the real Chrome, the real test listener and a real
 // page run in render.e2e.test.ts (AIDENHQ_BROWSER_E2E=1).
 import { describe, expect, it } from "vitest";
-import { CANARY_NETWORK, renderArgs } from "../src/view.js";
+import { CANARY_NETWORK, WEB_NETWORK, renderArgs } from "../src/view.js";
 import { CANARY_BASE, CANARY_LISTENER_ADDRESS, CANARY_PORT, CANARY_SCRIPT, canaryContent, canaryOrigin, pageCanary, type CanaryDeps } from "../src/canary.js";
 import { parseApp } from "../src/registry.js";
 
@@ -47,6 +47,12 @@ describe("app_page_canary", () => {
     const content = canaryContent(r);
     expect(content.content).toHaveLength(2);
     expect(content.content[1]).toEqual({ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" });
+  });
+
+  it("an intake the app refused is not a successful submission, even when the page still fires notify", async () => {
+    const { d } = deps({ run: { status: 500, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "fired", notifyStatus: 204, reference: null } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(r).toMatchObject({ ok: false, status: 500, notify: "fired", notifyStatus: 204, session: { revoked: true } });
   });
 
   it("a page that never posts notify is not-fired, and the session is still revoked", async () => {
@@ -101,8 +107,15 @@ describe("app_page_canary", () => {
     // Evidence is only what this submission caused, from the page's own origin.
     expect(script).toContain("n.at >= submittedAt");
     expect(script).toContain("new URL(n.url).origin === listener");
+    // The app's own intake answer is the reported status; a 5xx is not a success.
+    expect(script).toContain("const intakeStatus =");
+    expect(script).toContain("status: intakeStatus ?? 200");
     // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
     expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);
+    // No DNS that could leave the host from the canary bridge (the listener's name comes from Chrome's resolver rule).
+    expect(renderArgs(CANARY_NETWORK, "img")).toContain("--dns");
+    expect(renderArgs(CANARY_NETWORK, "img")[renderArgs(CANARY_NETWORK, "img").indexOf("--dns") + 1]).toBe("127.0.0.1");
+    expect(renderArgs(WEB_NETWORK, "img")).not.toContain("--dns");
     expect(renderArgs(CANARY_NETWORK, "img").slice(0, -1).join(" ")).not.toMatch(/--cap-add|--privileged|-v |--volume|--mount/);
   });
 });

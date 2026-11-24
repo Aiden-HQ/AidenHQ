@@ -201,9 +201,23 @@ export function createTestListenerReconciler({ config, log = (o) => console.log(
     }
     at = key;
     if (!want) return;
-    server = createTestListener({ config, log });
-    server.listen(want.port, want.address, () => log({ msg: "test listener listening", address: want.address, port: want.port }));
-    server.on("error", (e) => log({ msg: "test listener failed", err: (e as Error).message }));
+    const s = createTestListener({ config, log });
+    server = s;
+    // A bind that fails (the bridge isn't up yet, the port is taken) is retried: `at` is cleared, so the next reconcile binds
+    // again rather than treating the dead listener as the one serving.
+    const failed = (e: Error) => {
+      log({ msg: "test listener failed", address: key, err: e.message });
+      if (server !== s) return;
+      server = undefined;
+      at = "";
+      s.close();
+    };
+    s.once("error", failed);
+    s.listen(want.port, want.address, () => {
+      s.off("error", failed);
+      s.on("error", (e) => log({ msg: "test listener failed", address: at, err: (e as Error).message }));
+      log({ msg: "test listener listening", address: want.address, port: want.port });
+    });
   };
   return { reconcile, current: () => server };
 }

@@ -138,6 +138,28 @@ test("a settings-only apply binds the listener when the test user appears and cl
   } finally { await closed(bound).catch(() => undefined); }
 });
 
+test("a bind that fails before the bridge is up is retried, not remembered as serving", async () => {
+  // The gate can be configured before the canary bridge exists: the first bind fails with EADDRNOTAVAIL, and a later
+  // reconcile must try again rather than skip it because the address was already recorded.
+  const logs: any[] = [];
+  let now: any = { ...cfg, test_listener: { address: "10.99.99.99", port: 0 } };
+  const rec = createTestListenerReconciler({ config: () => now, log: (o) => logs.push(o) });
+  rec.reconcile();
+  await new Promise((ok) => setTimeout(ok, 100));
+  assert.equal(rec.current(), undefined);
+  assert.ok(logs.some((l) => l.msg === "test listener failed"));
+  // Now the bridge exists (a loopback listener on a real address): the next pass binds it.
+  now = { ...cfg, test_listener: { address: "127.0.0.1", port: 0 } };
+  rec.reconcile();
+  const bound = rec.current()!;
+  try {
+    await new Promise<void>((ok) => (bound.listening ? ok() : bound.once("listening", () => ok())));
+    assert.ok(((bound.address() as any)?.port ?? 0) > 0);
+  } finally {
+    await new Promise<void>((ok) => { bound.close(() => ok()); bound.closeAllConnections?.(); });
+  }
+});
+
 test("an unauthenticated browser gets 401 and no page; the front-door header and an anonymous request get nothing", async () => {
   for (const [host, headers] of [
     [`roadmap.${CANARY_BASE}`, {}],

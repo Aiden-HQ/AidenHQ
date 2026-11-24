@@ -141,8 +141,12 @@ export async function webView(url: string, caller: { key: string }, req: { width
 /** `docker run` argv for one render: no mounts, env or secrets beyond HOME; non-root, no capabilities, read-only, limited. */
 export function renderArgs(network: string, image: string, script = VIEW_SCRIPT): string[] {
   if (!/^container:[0-9a-f]{64}$/.test(network) && network !== WEB_NETWORK && network !== CANARY_NETWORK) throw new Error(`bad render network ${network}`);
+  // The canary browser has no DNS that can leave the host: its own loopback resolver answers nothing, so an external name fails
+  // at the lookup instead of being forwarded by Docker's embedded resolver (a lookup is data leaving the box too). The app's
+  // name is mapped to the listener by Chrome's host-resolver-rules, so nothing the canary needs is looked up.
+  const noDns = network === CANARY_NETWORK ? ["--dns", "127.0.0.1"] : [];
   return [
-    "run", "--rm", "-i", "--init", "--pull", "never", "--network", network,
+    "run", "--rm", "-i", "--init", "--pull", "never", "--network", network, ...noDns,
     "--user", "65534:65534", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m", "-e", "HOME=/tmp",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "1g", "--cpus", "1", "--pids-limit", "512", "--shm-size", "256m",
     image, "node", "-e", script,
