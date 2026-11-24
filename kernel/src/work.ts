@@ -107,6 +107,10 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       }) };
     },
     since(from: string, to = new Date().toISOString()) {
+      // The stored times are UTC ISO strings compared as text: both bounds are put in that form first (records and spend alike).
+      const utc = (t: string) => (Number.isNaN(Date.parse(t)) ? t : new Date(t).toISOString());
+      from = utc(from);
+      to = utc(to);
       const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, judged: judged(r), outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
       // Confirmed spend only: a `reserved` call's amount is an estimate, an `unsettled` one the gateway's fail-closed hold, and a call
       // that settled with no tokens seen (a stream cut or gone quiet, `upstream_aborted`) was closed at its reservation. A billed call has tokens (a free refusal, at $0, is confirmed too).
