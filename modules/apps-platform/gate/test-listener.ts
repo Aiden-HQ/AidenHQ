@@ -154,15 +154,20 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
       const h = { ...r.headers };
       for (const k of HOP) delete h[k];
       delete h["set-auth-token"];
-      // No app may set a cookie the listener would accept: it has one cookie, and only the handoff sets it.
+      // No app may set the listener's own session cookie: only the handoff sets that one. The app's other cookies (its own
+      // __Host- CSRF token, say) pass through as they do at the public gate, so a form's own check works here too.
       if (h["set-cookie"]) {
-        const kept = [h["set-cookie"]].flat().filter((x) => cookieName(x).toLowerCase() !== CANARY_COOKIE.toLowerCase() && !/^__host-/i.test(cookieName(x)));
+        const kept = [h["set-cookie"]].flat().filter((x) => cookieName(x).toLowerCase() !== CANARY_COOKIE.toLowerCase());
         if (kept.length) h["set-cookie"] = kept;
         else delete h["set-cookie"];
       }
       res.writeHead(r.statusCode ?? 502, r.statusMessage, h);
+      // A body the app cuts short ends the browser's response too, rather than leaving it half-written.
+      r.on("error", () => res.destroy());
       r.pipe(res);
     });
+    // A body cut short (the app restarted mid-response) closes the browser's response, so the canary fails now rather than
+    // waiting out its own timeout for a body that will never finish.
     up.on("error", () => (res.headersSent ? res.destroy() : plain(res, 502, "bad gateway")));
     res.on("close", () => up.destroy());
     req.pipe(up);
