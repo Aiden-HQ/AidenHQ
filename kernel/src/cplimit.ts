@@ -90,6 +90,21 @@ export function shareReads(f: typeof fetch, now = Date.now): typeof fetch {
   }) as typeof fetch;
 }
 
+/**
+ * JSON both ways over `call` (the control plane as the owner, the board's internal listener). A 2xx whose body can't be read
+ * whole or isn't JSON (a read the timeout cut off) is a failure, never an empty answer: an empty `{}` read as a task would put
+ * an undefined id into its caller's queries.
+ */
+export const jsonApi = (call: (p: string, init: RequestInit) => Promise<Response>) => async (method: string, p: string, body?: unknown): Promise<{ status: number; json: any }> => {
+  const r = await call(p, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  const text = (await readCapped(r)).toString("utf8");
+  if (!text.trim()) return { status: r.status, json: {} };
+  try { return { status: r.status, json: JSON.parse(text) }; } catch {
+    if (r.ok) throw new Error(`${method} ${p.split("?")[0]} answered ${r.status} with a body that isn't JSON`);
+    return { status: r.status, json: {} };
+  }
+};
+
 /** A request header the owner's own typed words carry to the owner-key caller (stripped before the control plane). */
 export const TYPED = "x-aidenhq-typed";
 /** The marker every other comment written with the owner key carries: code wrote it, so it is never the owner's words. */

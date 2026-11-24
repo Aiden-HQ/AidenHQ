@@ -62,6 +62,8 @@
 //                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, the declared journeys, a journey's items (journeys.ts), the summary with its insights
 //   GET  /v1/facts[?since=<seq>&limit=]  (role kernel.flow-read) the fact log after `since` in ingestion order: {facts: [{seq,
 //                              type, task}], tail}; without `since`, none and the tail (where a new incremental reader starts)
+//   GET  /v1/tasks/issues?ids=  (the board, or a module with role kernel.flow-read) the issue mirror's rows (wakes.ts): identifier,
+//                               title, status, assignee, parent and updatedAt of up to 200 tasks, by id or identifier, no Paperclip read
 //   GET  /v1/tasks/state?ids=|?open=1[&closed_since=<iso>]  (the board, or a module with role kernel.flow-read) each task's one
 //                              state, computed from its facts (task-state.ts): `ids` (≤ 200, ids or identifiers, closures included) or
 //                              every open task (and every task closed since `closed_since`, no id limit), in one snapshot, with the needs-you, failed and unexplained-idle counts (task-state-read.ts)
@@ -195,6 +197,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
   { method: "POST", path: "/v1/routines/cancel", auth: "module" },
   { method: "GET", path: "/v1/tasks/state", auth: "module|board" },
+  { method: "GET", path: "/v1/tasks/issues", auth: "module|board" },
   { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/close", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/comment", auth: "module" },
@@ -360,7 +363,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   /** Flow's views over the fact log (flow.ts). */
   flow?: Flow;
   /** Each task's one state (task-state-read.ts). */
-  taskStates?: Pick<TaskStateRead, "read" | "named">;
+  taskStates?: Pick<TaskStateRead, "read" | "named" | "issues">;
   /** The repos the instance reaches (codehostRepos in main.ts): GET /v1/agents hands them to modules. */
   repos?: () => Record<string, unknown>;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
@@ -799,6 +802,13 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         if (p.get("open") === "1") return send(res, 200, await taskStates.named(taskStates.read({ open: true, ...(since ? { closed_since: new Date(since).toISOString() } : {}) })));
         if (!ids?.length || ids.length > 200 || ids.some((s) => s.length > 100)) throw fail(400, "bad_request", "send ?open=1 or ?ids= (1 to 200 task ids or identifiers, comma-separated)");
         return send(res, 200, await taskStates.named(taskStates.read({ ids })));
+      }
+      if (hit?.path === "/v1/tasks/issues") {
+        if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read task state (role kernel.flow-read)`); }
+        if (!taskStates) throw fail(503, "unavailable", "task state reads are off");
+        const ids = new URLSearchParams(q ?? "").get("ids")?.split(",").map((s) => s.trim()).filter(Boolean);
+        if (!ids?.length || ids.length > 200 || ids.some((s) => s.length > 100)) throw fail(400, "bad_request", "send ?ids= (1 to 200 task ids or identifiers, comma-separated)");
+        return send(res, 200, taskStates.issues(ids));
       }
       if (hit?.path.startsWith("/v1/tasks")) {
         const w = await moduleOf(req);

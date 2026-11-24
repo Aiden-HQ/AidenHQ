@@ -101,7 +101,7 @@ import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.ts";
-import { TYPED, limitIssueLists, markCode, readCapped, shareReads } from "./cplimit.ts";
+import { TYPED, jsonApi as asApi, limitIssueLists, markCode, shareReads } from "./cplimit.ts";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
 
@@ -248,17 +248,6 @@ replay = proxy.replay as never;
 const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections, kindOf: writes.kindOf, callAs: proxy.callAs, log });
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
 // the kernel's key (gateway_board_key).
-// A 2xx whose body can't be read whole or isn't JSON (a read cut off by the timeout) is a failure, never an empty answer: an
-// empty `{}` read as the task would put an undefined id into every caller's queries.
-const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api => async (method, p, body) => {
-  const r = await call(p, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-  const text = (await readCapped(r)).toString("utf8");
-  if (!text.trim()) return { status: r.status, json: {} };
-  try { return { status: r.status, json: JSON.parse(text) }; } catch {
-    if (r.ok) throw new Error(`${method} ${p.split("?")[0]} answered ${r.status} with a body that isn't JSON`);
-    return { status: r.status, json: {} };
-  }
-};
 const ownerApi = asApi(cpApi);
 // Projects (projects.ts): repos map into products; a PR's repo fills in its task's project, agents tag one by name.
 const projects = createProjects({ db: records.db, owner: ownerApi, products: () => (grantsTable().projects ?? {}) as Record<string, string[]>, log });
@@ -547,7 +536,8 @@ every(() => {
 // The disk stays bounded (workspaces.ts): closed and idle tasks' workspaces, cache layers, engine homes and left check folders
 // go, sooner when a disk is over PRESSURE. Every 15 minutes, and once soon after start; one pass at a time.
 const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir, stateDir: sandbox.stateDir, stopping: () => draining,
-  stillClosed: async (task) => { const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(task)}`); return r.status === 404 ? true : r.status === 200 ? ["done", "cancelled"].includes(String((r.json as { status?: string }).status)) : undefined; }, // 404: the task is gone, so is its workspace's reason to stay
+  // From the issue mirror (wakes.ts): a task gone from Paperclip is recorded cancelled there; one it has never seen is kept.
+  stillClosed: async (task) => { const st = wakes.mirror(task)?.status; return st ? ["done", "cancelled"].includes(st) : undefined; },
   engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
 let diskSweeping = false;
 const sweepDisk = () => {

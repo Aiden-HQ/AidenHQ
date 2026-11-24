@@ -41,3 +41,8 @@ export type TaskState = {
  */
 export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; origin: string | null; holder_name?: string; holder_gone?: true };
 export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };
+/**
+ * What the kernel's issue mirror last recorded of a task from Paperclip (GET /v1/tasks/issues): its identifier, title, status,
+ * agent assignee (id), parent (id) and Paperclip's updatedAt. A task the kernel has never seen has no row.
+ */
+export type IssueRow = { id: string; identifier: string | null; title: string | null; status: string | null; assignee: string | null; parent: string | null; updated_at: string | null };

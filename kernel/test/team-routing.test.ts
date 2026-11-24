@@ -145,7 +145,9 @@ test("continuity counts a member's done tasks in the same repo; a wake already f
   const w = world();
   w.issue("old1", { assigneeAgentId: MINA }); w.issue("old2", { assigneeAgentId: MINA });
   await w.wakes.poll();
-  w.issues.old1.status = "done"; w.issues.old2.status = "done";
+  w.tick();
+  for (const t of ["old1", "old2"]) Object.assign(w.issues[t], { status: "done", updatedAt: new Date(Date.parse(w.issues[t].updatedAt) + 1000).toISOString() });
+  await w.wakes.poll(); // the closes reach the issue mirror
   w.db.prepare("INSERT INTO wakes (key, task, agent, cause, at) VALUES ('issue:x:1', 'x', ?, 'assigned', 1)").run(TEAM);
   w.issue("t1");
   await w.wakes.event({ issueId: "t1" });

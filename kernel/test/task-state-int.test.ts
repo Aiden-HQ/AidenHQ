@@ -58,7 +58,7 @@ function world(t: any) {
   wakes.claim("dispatch");
   const reader = createTaskStateRead({ file, stages: () => KERNEL_STAGES, now: () => clock });
   const w = {
-    db, facts, wakes, comments, issue, tick: (ms = 1000) => (clock += ms), at: () => iso(clock),
+    db, dbFile: file, facts, wakes, comments, issue, tick: (ms = 1000) => (clock += ms), at: () => iso(clock),
     state: () => reader.read({ ids: ["t1"] }).tasks[0]!,
     wakeRows: () => (db.prepare("SELECT key, state FROM wakes WHERE task = 't1'").all() as any[]).map((r) => `${r.key} ${r.state}`),
     /** The agent asks the owner a question (task_wait for: owner), now. */
@@ -109,4 +109,14 @@ test("a task blocked in Paperclip with no blocked fact reads waiting, blocked af
   w.tick();
   await w.wakes.poll();
   assert.equal(count(), 1);
+});
+
+test("the issue mirror serves a task's identifier, title, status and parent by id or identifier, with no Paperclip read", async (t) => {
+  const w = world(t);
+  Object.assign(w.issue, { title: "Ship it", parentId: "p-1" });
+  await w.wakes.poll();
+  const reader = createTaskStateRead({ file: w.dbFile, stages: () => KERNEL_STAGES });
+  const want = { id: "t1", identifier: "WOR-1", title: "Ship it", status: "in_progress", assignee: AGENT, parent: "p-1", updated_at: w.issue.updatedAt };
+  assert.deepEqual(reader.issues(["WOR-1"]).issues.map((r) => ({ ...r })), [want]);
+  assert.deepEqual(reader.issues(["t1", "nope"]).issues.map((r) => ({ ...r })), [want]);
 });

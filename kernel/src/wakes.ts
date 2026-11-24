@@ -610,15 +610,16 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (!id) continue;
       const a = await owner("GET", `/api/agents/${encodeURIComponent(id)}`);
       if (a.status !== 200) throw new Error(`control plane GET agent → ${a.status}`);
-      const l = await owner("GET", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(id)}`);
+      // Only the ids are read: the compact view, which Paperclip may answer from its short request cache.
+      const l = await owner("GET", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues?status=${OPEN}&limit=500&view=compact&assigneeAgentId=${encodeURIComponent(id)}`);
       if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
       // Continuity: whether this member finished a task in one of the task's repos within the window (task status done).
       let done = 0;
       if (repos.length) for (const r of q("SELECT task, repos, done FROM team_routes WHERE member = ? AND at > ? AND task != ? AND state != 'blocked' ORDER BY done DESC").all(id, since, task) as { task: string; repos: string; done: number }[]) {
         if (!(JSON.parse(r.repos) as string[]).some((x) => repos.includes(x))) continue;
         if (!r.done) {
-          const t = await owner("GET", `/api/issues/${encodeURIComponent(r.task)}`);
-          if (t.status === 200 && t.json?.status === "done") q("UPDATE team_routes SET done = 1 WHERE task = ?").run(r.task);
+          // Its status as the issue mirror last recorded it (the poll's change list keeps it current).
+          if ((q("SELECT status FROM task_facts_seen WHERE task = ?").get(r.task) as { status: string | null } | undefined)?.status === "done") q("UPDATE team_routes SET done = 1 WHERE task = ?").run(r.task);
           else continue;
         }
         done = 1;
