@@ -5,6 +5,7 @@
 // goes on hold with the reason and its owner is told (tell): a task's PR wakes whoever asked for the task, a member's gets the
 // report comment and its author assigned. A new head clears a stalled hold. Only a member's PR gets the report comment.
 // The loop (loop.ts) calls round() after intake() for each PR it read, with decide's answer and this pass's facts.
+import { createHash } from "node:crypto";
 import { advance, discovered, stageOf, suggestLines, type Gh } from "./actions.ts";
 import type { Discovered } from "./discover.ts";
 import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
@@ -142,7 +143,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     text = text.slice(0, 2000);
     // The first job files the adoption's task (which starts the Engineer on it); later ones wake that same task.
     if (!a!.task) a = { ...a!, task: await fileTask(d.kernel, pr, a!.generation, text) };
-    else if ((await d.kernel.call("POST", "/v1/wakes", { task: a!.task, text }))?.closed) {
+    // The wake's own key: a retry of one whose answer was lost posts nothing twice.
+    else if ((await d.kernel.call("POST", "/v1/wakes", { task: a!.task, text, id: wakeKey(`${pr.repo}#${pr.number}:${kind}:${pr.head}:${c.wakes}`) }))?.closed) {
       // Someone closed or cancelled the task: that ends the adoption until a fresh hand-off.
       a = { ...a!, hold: { kind: "handed_back", reason: "its task was closed", at: new Date().toISOString() } };
       await save("on hold");
@@ -210,7 +212,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         // A fork's branch takes ship's writes (update-branch too) only where its author allows maintainer edits.
         if (pr.fork && !pr.canModify) return hold(noEdits);
         if (!f.dirty) {
-          await d.updateBranch(pr.repo, pr.number, pr.head);
+          // GitHub refusing the update (a rule, a permission) holds with its reason rather than asking every pass.
+          try { await d.updateBranch(pr.repo, pr.number, pr.head); }
+          catch (e) {
+            // A refusal (a 4xx but a rate limit) holds; anything else is asked again next pass.
+            const why = String((e as Error).message), status = Number(/: (\d{3})\b/.exec(why)?.[1]);
+            if (status >= 400 && status < 500 && status !== 429 && !/rate limit/i.test(why)) return hold(`GitHub refused to update the branch with \`${pr.base}\`: ${why.slice(0, 200)}`);
+            throw e;
+          }
           a = { ...a!, did: [...(a!.did ?? []), `updated the branch with \`${pr.base}\``] };
           return "acted";
         }
@@ -406,7 +415,7 @@ export async function retryReport(d: RoundDeps, a: Kept, pr: PrView): Promise<Ke
 export async function tell(d: Pick<RoundDeps, "kernel" | "log">, a: Kept, pr: PrView, text: string, what: string, asker = false) {
   if (a.owner?.kind !== "task") return;
   // The notice's own key: a retry of a wake whose answer was lost posts nothing twice.
-  const id = `ship.${pr.repo}.${pr.number}.${what}`.replace(/[^\w.-]/g, "-").slice(0, 80);
+  const id = wakeKey(`${pr.repo}#${pr.number}:${what}`);
   try { await d.kernel.call("POST", "/v1/wakes", { task: a.owner.task, text: text.slice(0, 2000), id, ...(asker ? { to: "asker" } : {}) }); }
   catch (e) {
     const status = (e as { status?: number }).status;
@@ -414,6 +423,9 @@ export async function tell(d: Pick<RoundDeps, "kernel" | "log">, a: Kept, pr: Pr
     d.log("tell refused", { pr: pr.url, status, err: String((e as Error).message).slice(0, 200) });
   }
 }
+
+/** A wake's bounded key from its whole identity: a retry reuses it, distinct wakes never share one. */
+const wakeKey = (identity: string) => `ship.${createHash("sha256").update(identity).digest("hex").slice(0, 32)}`;
 
 /** Posts the report, or edits it in place (its id kept on the adoption). A task's PR gets none: its task is told instead. */
 async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts) {
