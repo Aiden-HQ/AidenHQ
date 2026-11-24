@@ -54,6 +54,8 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   let duringRepair;
   // A ref update GitHub refuses for its own reasons (a rule), never a moved head: the branch reads back at the expected head.
   let refuseRef = false;
+  // A PR closed after ship's first read and before its ref update (`duringPush`), so the recheck before the branch moves is tested.
+  let duringPush;
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
@@ -89,6 +91,8 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     }
     // GitHub signs a commit as the identity whose token made it: the owner's login, or the reviewer App's bot.
     if (method === "POST" && path === `/repos/${REPO}/git/commits`) {
+      // The upload reached its commit: whatever the test wants to happen next does, before the ref moves.
+      const hooked = duringPush; duringPush = undefined; hooked?.();
       const who = body.as === "app" ? "app" : "owner1";
       const env = { GIT_COMMITTER_NAME: who, GIT_COMMITTER_EMAIL: `${who}@example.com`, GIT_AUTHOR_NAME: who, GIT_AUTHOR_EMAIL: `${who}@example.com` };
       return { status: 201, body: { sha: git(["commit-tree", body.tree, ...body.parents.flatMap((p) => ["-p", p]), "-m", body.message], { env }) } };
@@ -133,11 +137,11 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, c1, fix, main, pr, queue, calls, call, run, adoption, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, refuseRef: (v) => { refuseRef = v; } };
+  return { root, ws, origin, c1, fix, main, pr, queue, calls, call, run, adoption, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; } };
 }
 
 test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
-  const { ws, origin, c1, fix, pr, calls, call, run } = await setup(t);
+  const { ws, origin, c1, fix, pr, calls, call, run, duringPush } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -171,6 +175,12 @@ test("a push onto an adopted PR's branch is written through the API as the code 
   const closed = await run("k-00000000000000b3", "github.push", args);
   assert.match(closed.text, /^ship-scope: .* is closed/);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1);
+  // Closed after the first read, while the upload is under way: the recheck before the ref moves refuses it, and the branch stays.
+  pr.state = "open";
+  duringPush(() => { pr.state = "closed"; });
+  const closedLate = await run("k-00000000000000b6", "github.push", args);
+  assert.match(closedLate.text, /^ship-scope: .* is closed/, closedLate.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "a PR closed during the upload never gets its branch moved");
   pr.state = "open";
   const ok = await run("k-00000000000000b2", "github.push", args);
   assert.equal(ok.ok, true, ok.text);

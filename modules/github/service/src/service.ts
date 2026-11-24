@@ -831,6 +831,10 @@ export function createService(o: Options) {
     // The adoption once more, right before the branch moves: a pause or a hand-back during the upload refuses it.
     const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (late) return { ok: false, text: late };
+    // The PR once more, as the repair reads it: a close or a retarget during the upload refuses it rather than move its branch.
+    const again = await api("GET", `/repos/${s.slug}/pulls/${Number(a.pr.number)}`);
+    if (again.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${again.state}: nothing was pushed.` };
+    if (again.head?.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} moved while writing: nothing was pushed; read it again.` };
     // The PR's own head branch, as GitHub names it: the box's branch is only where the commits came from.
     const r = await who.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
     // A 422 or 409 is a moved head or a refusal of GitHub's own (a rule, a validation): the branch read back tells them apart,
