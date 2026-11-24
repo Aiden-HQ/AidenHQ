@@ -197,3 +197,11 @@ test("session setup is answered by the kernel from the module's own answers; a s
   }
   assert.deepEqual(calls, ["initialize", "notifications/initialized", "tools/list", "initialize", "notifications/initialized", "tools/list"]);
 });
+
+test("a result over 1 MB reaches the agent as an explicit oversized-result error", async (t) => {
+  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read"], answer: () => ({ content: [{ type: "text", text: "x".repeat(1_100_000) }] }) });
+  const k = await kernel(t, { agents, grants, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }) } });
+  const r = await (await k.call("docs", "run-jwt-ada", { method: "tools/call", params: { name: "doc_read", arguments: {} } })).json();
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /^oversized-result: docs\.doc_read/);
+});

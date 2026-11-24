@@ -19,14 +19,14 @@ const secretsDir = env("AIDENHQ_SECRETS_DIR");
 if (!secretsDir) throw new Error("AIDENHQ_SECRETS_DIR is not set (.env)");
 export const configDir = path.resolve(repo, env("AIDENHQ_CONFIG_DIR", "config"));
 export const dataDir = path.resolve(repo, env("AIDENHQ_DATA_DIR", "data"));
-// A secret is re-read only when its file's mtime, size or inode changed (a rotation, or a replacement that keeps the mtime), so
+// A secret is re-read only when its file's mtime, ctime, size, mode or inode changed (a rotation, or a replacement that keeps the mtime), so
 // a per-call lookup costs one stat. A missing or unreadable file is "" and is never cached.
 const cached = new Map<string, { sig: string; value: string }>();
 export const secret = (n: string) => {
   const file = path.join(secretsDir, n);
   try {
     const st = statSync(file);
-    const sig = `${st.mtimeMs}:${st.size}:${st.ino}`;
+    const sig = `${st.mtimeMs}:${st.ctimeMs}:${st.size}:${st.ino}:${st.mode}`;
     const hit = cached.get(n);
     if (hit?.sig === sig) return hit.value;
     const value = readFileSync(file, "utf8").trim();

@@ -139,13 +139,17 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     if (deployed.get(connection) !== d) { forgetSetup(connection); deployed.set(connection, d); }
     return d;
   };
-  const slots = new Map<string, { n: number; queue: (() => void)[] }>();
-  const acquire = async (connection: string): Promise<() => void> => {
+  // Calls in flight per connection, live calls, replays and probes alike. A waiter whose caller has gone is skipped, so a
+  // timed-out call never runs after its caller retried it.
+  const slots = new Map<string, { n: number; queue: { go: () => void; gone: () => boolean }[] }>();
+  const acquire = async (connection: string, gone: () => boolean = () => false): Promise<(() => void) | undefined> => {
     const s = slots.get(connection) ?? { n: 0, queue: [] };
     slots.set(connection, s);
-    if (s.n >= CONN_LIMIT) await new Promise<void>((go) => s.queue.push(go));
+    const release = () => { for (let next = s.queue.shift(); ; next = s.queue.shift()) { if (!next) { s.n--; return; } if (!next.gone()) return next.go(); } };
+    if (s.n >= CONN_LIMIT) await new Promise<void>((go) => s.queue.push({ go, gone }));
     else s.n++;
-    return () => { const next = s.queue.shift(); if (next) next(); else s.n--; };
+    if (gone()) { release(); return undefined; }
+    return release;
   };
 
   /**
@@ -156,10 +160,13 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
   async function callAs(q: Requester, connection: string, tool: string, args: unknown, task?: string): Promise<{ ok: boolean; text: string; objects?: unknown }> {
     const conn = connections()[connection];
     if (!conn) throw new Error(`no connection ${connection}`);
-    const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(task ? { task } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: q.kind });
-    // The module acts at /v1/cp/agent as the requester (cp.ts: a kernel job's agent on its task, with the kernel-held agent key).
-    asserter.begin(signed.jti, { credential: "", aud: conn.module, kind: q.kind }, conn.tool_timeout_s ?? 300);
+    const release = (await acquire(connection))!;
+    let jti: string | undefined;
     try {
+      const signed = asserter.signCaller({ agent: q.agent, key: q.key, name: q.name, roles: q.roles, ...(task ? { task } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: q.kind });
+      // The module acts at /v1/cp/agent as the requester (cp.ts: a kernel job's agent on its task, with the kernel-held agent key).
+      jti = signed.jti;
+      asserter.begin(signed.jti, { credential: "", aud: conn.module, kind: q.kind }, conn.tool_timeout_s ?? 300);
       const to = await resolver.resolve(conn.url);
       const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }));
       const { status, sse, text } = await new Promise<{ status: number; sse: boolean; text: string }>((resolve, reject) => {
@@ -185,7 +192,8 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       } catch (e) { log("connection state not updated", { connection, err: (e as Error).message }); }
       return { ok, text: answer, ...(objects !== undefined ? { objects } : {}) };
     } finally {
-      asserter.end(signed.jti);
+      release();
+      if (jti) asserter.end(jti);
     }
   }
   const replay = (r: Rec) => {
@@ -306,7 +314,8 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       }
     }
     let jti: string | undefined;
-    const release = await acquire(connection);
+    const release = await acquire(connection, () => req.destroyed && !req.complete || req.socket.destroyed);
+    if (!release) { done(false, "the caller went away before the call ran"); outcome("caller-gone"); return; }
     try {
     if (tool) {
       const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
@@ -344,31 +353,24 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             }
             const sse = String(ur.headers["content-type"] ?? "").includes("text/event-stream");
             const raw = await readAll(ur, MAX_ANSWER);
-            // A result too big for an agent's context is refused with its size, not truncated: the call itself did run.
-            if (call && raw.length > MAX_RESULT && !raw.includes('"type":"image"')) {
-              const said = `oversized-result: ${connection}.${tool} answered ${raw.length} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
-              done(true, said);
-              const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: said }], isError: true } });
-              bytes = Buffer.byteLength(out);
-              res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(out);
-              return resolve();
-            }
             // A trusted connection's answer (no record) is only read here: it goes back as it came unless it is a need.
-            const asIs = call && !fenced && !rec;
-            // ...and parsed only if it carries what the kernel reads: a need or a sign-in marker.
-            if (asIs && !raw.includes("needs_owner") && !raw.includes(SIGNED_IN)) {
+            const asIs = (call && !fenced && !rec) || method === "initialize";
+            // ...and parsed only if it carries what the kernel reads (a need, a sign-in marker, or text that may hide them in
+            // an escape) or is big enough to cap.
+            if (call && asIs && raw.length <= MAX_RESULT && !/needs_owner|signed_in|\\u|\\\//.test(raw.toString("latin1"))) {
               bytes = raw.length;
               res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
               return resolve();
             }
             const text = raw.toString("utf8");
-            let captured: Record<string, unknown> | undefined;
+            let captured: Record<string, unknown> | undefined, image = false;
             let need: Need | undefined, success = false, account: string | undefined;
             let answer: string | undefined;
             try {
               answer = mapMessages(text, sse, (m) => {
               // Read before fencing strips structuredContent: the module's own answer, never upstream text inside it.
               if (call && m.id === reqId && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); account = success ? servedAccount(m.result) : undefined; }
+              if (call && m.id === reqId && Array.isArray(m.result?.content) && m.result.content.some((c: { type?: unknown }) => c?.type === "image")) image = true;
               if (setupKey && m.id === reqId && !("method" in m) && m.result && typeof m.result === "object" && (method === "initialize" || Array.isArray(m.result.tools))) captured = structuredClone(m.result);
               if (method === "tools/list" && Array.isArray(m.result?.tools)) m.result.tools = m.result.tools.filter((t: { name?: unknown }) => allowed.has(String(t?.name)));
               if (rec && m.id === reqId && !("method" in m)) { okAnswer = !m.error && m.result?.isError !== true; objects = m.result?.structuredContent?._aidenhq?.objects; }
@@ -408,6 +410,14 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             // A call the connection's sign-in served (its answer says so: needs.ts SIGNED_IN) proves the module connected: a full
             // need it had clears, and the tasks waiting on it wake. A tool that works signed out proves nothing.
             try { if (success && state?.down(connection, account)) state.ok(connection, { account, fullOnly: true }); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
+            // A result too big for an agent's context is refused with its size, not truncated; the call itself ran and is recorded.
+            if (call && raw.length > MAX_RESULT && !image) {
+              const said = `oversized-result: ${connection}.${tool} answered ${raw.length} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
+              const out = JSON.stringify({ jsonrpc: "2.0", id: reqId, result: { content: [{ type: "text", text: said }], isError: true } });
+              bytes = Buffer.byteLength(out);
+              res.writeHead(200, { "content-type": "application/json", "content-length": bytes }).end(out);
+              return resolve();
+            }
             bytes = asIs ? raw.length : Buffer.byteLength(answer!);
             if (asIs) res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
             else res.writeHead(status, { ...hdrs, "content-length": bytes }).end(answer);
