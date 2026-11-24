@@ -117,9 +117,9 @@ describe("app_page_canary", () => {
     expect(script).toContain("data-aidenhq-canary-submit");
     // The intake is the POST before notify that carries the reference, not whatever the page posts last.
     expect(script).toContain("x.at <= notify.at");
-    expect(script).toContain("intakeAnswer ?? intake.at(-1)");
-    // A service worker's synthesized 204 never counts as the gate answering.
-    expect(script).toContain("p.response.fromServiceWorker");
+    expect(script).toContain("intakeAnswer ?? (intake.length === 1 ? intake[0] : null)");
+    // Service workers are bypassed: the gate's own answer is what the canary sees, never a cached or synthesized one.
+    expect(script).toContain("Network.setBypassServiceWorker");
     expect(script).toContain('notify.synthetic ? "unknown"');
     // The intake is the POST whose reference the page shows, not any POST with an id.
     expect(script).toContain("shown.includes(String(v))");

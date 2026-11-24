@@ -76,6 +76,9 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const targetId = (tabs.find((t) => t.active) || tabs[0]).targetId;
     const { sessionId } = await dt.send("Target.attachToTarget", { targetId, flatten: true });
     for (const d of ["Network", "Page"]) await dt.send(d + ".enable", {}, sessionId);
+    // Every request the page makes goes to the network: an app's service worker must not answer for the gate (its own 204, or a
+    // cached one), so the canary sees the real request and the gate's real answer.
+    await dt.send("Network.setBypassServiceWorker", { bypass: true }, sessionId).catch(() => {});
     // Every request the page itself makes, with its answer's status: the canary's own evidence, not a re-request.
     // One entry per request. A redirect reuses the request id with its own redirectResponse: keep that hop's status apart
     // from the final response's, so the app refusing a POST with a 302 -> 200 error page isn't read as a 200 on the POST.
@@ -170,12 +173,13 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
         const v = json && (json.reference ?? json.ref ?? json.id ?? json.ticket ?? json.submission_id ?? json.submissionId);
         if (typeof v !== "string" && typeof v !== "number") continue;
         if (shown.includes(String(v))) { reference = String(v); intakeAnswer = n; break; }
-        if (!reference) { reference = String(v); intakeAnswer = n; } // an answer the page renders differently still names one
       } catch {}
     }
+    // No POST answered with a reference the page shows: the intake is that one only when there is exactly one non-notify POST
+    // (the form's own save). With several, none can be told apart, so the answer stays unknown rather than picking one.
     // No body named a reference: the last POST before notify is the intake, by the page's own order. Its own answer is the
     // first hop when it redirected, never the redirect target's 200; a request that never answered is no answer at all.
-    const last = intakeAnswer ?? intake.at(-1) ?? null;
+    const last = intakeAnswer ?? (intake.length === 1 ? intake[0] : null);
     const intakeStatus = last ? (last.hop ?? last.status) : null;
     if (!reference) reference = (shown.match(/(?:reference|ref(?:erence)?\s*(?:id|no\.?)?)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9_.:-]{2,80})/i) || [])[1] || null;
     let png;

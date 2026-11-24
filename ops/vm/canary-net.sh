@@ -18,8 +18,15 @@ GATEWAY_PORT="${GATEWAY_PORT-3132}"
 TABLE="${TABLE:-aidenhq_canary}"
 
 if [ "${1:-}" = "--remove" ]; then
+  # The network goes first: while it exists (a canary browser still attached keeps it), its bridge stays guarded. The table is
+  # dropped only once the network is gone, so a failed removal never leaves a usable bridge without its rules.
+  if docker network inspect "$NET" >/dev/null 2>&1; then
+    if ! docker network rm "$NET" >/dev/null; then
+      echo "couldn't remove $NET (a canary browser may still be attached): the $TABLE rule stays in place" >&2
+      exit 1
+    fi
+  fi
   nft delete table inet "$TABLE" 2>/dev/null || true
-  docker network rm "$NET" >/dev/null 2>&1 || true
   echo "removed $TABLE and $NET"; exit 0
 fi
 
