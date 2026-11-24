@@ -10,9 +10,11 @@
 //   GITHUB_MIGRATE_FROM_APP  the retired App's id, for the one release that moves the repos' rules off it (migrate.ts)
 //   GITHUB_REVIEW_GATED     the repos code review gates (comma-separated; compile derives it): their merges wait for its verdict,
 //                           asked with the module's own token
-// Its loops start here: the merge queue, the held writes, the release train, the design reviews' sweep and the reviewed refs'
-// tidying. The PR watch is the ship module's (modules/ship): it reaches GitHub, Flow, code review's verdict and pr-tasks.json
-// through /internal/ship/* here (ship-routes.ts), with its own module token.
+// Its loops start here: the change feed (feed.ts: the one timer-driven reader of GitHub, which also schedules the src_github sync
+// and Flow's churn and backfill, and feeds Flow, the design reviews and the release train in-process), the merge queue, the held
+// writes, the release train's kernel-only minute, the design reviews' retries and the reviewed refs' tidying. The PR watch is the
+// ship module's (modules/ship): it reaches GitHub, Flow, code review's verdict and pr-tasks.json through /internal/ship/* here
+// (ship-routes.ts), with its own module token.
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { mergeable } from "./git-auth.ts";
@@ -28,13 +30,15 @@ import { startAppMigration } from "./migrate.ts";
 import { shipRoutes } from "./ship-routes.ts";
 import { isModule } from "../../connections/github-mcp/dist/src/module-caller.js";
 import { startTidy } from "./tidy.ts";
+import { createFeed } from "./feed.ts";
+import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 
 const env = process.env;
 const read = (f?: string) => (f && existsSync(f) ? readFileSync(f, "utf8").trim() : "");
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(JSON.stringify({ svc: "github", msg, ...f }));
 const key = read(env.CODEHOST_KEY_FILE);
 if (!key) throw new Error("github: CODEHOST_KEY_FILE is empty");
-const { access, reportNeed } = await startGithubMcp();
+const { access, reportNeed, sync, sources } = await startGithubMcp();
 const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
 const maintained = parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "");
@@ -67,9 +71,34 @@ handle.startMerges();
 handle.startHeld();
 handle.startReleases();
 handle.startDesignReviews();
-handle.startFlow();
-startTidy({ cacheDir, log });
 const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
+const feed = createFeed({
+  gh: access.rest, cacheDir, kernel: kernelClient(kernelUrl, key), log,
+  // The repos the code host manages, the maintained ones included: always watched.
+  // Signed out, the set can't be read: the feed keeps what it watched (and its state) until GitHub is back.
+  managed: async () => {
+    if (!access.connected()) throw new Error("GitHub isn't connected");
+    return [...new Set([...(await handle.managedRepos()), ...maintained.map((r) => r.repo.toLowerCase())])];
+  },
+  kindOf: (who, association, repo, seen) => handle.flow.kindOf(who, association, repo, seen),
+  started: (repo, prs, head, at) => { for (const n of prs) handle.flow.checksStarted(repo, n, head, at); },
+  hooks: [
+    handle.flow.observe({ runs: (repo, sha) => feed.runs(repo, sha) }),
+    handle.designReviews.observe({ pr: (repo, n) => feed.pr(repo, n) }),
+    // The train reads instance.yaml again when the instance repo's default branch moves.
+    (e) => { if (e.kind === "push" && env.INSTANCE_REPO && e.resource === env.INSTANCE_REPO.toLowerCase()) void handle.train?.refresh(String(e.data?.after ?? "") || undefined).catch((err: Error) => log("instance.yaml read failed", { err: err.message.slice(0, 200) })); },
+  ],
+  ...(sources ? { record: (scope: string, fn: () => Promise<number>) => sources.run("github_feed", scope, fn) } : {}),
+  background: [
+    ...(sync ? [{ name: "src_github sync", first: 30_000, run: sync }] : []),
+    { name: "churn", first: 60_000, run: () => handle.flow.churnPass() },
+  ],
+});
+handle.useFeed(feed);
+// A write this process makes (a status, a re-run, an update-branch, a merge) reads that repo again within 15 s.
+access.onWrite((_method, path) => { const m = /^\/repos\/([^/]+\/[^/?]+)(\/[^?]*)?/.exec(path); if (m) feed.touch(m[1]!, /\/(statuses|rerun|rerequest|update-branch|merge)\b/.test(m[2] ?? "")); });
+feed.start();
+startTidy({ cacheDir, log });
 const ship = shipRoutes({
   gh: access.rest, decision: handle.shipDecision, flow: handle.flow, gate: watchGate, cacheDir,
   allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),

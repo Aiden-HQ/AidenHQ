@@ -29,6 +29,7 @@ ships no compose file: compile generates its services from `services:`. There is
 | `board_env` | Environment (and its `${secrets.x}`) added to the root board service, until the board is a module. |
 | `privileged` | Entries of the closed list (spec §5.6); `host-metrics` allows `host_mounts` (read-only `/`, `/sys`, `/proc`). |
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
+| `subscribes` | `{ <connection>: { kinds, resources } }`: the events of the kernel's log a code service reads (`GET /v1/events/log` with its own committed cursor; `kernel/src/events.ts`). Each kind is one of the connection's `events.kinds`. `resources` is `{ setting, path }` (resolved from the instance's settings at compile: `path: "repos[].repo"` takes each entry's `repo`; a plain string entry stands for itself) or `"*"` (every resource; product modules only). The declaration is the grant: the log answers only these kinds and resources. |
 
 A connection connects with one Connect click from wherever the board lists it (a `board.signins` entry; the vendor's sign-in
 does the rest). The sign-in returns to loopback, `http://localhost:3121` plus the entry's `callback` (fixed, so a hand-made

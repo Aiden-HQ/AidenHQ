@@ -10,26 +10,39 @@
 //   id, connection, resource (or "*"), filter };
 // - connections.json `<connection>.events`: { resource, kinds, filter, reads }: `reads` are the read tools whose grant reaches
 //   what the connection's events carry.
+//
+// Code services read a second delivery (docs/superpowers/specs/2026-11-24-github-change-feed-design.md §3): an append-only log
+// (`event_log`), kept 3 days, of the events whose kind and resource some module subscribes to (kernel modules.json
+// `modules.<m>.subscribes.<connection>`: { kinds, resources: [...] | "*" }, compiled from module.yaml `subscribes:`). A module
+// reads it with its own committed cursor (GET /v1/events/log), and the kernel keeps where each reader is (`event_readers`), so
+// one that stops committing shows (GET /v1/events/readers). One ingest feeds both, in one transaction; an id the log holds is
+// accepted once.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Connection, Grant } from "./identity.ts";
 
 /** `thread`: the conversation an event replies in (a Slack reply's thread root ts), when it is a reply. */
-export type SourceEvent = { connection: string; resource: string; id: string; kind: string; author?: string; text?: string; labels?: string[]; bot?: boolean; url?: string; thread?: string; truncated?: boolean };
+/** `data`: a small flat object of what a consumer keys on (head, number, state…); never a stranger's words (those are `text`). */
+export type EventData = Record<string, string | number | boolean | null | (string | number)[]>;
+export type SourceEvent = { connection: string; resource: string; id: string; kind: string; author?: string; text?: string; labels?: string[]; bot?: boolean; url?: string; thread?: string; truncated?: boolean; data?: EventData };
+/** A module's subscription to one connection's events (compiled): the kinds it reads and its resources ("*": all). */
+export type ModuleSubscription = { kinds: string[]; resources: string[] | "*" };
+export type LoggedEvent = Omit<SourceEvent, "connection"> & { seq: number; at: string };
 export type Filter = { kind?: string | string[]; author?: string | string[]; label?: string | string[]; contains?: string[]; bot?: boolean };
 export type Subscription = { key: string; agent: string; connection: string; resource: string; filter: Filter };
 export type GrantsTable = { agents?: Record<string, Grant>; routine_events?: Record<string, Subscription> };
 export type EventsConnection = Connection & { events?: { reads?: string[] } };
-export type IngestResult = { queued: number } | { skipped: "invalid"; why: string } | { dropped: number; reason: "overflow" | "cap" };
+/** Accepted (new, or an id the log already holds): what routines got of it. A refusal throws (EventsError 403 or 422). */
+export type IngestResult = { accepted: true; seq?: number; duplicate?: true; queued: number; dropped?: { n: number; reason: "overflow" } };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
-export const WINDOW_MS = 60_000, BATCH_MAX = 20, TEXT_MAX = 2000, LABELS_MAX = 10;
+export const WINDOW_MS = 60_000, BATCH_MAX = 20, TEXT_MAX = 2000, LABELS_MAX = 10, DATA_KEYS = 20, DATA_BYTES = 2048, LOG_KEEP_MS = 3 * 24 * 3600_000, LOG_PAGE = 200;
 export const ROUTINE_HOURLY = 12, TOTAL_HOURLY = 120, PENDING_MAX = 2000;
 const DRAIN_MS = 30_000, FIRING_MS = 10 * 60_000, PENDING_RETRY_S = 10, BODY_MS = 24 * 3600_000, KEEP_MS = 7 * 24 * 3600_000, HOUR = 3600_000;
 
 export class EventsError extends Error {
-  status: 403 | 404;
-  constructor(status: 403 | 404, message: string) { super(message); this.status = status; }
+  status: 403 | 404 | 422;
+  constructor(status: 403 | 404 | 422, message: string) { super(message); this.status = status; }
 }
 
 const list = (v: string | string[] | undefined) => (v === undefined ? undefined : Array.isArray(v) ? v : [v]);
@@ -46,6 +59,11 @@ export function matches(f: Filter, e: SourceEvent): boolean {
 
 const str = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max;
 const opt = (v: unknown, max: number) => v === undefined || str(v, max);
+const scalar = (v: unknown) => v === null || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v)) || (typeof v === "string" && v.length <= 200);
+/** `data` as the schema allows it: flat, at most 20 keys, each a short string, a number, a boolean, null or a list of at most 20 strings or numbers; 2 KB. */
+const dataOk = (d: unknown) => d === undefined || (Boolean(d) && typeof d === "object" && !Array.isArray(d) && Object.keys(d as object).length <= DATA_KEYS
+  && Object.values(d as object).every((v) => (Array.isArray(v) ? v.length <= 20 && v.every((x) => typeof x !== "boolean" && x !== null && scalar(x)) : scalar(v)))
+  && Buffer.byteLength(JSON.stringify(d)) <= DATA_BYTES);
 /** An envelope as the schema allows it (text clipped), or why not. */
 function envelope(e: unknown): SourceEvent | string {
   const o = (e && typeof e === "object" && !Array.isArray(e) ? e : {}) as Record<string, unknown>;
@@ -53,10 +71,12 @@ function envelope(e: unknown): SourceEvent | string {
   if (!opt(o.author, 200) || !opt(o.url, 500) || !opt(o.thread, 200) || (o.text !== undefined && typeof o.text !== "string")) return "author, url, thread and text are strings";
   if ((o.bot !== undefined && typeof o.bot !== "boolean") || (o.truncated !== undefined && typeof o.truncated !== "boolean")) return "bot and truncated are true or false";
   if (o.labels !== undefined && (!Array.isArray(o.labels) || o.labels.length > LABELS_MAX || o.labels.some((l) => !str(l, 100)))) return `labels are at most ${LABELS_MAX} short strings`;
+  if (!dataOk(o.data)) return `data is a flat object of at most ${DATA_KEYS} short values (${DATA_BYTES} bytes)`;
   return {
     connection: o.connection as string, resource: o.resource as string, id: o.id as string, kind: o.kind as string,
     ...(o.author !== undefined ? { author: o.author as string } : {}), ...(o.text !== undefined ? { text: (o.text as string).slice(0, TEXT_MAX) } : {}),
     ...(o.labels !== undefined ? { labels: o.labels as string[] } : {}), ...(o.bot !== undefined ? { bot: o.bot as boolean } : {}), ...(o.url !== undefined ? { url: o.url as string } : {}), ...(o.thread !== undefined ? { thread: o.thread as string } : {}), ...(o.text !== undefined && (o.truncated === true || (o.text as string).length > TEXT_MAX) ? { truncated: true } : {}),
+    ...(o.data !== undefined ? { data: o.data as EventData } : {}),
   };
 }
 
@@ -74,6 +94,8 @@ export const routineRun = (post: (path: string, body: unknown) => Promise<{ stat
 
 export function createEvents(o: {
   db: DatabaseSync; grants: () => GrantsTable; connections: () => Record<string, EventsConnection>;
+  /** Modules' compiled subscriptions: module -> connection -> what it reads (kernel modules.json `subscribes`). */
+  subscriptions?: () => Record<string, Record<string, ModuleSubscription>>;
   /** Paperclip's /run as the owner: `issue` only when the run created its task (status issue_created with its linkedIssueId). */
   run: (routineId: string, key: string, vars: { batch: string; count: string }) => Promise<{ status: number; issue?: string }>;
   /** The routine as Paperclip has it now; undefined when it is gone. Throws when it can't be read now (a timeout). */
@@ -81,19 +103,26 @@ export function createEvents(o: {
   now?: () => number; log?: Log;
 }) {
   const { db } = o, now = o.now ?? Date.now, log = o.log ?? (() => {});
+  /** A resource as the router compares it: GitHub's repo slugs come lower-cased from its reader, a routine's as written. */
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   db.exec(`CREATE TABLE IF NOT EXISTS event_queue (seq INTEGER PRIMARY KEY AUTOINCREMENT, routine TEXT NOT NULL, id TEXT NOT NULL, batch TEXT NOT NULL, body TEXT, at INTEGER NOT NULL, UNIQUE(routine, id));
     CREATE TABLE IF NOT EXISTS event_batches (id TEXT PRIMARY KEY, routine TEXT NOT NULL, sub TEXT NOT NULL, turn INTEGER NOT NULL DEFAULT 0, task TEXT, count INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, sealed_at INTEGER, dispatched_at INTEGER);
     CREATE INDEX IF NOT EXISTS event_queue_batch ON event_queue (batch);
     CREATE INDEX IF NOT EXISTS event_batches_state ON event_batches (state, routine);
     CREATE INDEX IF NOT EXISTS event_batches_dispatched ON event_batches (dispatched_at);
     CREATE INDEX IF NOT EXISTS event_batches_fired ON event_batches (state, dispatched_at);
-    CREATE INDEX IF NOT EXISTS event_batches_task ON event_batches (task);`);
+    CREATE INDEX IF NOT EXISTS event_batches_task ON event_batches (task);
+    CREATE TABLE IF NOT EXISTS event_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, connection TEXT NOT NULL, resource TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, at INTEGER NOT NULL, UNIQUE(connection, id));
+    CREATE INDEX IF NOT EXISTS event_log_at ON event_log (at);
+    CREATE TABLE IF NOT EXISTS event_log_pruned (connection TEXT PRIMARY KEY, through INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS event_readers (module TEXT NOT NULL, connection TEXT NOT NULL, after INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (module, connection));`);
+  const modSubs = () => o.subscriptions?.() ?? {};
+  /** Whether module subscription `s` takes this kind and resource. */
+  const takes = (s: ModuleSubscription | undefined, kind: string, resource: string) => Boolean(s && s.kinds.includes(kind) && (s.resources === "*" || s.resources.some((r) => same(r, resource))));
   type Batch = { id: string; routine: string; sub: string; task: string | null; count: number; state: string; tries: number; opened_at: number; sealed_at: number | null; dispatched_at: number | null };
   const subs = () => o.grants().routine_events ?? {};
   /** What a batch was accepted under: a routine that changes its source, resource, filter or agent starts afresh. */
   const subOf = (s: Subscription) => JSON.stringify([s.key, s.agent, s.connection, s.resource, s.filter ?? {}]);
-  /** A resource as the router compares it: GitHub's repo slugs come lower-cased from its poller, a routine's as written. */
-  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   /** Whether `agent` holds one of the connection's declared `reads` tools. */
   const reads = (agent: string, connection: string) => {
     const tools = o.grants().agents?.[agent]?.tools?.[connection] ?? [];
@@ -108,42 +137,100 @@ export function createEvents(o: {
   const ownerOf = (module: string, connection: string) => {
     if (o.connections()[connection]?.module !== module) throw new EventsError(403, `${module} isn't connection ${connection.slice(0, 100)}'s module`);
   };
+  /** The routines an event matches, queued (inside ingest's transaction). Over the pending cap, routines drop it (logged). */
+  function route(ev: SourceEvent, body: Omit<SourceEvent, "connection">, t: number): { queued: number; dropped?: { n: number; reason: "overflow" } } {
+    const targets = Object.entries(subs()).filter(([, s]) => s.connection === ev.connection && (s.resource === "*" || same(s.resource, ev.resource)) && reads(s.agent, s.connection) && matches(s.filter ?? {}, ev));
+    if (!targets.length) return { queued: 0 };
+    const pending = (db.prepare("SELECT count(*) AS n FROM event_queue q JOIN event_batches b ON b.id = q.batch WHERE b.state IN ('open', 'sealed', 'firing')").get() as { n: number }).n;
+    // Only events not yet delivered count against intake; delivered bodies go with the 24 h retention.
+    if (pending + targets.length > PENDING_MAX) { log("events: dropped on overflow", { pending }); return { queued: 0, dropped: { n: targets.length, reason: "overflow" } }; }
+    let queued = 0;
+    for (const [routine, s] of targets) {
+      // A repeated source id for this routine is dropped (its row is kept 7 days), before it could open an empty batch.
+      if (db.prepare("SELECT 1 FROM event_queue WHERE routine = ? AND id = ?").get(routine, ev.id)) continue;
+      let b = db.prepare("SELECT * FROM event_batches WHERE routine = ? AND state = 'open'").get(routine) as Batch | undefined;
+      // A batch whose window ended (the drain seals it on its next pass) takes no more events: they open the next one.
+      if (b && b.opened_at <= t - WINDOW_MS) { db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE id = ?").run(t, b.id); b = undefined; }
+      if (b && b.sub !== subOf(s)) { db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE id = ?").run(t, b.id); b = undefined; }
+      if (!b) { const id = randomUUID(); db.prepare("INSERT INTO event_batches (id, routine, sub, state, opened_at) VALUES (?, ?, ?, 'open', ?)").run(id, routine, subOf(s), t); b = get(id)!; }
+      db.prepare("INSERT INTO event_queue (routine, id, batch, body, at) VALUES (?, ?, ?, ?, ?)").run(routine, ev.id, b.id, JSON.stringify(body), t);
+      queued++;
+      db.prepare(`UPDATE event_batches SET count = count + 1${b.count + 1 >= BATCH_MAX ? ", state = 'sealed', sealed_at = ?" : ""} WHERE id = ?`).run(...(b.count + 1 >= BATCH_MAX ? [t, b.id] : [b.id]));
+    }
+    return { queued };
+  }
   let draining = false;
 
   return {
-    /** One source event from `module`: 2xx for everything (queued, skipped or dropped) except a caller that isn't the connection's module. */
+    /**
+     * One source event from `module`, in one transaction: appended to the log when a module subscribes to its kind and resource
+     * (an id the log holds is accepted once: nothing appended or fanned out again), and queued for the routines it matches.
+     * Throws 403 for a caller that isn't the connection's module and 422 for an envelope the schema refuses: both are final.
+     */
     ingest(module: string, e: unknown): IngestResult {
       ownerOf(module, String((e as { connection?: unknown } | null)?.connection ?? ""));
       const ev = envelope(e);
-      if (typeof ev === "string") { log("events: skipped an invalid event", { module, why: ev }); return { skipped: "invalid", why: ev }; }
-      const targets = Object.entries(subs()).filter(([, s]) => s.connection === ev.connection && (s.resource === "*" || same(s.resource, ev.resource)) && reads(s.agent, s.connection) && matches(s.filter ?? {}, ev));
-      if (!targets.length) return { queued: 0 };
-      const pending = (db.prepare("SELECT count(*) AS n FROM event_queue q JOIN event_batches b ON b.id = q.batch WHERE b.state IN ('open', 'sealed', 'firing')").get() as { n: number }).n;
-      // Only events not yet delivered count against intake; delivered bodies go with the 24 h retention.
-      if (pending + targets.length > PENDING_MAX) { log("events: dropped on overflow", { module, pending }); return { dropped: targets.length, reason: "overflow" }; }
+      if (typeof ev === "string") { log("events: refused an invalid event", { module, why: ev }); throw new EventsError(422, ev); }
       const { connection: _c, ...body } = ev;
       const t = now();
-      let queued = 0;
-      for (const [routine, s] of targets) {
-        // A repeated source id for this routine is dropped (its row is kept 7 days), before it could open an empty batch.
-        if (db.prepare("SELECT 1 FROM event_queue WHERE routine = ? AND id = ?").get(routine, ev.id)) continue;
-        let b = db.prepare("SELECT * FROM event_batches WHERE routine = ? AND state = 'open'").get(routine) as Batch | undefined;
-        // A batch whose window ended (the drain seals it on its next pass) takes no more events: they open the next one.
-        if (b && b.opened_at <= t - WINDOW_MS) { db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE id = ?").run(t, b.id); b = undefined; }
-        if (b && b.sub !== subOf(s)) { db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE id = ?").run(t, b.id); b = undefined; }
-        if (!b) { const id = randomUUID(); db.prepare("INSERT INTO event_batches (id, routine, sub, state, opened_at) VALUES (?, ?, ?, 'open', ?)").run(id, routine, subOf(s), t); b = get(id)!; }
-        db.prepare("INSERT INTO event_queue (routine, id, batch, body, at) VALUES (?, ?, ?, ?, ?)").run(routine, ev.id, b.id, JSON.stringify(body), t);
-        queued++;
-        db.prepare(`UPDATE event_batches SET count = count + 1${b.count + 1 >= BATCH_MAX ? ", state = 'sealed', sealed_at = ?" : ""} WHERE id = ?`).run(...(b.count + 1 >= BATCH_MAX ? [t, b.id] : [b.id]));
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        let seq: number | undefined;
+        if (Object.values(modSubs()).some((m) => takes(m[ev.connection], ev.kind, ev.resource))) {
+          if (db.prepare("SELECT 1 FROM event_log WHERE connection = ? AND id = ?").get(ev.connection, ev.id)) { db.exec("COMMIT"); return { accepted: true, duplicate: true, queued: 0 }; }
+          seq = Number(db.prepare("INSERT INTO event_log (connection, resource, id, kind, body, at) VALUES (?, ?, ?, ?, ?, ?)").run(ev.connection, ev.resource.toLowerCase(), ev.id, ev.kind, JSON.stringify(body), t).lastInsertRowid);
+        }
+        const out = { accepted: true as const, ...(seq !== undefined ? { seq } : {}), ...route(ev, body, t) };
+        db.exec("COMMIT");
+        return out;
+      } catch (err) { db.exec("ROLLBACK"); throw err; }
+    },
+    /**
+     * A module's page of the log after `after` (its last committed seq), only the kinds and resources it subscribes to. With no
+     * `after`: no events and `next` at the log's end, the watermark a fresh reader starts from. `gap`: rows after `after` were
+     * already pruned. A read with `after` records where the reader is (event_readers).
+     */
+    log(module: string, connection: string, after?: number, limit = LOG_PAGE): { events: LoggedEvent[]; next: number; gap: boolean } {
+      const s = modSubs()[module]?.[connection];
+      if (!s) throw new EventsError(403, `${module} doesn't subscribe to ${connection.slice(0, 100)}'s events`);
+      const end = Number((db.prepare("SELECT max(seq) AS m FROM event_log WHERE connection = ?").get(connection) as { m: number | null }).m ?? 0);
+      const pruned = Number((db.prepare("SELECT through FROM event_log_pruned WHERE connection = ?").get(connection) as { through: number } | undefined)?.through ?? 0);
+      // The watermark registers a new reader where it starts (an existing one keeps its committed cursor), so one that never
+      // reads past it still shows as lagging.
+      if (after === undefined) {
+        db.prepare("INSERT INTO event_readers (module, connection, after, at) VALUES (?, ?, ?, ?) ON CONFLICT (module, connection) DO NOTHING").run(module, connection, Math.max(end, pruned), now());
+        return { events: [], next: Math.max(end, pruned), gap: false };
       }
-      return { queued };
+      db.prepare("INSERT INTO event_readers (module, connection, after, at) VALUES (?, ?, ?, ?) ON CONFLICT (module, connection) DO UPDATE SET after = excluded.after, at = excluded.at").run(module, connection, after, now());
+      const kinds = s.kinds.map(() => "?").join(","), res = s.resources === "*" ? "" : ` AND resource IN (${s.resources.map(() => "?").join(",")})`;
+      const rows = db.prepare(`SELECT seq, body, at FROM event_log WHERE connection = ? AND seq > ? AND kind IN (${kinds})${res} ORDER BY seq LIMIT ?`)
+        .all(connection, after, ...s.kinds, ...(s.resources === "*" ? [] : s.resources.map((r) => r.toLowerCase())), Math.min(Math.max(limit, 1), LOG_PAGE)) as { seq: number; body: string; at: number }[];
+      const events = rows.map((r) => ({ ...JSON.parse(r.body), seq: r.seq, at: new Date(r.at).toISOString() }));
+      // A short page reached the end: the cursor moves past rows this module doesn't read, too.
+      const next = rows.length >= Math.min(Math.max(limit, 1), LOG_PAGE) ? rows.at(-1)!.seq : Math.max(after, end, pruned);
+      return { events, next, gap: after < pruned };
+    },
+    /** Each subscribed module per connection: its committed cursor, when it last read, and how many of its events wait past it. */
+    readers(): { module: string; connection: string; after: number | null; read_at: string | null; waiting: number; oldest: string | null }[] {
+      const out = [];
+      for (const [module, conns] of Object.entries(modSubs())) {
+        for (const [connection, s] of Object.entries(conns)) {
+          const r = db.prepare("SELECT after, at FROM event_readers WHERE module = ? AND connection = ?").get(module, connection) as { after: number; at: number } | undefined;
+          const res = s.resources === "*" ? "" : ` AND resource IN (${s.resources.map(() => "?").join(",")})`;
+          const w = db.prepare(`SELECT count(*) AS n, min(at) AS oldest FROM event_log WHERE connection = ? AND seq > ? AND kind IN (${s.kinds.map(() => "?").join(",")})${res}`)
+            .get(connection, r?.after ?? 0, ...s.kinds, ...(s.resources === "*" ? [] : s.resources.map((x) => x.toLowerCase()))) as { n: number; oldest: number | null };
+          out.push({ module, connection, after: r?.after ?? null, read_at: r ? new Date(r.at).toISOString() : null, waiting: r ? w.n : 0, oldest: r && w.oldest ? new Date(w.oldest).toISOString() : null });
+        }
+      }
+      return out;
     },
     /** Whether a batch was fired into this task: its run read outside text. */
     fired: (task: string) => Boolean(db.prepare("SELECT 1 FROM event_batches WHERE task = ?").get(task)),
-    /** The resources a source module should watch on its connection: every subscription's ("*" for all it reads). */
+    /** The resources a source module should watch on its connection: every routine's and module's ("*" for all it reads). */
     resources(module: string, connection: string): string[] {
       ownerOf(module, connection);
-      return [...new Set(Object.values(subs()).filter((s) => s.connection === connection).map((s) => s.resource))];
+      const mods = Object.values(modSubs()).flatMap((m) => { const s = m[connection]; return !s ? [] : s.resources === "*" ? ["*"] : s.resources; });
+      return [...new Set([...Object.values(subs()).filter((s) => s.connection === connection).map((s) => s.resource), ...mods])];
     },
     /**
      * A run's batch, for its job: its own task and routine (`job.routine` is the job's routine's compiled key), the routine still
@@ -212,6 +299,11 @@ export function createEvents(o: {
         db.prepare("DELETE FROM event_queue WHERE at < ?").run(t2 - KEEP_MS);
         // A fired batch's row stays (its body is gone after a day): it is what tells the kernel the task read outside text.
         db.prepare("DELETE FROM event_batches WHERE state = 'dropped' AND opened_at < ?").run(t2 - KEEP_MS);
+        // The log keeps 3 days; what is pruned is remembered per connection, so a reader behind it is told (`gap`).
+        for (const r of db.prepare("SELECT connection, max(seq) AS through FROM event_log WHERE at < ? GROUP BY connection").all(t2 - LOG_KEEP_MS) as { connection: string; through: number }[]) {
+          db.prepare("INSERT INTO event_log_pruned (connection, through) VALUES (?, ?) ON CONFLICT (connection) DO UPDATE SET through = max(through, excluded.through)").run(r.connection, r.through);
+        }
+        db.prepare("DELETE FROM event_log WHERE at < ?").run(t2 - LOG_KEEP_MS);
       } finally { draining = false; }
     },
   };

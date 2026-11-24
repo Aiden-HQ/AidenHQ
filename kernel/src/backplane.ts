@@ -100,8 +100,12 @@
 //   POST /v1/memory/:op       (a module with role kernel.memory, serving a job's memory_<op> call in flight) note | forget | read |
 //                              rewrite on the job's own agent's memory (memory.ts); read and a removals-only rewrite of any agent's
 //                              for a librarian. GET /v1/memory/:key (the board, or role kernel.lane) {view, facts, updated}
-//   POST /v1/events            (a module with role kernel.events) one source event of a connection it serves (events.ts) -> {queued} |
-//                              {skipped} | {dropped}, always 200 unless it isn't that connection's module (403).
+//   POST /v1/events            (a module with role kernel.events) one source event of a connection it serves (events.ts) ->
+//                              {accepted, seq?, duplicate?, queued}; 422 for an envelope the schema refuses, 403 when it isn't that
+//                              connection's module: both final.
+//   GET  /v1/events/log?connection=&after=&limit= (a module whose compiled `subscribes:` names the connection) {events, next, gap}:
+//                              the log after its committed cursor, only its kinds and resources; no `after`: the watermark.
+//   GET  /v1/events/readers    (role kernel.flow-read) each subscribed module's committed cursor, last read and events waiting.
 //                              GET /v1/events/sources?connection= the resources its connection's routines subscribe to.
 //                              GET /v1/events/batch/:batch (role kernel.events, serving a job's routine_events call in flight) the
 //                              batch the job's own run was fired with, or {pending, retry_after_s} while its binding is stored
@@ -249,6 +253,8 @@ export const ROUTES = [
   { method: "GET", path: "/v1/memory/:key", auth: "module|board" },
   { method: "POST", path: "/v1/events", auth: "module" },
   { method: "GET", path: "/v1/events/sources", auth: "module" },
+  { method: "GET", path: "/v1/events/log", auth: "module" },
+  { method: "GET", path: "/v1/events/readers", auth: "module" },
   { method: "GET", path: "/v1/events/batch/:batch", auth: "module+assertion" },
   { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
   { method: "POST", path: "/v1/views/:module/mcp", auth: "board" },
@@ -834,6 +840,21 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         if (!Object.values(grantsFile().agents ?? {}).some((g) => g.key === key)) throw fail(404, "not_found", `no agent ${key.slice(0, 60)}`);
         const { doc } = memory.read(key);
         return send(res, 200, { view: memoryView(doc), facts: doc.facts, updated: memory.updated(key) ?? null });
+      }
+      if (hit?.path === "/v1/events/log" || hit?.path === "/v1/events/readers") {
+        // The log's own grant: the module's compiled subscription (events.log refuses one without it); readers is fleet state.
+        const w = await moduleOf(req);
+        if (!events) throw fail(503, "unavailable", "events are off");
+        const p = new URLSearchParams(q ?? "");
+        try {
+          if (hit.path === "/v1/events/readers") {
+            if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read the event readers (role kernel.flow-read)`);
+            return send(res, 200, { readers: events.readers() });
+          }
+          const after = p.get("after"), limit = Math.floor(Number(p.get("limit") ?? 200));
+          if (after !== null && !/^\d{1,15}$/.test(after)) throw fail(400, "bad_request", "after is a log seq");
+          return send(res, 200, events.log(w.module!, String(p.get("connection") ?? ""), after === null ? undefined : Number(after), Number.isFinite(limit) ? limit : 200));
+        } catch (e) { if (e instanceof EventsError) throw fail(e.status, "refused", e.message); throw e; }
       }
       if (hit?.path.startsWith("/v1/events")) {
         const w = await moduleOf(req);

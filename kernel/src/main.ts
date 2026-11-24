@@ -138,6 +138,7 @@ const memory = createMemory({ dir: path.join(dataDir, "kernel", "memory") });
 // The event router (events.ts): source events become routine runs through Paperclip's own /run as the owner (routineRun).
 const events = createEvents({
   db: records.db, grants: grantsTable as never, connections: connections as never, log,
+  subscriptions: () => Object.fromEntries(Object.entries(modulesFile().modules ?? {}).flatMap(([m, d]) => (d.subscribes ? [[m, d.subscribes]] : []))),
   run: routineRun(async (p, body) => { const r = await cpApi(p, { method: "POST", body: JSON.stringify(body) }); return { status: r.status, json: await r.json().catch(() => ({})) }; }),
   routine: async (id) => {
     const r = await cpApi(`/api/routines/${encodeURIComponent(id)}`);
