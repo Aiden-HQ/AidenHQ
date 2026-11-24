@@ -176,11 +176,15 @@ export function createMerges(d: {
     // reported again on every update keeps only its newest (first listed) state.
     return out.filter((c, i) => !c.status || out.findIndex((x) => x.status && x.name === c.name) === i);
   }
-  /** The checks the branch requires (its rulesets and classic protection; merge-gate.ts requiredChecks): none is a confirmed answer. */
+  /**
+   * The checks the branch requires (its rulesets and classic protection; merge-gate.ts requiredChecks): none is a confirmed answer.
+   * undefined when classic protection can't be read (403: the sign-in isn't a repo admin): every check on the head is then judged.
+   */
   async function requiredOf(repo: string, branch: string) {
     const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);
     if (rules.status >= 300) throw new Error(`GitHub GET rules: ${rules.status}`);
     const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
+    if (classic.status === 403) return undefined;
     if (classic.status >= 300 && classic.status !== 404) throw new Error(`GitHub GET required_status_checks: ${classic.status}`);
     return requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body);
   }
@@ -265,7 +269,9 @@ export function createMerges(d: {
       // Merged or open, the PR must still be on the base it was filed against: a retarget-and-merge elsewhere is no merge of this one.
       if (q.ship && p.base && data.repository.pullRequest && data.repository.pullRequest.baseRefName !== p.base) return fail(`its base changed to \`${data.repository.pullRequest.baseRefName}\` since the merge was filed`);
       // On a repo code review gates, an approval on the head is needed before the merge (the gate answers undefined elsewhere).
-      const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required: await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")), checks: await allChecks(p.repo, p.head) } : undefined;
+      const checks = open ? await allChecks(p.repo, p.head) : [];
+      // Required checks unreadable: every check on the head is judged, as a merge outside ship is.
+      const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required: (await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? ""))) ?? [...new Set(checks.map((c) => c.name))], checks } : undefined;
       const v = decide(data, p.head, ship);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
       const pull = data.repository.pullRequest;

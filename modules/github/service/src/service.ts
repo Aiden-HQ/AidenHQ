@@ -472,7 +472,8 @@ export function createService(o: Options) {
       bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]), dir, tip });
       // The commits go onto the PR's own head branch (GitHub's name for it, a fork's too); the box's branch only carries them.
       const ship = onto ? { ...(await adoption(onto.s.slug, Number(a.pr.number), a.generation, a.expected, onto.pr)), branch: String(onto.pr?.head?.ref ?? "") } : undefined;
-      branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
+      // An adopted PR's push is planned against where it lands (the PR's head branch), never the box's local branch name.
+      branches.push({ repo: s.slug, branch: ship ? ship.branch : b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
     return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, changed, bases, own, task: String(a.workspace ?? "") };
@@ -716,8 +717,9 @@ export function createService(o: Options) {
       // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
       const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", a.head, baseSha], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
       const [merged, ...conflicted] = out.split("\0").filter(Boolean);
-      // A generated path (the plan's globs), or a lockfile git couldn't merge (its package manager rewrote it).
-      const allowed = (p: string) => globs.some((re: RegExp) => re.test(p)) || (REPAIR_LOCKS.includes(p.slice(p.lastIndexOf("/") + 1)) && conflicted.includes(p));
+      // A generated path (the plan's globs), or a lockfile only where git couldn't merge it (its package manager rewrote it), even
+      // when a glob names lockfiles.
+      const allowed = (p: string) => (REPAIR_LOCKS.includes(p.slice(p.lastIndexOf("/") + 1)) ? conflicted.includes(p) : globs.some((re: RegExp) => re.test(p)));
       const refuse = (why: string) => ({ ok: false, text: `ship-refused: the repair of ${url} ${why}: nothing was changed.` });
       const taken = new Set<string>();
       await g(["read-tree", merged!]);

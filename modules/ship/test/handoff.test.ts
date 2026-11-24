@@ -77,6 +77,15 @@ test("a fork waits for a member: then it is adopted and code review is asked onc
   assert.equal((await intake(w.deps, p))?.trigger.actor, "writer");
   await intake(w.deps, p);
   assert.deepEqual(w.of("ask").map((c) => [c.url, c.task]), [["https://github.com/a/b/pull/7", "task-ship:a/b/7:1:records"]]);
+  // Code review was down: the ask is made again on the next pass, once.
+  const down = world();
+  let fail = true;
+  down.deps.askReview = async (url: string, task: string) => { if (fail) throw new Error("503"); down.calls.push({ what: "ask", url, task }); };
+  await intake(down.deps, p);
+  fail = false;
+  await intake(down.deps, p);
+  await intake(down.deps, p);
+  assert.equal(down.of("ask").length, 1);
   assert.deepEqual(w.of("POST /v1/tasks").map((c) => [(c.body as any).source, (c.body as any).role, (c.body as any).quiet]), [["ship:a/b/7:1:records", "platform-engineer", true]]);
 });
 
