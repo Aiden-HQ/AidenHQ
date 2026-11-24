@@ -21,9 +21,11 @@ ttyd_pid=""
 [[ -f "$dir/ttyd.pid" ]] && ttyd_pid="$(tr -dc '0-9' < "$dir/ttyd.pid")"
 
 # The lease's ttyd by its command line (`ttyd ... tmux attach -t <lease>`): the lease id is unique, so no other lease matches.
+# A zombie (exited, not yet reaped by the box's init) is not alive: kill -0 succeeds on it, so the state is read.
+live_state() { ps -o stat= "$@" 2>/dev/null | grep -qv '^Z'; }
 alive() {
-  { [[ -n "$group" && "$group" -gt 1 ]] && kill -0 -- "-$group" 2>/dev/null; } && return 0
-  { [[ -n "$ttyd_pid" && "$ttyd_pid" -gt 1 ]] && kill -0 "$ttyd_pid" 2>/dev/null; } && return 0
+  { [[ -n "$group" && "$group" -gt 1 ]] && live_state -g "$group"; } && return 0
+  { [[ -n "$ttyd_pid" && "$ttyd_pid" -gt 1 ]] && live_state -p "$ttyd_pid"; } && return 0
   pgrep -f -- "ttyd .*$lease" >/dev/null 2>&1
 }
 signal() {

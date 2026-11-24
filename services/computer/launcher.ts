@@ -425,7 +425,8 @@ const jobControl = {
       if (typeof lease !== "string") throw fail(400, "the standing box is released by lease");
       const l = jobs.leases(container).find((x) => x.lease === lease);
       if (l && (gen ?? 1) !== l.gen) return { released: true, state: "superseded" };
-      if (l) await standing.stop(container, lease);
+      // A stop that failed leaves the lease (revoked) for the next release or the reaper: not released yet.
+      if (l && !(await standing.stop(container, lease))) return { released: false, state: "stopping" };
       return { released: true, state: "stopped" };
     }
     // A kernel job's box: an earlier lease's release touches nothing (the box is its successor's now, or parked for it).

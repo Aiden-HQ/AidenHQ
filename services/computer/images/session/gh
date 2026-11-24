@@ -1,0 +1,22 @@
+#!/bin/sh
+# `gh` in a session box (/opt/aidenhq/bin/gh, ahead of the real one on PATH): the same one-hour, repo-narrowed App token as
+# git's, asked through git-credential-aidenhq for the repo (-R/--repo, GH_REPO, else this directory's `origin`), as GH_TOKEN.
+# The real gh is AIDENHQ_REAL_GH (default /usr/bin/gh).
+real="${AIDENHQ_REAL_GH:-/usr/bin/gh}"
+repo="${GH_REPO:-}"
+prev=
+for a in "$@"; do
+  case "$prev" in -R|--repo) repo="$a";; esac
+  case "$a" in --repo=*) repo="${a#--repo=}";; -R?*) repo="${a#-R}";; https://github.com/*/*/*) [ -n "$repo" ] || repo=$(printf '%s' "$a" | sed -n 's#^https://github.com/\([^/]*/[^/]*\)/.*#\1#p');; esac
+  prev="$a"
+done
+repo="${repo#github.com/}"
+if [ -z "$repo" ]; then
+  url=$(git remote get-url origin 2>/dev/null || true)
+  repo=$(printf '%s' "$url" | sed -n 's#^https://github.com/\([^/]*/[^/]*\)$#\1#p; s#^git@github.com:\(.*\)$#\1#p' | sed 's#\.git$##')
+fi
+if [ -n "$repo" ] && [ -z "${GH_TOKEN:-}" ]; then
+  token=$(printf 'protocol=https\nhost=github.com\npath=%s\n\n' "$repo" | /opt/aidenhq/bin/git-credential-aidenhq get | sed -n 's/^password=//p') || exit 1
+  [ -n "$token" ] && export GH_TOKEN="$token"
+fi
+exec "$real" "$@"

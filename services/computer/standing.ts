@@ -84,7 +84,10 @@ export class Standing {
     if (box) {
       const key = (() => { try { return compatKey(req.runArgs(box.container)); } catch { return undefined; } })();
       // A different image, limit or mount source is a different box: its sessions end, and dispatch's retry resumes them in the new one.
-      if (key === undefined || box.compat !== key || (await d.jobState(box.container)) !== "running") {
+      // Only a box that is really gone (or exited or dead) is replaced; a transient state (restarting, paused, an unanswered inspect) never ends every session.
+      const state = await d.jobState(box.container);
+      if (state === "created" || state === "restarting" || state === "paused" || state === "removing" || state === "unknown") throw fail(503, `the standing box ${box.container} is ${state}; ask again`);
+      if (key === undefined || box.compat !== key || state !== "running") {
         for (const l of d.jobs.leases(box.container)) await this.stop(box.container, l.lease);
         if (!(await d.retire(box.container, "the standing box no longer fits"))) throw fail(409, `the standing box ${box.container} is still being removed`);
         box = undefined;
@@ -94,7 +97,9 @@ export class Standing {
     const container = box.container;
     // A task has one session: a lease of an earlier job of it (its box replaced, the kernel restarted) ends first.
     const earlier = d.jobs.leaseOf(req.issueId);
-    if (earlier) await this.stop(earlier.container, earlier.lease);
+    if (earlier && !(await this.stop(earlier.container, earlier.lease))) throw fail(409, `the task's earlier session ${earlier.lease} is still stopping; ask again`);
+    // The launcher may have begun draining while this waited: it commits nothing the next one doesn't know.
+    if (d.draining()) throw fail(503, "the launcher is restarting; ask the next one");
     const taken = new Set(d.jobs.leases(container).flatMap((l) => [l.lease, l.ports.serve]));
     let lease = "";
     do lease = `l-${randomBytes(4).toString("hex")}`; while (taken.has(lease));
@@ -138,7 +143,7 @@ export class Standing {
 
   /**
    * The session ends: its token opens nothing at once, its processes are stopped by their process group (never a restart of the
-   * shared box), then its lease and out folder go. A failing session-stop is logged and the lease still goes. Idempotent; true
+   * shared box), then its lease and out folder go. A failing session-stop is logged and the lease stays revoked for the reaper to retry. Idempotent; true
    * when this call (or the one in flight) ended a lease.
    */
   stop(container: string, lease: string): Promise<boolean> {
@@ -156,7 +161,10 @@ export class Standing {
     if (!d.jobs.revokeLease(container, lease)) return false;
     d.save();
     const r = await d.docker(["exec", container, SESSION_STOP, lease], { timeoutMs: 30_000 });
-    if (r.exitCode !== 0) d.log("session-stop failed", container, lease, r.stderr.trim() || `exit ${r.exitCode}`);
+    // A box Docker confirms gone holds no process: its lease is simply over.
+    const gone = r.exitCode !== 0 && (await d.jobState(container)) === "missing";
+    // A failed stop stays revoked and lapsed (leaseUntil 0): the reaper tries it again, and its ports stay reserved until it ends.
+    if (r.exitCode !== 0 && !gone) { d.log("session-stop failed; the lease stays to be retried", container, lease, r.stderr.trim() || `exit ${r.exitCode}`); return false; }
     d.jobs.releaseLease(container, lease);
     d.save();
     rmSync(leaseEnvFile(d.envDir, container, lease), { force: true });

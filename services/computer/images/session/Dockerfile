@@ -27,3 +27,7 @@ RUN cd /opt/opencode \
     && chmod -R a+rX /opt/opencode && npm cache clean --force
 # `session-stop <lease>`: how the launcher ends one session in the shared box (see the script).
 COPY --chmod=755 session-stop /opt/aidenhq/bin/session-stop
+# Git and gh in the shell (lane G): the credential helper and a `gh` wrapper, first on PATH (/opt/aidenhq/bin precedes the real gh),
+# and the system gitconfig that points git at the helper.
+COPY --chmod=755 git-credential-aidenhq gh /opt/aidenhq/bin/
+COPY gitconfig /etc/gitconfig
