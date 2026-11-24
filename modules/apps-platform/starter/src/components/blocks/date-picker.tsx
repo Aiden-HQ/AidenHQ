@@ -51,7 +51,10 @@ export function DatePicker({
 }
 
 export type RangePreset = { label: string; range: () => DateRange }
-const daysAgo = (n: number) => new Date(new Date().setHours(0, 0, 0, 0) - n * 86400000)
+const daysAgo = (n: number) => {
+  const d = new Date()
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - n)
+}
 export const RANGE_PRESETS: RangePreset[] = [
   { label: "Last 7 days", range: () => ({ from: daysAgo(6), to: daysAgo(0) }) },
   { label: "Last 30 days", range: () => ({ from: daysAgo(29), to: daysAgo(0) }) },

@@ -81,5 +81,9 @@ export function relativeTime(iso: string) {
   return formatDate(iso)
 }
 
-export const isOverdue = (p: Project) => p.status !== "done" && p.due < new Date().toISOString().slice(0, 10)
+export const isOverdue = (p: Project) => {
+  const t = new Date()
+  const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`
+  return p.status !== "done" && p.due < today
+}
 export const initials = (name: string) => name.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase()

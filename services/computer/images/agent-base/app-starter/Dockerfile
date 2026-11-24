@@ -22,7 +22,7 @@ COPY --from=node /usr/local /usr/local
 RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --create-home --shell /bin/bash node
 WORKDIR /app
 ENV NODE_ENV=production
-COPY --from=build /app/server.mjs /app/aidenhq-identity.mjs ./
+COPY --from=build /app/package.json /app/server.mjs /app/aidenhq-identity.mjs ./
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 8080
