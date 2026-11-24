@@ -11,13 +11,13 @@ import { mintToken } from "../src/gateway/token.ts";
 import { serveOps, type OpsContext } from "../../modules/github/service/src/ops.ts";
 
 const repos = { agentsOrgs: ["acme-agents"], product: "acme/widgets-product", maintained: ["acme/maintained"] };
-const setup = () => {
+const setup = (autonomy = "full") => {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, agent TEXT, task TEXT, state TEXT, authority TEXT)");
   const ins = db.prepare("INSERT INTO jobs VALUES (?, 'ag1', ?, 'running', ?)");
   ins.run("j-session", "t1", JSON.stringify({ profile: "session", roles: ["session"] }));
   ins.run("j-crew", "t2", JSON.stringify({ profile: "crew", roles: ["session"] }));
-  const tools = createJobTools({ db, secret: () => "s", engines: () => [], reach: (r) => covers(r, ["@agents/*", "@product", "@maintained"], repos) });
+  const tools = createJobTools({ db, secret: () => "s", engines: () => [], reach: (r) => covers(r, ["@agents/*", "@product", "@maintained"], repos), autonomy: () => autonomy });
   const tok = (job: string, task: string) => mintToken("s", { kind: "job", job, agentId: "ag1", issueId: task });
   return { tools, session: tok("j-session", "t1"), crew: tok("j-crew", "t2") };
 };
@@ -50,4 +50,9 @@ test("a crew job is refused", () => {
 test("an outside repo is refused", () => {
   const { tools, session } = setup();
   assert.throws(() => tools.gitToken(session, { repo: "someone-else/widgets" }), { status: 403 });
+});
+
+test("autonomy off gives a session no token", () => {
+  const { tools, session } = setup("off");
+  assert.throws(() => tools.gitToken(session, { repo: "acme-agents/widgets" }), { status: 403 });
 });

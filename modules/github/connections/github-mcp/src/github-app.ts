@@ -98,6 +98,7 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
      */
     mint: (installation: number, narrow: { repositories: string[]; permissions: Record<string, string> }): Promise<{ token: string; expires_at: string }> => track(async () => {
       const r = await api("POST", `/app/installations/${installation}/access_tokens`, jwt(), narrow);
+      if (r.status === 403 || r.status === 422) throw refused("the installation refused a token with contents and pull requests write: accept the App's new Contents permission on GitHub (the App's settings, Permissions, then this installation's review request) and make sure the App has access to the repository", r);
       if (r.status !== 201 || typeof r.body?.token !== "string") throw refused("couldn't get a narrowed installation token", r);
       return { token: r.body.token, expires_at: String(r.body.expires_at ?? "") };
     }),
