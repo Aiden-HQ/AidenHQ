@@ -9,11 +9,9 @@
 //   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
 //                                context); `pr` and `main` are the list read's node and default branch (OPEN_PRS_QUERY), so the
 //                                PR isn't read again
-//   POST /internal/ship/decide   {data, head} -> the merge gate's rule on the loop's view of a PR (merge-gate.ts decide)
 //   GET  /internal/ship/openers  -> pr-tasks.json: which task opened each PR
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withBranch } from "./branch-lock.ts";
-import { decide } from "./merge-gate.ts";
 import { readPrTasks } from "./pr-tasks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
@@ -165,7 +163,6 @@ export function shipRoutes(o: {
         const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup } } : undefined;
         return send(res, 200, await o.decision(repo, Number(b.number), String(b.head), view)), true;
       }
-      if (op === "decide") return send(res, 200, decide(b.data, String(b.head))), true;
       return send(res, 404, { error: "no such operation" }), true;
     } catch (e) {
       return send(res, 500, { error: String((e as Error).message ?? e).slice(0, 300) }), true;

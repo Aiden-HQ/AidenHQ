@@ -1,16 +1,22 @@
-// The watch loop's pass for the PRs that aren't the fleet's own (loop.ts calls it for each one it reads): the hand-off's intake and,
-// once adopted, its round (handoff.ts, rounds.ts). This file turns the loop's GitHub reads into their PrView and facts, and supplies
-// the GitHub effects they need (a trigger author's role, assignees, update-branch) through github's /internal/ship/* routes. Where
-// the PR waits only on an approval, it reads the PR's own change and code review's verdict and judges the App's approval (safe.ts).
+// The one engine's pass for every PR the loop reads but Dependabot's (loop.ts calls it for each): the hand-off's intake and, once
+// adopted, its round (handoff.ts, rounds.ts). A task's PR (the code host opened it for that task) is adopted at first sight and
+// follows its task: closed with its branch when the task is cancelled, superseded by a newer PR of the same task, or done with no
+// merge of it in flight. This file turns the loop's GitHub reads into their PrView and facts (github's decision from the list
+// node, the CI recoveries' answer), and supplies the GitHub effects they need (a trigger author's role, assignees, update-branch,
+// a close) through github's /internal/ship/* routes. Where the PR waits only on an approval, it reads the PR's own change and code
+// review's verdict and judges the App's approval (safe.ts).
 import { discovered } from "./actions.ts";
+import { withFooter } from "./aidenhq-sdk/attribution.ts";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import type { Recovery } from "./ci-recover.ts";
 import { handBack, intake, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
-import { retryReport, round, type Decision, type RoundDeps } from "./rounds.ts";
+import { retryReport, round, tell, type Decision, type RoundDeps } from "./rounds.ts";
 import { canApprove, judge, type ChangedFile, type Judged, type Verdict } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
 
 type Json = any;
+const HALF_HOUR = 30 * 60_000;
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 export type AdoptedOptions = {
   gh: Gh; state: State;
@@ -20,7 +26,7 @@ export type AdoptedOptions = {
   /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
    * whether the branch merges through a merge queue, the required checks red on the PR's latest merge_group run, and whether an
    * approval of the head is all it waits on. */
-  decision(repo: string, number: number, head: string): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean }>;
+  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json } }): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
   /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
   effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
@@ -50,11 +56,11 @@ export function viewOf(repo: string, defaultBranch: string, pr: Json): PrView {
 export function adoptedPass(o: AdoptedOptions) {
   /**
    * Whether the PR is first in the repo's merge order (item 19): the earliest hand-off among the repo's open adoptions that ship
-   * still works (not the fleet's, not held). Under `rebase: conflict` only that one is brought up to date; the rest wait their turn.
+   * still works (not held). Under `rebase: conflict` only that one is brought up to date; the rest wait their turn.
    */
   const front = (repo: string, number: number, open: Set<number>) => {
     const order = (o.state.all() as Kept[])
-      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && a.trigger.kind !== "fleet" && !a.hold)
+      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept)
       .sort((x, y) => String(x.trigger.at ?? "").localeCompare(String(y.trigger.at ?? "")) || x.number - y.number);
     return order[0]?.number === number;
   };
@@ -94,22 +100,94 @@ export function adoptedPass(o: AdoptedOptions) {
     const generated = s.generated?.globs ?? (await discovered(o.gh, view.repo, view.base)).globs;
     return judge(s, { files, generated, verdict, ...(reviewedFiles ? { reviewedFiles } : {}) });
   };
+  /**
+   * A task's PR follows its task (`task`: its identifier, as pr-tasks.json names it). Cancelled: the PR and its branch are left
+   * open for a successor and noted once (a successor publishing to the branch takes it over), and nothing else runs. Superseded by a
+   * newer PR of the same task into the same base, or done with this head half an hour old, each with no merge of it in flight:
+   * closed, and its branch deleted only while still at this head with no other open PR on it. True when the round is skipped.
+   */
+  const lifecycle = async (a: Kept, view: PrView, pr: Json, work: Json, task: string, newer?: string): Promise<boolean> => {
+    if (work.status === "cancelled") {
+      if (a.kept === task) return true;
+      const text = `Left open by the code host: ${task}, the task this PR was for, is cancelled. The PR and its branch \`${pr.headRefName}\` are left as they are for a successor task to finish, and this PR is not closed or deleted while it waits. A successor takes it over by checking \`${pr.headRefName}\` out and publishing to it (\`aidenhq publish\` with that branch): that records the successor as the PR's task and the PR is worked for it again.`;
+      const c = await o.gh("POST", `/repos/${view.repo}/issues/${view.number}/comments`, { body: withFooter(text, "Ship") }).catch(() => undefined);
+      if (!c || c.status >= 300) { o.log("cancelled task's PR left open: note not posted, retried next pass", { pr: view.url, task }); return true; }
+      o.state.put({ ...a, kept: task } as Kept);
+      o.log("cancelled task's PR left open", { pr: view.url, task });
+      return true;
+    }
+    // A task that resumed takes its PR back into the merge order.
+    if (a.kept) { const { kept: _, ...rest } = a; a = rest as Kept; o.state.put(a); }
+    // A merge or an enqueue of it in flight, or the PR in GitHub's merge queue: nothing is retired under it.
+    const ours = (r: Json) => (r.args?.prs ?? [r.args ?? {}]).some((p: Json) => String(p.repo).toLowerCase() === view.repo.toLowerCase() && p.number === view.number);
+    const merging = pr.isInMergeQueue === true || (work.records ?? []).some((r: Json) => ["github.merge", "github.enqueue"].includes(r.kind) && ["review", "owner", "approved", "claimed"].includes(r.state) && ours(r));
+    if (a.seen?.head !== view.head) { a = { ...a, seen: { head: view.head, at: new Date().toISOString() } }; o.state.put(a); }
+    // Only a known task status retires a PR (a read without one says nothing about cancellation).
+    const why = merging || !work.status ? undefined
+      : newer ? `Closing: superseded by ${newer}, the newer PR ${task} published for the same task.`
+      : work.status === "done" && Date.now() - Date.parse(a.seen!.at) >= HALF_HOUR ? `Closing: its task ${task} is done; its change landed elsewhere or isn't needed.` : undefined;
+    if (!why) return false;
+    // The close names the task it was decided for: github re-reads the PR's ownership under the branch lock and skips a PR a
+    // successor took over meanwhile.
+    const c = await o.gh("PATCH", `/repos/${view.repo}/pulls/${view.number}`, { state: "closed", expectTask: task });
+    if (c.status >= 300) { o.log("task's PR not closed: retried next pass", { pr: view.url, task, status: c.status }); return true; }
+    o.state.put({ ...a, hold: { kind: "stopped", reason: why, at: new Date().toISOString() } });
+    await o.gh("POST", `/repos/${view.repo}/issues/${view.number}/comments`, { body: withFooter(why, "Ship") });
+    // The branch goes only while it is still at this PR's head and no open PR uses it (a read that fails keeps it).
+    const [owner] = view.repo.split("/");
+    const ref = await o.gh("GET", `/repos/${view.repo}/git/ref/heads/${pr.headRefName}`).catch(() => undefined);
+    const uses = await o.gh("GET", `/repos/${view.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${pr.headRefName}`)}`).catch(() => undefined);
+    const keep = !ref || ref.status >= 300 || String(ref.body?.object?.sha ?? "") !== view.head || !uses || uses.status >= 300 || (uses.body ?? []).length > 0;
+    const d = keep ? undefined : await o.gh("DELETE", `/repos/${view.repo}/git/refs/heads/${pr.headRefName}`, { expectTask: task });
+    o.log("task's PR closed", { pr: view.url, task, branchDeleted: !!d && d.status < 300 });
+    return true;
+  };
   return {
     /** A new pass: roles are read again. */
     begin() { roles.clear(); },
-    /** One open PR that isn't the fleet's own: intake, then a round once adopted (and handed back when its task was cancelled). */
-    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number])) {
+    /**
+     * One open PR: intake, then a round once adopted. `ctx.opener`: the task the code host opened it for (its identifier);
+     * `ctx.newer`: a newer open PR of that same task; `ctx.recover`: its CI recoveries (ci-recover.ts), run once its task's
+     * lifecycle has kept it (a PR about to be closed or left for a successor spends no CI).
+     */
+    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number]), ctx: { opener?: string; newer?: string; recover?: () => Promise<Recovery> } = {}) {
       const view = viewOf(repo, main.name, pr);
-      let a = await intake(handoff, view) as Kept | undefined;
-      if (!a || a.trigger.kind === "fleet") return;
-      // A ship task cancelled outside a wake ends the adoption (a hold): never a close of the PR or a touch of its ref.
-      if (a.task && !a.hold) {
+      // The task as the kernel keeps it, read once a pass: its id names the adoption's task, its state the PR's lifecycle.
+      const work = ctx.opener ? await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(ctx.opener)}`).catch((e: Error) => (o.log("task read failed", { pr: view.url, err: String(e.message).slice(0, 200) }), undefined)) : undefined;
+      const taskId = ctx.opener && work ? String(work.jobs?.find((j: Json) => typeof j.task === "string" && j.task)?.task ?? ctx.opener) : undefined;
+      // A task's PR whose task couldn't be read waits a pass: never taken in as a member's meanwhile.
+      if (ctx.opener && !work) return;
+      let a = await intake(handoff, view, taskId) as Kept | undefined;
+      if (!a) { await ctx.recover?.(); return; }
+      if (a.owner?.kind === "task") {
+        // Closed by ship (a stop): nothing more until a successor publishes to it.
+        if (a.hold?.kind === "stopped") return;
+        if (work && await lifecycle(a, view, pr, work, ctx.opener!, ctx.newer)) return;
+        // A done task starts nothing new (its leftover PR waits for its close); a merge of it its task filed itself is left to run.
+        if (work?.status === "done") return;
+        const own = new Set([a.merge?.record, (a as Kept & { queue?: { record: string } }).queue?.record].filter(Boolean).map(String));
+        if ((work?.records ?? []).some((r: Json) => !own.has(String(r.id)) && ["github.merge", "github.enqueue"].includes(r.kind) && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? [r.args ?? {}]).some((p: Json) => String(p.repo).toLowerCase() === repo.toLowerCase() && p.number === view.number))) return;
+      } else if (a.task && !a.hold) {
+        // A ship task cancelled outside a wake ends the adoption (a hold): never a close of the PR or a touch of its ref.
         const w = await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(a.task)}`).catch(() => undefined);
         if (w?.status === "cancelled") { handBack(o.state, repo, pr.number, "its task was cancelled"); return; }
       }
+      const recovery = await ctx.recover?.();
       a = o.state.get(repo, pr.number) as Kept;
-      if (a.hold || o.paused()) { await retryReport(rounds, a, view); return; }
-      const v = await o.decision(repo, pr.number, view.head);
+      // A stalled hold is round()'s to clear on a new head; any other hold, or a pause, only retries a report that failed.
+      const resumes = a.hold?.kind === "stalled" && !!a.counters && a.counters.head !== view.head;
+      if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
+      const v = await o.decision(repo, pr.number, view.head, { pr, main });
+      // Red checks whose jobs never started are being re-run (ci-recover.ts): no fix is asked for a failure CI never ran.
+      if (v.do === "fix_ci" && recovery?.envRed) Object.assign(v, { do: "wait", why: "re-running required checks whose jobs never started" });
+      // A check run still pending well after its job finished and was re-run: no push fixes it, so its owner is told once per head.
+      if (recovery?.wedgedDue && v.do === "wait" && /still running on its head/.test(v.why ?? "") && a.wedgedTold !== view.head) {
+        const how = recovery.wedgedDue === "accepted" ? "after its Actions job completed and the job had been re-run" : "after its Actions job completed, and the request to re-run the job was refused";
+        await tell(rounds, a, view, `${view.url}'s check run is still \`in_progress\` at \`${view.head}\` ${how}, and the merge gate is held by it: this head cannot merge. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it; \`gh pr checks ${view.url}\` names it.`, `wedged.${view.head.slice(0, 12)}`);
+        o.log("wedged check run reported", { pr: view.url, head: view.head });
+        a = { ...a, wedgedTold: view.head };
+        o.state.put(a);
+      }
       // Waiting only on an approval: the evidence is judged, and decide's `approve` is taken where the repo's `approve` allows it.
       const s = o.settings(repo);
       const approval = v.approval && s && s.approve !== "off" && main.oid ? await approvalOf(s, view, main.oid) : undefined;
@@ -117,12 +195,15 @@ export function adoptedPass(o: AdoptedOptions) {
       // Red on the base too: the same required check names (on the head or the merge_group run) red on the default branch's head.
       const onBase = new Set(namedChecks(main.rollup).filter((c) => !c.ok && !c.pending).map((c) => c.name));
       const red = [...new Set([...(v.failing ?? []), ...(v.groupFailing ?? [])])];
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}) });
+      // Red while behind a green base: round() has GitHub update the branch once at this head before asking for a fix.
+      const behindGreen = v.do === "fix_ci" && main.rollup?.state === "SUCCESS" && main.oid && a.counters?.updated !== view.head
+        ? Number((await o.gh("GET", `/repos/${repo}/compare/${main.oid}...${view.head}`)).body?.behind_by) > 0 : false;
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
     },
-    /** The adoptions of `repo` (not the fleet's) whose PR left the open list: a merged one closes its hand-off's task once. */
+    /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {
       for (const a of o.state.all() as Kept[]) {
-        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || a.trigger.kind === "fleet" || a.counters?.lastRound === "closed" || (a.counters?.lastRound?.endsWith(":done") && !a.reportStale)) continue;
+        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || a.counters?.lastRound === "closed" || (a.counters?.lastRound?.endsWith(":done") && !a.reportStale)) continue;
         const r = await o.gh("GET", `/repos/${repo}/pulls/${a.number}`);
         if (r.status >= 300) continue;
         // A held adoption is still finished when someone merges its PR (round closes the hand-off's task). A closed one is handed
@@ -135,7 +216,8 @@ export function adoptedPass(o: AdoptedOptions) {
           continue;
         }
         const view: PrView = { repo, number: a.number, url: String(r.body.html_url), head: String(r.body.head?.sha), base: String(r.body.base?.ref), defaultBranch, author: String(r.body.user?.login ?? ""), authorBot: r.body.user?.type !== "User", fork: false, canModify: false, draft: false, state: "merged", labels: [], assignees: [], events: [] };
-        await round(rounds, view, { do: "done" });
+        // One PR's notice that didn't land never holds the others: it is retried next pass.
+        await round(rounds, view, { do: "done" }).catch((e) => o.log("landed round failed", { pr: view.url, err: String((e as Error).message).slice(0, 200) }));
       }
     },
   };

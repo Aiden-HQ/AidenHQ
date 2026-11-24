@@ -30,6 +30,10 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   assert.ok(l.includes("a/b.approve") && l.includes("a/b.caps.usd") && l.includes("a/b.handoff"));
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": { preset: "full" } } }), []);
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": "cautious" } }), []);
+  // A new step of the repo's own is the owner's; dropping one isn't.
+  const step = { repos: { "a/b": { preset: "cautious", actions: { before_merge: [{ workflow: "deploy.yml" }] } } } };
+  assert.ok(loosens({ repos: { "a/b": "cautious" } }, step).some((x) => /actions\.before_merge/.test(x)));
+  assert.deepEqual(loosens(step, { repos: { "a/b": "cautious" } }), []);
   assert.deepEqual(loosens({ repos: { "a/b": "cautious" } }, { repos: { "a/b": { rebase: "behind" } } }), ["a/b.rebase"]);
   assert.deepEqual(loosens({}, { repos: { "a/b": "cautious" } }, scope), ["a/b.enabled"]);
   assert.deepEqual(loosens({ paused: true }, { paused: false }), ["paused"]);
