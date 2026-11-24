@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DOOR_PORT } from "./edge.ts";
+import { LOG_ROTATION } from "./compiler/services.ts";
 
 export const ADMIN_PORT = 8446;
 const GATE_PORT = 3130; // scripts/edge.ts GATE_PORT: the gate on the host's loopback // the admin listener's public port (tailscale serve uses the same one)
