@@ -174,11 +174,33 @@ test("a module-filed write on a task the control plane can't resolve leaves its 
   assert.equal(k.records.get(gone.json.id).identifier ?? null, null);
 });
 
-test("a task that answers 200 with no issue body names no identifier, and the write is still filed", async (t) => {
-  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") ? { status: 200, body: null } : undefined) });
-  const r = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
-  assert.equal(r.status, 200, JSON.stringify(r.json));
-  assert.equal(k.records.get(r.json.id).identifier ?? null, null);
+test("a task that answers 200 with no issue body is no answer: the write is refused retryably, never filed", async (t) => {
+  for (const body of [null, [], { error: "not_found" }]) {
+    const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") ? { status: 200, body } : undefined) });
+    const r = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+    assert.equal(r.status, 503, JSON.stringify(r.json));
+    assert.equal(r.json.error.type, "check_failed");
+    assert.equal(k.records.list(["review", "owner", "claimed", "done"]).length, 0);
+  }
+});
+
+test("the same module request filed again persists the identifier on the open record it reuses", async (t) => {
+  // The task isn't resolvable yet (the control plane can't find it), so this filing is the identifier-less record an upgrade's
+  // open cards are; then it resolves, and the same request comes again.
+  const issues = { ...HEARTBEAT };
+  const { k } = await twin(t, { issues });
+  // The same object the fake control plane reads: taken in, then given the task.
+  const first = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(first.status, 200, JSON.stringify(first.json));
+  assert.equal(k.records.get(first.json.id).identifier ?? null, null);
+  issues["TASK-9"] = { ...TRIAGE["TASK-9"] };
+  const again = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(again.status, 200, JSON.stringify(again.json));
+  assert.equal(again.json.id, first.json.id);
+  assert.deepEqual([k.records.get(first.json.id).identifier, (await k.v1("GET", `/v1/work?record=${first.json.id}`)).json.identifier], ["WOR-8637", "WOR-8637"]);
+  // A decided record's identifier is still filled in, but never rewritten once it has one.
+  assert.equal(k.records.setIdentifier(first.json.id, "WOR-9999"), false);
+  assert.equal(k.records.get(first.json.id).identifier, "WOR-8637");
 });
 
 test("a module-filed write whose task the control plane can't read now is refused retryably, never filed identifier-less", async (t) => {

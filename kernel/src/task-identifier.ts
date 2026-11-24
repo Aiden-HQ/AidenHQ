@@ -4,10 +4,11 @@
 import type { Api } from "./channels.ts";
 
 /**
- * The identifier of the task at `task` (its id), as the control plane answers `GET /api/issues/<id>`. Undefined when the task
- * answers with none (404, or an empty identifier): the record stays without one, so a code host's guard fails closed. Any
- * other failure — a 5xx, a timeout, a dropped connection, a body that isn't JSON — throws a retryable 503 `check_failed`: an
- * identifier-less record the merge queue can never land is worse than a write tried again.
+ * The identifier of the task at `task` (its id), as the control plane answers `GET /api/issues/<id>`. Undefined only when the
+ * task is gone (404) or answers with an empty identifier: the record stays without one, so a code host's guard fails closed.
+ * Any other failure — a 5xx, a timeout, a dropped connection, a body that isn't JSON, a 2xx with no issue at all — throws a
+ * retryable 503 `check_failed`: an answer that only looks empty is no answer, and an identifier-less record the merge queue
+ * could never land is worse than a write tried again.
  */
 export function createTaskIdentifier(read: Api): (task: string) => Promise<string | undefined> {
   return async (task) => {
@@ -21,8 +22,10 @@ export function createTaskIdentifier(read: Api): (task: string) => Promise<strin
     } catch (e) {
       throw (e as { type?: string })?.type === "check_failed" ? e : unavailable(String((e as Error)?.message ?? e).slice(0, 200));
     }
-    // A body that isn't an issue (null, a list) names no identifier: the task answered, without one.
-    const identifier = body && typeof body === "object" && !Array.isArray(body) ? (body as { identifier?: unknown }).identifier : undefined;
+    // A task answers with its issue (its id at least). Anything else — null, a list, an error object — is no issue read, so it
+    // is the same retryable refusal, never a silent "no identifier".
+    if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as { id?: unknown }).id !== "string") throw unavailable("it answered without an issue");
+    const identifier = (body as { identifier?: unknown }).identifier;
     return typeof identifier === "string" && identifier ? identifier : undefined;
   };
 }

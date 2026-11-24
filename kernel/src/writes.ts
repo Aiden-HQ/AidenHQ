@@ -318,7 +318,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // record with the owner or approved stays as it is. Another requester's record is never touched: this one is its own.
     const who = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}`;
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
-    if (same && same.tier >= t.tier) return same;
+    if (same && same.tier >= t.tier) {
+      // The record is this request, so it is on the task by the identifier this call resolved: one filed before the lookup
+      // (or before it could resolve) would otherwise keep `identifier: null`, and the code host's guard stay closed on it.
+      if (base.identifier && !same.identifier) records.setIdentifier(same.id, base.identifier);
+      return records.get(same.id)!;
+    }
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
     return records.file(t);
   }
