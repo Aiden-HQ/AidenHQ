@@ -139,13 +139,14 @@ const skipEnd = (text: string, from: number, to: number) => {
   while (i > from && PAD.test(text[i - 1]!)) i--;
   return i;
 };
-/** How long a role at `at` is, when one of `roles` starts there and the reply has a role's delimiter after it, else 0. */
+/** How long a role at `at` is, when one of `roles` starts there and a template delimiter follows it, else 0. */
 const roleAt = (text: string, at: number, to: number, roles: string[]) => {
   const role = roles.find((r) => text.startsWith(r, at));
   if (!role) return 0;
   let i = at + role.length;
   while (i < to && /[ \t\u200b\ufeff\u2060]/.test(text[i]!)) i++;
-  return i >= to || text[i] === "\n" || text[i] === "\r" || text[i] === "<" ? role.length : 0;
+  if (i >= to || text[i] === "\n" || text[i] === "\r") return role.length;
+  return HEADERS.some((h) => text.startsWith(h.text, i)) || SENTINELS.some((s) => text.startsWith(s, i)) ? role.length : 0;
 };
 /** How far a leading header and its role reach past `from`, or undefined when the text there opens with neither. */
 const afterHeader = (text: string, from: number, to: number) => {

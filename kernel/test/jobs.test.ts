@@ -146,6 +146,7 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("Done.<|im_end|><|im_start|>user"), "Done.", "a trailing header and its role go too");
   assert.equal(stripSentinels("<|im_start|>User-facing changes are ready."), "User-facing changes are ready.", "a word is not a role");
   assert.equal(stripSentinels("<|im_start|>model\n---\nUse gpt-4.1."), "model\n---\nUse gpt-4.1.", "Gemma's role is not a ChatML role");
+  assert.equal(stripSentinels("<|im_start|>user<sub>1</sub> was updated"), "user<sub>1</sub> was updated", "a tag is not a template delimiter");
   assert.equal(stripSentinels("<|im_start|>user@example.com"), "user@example.com", "an address is not a role");
   assert.equal(stripSentinels("<|im_start|>model<sub>1</sub> is ready"), "model<sub>1</sub> is ready", "a tag is not a role delimiter");
   assert.equal(stripSentinels("NO_REPLY<|im_end|><|im_start|>\u200buser"), "NO_REPLY", "invisible padding at a header's role");
