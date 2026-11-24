@@ -242,7 +242,9 @@ export class Paperclip {
    */
   private async snapshot(strict: boolean): Promise<Snapshot> {
     const s = this.snap;
-    if (s && s.syncedWrites === this.writes && Date.now() - s.syncedAt < SNAP_FRESH_MS && Date.now() - s.fullAt < SNAP_FULL_MS) return s;
+    // A read that writes follow from never takes the shortcut, nor joins a sync that began before it asked (a write may be in it).
+    if (strict) await this.syncing?.catch(() => {});
+    else if (s && s.syncedWrites === this.writes && Date.now() - s.syncedAt < SNAP_FRESH_MS && Date.now() - s.fullAt < SNAP_FULL_MS) return s;
     this.syncing ??= this.sync().finally(() => (this.syncing = undefined));
     try {
       await this.syncing;

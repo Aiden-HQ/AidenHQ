@@ -160,7 +160,7 @@ export function load<T>(key: string, fetcher: () => Promise<T>, persist: Persist
       put(key, data, persist);
       // The server showed its last good answer while it reads a fresh one (swr.ts `stale`): ask again in a moment.
       if ((data as { stale?: unknown } | null)?.stale === true) retryStale(key, fetcher, persist);
-      else staleRetries.delete(key);
+      else (clearTimeout(staleRetries.get(key)?.timer), staleRetries.delete(key));
       // The stored copy: unchanged parts keep their identity (share), so callers' memos hold.
       return mem.get(key)!.data as T;
     },

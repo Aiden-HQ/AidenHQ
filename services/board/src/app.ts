@@ -315,8 +315,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     return id ? { ...a, identifier: id } : a;
   }
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
-  /** The last complete live read: a failed page falls back to it, never to a short list that would drop a blocked card. */
-  let liveCache: Approval[] | undefined;
 
   const sessionOf = liveActivity(opts.sessions);
   const work = opts.work ?? { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async () => [] };
@@ -1798,13 +1796,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // must never push a blocked merge out of the list the owner watches, and neither may the kernel's own page size. The
         // wider recent list adds the ended Tier 0 audit rows.
         // The kernel not answering is "unavailable" (the strict reads throw; the page keeps its last good response), never an empty list.
-        // A page of the live read that fails (the kernel restarting) is not "no live records": the cached page is kept instead
-        // of publishing a short list that would drop an old blocked merge off the cards. The kernel-down fallback below still
-        // answers what the capped reads have.
+        // A page of the live read that fails (the kernel restarting) is not "no live records": it fails the read, and the page keeps its
+        // last complete response (marked stale) rather than publishing a short list that would drop an old blocked merge off the cards.
         const [cards, all, live] = await Promise.all([
           cardsOf("recent", { limit: 100, strict: true }),
           cardsOf("recent", { limit: 100, tier0: true, strict: true }),
-          records.live().then((rows) => Promise.all(rows.map(named))).then((rows) => ((liveCache = rows), rows), () => liveCache ?? []),
+          records.live().then((rows) => Promise.all(rows.map(named))),
         ]);
         const held = [...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
         const seen = new Set(cards.map((c) => c.id));

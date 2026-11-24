@@ -60,15 +60,17 @@ it("serves the last good response while a fresh one is read, one read at a time"
   expect(await swr.serve("k", async () => ({ n: 3 }))).toEqual({ n: 3 });
 });
 
-it("never lets a read that began before a change answer after it", async () => {
+it("keeps one read per key, and marks what a change outran as stale", async () => {
   const swr = new Swr();
+  let reads = 0;
   let release!: (v: { n: number }) => void;
-  const slow = () => new Promise<{ n: number }>((r) => (release = r));
-  const first = swr.serve("k", slow);
+  const load = () => (++reads === 1 ? new Promise<{ n: number }>((r) => (release = r)) : Promise.resolve({ n: 2 }));
+  const first = swr.serve("k", load);
   swr.touch(); // a change while that read is under way
-  const second = swr.serve("k", async () => ({ n: 2 }));
-  expect(await second).toEqual({ n: 2 });
+  const second = swr.serve("k", load); // joins it: no pile-up of reads
   release({ n: 1 });
-  expect(await first).toEqual({ n: 1 }); // its own caller still gets it, but it isn't kept as the answer
-  expect(await swr.serve("k", async () => ({ n: 9 }))).toEqual({ n: 2 });
+  expect(await first).toEqual({ n: 1, stale: true });
+  expect(await second).toEqual({ n: 1, stale: true });
+  expect(reads).toBe(1);
+  expect(await swr.serve("k", load)).toEqual({ n: 2 }); // the client's retry reads again
 });

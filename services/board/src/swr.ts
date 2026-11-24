@@ -38,12 +38,11 @@ export class Swr {
     const have = this.last.get(key);
     if (have && Date.now() < have.until) return have.value as T;
     let read = this.reading.get(key);
-    // A read that began before the latest change may not show it: this one starts its own.
-    if (!read || read.gen !== this.gen) {
+    if (!read) {
       const r: Read = { gen: this.gen, late: false, promise: undefined as unknown as Promise<object> };
       r.promise = load().then((value) => {
-        // Only a read from the current generation is kept as the answer.
-        if (r.gen === this.gen) this.last.set(key, { value, until: Date.now() + (r.late ? LATE_FRESH_MS : FRESH_MS) });
+        // A read that began before the latest change is kept to show in a pinch, never as fresh.
+        this.last.set(key, { value, until: r.gen === this.gen ? Date.now() + (r.late ? LATE_FRESH_MS : FRESH_MS) : 0 });
         return value;
       });
       this.reading.set(key, r);
@@ -51,14 +50,20 @@ export class Swr {
       r.promise.then(done, done);
       read = r;
     }
+    const reading = read;
+    // What the read answered, marked stale when a change came after it began (the client asks again, and then starts a new read).
+    const answer = async () => {
+      const value = (await reading.promise) as T;
+      return reading.gen === this.gen ? value : { ...value, stale: true as const };
+    };
     // Nothing to show yet: wait for the read, whatever it takes (its failure is the page's).
-    if (!have) return (await read.promise) as T;
+    if (!have) return answer();
     let timer: NodeJS.Timeout | undefined;
     try {
-      return (await Promise.race([read.promise, new Promise<never>((_, no) => (timer = setTimeout(no, waitMs)).unref())])) as T;
+      return (await Promise.race([answer(), new Promise<never>((_, no) => (timer = setTimeout(no, waitMs)).unref())])) as Served<T>;
     } catch {
-      read.late = true;
-      read.promise.catch(() => {}); // still on its way (or failed): the last good one is shown
+      reading.late = true;
+      reading.promise.catch(() => {}); // still on its way (or failed): the last good one is shown
       return { ...(have.value as T), stale: true };
     } finally {
       clearTimeout(timer);
