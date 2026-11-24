@@ -97,6 +97,19 @@ describe("notify", () => {
     expect(sent).toHaveLength(2);
   });
 
+  it("a single single-choice question carries its wait's start for a one-tap answer; any other shape doesn't", async () => {
+    const { d, sent } = world();
+    d.resolveTask = async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "telegram" });
+    const since = "2026-11-24T10:00:00.000Z";
+    d.wait = async () => ({ to: "owner", since });
+    const ask = (questions: { question: string; options: string[]; multi?: boolean }[], text = "Context.") => ({ kind: "decision" as const, text, task: "WOR-9", questions });
+    await notify(d, ask([{ question: "Ship?", options: ["Wait", "Publish"] }]), agent("a1"));
+    expect(sent.at(-1)!.m.answer).toEqual({ options: ["Wait", "Publish"], since });
+    await notify(d, ask([{ question: "Which?", options: ["A", "B"], multi: true }], "Two."), agent("a1"));
+    await notify(d, ask([{ question: "Which?", options: ["A", "B", "C", "D", "E"] }], "Three."), agent("a1"));
+    expect([sent[1]!.m.answer, sent[2]!.m.answer]).toEqual([undefined, undefined]);
+  });
+
   it("notify's input is strict", async () => {
     const { d, sent } = world();
     const client = new Client({ name: "t", version: "1" });

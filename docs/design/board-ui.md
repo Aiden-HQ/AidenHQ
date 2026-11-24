@@ -96,11 +96,54 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 
 ## Modules
 
-Modules declare (`board.signins`, `board.setup_flows`, `providers.board`, settings) and both the board and the owner's MCP
-drive the declarations: a Connect on Settings, Connections, a setup sheet and wizard step
-([guided-setup.md](guided-setup.md)), an API a board page reads (like Reviews), a setting with its help. A page the
-declarations can't express is a module view (sandboxed, in the MCP Apps format), designed later. How a module is built:
+Modules declare (`board.signins`, `board.setup_flows`, `board.pages`, `providers.board`, settings) and both the board and the
+owner's MCP drive the declarations: a Connect on Settings, Connections, a setup sheet and wizard step
+([guided-setup.md](guided-setup.md)), a page in the Fleet sidebar, a setting with its help. How a module is built:
 [modules/AGENTS.md](../../modules/AGENTS.md).
+
+**A module's Fleet page is a module view** ([MCP Apps](https://github.com/modelcontextprotocol/ext-apps), protocol
+2026-01-26): an HTML resource its own MCP connection serves, declared in `module.yaml`:
+
+```yaml
+requires: [board]
+contributes:
+  board.pages:
+    - id: ship                      # its address, #/fleet/ship; unique
+      title: Ship
+      icon: rocket                  # one of the icons modules/board/schemas/pages.json lists
+      order: 10                     # after Agents, Apps, Modules and Reviews, ascending
+      connection: ship              # one of this module's own connections
+      view: ui://ship/page          # served by it (resources/read, text/html;profile=mcp-app)
+      tools: [ship_config, ship_configure]   # what the view calls: read or write tools of that connection, named <module>_…
+```
+
+- **Compile** checks it (the connection is the module's, the view is `ui://<module>/…`, no destructive tool and none a write kind routes, tool names
+  `<module>_…`) and puts each view with its tools on its connection in the kernel's `connections.json` (`views`).
+- **The board** lists the pages after Fleet's own (sidebar, phone More, ⌘K) and shows one at `#/fleet/<id>`
+  (`ModuleView.tsx`). The view runs in an iframe served from `/api/pages/<id>/frame` with a sandbox CSP (`allow-scripts
+  allow-forms` only): an opaque origin with no network, no cookies, no navigation and nothing loaded from outside. Inline
+  script and style only; `_meta.ui.csp` domains aren't honoured. The board's own CSP (`frame-src 'self'`) keeps the frame from navigating anywhere outside the board, and the bridge serves only the first document a frame loads; a view that navigates itself, or doesn't send `ui/initialize` within 8 seconds (its module down), is replaced by a Try again.
+- **The bridge** is MCP Apps over postMessage, from that frame only: `ui/initialize` (the host context carries `theme` and
+  `styles.variables`: `--color-background-primary|secondary`, `--color-text-primary|secondary|danger|inverse`,
+  `--color-border-primary`, `--color-ring-primary`, `--font-sans`, `--border-radius-md`, as the board's tokens write them, so
+  the view sets `color-scheme` to `theme`), `ui/notifications/initialized`, `tools/call` and `ui/notifications/size-changed`
+  (the frame's height). Nothing else is answered. A web host should use a sandbox proxy on a second origin; the board has one
+  origin in every exposure mode, so the single sandboxed frame stands in for it.
+- **A tool call** goes board → kernel (`POST /v1/views/<module>/mcp`, the board's key), which lets through only that view's
+  resource and its page's tools, and calls the module with a caller assertion of kind `owner` (no agent, no roles, no
+  control-plane reach).
+- **Settings:** a page's write tool, called by the owner, returns the typed change instead of filing it:
+  `structuredContent._aidenhq.settings_change: [{ kind: setting, key, value }]`. The board shows it in a bar outside the
+  frame, and the owner's Save files it as his own settings change, refused unless every key is the page's module's own.
+  An agent's call of the same tool files the change itself (`/v1/settings/agent`), so the module's one check serves both.
+- **In the owner's Claude** the owner MCP serves each page as an MCP App: an opener `<id>_page` with `_meta.ui.resourceUri`,
+  the view (with no `_meta.ui.csp`, so Claude's strict default holds) and the page's tools with visibility `["app"]`; the
+  board's own tools are `["model"]`, so no view calls them. Their answers come back fenced as untrusted data (text blocks and every string of `structuredContent`), so a view written for Claude reads values out of the fence. Claude scopes app-visible tools by server, not by view, so there a view can also reach another page's tools (each still only a declared, non-destructive one, run as the board's own route). A proposed setting there is saved by asking Claude to apply it
+  (`change_settings`).
+- **A view's job:** the module's state and its feature settings, empty states that say how to connect. The example
+  (`web/dev/example-view.html`, the mock API's Notes page) is the starting point: no build step, about 100 lines.
+
+Reviews is still native board code reading `providers.board`; moving it to a view is the follow-up.
 
 ## Working on the UI without an instance
 

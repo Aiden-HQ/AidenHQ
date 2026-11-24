@@ -57,12 +57,13 @@ const AgentPage = lazy(() => VIEW_CHUNKS.agentPage().then((m) => ({ default: m.A
 const ModulePage = lazy(() => VIEW_CHUNKS.modulePage().then((m) => ({ default: m.ModulePage })));
 const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage })));
 const ReviewsView = lazy(() => VIEW_CHUNKS.reviews().then((m) => ({ default: m.ReviewsView })));
+const ModuleView = lazy(() => VIEW_CHUNKS.moduleView().then((m) => ({ default: m.ModuleView })));
 const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.DesignView })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string; /** One approval card (#/approvals/<id>). */ card?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string; /** One approval card (#/approvals/<id>). */ card?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean } | { kind: "page"; id: string };
 
 /** My day's Done column: cards shown before "Show more". */
 const DONE_PAGE = 10;
@@ -156,6 +157,9 @@ function parseRoute(): Route {
   if (h === "brief") return { kind: "brief" };
   if (h === "help") return { kind: "help" };
   if (h === "design") return { kind: "design" };
+  // #/fleet/<id> opens a module's page (board.pages, ModuleView.tsx).
+  const page = /^fleet\/([a-z][a-z0-9-]{0,30})$/.exec(h);
+  if (page) return { kind: "page", id: page[1]! };
   // #/apps/<name> opens an app's page.
   const app = /^apps\/([a-z0-9-]+)$/.exec(h);
   if (app) return { kind: "app", name: app[1]! };
@@ -176,8 +180,8 @@ function useMedia(query: string) {
   return on;
 }
 
-// "design" (#/design, the design system's catalogue) has no tab of its own.
-type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "reviews" | "costs" | "flow" | "settings" | "design";
+// "design" (#/design, the design system's catalogue) has no tab of its own; "fleet" is a module's page (#/fleet/<id>).
+type View = "chat" | "agents" | "modules" | "approvals" | "board" | "apps" | "reviews" | "costs" | "flow" | "settings" | "design" | "fleet";
 const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "apps", "reviews", "costs", "flow", "settings"];
 const VIEW_KEY = "aidenhq.view";
 const savedView = (): View => {
@@ -372,7 +376,7 @@ export function App() {
     const hash = () => {
       const r = parseRoute();
       // A chat link opens the Chat tab; a tab link opens that tab.
-      const v: View | null = r.kind === "chat" ? "chat" : r.kind === "view" ? r.view : r.kind === "agent" ? "agents" : r.kind === "module" ? "modules" : r.kind === "settings" ? "settings" : r.kind === "design" ? "design" : r.kind === "app" ? "apps" : null;
+      const v: View | null = r.kind === "chat" ? "chat" : r.kind === "view" ? r.view : r.kind === "agent" ? "agents" : r.kind === "module" ? "modules" : r.kind === "settings" ? "settings" : r.kind === "design" ? "design" : r.kind === "app" ? "apps" : r.kind === "page" ? "fleet" : null;
       if (v) setView(v, r);
       else setRoute(r);
     };
@@ -676,6 +680,12 @@ export function App() {
   }, [needsSignIn]);
   // Every hook runs before the early returns below (React needs the same hooks on every render).
   const appsQ = useQuery(QUERIES.apps, signInNeeded);
+  const pagesQ = useQuery(QUERIES.pages, signInNeeded);
+  const pages = pagesQ.data?.pages ?? [];
+  // An apply can add or remove a module's page while the board is open: Fleet reads them again each time it is opened.
+  const inFleet = ["agents", "apps", "modules", "reviews", "fleet"].includes(view);
+  const reloadPages = pagesQ.reload;
+  useEffect(() => void (inFleet && reloadPages()), [inFleet, reloadPages]);
   // Signed out, or an admin without an authenticator yet: both are done on the kernel's sign-in pages.
   if (session && !session.account) return <SignInScreen />;
 
@@ -736,7 +746,7 @@ export function App() {
         />
       )}
       <div className="app-row">
-      {!mobile && <SubNav view={view} onNav={nav} panels={panels} />}
+      {!mobile && <SubNav view={view} onNav={nav} panels={panels} pages={pages} page={route.kind === "page" ? route.id : undefined} go={go} />}
       <div className="app-main">
       {mobile && (
         <header className="topbar" hidden={chatFull}>
@@ -849,6 +859,7 @@ export function App() {
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
       {view === "reviews" && <Suspense fallback={<PageLoading />}><ReviewsView onSignIn={signInNeeded} /></Suspense>}
+      {view === "fleet" && route.kind === "page" && <Suspense fallback={<PageLoading />}><ModuleView key={route.id} page={pages.find((p) => p.id === route.id)} onSignIn={signInNeeded} /></Suspense>}
       {view === "flow" && <Suspense fallback={<PageLoading />}><FlowView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
@@ -965,7 +976,7 @@ export function App() {
         />
       )}
 
-      {mobile && !chatFull && <BottomBar view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
+      {mobile && !chatFull && <BottomBar view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} pages={pages} go={go} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
       </div>
       </div>
       <Palette

@@ -721,6 +721,10 @@ kbd {
 .q-opt.on .q-mark { background: var(--accent); border-color: var(--accent); opacity: 1; box-shadow: inset 0 0 0 2px var(--surface); }
 .q-label { flex: 1; }
 .q-rec { font-size: var(--text-2xs); color: var(--accent); }
+.q-tap { display: flex; flex-wrap: wrap; gap: 6px; }
+.q-opts { display: grid; gap: 6px; }
+.q-sent { margin: 0; font-size: var(--text-sm); color: var(--muted); }
+.q-error { margin: 0; font-size: var(--text-sm); color: var(--bad-text); }
 .q-own { padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; outline: none; }
 .q-own:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .btn.answer { border-color: var(--accent); color: var(--accent); background: var(--surface); }

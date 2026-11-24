@@ -12,6 +12,8 @@ import { ChangeSchema } from "./settings-change.js";
 import type { SetupFlowPoint } from "./setup-flows.js";
 import { EFFORTS } from "./board.js";
 import { BUCKETS } from "./store.js";
+import { VIEW_MIME, type PagePoint } from "./module-views.js";
+import { OWNER_TOOLS } from "./mcp-tools.js";
 
 export type CallRoute = (method: string, path: string, body?: unknown) => Promise<any>;
 
@@ -23,7 +25,13 @@ export interface McpDeps {
   flows: () => SetupFlowPoint[];
   /** Each flow's done and dismissed state as the setup page counts it (setup-flows.ts). */
   setupStates: (module?: string) => Promise<{ module: string; title: string; done: boolean; dismissed: boolean }[]>;
+  /** The modules' Fleet pages (module-views.ts), and a page's view HTML through the kernel. */
+  pages: () => PagePoint[];
+  viewHtml: (id: string) => Promise<string>;
 }
+
+/** The board's own tools are the model's: a module view in the owner's Claude calls only its page's tools (MCP Apps visibility). */
+const MODEL_ONLY = { ui: { visibility: ["model"] } };
 
 /** The tools that change something: the HTTP layer asks the kernel afresh about the bearer before running one. */
 export const WRITE_TOOLS = new Set(["ask", "create_task", "update_task", "decide", "change_settings", "update"]);
@@ -140,8 +148,8 @@ export function createMcp(d: McpDeps) {
       return { origin: ctx.origin, known: new Set([...(roster.roster as any[]).flatMap((r) => [r.key, r.id]), ...(modules.modules as any[]).map((m) => m.name)].filter(Boolean)) };
     };
     const out = (text: string, data: Record<string, unknown>) => ({ content: [{ type: "text" as const, text }], structuredContent: data });
-    const tool = (name: string, description: string, input: z.ZodRawShape, output: z.ZodRawShape, hint: "read" | "write" | "destructive", fn: (a: any) => Promise<ReturnType<typeof out>>) =>
-      server.registerTool(name, { description, inputSchema: input, outputSchema: output, annotations: { readOnlyHint: hint === "read", destructiveHint: hint === "destructive", openWorldHint: false } }, async (a: any) => {
+    const tool = (name: (typeof OWNER_TOOLS)[number], description: string, input: z.ZodRawShape, output: z.ZodRawShape, hint: "read" | "write" | "destructive", fn: (a: any) => Promise<ReturnType<typeof out>>) =>
+      server.registerTool(name, { description, inputSchema: input, outputSchema: output, annotations: { readOnlyHint: hint === "read", destructiveHint: hint === "destructive", openWorldHint: false }, _meta: MODEL_ONLY }, async (a: any) => {
         try {
           const r = await fn(a);
           return { ...r, structuredContent: fenceAll(r.structuredContent, await fenceCtx(r.structuredContent)) as Record<string, unknown> };
@@ -479,6 +487,25 @@ export function createMcp(d: McpDeps) {
         return out(`Costs (${a.view}).`, { costs: await call("GET", path) });
       },
     );
+
+    // Module pages as MCP Apps (docs/design/board-ui.md "Modules"): an opener the model calls, the view it shows (served with no
+    // `_meta.ui.csp` of the module's, so the strict default holds) and the page's tools, visible to the view only. A view's calls
+    // run the board's own route, as the board page's do; their answers come back fenced, as any module's words do here.
+    for (const p of d.pages()) {
+      // Compile keeps pages' names apart from each other and from OWNER_TOOLS.
+      const opener = `${p.id.replace(/-/g, "_")}_page`;
+      server.registerResource(p.id, p.view, { title: p.title, mimeType: VIEW_MIME }, async () => ({ contents: [{ uri: p.view, mimeType: VIEW_MIME, text: await d.viewHtml(p.id) }] }));
+      server.registerTool(opener, { description: `Show the owner the ${p.title} page of the ${p.module} module, where its features are configured.`, inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: p.view, visibility: ["model"] } } }, async () => ({ content: [{ type: "text" as const, text: `The ${p.title} page is open: ${ctx.origin}/#/fleet/${p.id}` }] }));
+      for (const t of p.tools)
+        server.registerTool(t, { description: `${p.title} page: ${t}`, inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ["app"] } } }, async (a: Record<string, unknown>) => {
+          // A module's answer is its words: fenced like every other text the owner's Claude reads from an agent or a module.
+          const r = await call("POST", `/api/pages/${p.id}/call`, { name: t, arguments: a });
+          if (r.error) return { isError: true, content: [{ type: "text" as const, text: fence(String(r.error.message ?? "failed"), t) }] };
+          // Text fenced, images as they are, anything else (audio, links) dropped: as the kernel's proxy hands an agent a result.
+          const content = ((r.result?.content ?? []) as { type?: string; text?: unknown }[]).flatMap((c): ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] => (c?.type === "text" ? [{ type: "text", text: fence(String(c.text ?? ""), t) }] : c?.type === "image" ? [c as { type: "image"; data: string; mimeType: string }] : []));
+          return { content, ...(r.result?.structuredContent ? { structuredContent: fenceAll(r.result.structuredContent, { origin: ctx.origin }) as Record<string, unknown> } : {}), ...(r.result?.isError ? { isError: true } : {}) };
+        });
+    }
 
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {

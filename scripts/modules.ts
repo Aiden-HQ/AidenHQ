@@ -11,6 +11,7 @@ import { validate } from "../kernel/src/writes.ts";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.ts";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
+import { OWNER_TOOLS } from "../services/board/src/mcp-tools.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { current, MANIFEST_KEYS, moduleName } from "./compiler/authority.ts";
@@ -656,6 +657,37 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
 }
 
 /**
+ * board.pages (modules/board/schemas/pages.json): each page's view and tools sit on one of its own module's connections, as
+ * read or write tools (never destructive, never one a write kind routes). Each tool is named <module>_… (the owner MCP serves every page's tools side by side,
+ * under their own names). What each view may reach goes onto its connection in the kernel's table (`views`: view -> tools),
+ * where the kernel's view route enforces it (kernel/src/views.ts).
+ */
+export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}) {
+  // One page per view, and one page per MCP name (the owner MCP serves each page's tools and its `<id>_page` opener side by side).
+  const views = new Set<string>(), names = new Map<string, string>(OWNER_TOOLS.map((t) => [t, "the owner MCP"]));
+  const name = (n: string, p: Obj) => (names.has(n) ? fail(`module ${p.module}: board.pages ${p.id}: the name ${n} is already ${names.get(n)}'s`) : names.set(n, `page ${p.id}`));
+  for (const p of pages) {
+    const where = `module ${p.module}: board.pages ${p.id}`;
+    const c = Object.hasOwn(connections, p.connection) ? connections[p.connection] : undefined;
+    if (c?.module !== p.module) fail(`${where}: connection ${p.connection} isn't one of its own`);
+    if (!p.view.startsWith(`ui://${p.module}/`)) fail(`${where}: view must be ui://${p.module}/<path>`);
+    if (views.has(p.view)) fail(`${where}: another page already shows ${p.view}`);
+    views.add(p.view);
+    name(`${p.id.replace(/-/g, "_")}_page`, p);
+    for (const t of p.tools) {
+      if (![...c.tools.read, ...c.tools.write].includes(t) || c.tools.destructive.includes(t)) fail(`${where}: ${t} isn't a read or write tool of ${p.connection}`);
+      // The view route calls a tool directly; a tool routed into a write kind goes through its record, tier and executor instead.
+      const kind = Object.keys(kinds).find((k) => kinds[k].tools?.includes(`${p.connection}.${t}`));
+      if (kind) fail(`${where}: ${t} is write kind ${kind}'s, which a view can't call`);
+      if (!t.startsWith(`${p.module.replace(/-/g, "_")}_`)) fail(`${where}: tool ${t} must be named ${p.module.replace(/-/g, "_")}_…`);
+      name(t, p);
+    }
+    c.views = { ...c.views, [p.view]: [...p.tools] };
+  }
+  pages.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+}
+
+/**
  * The board calls a flow's pair_url, so it shares a network with that service: the same one a board link makes
  * (aidenhq-mod-<module>-board, internal), and `board` joins the service's aidenhq.links label (scripts/verify-security.sh).
  * The host must be one of the declaring module's own services (its compose name or alias).
@@ -723,7 +755,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const seen = bundleState?.seen ?? oldBundle ?? bundle;
   const adopted = new Set([...(bundleState?.adopted ?? []), ...bundle.filter((n: string) => !seen.includes(n) && !listed.has(n))].filter((n) => all.has(n)));
   const unset = (n: string) => resolveEnabled(all, [n]).flatMap((m) => Object.entries(all.get(m)!.def.settings ?? {}).filter(([k, d]: [string, any]) => d?.required && !("default" in d) && instance.settings?.[k] == null).map(([k]) => k));
-  const added = [...adopted].filter((n) => !removed.has(n) && !listed.has(n)).filter((n) => {
+  // A new bundle member whose requirements include a module the owner removed stays out (a local-only install keeps GitHub off).
+  const added = [...adopted].filter((n) => !removed.has(n) && !listed.has(n) && !resolveEnabled(all, [n]).some((m) => removed.has(m))).filter((n) => {
     const missing = unset(n);
     if (missing.length) console.warn(`module ${n} is not enabled yet: set ${missing.join(", ")} first`);
     return !missing.length;
@@ -1260,6 +1293,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     ...(c.health_probes ? { health_probes: c.health_probes } : {}),
     ...(c.events ? { events: c.events } : {}),
   }]));
+  modulePages(points.board?.pages ?? [], connections, writes);
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. An Engineer gets

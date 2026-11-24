@@ -1,11 +1,13 @@
 // A fixture-backed stand-in for the board's API, for working on the web UI without a kernel or Paperclip:
 //   node web/dev/mock-api.ts & npm run dev:web     (vite proxies /api to :3120)
-// Neutral sample data only. Writes answer ok and change nothing. GET /__mock?welcome=1|0 shows or hides the first-run wizard;
+// Neutral sample data only. Writes answer ok and change nothing (an answer to WOR-821 is refused 409, the "already answered" case). GET /__mock?welcome=1|0 shows or hides the first-run wizard;
 // GET /__mock?empty=1 empties every list (empty states); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
 // ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
 // Slack setup page's state (nothing yet, sign-in only, an organisation's sign-in, sign-in and bot, a bot app that predates the manifest).
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { FRAME_CSP } from "../../src/module-views.ts";
 
 const port = Number(process.env.PORT ?? 3120);
 const now = Date.now();
@@ -125,6 +127,17 @@ let views = [
   { id: "00000000-0000-4000-8000-0000000000a1", name: "Needs review", rev: 1, spec: { layout: "work", groupBy: "none", filters: { label: ["l-review"] } } },
   { id: "00000000-0000-4000-8000-0000000000a2", name: "Engineering", rev: 1, spec: { layout: "work", groupBy: "none", filters: { agent: ["engineer", "aiden", "platform-engineer"], updated: "7d" } } },
 ];
+// A module's Fleet page (board.pages): the example view (web/dev/example-view.html) and its two tools, as the kernel would relay them.
+const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }];
+function pageRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
+  if (url.pathname === "/api/pages") return [200, { pages: mock.empty ? [] : PAGES }];
+  if (method === "POST" && url.pathname === "/api/pages/notes/save") return [200, { identifier: "WOR-901", record: "k-0000000000000901", tier: 2, state: "approved" }];
+  if (method !== "POST" || url.pathname !== "/api/pages/notes/call") return undefined;
+  if (body.name === "example_notes") return [200, { result: { content: [{ type: "text", text: "3 notes" }], structuredContent: { notes: [{ text: "Renewal call with Acme moved to Thursday", at: "2h ago" }, { text: "Invoices export shipped", at: "yesterday" }, { text: "Draft the Q1 offsite agenda", at: "3 days ago" }] } } }];
+  if (body.name === "example_configure") return [200, { result: { content: [{ type: "text", text: `Proposed keeping ${body.arguments?.limit} notes: save it above.` }], structuredContent: { _aidenhq: { settings_change: [{ kind: "setting", key: "example_limit", value: body.arguments?.limit }] } } } }];
+  return [403, { error: `${body.name} isn't one of this page's tools` }];
+}
+
 function viewRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
   const id = /^\/api\/views\/([0-9a-f-]{36})$/.exec(url.pathname)?.[1];
   if (url.pathname === "/api/views" && method === "GET") return [200, { views: mock.empty ? [] : views }];
@@ -372,6 +385,7 @@ function route(method: string, url: URL): [number, unknown] {
   const one = /^\/api\/approvals\/(k-[0-9a-f]{16})$/.exec(url.pathname)?.[1];
   if (one && method === "GET") { const a = approvals().find((x) => x.id === one); return a ? [200, { approval: a }] : [404, { error: "no such card" }]; }
   const p = url.pathname;
+  if (method === "POST" && /^\/api\/issues\/[^/]+\/answer$/.test(p)) return p.split("/")[3] === "WOR-821" ? [409, { error: "Already answered, or the question changed." }] : [200, { identifier: p.split("/")[3], message: "m-1" }];
   if (method === "POST" && p === "/api/reviews") return [200, { batch: "b-000000000003" }];
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   if (p.startsWith("/api/models/")) return [200, { default: "openrouter/~deepseek/deepseek-flash-latest", models: ["openrouter/~deepseek/deepseek-flash-latest", "openrouter/~openai/gpt-luna-latest", "openrouter/z-ai/glm-5.3"], efforts: ["low", "medium", "high"] }];
@@ -392,8 +406,10 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/setup-flows": return [200, flows()];
     case "/api/chats": return [200, { chats: chatRows(), agents: [{ key: "aiden", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];
-    case "/api/needs-you": return [200, mock.empty ? { counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, approvals: 0, items: [] } : { counts: { needs_you: 4, failed: 1, unexplained_idle: 3 }, approvals: 2, items: [
-      { identifier: "WOR-801", title: "Brief decisions", agent: "Aiden", state: named("WOR-801", ASK) },
+    case "/api/needs-you": return [200, mock.empty ? { counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, approvals: 0, items: [] } : { counts: { needs_you: 6, failed: 1, unexplained_idle: 3 }, approvals: 2, items: [
+      { identifier: "WOR-801", title: "Brief decisions", agent: "Aiden", state: named("WOR-801", ASK), ask: { question: "Ship the weekly digest now, or wait for the corrected data?", waitSince: ago(120), questions: [{ question: "Ship the weekly digest now, or wait for the corrected data?", options: ["Wait for the corrected data", "Ship it now"] }] } },
+      { identifier: "WOR-815", title: "Weekly metrics digest looks off", agent: "Aiden", state: named("WOR-815", ASK), ask: { question: "A few things before I rebuild the digest.", waitSince: ago(75), questions: [{ question: "Which week should I compare against?", options: ["Last week", "Same week last month"] }, { question: "Which channels should get it?", options: ["#metrics", "#leads", "#exec"], multi: true }] } },
+      { identifier: "WOR-821", title: "Design the invoice screens", agent: "UI Designer", state: named("WOR-821", ASK), ask: { question: "What should the empty invoice list say?", waitSince: ago(30), questions: [{ question: "What should the empty invoice list say?", options: [] }] } },
       { identifier: "WOR-790", title: "Fix the sbom job", agent: "Engineer", state: named("WOR-790", { ...WORKING_CARD, refLabel: "approve the push to main" }) },
       { identifier: "WOR-795", title: "A task handed back to you", agent: "Engineer", state: named("WOR-795", STATES.handback) },
       { identifier: "WOR-802", title: "Slack ingest", agent: "Open Loops", state: named("WOR-802", FAILED) },
@@ -473,10 +489,11 @@ createServer((req, res) => {
     const t = setInterval(() => res.write("event: ping\ndata: {}\n\n"), 20_000);
     return req.on("close", () => clearInterval(t));
   }
+  if (url.pathname === "/api/pages/notes/frame") return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(readFileSync(new URL("./example-view.html", import.meta.url)));
   let text = "";
   req.on("data", (c) => (text += c));
   req.on("end", () => {
-    const [status, body] = viewRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? route(req.method!, url);
+    const [status, body] = pageRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? viewRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? route(req.method!, url);
     setTimeout(() => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)), mock.slow);
   });
 }).listen(port, "127.0.0.1", () => console.log(`board mock API on :${port}`));

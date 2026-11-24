@@ -41,9 +41,8 @@ export function toTelegramHtml(text: string, taskUrl?: string, boardUrl?: string
 
 export type InlineKeyboard = { inline_keyboard: { text: string; callback_data: string }[][] };
 
-/** Stores each label under a random id; one row per button. undefined when there are no buttons. */
-export function buttonsMarkup(store: Store, labels: string[]): InlineKeyboard | undefined {
-  if (!labels.length) return undefined;
+/** The labels as sent (NFC), or a throw for one Telegram can't show safely. */
+function checked(labels: string[]): string[] {
   if (labels.length > 4) throw new Error("at most 4 buttons");
   labels = labels.map((l) => l.normalize("NFC"));
   for (const l of labels) {
@@ -53,10 +52,30 @@ export function buttonsMarkup(store: Store, labels: string[]): InlineKeyboard | 
     // zero-width, filler or other invisible or look-alike characters.
     if (!/^[\x20-\x7E]+$/.test(l)) throw new Error("a button label is printable ASCII only (no invisible or look-alike characters)");
   }
+  return labels;
+}
+
+/** Stores each label under a random id; one row per button. undefined when there are no buttons. */
+export function buttonsMarkup(store: Store, labels: string[]): InlineKeyboard | undefined {
+  if (!labels.length) return undefined;
   return {
-    inline_keyboard: labels.map((label) => {
+    inline_keyboard: checked(labels).map((label) => {
       const id = `b${randomBytes(8).toString("hex")}`;
       store.setKv(`btn:${id}`, label);
+      return [{ text: label, callback_data: id }];
+    }),
+  };
+}
+
+/** One-tap answers to a task's open question: each press is bound to `task` and the wait that began at `since`. undefined when a label can't be a button. */
+export function answerMarkup(store: Store, task: string, since: string, labels: string[]): InlineKeyboard | undefined {
+  let ok: string[];
+  try { ok = checked(labels); } catch { return undefined; }
+  if (!ok.length) return undefined;
+  return {
+    inline_keyboard: ok.map((label) => {
+      const id = `a${randomBytes(8).toString("hex")}`;
+      store.setKv(`ans:${id}`, JSON.stringify({ label, task, since }));
       return [{ text: label, callback_data: id }];
     }),
   };
@@ -82,4 +101,25 @@ export function fromTelegramCallback(update: unknown, ownerChatId: string, store
   if (!label) return null;
   store.setKv(key, "");
   return { message: { source: "telegram", text: label, ...(msg.message_id ? { replyTo: String(msg.message_id) } : {}) }, chatId, messageId: Number(msg.message_id), label };
+}
+
+export interface AnswerPress extends ButtonPress {
+  task: string;
+  since: string;
+  /** The stored record, to put back when the press has to be retried. */
+  stored: string;
+  data: string;
+}
+
+/** A press on an answer button from the owner chat; one-shot like `fromTelegramCallback`. */
+export function fromAnswerCallback(update: unknown, ownerChatId: string, store: Store): AnswerPress | null {
+  const cb = rec(rec(update).callback_query);
+  const msg = rec(cb.message);
+  const chatId = String(rec(msg.chat).id ?? "");
+  if (!ownerChatId || chatId !== ownerChatId || typeof cb.data !== "string") return null;
+  const stored = store.getKv(`ans:${cb.data}`);
+  if (!stored) return null;
+  const { label, task, since } = JSON.parse(stored) as { label: string; task: string; since: string };
+  store.setKv(`ans:${cb.data}`, "");
+  return { message: { source: "telegram", text: label, ...(msg.message_id ? { replyTo: String(msg.message_id) } : {}) }, chatId, messageId: Number(msg.message_id), label, task, since, stored, data: cb.data };
 }

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { peek } from "./cache";
 import { prefetchView, QUERIES } from "./queries";
 import { CATEGORIES } from "./Settings";
-import type { Assignee, ChatRow, ModuleRow, SpendNow } from "./types";
+import type { Assignee, ChatRow, ModuleRow, PageRow, SpendNow } from "./types";
 import { Icon, type IconName } from "./ui/icons";
 import { Ticker } from "./ui/Ticker";
 
@@ -25,15 +25,21 @@ const ITEMS: Item[] = [
   { view: "flow", name: "Flow", icon: "flow" },
 ];
 const item = (v: NavView) => ITEMS.find((i) => i.view === v)!;
+/** The section that lists the modules' pages (board.pages) after its own. */
+const FLEET = "Fleet";
 /** The top bar's sections; one of several pages opens on its first and lists the rest on its left (SubNav). */
 const SECTIONS: { name: string; views: NavView[] }[] = [
   { name: "Chat", views: ["chat"] },
   { name: "Approvals", views: ["approvals"] },
   { name: "Tasks", views: ["board"] },
-  { name: "Fleet", views: ["agents", "apps", "modules", "reviews"] },
+  { name: FLEET, views: ["agents", "apps", "modules", "reviews"] },
   { name: "Insight", views: ["costs", "flow"] },
 ];
 export const hrefOf = (v: NavView) => `#/${v}`;
+/** A module's page (board.pages): Fleet lists them after its own, from the modules' declarations. */
+export const pageHref = (p: PageRow) => `#/fleet/${p.id}`;
+/** A module page's view is "fleet": its section is Fleet. */
+const sectionOf = (view: string) => SECTIONS.find((t) => t.views.includes(view as NavView) || (view === "fleet" && t.name === FLEET));
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 export const paletteKey = isMac ? "⌘K" : "Ctrl K";
@@ -62,7 +68,7 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
       </a>
       <nav className="tn-items" aria-label="Sections">
         {SECTIONS.map((sec) => {
-          const on = sec.views.includes(view as NavView);
+          const on = sectionOf(view) === sec;
           const first = sec.views[0]!;
           return (
             <a
@@ -76,7 +82,7 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
             >
               {sec.name}
               {first === "approvals" && approvals > 0 && <span className="tn-badge" key={approvals}>{approvals}</span>}
-              {sec.name === "Fleet" && agentsActive > 0 && (
+              {sec.name === FLEET && agentsActive > 0 && (
                 <span className="tn-live" title={`${agentsActive} working now`}>
                   <i />
                   {agentsActive}
@@ -128,9 +134,9 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
 }
 
 /** The pages of the open section, on its left (Fleet, Insight); nothing for a section of one page. */
-export function SubNav({ view, onNav, panels }: { view: string; onNav: (v: NavView) => void; panels: Panel[] }) {
-  const sec = SECTIONS.find((t) => t.views.length > 1 && t.views.includes(view as NavView));
-  if (!sec) return null;
+export function SubNav({ view, onNav, panels, pages, page, go }: { view: string; onNav: (v: NavView) => void; panels: Panel[]; pages: PageRow[]; page?: string; go: (hash: string) => void }) {
+  const sec = sectionOf(view);
+  if (!sec || sec.views.length < 2) return null;
   return (
     <nav className="subnav" aria-label={sec.name}>
       <div className="sn-name">{sec.name}</div>
@@ -152,13 +158,23 @@ export function SubNav({ view, onNav, panels }: { view: string; onNav: (v: NavVi
           </div>
         );
       })}
+      {sec.name === FLEET &&
+        pages.map((p) => {
+          const on = view === "fleet" && page === p.id;
+          return (
+            <a key={p.id} className={`sn-item${on ? " on" : ""}`} href={pageHref(p)} title={p.title} aria-current={on ? "page" : undefined} onClick={(e) => (e.preventDefault(), go(pageHref(p)))}>
+              <Icon name={p.icon} />
+              <span className="sn-label">{p.title}</span>
+            </a>
+          );
+        })}
     </nav>
   );
 }
 
 /** The phone's sections: four at hand, the rest behind More. */
 const PHONE: NavView[] = ["chat", "approvals", "agents", "board"];
-export function BottomBar({ view, approvals, agentsActive, onNav, panels, notify }: Common & { panels: Panel[]; notify?: () => void }) {
+export function BottomBar({ view, approvals, agentsActive, onNav, panels, notify, pages, go }: Common & { panels: Panel[]; notify?: () => void; pages: PageRow[]; go: (hash: string) => void }) {
   const [more, setMore] = useState(false);
   const rest = ITEMS.filter((i) => !PHONE.includes(i.view));
   const inMore = !PHONE.includes(view as NavView);
@@ -192,6 +208,12 @@ export function BottomBar({ view, approvals, agentsActive, onNav, panels, notify
               <a key={it.view} className={`sn-item${view === it.view ? " on" : ""}`} href={hrefOf(it.view)} onClick={(e) => (e.preventDefault(), setMore(false), onNav(it.view))}>
                 <Icon name={it.icon} />
                 <span className="sn-label">{it.name}</span>
+              </a>
+            ))}
+            {pages.map((p) => (
+              <a key={p.id} className="sn-item" href={pageHref(p)} onClick={(e) => (e.preventDefault(), setMore(false), go(pageHref(p)))}>
+                <Icon name={p.icon} />
+                <span className="sn-label">{p.title}</span>
               </a>
             ))}
             {notify && (
@@ -249,11 +271,13 @@ export function Palette({ open, onClose, go, crew, apps, onNewTask, tasks = [] }
     const nav = (hash: string) => () => (onClose(), go(hash));
     const chats = peek<{ chats: ChatRow[] }>(QUERIES.chats.key)?.data.chats ?? [];
     const modules = peek<{ modules: ModuleRow[] }>(QUERIES.modules.key)?.data.modules ?? [];
+    const pages = peek<{ pages: PageRow[] }>(QUERIES.pages.key)?.data.pages ?? [];
     return [
       { id: "new-chat", kind: "Action", label: "New chat with Aiden", icon: "chat", run: nav("#/c/") },
       { id: "new-task", kind: "Action", label: "New task", icon: "plus", run: () => (onClose(), onNewTask()) },
       ...tasks.map((t) => ({ ...t, run: () => (onClose(), t.run()) })),
       ...ITEMS.map((i) => ({ id: `v-${i.view}`, kind: "Go to", label: i.name, icon: i.icon, run: nav(hrefOf(i.view)) })),
+      ...pages.map((p) => ({ id: `pg-${p.id}`, kind: "Go to", label: p.title, icon: p.icon, run: nav(pageHref(p)) })),
       { id: "v-settings", kind: "Go to", label: "Settings", icon: "settings", run: nav("#/settings") },
       ...CATEGORIES.map((c) => ({ id: `s-${c.key}`, kind: "Settings", label: c.name, icon: "settings" as const, run: nav(`#/settings/${c.key}`) })),
       ...crew.filter((a) => a.kind !== "me").map((a) => ({ id: `a-${a.key}`, kind: "Agent", label: a.name, icon: "agents" as const, run: nav(`#/agents/${a.key}`) })),

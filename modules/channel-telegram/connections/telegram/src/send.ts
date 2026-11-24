@@ -2,7 +2,7 @@
 // Telegram, rendered here (escaped HTML with a small formatting subset, telegram.ts) with its one-tap buttons; a message about
 // a chat is headed with its agent and remembered, so the owner's Telegram reply continues that chat.
 import type { Store } from "./store.js";
-import { buttonsMarkup, escape, toTelegramHtml } from "./telegram.js";
+import { answerMarkup, buttonsMarkup, escape, toTelegramHtml } from "./telegram.js";
 
 export interface TgConfig {
   telegramToken?: string;
@@ -11,7 +11,7 @@ export interface TgConfig {
   boardUrl?: string; // the board's https address (BOARD_LAN_URL): in-app `#/route` links resolve against it
 }
 /** What owner-channel sends (its Message): the text as the agent wrote it, and the chat it belongs to. */
-export type Message = { kind: string; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: boolean };
+export type Message = { kind: string; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: boolean; answer?: { options: string[]; since: string } };
 
 // A reply sent soon after another, with no new message from the owner in between (two wakes answering the same question,
 // "working on it" then "done"), replaces the earlier Telegram message instead of stacking a second one. It goes as a
@@ -69,9 +69,10 @@ export async function transportSend(cfg: TgConfig, store: Store, m: Message, now
   const chat = m.head ? { identifier: m.head.task, issueId: m.head.issue, agentName: m.head.agent } : undefined;
   let markup: unknown;
   try {
-    markup = buttonsMarkup(store, m.actions ?? []);
+    // A one-tap answer is bound to its task's wait; actions win. A label Telegram can't show safely: the text still goes, without buttons.
+    markup = m.actions?.length || !m.answer || !m.head ? buttonsMarkup(store, m.actions ?? []) : answerMarkup(store, m.head.issue, m.answer.since, m.answer.options);
   } catch {
-    markup = undefined; // a label Telegram can't show safely: the text still goes, without buttons
+    markup = undefined;
   }
   return { sent: await postTelegram(cfg, text, markup, store, now, chat, undefined, Boolean(m.asks)) };
 }
