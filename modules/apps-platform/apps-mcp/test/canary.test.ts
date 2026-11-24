@@ -161,7 +161,9 @@ describe("app_page_canary", () => {
     // The notify's own answer is waited for, and it is the POST's first hop.
     expect(script).toContain("notify.status == null && Date.now() - tn < 10000");
     // The intake is the POST whose reference the page shows, not any POST with an id.
-    expect(script).toContain("shown.includes(String(v))");
+    // A whole token only: a body's id 42 is not shown by "142" or "4200" the page prints for something else.
+    expect(script).toContain("shows(shown, v) && !shows(beforeShown, v)");
+    expect(script).toContain('split(/[^A-Za-z0-9_.:-]+/).includes(String(v))');
     expect(script).toContain("intake.some((x) => x.status == null)");
     // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
     expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);

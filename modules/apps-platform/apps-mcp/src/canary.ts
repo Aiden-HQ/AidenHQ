@@ -189,6 +189,9 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // it, a POST that failed keeps its own failure even when its body has an id, and an id already on the page (an earlier
     // submission's ticket) is not proof that this POST saved anything.
     const beforeShown = String(beforeText);
+    // A whole token in the page's text, never a substring of one: an answer's id 42 is not shown by "142" or "4200", so a
+    // telemetry body can't borrow a number the page prints for something else.
+    const shows = (text, v) => String(text).split(/[^A-Za-z0-9_.:-]+/).includes(String(v));
     let reference = null, intakeAnswer = null;
     for (const n of intake.filter((x) => x.id).slice(-4)) {
       try {
@@ -197,7 +200,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
         const json = JSON.parse(body);
         const v = json && (json.reference ?? json.ref ?? json.id ?? json.ticket ?? json.submission_id ?? json.submissionId);
         if (typeof v !== "string" && typeof v !== "number") continue;
-        if (shown.includes(String(v)) && !beforeShown.includes(String(v))) { reference = String(v); intakeAnswer = n; break; }
+        if (shows(shown, v) && !shows(beforeShown, v)) { reference = String(v); intakeAnswer = n; break; }
       } catch {}
     }
     // No POST answered with a reference the page shows: the intake is that one only when there is exactly one non-notify POST

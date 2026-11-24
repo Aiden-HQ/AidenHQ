@@ -63,7 +63,13 @@ table inet $TABLE {
 EOF
 then
   if docker network inspect "$NET" >/dev/null 2>&1; then
-    docker network rm "$NET" >/dev/null 2>&1 || echo "couldn't remove $NET after the rule failed (a canary browser may still be attached): it is unguarded, remove it" >&2
+    # A browser already attached keeps the network from being removed, so it is detached first; and the link itself goes down
+    # whatever happens, because a removed network object is not the only way to make an unguarded bridge unusable.
+    for id in $(docker network inspect --format '{{range .Containers}}{{.Name}} {{end}}' "$NET" 2>/dev/null); do
+      docker network disconnect -f "$NET" "$id" >/dev/null 2>&1 || true
+    done
+    docker network rm "$NET" >/dev/null 2>&1 || echo "couldn't remove $NET after the rule failed" >&2
+    ip link set dev "$BRIDGE" down 2>/dev/null || true
   fi
   echo "couldn't install the $TABLE rule: the network is gone, so nothing can launch a browser on it" >&2
   exit 1

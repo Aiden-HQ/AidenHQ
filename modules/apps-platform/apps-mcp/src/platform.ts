@@ -525,6 +525,12 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     if (network === CANARY_NETWORK) {
       const got = (await exec(["network", "inspect", "--format", '{{index .Options "com.docker.network.bridge.name"}}|{{index .Options "com.docker.network.bridge.enable_icc"}}|{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}{{end}}', network], { timeout: 15_000 }).catch(() => "")).trim();
       if (got !== "ahq-canary|false|10.231.6.0/24|10.231.6.1") throw new Error(`the canary network isn't the guarded one (want ahq-canary|false|10.231.6.0/24|10.231.6.1, found ${got || "nothing"}): run ops/vm/canary-net.sh on the host, then retry`);
+      // A network of the right shape is not proof its bridge is usable: ops/vm/canary-net.sh brings the link down when the
+      // isolation rule could not load (a reboot that restored the network, say), and Docker still lists the network. Starting
+      // a container on it is the check that fails in that case, so the launch refuses with the reason instead of running a
+      // signed-in browser on an unguarded bridge.
+      const reachable = await exec(["run", "--rm", "--network", network, cfg.healthImage, "true"], { timeout: 60_000 }).then(() => true, () => false);
+      if (!reachable) throw new Error(`the canary bridge ${network} is not usable: its isolation rule did not load; run ops/vm/canary-net.sh on the host, then retry`);
     }
     return renderWith(network, script, input, timeout, before);
   };

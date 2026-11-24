@@ -20,23 +20,28 @@ const standIn = (dir: string) => {
   case "$1 $2" in
     "network inspect")
       [ "\${EXISTS:-0}" = 1 ] || return 1
-      case " $* " in *" --format "*) printf '%s\\n' "\${INSPECT:-}" ;; esac
+      case " $* " in
+        *Containers*) echo "\${CONTAINERS:-}" ;;
+        *" --format "*) printf '%s\\n' "\${INSPECT:-}" ;;
+      esac
       return 0 ;;
     "network create") return 0 ;;
     "network rm") return "\${RM_FAIL:-0}" ;;
+    "network disconnect") return 0 ;;
   esac
   return 0
 }
 nft() { printf 'nft %s\\n' "$*" >> "$LOG"; return "\${NFT_FAIL:-0}"; }
+ip() { printf 'ip %s\\n' "$*" >> "$LOG"; return 0; }
 `);
   return file;
 };
 
-const run = ({ exists = false, inspect = WANT, remove = false, rmFail = false, nftFail = false } = {}) => {
+const run = ({ exists = false, inspect = WANT, remove = false, rmFail = false, nftFail = false, containers = "" } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), "canary-net-"));
   const log = join(dir, "calls.log");
   writeFileSync(log, "");
-  const env = { ...process.env, BASH_ENV: standIn(dir), LOG: log, EXISTS: exists ? "1" : "0", INSPECT: inspect, RM_FAIL: rmFail ? "1" : "0", NFT_FAIL: nftFail ? "1" : "0" };
+  const env = { ...process.env, BASH_ENV: standIn(dir), LOG: log, EXISTS: exists ? "1" : "0", INSPECT: inspect, RM_FAIL: rmFail ? "1" : "0", NFT_FAIL: nftFail ? "1" : "0", CONTAINERS: containers };
   const r = spawnSync("bash", [script, ...(remove ? ["--remove"] : [])], { encoding: "utf8", env });
   return { calls: readFileSync(log, "utf8").split("\n").filter(Boolean), out: r.stdout, err: r.stderr, status: r.status };
 };
@@ -84,9 +89,13 @@ test("canary-net: --remove takes the network away first, and a failed removal ke
 // A reboot restores the network before this unit re-runs; if the rule cannot load then, the restored bridge is unguarded and a
 // signed-in browser launched on it could reach anywhere. The run must take the network away, never leave it to be adopted.
 test("canary-net: a failed rule takes the restored network away, so nothing launches unguarded", () => {
-  const r = run({ exists: true, nftFail: true });
+  const r = run({ exists: true, nftFail: true, containers: "canary-1 " });
   assert.equal(r.status, 1, r.err);
   assert.match(r.err, /couldn't install the aidenhq_canary rule/);
+  // A browser still attached would keep the network from being removed: it is detached first, the network goes, and the
+  // bridge link is brought down whatever is left, so nothing can launch a signed-in browser on it.
+  assert.ok(r.calls.some((c) => c === "docker network disconnect -f aidenhq-canary canary-1"), r.calls.join("\n"));
   assert.ok(r.calls.some((c) => c.startsWith("docker network rm aidenhq-canary")), r.calls.join("\n"));
+  assert.ok(r.calls.some((c) => c === "ip link set dev ahq-canary down"), r.calls.join("\n"));
   assert.equal(r.calls.filter((c) => c.startsWith("docker network create")).length, 0);
 });
