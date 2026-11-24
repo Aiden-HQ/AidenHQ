@@ -145,7 +145,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       "const explicit = els.filter((b) => (b.tagName === 'INPUT' ? /^(submit|image)$/i.test(b.type) : (b.type || 'submit') === 'submit'));" +
       "const word = (b) => (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '';" +
       "const sendish = /send|submit|share|post|feedback/i;" +
-      "const b = explicit.find((x) => sendish.test(word(x))) || explicit[0] || (els.length === 1 && sendish.test(word(els[0])) ? els[0] : null);" +
+      // Never guess between several explicit controls: two submit buttons with different actions (Preview, Save) are a form
+      // whose send nobody can name, so the canary stops instead of clicking the first one and submitting the wrong thing.
+      "const named = explicit.filter((x) => sendish.test(word(x)));" +
+      "const b = named.length === 1 ? named[0] : named.length === 0 && explicit.length === 1 ? explicit[0] : els.length === 1 && sendish.test(word(els[0])) ? els[0] : null;" +
       "if (!b) return '';" +
       "b.setAttribute('data-aidenhq-canary-submit', '1');" +
       "return b.tagName + ':' + word(b).trim().slice(0, 60);" +
@@ -237,12 +240,13 @@ export async function pageCanary(app: App, req: CanaryRequest, d: CanaryDeps): P
       // A failed run still carries whatever the browser proved before it stopped (never the code or the cookie).
       return { ...base, ...(r.finalUrl ? { finalUrl: scrub(r.finalUrl) } : {}), ...(r.pageTitle ? { pageTitle: r.pageTitle } : {}), session: session ?? base.session, error: scrub(r.error) };
     }
-    // `ok` is a submission the app took: the page fired its notify (the gate's 204) and the app's own intake answered 2xx. A page
-    // that made no intake call, or whose call is still unanswered, is never a success: `status` stays 0 and `ok` false.
+    // `ok` is a submission the app took and proved: the page fired its notify (the gate's 204), the app's own intake answered
+    // 2xx, and the page itself displayed the reference that answer carried. A successful-looking POST with no reference (an
+    // analytics call, say) is not evidence the feedback was saved: status and notify are still reported, `ok` is false.
     const accepted = typeof r.status === "number" && r.status >= 200 && r.status < 300;
     return {
       ...base,
-      ok: r.notify === "fired" && accepted,
+      ok: r.notify === "fired" && accepted && Boolean(r.reference),
       status: r.status ?? 200,
       finalUrl: scrub(r.finalUrl ?? ""),
       pageTitle: r.pageTitle ?? "",

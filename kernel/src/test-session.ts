@@ -207,6 +207,9 @@ export function createTestSessions(d: TestSessionsDeps) {
         await end(r.id, "task-closed");
         return null;
       }
+      // The task read awaited: a revoke or expiry that landed meanwhile ends it here, so no request is served on a session
+      // that is already gone.
+      if (!live(byId(r.id))) return null;
       return { email: r.email, app: r.app, expires: iso(r.expires), role: "member" };
     },
 

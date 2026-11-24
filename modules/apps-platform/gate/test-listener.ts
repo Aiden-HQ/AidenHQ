@@ -65,16 +65,18 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     return { status: r.status, body: parsed };
   }
 
-  /** The session behind this request's cookie, or a refusal: no cookie is 401 and no page. */
-  async function session(req: IncomingMessage, c: GateConfig, app: string, host: string): Promise<{ email: VerifiedEmail; expires: string } | "other-app" | undefined> {
+  /** The session behind this request's cookie, a refusal (401/409), or "down" when the kernel could not answer. */
+  async function session(req: IncomingMessage, c: GateConfig, app: string, host: string): Promise<{ email: VerifiedEmail; expires: string } | "other-app" | "down" | undefined> {
     const found = cookiesOf(req).filter((x) => cookieName(x) === CANARY_COOKIE);
     if (found.length !== 1) return undefined;
     const cookie = found[0]!.slice(CANARY_COOKIE.length + 1).trim();
     if (!cookie) return undefined;
-    // A kernel that can't answer is a refusal too: fail closed, never serve a page on an unchecked cookie.
+    // A kernel that can't answer is not "signed out": fail closed, but say so with 503 so a retryable blip during a page's
+    // own subresources never tells the browser to sign in again (which would throw away a live session mid-page).
     const r = await kernel(c, "/.auth/api/test-session/check", { cookie, host }).catch(() => ({ status: 503, body: null }));
     // A live session for another app is its own refusal (404: there is no page for it here), never a sign-in prompt.
     if (r.status === 409) return "other-app";
+    if (r.status >= 500 || r.status === 0) return "down";
     if (r.status !== 200 || typeof r.body?.email !== "string" || r.body?.app !== app) return undefined;
     return { email: String(r.body.email).trim().toLowerCase() as VerifiedEmail, expires: String(r.body.expires ?? "") };
   }
@@ -126,6 +128,7 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
 
     const who = await session(req, c, app, publicHost);
     if (who === "other-app") return plain(res, 404, "not found");
+    if (who === "down") return plain(res, 503, "unavailable: the session may still be valid; try again");
     if (!who) return plain(res, 401, "sign in first");
 
     // The gate's own path on an app host, as the gate serves it: the page says people sent something into the app's intake.

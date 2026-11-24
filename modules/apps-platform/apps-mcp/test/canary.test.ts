@@ -49,6 +49,14 @@ describe("app_page_canary", () => {
     expect(content.content[1]).toEqual({ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" });
   });
 
+  it("a page that fired notify but never showed a reference is not a successful submission", async () => {
+    // A same-origin analytics POST answering 200 is not the intake: without a reference the page itself displays, nothing
+    // proves the feedback was saved, so the canary reports it unverified rather than ok.
+    const { d } = deps({ run: { status: 200, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "fired", notifyStatus: 204, reference: null } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(r).toMatchObject({ ok: false, status: 200, notify: "fired", notifyStatus: 204, reference: null, session: { revoked: true } });
+  });
+
   it("an intake the app refused is not a successful submission, even when the page still fires notify", async () => {
     const { d } = deps({ run: { status: 500, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "fired", notifyStatus: 204, reference: null } });
     const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
@@ -120,6 +128,9 @@ describe("app_page_canary", () => {
     expect(script).toContain("input[type=submit], input[type=image]");
     expect(script).toContain("(b.type || 'submit') === 'submit'");
     expect(script).toContain("no submit control in the feedback form");
+    // Several explicit submit controls with no single send-like one: stop, never click the first (a Preview before a Save).
+    expect(script).toContain("const named = explicit.filter((x) => sendish.test(word(x)));");
+    expect(script).toContain("named.length === 1 ? named[0]");
     // The landing page's own feedback link is followed even when it has a search box: a feedback field is what ends the walk.
     expect(script).toContain("for (let i = 0; i < 3 && !box; i++)");
     expect(script).toContain("box = feedbackField(refs)");

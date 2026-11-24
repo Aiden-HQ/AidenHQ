@@ -252,11 +252,12 @@ test("a revoked or expired session is 401 and no page; the app's own cookie is n
     assert.equal((await hit(lPort, `roadmap.${CANARY_BASE}`, "/", { cookie: `${CANARY_COOKIE}=${COOKIE}` })).status, 401);
     assert.equal((await hit(lPort, `roadmap.${CANARY_BASE}`, "/", { cookie: `${CANARY_COOKIE}=nope.signed` })).status, 401);
   } finally { kernel.state.live = true; }
-  // A kernel that can't answer at all: also 401, never a page on an unchecked cookie.
+  // A kernel that can't answer at all: never a page on an unchecked cookie, and a retryable 503 rather than a 401 that would
+  // tell a live browser to sign in again mid-page.
   const deny = createTestListener({ config: () => ({ ...cfg, auth_url: "http://127.0.0.1:1" }), log: () => {} });
   const port = await listen(deny);
   try {
-    assert.equal((await hit(port, `roadmap.${CANARY_BASE}`, "/", { cookie: `${CANARY_COOKIE}=${COOKIE}` })).status, 401);
+    assert.equal((await hit(port, `roadmap.${CANARY_BASE}`, "/", { cookie: `${CANARY_COOKIE}=${COOKIE}` })).status, 503);
   } finally { deny.close(); deny.closeAllConnections?.(); }
   // An app trying to plant the listener's own cookie has it stripped; its own cookies (a __Host- CSRF token included) pass,
   // as they do at the public gate, so a form's own check works on the canary.

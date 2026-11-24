@@ -219,6 +219,22 @@ test("a session signs in as the account it was minted for: a changed setting ema
   assert.ok(st.s.auditRows().some((r) => r.event === "test_session_revoked" && r.reason === "setting-removed"));
 });
 
+test("a revoke or expiry that lands while the task lookup is awaited ends the session before the request is served", async () => {
+  let revokeDuringRead: (() => Promise<unknown>) | undefined;
+  const st = store({
+    testUser: () => ({ email: EMAIL, apps: [APP] }),
+    // The task read is the check's one awaited call: a revoke landing then must be seen, not outrun by the answer.
+    task: async (id) => {
+      await revokeDuringRead?.();
+      return { id, identifier: "WOR-11495", status: "in_progress", assigneeAgentId: AGENT };
+    },
+  });
+  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
+  revokeDuringRead = () => st.s.revoke({ sessionId: m.id, reason: "canary finished" });
+  assert.equal(await st.s.check({ cookie, host: HOST }), null);
+});
+
 test("a removed setting ends live sessions, and nothing logs a cookie, token or handoff code", async () => {
   let setting: { email: string; apps: string[] } | undefined = { email: EMAIL, apps: [APP] };
   const logs: any[] = [];

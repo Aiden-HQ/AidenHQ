@@ -140,7 +140,9 @@ export async function webView(url: string, caller: { key: string }, req: { width
 
 /** `docker run` argv for one render: no mounts, env or secrets beyond HOME; non-root, no capabilities, read-only, limited. */
 export function renderArgs(network: string, image: string, script = VIEW_SCRIPT): string[] {
-  if (!/^container:[0-9a-f]{64}$/.test(network) && network !== WEB_NETWORK && network !== CANARY_NETWORK) throw new Error(`bad render network ${network}`);
+  // The canary network's own disposable test bridge (test/render.e2e.test.ts) is the one other name allowed: production
+  // renders reach exactly WEB_NETWORK, CANARY_NETWORK or a container's namespace.
+  if (!/^container:[0-9a-f]{64}$/.test(network) && network !== WEB_NETWORK && network !== CANARY_NETWORK && !/^aidenhq-canary-test-\d+$/.test(network)) throw new Error(`bad render network ${network}`);
   // The canary browser has no DNS that can leave the host: its own loopback resolver answers nothing, so an external name fails
   // at the lookup instead of being forwarded by Docker's embedded resolver (a lookup is data leaving the box too). The app's
   // name is mapped to the listener by Chrome's host-resolver-rules, so nothing the canary needs is looked up.

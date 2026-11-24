@@ -92,7 +92,11 @@ describe.runIf(process.env.AIDENHQ_BROWSER_E2E)("the browser image renders (end 
   // /api/intake (returning a reference) and then /.aidenhq/notify, a real handoff that sets the listener's host-only cookie,
   // and the real renderer on the canary network. The page's own JS is what runs; nothing calls the app on its behalf.
   it("app_page_canary: the page's own JS posts /.aidenhq/notify, and the canary reads notify: fired with the reference", () => {
-    try { docker(["network", "inspect", CANARY_NETWORK]); } catch { docker(["network", "create", CANARY_NETWORK]); }
+    // A bridge of the test's own, never the host's aidenhq-canary: that one has inter-container traffic off, so the browser
+    // could not reach the fixture at all, and creating it here (or reusing it) would leave a production-named, unguarded
+    // network on a developer's host for ops/vm/canary-net.sh to trip over.
+    const testNet = `aidenhq-canary-test-${process.pid}`;
+    docker(["network", "create", testNet]);
     const fixture = String.raw`
 const http = require("node:http");
 const seen = [];
@@ -126,11 +130,11 @@ app.listen(8080, "0.0.0.0");
     try {
       // The "listener" is the fixture itself, on the canary network's own bridge address: the browser reaches it at
       // <app>.canary.localhost through the resolver rule, and at nothing else.
-      docker(["network", "connect", CANARY_NETWORK, page]);
-      const ip = docker(["inspect", "-f", "{{(index .NetworkSettings.Networks \"aidenhq-canary\").IPAddress}}", page]).trim();
+      docker(["network", "connect", testNet, page]);
+      const ip = docker(["inspect", "-f", `{{(index .NetworkSettings.Networks "${testNet}").IPAddress}}`, page]).trim();
       execFileSync("sleep", ["1"]);
       const input = { listener: "http://roadmap-keeper.canary.localhost:8080", listenerAddress: ip, code: "c".repeat(43), state: "0".repeat(32), path: "/intake", text: "TEST-RT-2026-11-24-9 canary", width: 1280 };
-      const r = JSON.parse(docker(renderArgs(CANARY_NETWORK, IMAGE, CANARY_SCRIPT), JSON.stringify(input))) as { error?: string; notify?: string; notifyStatus?: number | null; reference?: string | null; finalUrl?: string; pageTitle?: string; png?: string };
+      const r = JSON.parse(docker(renderArgs(testNet, IMAGE, CANARY_SCRIPT), JSON.stringify(input))) as { error?: string; notify?: string; notifyStatus?: number | null; reference?: string | null; finalUrl?: string; pageTitle?: string; png?: string };
       console.log(JSON.stringify({ ...r, png: r.png ? `${r.png.length} b64 chars` : undefined }));
       expect(r.error).toBeUndefined();
       expect(r).toMatchObject({ notify: "fired", notifyStatus: 204, reference: "TEST-RT-2026-11-24-9", pageTitle: "Roadmap Keeper" });
@@ -142,6 +146,7 @@ app.listen(8080, "0.0.0.0");
       expect(seen.find((x) => x.method === "POST" && x.url === "/api/intake")).toBeTruthy();
     } finally {
       docker(["rm", "-f", page]);
+      docker(["network", "rm", testNet]);
     }
   });
 });
