@@ -195,23 +195,26 @@ export function openRecords(file: string, now = () => new Date()) {
   const select = (columns: string, states: State[], limit: number | null, { reviewed = false, task, kinds, after }: Opts) => {
     // A negative limit is no limit (as SQLite reads it).
     if (limit !== null && limit < 0) limit = null;
-    // A task's records come from the task index in one query. Otherwise each state is one search of (state, created_at) taking
-    // its newest `limit` keys, and the keys merge (a record seen under two states, because it moved between the searches, once):
-    // only the winners' columns are read, so a page of several states never loads or sorts them whole.
-    const split = task ? [states] : states.map((s) => [s]);
     const keyset = after ? " AND (created_at, rowid) < (SELECT created_at, rowid FROM records WHERE id = ?)" : "";
-    const seen = new Set<number>();
-    const keys = split.flatMap((part) => db.prepare(`SELECT rowid AS rid, created_at FROM records WHERE state IN (${part.map(() => "?").join(",")})${alive()}${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""}${keyset} ORDER BY created_at DESC, rowid DESC${limit === null ? "" : " LIMIT ?"}`)
-      .all(...part, cutoff(), ...(task ? [task, task] : []), ...(kinds ?? []), ...(after ? [after] : []), ...(limit === null ? [] : [limit])) as { created_at: string; rid: number }[])
-      .filter((k) => !seen.has(k.rid) && seen.add(k.rid));
-    if (split.length > 1) keys.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : b.rid - a.rid));
-    const win = limit === null ? keys : keys.slice(0, limit);
-    const byRid = new Map<number, unknown>();
-    for (let n = 0; n < win.length; n += 500) {
-      const part = win.slice(n, n + 500);
-      for (const r of db.prepare(`SELECT ${columns}, rowid AS rid FROM records WHERE rowid IN (${part.map(() => "?").join(",")})`).all(...part.map((k) => k.rid)) as { rid: number }[]) byRid.set(r.rid, r);
+    const query = (cols: string, part: State[], cap: number | null) => db.prepare(`SELECT ${cols} FROM records WHERE state IN (${part.map(() => "?").join(",")})${alive()}${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""}${keyset} ORDER BY created_at DESC, rowid DESC${cap === null ? "" : " LIMIT ?"}`)
+      .all(...part, cutoff(), ...(task ? [task, task] : []), ...(kinds ?? []), ...(after ? [after] : []), ...(cap === null ? [] : [cap]));
+    // One query when nothing is discarded: one state, a task's (its own index), or every match.
+    if (states.length === 1 || task || limit === null) return rows(query(columns, states, limit));
+    // A capped page of several states: each state's newest `limit` keys from its (state, created_at) index, merged, and only the
+    // winners' columns read, so the page never loads or sorts them whole. One snapshot for both steps.
+    db.exec("SAVEPOINT records_page");
+    try {
+      const keys = states.flatMap((s) => query("rowid AS rid, created_at", [s], limit) as { rid: number; created_at: string }[])
+        .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : b.rid - a.rid)).slice(0, limit);
+      const byRid = new Map<number, { rid?: number }>();
+      for (let n = 0; n < keys.length; n += 500) {
+        const part = keys.slice(n, n + 500);
+        for (const r of db.prepare(`SELECT ${columns}, rowid AS rid FROM records WHERE rowid IN (${part.map(() => "?").join(",")})`).all(...part.map((k) => k.rid)) as { rid: number }[]) byRid.set(r.rid, r);
+      }
+      return rows(keys.flatMap((k) => { const r = byRid.get(k.rid); if (!r) return []; delete r.rid; return [r]; }));
+    } finally {
+      db.exec("RELEASE records_page");
     }
-    return rows(win.flatMap((k) => { const r = byRid.get(k.rid) as { rid?: number } | undefined; if (!r) return []; delete r.rid; return [r]; }));
   };
   const shownState = (r: Pick<Rec, "state" | "decided_at" | "created_at">) => (OPEN.includes(r.state) && (r.decided_at ?? r.created_at) <= cutoff() ? "expired" : r.state);
 
