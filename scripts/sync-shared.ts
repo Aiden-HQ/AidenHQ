@@ -63,8 +63,12 @@ export function sharedCopies(root = repo) {
     "modules/code-review/service/src",
     // The grading service checks the tasks module's assertion when it files a rubric, and the owner's router on notify; the
     // grading service, the reviewer and dispatch fence their prompts' data blocks (dataBlock).
-    ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src", "modules/ship/service/src"] : ["modules/grading/service/src", "modules/ai-reviewer/service/src", "modules/dispatch/service/src", "modules/warehouse/search/src"]),
+    ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src", "modules/ship/service/src", "modules/maintainer/service/src"] : ["modules/grading/service/src", "modules/ai-reviewer/service/src", "modules/dispatch/service/src", "modules/warehouse/search/src"]),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
+  // The module MCP endpoint (tools and a Fleet page view): ship's, and the Maintainer's.
+  "modules/ship/service/src/mcp.ts": ["modules/maintainer/service/src/mcp.ts"],
+  // The Fleet pages' shared kit (the common styles and bridge script), inlined into each module's page.html when it is served (mcp.ts pageHtml).
+  ...Object.fromEntries(["page-kit.css", "page-kit.js"].map((f) => [`services/shared/${f}`, [`modules/ship/service/src/${f}`, `modules/maintainer/service/src/${f}`]])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
   "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/slack/connections/slack-live/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/github/service/src/aidenhq-sdk/executor.ts", "modules/code-review/service/src/aidenhq-sdk/executor.ts"],
   // A change's tests (the secret scan, supply chain, lint, tests and build), run the same for a change request on this server.
@@ -87,7 +91,7 @@ export function sharedCopies(root = repo) {
   // How GitHub check results are read: the merge gate, the PR watcher and the grader.
   "kernel/sdk/src/checks.ts": ["modules/github/service/src/aidenhq-sdk/checks.ts", "modules/grading/service/src/aidenhq-sdk/checks.ts", "modules/ship/service/src/aidenhq-sdk/checks.ts"],
   // The one parser of maintainer_repos (per-repo duties): github-mcp's Maintainer tools and the code host's PR watch read.
-  "kernel/sdk/src/maintained-repos.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/maintained-repos.ts", "modules/github/service/src/aidenhq-sdk/maintained-repos.ts", "modules/ship/service/src/aidenhq-sdk/maintained-repos.ts"],
+  "kernel/sdk/src/maintained-repos.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/maintained-repos.ts", "modules/github/service/src/aidenhq-sdk/maintained-repos.ts", "modules/maintainer/service/src/aidenhq-sdk/maintained-repos.ts", "modules/ship/service/src/aidenhq-sdk/maintained-repos.ts"],
   // What closed an issue (the newest ClosedEvent): the code host's issue read for the grader and github-mcp's github_issue_read.
   "kernel/sdk/src/closed-event.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/closed-event.ts", "modules/github/service/src/aidenhq-sdk/closed-event.ts", "modules/grading/service/src/aidenhq-sdk/closed-event.ts"],
   "kernel/sdk/src/attribution.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/attribution.ts", "modules/github/service/src/aidenhq-sdk/attribution.ts", "modules/ship/service/src/aidenhq-sdk/attribution.ts"],

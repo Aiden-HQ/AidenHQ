@@ -4,6 +4,7 @@
 // the row shows its stage instead of the editor.
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "./api";
+import { runAt as at } from "./util";
 import { cronText, modelShort, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
 import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./types";
@@ -92,7 +93,7 @@ function Edit({ label, current, item, input, options, models }: { label: string;
   );
 }
 
-export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData }) {
+export function AgentDetails({ a, data, reload }: { a: AgentSettings; data: SettingsData; /** Re-reads settings, dropping any older read still in flight. */ reload?: () => void }) {
   const d = a.defaults ?? {};
   const agentField = (f: "model" | "reasoning_effort" | "heartbeat" | "max_parallel") => (c: SettingChange) => c.kind === "agent" && c.agent === a.key && c.field === f;
   const dflt = (f: "model" | "reasoning_effort" | "heartbeat", now: unknown, text: (v: unknown) => ReactNode) =>
@@ -138,30 +139,50 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
           </Field>
         )}
         {routines.map((r) => (
-          <RoutineField key={r.key} r={r} models={data.choices.models} agentModel={a.model} />
+          <RoutineField key={`${r.key}:${JSON.stringify([r.schedules, r.model])}`} r={r} models={data.choices.models} agentModel={a.model} zone={data.instance.boardTimezone} reload={reload} />
         ))}
-        {!routines.length && !a.canHeartbeat && !a.heartbeatHours && <p className="fleet-empty">No heartbeat or routines: it runs when asked.</p>}
+        {a.recurring.map((r) => (
+          <Row
+            key={r.title}
+            title={<a className="st-row-title" href={`#/t/${r.task}`}>{r.title}</a>}
+            meta={
+              <>
+                <span>
+                  {r.summary}
+                  {!r.paused && r.next && ` · next ${at(r.next, r.zone || data.instance.boardTimezone)}`}{zoneNote(r.zone || data.instance.boardTimezone)}
+                </span>
+                {r.paused && <StatusDot tone="idle">Paused</StatusDot>}
+              </>
+            }
+          />
+        ))}
+        {!routines.length && !a.recurring.length && !a.canHeartbeat && !a.heartbeatHours && <p className="fleet-empty">No heartbeat or routines: it runs when asked.</p>}
       </Group>
       <Recent a={a} />
     </div>
   );
 }
 
+const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+/** The zone, named once, when it isn't the browser's. */
+const zoneNote = (tz: string) => (tz && tz !== browserZone ? ` (${tz})` : "");
+
 /**
  * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed; pause and
  * resume are its live controls here (Paperclip's status, no settings change).
  */
-function RoutineField({ r, models, agentModel }: { r: Routine; models: string[]; agentModel: string }) {
+function RoutineField({ r, models, agentModel, zone, reload }: { r: Routine; models: string[]; agentModel: string; zone: string; reload?: () => void }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
   const [model, setModel] = useState(r.model ?? "");
   const [paused, setPaused] = useState(Boolean(r.paused));
-  useEffect(() => setPaused(Boolean(r.paused)), [r.paused]); // a refreshed status is the truth
+  const [next, setNext] = useState(r.next);
+  useEffect(() => (setPaused(Boolean(r.paused)), setNext(r.next)), [r.paused, r.next]); // a refreshed status is the truth
   const [pausing, setPausing] = useState(false);
   const [pauseError, setPauseError] = useState("");
   const togglePause = () => {
     setPausing(true);
-    api.pauseRoutine(r.id!, !paused).then((x) => (setPaused((r.paused = x.status === "paused")), setPauseError("")), (e) => setPauseError((e as Error).message)).finally(() => setPausing(false));
+    api.pauseRoutine(r.id!, !paused).then((x) => (setPaused((r.paused = x.status === "paused")), setNext(x.next), setPauseError(""), reload?.()), (e) => setPauseError((e as Error).message)).finally(() => setPausing(false));
   };
   const [review, setReview] = useState(false);
   const own = r.defaults ?? {};
@@ -172,7 +193,11 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
   if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() || null }), was.push(r.model ?? null));
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
-  const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : r.webhook ? "on an event" : "when asked";
+  const tz = r.schedules[0]?.timezone || zone; // the cadence and the next run read in the schedule's own zone
+  const w = typeof r.wakes === "object" ? r.wakes : null;
+  const wakes = w && `wakes on ${w.connection}${w.resource && w.resource !== "*" ? ` ${w.resource}` : ""} events`;
+  const matching = w?.filter && Object.entries(w.filter).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : String(v)}`).join("; ");
+  const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : wakes || (r.webhook ? "on an event" : "when asked");
   const [catalog, refreshCatalog] = useModelCatalog();
   const prefix = prefixOf(r.model ?? agentModel);
   return (
@@ -184,8 +209,10 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
           <span>
             {when}
             {r.model && ` on ${modelShort(r.model)}`}
-            {paused && " (paused)"}
+            {!paused && next && ` · next ${at(next, tz)}`}{r.schedules.length > 0 && zoneNote(tz)}
           </span>
+          {paused && <StatusDot tone="idle">Paused</StatusDot>}
+          {r.wakes === "not_applied" && <StatusDot tone="idle">Not set up yet</StatusDot>}
           {r.id && <button className="btn" type="button" disabled={pausing} onClick={togglePause}>{paused ? "Resume" : "Pause"}</button>}
           {pauseError && <span className="st-error" role="alert">{pauseError}</span>}
           {diff.length > 0 && <span className="muted"> · module default differs for {diff.join(", ")}</span>}
@@ -196,6 +223,7 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
           {filed && <ChangeProgress f={filed} after={busy ? <p className="ui-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined} />}
           {!busy && (
             <div className="st-change">
+              {matching && <p className="ui-field-help">Wakes on events matching {matching}.</p>}
               {sched.map((s, i) => (
                 <div key={i} className="ui-field">
                   <span className="ui-field-label">Schedule{sched.length > 1 ? ` ${i + 1}` : ""}</span>

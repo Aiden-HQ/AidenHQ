@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- The Maintainer's Fleet page: an MCP Apps view (text/html;profile=mcp-app) the maintainer connection serves as ui://maintainer/page.
+     Its own parts only: the shared kit (services/shared/page-kit.css and .js) is inlined where the markers sit (mcp.ts pageHtml).
+     Calls only maintainer_config and maintainer_configure; maintainer_configure only proposes (the board files it on the owner's Save).
+     docs/design/board-ui.md "Modules". -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/*kit:css*/
+  .row { grid-template-columns: minmax(150px, 1.6fr) repeat(4, minmax(84px, 1fr)) 72px; }
+  .duty { display: grid; gap: 4px; justify-items: start; }
+  .trig { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; }
+  .trig p { margin: 2px 0 0; color: var(--soft); max-width: 62ch; }
+  @media (max-width: 860px) { .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; } .row .repo { grid-column: 1 / -1; } }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head"><div><b>Repos</b> <small id="count"></small></div><small>What the Maintainer does on each. Add a repo from the Ship page.</small></div>
+  <div id="rows"></div>
+  <div class="note" id="note" role="status"></div>
+</div>
+<div class="card">
+  <div class="head"><b>Triage</b><button type="button" id="refresh">Refresh</button></div>
+  <div class="trig"><div><b>Triage unlabelled issues</b><p>Each new issue from someone outside gets a triage run within minutes of its filing, and the backlog gets the daily run. Off, only issues carrying the fix label are worked.</p></div><button class="sw" id="triage" role="switch" aria-checked="false" aria-label="Triage unlabelled issues"></button></div>
+</div>
+<script>
+/*kit:js*/
+  const DUTIES = [["issues", "Fix issues"], ["features", "Features"], ["dependabot", "Dependabot"], ["contributor_prs", "Contributor PRs"]];
+  let cfg = { repos: [], external_triage: false };
+  // The edits the owner hasn't saved yet, one proposal for the page: duty changes per repo, and the triage switch. Each edit merges into it.
+  let pending = { repos: {}, external_triage: undefined };
+  const fresh = () => ({ repos: {}, external_triage: undefined });
+  const shown = (r) => ({ ...r, ...(pending.repos[r.repo] ?? {}) });
+
+  async function propose(repo, duties) {
+    const next = { repos: { ...pending.repos }, external_triage: pending.external_triage };
+    if (repo) next.repos[repo] = { ...(next.repos[repo] ?? {}), ...duties };
+    else next.external_triage = duties.external_triage;
+    pending = next; // at once, so a second edit before the answer comes back keeps this one
+    render();
+    const edits = { ...(Object.keys(next.repos).length ? { repos: next.repos } : {}), ...(next.external_triage === undefined ? {} : { external_triage: next.external_triage }) };
+    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits })); } catch (e) { say(e.message, true); } });
+  }
+
+  function render() {
+    $("count").textContent = cfg.repos.length ? `${cfg.repos.length}` : "";
+    const rows = cfg.repos.map((raw) => {
+      const r = shown(raw);
+      const remove = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
+      remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { remove: r.repo }); pending = fresh(); proposed(x); render(); } catch (e) { say(e.message, true); } });
+      return h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
+        h("div", { className: "repo" }, r.repo, h("i", { textContent: `label ${r.label}` })),
+        ...DUTIES.map(([k, label]) => { const sw = toggle(r[k], `${label} on ${r.repo}`, () => propose(r.repo, { [k]: !r[k] })); sw.classList.toggle("unsaved", k in (pending.repos[raw.repo] ?? {})); return h("div", { className: "duty" }, h("span", { className: "lab", textContent: label }), sw); }),
+        remove);
+    });
+    const cols = h("div", { className: "row cols" }, ...["Repo", ...DUTIES.map((d) => d[1]), ""].map((t) => h("span", { textContent: t })));
+    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty", textContent: "No repo is listed. Add one from the Ship page and the Maintainer works its labelled issues; switch on the duties you want here." })]));
+    setSwitch($("triage"), pending.external_triage ?? cfg.external_triage);
+    $("triage").classList.toggle("unsaved", pending.external_triage !== undefined);
+  }
+
+  async function load() {
+    try { cfg = await tool("maintainer_config", {}); render(); } catch (e) { say(e.message, true); }
+  }
+  $("triage").addEventListener("click", () => propose(null, { external_triage: !(pending.external_triage ?? cfg.external_triage) }));
+  $("refresh").addEventListener("click", () => { pending = fresh(); say(""); load(); });
+  start("maintainer", load);
+</script>
+</body>
+</html>

@@ -92,8 +92,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const noEdits = "it needs a change on its fork's branch, and the fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\", rebase or fix it";
   const wake = async (kind: string, text: string) => {
     if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`);
-    // The kernel keeps 2,000 characters of a wake: a longer one (a very long repair plan) would reach the task cut.
-    if (text.length > 2000) return hold(`the ${kind} wake is ${text.length} characters (over 2,000): narrow the repo's \`generated\` setting`);
+    // The kernel keeps 2,000 characters of a wake.
+    text = text.slice(0, 2000);
     // The first job files the adoption's task (which starts the Engineer on it); later ones wake that same task.
     if (!a!.task) a = { ...a!, task: await fileTask(d.kernel, pr, a!.generation, text) };
     else if ((await d.kernel.call("POST", "/v1/wakes", { task: a!.task, text }))?.closed) {
@@ -150,12 +150,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
               push(),
             ].join("\n"));
           }
-          return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`);
+          // A run that didn't finish (nothing kept) is asked for once more at this head; anything else holds with its reason.
+          if (!/^ship-repair:/.test(text) || a!.repair.retried) return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`);
         }
+        const retry = a!.repair?.head === pr.head;
         const held = spend();
         if (held) return held;
-        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.repair", ...(a!.task ? { task: a!.task } : {}), args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, plan: repairPlan(s, f.discovered) } });
-        a = { ...a!, repair: { head: pr.head, record: String(r.id) }, did: [...(a!.did ?? []), `ran the repair (merge \`${pr.defaultBranch}\`, regenerate) at \`${pr.head.slice(0, 12)}\``] };
+        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.repair", ...(a!.task ? { task: a!.task } : {}), args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, plan: repairPlan(s, f.discovered), ...(retry ? { attempt: 2 } : {}) } });
+        a = { ...a!, repair: { head: pr.head, record: String(r.id), ...(retry ? { retried: true } : {}) }, did: [...(a!.did ?? []), `ran the repair (merge \`${pr.defaultBranch}\`, regenerate) at \`${pr.head.slice(0, 12)}\``] };
         return "acted";
       }
       case "fix_ci": {

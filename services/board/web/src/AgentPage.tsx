@@ -47,7 +47,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
     return <main className="page wide agp" aria-busy="true"><SkeletonLines lines={6} /></main>;
   }
   const needs = open.data?.needs ?? [];
-  const ongoing = open.data?.ongoing ?? [];
+  const ongoing = [...(open.data?.ongoing ?? [])].sort((a, b) => Number(b.state?.kind === "working") - Number(a.state?.kind === "working"));
   const working = ongoing.find((r) => r.state?.kind === "working");
   const paused = profile.state === "paused";
   const status = paused ? (
@@ -100,7 +100,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
         <div className="agp-grid">
           <div className="agp-main">
             {needs.length > 0 && <Section title="Needs you" count={needs.length}><Rows rows={needs} /></Section>}
-            {ongoing.length > 0 && <Section title="Working now" count={ongoing.length}><Rows rows={ongoing} /></Section>}
+            {ongoing.length > 0 && <Section title="Open tasks" count={ongoing.length}><Rows rows={ongoing} /></Section>}
             <Tasks agentKey={agentKey} name={profile.name} task={task} hasOpen={needs.length + ongoing.length > 0} onSignIn={onSignIn} />
           </div>
           <Week id={profile.id} />

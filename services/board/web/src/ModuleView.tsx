@@ -114,7 +114,7 @@ export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSi
             ))}
           </div>
           <div className="mv-proposal-actions">
-            <Button variant="quiet" onClick={() => setProposal(null)} disabled={saving}>Discard</Button>
+            <Button variant="quiet" onClick={() => (setProposal(null), setAttempt((a) => a + 1))} /* a discarded edit must not linger in the page: it starts over from what is saved */ disabled={saving}>Discard</Button>
             <Button variant="primary" onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
           </div>
         </div>

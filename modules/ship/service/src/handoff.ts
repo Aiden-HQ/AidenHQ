@@ -38,7 +38,7 @@ export type Kept = Adoption & {
   /** The direct merge filed for a head: its kernel record and attempt (a failed one is filed again with the next attempt). */
   merge?: { head: string; attempt: number; record: string };
   /** The repair filed for a head (github's `repair`, ship's check job), and whether its leftovers have woken the Engineer. */
-  repair?: { head: string; record: string; woke?: boolean };
+  repair?: { head: string; record: string; woke?: boolean; retried?: boolean };
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
 };
@@ -93,8 +93,8 @@ export async function intake(d: HandoffDeps, pr: PrView): Promise<Kept | undefin
   if (!s?.enabled || d.paused() || pr.state !== "open") return was;
   const { trigger, handback } = await newest(d, pr, was ? { at: was.trigger.at, event: was.trigger.event } : undefined);
   if (trigger) {
-    // A fork is adopted only by a member's trigger, under any handoff mode; a member's PR by one unless handoff is none.
-    if (s.handoff === "none" && !pr.fork) return was;
+    // `handoff: none` is the fleet's own PRs only; otherwise a member's trigger adopts any PR, a fork included.
+    if (s.handoff === "none") return was;
     return adopt(d, pr, was, { kind: trigger.kind === "comment" ? "comment" : "label", event: trigger.id, actor: trigger.actor, at: trigger.at, head: pr.head });
   }
   if (was && handback && !was.hold) {

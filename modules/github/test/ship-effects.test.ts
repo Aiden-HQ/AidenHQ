@@ -67,7 +67,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
     if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
-    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author } } };
+    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
@@ -104,7 +104,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg: "acme-agents", productRepo: "acme/aidenhq",
     reviewGate: async () => undefined, ship,
     // The App, installed on the repo: its writes are recorded like the owner's (`as` marks whose they are).
-    reviewer: async () => (app ? { login: "acme-app[bot]", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
+    reviewer: async () => (app ? { login: "acme-app[bot]", token: async () => "app-token", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -320,7 +320,7 @@ test("ship's repair: github runs ship's check job and writes what it kept as the
 
   const ok = await run("k-00000000000000c1", "github.repair", args);
   assert.equal(ok.ok, true, ok.text);
-  assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: main, base_ref: "main", plan: JSON.stringify(args.plan) } });
+  assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: main, base_ref: "main", plan: JSON.stringify(args.plan), attempt: "1" } });
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^1"), c1);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^2"), main);
   assert.equal(sh(origin, "show", "refs/heads/contrib:gen.txt"), "regenerated");
@@ -334,4 +334,59 @@ test("ship's repair: github runs ship's check job and writes what it kept as the
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), pr.head);
   pr.fork = true;
   assert.match((await run("k-00000000000000c3", "github.repair", { ...args, head: pr.head })).text, /^ship-fork/);
+});
+
+test("a fork that allows maintainer edits: the fix and the repair are pushed to the fork's branch as the base repo's App, leased on the head", async (t) => {
+  const { root, origin, ws, c1, fix, main, pr, run, repairResult } = await setup(t);
+  // The contributor's fork, holding the PR's branch.
+  const fork = join(root, "github", "someone", "widget.git");
+  mkdirSync(dirname(fork), { recursive: true });
+  sh(root, "clone", "--quiet", "--bare", origin, fork);
+  Object.assign(pr, { fork: true, canModify: true });
+  const push = { workspace: "TASK-1", only: [{ repo: REPO, branch: "ship-pr-7", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
+  // A contributor's push in between wins.
+  sh(ws, "push", "--quiet", fork, `${main}:refs/heads/other`);
+  const scratch = `${ws}-fork`;
+  sh(dirname(ws), "clone", "--quiet", "-b", "contrib", fork, scratch);
+  writeFileSync(join(scratch, "c.txt"), "c\n");
+  sh(scratch, "add", "c.txt");
+  sh(scratch, "commit", "--quiet", "-m", "contributor again");
+  sh(scratch, "push", "--quiet", fork, "contrib");
+  assert.match((await run("k-00000000000000d1", "github.push", push)).text, /^ship-head-moved/);
+  sh(scratch, "push", "--quiet", "--force", fork, `${c1}:refs/heads/contrib`);
+  const ok = await run("k-00000000000000d2", "github.push", push);
+  assert.equal(ok.ok, true, ok.text);
+  assert.equal(sh(fork, "rev-parse", "refs/heads/contrib"), fix, "the box's own commit, pushed as it is");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the base repo's branch is untouched");
+
+  // The repair: a merge commit made here from git's merge and the kept generated files, pushed to the fork. The fork's head is
+  // the base repo's too, as refs/pull/7/head (GitHub serves it by sha). Here the repair deletes a generated file.
+  sh(ws, "push", "--quiet", origin, `${fix}:refs/pull/7/head`);
+  sh(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
+  pr.head = fix;
+  repairResult.keep.entries = [{ path: "gen.txt", mode: "100644", sha: null }];
+  const r = await run("k-00000000000000d3", "github.repair", { repo: REPO, number: 7, head: fix, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(sh(fork, "rev-parse", "refs/heads/contrib^1"), fix);
+  assert.equal(sh(fork, "rev-parse", "refs/heads/contrib^2"), main);
+  assert.equal(sh(fork, "ls-tree", "--name-only", "refs/heads/contrib", "gen.txt"), "", "the generated file's deletion is applied");
+  assert.equal(sh(fork, "show", "refs/heads/contrib:b.txt"), "b", "the contributor's own file stays");
+});
+
+test("ship's repair takes the box's files only on generated paths and lockfiles, never a workflow, a gitlink or a source file", async (t) => {
+  const { origin, c1, run, repairResult } = await setup(t);
+  const file = (path, text, mode = "100644") => ({ path, mode, sha: execFileSync("git", ["hash-object", "--stdin"], { input: text, encoding: "utf8" }).trim(), content: Buffer.from(text).toString("base64") });
+  const args = { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt", ".github/**"] } };
+  const tries = [
+    [[file(".github/workflows/evil.yml", "on: push\njobs: { x: { runs-on: ubuntu-latest, steps: [ { run: curl evil } ] } }\n")], /under \.github\//],
+    [[file("src/evil.ts", "steal()\n")], /neither a generated path nor a lockfile/],
+    [[{ path: "gen.txt", mode: "160000", sha: "e".repeat(40) }], /only files and symlinks/],
+  ];
+  for (const [i, [entries, why]] of tries.entries()) {
+    repairResult.keep.entries = entries;
+    const r = await run(`k-00000000000000e${i}`, "github.repair", args);
+    assert.equal(r.ok, false);
+    assert.match(r.text, why);
+    assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "nothing was written");
+  }
 });

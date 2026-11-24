@@ -1,17 +1,17 @@
-// The ship service: its state (SHIP_STATE_FILE), the watch loop (loop.ts) and the contributor-PR pass (contributor.ts), the HTTP
-// API and the MCP connection `ship` on :8101.
+// The ship service: its state (SHIP_STATE_FILE), the watch loop (loop.ts: the fleet's PRs, and every other PR's hand-off and rounds
+// through adopted.ts), the contributor-PR pass (contributor.ts), the HTTP API and the MCP connection `ship` on :8101.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
-import { configTools } from "./config-tool.ts";
 import { adoptedPass } from "./adopted.ts";
-import { shipEffects } from "./effects.ts";
+import { configTools } from "./config-tool.ts";
 import { contributorPrs, contributorPrWake, prTick } from "./contributor.ts";
+import { shipEffects } from "./effects.ts";
 import { startLoop, type Flow } from "./loop.ts";
-import { createMcp, serveMcp } from "./mcp.ts";
+import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { effective, scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
 import { generationOf } from "./handoff.ts";
@@ -25,23 +25,26 @@ const token = () => file(env.SHIP_TOKEN_FILE);
 const kernel = new Proxy({} as ReturnType<typeof kernelClient>, { get: (_, k) => (kernelClient(kernelUrl, token()) as Record<string | symbol, unknown>)[k] });
 
 const json = (v: string | undefined) => { try { return JSON.parse(v || "null"); } catch { return null; } };
-const raw = () => { const v = json(env.SHIP_SETTINGS); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
+// The ship setting with the kill switch (its own setting, ship_paused, so a repo proposal never carries it) folded in.
+const raw = () => { const v = json(env.SHIP_SETTINGS); return { ...(v && typeof v === "object" && !Array.isArray(v) ? v : {}), paused: env.SHIP_PAUSED === "true" }; };
 const scope = () => scopeFrom(env);
+const maintainerRepos = (): unknown[] => { const t = String(env.SHIP_MAINTAINER_REPOS ?? "").trim(); const v = t.startsWith("[") ? json(t) : t.split(",").map((x) => x.trim()).filter(Boolean); return Array.isArray(v) ? v : []; };
 const paused = () => raw().paused === true;
 /** The repo's settings when ship works it (on, in scope), else null. */
 const settingsOf = (repo: string) => { const s = effective(raw(), repo, scope()); return s?.enabled ? s : null; };
+const codeReview = () => { const v = json(env.SHIP_CODE_REVIEW); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
 
 const stateFile = env.SHIP_STATE_FILE ?? "/data/state.json";
 const state = openState(stateFile);
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
-const mcp = serveMcp(createMcp(configTools({
-  raw, scope, state,
+const mcp = serveMcp(createMcp("ship", configTools({
+  raw, scope, state, maintainerRepos, codeReview,
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
     return r.json;
   },
-})), () => file(env.SHIP_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "ship")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
+}), [{ uri: "ui://ship/page", html: pageHtml(new URL("./", import.meta.url)) }]), () => file(env.SHIP_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "ship")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
 
 // github's routes for ship (github service/src/ship-routes.ts), with this module's token.
 const githubUrl = (env.SHIP_GITHUB_URL ?? "http://github:8100").replace(/\/+$/, "");
@@ -104,12 +107,12 @@ setInterval(() => { if (!paused() && token()) void prTick({ prs, firePr, store: 
 createServer(async (req, res) => {
   if (await mcp(req, res)) return;
   // github's check before each adopted-PR write: the adoption's generation, hold and task, to the github module's token only. A
-  // repo switched off reads as paused, so a write already in flight for it is refused too.
+  // repo switched off reads as paused, so a write already in flight for it (a ship-filed merge too: merges.ts) is refused.
   if (req.method === "GET" && req.url?.startsWith("/v1/generation?")) {
     const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "github");
     if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end();
     const q = new URL(req.url, "http://x").searchParams;
-    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(generationOf(state, raw().paused === true || !settingsOf(q.get("repo") ?? ""), q.get("repo") ?? "", Number(q.get("pr")))));
+    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(generationOf(state, paused() || !settingsOf(q.get("repo") ?? ""), q.get("repo") ?? "", Number(q.get("pr")))));
   }
   res.writeHead(req.url === "/healthz" ? 200 : 404).end();
 }).listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101 }));

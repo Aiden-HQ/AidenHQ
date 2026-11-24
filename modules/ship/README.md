@@ -11,8 +11,10 @@ wakes the task that opened it when the PR conflicts or its checks go red, has Gi
 re-runs checks that never started, got wedged, or failed only on the title gate. When `caps.ci_rounds` red rounds pass, or one
 check is red on `caps.same_check_heads` heads, the CI breaker tells the asker instead. A green PR has its merge filed
 (`github.merge`, on its task). Ship also closes a cancelled or finished task's leftover PR, files a Dependabot PR's task, and has
-the Maintainer nudge, then close, a quiet contributor PR on repos with `contributor_prs`. `paused` stops all of it. Hand-offs,
-repair and App approval arrive in later releases. The Fleet page (Fleet sidebar) edits the settings and shows status.
+the Maintainer nudge, then close, a quiet contributor PR on repos with `contributor_prs`. Every other PR is a hand-off: a
+member's `ship` label or `/ship` comment adopts it, and ship repairs, reports on and merges it. The pause stops all of it,
+merges already filed included.
+The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: per repo on or off, preset, which PRs to adopt (`handoff`), `approve` and `merge`, a global pause, and the holds. The module's settings are for the advanced options only.
 
 ## Connect
 
@@ -24,7 +26,7 @@ Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq me
 ## What agents get
 
 The `ship` connection. Read: `ship_config`. Write: `ship_configure`. Both need the `ship-admin` role (the Maintainer and Aiden
-hold it). A change that loosens anything (more hand-off, a higher or removed cap, wider approve) is the owner's, made from the
+hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page, as one change covering its `maintainer_repos`, `code_review` and `ship` entries. A change that loosens anything (more hand-off, a higher or removed cap, wider approve) is the owner's, made from the
 Fleet page.
 
 ## New installs

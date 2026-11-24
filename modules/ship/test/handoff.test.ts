@@ -137,6 +137,17 @@ test("a conflict runs ship's repair job first and wakes the Engineer only for wh
   assert.equal(w.jobs().length, 1);
   assert.match(w.jobs()[0]!, /left 1 conflict\(s\)/);
   assert.doesNotMatch(w.jobs()[0]!, /src\/a\.ts/);
+  // A repair run that didn't finish is filed once more at that head, then holds.
+  const h = world();
+  await intake(h.deps, h.pr({ events: [on] }));
+  await round(h.deps, h.pr(), { do: "repair" }, dirty);
+  h.records["rec-1"] = { state: "failed", outcome: { text: "ship-repair: the repair didn't finish" } };
+  await round(h.deps, h.pr(), { do: "repair" }, dirty);
+  assert.equal(h.of("POST /v1/writes").length, 2);
+  h.records["rec-2"] = { state: "failed", outcome: { text: "ship-repair: the repair didn't finish" } };
+  await round(h.deps, h.pr(), { do: "repair" }, dirty);
+  assert.equal(h.of("POST /v1/writes").length, 2);
+  assert.match(String((h.state.get("a/b", 7) as any).hold.reason), /didn't finish/);
   // Behind only, under `rebase: conflict`: only the PR at the front of the merge order gets update-branch, and no wake.
   await round(w.deps, w.pr({ head: H2 }), { do: "repair", why: "it is behind `main`" }, { dirty: false });
   assert.equal(w.of("update").length, 0);
