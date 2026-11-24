@@ -65,7 +65,7 @@
   const dflt = (m, k) => { const D = cfg.defaults, p = D.presets[m.preset ?? "quiet"]; return k in p ? p[k] : D.base[k]; };
   // An object field (quiet issues, the resolved check) shows what the entry sets over its own defaults.
   const FILL = (k) => k === "stale_issues" ? cfg.defaults.stale : k === "resolved_check" ? cfg.defaults.base.resolved_check : null;
-  const val = (r, k) => { const m = setOf(r); const v = k in m ? m[k] : dflt(m, k); return v && FILL(k) && !Array.isArray(v) ? { ...FILL(k), ...v } : v; };
+  const val = (r, k) => { const m = setOf(r); const v = k in m && m[k] !== null ? m[k] : dflt(m, k); return v && FILL(k) && !Array.isArray(v) ? { ...FILL(k), ...v } : v; };
   const over = (r, k) => { const m = setOf(r); return k in m && !eq(m[k], dflt(m, k)); };
   const shownDefault = (v, k) => k === "resolved_check" ? `${v.max_closes} closes, skips ${v.exempt_labels.join(", ")}` : v === null ? "none" : Array.isArray(v) ? (v.length ? v.join(", ") : "none") : typeof v === "boolean" ? (v ? "on" : "off") : typeof v === "object" ? Object.entries(v).map(([a, b]) => `${a} ${Array.isArray(b) ? b.join("/") : b}`).join(", ") : String(v);
 
@@ -128,7 +128,8 @@
     remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { remove: r.repo }); pending = lastGood = {}; proposed(x); render(); } catch (e) { say(e.message, true); } });
     const tog = linkBtn("Settings", () => { open.has(r.repo) ? open.delete(r.repo) : open.add(r.repo); render(); });
     tog.className = "link toggle"; tog.setAttribute("aria-expanded", String(open.has(r.repo))); tog.setAttribute("aria-controls", `drawer-${r.repo}`);
-    const cell = (k, label, text, ctl, note) => h("div", { className: "cell" }, h("span", { className: "lab" }, help(label, text)), ctl, note ? h("small", { textContent: note }) : null);
+    // A headline field the entry sets itself can go back to following the preset.
+    const cell = (k, label, text, ctl) => h("div", { className: "cell" }, h("span", { className: "lab" }, help(label, text)), ctl, (k === "features" || k === "triage") && k in setOf(r) ? linkBtn("Use preset default", () => reset(r, k)) : null);
     const tri = editor({ kind: "select", label: `Triage (${r.repo})`, f: `${r.repo}|triage`, value: val(r, "triage"), values: cfg.defaults.triage, titles: TRIAGES, set: (v) => set(r, "triage", v === dflt(setOf(r), "triage") ? null : v) });
     const lab = val(r, "label");
     const gist = [val(r, "issues") ? `Works issues labelled <b>${esc(lab)}</b>` : "Leaves fix-labelled issues alone", val(r, "triage") === "off" ? "no triage" : `triage ${esc(val(r, "triage"))} (up to ${val(r, "triage_cap_per_author_day")} per author a day)`, ...(val(r, "close").length ? [`may close ${esc(val(r, "close").join(", "))}`] : []), ...(val(r, "stale_issues") ? [`closes issues quiet ${val(r, "stale_issues").days}+ days`] : [])].join("; ");
