@@ -398,7 +398,7 @@ export function startPrWatch(o: PrWatchOptions) {
       for (let i = 0; i < candidates.length; i++) {
         const c = candidates[(start + i) % candidates.length];
         const name = `${repo.toLowerCase()}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
-        const asked: { at: string; accepted: boolean; job: number } | undefined = state.wedged[name];
+        const asked: { at: string; accepted: boolean; job: number; run?: number; attempt?: number } | undefined = state.wedged[name];
         const jobId = jobIdOf(c);
         if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head, check: String(c.name ?? "").slice(0, 100) }); continue; }
         // A refused or unanswered read backs off before anything else, so an Actions outage is not hit on every tick. Nothing
@@ -436,7 +436,10 @@ export function startPrWatch(o: PrWatchOptions) {
         // is a check of its own and gets its own ask.
         // A later attempt of *this* workflow run is the re-run's replacement. Two different jobs in one suite that share a
         // display name are different runs: their attempt numbers say nothing about the ask, so the run id must match too.
-        const replaced = !!asked?.accepted && !!asked.run && !!job.body && Number(job.body.run_id) === Number(asked.run) && Number(job.body.run_attempt ?? 1) > 1;
+        // And it must be an attempt *later* than the one that was re-run: a sibling matrix job of the same run and display name
+        // on that same attempt is a different job, not the re-run's replacement.
+        const replaced = !!asked?.accepted && !!asked.run && !!job.body && Number(job.body.run_id) === Number(asked.run)
+          && Number(job.body.run_attempt ?? 1) > Math.max(1, Number(asked.attempt ?? 1));
         if ((asked?.accepted && (Number(asked.job) === Number(jobId) || replaced)) || (prior && !prior.startsWith("retry:"))) {
           const at = prior && !prior.startsWith("retry:") ? Date.parse(prior) : Date.parse(asked?.at ?? "");
           out.push({ at, accepted: true, name: String(c.name ?? ""), nodeId, key: name });
@@ -462,7 +465,7 @@ export function startPrWatch(o: PrWatchOptions) {
         // A re-run GitHub takes is the one the report's interval counts from: an earlier refusal never ran a re-run.
         // The ask is now this job of this run, not the one it was first made for: a later sibling that shares the display name
         // matches neither, so its own replacement is not mistaken for this ask's.
-        if (r.status < 300) { state.wedged[name].accepted = true; state.wedged[name].at = new Date().toISOString(); state.wedged[name].job = Number(jobId); state.wedged[name].run = Number(job.body?.run_id) || undefined; }
+        if (r.status < 300) { state.wedged[name].accepted = true; state.wedged[name].at = new Date().toISOString(); state.wedged[name].job = Number(jobId); state.wedged[name].run = Number(job.body?.run_id) || undefined; state.wedged[name].attempt = Number(job.body?.run_attempt ?? 1); }
         // Only a re-run GitHub took is recorded as done: a refusal backs off and is asked again instead of leaving the head
         // marked as handled with its check run still wedged.
         state.reran[`${repo.toLowerCase()}:${head}:${jobId}`] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
