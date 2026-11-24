@@ -257,6 +257,61 @@ and each app's Access page. A user invite link lands there to set a password.
 The board writes `accounts.json` (email, name, role, disabled, plus each app's default and role assignments) on every
 change. Exports are serialized, and a block, demotion, removal or disable returns only after the gate's file has it.
 
+## Test-user sign-in
+
+An agent can prove a page-level flow end to end — the page's own JavaScript, its same-origin `fetch("/.aidenhq/notify")`
+and the gate's real notify handler — without a person at a sign-in screen. This is the `app_page_canary` tool on the
+`apps` connection, and it exists only on instances that name a test user.
+
+1. **The setting.** `settings.edge.test_user: { email, apps }` names one non-owner account (e.g. `canary@aidenhq.test`,
+   non-routable) and the shared apps it may reach. Compile refuses the owner's own address, an empty or repeated app
+   list, and an app that isn't a shared app with a `share.host`; it then writes `test_user` and `test_listener` (the
+   listener's own bridge address and port) into the gate's config. With no setting neither key is written: no route
+   mints a session and no test listener binds or serves a page, including straight after a product deploy that lands
+   this code ahead of the setting.
+2. **The account.** The kernel creates the email as a `test` account row on first use: no password, invite or mailbox.
+   It is never the owner and never an admin.
+3. **The session.** `POST /v1/test-session` on the kernel's internal API takes `{ app }` from a module call made inside a
+   live job whose tool is `apps.app_page_canary`, and checks the agent key is `red-teamer`, the app is in
+   `test_user.apps`, and the task is open and assigned to that agent. It creates a Better Auth session for the test
+   account with a 15-minute TTL and a `test:` marker, and returns a one-time, 60-second, single-use, host- and
+   state-bound handoff code. `POST /v1/test-session/revoke` ends it; so does the task finishing, and the tool revokes in
+   a `finally` whatever the browser did. `test_session_minted` and `test_session_revoked` audit rows carry the agent key,
+   task id, app, session id and expiry — never a cookie, token or code value.
+4. **The listener.** The gate's test listener binds only `test_listener.address` (a bridge gateway the front door never
+   proxies and only the canary browser's network reaches), and serves nothing without a live test session: it redeems
+   `/.auth/handoff?code=…&state=…` with the kernel once and sets a host-only `__Host-` cookie on
+   `<app>.canary.localhost`. It never accepts the front-door identity header and never an anonymous request (401, no
+   page). It checks the cookie with the kernel's session check, the same way password mode checks a session — no new
+   shared secret — and refuses every other host. The normal gate and the front door are unchanged.
+5. **The identity.** Each request is minted per request by the gate's own signer as the test user, `role: "member"`, for
+   that one app (`idp: "test"`). Never admin, never the board. The cookie is valid only on the test listener's origin
+   for the named app's host: not at the front door, not at the app's public URL (a different host), not for another app
+   (403/404). An expired or revoked session is a 401.
+
+**On an existing host, once.** `ops/vm/setup.sh` installs the canary network's unit
+(`ops/units/aidenhq-canary-net.service`) and script on a new host, but an apply does not re-run it. Before the setting
+is added, an upgraded host installs them once (sudo, as the CI runner's own network is installed on an upgrade):
+
+```sh
+sudo install -m0755 ops/vm/canary-net.sh /usr/local/sbin/aidenhq-canary-net
+sudo install -m0644 ops/units/aidenhq-canary-net.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now aidenhq-canary-net
+```
+
+Without it there is no `aidenhq-canary` bridge, the gate cannot bind `10.231.6.1`, and `app_page_canary` cannot start a
+browser: the canary stays unavailable (nothing opens or serves) rather than running on an unguarded network. The
+setting's own apply card says so.
+
+With the host's `ufw` active, `ops/vm/ufw-rules.sh` also opens the listener to the canary bridge only
+(`10.231.6.1:3132` from `ahq-canary`); `ops/vm/setup.sh` runs it on a new host. On an upgraded host, run it once the
+same way (`sudo bash ops/vm/ufw-rules.sh tailscale`, or `public` for a public exposure), or `ufw`'s default deny keeps
+the browser from reaching the listener.
+
+Negative checks are part of the acceptance, not polish: no setting means the mint refuses and the listener serves no
+page; an unauthenticated browser gets 401; another app's host gets 403/404; an expired or revoked session gets 401; the
+public app URL refuses the test cookie; a test account is not an admin and has no board access.
+
 ## Per-app roles
 
 The gate enforces one thing: `blocked`. The app decides the rest from the identity token's `role`.

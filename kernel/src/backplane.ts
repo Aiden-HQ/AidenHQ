@@ -100,8 +100,12 @@
 //   POST /v1/memory/:op       (a module with role kernel.memory, serving a job's memory_<op> call in flight) note | forget | read |
 //                              rewrite on the job's own agent's memory (memory.ts); read and a removals-only rewrite of any agent's
 //                              for a librarian. GET /v1/memory/:key (the board, or role kernel.lane) {view, facts, updated}
-//   POST /v1/events            (a module with role kernel.events) one source event of a connection it serves (events.ts) -> {queued} |
-//                              {skipped} | {dropped}, always 200 unless it isn't that connection's module (403).
+//   POST /v1/events            (a module with role kernel.events) one source event of a connection it serves (events.ts) ->
+//                              {accepted, seq?, duplicate?, queued}; 422 for an envelope the schema refuses, 403 when it isn't that
+//                              connection's module: both final.
+//   GET  /v1/events/log?connection=&after=&limit= (a module whose compiled `subscribes:` names the connection) {events, next, gap}:
+//                              the log after its committed cursor, only its kinds and resources; no `after`: the watermark.
+//   GET  /v1/events/readers    (role kernel.flow-read) each subscribed module's committed cursor, last read and events waiting.
 //                              GET /v1/events/sources?connection= the resources its connection's routines subscribe to.
 //                              GET /v1/events/batch/:batch (role kernel.events, serving a job's routine_events call in flight) the
 //                              batch the job's own run was fired with, or {pending, retry_after_s} while its binding is stored
@@ -123,6 +127,7 @@ import { INPUT_MAX, type Checks as CheckJobs } from "./checkjobs.ts";
 import type { Answers } from "./answers.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
 import type { Grant, Identity, Whoami } from "./identity.ts";
+import { TestSessionError, type TestSessions } from "./test-session.ts";
 import type { Jobs } from "./jobs.ts";
 import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
@@ -248,6 +253,8 @@ export const ROUTES = [
   { method: "GET", path: "/v1/memory/:key", auth: "module|board" },
   { method: "POST", path: "/v1/events", auth: "module" },
   { method: "GET", path: "/v1/events/sources", auth: "module" },
+  { method: "GET", path: "/v1/events/log", auth: "module" },
+  { method: "GET", path: "/v1/events/readers", auth: "module" },
   { method: "GET", path: "/v1/events/batch/:batch", auth: "module+assertion" },
   { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
   { method: "POST", path: "/v1/views/:module/mcp", auth: "board" },
@@ -258,6 +265,8 @@ export const ROUTES = [
   { method: "POST", path: "/v1/accounts/:op", auth: "board+session" },
   { method: "POST", path: "/v1/apps/:op", auth: "module" },
   { method: "POST", path: "/v1/operator/:op", auth: "operator-key" },
+  { method: "POST", path: "/v1/test-session", auth: "module+assertion" },
+  { method: "POST", path: "/v1/test-session/:op", auth: "module+assertion" },
   { method: "POST", path: "/v1/health/probe", auth: "health-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
@@ -333,7 +342,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -382,6 +391,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   advisories?: () => unknown[];
   /** 3g: the accounts' routes (auth-api.ts). */
   accounts?: (req: IncomingMessage, res: ServerResponse, group: string, op: string) => Promise<void>;
+  /** The test-user page canary's sessions (test-session.ts), for app_page_canary's own tool call in flight. */
+  testSessions?: () => TestSessions | undefined;
   /** 3h: the finish gate (checks.ts). */
   checks?: Checks;
   /** Check jobs and their receipts (checkjobs.ts). */
@@ -764,6 +775,47 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         if (tool === "self_change" && evented) throw fail(403, "forbidden", "a run fired by events changes nothing about its agent: file the change as a task of your own (task_create), with the evidence, and make it there");
         try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!, { tool, why: b.why })); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
       }
+      if (hit && (hit.path === "/v1/test-session" || hit.path === "/v1/test-session/:op")) {
+        // The test-user page canary (test-session.ts): a module holding kernel.test-session serves a kernel job's own tool call
+        // in flight. Who the agent is comes from its job token and grants row, never from the request body; the app list and
+        // the task's assignee are re-read in test-session.ts. With no settings.edge.test_user the route refuses everything.
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.test-session")) throw fail(403, "forbidden", `${w.module} may not reach the test session (role kernel.test-session)`);
+        const sessions = testSessions?.();
+        if (!sessions) throw fail(503, "unavailable", "test sessions are off");
+        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+        const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+        if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight opens a test session");
+        const signed = String(live.caller.tool ?? "");
+        const tool = signed === "apps.app_page_canary" ? "apps.app_page_canary" : "";
+        if (!tool) throw fail(403, "forbidden", "a test session is app_page_canary's only");
+        const b = await json(req);
+        const op = hit.path === "/v1/test-session" ? "mint" : m[0]!;
+        // The allowlist and the audit use the grants key; the task's assignee is the control plane's agent id.
+        const who = { agentKey: String(job.key ?? ""), agentId: String(job.agent ?? ""), task: job.task };
+        try {
+          if (op === "mint") {
+            if (typeof b.app !== "string" || !/^[a-z][a-z0-9-]{1,30}$/.test(b.app)) throw fail(400, "bad_request", "send {app}");
+            const t = await sessions.mint({ agentKey: who.agentKey, agentId: who.agentId, task: who.task, app: b.app });
+            // The one place a code or cookie leaves the kernel: back to the tool call that asked, never to a browser.
+            return send(res, 200, { app: t.app, host: t.host, expires: t.expires, email: t.email, code: t.code, state: t.state, id: t.id });
+          }
+          if (op === "check") {
+            if (typeof b.cookie !== "string" || typeof b.host !== "string") throw fail(400, "bad_request", "send {cookie, host}");
+            const r = await sessions.check({ cookie: b.cookie, host: b.host });
+            return send(res, r ? 200 : 401, r ?? { error: "no test session" });
+          }
+          if (op === "revoke") {
+            const sessionId = typeof b.sessionId === "string" ? b.sessionId : undefined;
+            // The calling job's task always scopes the revocation, so one task can never end another's session by id.
+            return send(res, 200, await sessions.revoke({ ...(sessionId ? { sessionId } : {}), task: who.task, reason: "canary finished" }));
+          }
+          throw fail(404, "not_found", `no test session op ${op}`);
+        } catch (e) {
+          if (e instanceof TestSessionError) throw fail(e.status, e.status === 401 ? "unauthorized" : e.status === 403 ? "forbidden" : e.status === 404 ? "not_found" : e.status === 409 ? "conflict" : "bad_request", (e as Error).message);
+          throw e;
+        }
+      }
       if (hit?.path === "/v1/memory/:op") {
         // A module holding kernel.memory, serving a kernel job's memory_<op> call in flight: the job is read from its own token
         // and its agent from the grants table, never the body's say-so (a lane turn holds no job, so it never writes memory).
@@ -788,6 +840,21 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         if (!Object.values(grantsFile().agents ?? {}).some((g) => g.key === key)) throw fail(404, "not_found", `no agent ${key.slice(0, 60)}`);
         const { doc } = memory.read(key);
         return send(res, 200, { view: memoryView(doc), facts: doc.facts, updated: memory.updated(key) ?? null });
+      }
+      if (hit?.path === "/v1/events/log" || hit?.path === "/v1/events/readers") {
+        // The log's own grant: the module's compiled subscription (events.log refuses one without it); readers is fleet state.
+        const w = await moduleOf(req);
+        if (!events) throw fail(503, "unavailable", "events are off");
+        const p = new URLSearchParams(q ?? "");
+        try {
+          if (hit.path === "/v1/events/readers") {
+            if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read the event readers (role kernel.flow-read)`);
+            return send(res, 200, { readers: events.readers() });
+          }
+          const after = p.get("after"), limit = Math.floor(Number(p.get("limit") ?? 200));
+          if (after !== null && !/^\d{1,15}$/.test(after)) throw fail(400, "bad_request", "after is a log seq");
+          return send(res, 200, events.log(w.module!, String(p.get("connection") ?? ""), after === null ? undefined : Number(after), Number.isFinite(limit) ? limit : 200));
+        } catch (e) { if (e instanceof EventsError) throw fail(e.status, "refused", e.message); throw e; }
       }
       if (hit?.path.startsWith("/v1/events")) {
         const w = await moduleOf(req);

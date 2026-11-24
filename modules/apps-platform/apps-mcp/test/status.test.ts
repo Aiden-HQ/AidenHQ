@@ -245,3 +245,36 @@ describe("app_status previews", () => {
     expect((await callStatus(p)).previews[0]).toMatchObject({ reason: "its build failed: exit 1" });
   });
 });
+
+describe("app_page_canary registration", () => {
+  // docs/design/access.md §Test-user sign-in: the tool exists only on an instance that names a test user. A default install
+  // lists no tool it can never run (no listener binds, no session mints).
+  const names = async (gateFile?: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "canary-tool-"));
+    const registryPath = join(dir, "apps.yaml");
+    writeFileSync(registryPath, "apps:\n  - { name: notes, repo: local/notes, owner: a, description: d }\n");
+    const p = createPlatform(
+      { registryPath, modulesRegistryPath: join(dir, "apps.modules.yaml"), appsData: dir, secretsDir: dir, hostSecretsDir: dir, identityKeyFile: join(dir, "missing.pem"), identityKeysHostFile: join(dir, "keys.json"), dbPath: join(dir, "state.sqlite"), urlBase: "", edgeDir: dir, healthImage: "none", git: { appsData: dir, gitDir: dir }, ...(gateFile ? { gateFile } : {}) },
+      { warn: () => {}, info: () => {} },
+    );
+    const server = buildServer(p, { id: "id", key: "reader", name: "reader", roles: [] }, { dir: "", pushUrl: "" }, async () => {});
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "1" });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const r = await client.listTools();
+    await client.close();
+    return r.tools.map((t) => t.name);
+  };
+
+  it("is absent with no test user, and present once the setting is compiled in", async () => {
+    expect(await names()).not.toContain("app_page_canary");
+    const dir = mkdtempSync(join(tmpdir(), "canary-gate-"));
+    const gateFile = join(dir, "gate.json");
+    writeFileSync(gateFile, JSON.stringify({ test_user: { email: "canary@aidenhq.test", apps: ["notes"] } }));
+    expect(await names(gateFile)).toContain("app_page_canary");
+    // Previews alone are not a test user.
+    const other = join(dir, "gate2.json");
+    writeFileSync(other, JSON.stringify({ previews: { file: "x", ports: [39000, 39100] } }));
+    expect(await names(other)).not.toContain("app_page_canary");
+  });
+});

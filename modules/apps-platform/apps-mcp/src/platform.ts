@@ -9,7 +9,7 @@ import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, t
 import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, mergeScans, noHttpSurface, processUids, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { BROWSER_IMAGE, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
+import { BROWSER_IMAGE, CANARY_NETWORK, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
 import { checkout, checkoutPr, commitMessage, diffForDeploy, resolveCommit, show, type GitEnv } from "./git.js";
 import { loadRegistry, type App } from "./registry.js";
 import { pickService, scriptCommand } from "./run.js";
@@ -260,6 +260,17 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       return false;
     }
   };
+  /**
+   * Does the instance name a test user (settings.edge.test_user)? The canary tool exists only then, as the design says: a
+   * default install lists no tool it can never run. Re-read on use, like the previews setting.
+   */
+  const gateTestUser = (): boolean => {
+    try {
+      return !!cfg.gateFile && !!JSON.parse(readFileSync(cfg.gateFile, "utf8")).test_user;
+    } catch {
+      return false;
+    }
+  };
   /** A preview's URL (previews.ts): its gate host when the gate serves previews, else the apps' tailnet node (none without one). */
   const previewUrl = (app: App): string | undefined => (app.share?.host ? (gatePreviews() ? `https://${app.share.host}` : undefined) : nodeUrl(app));
 
@@ -362,15 +373,18 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const haveImage = () => exec(["image", "inspect", BROWSER_IMAGE]).then(() => true, () => false);
   const NO_IMAGE = `the browser image (${BROWSER_IMAGE}) isn't built on this host yet: ops/computer-images.sh builds it on every apply`;
   /** One run of a renderer script (view.ts's image and hardening) on a docker network: its stdout. */
-  const renderWith = async (network: string, script: string, input: object, timeout: number): Promise<string> => {
+  const renderWith = async (network: string, script: string, input: object, timeout: number, before?: () => Promise<object>): Promise<string> => {
     if (!(await haveImage())) throw new Error(NO_IMAGE);
     if (renders >= 2) await new Promise<void>((ok) => queue.push(ok)); // a finishing render hands its slot over
     else renders++;
     const name = `aidenhq-view-${randomBytes(6).toString("hex")}`;
     try {
+      // `before` runs once the slot is this render's, so a one-time code (the canary's handoff) is minted as the browser
+      // starts rather than when it joined the queue.
+      const full = before ? { ...input, ...(await before()) } : input;
       const args = renderArgs(network, BROWSER_IMAGE, script);
       args.splice(1, 0, "--name", name);
-      return await exec(args, { input: JSON.stringify(input), timeout });
+      return await exec(args, { input: JSON.stringify(full), timeout });
     } catch (e) {
       await exec(["rm", "-f", name]).catch(() => undefined); // a killed `docker run` leaves its container running
       throw e;
@@ -512,6 +526,38 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   const qualityFor = (a: App): Quality => quality.get(a.name) ?? { state: "unknown", why: "not probed yet" };
   /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
   const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
-  return { previewUrl, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  // The test-user canary's one-shot browser (canary.ts): the same image and hardening as a view, on the canary network.
+  // ops/vm/canary-net.sh gives that bridge its isolation table (inter-container traffic off, everything but the test
+  // listener dropped). The unit is host-side, so this cannot read it; what it can prove is that the bridge is the one the
+  // script left: its name, its own subnet and gateway, and inter-container traffic off. Anything else (an ordinary bridge
+  // merely carrying the name, a re-created one the rules do not match) refuses the launch rather than running a signed-in
+  // browser on a network the firewall may not guard.
+  const canaryRun = async (network: string, script: string, input: object, timeout: number, before?: () => Promise<object>) => {
+    if (network === CANARY_NETWORK) {
+      const got = (await exec(["network", "inspect", "--format", '{{index .Options "com.docker.network.bridge.name"}}|{{index .Options "com.docker.network.bridge.enable_icc"}}|{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}{{end}}', network], { timeout: 15_000 }).catch(() => "")).trim();
+      if (got !== "ahq-canary|false|10.231.6.0/24|10.231.6.1") throw new Error(`the canary network isn't the guarded one (want ahq-canary|false|10.231.6.0/24|10.231.6.1, found ${got || "nothing"}): run ops/vm/canary-net.sh on the host, then retry`);
+      // A network of the right shape proves nothing about its rules: a reboot restores the bridge before the isolation unit
+      // runs, and a firewall reload can drop the rule under it. So the launch checks the isolation itself from a helper on the
+      // canary network: the test listener must answer (the bridge is up and the rule admits its one port), and the host's other
+      // services and the Internet must not (the rule is loaded). A drop is silent, so a timeout counts as blocked as much as a
+      // refusal does; only a real connection is a leak. One external address would not do, because a host or upstream that
+      // blocks it looks the same as the rule; the other destinations are this host's own listeners on its other bridges.
+      const probe = [
+        'const net=require("net");',
+        'const one=(h,p)=>new Promise(ok=>{const s=net.connect({host:h,port:p});const t=setTimeout(()=>{s.destroy();ok("timeout")},3000);',
+        's.on("connect",()=>{clearTimeout(t);s.destroy();ok("open")});s.on("error",()=>{clearTimeout(t);ok("blocked")})});',
+        '(async()=>{const listener=await one("10.231.6.1",3132);const open=[];',
+        'for(const [h,p] of [["10.231.0.1",3130],["10.231.2.1",8200],["1.1.1.1",443]]) if(await one(h,p)==="open") open.push(h+":"+p);',
+        'console.log("RESULT "+JSON.stringify({listener,open}))})();',
+      ].join("");
+      const out = await exec(["run", "--rm", "--network", network, cfg.healthImage, "node", "-e", probe], { timeout: 90_000, both: true }).catch((e: Error) => e.message);
+      const line = String(out).split("\n").reverse().find((x) => x.includes("RESULT "));
+      const v = (() => { try { return JSON.parse(line!.slice(line!.indexOf("RESULT ") + 7)); } catch { return null; } })() as { listener?: string; open?: string[] } | null;
+      if (!v || v.listener !== "open") throw new Error(`the canary bridge ${network} can't reach its test listener, so its isolation rule is not in place: run ops/vm/canary-net.sh on the host, then retry`);
+      if (v.open?.length) throw new Error(`the canary bridge ${network} isn't isolated (${v.open.join(", ")} answered): run ops/vm/canary-net.sh on the host, then retry`);
+    }
+    return renderWith(network, script, input, timeout, before);
+  };
+  return { previewUrl, gateTestUser, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, canaryRun, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;

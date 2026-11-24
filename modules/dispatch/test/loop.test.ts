@@ -52,8 +52,10 @@ function fake({ task, comments = [], directory = {}, tasks = {}, paused = [] }) 
     input: async (job, b) => (k.inputs.push({ job, ...b }), { sent: k.takes }),
     post: async (job, b) => {
       if (k.failPost) { k.failPost--; throw new KernelError(502, "upstream"); }
-      k.posts.push({ job, ...b });
       const t = all[k.jobs.get(job).task];
+      // As the kernel's write path does: a comment on a closed task is refused `task-closed` before anything is written.
+      if (b.kind !== "status" && ["done", "cancelled"].includes(String(t.status))) throw new KernelError(409, `task ${t.id} is ${t.status}`, { type: "task-closed", message: `task ${t.id} is ${t.status}: its outcome is not posted` });
+      k.posts.push({ job, ...b });
       if (b.kind === "status" && b.status) Object.assign(t, { status: b.status, blockedBy: (b.blocked_by ?? []).map((id) => ({ id, status: "todo" })) });
     },
     note: async (wake, body) => void k.notes.push({ wake, body }),
@@ -227,46 +229,44 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   assert.match(k.notified[0].text, /reply for WOR-1 was dropped/);
 });
 
-test("a task-closed refusal on a wake is never dropped silently: the owner is told, once, and the wake goes", async () => {
+test("a task-closed refusal is bookkeeping: the wake is dropped quietly, whoever's word woke it", async () => {
   const comments = [{ id: "c1", authorType: "user", body: "One more thing.", createdAt: "2026-11-18T10:00:00Z" }];
   const k = fake({ task: { id: "t1", identifier: "WOR-5", title: "Chat", description: "", status: "done", assigneeAgentId: "eng", createdByUserId: "u1" }, comments, directory: { cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } });
   k.kernel.start = async () => { throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
   k.inbox.push(wake("comment:c1", "comment"));
   await k.dispatch.tick();
-  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "dropped only after it was surfaced");
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "the wake goes");
   assert.deepEqual(k.notes, [], "a finished task is never written to");
-  assert.deepEqual(k.notified.map((n) => [n.task, n.dedupe_key]), [["WOR-5", "refused-wake:comment:c1"]], "the owner hears it, the task named by its identifier");
-  assert.match(k.notified[0].text, /A wake on WOR-5 was not started/);
-  assert.match(k.notified[0].text, /task-closed/);
-  assert.match(k.notified[0].text, /The task is closed, so nothing was started for it; its message stays on the task\./);
-  // The notice not landing: the wake is kept for its lease, never dropped silently.
-  comments.push({ id: "c2", authorType: "user", body: "And another.", createdAt: "2026-11-18T10:01:00Z" });
+  assert.deepEqual(k.notified, [], "a closed task's refusal is not a page (#1676)");
+  // A drop that fails keeps the wake for its lease, and still says nothing to the owner.
   k.inbox.push(wake("comment:c2", "comment"));
-  k.kernel.notify = async () => { throw new KernelError(502, "upstream"); };
+  comments.push({ id: "c2", authorType: "user", body: "And another.", createdAt: "2026-11-18T10:01:00Z" });
+  k.kernel.drop = async () => { throw new KernelError(502, "upstream"); };
   await k.dispatch.tick();
   assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "kept for its lease");
   assert.equal(k.inbox.length, 0, "claimed");
+  k.kernel.drop = async (key) => void k.dropped.push({ key });
+  k.inbox.push(wake("comment:c2", "comment")); // its lease returns the row
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "comment:c2"], "the retry drops it");
   // A timed wait that came due after its task finished has nothing to do: dropped without a word to anyone.
   k.inbox.push(wake("wait:t1:1:0", "wait: check the deploy"));
   await k.dispatch.tick();
-  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "wait:t1:1:0"], "a closed task's wait is stale");
-  assert.equal(k.notified.length, 1, "the owner hears nothing of it");
-  // An overseer's comment that came in before the close reaches admission, is refused, and is stale: not the owner's to hear.
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "comment:c2", "wait:t1:1:0"], "a closed task's wait is stale");
+  // An overseer's comment that came in before the close: admission refuses it, and it is dropped quietly too.
   comments.push({ id: "a1", authorType: "agent", authorAgentId: "cos", body: "A correction.", createdAt: "2026-11-18T10:02:00Z" });
   k.inbox.push(wake("comment:a1", "comment"));
-  let asked = 0, told = 0;
+  let asked = 0;
   k.kernel.start = async () => { asked++; throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
-  k.kernel.notify = async () => { told++; };
   await k.dispatch.tick();
   assert.equal(asked, 1, "admission was asked");
-  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "wait:t1:1:0", "comment:a1"], "an agent's word on a closed task is stale");
-  assert.equal(told, 0, "the owner hears nothing of it");
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "comment:c2", "wait:t1:1:0", "comment:a1"], "an agent's word on a closed task is stale");
   // A kernel notice posted with the owner's key is not his word either.
   comments.push({ id: "n1", authorType: "user", body: "Approved.\n<!-- aidenhq-kernel-notice:k-1 -->", createdAt: "2026-11-18T10:03:00Z" });
   k.inbox.push(wake("comment:n1", "comment"));
   await k.dispatch.tick();
   assert.equal(asked, 2, "admission was asked");
-  assert.equal(told, 0, "the owner hears nothing of a kernel notice");
+  assert.deepEqual(k.notified, [], "the owner hears nothing of any of them");
 });
 
 test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
@@ -428,4 +428,86 @@ test("a retry dropped on a child that never runs still reports its parent's batc
   await k.dispatch.tick();
   assert.equal(wakes.length, 1, "the parent hears the batch once the retry goes");
   assert.match(wakes[0].text, /WOR-2/);
+});
+
+test("the owner's comment that closed the task is not paged: the wake is dropped quietly", async () => {
+  const comments = [{ id: "c1", authorType: "user", body: "Done, thanks.", createdAt: "2026-11-18T10:00:00Z" }];
+  const k = fake({ task: { id: "t1", identifier: "WOR-7", title: "Chat", description: "", status: "done", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.kernel.start = async () => { throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
+  k.inbox.push(wake("comment:c1", "comment"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "the wake goes");
+  assert.deepEqual(k.notes, [], "a finished task is never written to");
+  assert.deepEqual(k.notified, [], "the owner acted on it himself: no page");
+});
+
+test("#1611 retired: the owner's comment while the task was open, closed later by an agent, is no longer paged", async () => {
+  // #1611 deliberately paged him here. It is retired with #1676's rule: the platform records no sound link between a comment and
+  // the close that followed it, so telling "his comment closed it" from "his comment, then an agent closed it" would be a guess,
+  // and the guess loses his request silently when a crew cascade, a grader or the kernel itself closes the task.
+  const comments = [{ id: "c1", authorType: "user", body: "One more thing.", createdAt: "2026-11-18T10:00:00Z" }];
+  const k = fake({ task: { id: "t1", identifier: "WOR-5", title: "Chat", description: "", status: "done", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.kernel.start = async () => { throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
+  k.inbox.push(wake("comment:c1", "comment"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"]);
+  assert.deepEqual(k.notified, [], "a closed task's refusal is bookkeeping, not a page");
+  // A cancelled task is no different.
+  comments.push({ id: "c2", authorType: "user", body: "Still one more.", createdAt: "2026-11-18T10:06:00Z" });
+  Object.assign(await k.kernel.task("t1"), { status: "cancelled" });
+  k.inbox.push(wake("comment:c2", "comment"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.notified, [], "cancelled too");
+});
+
+test("a reply on a closed task is not posted: acked, no page, and the closed child's batch still runs", async () => {
+  const parent = { id: "p1", identifier: "WOR-9", title: "Parent", description: "", status: "in_progress", assigneeAgentId: "coach", createdByUserId: "u1" };
+  const task = { id: "t1", identifier: "WOR-4", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1", parentId: "p1" };
+  const k = fake({ task, tasks: { p1: parent } });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Fixed it.");
+  Object.assign(task, { status: "done" });
+  await k.dispatch.tick();
+  assert.equal(k.jobs.get("j1").acked, true, "the outcome is acknowledged");
+  assert.deepEqual(k.posts, [], "nothing is posted on a closed task: no reply, no notice");
+  assert.deepEqual(k.notified, [], "and no outcome-dropped page for a task the owner closed");
+});
+
+test("a reply refused as task-closed while the task re-reads closed is acked quietly; an open task's refusal still pages", async () => {
+  const task = { id: "t1", identifier: "WOR-6", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" };
+  const k = fake({ task });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  k.end("j1", "Fixed it.");
+  // The kernel's own guard reads open, then a close lands before the write: Paperclip refuses it there.
+  let read = 0;
+  const tasks = k.kernel.task;
+  k.kernel.task = async (id) => { const t = await tasks(id); return ++read > 1 ? { ...t, status: "done" } : t; };
+  k.kernel.post = async () => { throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
+  await k.dispatch.tick();
+  assert.equal(k.jobs.get("j1").acked, true);
+  assert.deepEqual(k.notified, [], "the re-read says closed: quiet");
+  // The same refusal on a task that stays open: the owner hears it.
+  k.inbox.push(wake("issue:t1:2", "assigned"));
+  k.kernel.task = tasks;
+  Object.assign(task, { status: "in_progress" });
+  await k.dispatch.tick();
+  k.end("j2", "Fixed it too.");
+  k.kernel.post = async () => { throw new KernelError(422, "refused", { type: "refused", message: "the write was refused" }); };
+  await k.dispatch.tick();
+  assert.deepEqual(k.notified.map((n) => n.dedupe_key), ["outcome-dropped:j2"], "an open task's refused reply is still paged");
+});
+
+test("a cancelled task under a running job takes no outcome at all, for any kind", async () => {
+  const task = { id: "t1", identifier: "WOR-8", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" };
+  const k = fake({ task });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  Object.assign(task, { status: "cancelled" });
+  k.end("j1", "Fixed it.");
+  await k.dispatch.tick();
+  assert.deepEqual(k.posts, [], "neither the reply nor a notice is posted on a cancelled task");
+  assert.equal(k.jobs.get("j1").acked, true);
+  assert.deepEqual(k.notified, [], "nothing to page him about");
 });

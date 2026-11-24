@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { itemRow, startSync, syncOrg } from "../src/sources.js";
+import { expect, it } from "vitest";
+import { itemRow, syncOrg, syncPass } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer side against a fake store: what lands, and with which baseline flag (the SQL itself was smoke-run on postgres:17).
@@ -111,9 +111,6 @@ it("src_github: a closed board with a refused item is read again weekly, and an 
   expect("title" in last[1]!.row).toBe(false);
 });
 
-// startSync's first tick runs 30 s in; the tests drive the clock, so they don't wait for it.
-beforeEach(() => vi.useFakeTimers());
-afterEach(() => vi.useRealTimers());
 
 // The scope store plus the two statements a retirement writes: the retired ingest_run row and the scope rows' delete. The
 // writer holds an org's rows as the sync scopes it writes: `issues:<org>`, `prs:<org>` and `board:<org>/<number>` (the
@@ -148,8 +145,7 @@ function retireStore(orgs: string[]) {
 
 it("src_github: an org dropped from the configured list gets one retired ingest_run row and loses its scope rows; a re-start writes nothing", async () => {
   const { store, held, retired, deleted } = retireStore(["acme", "kept"]);
-  startSync(store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, ["kept"], { info: () => {}, warn: () => {} } as any);
-  await vi.advanceTimersByTimeAsync(30_000);
+  await syncPass(store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, ["kept"], { info: () => {}, warn: () => {} } as any)();
 
   expect(retired).toEqual([{ source: "github", scope: "org:acme", error: null, status: "retired" }]);
   expect(deleted.sort()).toEqual(["board:acme/1", "issues:acme", "prs:acme"]);
@@ -159,8 +155,7 @@ it("src_github: an org dropped from the configured list gets one retired ingest_
   // A second start (the process restarts, or a later tick) finds the rows gone and writes nothing new.
   retired.length = 0;
   deleted.length = 0;
-  startSync(store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, ["kept"], { info: () => {}, warn: () => {} } as any);
-  await vi.advanceTimersByTimeAsync(30_000);
+  await syncPass(store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, ["kept"], { info: () => {}, warn: () => {} } as any)();
   expect(retired).toEqual([]);
   expect(deleted).toEqual([]);
 });
@@ -168,31 +163,27 @@ it("src_github: an org dropped from the configured list gets one retired ingest_
 it("src_github: an org name compares case-insensitively, and a removed org's history is retired under both spellings", async () => {
   // Configured as "acme", the writer holds the old release's "Acme" rows: kept, not retired.
   const kept = retireStore(["Acme"]);
-  startSync(kept.store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, ["acme"], { info: () => {}, warn: () => {} } as any);
-  await vi.advanceTimersByTimeAsync(30_000);
+  await syncPass(kept.store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, ["acme"], { info: () => {}, warn: () => {} } as any)();
   expect(kept.retired).toEqual([]);
   expect(kept.deleted).toEqual([]);
 
   // Removed: a marker under both spellings, so whichever the failed history used, it is retired.
   const gone = retireStore(["Acme"]);
-  startSync(gone.store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, [], { info: () => {}, warn: () => {} } as any);
-  await vi.advanceTimersByTimeAsync(30_000);
+  await syncPass(gone.store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, [], { info: () => {}, warn: () => {} } as any)();
   expect(gone.retired.map((r) => r.scope).sort()).toEqual(["org:Acme", "org:acme"]);
   expect(gone.deleted.sort()).toEqual(["board:Acme/1", "issues:Acme", "prs:Acme"]);
 });
 
 it("src_github: an org records its own scope row before its first request, so an org whose passes all fail is still retired once removed", async () => {
-  // A configured org that has never saved a scope row (its every pass failed): startSync saves `org:<org>` before syncOrg.
+  // A configured org that has never saved a scope row (its every pass failed): syncPass saves `org:<org>` before syncOrg.
   const { store, held, retired, deleted, saved } = retireStore([]);
   const failing = { account: async () => { throw new Error("GitHub refused: SSO required"); }, request: async () => ({ items: [] }) } as any;
-  startSync(store, failing, ["acme"], { info: () => {}, warn: () => {} } as any);
-  await vi.advanceTimersByTimeAsync(30_000);
+  await syncPass(store, failing, ["acme"], { info: () => {}, warn: () => {} } as any)();
   expect(saved).toContain("org:acme");
   expect(held.has("org:acme")).toBe(true);
 
   // Removed with no orgs left to sync: the retirement sweep still runs and retires it.
-  startSync(store, failing, [], { info: () => {}, warn: () => {} } as any);
-  await vi.advanceTimersByTimeAsync(30_000);
+  await syncPass(store, failing, [], { info: () => {}, warn: () => {} } as any)();
   expect(retired).toEqual([{ source: "github", scope: "org:acme", error: null, status: "retired" }]);
   expect(deleted).toEqual(["org:acme"]);
 });

@@ -33,12 +33,14 @@ test("ufw-rules: an inactive or absent ufw changes nothing", () => {
 });
 
 // The host listeners containers use, and only those: the kernel's backplane, the launcher and the model gateway on the
-// compose bridges' gateway, and the model gateway on the computers' bridge gateway.
+// compose bridges' gateway, the model gateway on the computers' bridge gateway, and the gate's test listener on the
+// canary browser's bridge (nothing listens there until settings.edge.test_user names the test user).
 const HOST_SERVICES = [
   "allow in on br+ to 10.231.0.1 port 3130 proto tcp comment AidenHQ containers to host services",
   "allow in on br+ to 10.231.0.1 port 8199 proto tcp comment AidenHQ containers to host services",
   "allow in on br+ to 10.231.0.1 port 8201 proto tcp comment AidenHQ containers to host services",
   "allow in on ahq-computers to 10.231.2.1 port 8200 proto tcp comment AidenHQ computers to host",
+  "allow in on ahq-canary to 10.231.6.1 port 3132 proto tcp comment AidenHQ test-user canary to the gate's test listener",
 ];
 
 test("ufw-rules: every mode opens the host listeners containers use, and nothing on the public interface", () => {
@@ -59,10 +61,11 @@ test("ufw-rules: an allow already listed is not added again, matched per line fr
     "10.231.0.1 8199/tcp on br+ DENY IN     Anywhere                   # AidenHQ containers to host services",
     "10.231.0.1 8201/tcp on br+ ALLOW IN    10.0.0.1                   # AidenHQ containers to host services",
     "10.231.2.1 8200/tcp on ahq-computers ALLOW IN Anywhere            # AidenHQ computers to host",
+    "10.231.6.1 3132/tcp on ahq-canary ALLOW IN Anywhere               # AidenHQ test-user canary to the gate's test listener",
   ]);
   const r = run({ mode: "tailscale", status });
-  // 3130 and 8200 are already allowed from Anywhere; 8199's DENY is left in place (not replaced by an allow) and only
-  // 8201's source-limited allow, which does not permit the bridge, is replaced by one from Anywhere.
+  // 3130, 8200 and the canary listener are already allowed from Anywhere; 8199's DENY is left in place (not replaced by
+  // an allow) and only 8201's source-limited allow, which does not permit the bridge, is replaced by one from Anywhere.
   assert.deepEqual(r.calls, [
     "allow in on br+ to 10.231.0.1 port 8201 proto tcp comment AidenHQ containers to host services",
   ]);
@@ -74,9 +77,10 @@ test("ufw-rules: an explicit DENY or LIMIT is preserved and warned about, not re
     "10.231.0.1 8199/tcp on br+ LIMIT IN    Anywhere",
     "10.231.0.1 8201/tcp on br+ REJECT IN   Anywhere",
     "10.231.2.1 8200/tcp on ahq-computers ALLOW IN Anywhere",
+    "10.231.6.1 3132/tcp on ahq-canary ALLOW IN Anywhere",
   ]);
   const r = run({ mode: "tailscale", status });
-  // None of the DENY/LIMIT/REJECT rules is replaced; the already-allowed one is skipped.
+  // None of the DENY/LIMIT/REJECT rules is replaced; the already-allowed ones (the canary listener included) are skipped.
   assert.deepEqual(r.calls, []);
   assert.match(r.err, /already has a DENY\/LIMIT\/REJECT rule for 10\.231\.0\.1 3130\/tcp on br\+/);
   assert.match(r.err, /sign-in may fail/);
@@ -107,7 +111,9 @@ test("ufw-rules: a rule it can't add warns that sign-in will fail, with the comm
   assert.match(r.err, /cannot reach the kernel, and sign-in will fail/);
   assert.match(r.err, /ufw allow in on br\+ to 10\.231\.0\.1 port 3130 proto tcp/);
   // Only the rules that failed are printed, not every rule: a prefix/whole match is covered above.
-  assert.equal(r.err.match(/sudo ufw allow in on/g)?.length, 4);
+  // Four kernel/launcher/model-gateway rules plus the test-user canary's listener (only when settings.edge.test_user is set).
+  assert.equal(r.err.match(/sudo ufw allow in on/g)?.length, 5);
+  assert.match(r.err, /ufw allow in on ahq-canary to 10\.231\.6\.1 port 3132 proto tcp/);
 });
 
 test("ufw-rules: a front door port it can't add is warned about too, without the container commands", () => {

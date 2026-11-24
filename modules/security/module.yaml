@@ -48,7 +48,9 @@ agents:
     # exposure. A computer would need an explicit nft allowlist from the box to the apps (operator step). No source reads:
     # github-mcp has no file tools and app repos are private; white-box review is App Auditor's.
     connections:
-      apps: [ app_list, app_status, app_view, app_api, web_view, warehouse_query ]
+      # app_page_canary: one signed-in, page-level "Send feedback" submission as the test user (docs/design/access.md, Test-user
+      # sign-in), so an intake canary is observed through the page's own JS. Nothing else changes: it is a read of the app's page.
+      apps: [ app_list, app_status, app_view, app_page_canary, app_api, web_view, warehouse_query ]
       owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_block, task_cancel, task_finish, fleet_catalog ]
     # Its fix tasks go to the Fleet Steward, which routes them to the owner's chosen engineer (`?`: only when it is installed).

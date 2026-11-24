@@ -1,5 +1,8 @@
-// The Reviewer Manager's tools (role reviewer-manager), on the module's MCP connection: the config tool, how it reads and
-// changes settings.code_review when the owner asks Aiden in words, plus a one-off review and the runs of a PR. The config tool ("watch acme/payments, and add a Claude Code review when a PR opens"). Served on the module's MCP connection; a change
+// The module's tools on its MCP connection: the Reviewer Manager's (role reviewer-manager), how it reads and
+// changes settings.code_review when the owner asks Aiden in words, plus a one-off review and the runs of a PR; and the Reviews
+// page's (a module view, docs/design/board-ui.md "Modules": code_review_overview, _run_detail, _report, _catalog, _available, _dismiss),
+// which the owner's own calls reach. As the owner (caller.kind), configure only proposes: the board files the change on his Save,
+// and a run or a repo review keeps full model choice. The config tool ("watch acme/payments, and add a Claude Code review when a PR opens"). A change
 // is one typed settings change the kernel writes to instance.yaml and files as a reviewed apply on the agent's own task
 // (POST /v1/settings/agent with the call's caller assertion: kernel/src/settings-change.ts asAgent), the same write the board's
 // Reviews page makes for the owner. The new value is checked whole here (config.ts) before it is filed: nothing half-valid lands.
@@ -12,7 +15,7 @@ export interface Tool {
   inputSchema: object;
   /** Roles of which the caller must hold one. */
   roles?: string[];
-  run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string; task?: string }) => Promise<unknown>;
+  run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string; task?: string; kind?: string }) => Promise<unknown>;
 }
 
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
@@ -118,10 +121,18 @@ export function configTools(d: {
   repos: () => unknown;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
-  /** The service's own one-off review of a PR and repo review (POST /reviews), with the calling agent and its task (verified by the service) so a PR review's one summary reaches them. */
-  oneoff: (body: Dict, asker: { requester: string; task?: string }) => Promise<unknown>;
+  /** The service's own one-off review of a PR and repo review, with the calling agent and its task (verified by the service) so a PR review's one summary reaches them; the owner's own call has none, so he hears it. */
+  oneoff: (body: Dict, asker?: { requester: string; task?: string }) => Promise<unknown>;
   repoReview: (body: Dict) => Promise<unknown>;
-  runs: (q: { repo?: string; limit?: number }) => unknown[];
+  runs: (q: { repo?: string; target?: string; limit?: number }) => unknown[];
+  /** The Reviews page's reads: repo reviews, one run with its findings and gate, a repo review's report, the options a repo fits, the repos the GitHub sign-in can read. */
+  batches: (q: { limit?: number }) => unknown[];
+  detail: (id: string) => unknown;
+  report: (batch: string) => string | undefined;
+  catalog: (q: { repo: string; commit?: string }) => Promise<unknown>;
+  available: (q: string) => Promise<unknown>;
+  /** The owner's dismissal of an open finding. */
+  dismiss: (b: Dict) => unknown;
   /** The engine's record of an agent's answer to a finding (no GitHub write). */
   resolve: (b: Dict) => unknown;
   /** A PR's open gating findings with ids. */
@@ -150,15 +161,18 @@ export function configTools(d: {
       inputSchema: { type: "object", properties: { pr_url: { type: "string" }, combos: COMBOS, focus: { type: "string" }, full: { type: "boolean" },
         repo: { type: "string" }, commit: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 50 }, combo: { type: "object", properties: { model: { type: "string" }, effort: { type: "string" } }, additionalProperties: false } }, additionalProperties: false },
       run: async (a, caller) => {
+        // The owner keeps full model choice (the Reviews page), and hears the one summary himself.
+        const owner = caller.kind === "owner";
         if (a.repo !== undefined) {
           if (a.pr_url !== undefined) throw new Error("give pr_url (a pull request) or repo (a whole repository), not both");
-          agentRepoModel(a.combo, d.repos);
+          if (!owner) agentRepoModel(a.combo, d.repos);
           return d.repoReview({ target: { repo: a.repo, ...(a.commit ? { commit: a.commit } : {}) }, ...(a.options ? { options: a.options } : {}), ...(a.combo ? { combo: a.combo } : {}), ...(a.full ? { full: true } : {}) });
         }
         if (typeof a.pr_url !== "string") throw new Error("give pr_url (a pull request) or repo (a whole repository)");
-        agentCombos(a.combos, d.repos);
-        return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) },
-          { requester: caller.agent, ...(caller.task ? { task: caller.task } : {}) });
+        if (!owner) agentCombos(a.combos, d.repos);
+        const runs = await d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) },
+          owner ? undefined : { requester: caller.agent, ...(caller.task ? { task: caller.task } : {}) });
+        return owner ? { runs } : runs;
       },
     },
     {
@@ -194,7 +208,60 @@ export function configTools(d: {
       },
       run: async (a, caller) => {
         const { value, summary } = applyChange(d.raw(), a as Change);
-        return { filed: await d.file([{ kind: "setting", key: "code_review", value }], caller.assertion ?? ""), changes: summary };
+        const changes = [{ kind: "setting", key: "code_review", value }];
+        // The owner's own call (the Reviews page) only proposes: the board shows it and files it on his Save.
+        if (caller.kind === "owner") return { changes: summary, _aidenhq: { settings_change: changes } };
+        return { filed: await d.file(changes, caller.assertion ?? ""), changes: summary };
+      },
+    },
+    {
+      name: "code_review_overview",
+      description: "The Reviews page's first read: the recent PR runs, the repo reviews, the watched repos (as run, with today's spend), the engines a combo may name, the setting and any problem with it.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      run: async () => ({ runs: d.runs({ target: "pr", limit: 300 }), batches: d.batches({ limit: 100 }), repos: d.repos(), engines: ENGINES, setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors }),
+    },
+    {
+      name: "code_review_run_detail",
+      description: "One run with its review, its findings and their outcomes and, on a gated repo, the PR's merge gate: { id: cr-… }.",
+      inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+      run: async (a) => {
+        if (typeof a.id !== "string" || !/^cr-[0-9a-f]{12}$/.test(a.id)) throw new Error("id is a run id (cr-…)");
+        return d.detail(a.id);
+      },
+    },
+    {
+      name: "code_review_report",
+      description: "A finished repo review's report (markdown): { batch: b-… }.",
+      inputSchema: { type: "object", properties: { batch: { type: "string" } }, required: ["batch"], additionalProperties: false },
+      run: async (a) => {
+        if (typeof a.batch !== "string" || !/^b-[0-9a-f]{12}$/.test(a.batch)) throw new Error("batch is a repo review id (b-…)");
+        const markdown = d.report(a.batch);
+        if (markdown === undefined) throw new Error(`no finished repo review ${a.batch}`);
+        return { markdown };
+      },
+    },
+    {
+      name: "code_review_catalog",
+      description: "The options a repo review can run on a repo at a commit (default: its default branch's head), and the commit: { repo: owner/name, commit? }.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" }, commit: { type: "string" } }, required: ["repo"], additionalProperties: false },
+      run: async (a) => {
+        if (typeof a.repo !== "string" || !REPO.test(a.repo)) throw new Error("repo is owner/name");
+        return d.catalog({ repo: a.repo, ...(typeof a.commit === "string" && a.commit ? { commit: a.commit } : {}) });
+      },
+    },
+    {
+      name: "code_review_available",
+      description: "Repos the owner's GitHub sign-in can read whose name holds q (the Reviews page's picker): { q? }.",
+      inputSchema: { type: "object", properties: { q: { type: "string" } }, additionalProperties: false },
+      run: async (a) => ({ repos: await d.available(typeof a.q === "string" ? a.q : "") }),
+    },
+    {
+      name: "code_review_dismiss",
+      description: "The owner's dismissal of an open finding, with his reason (it no longer holds the PR's merge; reported again later, it opens again): { repo, number, id, reason }. Only the owner's own call; an agent answers a finding with code_review_resolve.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" }, number: { type: "integer" }, id: { type: "string" }, reason: { type: "string" } }, required: ["repo", "number", "id", "reason"], additionalProperties: false },
+      run: async (a, caller) => {
+        if (caller.kind !== "owner") throw new Error("a dismissal is the owner's: record your answer with code_review_resolve");
+        return d.dismiss({ ...a, by: "owner (board)" });
       },
     },
   ];

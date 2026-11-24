@@ -81,6 +81,10 @@ export interface GateConfig {
   origin?: { scheme: "http" | "https"; port?: number };
   /** Doors: every exposed app at <app>.<base>, its port from apps-mcp's `file`. */
   doors?: { base: string; file: string };
+  /** settings.edge.test_user (scripts/edge.ts): the one non-owner account an allowlisted agent may sign in as, for these apps. */
+  test_user?: { email: string; apps: string[] };
+  /** The test listener's own bridge address (never the gate's port, the front door's socket or the tailnet): `*.canary.localhost`. */
+  test_listener?: { address: string; port: number };
   /** Where a door's visitor signs in: the kernel's admin listener (every door, the module door included). */
   signin?: string;
   identity_key_file: string;
@@ -175,6 +179,13 @@ const IDENTITY_TTL_S = 300;
 
 /** A person's stable, opaque id: the same under every sign-in method, from the email that method verified. */
 export const subOf = (email: VerifiedEmail) => `u_${createHash("sha256").update(`aidenhq-user:${email.trim().toLowerCase()}`).digest("base64url").slice(0, 22)}`;
+/**
+ * The test user's subject: its own namespace, never `subOf`'s. A person with no Better Auth account (Access or header-JWT
+ * mode, or an app's default role) can hold any email, so an email alone would give the canary that person's own subject and
+ * the app could serve their records. The `u_` form stays (every app's own verifier requires it); the hash's namespace is the
+ * test user's alone, so no real person's `subOf(email)` can ever equal it.
+ */
+export const testSubOf = (email: VerifiedEmail) => `u_${createHash("sha256").update(`aidenhq-test-user:${email.trim().toLowerCase()}`).digest("base64url").slice(0, 22)}`;
 
 /** The gate's signing key (identity_key_file, Ed25519 PKCS#8), re-read when the file changes; its kid as scripts/identity.ts computes it. */
 export function signingKey(file: string): () => Signer {
@@ -189,6 +200,12 @@ export function signingKey(file: string): () => Signer {
     }
     return cached!;
   };
+}
+
+/** The gate's signer for `file`, cached across calls (the test listener mints with the same key and kid the gate uses). */
+const signersByFile = new Map<string, () => Signer>();
+export function signerFor(file: string): () => Signer {
+  return signersByFile.get(file) ?? signersByFile.set(file, signingKey(file)).get(file)!;
 }
 
 /** A compact EdDSA JWT. */
@@ -246,7 +263,7 @@ export async function verifyToken(token: string, { issuer, aud, key, alg = "RS25
 
 /** A Set-Cookie without any Domain attribute: host-only (a preview's cookies never reach a sibling host). */
 export const hostOnly = (c: string) => c.replace(/;\s*domain\s*=[^;]*/gi, "");
-const hostOf = (req: IncomingMessage) => String(req.headers.host ?? "").toLowerCase().replace(/:\d+$/, "");
+export const hostOf = (req: IncomingMessage) => String(req.headers.host ?? "").toLowerCase().replace(/:\d+$/, "");
 const cookies = (req: IncomingMessage) => String(req.headers.cookie ?? "").split(";").map((c) => c.trim()).filter(Boolean);
 const cookieName = (c: string) => c.split("=")[0]!.trim();
 /** Only Better Auth's cookies (for the auth listener), "" when there are none. */
@@ -449,8 +466,7 @@ export function doorSites(): (cfg: GateConfig, host: string) => Site | undefined
 export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean }): Server {
   const keysets = new Map<string, KeyLookup>(); // certs_url → key lookup (one in practice)
   const keyFor = (url: string) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url)!;
-  const signers = new Map<string, () => Signer>(); // identity_key_file → its key (one in practice)
-  const signerFor = (file: string) => signers.get(file) ?? signers.set(file, signingKey(file)).get(file)!;
+  // identity_key_file → its key (one in practice), shared with the test listener through signerFor().
   const previewOf = previewSites();
   const doorOf = doorSites();
 

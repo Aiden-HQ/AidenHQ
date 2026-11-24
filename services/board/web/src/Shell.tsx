@@ -9,7 +9,7 @@ import type { Assignee, ChatRow, ModuleRow, PageRow, SpendNow } from "./types";
 import { Icon, type IconName } from "./ui/icons";
 import { Ticker } from "./ui/Ticker";
 
-export type NavView = "chat" | "approvals" | "board" | "agents" | "apps" | "modules" | "reviews" | "costs" | "flow" | "settings";
+export type NavView = "chat" | "approvals" | "board" | "agents" | "apps" | "modules" | "costs" | "flow" | "settings";
 type Item = { view: NavView; name: string; icon: IconName };
 type Panel = { name: string; label: string; url: string };
 
@@ -20,7 +20,6 @@ const ITEMS: Item[] = [
   { view: "agents", name: "Agents", icon: "agents" },
   { view: "apps", name: "Apps", icon: "apps" },
   { view: "modules", name: "Modules", icon: "modules" },
-  { view: "reviews", name: "Reviews", icon: "reviews" },
   { view: "costs", name: "Costs", icon: "costs" },
   { view: "flow", name: "Flow", icon: "flow" },
 ];
@@ -32,7 +31,7 @@ const SECTIONS: { name: string; views: NavView[] }[] = [
   { name: "Chat", views: ["chat"] },
   { name: "Approvals", views: ["approvals"] },
   { name: "Tasks", views: ["board"] },
-  { name: FLEET, views: ["agents", "apps", "modules", "reviews"] },
+  { name: FLEET, views: ["agents", "apps", "modules"] },
   { name: "Insight", views: ["costs", "flow"] },
 ];
 export const hrefOf = (v: NavView) => `#/${v}`;

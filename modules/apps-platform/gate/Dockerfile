@@ -16,6 +16,6 @@ COPY --from=node /usr/local /usr/local
 RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --create-home --shell /bin/bash node
 ENV NODE_ENV=production
 WORKDIR /app
-COPY package.json gate.ts main.ts signin-pages.ts ./
+COPY package.json config-reader.ts gate.ts main.ts signin-pages.ts test-listener.ts ./
 USER node
 CMD ["node", "main.ts"]

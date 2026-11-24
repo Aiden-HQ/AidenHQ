@@ -1,0 +1,16 @@
+[Unit]
+Description=AidenHQ test-user canary: Docker network and host network rule (ops/vm/canary-net.sh)
+# The one-shot canary browser (apps-mcp app_page_canary) reaches only the gate's test listener (10.231.6.1:3132): not the LAN,
+# the tailnet, the host's other addresses, the other compose services or each other. Re-applied whenever Docker (re)starts;
+# installed as a system unit by ops/vm/setup.sh. With no settings.edge.test_user nothing listens, so it reaches nothing.
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/aidenhq-canary-net
+
+[Install]
+WantedBy=docker.service multi-user.target

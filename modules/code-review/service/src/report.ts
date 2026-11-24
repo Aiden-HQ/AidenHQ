@@ -1,4 +1,4 @@
-// A repo review's report: the verdict and the markdown document (Primer's, and the board's GET /reviews/:batch/report), made by
+// A repo review's report: the verdict and the markdown document (Primer's, and the Reviews page's code_review_report), made by
 // code from the batch's stored reviews, never by a model. Findings stay stored per option observation; display() groups the same
 // lens, file and overlapping lines for the reader only. A per-area option's runs (one per area of the batch's plan) are rolled up as
 // one option: its areas done, the files it confirmed reading over every area's (a failed area's count too), its failed or partial
