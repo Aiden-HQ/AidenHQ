@@ -82,15 +82,17 @@ export function shipRoutes(o: {
         const { method, path, deadline } = b;
         const v = b.body?.variables ?? {};
         const read = method === "POST" && path === "/graphql";
-        const call = CALLS.find(([m, re]) => m === method && re.test(String(path)));
+        // No `.` or `..` segment (raw or percent-encoded) and no other escape: a path that normalises elsewhere is never sent.
+        const dotted = String(path).split("?")[0]!.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(String(path));
+        const call = dotted ? undefined : CALLS.find(([m, re]) => m === method && re.test(String(path)));
         const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
         if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
         // A branch is deleted only as an abandoned PR's: one pr-tasks.json names as an opener's head branch on this repo, never the default.
         if (method === "DELETE") {
-          const branch = decodeURIComponent(String(path).split("/git/refs/heads/")[1] ?? "");
-          const opened = Object.entries(readPrTasks(o.cacheDir)).some(([url, t]) => url.startsWith(`https://github.com/${repo.toLowerCase()}/pull/`) && t.branch === branch);
-          const def = opened ? (await o.gh("GET", `/repos/${repo}`, undefined, { background: true })).body?.default_branch : undefined;
-          if (!opened || !def || def === branch) return send(res, 403, { error: `ship may delete only an opener's PR branch, never the default branch` }), true;
+          // The path is exactly an opener's branch on this repo, compared whole (never a prefix or a normalised form).
+          const branch = Object.entries(readPrTasks(o.cacheDir)).find(([url, t]) => url.startsWith(`https://github.com/${repo.toLowerCase()}/pull/`) && path === `/repos/${repo}/git/refs/heads/${t.branch}`)?.[1].branch;
+          const def = branch ? (await o.gh("GET", `/repos/${repo}`, undefined, { background: true })).body?.default_branch : undefined;
+          if (!branch || !def || def === branch) return send(res, 403, { error: `ship may delete only an opener's PR branch, never the default branch` }), true;
         }
         const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body;
         try { return send(res, 200, await o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) })), true; }

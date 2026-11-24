@@ -264,7 +264,7 @@ test("plan: an adopted PR's merge is refused when the generation is stale or shi
 
 test("an adoption's direct merge: no checks and none required merges at its bound target; a hand-back before the call ends it", async () => {
   const H = "a".repeat(40);
-  const run = async (adopted, plain = false, taskStatus = "in_progress") => {
+  const run = async (adopted, plain = false, taskStatus = "in_progress", classic = 404) => {
     const calls = [];
     const gh = async (method, path) => {
       calls.push(`${method} ${path}`);
@@ -275,7 +275,7 @@ test("an adoption's direct merge: no checks and none required merges at its boun
       if (path.includes("/rules/branches/")) return { status: 200, body: [] };
       if (path.includes("/check-runs")) return { status: 200, body: { check_runs: [] } };
       if (path.endsWith("/statuses") || path.includes("/statuses?")) return { status: 200, body: [] };
-      if (path.endsWith("/required_status_checks")) return { status: 404, body: {} };
+      if (path.endsWith("/required_status_checks")) return { status: classic, body: {} };
       if (method === "PUT") return { status: 200, body: { sha: "c".repeat(40) } };
       return { status: 404, body: {} };
     };
@@ -304,6 +304,12 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   assert.match(cancelled.outcomes[0]?.text ?? "", /its task is cancelled/);
   const live = await run(true, true);
   assert.equal(live.calls.filter((c) => c.startsWith("PUT")).length, 1, "a live task's merge goes ahead");
+  const done = await run(true, true, "done");
+  assert.equal(done.calls.filter((c) => c.startsWith("PUT")).length, 1, "a merge in flight still lands after its task is done");
+  // Rules unreadable (403) and no check reported yet: the adoption's merge waits, never merges on nothing.
+  const unread = await run(true, false, "in_progress", 403);
+  assert.equal(unread.calls.filter((c) => c.startsWith("PUT")).length, 0, unread.calls.join("\n"));
+  assert.equal(unread.outcomes.length, 0, "waiting, not settled");
 });
 
 test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {

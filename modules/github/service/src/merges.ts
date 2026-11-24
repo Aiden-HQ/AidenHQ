@@ -13,7 +13,7 @@
 // The UI Reviewer's design review is advisory: it never holds a merge.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import { DESIGN_REVIEW_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
@@ -190,6 +190,9 @@ export function createMerges(d: {
     if (classic.status >= 300 && classic.status !== 404) throw new Error(`GitHub GET required_status_checks: ${classic.status}`);
     return requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body);
   }
+  /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts but the
+   * advisory design review; with none reported yet there is nothing to judge, so the caller waits. */
+  const fallbackRequired = (checks: { name: string }[]) => [...new Set(checks.map((c) => c.name).filter((n) => n !== DESIGN_REVIEW_CHECK))];
   async function mergePut(repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
     // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
     // The trailer goes on whatever the body says (withTrailer would keep a body's own AidenHQ trailer and drop ours), and it
@@ -274,7 +277,9 @@ export function createMerges(d: {
       const checks = open ? await allChecks(p.repo, p.head) : [];
       // Only the checks the rules require are judged, and none required counts as green (a merge outside ship needs a check on
       // the head); when the rules can't be read (403), every check on the head is judged instead.
-      const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required: (await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? ""))) ?? [...new Set(checks.map((c) => c.name))], checks } : undefined;
+      const rules = open ? await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")) : [];
+      if (open && !rules && !checks.length) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
+      const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required: rules ?? fallbackRequired(checks), checks } : undefined;
       const v = decide(data, p.head, ship);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
       const pull = data.repository.pullRequest;
@@ -332,10 +337,11 @@ export function createMerges(d: {
       if (q.ship && (await d.ship?.generation(p.repo, p.number))?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
       if (q.byShip && !q.ship && d.ship && (await d.ship.generation(p.repo, p.number)).generation === null) return fail("ship is paused, or this repo is switched off in ship: not merged");
-      // The kernel files a module's write on any task: a fleet PR's merge ship filed stops when its task is done or cancelled.
+      // The kernel files a module's write on any task: a fleet PR's merge ship filed stops when its task is cancelled.
       if (q.byShip && !q.ship && q.task && d.taskStatus) {
         const status = await d.taskStatus(q.task);
-        if (status === "done" || status === "cancelled") return fail(`its task is ${status}: not merged`);
+        // Only a cancelled task: a merge in flight may finish after its task is done (ship files none on a done task).
+        if (status === "cancelled") return fail("its task is cancelled: not merged");
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
       // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy). It joins the attempts
@@ -599,8 +605,9 @@ export function createMerges(d: {
       const data = await readPr(repo, number);
       const g = await d.reviewGate(repo, number, head);
       const checks = await allChecks(repo, head);
-      // Rules unreadable (no admin read of classic protection): every check on the head counts, as the queue's own ship path does.
-      const required = (await requiredOf(repo, String(data.repository.defaultBranchRef?.name ?? ""))) ?? [...new Set(checks.map((c) => c.name))];
+      const rules = await requiredOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
+      if (!rules && !checks.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false };
+      const required = rules ?? fallbackRequired(checks);
       const v = decide(data, head, { queue: false, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
       return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY" };
