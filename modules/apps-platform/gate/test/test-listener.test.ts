@@ -370,3 +370,43 @@ test("a WebSocket upgrade needs the listener's own origin and a live session, an
   assert.equal(await ask(`http://roadmap.${CANARY_BASE}:${lPort}`), "401");
   assert.equal(appSeen.length, before, "no upgrade reaches the app without a live session");
 });
+
+// The app may answer a handshake slowly. If the browser is gone by then, its upstream request must be cancelled: the app's
+// socket sees the connection end, and a late 101 never becomes a tunnel the listener has stopped tracking.
+test("a browser that leaves mid-handshake cancels the upstream upgrade, so no app socket stays open unowned", async () => {
+  const slow = createServer();
+  const seen: { ended: boolean; sock: any }[] = [];
+  slow.on("upgrade", (q, sock) => {
+    const rec = { ended: false, sock };
+    seen.push(rec);
+    sock.on("error", () => {});
+    sock.on("end", () => { rec.ended = true; });
+    sock.on("close", () => { rec.ended = true; });
+    // Answer only after the browser has gone: a tunnel opened now would outlive its session.
+    setTimeout(() => { if (!sock.destroyed) sock.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"); }, 250).unref?.();
+  });
+  const slowPort = await listen(slow);
+  const c: any = { ...cfg, hosts: { "roadmap.example.com": { app: "roadmap", port: slowPort }, [`roadmap.${CANARY_BASE}`]: { app: "roadmap", port: slowPort } } };
+  const l = createTestListener({ config: () => c, log: () => {} });
+  const port = await listen(l);
+  c.test_listener = { address: "127.0.0.1", port };
+  try {
+    const q = request({ host: "127.0.0.1", port, path: "/ws", headers: { host: `roadmap.${CANARY_BASE}`, connection: "Upgrade", upgrade: "websocket", origin: `http://roadmap.${CANARY_BASE}:${port}`, cookie: `${CANARY_COOKIE}=${COOKIE}` } });
+    q.on("error", () => {});
+    q.on("upgrade", () => {});
+    q.end();
+    // The browser times out: its socket goes before the app answers.
+    await new Promise((ok) => setTimeout(ok, 40));
+    q.destroy();
+    await new Promise((ok) => setTimeout(ok, 700));
+    assert.ok(seen.length > 0, "the app got the handshake");
+    for (const r of seen) assert.equal(r.ended, true, "its socket ended with the browser, never left open unowned");
+  } finally {
+    for (const r of seen) r.sock.destroy();
+    slow.closeAllConnections?.();
+    slow.close();
+    (l as any).closeTunnels?.();
+    l.closeAllConnections?.();
+    await new Promise<void>((ok) => l.close(() => ok()));
+  }
+});

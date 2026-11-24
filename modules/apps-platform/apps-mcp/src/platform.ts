@@ -526,17 +526,23 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       const got = (await exec(["network", "inspect", "--format", '{{index .Options "com.docker.network.bridge.name"}}|{{index .Options "com.docker.network.bridge.enable_icc"}}|{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}{{end}}', network], { timeout: 15_000 }).catch(() => "")).trim();
       if (got !== "ahq-canary|false|10.231.6.0/24|10.231.6.1") throw new Error(`the canary network isn't the guarded one (want ahq-canary|false|10.231.6.0/24|10.231.6.1, found ${got || "nothing"}): run ops/vm/canary-net.sh on the host, then retry`);
       // A network of the right shape proves nothing about its rules: a reboot restores the bridge before the isolation unit
-      // runs, and a firewall reload can drop the rule under it. So the launch checks the isolation itself: a helper on the
-      // canary network tries to reach the Internet, which the rule must block. A connection that succeeds means the bridge is
-      // unguarded, and no signed-in browser is run on it.
+      // runs, and a firewall reload can drop the rule under it. So the launch checks the isolation itself from a helper on the
+      // canary network: the test listener must answer (the bridge is up and the rule admits its one port), and the host's other
+      // services and the Internet must not (the rule is loaded). One external address would not do, because a host or upstream
+      // that blocks it looks the same as the rule; the other destinations are this host's own listeners on its other bridges.
       const probe = [
-        "const s=require('net').connect({host:'1.1.1.1',port:443});",
-        "const t=setTimeout(()=>{console.log('BLOCKED');process.exit(0)},4000);",
-        "s.on('connect',()=>{clearTimeout(t);console.log('LEAKED');s.destroy();process.exit(0)});",
-        "s.on('error',()=>{clearTimeout(t);console.log('BLOCKED');process.exit(0)});",
+        'const net=require("net");',
+        'const one=(h,p)=>new Promise(ok=>{const s=net.connect({host:h,port:p});const t=setTimeout(()=>{s.destroy();ok("timeout")},3000);',
+        's.on("connect",()=>{clearTimeout(t);s.destroy();ok("open")});s.on("error",()=>{clearTimeout(t);ok("blocked")})});',
+        '(async()=>{const listener=await one("10.231.6.1",3132);const open=[];',
+        'for(const [h,p] of [["10.231.0.1",3130],["10.231.2.1",8200],["1.1.1.1",443]]) if(await one(h,p)!=="blocked") open.push(h+":"+p);',
+        'console.log("RESULT "+JSON.stringify({listener,open}))})();',
       ].join("");
-      const out = await exec(["run", "--rm", "--network", network, cfg.healthImage, "node", "-e", probe], { timeout: 60_000, both: true }).catch((e: Error) => e.message);
-      if (/LEAKED/.test(out) || !/BLOCKED/.test(out)) throw new Error(`the canary bridge ${network} isn't isolated (the probe reached the Internet or could not run): run ops/vm/canary-net.sh on the host, then retry`);
+      const out = await exec(["run", "--rm", "--network", network, cfg.healthImage, "node", "-e", probe], { timeout: 90_000, both: true }).catch((e: Error) => e.message);
+      const line = String(out).split("\n").reverse().find((x) => x.includes("RESULT "));
+      const v = (() => { try { return JSON.parse(line!.slice(line!.indexOf("RESULT ") + 7)); } catch { return null; } })() as { listener?: string; open?: string[] } | null;
+      if (!v || v.listener !== "open") throw new Error(`the canary bridge ${network} can't reach its test listener, so its isolation rule is not in place: run ops/vm/canary-net.sh on the host, then retry`);
+      if (v.open?.length) throw new Error(`the canary bridge ${network} isn't isolated (${v.open.join(", ")} answered): run ops/vm/canary-net.sh on the host, then retry`);
     }
     return renderWith(network, script, input, timeout, before);
   };

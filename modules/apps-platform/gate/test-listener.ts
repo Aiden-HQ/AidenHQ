@@ -272,7 +272,15 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     const headers = upstreamHeaders(req, token, { upgrade: true, proto: "http" });
     for (const k of Object.keys(headers)) if (STRIP.test(k) && k.toLowerCase() !== IDENTITY_HEADER) delete headers[k];
     const up = httpRequest({ host: "127.0.0.1", port: t.site.port, method: req.method, path: req.url, headers });
+    // The browser may leave before the app answers the handshake: cancel the upstream request then, so no late 101 leaves an
+    // app socket open behind a tunnel this listener already stopped tracking.
+    let gone = false;
+    socket.on("close", () => {
+      gone = true;
+      up.destroy();
+    });
     up.on("upgrade", (r, usock, uhead) => {
+      if (gone) { usock.destroy(); return; }
       usock.on("error", () => socket.destroy());
       usock.on("close", () => socket.destroy());
       socket.on("close", () => usock.destroy());
