@@ -21,8 +21,11 @@
 //                             the image its admission froze, its job token (ahqj_) as the box's only credential and the job's
 //                             Codex MCP config → {container, envFile, outDir, gen}. The task's parked box when it fits the job
 //                             (lib.ts compatKey), else a new one.
-//   POST /job/renew {container, issueId, gen}   the kernel still follows it (also on adoption): a new lease
-//   POST /job/release {container, gen?, destroy?}   the job is over: its token is revoked and its box parked for the task's
+//   POST /job {standing: true, ...}   a session's job (profile session): the one standing box, which holds many leases at once, with
+//                             its own lease in it (standing.ts) → {container, envFile, outDir, gen, lease, boxOut, workdir, stateIn}
+//   POST /job/renew {container, issueId, gen, lease?}   the kernel still follows it (also on adoption): a new lease
+//   POST /job/release {container, gen?, lease?, destroy?}   a session's (`lease`): its process group is stopped in the box
+//                             (session-stop) and the lease dropped; the box is never restarted. Otherwise the job is over: its token is revoked and its box parked for the task's
 //                             next job (restarted, so nothing of the job runs on), or destroyed (`destroy`, a check's box, or
 //                             parking failed); idempotent, and a release of an earlier lease touches nothing →
 //                             {released, state} (state "missing" once the box is gone)
@@ -38,8 +41,9 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_CHECK_MIN, WARM_MS, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
+import { MAX_CHECK_MIN, WARM_MS, standingMounts,  forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
+import { STANDING_AGENT, Standing, dropStandingFiles } from "./standing.ts";
 
 type Failure = Error & { status?: number };
 
@@ -69,7 +73,11 @@ const CFG = {
   gateway: { host: "10.231.2.1", port: 8200 },
   network: "aidenhq-computers",
   prefix: "aidenhq-computer-",
-  limits: { memory: env("AIDENHQ_COMPUTERS_MEMORY", "6g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "1g", pids: 1024 },
+  limits: {
+    memory: env("AIDENHQ_COMPUTERS_MEMORY", "6g"), cpus: Number(env("AIDENHQ_COMPUTERS_CPUS", 2)), shm: "1g", pids: 1024,
+    // The standing session box: about 8 sessions at roughly 1.3 GB each (810 MB per opencode server, 470 MB per attached TUI).
+    session: { memory: env("AIDENHQ_SESSIONS_MEMORY", "12g"), cpus: Number(env("AIDENHQ_SESSIONS_CPUS", 4)), shm: "1g", pids: 4096 },
+  },
   computersFile: path.join(configDir, "computers.json"),
   composeProject: env("COMPOSE_PROJECT_NAME", "aidenhq"),
   // The host's work and state dirs (computers.json work_dir and state_dir, from config/runner.yaml at compile): the task
@@ -112,6 +120,8 @@ const saveJobs = () => { if (draining) return; try { writeFileSync(`${jobsFile}.
 const held = (name: string) => jobs.leased(name);
 const jobEnvDir = path.join(stateDir, "jobs");
 mkdirSync(jobEnvDir, { recursive: true, mode: 0o700 });
+// Every session lease's out folder is a child of this one: the standing box's /aidenhq-out.
+const standingOutDir = path.join(jobEnvDir, "standing");
 
 function docker(args: string[], opts: { stdin?: string; timeoutMs?: number } = {}) {
   return new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null; timedOut: boolean; stdout: string; stderr: string }>((resolve) => {
@@ -161,6 +171,7 @@ async function remove(name: string, why: string) {
   }
   unremoved.delete(name);
   boxes.delete(name);
+  if (j?.standing) dropStandingFiles(jobEnvDir, name, j.leases ?? []);
   if (jobs.delete(name)) saveJobs();
   rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
   rmSync(path.join(jobEnvDir, name), { recursive: true, force: true });
@@ -243,7 +254,8 @@ const imageNamed = (name: unknown) => builtImage(imageTag(name), docker, log);
 async function makeRoom() {
   for (const end = Date.now() + 45_000; ;) {
     const max = maxBoxes();
-    const evict = admit(boxes, max, (n) => held(n) || unremoved.has(n));
+    // The standing session box holds no pool slot: its sessions are bounded by their agent's max_parallel (the kernel's admission).
+    const evict = admit(new Map([...boxes].filter(([n]) => !jobs.get(n)?.standing)), max, (n) => held(n) || unremoved.has(n));
     if (evict === null) return;
     if (evict !== "wait" && (await retire(evict, "evicted (computers full)"))) return;
     if (Date.now() >= end) throw fail(503, `all ${max} computers are busy; try again shortly`);
@@ -251,6 +263,8 @@ async function makeRoom() {
   }
 }
 const newName = () => CFG.prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+/** Sessions' one standing box and its leases (standing.ts). */
+const standing = new Standing({ jobs, boxes, docker, save: saveJobs, log, envDir: jobEnvDir, newName, jobState, retire, destroy, draining: () => draining });
 
 /** The board's live line for an agent in its own computer: the tail of its Codex session log. */
 async function progress({ agentId }: { agentId?: unknown }) {
@@ -267,7 +281,7 @@ const IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** The job and check routes (lib.ts controlAllowed). */
 const jobControl = {
-  async "/job"({ job, agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles }: { job?: string; agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown; agent?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
+  async "/job"({ job, agentId, issueId, identifier, workspace, engine, state, identity, image: imageName, token, mcp, roles, standing: standingBox }: { standing?: boolean; job?: string; agentId: string; issueId: string; identifier: string; workspace: string; engine: string; state: string; identity?: { name?: unknown; email?: unknown; agent?: unknown }; image: unknown; token: string; mcp: string; roles: string[] }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!kernel) throw fail(403, "job boxes are the kernel's");
     if (job !== undefined && (typeof job !== "string" || !job)) throw fail(400, "a job id is a string");
     if (typeof agentId !== "string" || !agentId || typeof issueId !== "string" || !issueId) throw fail(400, "agentId and issueId required");
@@ -278,6 +292,20 @@ const jobControl = {
     const entry = (() => { try { return readJson(path.join(configDir, "engines.json"))[engine]; } catch { return undefined; } })();
     if (typeof engine !== "string" || entry?.box !== true || !/^modules\/[a-z0-9-]+$/.test(entry.dir ?? "")) throw fail(400, `engine ${engine} doesn't run in a box (config/engines.json)`);
     const tag = imageTag(imageName);
+    if (standingBox === true) {
+      // A session: exactly its own folder under work_dir/sessions and its agent's state folder under the engine's, in the one standing box.
+      const sessions = path.join(CFG.runnerWork, "sessions");
+      jobFolder(workspace, sessions, identifier);
+      const stateName = `${agentId}/${issueId}`.replace(/[^\w.-]/g, "_");
+      const stateRoot = path.join(CFG.runnerState, engine);
+      jobFolder(state, stateRoot, stateName);
+      const image = await builtImage(tag, docker, log);
+      return standing.lease({
+        agentId, job, issueId, identifier, workspace, token, roles, stateIn: `/engine-state/${stateName}`,
+        runArgs: (name) => dockerRunArgs({ name, image, agentId: STANDING_AGENT, network: CFG.network, limits: { ...CFG.limits, ...CFG.limits.session }, mounts: standingMounts({ resolvConf, sessionsDir: sessions, outDir: standingOutDir, stateDir: stateRoot, runnerWork: CFG.runnerWork, repo, engineDir: entry.dir }), user: JOB_USER, labels: ["aidenhq.standing=1"], home: "/aidenhq-out", workdir: "/sessions" }),
+        env: (lease) => jobEnvFile({ token, mcp, gatewayUrl: GATEWAY_URL, identity, lease }),
+      });
+    }
     // Exactly this task's folder and its engine's state folder, real directories with no symlink below the work dirs: never
     // the cache clones, another task's folder or anything a path trick reaches. A job's state is its agent's on this task
     // (kernel/src/sandbox.ts engineState), so two agents never share one.
@@ -341,14 +369,14 @@ const jobControl = {
     boxes.get(name)!.busy = 0;
     return { container: name, envFile, outDir, gen: 1 };
   },
-  async "/job/renew"({ container, issueId, gen }: { container: string; issueId?: string; gen?: number }, { kernel = false }: { kernel?: boolean } = {}) {
+  async "/job/renew"({ container, issueId, gen, lease }: { container: string; issueId?: string; gen?: number; lease?: string }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
     if (!kernel) throw fail(403, `not your job's box: ${container}`);
     if ((await jobState(container)) === "missing") {
       if (jobs.has(container)) await destroy(container, "gone before its renewal");
       throw fail(404, `box gone: ${container}`);
     }
-    const r = jobs.renew(container, { issueId, gen });
+    const r = jobs.renew(container, { issueId, gen, lease });
     if (!r) throw fail(404, `no live job ${container} for that task (its lease lapsed, or it is another task's)`);
     saveJobs();
     return { container, issueId: r.issueId, identifier: r.identifier, workspace: r.workspace, leaseUntil: r.leaseUntil };
@@ -388,10 +416,19 @@ const jobControl = {
     boxes.get(name)!.busy = 0;
     return { container: name };
   },
-  async "/job/release"({ container, gen, destroy: wipe }: { container: string; gen?: number; destroy?: boolean }, { kernel = false }: { kernel?: boolean } = {}) {
+  async "/job/release"({ container, gen, lease, destroy: wipe }: { container: string; gen?: number; lease?: string; destroy?: boolean }, { kernel = false }: { kernel?: boolean } = {}) {
     if (!ours(container)) throw fail(400, "not a computer");
     if (!kernel) throw fail(403, `not your job's box: ${container}`);
     const rec = jobs.get(container);
+    // A session's lease: its own processes stop, the shared box stays. An earlier lease's late release (another gen) touches nothing.
+    if (rec?.standing) {
+      if (typeof lease !== "string") throw fail(400, "the standing box is released by lease");
+      const l = jobs.leases(container).find((x) => x.lease === lease);
+      if (l && (gen ?? 1) !== l.gen) return { released: true, state: "superseded" };
+      // A stop that failed leaves the lease (revoked) for the next release or the reaper: not released yet.
+      if (l && !(await standing.stop(container, lease))) return { released: false, state: "stopping" };
+      return { released: true, state: "stopped" };
+    }
     // A kernel job's box: an earlier lease's release touches nothing (the box is its successor's now, or parked for it).
     if (rec && !rec.check && !jobs.current(container, gen)) return { released: true, state: "superseded" };
     if (rec && !rec.check && !rec.retired && wipe !== true && !draining && (rec.parked || (await park(container)))) return { released: true, state: "parked" };
@@ -542,7 +579,12 @@ for (const name of existing.stdout.trim().split("\n").filter(Boolean)) {
   else if (!rec) orphans.push(name);
 }
 // A job record whose box is gone never comes back; its lease goes with it.
-for (const name of jobs.containers()) if (!boxes.has(name)) jobs.delete(name);
+for (const name of jobs.containers()) {
+  if (boxes.has(name)) continue;
+  const gone = jobs.get(name);
+  if (gone?.standing) dropStandingFiles(jobEnvDir, name, gone.leases ?? []);
+  jobs.delete(name);
+}
 saveJobs();
 for (const name of orphans) await destroy(name, "a box without its job record");
 for (const name of retiring) await destroy(name, "retired before the restart");
@@ -570,7 +612,8 @@ await Promise.all([listen(controlServer, CFG.control, "launcher"), listen(gatewa
 const reaper = setInterval(() => {
   const lapsed = reapLapsed(jobs);
   if (lapsed.length) saveJobs();
-  for (const n of lapsed) destroy(n, "lease lapsed");
+  standing.reap(lapsed);
+  for (const l of lapsed) if (!l.lease) destroy(l.container, "lease lapsed");
   for (const n of stale(boxes, WARM_MS, Date.now(), held)) retire(n, "idle");
   for (const n of unremoved) destroy(n, "removal retried");
 }, 60_000).unref();

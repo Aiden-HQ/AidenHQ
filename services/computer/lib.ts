@@ -19,7 +19,13 @@ export interface Box { busy: number; lastUsed: number; agentId?: string }
  * its task's jobs the box is parked (`parked`: when): no job, no token, kept warm for the task's next job when that job's box
  * would be the same (`compat`, compatKey).
  */
-export interface JobRec { container: string; agentId?: string; issueId?: string; identifier?: string; workspace?: string; codexHome?: string; kernel?: boolean; check?: string; tokenHash?: string; roles?: string[]; leaseUntil: number; job?: string; gen?: number; compat?: string; parked?: number; retired?: boolean }
+export interface JobRec { container: string; agentId?: string; issueId?: string; identifier?: string; workspace?: string; codexHome?: string; kernel?: boolean; check?: string; tokenHash?: string; roles?: string[]; leaseUntil: number; job?: string; gen?: number; compat?: string; parked?: number; retired?: boolean; standing?: boolean; leases?: LeaseRec[] }
+/**
+ * One session's lease in the standing box (see Jobs): its job's token, its task's folders and the two ports and secrets its
+ * opencode server and terminal listen on. `gen` is always 1: a lease id is never reused, so a late call of an earlier job names
+ * another lease. A lease whose token is gone is being stopped (`revokeLease`).
+ */
+export interface LeaseRec { lease: string; agentId?: string; job?: string; issueId: string; identifier: string; workspace: string; tokenHash?: string; roles: string[]; ports: { serve: number; term: number }; secrets: { serve: string; term: string }; gen: number; leaseUntil: number }
 
 const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
 const MCP_BLOCK_ENV = "AIDENHQ_MCP_B64";
@@ -89,7 +95,7 @@ export async function builtImage(tag: string, docker: (args: string[]) => Promis
 }
 
 /** `docker run` arguments: image, limits, network and mounts all come from the launcher's own config. */
-export function dockerRunArgs({ name, image, agentId, network, limits, mounts, user, labels = [], home = "/root" }: {
+export function dockerRunArgs({ name, image, agentId, network, limits, mounts, user, labels = [], home = "/root", workdir = "/workspace" }: {
   name: string;
   image: string;
   agentId: string;
@@ -99,11 +105,12 @@ export function dockerRunArgs({ name, image, agentId, network, limits, mounts, u
   user?: string;
   labels?: string[];
   home?: string;
+  workdir?: string;
 }) {
   const args = ["run", "-d", "--name", name, "--runtime=runsc", "--network", network,
     "--memory", limits.memory, "--memory-swap", limits.memory, "--cpus", String(limits.cpus), "--shm-size", limits.shm, "--pids-limit", String(limits.pids),
     "--label", "aidenhq.computer=1", "--label", `aidenhq.agent=${agentId}`, ...labels.flatMap((l) => ["--label", l]),
-    ...(user ? ["--user", user] : []), "-e", `HOME=${home}`, "-w", "/workspace"];
+    ...(user ? ["--user", user] : []), "-e", `HOME=${home}`, "-w", workdir];
   for (const m of mounts) args.push("-v", m);
   args.push(image, "sleep", "infinity");
   return args;
@@ -180,7 +187,12 @@ export class Jobs {
     return true;
   }
   /** Revokes the box's token now (its job is over), before the box is parked or goes. */
-  revoke(container: string) { const r = this.#by.get(container); if (r) { delete r.tokenHash; delete r.job; } }
+  revoke(container: string) {
+    const r = this.#by.get(container);
+    if (!r) return;
+    delete r.tokenHash; delete r.job;
+    for (const l of r.leases ?? []) delete l.tokenHash;
+  }
   /**
    * The box is going: no token, no lease, never leased again. The record stays (holding the task) until Docker has removed the
    * box, so the task's next job waits for that rather than starting beside it.
@@ -200,27 +212,77 @@ export class Jobs {
     Object.assign(r, { job, tokenHash, roles, gen: (r.gen ?? 0) + 1, leaseUntil: now + LEASE_MS });
     return r;
   }
-  /** A kernel job's box by its job token (the kernel minted it; only its hash is kept): its container and agent, else undefined. */
+  /** A kernel job's box by its job token (the kernel minted it; only its hash is kept): its container and agent, else undefined. A session's lease counts too. */
   byKernelToken(token: unknown) {
     if (typeof token !== "string" || !token.startsWith("ahqj_")) return undefined;
     const h = tokenHash(token);
-    const r = [...this.#by.values()].find((x) => x.kernel && x.tokenHash === h);
-    return r && { container: r.container, agentId: r.agentId, roles: [...(r.roles ?? [])] };
+    for (const r of this.#by.values()) {
+      if (r.kernel && r.tokenHash === h) return { container: r.container, agentId: r.agentId, roles: [...(r.roles ?? [])] };
+      const l = r.leases?.find((x) => x.tokenHash === h);
+      if (r.kernel && l) return { container: r.container, agentId: l.agentId ?? r.agentId, roles: [...l.roles] };
+    }
+    return undefined;
   }
   containers() { return [...this.#by.keys()]; }
-  /** A live lease: admission and idle reaping leave the box alone (a parked box has none). */
-  leased(container: string, now = Date.now()) { const r = this.#by.get(container); return Boolean(r && !r.parked && r.leaseUntil > now); }
-  /** The kernel still follows the job (after its own restart too): a new lease. Undefined: no such job, or not this lease. */
-  renew(container: string, { issueId, gen }: { issueId?: string; gen?: number } = {}, now = Date.now()) {
+  /** A live lease: admission and idle reaping leave the box alone (a parked box has none). The standing box always holds one. */
+  leased(container: string, now = Date.now()) { const r = this.#by.get(container); return Boolean(r && (r.standing ? !r.retired : !r.parked && r.leaseUntil > now)); }
+  /**
+   * The kernel still follows the job (after its own restart too): a new lease. Undefined: no such job, or not this lease.
+   * In the standing box a job is its `lease`: that lease's own task and time.
+   */
+  renew(container: string, { issueId, gen, lease }: { issueId?: string; gen?: number; lease?: string } = {}, now = Date.now()) {
     const r = this.#by.get(container);
+    if (r?.standing) {
+      const l = r.leases?.find((x) => x.lease === lease);
+      if (!l || r.retired || l.issueId !== issueId || l.leaseUntil <= now || l.gen !== (gen ?? 1)) return undefined;
+      l.leaseUntil = now + LEASE_MS;
+      return l;
+    }
     if (!r || r.parked || r.issueId !== issueId || r.leaseUntil <= now || !this.current(container, gen)) return undefined;
     r.leaseUntil = now + LEASE_MS;
     return r;
   }
-  /** Jobs whose lease ran out: the kernel has been gone too long. */
-  lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => !r.parked && !r.retired && r.leaseUntil <= now).map((r) => r.container); }
+  /** Jobs whose lease ran out: the kernel has been gone too long. A session's is its own lease, never its box (the standing box is never reaped). */
+  lapsed(now = Date.now()): { container: string; lease?: string }[] {
+    return [...this.#by.values()].flatMap((r) => r.standing
+      ? (r.leases ?? []).filter((l) => l.leaseUntil <= now).map((l) => ({ container: r.container, lease: l.lease }))
+      : !r.parked && !r.retired && r.leaseUntil <= now ? [{ container: r.container }] : []);
+  }
+  /** The one standing box (sessions' computer), if any, retired or not. */
+  standingBox() { return [...this.#by.values()].find((r) => r.standing); }
+  addStanding(rec: { container: string; agentId?: string; compat?: string }) {
+    const r: JobRec = { ...rec, kernel: true, standing: true, leases: [], leaseUntil: 0 };
+    this.#by.set(rec.container, r);
+    return r;
+  }
+  /** A session's lease in the standing box: its token opens its own tools, from `leaseMs` on a renew keeps it. */
+  addLease(container: string, l: Omit<LeaseRec, "gen" | "leaseUntil">, now = Date.now(), leaseMs = LEASE_MS) {
+    const r = this.#by.get(container);
+    if (!r?.standing) throw new Error(`${container} is not the standing box`);
+    const rec: LeaseRec = { ...l, gen: 1, leaseUntil: now + leaseMs };
+    (r.leases ??= []).push(rec);
+    return rec;
+  }
+  leases(container: string) { return [...(this.#by.get(container)?.leases ?? [])]; }
+  /** The standing box and lease a task's session holds, if any. */
+  leaseOf(issueId: string | undefined) {
+    for (const r of this.#by.values()) { const l = r.leases?.find((x) => x.issueId === issueId); if (l) return { container: r.container, lease: l.lease }; }
+    return undefined;
+  }
+  /** The session is being stopped: its token opens nothing, its lease stays (lapsed at once) until `releaseLease`, so a restart finishes the stop. */
+  revokeLease(container: string, lease: string) {
+    const l = this.#by.get(container)?.leases?.find((x) => x.lease === lease);
+    if (!l) return false;
+    delete l.tokenHash; l.leaseUntil = 0;
+    return true;
+  }
+  releaseLease(container: string, lease: string) {
+    const r = this.#by.get(container);
+    const i = r?.leases?.findIndex((x) => x.lease === lease) ?? -1;
+    return i < 0 ? undefined : r!.leases!.splice(i, 1)[0];
+  }
   dump() { return [...this.#by.values()]; }
-  load(rows: JobRec[] | undefined) { for (const r of rows ?? []) if (r?.container && r.issueId) this.#by.set(r.container, r); }
+  load(rows: JobRec[] | undefined) { for (const r of rows ?? []) if (r?.container && (r.issueId || r.standing)) this.#by.set(r.container, r); }
 }
 
 /**
@@ -247,14 +309,30 @@ export const COMMIT_MSG_HOOK = '#!/bin/sh\nexec git interpret-trailers --in-plac
  * is created by Docker as root, and a hook then can't be written into it (EACCES on every repo command).
  */
 export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork, repo, engineDir, roles = [] }: { resolvConf: string; workspace: string; outDir: string; codexHome: string; runnerWork: string; repo: string; engineDir: string; roles?: string[] }) {
-  // The shared npm cache: made here as the launcher's user (Docker would make a missing bind source as root).
+  const hooks = guardHooks(runnerWork);
+  // `repo-checkout` is in the box only for a job frozen with its role: a command the box can't use is a dead end.
+  const checkout = mayCheckout({ roles }) ? [`${path.join(repo, "services/computer/images/agent-base/repo-checkout")}:/usr/local/bin/repo-checkout:ro`] : [];
+  return [...checkout, `${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`, `${npmCacheDir(runnerWork)}:${NPM_CACHE}`];
+}
+
+/**
+ * The standing session box's bind mounts: every session's folder under /sessions (the kernel's session workspaces), the leases'
+ * out folders under /aidenhq-out/<lease>, the engine's state folders under /engine-state, and the shared pieces of a job box.
+ * Never another task's folder, the secrets dir, the data dir or the Docker socket. Made here as the launcher's user (Docker
+ * would make a missing bind source as root).
+ */
+export function standingMounts({ resolvConf, sessionsDir, outDir, stateDir, runnerWork, repo, engineDir }: { resolvConf: string; sessionsDir: string; outDir: string; stateDir: string; runnerWork: string; repo: string; engineDir: string }) {
+  for (const d of [sessionsDir, outDir, stateDir]) mkdirSync(d, { recursive: true });
+  return [`${resolvConf}:/etc/resolv.conf:ro`, `${sessionsDir}:/sessions`, `${outDir}:/aidenhq-out`, `${stateDir}:/engine-state`, `${guardHooks(runnerWork)}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`, `${npmCacheDir(runnerWork)}:${NPM_CACHE}`];
+}
+
+/** The guard hooks folder and the shared npm cache, made as the launcher's user. */
+function guardHooks(runnerWork: string) {
   mkdirSync(npmCacheDir(runnerWork), { recursive: true });
   const hooks = path.join(runnerWork, ".guard-hooks");
   mkdirSync(hooks, { recursive: true });
   writeFileSync(path.join(hooks, "commit-msg"), COMMIT_MSG_HOOK, { mode: 0o755 });
-  // `repo-checkout` is in the box only for a job frozen with its role: a command the box can't use is a dead end.
-  const checkout = mayCheckout({ roles }) ? [`${path.join(repo, "services/computer/images/agent-base/repo-checkout")}:/usr/local/bin/repo-checkout:ro`] : [];
-  return [...checkout, `${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`, `${npmCacheDir(runnerWork)}:${NPM_CACHE}`];
+  return hooks;
 }
 
 /**
@@ -275,14 +353,17 @@ export const JOB_ENV_NAMES = [
   "AIDENHQ_RUN_TOKEN", "AIDENHQ_AGENT_NAME", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH", "npm_config_cache",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
   "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
+  "AIDENHQ_SESSION_PORT", "AIDENHQ_TERM_PORT", "OPENCODE_SERVER_PASSWORD", "AIDENHQ_TERM_CREDENTIAL",
 ];
+/** What a session's lease adds to its env file: its folders in the standing box, and the ports and secrets of its server and terminal. */
+export interface LeaseEnv { workdir: string; stateIn: string; ports: { serve: number; term: number }; secrets: { serve: string; term: string } }
 
 /**
  * A job box's env file (docker exec --env-file), built here from the allowlist: the job token (model key, MCP key and the
  * `aidenhq` commands' key, through the gateway), the job's granted connections as Codex config, and the commit identity.
  * Commits stay unsigned; the clones' hooks are the read-only guard hooks.
  */
-export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }: { token: string; mcp?: string | null; gatewayUrl: string; identity?: { name?: unknown; email?: unknown; agent?: unknown } }) {
+export function jobEnvFile({ token, mcp, gatewayUrl, identity = {}, lease }: { token: string; mcp?: string | null; gatewayUrl: string; identity?: { name?: unknown; email?: unknown; agent?: unknown }; lease?: LeaseEnv }) {
   const clean = (v: unknown) => String(v ?? "").replace(/[\r\n]/g, " ").trim();
   const env: Record<string, string> = {
     AIDENHQ_RUN_TOKEN: token,
@@ -300,15 +381,21 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }: { token: s
     GIT_CONFIG_KEY_0: "commit.gpgsign", GIT_CONFIG_VALUE_0: "false",
     GIT_CONFIG_KEY_1: "tag.gpgsign", GIT_CONFIG_VALUE_1: "false",
     GIT_CONFIG_KEY_2: "core.hooksPath", GIT_CONFIG_VALUE_2: "/opt/aidenhq/hooks",
+    // A session's own folders (its box is shared: no /workspace), and its server's and terminal's ports and passwords.
+    ...(lease ? {
+      HOME: `${lease.workdir}/.aidenhq/home`, AIDENHQ_TASK_WORKTREE: lease.workdir, CODEX_HOME: lease.stateIn,
+      AIDENHQ_SESSION_PORT: String(lease.ports.serve), AIDENHQ_TERM_PORT: String(lease.ports.term),
+      OPENCODE_SERVER_PASSWORD: lease.secrets.serve, AIDENHQ_TERM_CREDENTIAL: lease.secrets.term,
+    } : {}),
   };
   return JOB_ENV_NAMES.filter((k) => env[k]).map((k) => `${k}=${env[k]}`).join("\n") + "\n";
 }
 
-/** Lapsed jobs, their records dropped at once; the caller then removes the boxes. */
+/** Lapsed jobs: a box's record is dropped at once and the caller then removes the box; a session's lease (`lease` set) stays for the caller to stop. */
 export function reapLapsed(jobs: Jobs, now = Date.now()) {
-  const names = jobs.lapsed(now);
-  for (const n of names) jobs.delete(n);
-  return names;
+  const lapsed = jobs.lapsed(now);
+  for (const l of lapsed) if (!l.lease) jobs.delete(l.container);
+  return lapsed;
 }
 
 /** The job routes: only launcher_kernel_key (the kernel) and computers_runner_key open them, and nothing else. */
