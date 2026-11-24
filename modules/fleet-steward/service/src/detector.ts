@@ -346,7 +346,7 @@ export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (
 }
 
 /** A row of the kernel's task state (GET /v1/tasks/state, kernel/src/task-state-read.ts). */
-type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string; ref?: string }[]; idle_wakes: number; wait_since?: string; stage?: string };
+type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string; ref?: string }[]; idle_wakes: number; origin: string | null; wait_since?: string; stage?: string };
 /** Idle with nothing recorded to wake it, a wake nothing took, or its history pruned: the state's unexplained idle. */
 const UNEXPLAINED = ["unpolled", "orphaned", "unknown", "history_expired"];
 type IdleItem = { task: string; identifier: string | null; reason: string; blocked_on?: string };
@@ -394,7 +394,7 @@ export function reviewGateStalls(rows: StateRow[], t: number): { key: string; re
  */
 export async function unresumedWaits(rows: StateRow[], t: number, comments: (task: string) => Promise<CommentRow[]>, holder: (task: string) => Promise<string | undefined>, start = 0): Promise<{ found: { key: string; reason: string }[]; unscanned: string[] }> {
   const found: { key: string; reason: string }[] = [];
-  const due = rows.filter((r) => (r.reason === "owner_wait" || r.reason === "delegator_wait") && r.attention.some((a) => a.why === r.reason && a.ref?.startsWith("wait:")) && !exempt({ identifier: r.identifier, originKind: null }));
+  const due = rows.filter((r) => (r.reason === "owner_wait" || r.reason === "delegator_wait") && r.attention.some((a) => a.why === r.reason && a.ref?.startsWith("wait:")) && !exempt({ identifier: r.identifier, originKind: r.origin }));
   const scan = Math.min(due.length, MAX_LOOKUPS);
   for (let n = 0; n < scan; n++) {
     const r = due[(start + n) % due.length]!;
@@ -739,7 +739,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
       // `unpolled`: no dispatcher runs the holder, so no wake is ever taken, and it is raised at once: not critical, since a
       // dispatcher outage makes every idle task unpolled at once and one fix covers them all.
       const stuck = (x: { reason: string; idle_wakes?: number; since: string }) => capped(x) || x.reason === "unpolled" || age(x.since, t) > IDLE_MS;
-      for (const i of items.filter((x) => UNEXPLAINED.includes(x.reason) && stuck(x) && !exempt({ identifier: x.identifier, originKind: null }) && !suppressed(x.task, `stuck:${x.task}`))) {
+      for (const i of items.filter((x) => UNEXPLAINED.includes(x.reason) && stuck(x) && !exempt({ identifier: x.identifier, originKind: x.origin }) && !suppressed(x.task, `stuck:${x.task}`))) {
         // Owned by nobody, or by the owner (a person, not an agent's work): not someone's stuck work (the inbox, review-log and
         // issues tasks are idle by design; owner-assigned todos are the stale follow-up check's). A backlog task is `backlog`, never idle.
         if (!i.holder || i.holder === "owner") continue;
@@ -751,7 +751,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
     },
     // A PR held for code review's verdict with no job on its task: the merge gate's own jam (a post parked, a run never queued).
     async gate() {
-      return reviewGateStalls((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })), now());
+      return reviewGateStalls((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: i.origin })), now());
     },
     // An owner or delegator wait the kernel still holds open although a comment answers it (its own rule disagreed, as in #1194): the
     // answer is on the task, the work is not moving. A wait the kernel did close that nothing resumed is `stuck`'s (idle, orphaned). A pass
@@ -806,7 +806,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
         // older wait shows instead, and the handback waits its turn); a delegator wait's is `wait_since`.
         if (why === "handback" && i.reason !== "handback") continue;
         const since = why === "handback" ? i.since : i.wait_since ?? i.since;
-        if (!why || age(since, t) <= JUDGEMENT_WAIT_MS || exempt({ identifier: i.identifier, originKind: null })) continue;
+        if (!why || age(since, t) <= JUDGEMENT_WAIT_MS || exempt({ identifier: i.identifier, originKind: i.origin })) continue;
         if (why === "handback" && !agentMade.has(i.task) && !((unreadUntil.get(i.task) ?? 0) > t)) {
           // Past this pass's reads, a handback already open stays open (a later pass reads it); a failed read is unknown, so it is
           // raised, and not read again for an hour.
@@ -837,7 +837,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
     },
     // Merge waits over 6 hours, and tasks blocked on each other: the queue or a red base holds them.
     async deadlock() {
-      return mergeDeadlocks((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })), now());
+      return mergeDeadlocks((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: i.origin })), now());
     },
     // One task whose runs alternate between two agents five times in 12 hours.
     async pingpong() {
@@ -861,7 +861,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
     async queue() {
       const w = (await d.kernel.call("GET", "/v1/work")) as { running?: unknown[]; capacity?: number };
       if (!Array.isArray(w.running) || !(Number(w.capacity) > 0)) return undefined; // not readable: its open incidents stay open
-      return capacityQueues((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })), w.running.length, Number(w.capacity), now());
+      return capacityQueues((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: i.origin })), w.running.length, Number(w.capacity), now());
     },
     // A card with the AI reviewer over 15 minutes (Tier 1; a Tier 2 card on the owner is theirs, on their card).
     async "review-stall"() {

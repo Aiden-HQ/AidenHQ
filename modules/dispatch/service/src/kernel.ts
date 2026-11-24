@@ -8,7 +8,7 @@ import type { Agent, Comment, Directory, Issue } from "./thread.ts";
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; live_job?: string }
 /** A job as the kernel shows it (jobs.ts JobView, the fields dispatch reads). */
 /** `refused`, and a coded refusal's rule code with the kind asked for and that kind's module (kernel/src/jobs.ts JobView. `refusedKind` is the kind, not the module: another of the module's kinds could return the same code). */
-export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; cancelled: boolean; at: number; ended: number | null; acked: boolean; refused?: string; refusedCode?: string; refusedKind?: string; refusedSource?: string; progress?: { steps?: Step[] } }
+export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; cancelled: boolean; /** The account that stopped it (the owner's Stop); null when the machinery stopped it (or it wasn't stopped). */ stoppedBy: string | null; at: number; ended: number | null; acked: boolean; refused?: string; refusedCode?: string; refusedKind?: string; refusedSource?: string; progress?: { steps?: Step[] } }
 
 /** A connection the owner has to fix (kernel connection-state.ts): `connection` is the agent-facing key, `module` the one the owner connects. */
 export interface Down { connection: string; module: string; cause: string; account?: string; since: string }
@@ -37,18 +37,18 @@ export interface Kernel {
   stop(job: string): Promise<void>;
   /** A company's tasks by control-plane query (the open ones of a routine, say). */
   issues(company: string, query: string): Promise<Issue[]>;
-  /** Whether the kernel holds a wake for the task still waiting to start a job (routines.ts: a run in flight). */
-  wakePending(task: string): Promise<boolean>;
+  /** Whether the kernel holds a wake for the task still waiting to start a job (routines.ts: a run in flight); `retry`: only that run's own restart (`retry.<job>`); `except`: one being dropped now. */
+  wakePending(task: string, o?: { retry?: string; except?: string }): Promise<boolean>;
   /** A routine's definition (its concurrency policy). */
   routine(id: string): Promise<{ concurrencyPolicy?: string }>;
   /** Cancel a routine run's task as its agent: folded into an earlier run (`coalesced`), or overtaken by a later one (`stale`). */
   cancelRoutineRun(task: string, why: "coalesced" | "stale", body: string): Promise<void>;
   /** A task's sub-tasks, any status. */
   children(parent: string, company: string): Promise<Issue[]>;
-  /** A labelled wake notice on a task (role kernel.wake): it wakes the task's agent, as a module's words. */
-  wake(task: string, text: string): Promise<void>;
-  /** A scheduled wake for the task's assignee at `at` (role kernel.wake; once per `id`): a job that couldn't start is tried again. */
-  schedule(b: { task: string; at: number; cause: string; id: string }): Promise<void>;
+  /** A labelled wake notice on a task (role kernel.wake): it wakes the task's agent, as a module's words. `id`: the producer's own key, so a retry after a lost answer files it once. */
+  wake(task: string, text: string, id?: string): Promise<void>;
+  /** A scheduled wake for `agent` (default: the task's assignee) at `at` (role kernel.wake; once per `id`): a run that stopped is tried again. */
+  schedule(b: { task: string; agent?: string; at: number; cause: string; id: string }): Promise<void>;
   /** A task of this module's fixed text for an agent (role kernel.tasks), once per source; 409 when it is paused or gone. */
   fileTask(b: { agent: string; title: string; description: string; source: string }): Promise<{ id: string } | void>;
   /**
@@ -86,11 +86,12 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     post: async (job, b) => void (await call("POST", `/v1/jobs/${e(job)}/post`, b)),
     stop: async (job) => void (await call("DELETE", `/v1/jobs/${e(job)}`)),
     issues: (company, query) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?${query}`),
-    wakePending: async (task) => Boolean((await call("GET", `/v1/wakes/pending?task=${e(task)}`)).pending),
+    wakePending: async (task, o) => Boolean((await call("GET", `/v1/wakes/pending?task=${e(task)}${o?.retry ? `&retry=${e(o.retry)}` : ""}${o?.except ? `&except=${e(o.except)}` : ""}`)).pending),
     routine: (id) => call("GET", `/v1/cp/read/api/routines/${e(id)}`),
     cancelRoutineRun: async (task, why, body) => void (await call("POST", "/v1/routines/cancel", { task, why, body })),
-    children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
-    wake: async (task, text) => void (await call("POST", "/v1/wakes", { task, text })),
+    // A child parked in backlog still counts: it is a task of this batch, and a summary that left it out would misreport the batch.
+    children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,backlog,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
+    wake: async (task, text, id) => void (await call("POST", "/v1/wakes", { task, text, ...(id ? { id } : {}) })),
     schedule: async (b) => void (await call("POST", "/v1/wakes", b)),
     fileTask: async (b) => await call("POST", "/v1/tasks", b),
     commentTask: async (task, body) => Boolean((await call("POST", `/v1/tasks/${e(task)}/comment`, { body }))?.comment),

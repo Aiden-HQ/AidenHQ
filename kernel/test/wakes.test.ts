@@ -267,6 +267,15 @@ test("a task's pending read: a wake still waiting to start a job reads true (a r
   row("comment:a2", "p4", AGENT, "open", w.tick());
   row("comment:o2", "p4", OTHER, "done", w.tick());
   assert.equal(w.wakes.pending("dispatch", "p4"), true, "its own pending wake under another agent's newer row");
+  // `retry`: only the wake that restarts that run counts (dispatch's `retry.<job>`); a comment or another run's retry never does.
+  w.issue("p5", { assigneeAgentId: AGENT });
+  w.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state) VALUES ('comment:p5', 'p5', ?, 'comment', ?, 'open')").run(AGENT, w.tick());
+  assert.equal(w.wakes.pending("dispatch", "p5"), true, "any wake is pending");
+  assert.equal(w.wakes.pending("dispatch", "p5", { retry: "j-p5" }), false, "a comment is not a retry");
+  w.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state) VALUES ('wake_at:dispatch.retry.j-p5', 'p5', ?, 'scheduled: retry', ?, 'open')").run(AGENT, w.tick());
+  assert.equal(w.wakes.pending("dispatch", "p5", { retry: "j-p5" }), true, "that run's retry is");
+  assert.equal(w.wakes.pending("dispatch", "p5", { retry: "j-older" }), false, "another run's retry is not");
+  assert.equal(w.wakes.pending("dispatch", "p5", { retry: "j-p5", except: "wake_at:dispatch.retry.j-p5" }), false, "the one being dropped is left out");
 });
 
 test("a routine run whose dropped wake is re-armed on the next poll starts once, and not again once a job has started", async () => {
@@ -1241,4 +1250,18 @@ test("a task put back in a scanned status reaches the wait reconcile on its own 
     await w.wakes.event({ issueId: "t1" });
     assert.deepEqual(calls, [], status);
   }
+});
+
+test("a schedule whose task read fails says so (a retryable 503), never 'no assigned task'", async () => {
+  const w = world();
+  w.issue("s1");
+  w.fail.get.s1 = 503;
+  const r = await w.wakes.schedule("dispatch", { task: "s1", at: w.tick(), id: "retry.j1", cause: "retry" });
+  assert.deepEqual(r, { error: "the control plane answered 503 reading task s1", upstream: true }, "a failed read is the module's to retry");
+  assert.equal(w.rows("s1").filter((x) => x.includes("retry.j1")).length, 0, "nothing is armed from a read that failed");
+  delete w.fail.get.s1;
+  assert.equal((await w.wakes.schedule("dispatch", { task: "s1", at: w.tick(), id: "retry.j1", cause: "retry" })).key, "wake_at:dispatch.retry.j1");
+  // A task read that answers 200 with no assignee is the one that is really unassigned.
+  w.issue("s2", { assigneeAgentId: null });
+  assert.deepEqual(await w.wakes.schedule("dispatch", { task: "s2", at: w.tick(), id: "retry.j2" }), { error: "no assigned task s2" });
 });

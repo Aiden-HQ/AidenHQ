@@ -50,7 +50,7 @@ export function searchView(a: SearchAnswer, ctx: { me: string; labels: Label[]; 
       completedAt: h.status === "done" ? closed : null, cancelledAt: h.status === "cancelled" ? closed : null, projectId: h.projectId,
     } as Issue;
     if (!isWork(issue)) continue;
-    const state = { task: h.id, identifier: h.identifier, idle_wakes: 0, kind: "done" as const, reason: h.status === "cancelled" ? ("cancelled" as const) : ("closed" as const), since: closed, holder: null, attention: [], lane: "done" as const };
+    const state = { task: h.id, identifier: h.identifier, idle_wakes: 0, origin: null, kind: "done" as const, reason: h.status === "cancelled" ? ("cancelled" as const) : ("closed" as const), since: closed, holder: null, attention: [], lane: "done" as const };
     // `mine`: what My day's own Done would hold (log tasks are already left out above).
     // `recent`: closed in the board's window (My day's own Done lists every such close it shows; Agent work may lack one).
     done.push({ ...workCard(issue, ctx.assignees, state, null, h.crew), mine: onMyDay(issue, ctx), ...(recent.has(h.id) ? { recent: true as const } : {}) });

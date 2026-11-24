@@ -860,15 +860,16 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           }
           if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
           const r = await wakes.schedule(w.module!, b);
-          if ("error" in r) throw fail(400, "bad_request", r.error!);
+          if ("error" in r) throw fail("upstream" in r ? 503 : 400, "upstream" in r ? "upstream" : "bad_request", r.error!);
           return send(res, 200, r);
         }
         if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
         if (!w.roles.includes("kernel.jobs")) throw fail(403, "forbidden", `${w.module} may not claim wakes (role kernel.jobs)`);
         if (hit.path === "/v1/wakes/pending") {
-          const task = new URLSearchParams(q ?? "").get("task") ?? "";
+          const params = new URLSearchParams(q ?? ""), task = params.get("task") ?? "";
           if (!/^[\w.:-]{1,100}$/.test(task)) throw fail(400, "bad_request", "send ?task=<id>");
-          return send(res, 200, { pending: wakes.pending(w.module!, task) });
+          // `retry`: only the wake that restarts that run (dispatch's `retry.<job>`); `except`: one the caller is dropping.
+          return send(res, 200, { pending: wakes.pending(w.module!, task, { retry: params.get("retry") ?? undefined, except: params.get("except") ?? "" }) });
         }
         const b = await json(req);
         if (hit.path === "/v1/wakes/claim") return send(res, 200, { wakes: wakes.claim(w.module!, Math.min(Math.max(Number(b.limit) || 20, 1), 100)) });

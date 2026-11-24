@@ -123,13 +123,17 @@ ${REPLY(user)}
 }
 
 /** What a finished job posts: its reply, nothing (NO_REPLY; a run the owner stopped, whose note the kernel wrote), or a notice of how it stopped. */
-export function outcome(v: { state?: string; exit?: number | null; timedOut?: boolean; cancelled?: boolean; stopped?: string; final?: string }): { kind: "reply" | "notice"; body: string } | undefined {
-  if (v.cancelled && !v.stopped) return undefined;
+export function outcome(v: { state?: string; exit?: number | null; timedOut?: boolean; cancelled?: boolean; stopped?: string; stoppedBy?: string | null; final?: string }): { kind: "reply" | "notice"; body: string } | undefined {
+  // The owner's Stop: the kernel already posted its STOPPED_NOTE on the task, so nothing here repeats it.
+  if (v.cancelled && v.stoppedBy) return undefined;
   const reply = String(v.final ?? "").trim();
+  const again = "Say **continue** to pick up where it stopped.";
+  // A run the machinery stopped (no account: the progress judge, a closed task) never posts its partial words: it gets the notice
+  // that says it stopped, with the module's own reason when it has one.
+  if (v.cancelled) return { kind: "notice", body: v.stopped ? `**Stopped:** ${v.stopped}. Rethink the approach, or ${again.toLowerCase()}` : `**Stopped before finishing:** the run was stopped before it finished. ${again}` };
   // A job that never started (failed with no exit code): its final text is the kernel's error, never the agent's words.
   if (v.state === "failed" && v.exit == null) return { kind: "notice", body: `**Couldn't start:** ${reply.split("\n")[0]!.slice(0, 300) || "the kernel gave no reason"}. Say **continue** to try again.` };
   if (!v.exit && !v.timedOut && !v.stopped && reply) return reply === NO_REPLY ? undefined : { kind: "reply", body: reply };
-  const again = "Say **continue** to pick up where it stopped.";
   const body = v.stopped ? `**Stopped:** ${v.stopped}. Rethink the approach, or ${again.toLowerCase()}`
     : v.timedOut ? `**Timed out.** ${again}`
       : v.exit ? `**Failed** (exit code ${v.exit})${reply ? `: ${reply.split("\n")[0]!.slice(0, 300)}` : "."}`

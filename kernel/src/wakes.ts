@@ -901,7 +901,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (!task) return { error: "send {task, agent?, at?, cause?, id?}" };
       const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
       const issue = r.json as Issue;
-      if (r.status !== 200 || !issue.assigneeAgentId) return { error: `no assigned task ${task}` };
+      // A read that failed says nothing about the task: the module's retry (a 503) must not read as "no assigned task".
+      if (r.status !== 200) return { error: `the control plane answered ${r.status} reading task ${task}`, upstream: true };
+      if (!issue.assigneeAgentId) return { error: `no assigned task ${task}` };
       if (b.agent !== undefined && b.agent !== issue.assigneeAgentId) return { error: "the agent isn't the task's assignee" };
       const key = `wake_at:${module}.${id}`;
       insert(key, issue.id, issue.assigneeAgentId, typeof b.cause === "string" ? `scheduled: ${b.cause.slice(0, 1000)}` : "scheduled", at, at, `module:${module}`);
@@ -998,12 +1000,16 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
      * Whether a task has a wake still waiting to start a job: an open row (not yet due, or due and unclaimed) or one a
      * dispatcher claimed with no job yet. A task with a live job is asked about its job instead (`GET /v1/jobs?task=`): the
      * two together are a task in flight. Dispatch reads this before folding a routine run into an earlier one (routines.ts):
-     * a run whose job ended and left no wake is idle work, not something a new run belongs to.
+     * a run whose job ended and left no wake is idle work, not something a new run belongs to. `retry`: only a wake that
+     * restarts a run that stopped (dispatch's `retry.<job>`: only that run's own retry), which is what holds a parent's batch
+     * summary; `except`: one key the caller is dropping itself, which no longer holds anything.
      */
-    pending(module: string, task: string) {
+    pending(module: string, task: string, o: { retry?: string; except?: string } = {}) {
       // Same rule as claim(): only rows for an agent this dispatcher runs count, each read on its own (a task's wakes can name
       // different agents across a reassignment). A pending row of another agent is never readable through this module.
-      const rows = q("SELECT agent FROM wakes WHERE task = ? AND (state = 'open' OR (state = 'claimed' AND job IS NULL))").all(task) as { agent: string }[];
+      // A retry's key is exactly `wake_at:<module>.retry.<job>` (schedule's `wake_at:${module}.${id}` and dispatch's `retry.<job>`).
+      const rows = q(`SELECT agent FROM wakes WHERE task = ? AND (state = 'open' OR (state = 'claimed' AND job IS NULL)) AND key != ?${o.retry ? " AND key = ?" : ""}`)
+        .all(task, o.except ?? "", ...(o.retry ? [`wake_at:${module}.retry.${o.retry}`] : [])) as { agent: string }[];
       return rows.some((r) => dispatches.may(module, r.agent));
       // (`until` doesn't matter: a scheduled row is a wake still to come, and one whose lease ran out is claimable again.)
     },

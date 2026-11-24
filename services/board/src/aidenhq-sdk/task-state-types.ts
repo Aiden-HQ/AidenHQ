@@ -34,6 +34,10 @@ export type TaskState = {
   /** The agent (id) an open delegator wait's question went to, when the wait recorded it. */
   waits_on?: string;
 };
-/** `holder_name` and `holder_gone` name a holder Paperclip reports terminated (a holder no grant maps stays its raw id). */
-export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; holder_name?: string; holder_gone?: true };
+/**
+ * `origin`: what created the task (`task.created` `data.origin`): a routine's `routine_execution`, a module's `module:<key>`,
+ * or null for one a person or an agent made. `holder_name` and `holder_gone` name a holder Paperclip reports terminated (a
+ * holder no grant maps stays its raw id).
+ */
+export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; origin: string | null; holder_name?: string; holder_gone?: true };
 export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };

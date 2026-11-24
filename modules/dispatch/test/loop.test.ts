@@ -335,3 +335,97 @@ test("a run whose task moved to another agent is stopped, and its refused reply 
   await k.dispatch.tick();
   assert.equal(k.notified.length, 1, "nobody holds it: the owner hears the drop");
 });
+
+
+test("a run the progress judge stopped is retried, not skipped for its recorded stop reason; the owner's Stop is not", async () => {
+  const comments = [{ id: "a1", authorType: "agent", authorAgentId: "eng", body: "On it.", createdAt: "2026-11-18T10:00:00Z" }];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  // A machinery stop: cancelled with no stopping account, and dispatch recorded why (the run that needs its retry).
+  Object.assign(k.jobs.get("j1"), { state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: null, ended: Date.now() });
+  k.db.prepare("INSERT INTO stopped (job, why) VALUES (?, ?)").run("j1", "no progress for 35 min");
+  await k.dispatch.tick();
+  assert.deepEqual(k.scheduled.map((s) => [s.id, s.cause]), [["retry.j1", "retry"]], "the recorded stop reason doesn't skip the retry");
+  assert.deepEqual(k.posts, [], "no notice for a run that restarts itself");
+  k.inbox.push(wake("wake_at:dispatch.retry.j1", "scheduled: retry"));
+  await k.dispatch.tick();
+  assert.match(k.started[1].prompt, /ended before finishing/);
+  // The owner's own Stop records the account: no retry, and the kernel's STOPPED_NOTE is not posted twice.
+  Object.assign(k.jobs.get("j2"), { state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: "acct-1", ended: Date.now() });
+  await k.dispatch.tick();
+  assert.equal(k.scheduled.length, 1, "the owner's Stop is not retried");
+  assert.deepEqual(k.posts, [], "the kernel posts its own STOPPED_NOTE");
+});
+
+test("a machinery-stopped run past its retry bound posts the Stopped notice", async () => {
+  const comments = [{ id: "a1", authorType: "agent", authorAgentId: "eng", body: "On it.", createdAt: "2026-11-18T10:00:00Z" }];
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  for (let i = 0; i < 7; i++) k.jobs.set(`j${i + 10}`, { id: `j${i + 10}`, task: "t1", agent: "eng", state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: null, at: i, ended: i, acked: true });
+  k.jobs.set("jm", { id: "jm", task: "t1", agent: "eng", state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: null, at: 8, ended: 8, acked: false });
+  k.db.prepare("INSERT INTO stopped (job, why) VALUES (?, ?)").run("jm", "no progress for 35 min");
+  await k.dispatch.tick();
+  assert.deepEqual(k.scheduled, [], "past the bound: no further retry");
+  assert.equal(k.posts[0].kind, "notice");
+  assert.match(k.posts[0].body, /\*\*Stopped:\*\* no progress for 35 min/);
+});
+
+test("a parent's summary waits while a child's retry is still pending", async () => {
+  const parent = { id: "p1", identifier: "WOR-1", title: "Parent", description: "Whole job", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" };
+  const c1 = { id: "c1", identifier: "WOR-2", title: "One", description: "Do it", status: "in_progress", assigneeAgentId: "eng", parentId: "p1", createdByAgentId: "cos" };
+  const c2 = { id: "c2", identifier: "WOR-3", title: "Two", description: "Do it", status: "in_progress", assigneeAgentId: "eng", parentId: "p1", createdByAgentId: "cos" };
+  const k = fake({ task: parent, tasks: { c1, c2 }, directory: { eng: { key: "crew" }, cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } });
+  const wakes = [];
+  k.kernel.wake = async (task, text) => void wakes.push({ task, text });
+  k.jobs.set("jc1", { id: "jc1", task: "c1", agent: "eng", state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: null, at: 1, ended: 1, acked: true });
+  k.jobs.set("jc2", { id: "jc2", task: "c2", agent: "eng", state: "done", exit: 0, final: "Two done.", at: 2, ended: 2, acked: true });
+  k.pending.add("c1");
+  k.jobs.set("jc3", { id: "jc3", task: "c2", agent: "eng", state: "done", exit: 0, final: "Two again.", at: 3, ended: 3, acked: false });
+  await k.dispatch.tick();
+  assert.deepEqual(wakes, [], "the child's retry is still pending, so the batch isn't reported yet");
+  k.jobs.delete("jc3");
+  k.pending.delete("c1");
+  k.jobs.set("jc4", { id: "jc4", task: "c2", agent: "eng", state: "done", exit: 0, final: "Two once more.", at: 4, ended: 4, acked: false });
+  await k.dispatch.tick();
+  assert.equal(wakes.length, 1, "with the retry gone the batch reports once");
+  assert.match(wakes[0].text, /WOR-2/);
+});
+
+test("a child that closed its own task still reports its parent's batch", async () => {
+  const parent = { id: "p1", identifier: "WOR-1", title: "Parent", description: "Whole job", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" };
+  const c1 = { id: "c1", identifier: "WOR-2", title: "One", description: "Do it", status: "done", assigneeAgentId: "eng", parentId: "p1", createdByAgentId: "cos" };
+  const k = fake({ task: parent, tasks: { c1 }, directory: { eng: { key: "crew" }, cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } });
+  const wakes = [];
+  k.kernel.wake = async (task, text) => void wakes.push({ task, text });
+  k.jobs.set("jc1", { id: "jc1", task: "c1", agent: "eng", state: "done", exit: 0, final: "One done.", at: 1, ended: 1, acked: false });
+  await k.dispatch.tick();
+  assert.equal(wakes.length, 1, "the parent hears the child's result");
+  assert.match(wakes[0].text, /WOR-2/);
+});
+
+test("a retry due after the task was put on hold is dropped, not started", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "backlog", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: null, at: 1, ended: 1, acked: true });
+  k.inbox.push(wake("wake_at:dispatch.retry.j1", "scheduled: retry"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.started, [], "nothing starts on a task the owner put on hold");
+  assert.equal(k.dropped[0].key, "wake_at:dispatch.retry.j1");
+  assert.match(k.dropped[0].why, /backlog/);
+});
+
+test("a retry dropped on a child that never runs still reports its parent's batch", async () => {
+  const parent = { id: "p1", identifier: "WOR-1", title: "Parent", description: "Whole job", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" };
+  const c1 = { id: "c1", identifier: "WOR-2", title: "One", description: "Do it", status: "done", assigneeAgentId: "eng", parentId: "p1", createdByAgentId: "cos" };
+  const c2 = { id: "c2", identifier: "WOR-3", title: "Two", description: "Do it", status: "todo", assigneeAgentId: "eng", parentId: "p1", createdByAgentId: "cos" };
+  const k = fake({ task: parent, tasks: { c1, c2 }, directory: { eng: { key: "crew" }, cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } });
+  const wakes = [];
+  k.kernel.wake = async (task, text) => void wakes.push({ task, text });
+  k.jobs.set("jc1", { id: "jc1", task: "c1", agent: "eng", state: "done", exit: 0, final: "One done.", at: 1, ended: 1, acked: true });
+  k.jobs.set("jc2", { id: "jc2", task: "c2", agent: "eng", state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: null, at: 2, ended: 2, acked: true });
+  // The owner puts the retried child on hold before its retry runs: the retry is dropped, and the batch is said then.
+  Object.assign(c2, { status: "backlog" });
+  k.inbox.push({ key: "wake_at:dispatch.retry.jc2", task: "c2", agent: "eng", cause: "scheduled: retry", at: Date.now() });
+  await k.dispatch.tick();
+  assert.equal(wakes.length, 1, "the parent hears the batch once the retry goes");
+  assert.match(wakes[0].text, /WOR-2/);
+});

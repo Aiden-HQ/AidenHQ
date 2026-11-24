@@ -3,7 +3,7 @@ import type { StateQuery, TaskStates } from "../src/task-state.js";
 import type { StateRead, StateRow } from "../src/aidenhq-sdk/task-state-types.js";
 
 export const row = (task: string, o: Partial<StateRow> = {}): StateRow => ({
-  task, identifier: o.identifier ?? null, kind: "idle", reason: "orphaned", since: "2026-11-20T10:00:00.000Z", holder: null, attention: [], lane: "idle", idle_wakes: 0, ...o,
+  task, identifier: o.identifier ?? null, kind: "idle", reason: "orphaned", since: "2026-11-20T10:00:00.000Z", holder: null, attention: [], lane: "idle", idle_wakes: 0, origin: null, ...o,
 });
 const needs = (r: StateRow, p: (a: StateRow["attention"][number]) => boolean) => r.attention.some(p);
 

@@ -53,6 +53,16 @@ test("open with closed_since adds the tasks closed since then, by their close fa
 
 const A1 = "11111111-1111-4111-8111-111111111111";
 const A2 = "22222222-2222-4222-8222-222222222222";
+test("a row carries the task's own origin from its created fact", (t) => {
+  const w = setup(t);
+  w.add("task.created", "t1", 0, { parent: null, identifier: "WOR-1", origin: "routine_execution" });
+  w.add("task.created", "t2", 0, { parent: null, identifier: "WOR-2", origin: "module:primer" });
+  w.add("task.created", "t3", 0, { parent: null, identifier: "WOR-3" });
+  const rows = w.reader.read({ ids: ["t1", "t2", "t3"] }).tasks;
+  const by = (id) => rows.find((r) => r.task === id);
+  assert.deepEqual([by("t1").origin, by("t2").origin, by("t3").origin], ["routine_execution", "module:primer", null]);
+});
+
 test("a holder Paperclip reports terminated is named and marked gone; a failed agent read leaves the rows as they are", async (t) => {
   const calls = [];
   const agent = async (id) => { calls.push(id); return { [A1]: { name: "Platform Engineer", terminated: true }, [A2]: { name: "Kai", terminated: false } }[id]; };
