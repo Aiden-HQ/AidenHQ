@@ -1,4 +1,0 @@
-# /etc/gitconfig in the session image: git asks the kernel for a repo-narrowed App token on demand (git-credential-aidenhq).
-[credential "https://github.com"]
-	helper = /opt/aidenhq/bin/git-credential-aidenhq
-	useHttpPath = true
