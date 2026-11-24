@@ -310,8 +310,14 @@ export const SESSION = /^[\w.:-]{1,200}$/;
 /** A job: who and what it is for, and its start time (`at`). */
 export interface JobClaims { agentId?: string | null; issueId?: string | null; at?: number }
 
-/** A box job's box (the computer launcher made it): its container, the env file of its credentials and its out folder. */
-export interface Box { container: string; envFile: string; outDir: string }
+/** One connection a job's engine reaches (engine@1 `mcp`): the box gateway's proxy, the run token as X-Agent-Key. */
+export type McpServer = { name: string; url: string; token_env: "AIDENHQ_RUN_TOKEN"; tools: string[]; tool_timeout_s?: number };
+/**
+ * A box job's box (the computer launcher made it): its container, the env file of its credentials and its out folder. A
+ * standing box's lease (one session among several in one container) adds its own in-box out root, working directory and engine
+ * state folder. `servers`: the job's frozen connections (boxes.ts launch), kept on the row so a restarted run has the same spec.
+ */
+export interface Box { container: string; envFile: string; outDir: string; lease?: string; boxOut?: string; workdir?: string; stateIn?: string; servers?: McpServer[] }
 
 /**
  * One run of an engine under engine@1, in the job's agent computer: job.json in its out folder (the box's /aidenhq-out/job),
@@ -319,20 +325,23 @@ export interface Box { container: string; envFile: string; outDir: string }
  * read-only at /opt/aidenhq/engine. The model comes through the box gateway with the box's run token; its connections are in
  * its Codex home already (the launcher's). Only an engine that runs in a box (`box: true`) runs at all.
  */
-export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", job = {}, box, boxWrap }: {
+export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = "", job = {}, box, boxWrap, models = [] }: {
   cfg: SandboxConfig; engine: Engine; worktree: string; jobDir: string; sessionId?: string; prompt?: string; job?: JobClaims; box: Box; boxWrap: string;
+  /** The model ids the agent offers (its frozen authority's `models`). */
+  models?: string[];
 }) {
   const entry = engineEntry(cfg, engine.kind);
   if (entry.box !== true) throw new Error(`The ${entry.label ?? engine.kind} engine doesn't run in an agent computer, and every job does.`);
   const spec = {
     contract: "engine@1", job: basename(jobDir), agent: job.agentId ?? "", task: job.issueId ?? "", prompt,
     ...(sessionId && SESSION.test(sessionId) ? { session: sessionId } : {}),
-    model: { base_url: `${cfg.boxGatewayUrl}/api/v1`, token_env: "AIDENHQ_RUN_TOKEN", id: engine.model ?? "", effort: engine.effort ?? "" },
-    mcp: [], env: [], limits: { timeout_s: (cfg.timeout_minutes ?? 60) * 60 }, web: !observes(engine), // no web search when its agent turns it off
+    model: { base_url: `${cfg.boxGatewayUrl}/api/v1`, token_env: "AIDENHQ_RUN_TOKEN", id: engine.model ?? "", effort: engine.effort ?? "", models: [...models] },
+    mcp: box.servers ?? [], env: [], limits: { timeout_s: (cfg.timeout_minutes ?? 60) * 60 }, web: !observes(engine), // no web search when its agent turns it off
+    ...(box.stateIn ? { state: box.stateIn } : {}),
     sandbox: { kind: "box", writable: [worktree], network: true },
   };
   writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });
   // The box path of this run's folder (a job that runs a turn again after a stale session gets its own).
-  const argv = ["docker", "exec", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", boxWrap, "aidenhq-computer", join("/opt/aidenhq/engine", relative(entry.dir, entry.bin)), join("/aidenhq-out", basename(jobDir))];
+  const argv = ["docker", "exec", "--env-file", box.envFile, "-w", box.workdir ?? "/workspace", box.container, "sh", "-c", boxWrap, "aidenhq-computer", join("/opt/aidenhq/engine", relative(entry.dir, entry.bin)), join(box.boxOut ?? "/aidenhq-out", basename(jobDir))];
   return { argv, spec, entry };
 }

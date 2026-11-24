@@ -84,7 +84,7 @@ import { logTasks, scopeOf } from "./task-scope.ts";
 import { KERNEL_KINDS, LOCAL_ORG } from "./kinds.ts";
 import { FLEET_OP, createFleetOps } from "./fleet-ops.ts";
 import { JobError, admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
-import { createAdmission, wakeInbox } from "./admission.ts";
+import { agentJobsLive, createAdmission, wakeInbox } from "./admission.ts";
 import { createPool } from "./pool.ts";
 import { createBoxes, handbookFrom, launcherClient, type Boxes } from "./boxes.ts";
 import { checkJobsFrom } from "./checkbox.ts";
@@ -696,7 +696,7 @@ boxes = createBoxes({
   },
 });
 // The computer pool (pool.ts): agent jobs bounded by settings.computers_max, check jobs by settings.check_computers_max.
-const pool = createPool({ capacity: () => Number(computers().max) || 0, checkCapacity: () => Number(computers().checks) || 0, agentLive: () => (records.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get() as { n: number }).n });
+const pool = createPool({ capacity: () => Number(computers().max) || 0, checkCapacity: () => Number(computers().checks) || 0, agentLive: () => agentJobsLive(records.db) });
 const admission = createAdmission({
   pool, db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
   spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools,

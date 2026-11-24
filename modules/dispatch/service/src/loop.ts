@@ -3,6 +3,7 @@
 // built from the task and its conversation. What a row may start follows the asker rules (thread.ts). The kernel owns
 // admission, limits, identity and the job's lifecycle: a busy kernel (429), or input a run didn't take, leaves the row
 // claimed, and its lease brings it back.
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { KernelError, type JobView, type Kernel, type Wake } from "./kernel.ts";
 import { buildPrompt, outcome, type Words } from "./prompt.ts";
@@ -57,6 +58,14 @@ const neverStarted = (j: { state: string; exit: number | null }) => j.state === 
 /** A run that ended cleanly with no final message at all (the model returned nothing): tried again like one that didn't finish. */
 const silent = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean }) => j.state === "done" && !j.exit && !j.timedOut && !j.cancelled && !String(j.final ?? "").trim();
 /** A run the machinery cancelled (the progress judge, a closed task): no account stopped it. The owner's own Stop records one, and is not this. */
+/** A wake notice's id for a wake delivered to a live session (the kernel's `[\w.-]{1,80}`): filed again, it posts nothing. */
+export const noticeId = (key: string) => `w-${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
+/** What a session is woken with by a wake that carries no words: its scheduled note, why it resumes, or its wait's end. */
+const liveNotice = (cause: string) => {
+  const waited = /^wait:\s*(.*)$/s.exec(cause)?.[1];
+  return RESUME[cause] ?? (waited !== undefined ? `Your wait is up: ${waited || "the time you set"}` : undefined) ?? /^scheduled: (.+)$/s.exec(cause)?.[1]
+    ?? (cause === "idle" ? "This task has been idle: carry on, or finish it" : `Woken: ${cause}`);
+};
 export const machineryStop = (j: { state: string; stoppedBy?: string | null }) => j.state === "cancelled" && j.stoppedBy === null;
 export const unfinished = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean; stoppedBy?: string | null }) => neverStarted(j) || j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128) || silent(j) || machineryStop(j);
 
@@ -219,6 +228,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
 
   /** Each ended job's outcome, once: its reply (none for NO_REPLY), or how it stopped; a run whose task was closed is stopped. */
   async function follow() {
+    let dir: Directory | undefined;
     for (const v of await kernel.open()) {
       const wait = backoff.get(v.id);
       if (wait && now() < wait.next) continue;
@@ -230,6 +240,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           // A task moved to another agent while its run goes on (re-routed): the new assignee has its own wake, and this run's
           // reply would be refused, so it is stopped rather than left to run out its time.
           if (cur.assigneeAgentId && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log("task moved while running: run stopped", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
+          // A session waits for days with no steps by design: never judged on progress.
+          if ((dir ??= await kernel.directory())[v.agent]?.profile === "session") continue;
           // A run that stops making progress is stopped here (progress.ts); the kernel keeps only the hard deadline.
           const judge = judges.get(v.id) ?? judges.set(v.id, progressTracker()).get(v.id)!;
           judge.add(v.progress?.steps);
@@ -355,6 +367,12 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         await kernel.drop(w.key, `nothing to retry: ${dropped}`);
         return;
       }
+    }
+    // A session's job never ends to make way for the next one: a timer, a wait or any other wake that isn't a comment reaches
+    // it as a wake notice on its task (deduped by its id), which the comment path below then delivers as live input.
+    if (w.live_job && w.cause !== "comment") {
+      await kernel.wake(task.id, liveNotice(w.cause), noticeId(w.key));
+      return kernel.drop(w.key, "delivered to the live session as a wake notice");
     }
     if (w.cause === "comment") {
       const c = comments.find((x) => `comment:${x.id}` === w.key);

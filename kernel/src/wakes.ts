@@ -324,7 +324,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     return (q("SELECT at FROM dispatch_since WHERE agent = ?").get(agent) as { at: number }).at;
   };
   // A job with `at`: what it covers, the claim of the wake that started it (its spawn time for a job no claimed wake started).
-  const liveJob = (task: string) => q(`SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? AND j.state IN ${LIVE} ORDER BY j.at DESC LIMIT 1`).get(task) as { id: string; at: number } | undefined;
+  const liveJob = (task: string) => q(`SELECT j.id, j.profile, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? AND j.state IN ${LIVE} ORDER BY j.at DESC LIMIT 1`).get(task) as { id: string; profile: string | null; at: number } | undefined;
   const lastJob = (task: string) => q("SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? ORDER BY j.at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
 
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
@@ -1127,9 +1127,12 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           const live = liveJob(w.task);
           const comment = w.cause === "comment";
           if (live) {
-            // A wake is consumed only by a job whose prompt had its cause: any other waits for the next job (still open).
-            if (!comment) continue;
-            if (w.at < live.at) set(w, { done: `before the live job ${live.id} was claimed`, job: live.id });
+            // A wake is consumed only by a job whose prompt had its cause: any other waits for the next job (still open). A
+            // session's job never ends to make way for one, so its timers and waits are claimed for it too (dispatch delivers
+            // them as wake notices); one older than its claim its prompt already had.
+            const session = live.profile === "session";
+            if (!comment && !session) continue;
+            if (w.at < live.at) set(w, comment ? { done: `before the live job ${live.id} was claimed`, job: live.id } : { dropped: `before the live session job ${live.id} was claimed` });
             else { take.run(module, t + LEASE_MS, w.key); out.push({ ...w, state: "claimed", claimed_by: module, until: t + LEASE_MS, live_job: live.id }); }
             continue;
           }

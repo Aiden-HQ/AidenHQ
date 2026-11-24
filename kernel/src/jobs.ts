@@ -460,7 +460,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     let final: string | undefined = r.final || undefined;
     const progress: Progress = JSON.parse(r.progress || "{}");
     const usage = { input: 0, cached: 0, output: 0, seen: false, ...(r.usage ? { ...JSON.parse(r.usage), seen: true } : {}) };
-    const deadline = r.at + cfg.timeout_minutes * 60_000;
+    // A session job lives until it is stopped (its task closed, the owner's Stop, its lease released): no hard deadline.
+    const deadline = r.profile === "session" ? Infinity : r.at + cfg.timeout_minutes * 60_000;
     let timedOut = false, cancelled = false, killed = false, stoppedBy: string | undefined;
     let over = false;
     /** Comments appended to the inbox that no step of the engine has followed yet (see read). */
@@ -601,7 +602,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     watchers.set(id, { stop: () => (quiet(), save()), send, cancel: (by) => { cancelled = true; if (by) stoppedBy = by; kill(); } });
     timer = setInterval(tick, POLL_MS);
     // The deadline on its own timer, so a run is stopped when it runs out, not up to a poll later.
-    deadlineTimer = setTimeout(tick, Math.max(0, deadline - Date.now()) + 5);
+    if (deadline !== Infinity) deadlineTimer = setTimeout(tick, Math.max(0, deadline - Date.now()) + 5);
     // A file event (an engine event appended, the exit status written) reads at most once per NUDGE_MS. A job that removes or
     // replaces its own folder only loses the watch: the poll still follows it.
     const nudge = () => { soon ??= setTimeout(() => { soon = undefined; if (!over) tick(); }, NUDGE_MS); };
@@ -687,7 +688,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   /** Start (or restart, after a stale session) one run of an admitted job in its box, and follow it. */
   function start(id: string, { box, worktree, prompt, session, fullPrompt, label }: Run) {
     const r = row(id)!;
-    const a = JSON.parse(r.authority) as { engine: string; model: string; effort: string; web: boolean };
+    const a = JSON.parse(r.authority) as { engine: string; model: string; effort: string; web: boolean; models?: string[] };
     const entry = readEngines(cfg)[a.engine];
     if (entry?.box !== true) throw new JobError(400, "not-a-box-engine", `the ${a.engine} engine doesn't run in an agent computer`);
     // An engine that "reads" runs without web search (sandbox.ts observes).
@@ -702,7 +703,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     let logPath = `${stem}.log`;
     for (let n = 2; existsSync(`${logPath}.exit`) || existsSync(logPath); n++) logPath = `${stem}-${n}.log`;
     const jobDir = newJobDir(box.outDir);
-    const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: r.agent, issueId: r.task, at }, box, boxWrap });
+    const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: r.agent, issueId: r.task, at }, box, boxWrap, models: a.models ?? [] });
     appendFileSync(logPath, `# ${new Date(at).toISOString()} ${engine.kind}${engine.model ? ` (${engine.model})` : ""} in box ${box.container} (${worktree})\n`);
     const pid = spawnDetached(built.argv, logPath);
     // Running and its fact in one transaction; if they can't be written the run is stopped and the start fails (admission's

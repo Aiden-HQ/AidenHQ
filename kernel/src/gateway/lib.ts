@@ -69,7 +69,7 @@ export type Caller = Brand<{
 }, "Caller">;
 type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
 /** config/grants/grants.json `agents`, by Paperclip id (setup writes it). */
-type Grants = Record<string, { rev?: string; key?: string }>;
+type Grants = Record<string, { rev?: string; key?: string; profile?: string }>;
 /** config/gateway.json `ci` (compile writes it from the ci module's settings). */
 type CiConf = { orgs?: unknown; models?: unknown; review?: unknown; tiers?: Record<string, unknown> };
 /** A run key's settled identity (the runs table), or the same fields resolved for one call. */
@@ -682,7 +682,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         // A kernel job (boxes.ts): its run is the job, its agent's on its task (a chat or routine task by the day), while the job
         // lives.
         if (!jobLive(String(p.id))) throw fail(401, "unauthorized", "this job has ended");
-        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, runId: String(p.id), ...(await taskOf(p.i)) });
+        let row = q.run.get(runKey) as RunRow | undefined;
+        if (!row) {
+          const t = await taskOf(p.i);
+          // A session's task lives for days (its agent's profile): its cap is per UTC day, as a chat task's.
+          row = settle(runKey, { agentId: p.a, runId: String(p.id), issueId: t.issueId, perpetual: t.perpetual || Boolean(p.a && grants()[p.a]?.profile === "session") });
+        }
         return as(row, routeKind, "agent");
       }
       if (p.k === "check") return { ...as(null, "check", "Check jobs"), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;

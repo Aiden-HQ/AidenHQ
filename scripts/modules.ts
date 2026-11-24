@@ -208,7 +208,7 @@ export function grantEntry(key: string, a: Obj, routines: Obj = {}) {
   };
 }
 /** An agent's profile (kernel/src/admission.ts PROFILES): which tools, writes and computer its kernel jobs get. */
-const JOB_PROFILES = ["crew", "engineer", "check"];
+const JOB_PROFILES = ["crew", "engineer", "check", "session"];
 
 const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed"];
 const relPath = (p: string) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
@@ -1320,7 +1320,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const prompts = enabled.flatMap((n) => promptEntries(n, all.get(n)!.def, all.get(n)!.root)).sort(promptOrder);
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
   paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
-  for (const a of Object.values<Obj>(paperclip.agents)) if ((a.profile === "crew" || a.profile === "engineer") && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
+  for (const a of Object.values<Obj>(paperclip.agents)) if (["crew", "engineer", "session"].includes(a.profile) && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
   // Skills (modules/<m>/skills/<name>/SKILL.md): each agent gets exactly its effective list (effectiveSkills), of every
   // available module's skills; jobs get exactly these.
   const skills = [...all.values()].flatMap((m) => skillEntries(m.name, m.root, enabled.includes(m.name)).map((s) => ({ ...s, enabled: enabled.includes(m.name) })));
@@ -1863,7 +1863,7 @@ function heartbeatRoutines(paperclip: Obj, settings: Obj, agentOverrides: Obj, r
     if (hb == null || hb === false) continue;
     const hours = hb === true ? every : hb;
     if (!HEARTBEAT_HOURS.includes(hours)) fail(`agent ${key}: heartbeat is true, false or hours between heartbeats (${HEARTBEAT_HOURS.join(", ")})`);
-    if (a.profile === "engineer") fail(`agent ${key}: an Engineer can't have a heartbeat (it works on the tasks it is given)`);
+    if (a.profile === "engineer" || a.profile === "session") fail(`agent ${key}: an ${a.profile === "engineer" ? "Engineer" : "agent with profile session"} can't have a heartbeat (it works on the tasks it is given)`);
     const tools = a.enabled_tools.paperclip_tasks ?? [];
     const missing = HEARTBEAT_TOOLS.filter((t) => !tools.includes(t));
     if (missing.length) fail(`agent ${key}: heartbeat needs paperclip_tasks: ${missing.join(", ")}`);

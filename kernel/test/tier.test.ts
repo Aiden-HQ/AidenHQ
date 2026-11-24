@@ -14,3 +14,11 @@ test("an apply is the reviewer's unless refused, the owner's save or autonomy of
   assert.deepEqual(at({ floor: 0, raise: { tier: 2 } }), [1, "review"], "a raise is the reviewer's");
   assert.deepEqual(at({ floor: 0 }), [0, "claimed"], "floor 0 runs");
 });
+
+test("a session's writes run at once; a refusal, the owner's veto and autonomy off still hold", () => {
+  const state = (i: Partial<Parameters<typeof computeTier>[0]>) => computeTier({ floor: 1, session: true, autonomy: "full", ...i }).state;
+  assert.equal(state({}), "claimed");
+  assert.equal(state({ refusal: "x" }), "rejected");
+  assert.equal(state({ priorVeto: true }), "owner");
+  assert.equal(state({ autonomy: "off" }), "owner");
+});

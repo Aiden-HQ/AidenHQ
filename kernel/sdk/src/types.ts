@@ -16,12 +16,15 @@ export interface JobSpec {     // <job dir>/job.json, written by the runner
   job: string; agent: string; task: string;
   prompt: string;              // composed by the requesting module
   session?: string;            // resume a prior session id the engine reported
-  model: { base_url: string; token_env: string; id: string; effort: string };   // token_env: AIDENHQ_MODEL_TOKEN (a box: its run token)
-  mcp: { name: string; url: string; token_env: "AIDENHQ_JOB_TOKEN"; tool_timeout_s?: number }[];   // proxy URLs only (jobcaps)
+  model: { base_url: string; token_env: string; id: string; effort: string;   // token_env: AIDENHQ_MODEL_TOKEN (a box: its run token)
+           models?: string[] };   // minor: the model ids the agent offers (its frozen authority's)
+  // minor (filled): the job's frozen connections, each through the box gateway's proxy with the run token as X-Agent-Key; the
+  // proxy enforces the tools, the list only names them
+  mcp: { name: string; url: string; token_env: "AIDENHQ_RUN_TOKEN"; tools: string[]; tool_timeout_s?: number }[];
   env: string[];               // names of env vars set (jobcap secrets)
   limits: { timeout_s: number };
   web: boolean;                // minor: false when the job holds private data (no web search or fetch)
-  state?: string;              // minor: the engine's own state folder (its sessions), read-write
+  state?: string;              // minor: the engine's own state folder (its sessions), read-write, as the box sees it
   sandbox: { kind: "box"; writable: string[]; network: boolean };   // minor: the boundary the engine runs in
 }
 export type EngineEvent =      // <job dir>/events.jsonl, appended by the engine
