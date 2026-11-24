@@ -118,6 +118,11 @@ describe("app_page_canary", () => {
     // The intake is the POST before notify that carries the reference, not whatever the page posts last.
     expect(script).toContain("x.at <= notify.at");
     expect(script).toContain("intakeAnswer ?? intake.at(-1)");
+    // A service worker's synthesized 204 never counts as the gate answering.
+    expect(script).toContain("p.response.fromServiceWorker");
+    expect(script).toContain('notify.synthetic ? "unknown"');
+    // The intake is the POST whose reference the page shows, not any POST with an id.
+    expect(script).toContain("shown.includes(String(v))");
     expect(script).toContain("intake.some((x) => x.status == null)");
     // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
     expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);
