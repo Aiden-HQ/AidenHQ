@@ -31,7 +31,7 @@ import type { AuthorKind, Flow } from "./flow.js";
 import { searchView, type TaskSearch } from "./search.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
-import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
+import { connectionsView, readSources, readUpdates, settingsView, type Probe, type Wakes } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { CodeReviewSchema, CombosSchema, TreeRequestSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
@@ -1335,14 +1335,22 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   // ------------------------------------------------------------------ Settings (settings.ts)
 
   /** Setup's routine ids by key (grants.json `routine_keys`: Paperclip id -> compiled key); empty before the first apply. */
-  const routineKeys = (): Record<string, string> => { try { return JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")).routine_keys ?? {}; } catch { return {}; } };
+  const grantsTable = (): { routine_keys?: Record<string, string>; routine_events?: Record<string, Wakes> } => { try { return JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")); } catch { return {}; } };
+  const routineKeys = () => grantsTable().routine_keys ?? {};
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
   async function settingsData() {
     const [pending, live] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => [])]);
     // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
     const rows = new Map(live.filter((x) => x.status !== "archived").map((x) => [x.id, x]));
-    const byKey = Object.fromEntries(Object.entries(routineKeys()).flatMap(([id, k]) => (rows.has(id) ? [[k, { id, paused: rows.get(id)!.status === "paused" }]] : [])));
+    const { routine_keys = {}, routine_events = {} } = grantsTable();
+    const byKey = Object.fromEntries(Object.entries(routine_keys).flatMap(([id, k]) => {
+      const r = rows.get(id);
+      if (!r) return [];
+      const next = r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled).map((t) => t.nextRunAt).filter(Boolean).sort()[0] : undefined;
+      const ev = routine_events[id];
+      return [[k, { id, paused: r.status === "paused", ...(next ? { next } : {}), ...(ev ? { wakes: { connection: ev.connection, resource: ev.resource, filter: ev.filter } } : {}) }]];
+    }));
     return settingsView({
       ...readSources(settingsFiles()),
       live: byKey,

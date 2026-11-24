@@ -4,6 +4,7 @@
 // the row shows its stage instead of the editor.
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "./api";
+import { runAt as at } from "./util";
 import { cronText, modelShort, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
 import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./types";
@@ -172,7 +173,9 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
   if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() || null }), was.push(r.model ?? null));
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
-  const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : r.webhook ? "on an event" : "when asked";
+  const w = typeof r.wakes === "object" ? r.wakes : null;
+  const wakes = w && `wakes on ${w.connection}${w.resource && w.resource !== "*" ? ` ${w.resource}` : ""} events${w.filter ? `: ${Object.entries(w.filter).map(([k, v]) => `${k} ${Array.isArray(v) ? v.join(", ") : String(v)}`).join("; ")}` : ""}`;
+  const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : wakes || (r.webhook ? "on an event" : "when asked");
   const [catalog, refreshCatalog] = useModelCatalog();
   const prefix = prefixOf(r.model ?? agentModel);
   return (
@@ -184,8 +187,10 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
           <span>
             {when}
             {r.model && ` on ${modelShort(r.model)}`}
-            {paused && " (paused)"}
+            {!paused && r.next && ` · next ${at(r.next)}`}
           </span>
+          {paused && <StatusDot tone="idle">Paused</StatusDot>}
+          {(!r.id || r.wakes === "not_applied") && <StatusDot tone="idle">Not set up yet</StatusDot>}
           {r.id && <button className="btn" type="button" disabled={pausing} onClick={togglePause}>{paused ? "Resume" : "Pause"}</button>}
           {pauseError && <span className="st-error" role="alert">{pauseError}</span>}
           {diff.length > 0 && <span className="muted"> · module default differs for {diff.join(", ")}</span>}

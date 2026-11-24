@@ -143,3 +143,10 @@ export function keepsSecureCookies(): boolean {
   document.cookie = `${probe}=; Path=/; Secure; SameSite=Strict; Max-Age=0`;
   return secureOnHttp;
 }
+
+/** A run time: the clock time, with the weekday when it isn't today. */
+export const runAt = (iso: string) => {
+  const d = new Date(iso);
+  const day = d.toDateString() === new Date().toDateString() ? "" : `${d.toLocaleDateString(undefined, { weekday: "short" })} `;
+  return `${day}${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+};

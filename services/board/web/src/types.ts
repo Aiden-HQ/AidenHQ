@@ -761,7 +761,7 @@ export interface AgentSettings {
   team?: string;
   /** A team member: its team record's key. */
   memberOf?: string;
-  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown>; /** Its live Paperclip row and whether it is paused (absent before setup made it). */ id?: string; paused?: boolean }[];
+  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown>; /** Its live Paperclip row and whether it is paused (absent before setup made it). */ id?: string; paused?: boolean; /** An active schedule's next run (ISO). */ next?: string; /** An event routine: what wakes it (its applied subscription), or not_applied before setup has it. */ wakes?: { connection: string; resource?: string; filter?: Record<string, unknown> } | "not_applied" }[];
   graded: boolean;
   roles: string[];
   /** The module's own model, reasoning_effort and heartbeat where the instance overrides them. */
