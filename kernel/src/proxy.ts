@@ -380,7 +380,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             });
             } catch (e) {
               // A trusted answer was never parsed before: one the kernel can't read still goes back as it came.
-              if (asIs) {
+              if (asIs && !(call && raw.length > MAX_RESULT)) {
                 bytes = raw.length;
                 res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
                 return resolve();
