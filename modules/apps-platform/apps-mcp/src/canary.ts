@@ -88,9 +88,15 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
         x.status = null;
         return;
       }
-      NET.push({ id: p.requestId, url: p.request.url, method: p.request.method, status: null, hop: null, at: Date.now() });
+      NET.push({ id: p.requestId, url: p.request.url, method: p.request.method, status: null, hop: null, synthetic: false, at: Date.now() });
     };
-    dt.on["Network.responseReceived"] = (p) => { const x = NET.find((n) => n.id === p.requestId); if (x) x.status = p.response.status; };
+    // A response a service worker synthesized never reached the gate: it is recorded as such, never as the gate's 204.
+    dt.on["Network.responseReceived"] = (p) => {
+      const x = NET.find((n) => n.id === p.requestId);
+      if (!x) return;
+      x.status = p.response.status;
+      if (p.response.fromServiceWorker) x.synthetic = true;
+    };
     await ab("set", "viewport", String(r.width || 1280), "900");
     // The handoff sets the listener's host-only cookie, then lands on the app's own page.
     await ab("open", listener + "/.auth/handoff?" + new URLSearchParams({ code: r.code, state: r.state, next: r.path }).toString());
@@ -151,6 +157,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     while (intake.length && intake.some((x) => x.status == null) && Date.now() - ti < 10000) { await new Promise((ok) => setTimeout(ok, 250)); intake = intakeOf(); }
     // The reference: the app's own intake response body, else the text the page shows. The request that carries it is the
     // intake, so its answer is the one that decides whether the feedback was saved.
+    const shown = String((await within(ab("eval", "document.body.innerText"), 4000, {})).result ?? "");
+    // The intake is the POST whose answer carries the reference the page itself shows: a person reads that id, so it is the
+    // submission's. A body the page never displays (a telemetry id, say) is not taken for it, and a POST that failed keeps its
+    // own failure even when its body has an id.
     let reference = null, intakeAnswer = null;
     for (const n of intake.filter((x) => x.id).slice(-4)) {
       try {
@@ -158,19 +168,22 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
         const body = String(b.body || "");
         const json = JSON.parse(body);
         const v = json && (json.reference ?? json.ref ?? json.id ?? json.ticket ?? json.submission_id ?? json.submissionId);
-        if (typeof v === "string" || typeof v === "number") { reference = String(v); intakeAnswer = n; break; }
+        if (typeof v !== "string" && typeof v !== "number") continue;
+        if (shown.includes(String(v))) { reference = String(v); intakeAnswer = n; break; }
+        if (!reference) { reference = String(v); intakeAnswer = n; } // an answer the page renders differently still names one
       } catch {}
     }
     // No body named a reference: the last POST before notify is the intake, by the page's own order. Its own answer is the
     // first hop when it redirected, never the redirect target's 200; a request that never answered is no answer at all.
     const last = intakeAnswer ?? intake.at(-1) ?? null;
     const intakeStatus = last ? (last.hop ?? last.status) : null;
-    const shown = String((await within(ab("eval", "document.body.innerText"), 4000, {})).result ?? "");
     if (!reference) reference = (shown.match(/(?:reference|ref(?:erence)?\s*(?:id|no\.?)?)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9_.:-]{2,80})/i) || [])[1] || null;
     let png;
     if (await within(ab("screenshot", "/tmp/canary.png"), 8000, null)) png = readFileSync("/tmp/canary.png").toString("base64");
+    // fired is the gate answering 204 itself: a service worker's own 204 means the request never left the page.
+    const notifyState = !notify ? "not-fired" : notify.synthetic ? "unknown" : notify.status === 204 ? "fired" : notify.status ? "not-fired" : "unknown";
     out({
-      status: intakeStatus ?? 0, finalUrl, pageTitle, notify: notify ? (notify.status === 204 ? "fired" : notify.status ? "not-fired" : "unknown") : "not-fired",
+      status: intakeStatus ?? 0, finalUrl, pageTitle, notify: notifyState,
       notifyStatus: notify ? notify.status : null, reference, submittedAt: new Date(submittedAt).toISOString(), png,
     });
   } catch (e) {
