@@ -14,6 +14,7 @@ const LEAD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd", REP = "dddddddd-dddd-4ddd-8
 const STW = "ffffffff-ffff-4fff-8fff-ffffffffffff", SET = "ffffffff-ffff-4fff-8fff-fffffffffff1";
 const OWN = "10000000-0000-4000-8000-000000000001", OTHER = "10000000-0000-4000-8000-000000000002", CHAT = "10000000-0000-4000-8000-000000000003";
 const FLEET = "10000000-0000-4000-8000-000000000004", HANDED = "10000000-0000-4000-8000-000000000005", MINE = "10000000-0000-4000-8000-000000000006";
+const ROUTINE = "10000000-0000-4000-8000-000000000007", ORPHAN = "10000000-0000-4000-8000-000000000008";
 const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD, "key-stw": STW, "key-set": SET };
 
 async function setup(t, { projects } = {}) {
@@ -25,6 +26,10 @@ async function setup(t, { projects } = {}) {
     // An agent's task it handed back to the owner (task_handoff), and a task the owner made for themselves.
     [HANDED]: { id: HANDED, identifier: "WOR-5", status: "todo", assigneeAgentId: null, assigneeUserId: "u-owner", createdByAgentId: BO, companyId: "co", parentId: null },
     [MINE]: { id: MINE, identifier: "WOR-6", status: "todo", assigneeAgentId: BO, createdByUserId: "u-owner", companyId: "co", parentId: null },
+    // A routine run: woken by its routine, so no agent made it, and held by the agent the routine runs as. Another such run
+    // that nobody holds (an unpolled routine) is not settler-routeable: there is no agent to hand it to.
+    [ROUTINE]: { id: ROUTINE, identifier: "WOR-7", status: "in_progress", assigneeAgentId: BO, originKind: "routine_execution", companyId: "co", parentId: null },
+    [ORPHAN]: { id: ORPHAN, identifier: "WOR-8", status: "in_progress", assigneeAgentId: null, originKind: "routine_execution", companyId: "co", parentId: null },
   });
   const plugin = [];
   let k;
@@ -122,6 +127,28 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   assert.deepEqual([r.status, /handing a task back names the owner/.test(r.json.error.message)], [400, true]);
   r = await act("ada", "PATCH", "/api/issues/WOR-1", { assigneeAgentId: null, assigneeUserId: "u-owner", status: "todo" });
   assert.equal(r.status, 200);
+});
+
+test("the fleet settler routes a routine run held by another agent, and is refused only where its scope ends", async (t) => {
+  const { h, act } = await setup(t);
+  // A routine run, held by an agent: routed back to that agent, as a settler routes an agent-made task.
+  let r = await act("settler", "PATCH", "/api/issues/WOR-7", { status: "todo", assigneeAgentId: BO });
+  assert.deepEqual([r.status, r.json.status, h.issues[ROUTINE].status, h.issues[ROUTINE].assigneeAgentId], [200, "todo", "todo", BO]);
+  // Its scope is settling's: the status, the holder and the blockers, never the task's title.
+  r = await act("settler", "PATCH", "/api/issues/WOR-7", { title: "Renamed" });
+  assert.deepEqual([r.status, /a settler changes another agent's task's status, holder \(an agent\) and blockers only; not title/.test(r.json.error.message)], [403, true]);
+  // The owner's own task stays the owner's, and a person's task is no settler's to move.
+  r = await act("settler", "PATCH", "/api/issues/WOR-6", { status: "todo", assigneeAgentId: ADA });
+  assert.deepEqual([r.status, /it is the owner's own task/.test(r.json.error.message)], [403, true]);
+  assert.equal(h.issues[MINE].assigneeAgentId, BO);
+  // A routine run nobody holds names that state, and is not routed to a settler's guess at an agent.
+  r = await act("settler", "PATCH", "/api/issues/WOR-8", { status: "todo", assigneeAgentId: ADA });
+  assert.deepEqual([r.status, /it has no agent to hold it/.test(r.json.error.message)], [403, true]);
+  // A settler's refusal never sends it to ask itself.
+  assert.ok(!/Fleet Steward/.test(r.json.error.message));
+  // A non-settler's refusal still names whom to ask.
+  r = await act("ada", "PATCH", "/api/issues/WOR-2", { status: "cancelled" });
+  assert.match(r.json.error.message, /WOR-2 isn't yours to change: ask its assignee \(bo\) or the Fleet Steward to pass it on/);
 });
 
 test("the chief of staff comments on any task of its company, heard by that task's agent, and nothing more", async (t) => {
