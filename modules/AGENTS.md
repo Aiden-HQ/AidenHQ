@@ -19,7 +19,7 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
 ## Declare, and the board and the owner's Claude both drive it
 
 - **Everything the owner configures is declared in `module.yaml`:** settings (typed, with `values` and a comment that
-  explains them), `board.signins`, `board.setup_flows` and `providers.board`. The board draws them with its kit and theme
+  explains them), `board.signins`, `board.setup_flows` and `providers.board` (the module's Fleet page, below). The board draws them with its kit and theme
   ([board-ui.md](../docs/design/board-ui.md)). The owner's MCP reads and sets the same declarations
   ([design](../docs/superpowers/specs/2026-11-20-owner-mcp-design.md)), so a module adds no owner-facing code of its own.
 - **Secrets go through a board field, never chat.** Declare each with `setup:`. The board stores it in the vault and the
@@ -38,6 +38,26 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
   the MCP show its errors under the field.
 - **A new building block goes in the schema, for every module.** Add it to `modules/board/schemas/` and the board, never to
   one module ([design](../docs/superpowers/specs/2026-11-20-module-primitives-design.md)).
+
+## Features live on the module's own Fleet page
+
+- **The owner configures a module's features on its own page in the board's Fleet sidebar, the way Code review does.** The
+  generic module-settings screen (Settings, Modules) is for advanced settings: values an owner rarely touches. A feature
+  (what the module reviews, watches, sends or runs, and its on/off) is a page the owner opens from Fleet.
+- **How to add one:**
+  1. Declare `providers: board: { url: "http://<service>:<port>", auth: <one of the module's own secrets> }` in
+     `module.yaml` (`modules/code-review/module.yaml`). The url is a compose service; `scripts/modules.ts` checks both keys.
+  2. The module's service serves the page's data and actions as plain HTTP routes. The board reaches them through the kernel
+     (`GET|POST /v1/board-api/<module>/<path>`, `kernel/src/board-api.ts`), which adds the secret as the bearer, so the
+     board needs no network to the module.
+  3. The page is a board view (`services/board/web/src/Reviews.tsx` is the model) added to the Fleet section in
+     `services/board/web/src/Shell.tsx`, drawn with the board's kit ([board-ui.md](../docs/design/board-ui.md)).
+  4. The page shows the module's state (what it is doing, what it cost, what needs the owner) and edits its settings. An
+     empty, unconnected module says how to connect, as in "The owner's experience".
+- **The page edits settings through the settings-change path**, the one the module's agent tools use: a typed `setting`
+  change the kernel checks against the module's declared schema, writes to `instance.yaml` and applies
+  ([settings-changes.md](../docs/design/settings-changes.md)). The page and the module's agent tools both save through it, so
+  each setting has one validation and one owner-facing editor: its page.
 
 ## Connections are MCP servers
 
