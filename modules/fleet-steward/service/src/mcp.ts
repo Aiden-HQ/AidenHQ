@@ -140,7 +140,7 @@ export const fleetTools = (d: {
   },
   {
     name: "fleet_generation_status",
-    description: "Read-only: this instance's apply generations, newest first: the current product `pin` (the newest generation that got past validation) and the last 20, each with `n`, `at`, `product`, `health` (good, failed, refused, pending), `reason`, `log`, `revert_of` and `data_versions` (each data module's data-directory format version as that generation compiled it: `0` means never migrated, and is not evidence that the module did not run). Use it to check whether a product pin bump applied and stayed healthy, or rolled back.",
+    description: "Read-only: this instance's apply generations, newest first: the current product `pin` (the newest generation that got past validation) and the last 20, each with `n`, `at`, `product`, `health` (good, failed, refused, pending), `reason`, `log`, `revert_of` and `data_versions` (each data module's data-directory format version as that generation compiled it: `0` is the baseline a module that never bumped `data_version` declares, so it means never migrated and is not evidence that the module did not run). Use it to check whether a product pin bump applied and stayed healthy, or rolled back.",
     inputSchema: NO_ARGS,
     run: async () => d.generations(),
   },

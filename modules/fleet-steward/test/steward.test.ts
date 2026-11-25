@@ -176,7 +176,8 @@ test("fleet_generation_status's description names data_versions as each module's
   assert.ok(status, "the tool is listed");
   assert.match(status.description, /`data_versions`/, "it names the field");
   assert.match(status.description, /each data module's data-directory format version as that generation compiled it/, "it says what the field is");
-  assert.match(status.description, /`0` means never migrated, and is not evidence that the module did not run/, "it says what 0 means");
+  assert.match(status.description, /`0` is the baseline a module that never bumped `data_version` declares/, "it says 0 is the declared baseline, not migration history");
+  assert.match(status.description, /never migrated and is not evidence that the module did not run/, "it says what 0 means");
 });
 
 test("/alerts and /metrics take only the monitoring module's token: no key or a wrong one is a 401 and files nothing", async (t) => {
