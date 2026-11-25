@@ -122,13 +122,12 @@ it("src_security: one row per finding key across passes and paths, gone findings
   sboms["repo.json"] = { matches: [match("lodash", "4.17.20", "CVE-2021-23337", "/a/package-lock.json")] };
   delete sboms["image.json"];
   const second = await scanPass(store, { ...deps, readBatch: async () => ({ ...batch(), targets: batch().targets.filter((t) => !t.target.startsWith("image:")) }) });
-  expect(second).toBe(3); // lodash's locations changed on both repo targets; the image's finding is settled
+  expect(second).toBe(2); // lodash's locations changed on both repo targets; an absent target writes no finding
   expect(rows.get("repo:product|lodash|4.17.20|CVE-2021-23337")!.last_seen).toEqual(new Date(now));
-  // An image target absent from a fresh batch is retired, not a failing target: nothing runs it and no configured image
-  // names it, so its findings settle with a reason saying so and no replacement is claimed.
-  const imageRuns = runs.filter((r) => r.scope === "image:aidenhq/board:local");
-  expect(imageRuns[imageRuns.length - 1]).toMatchObject({ status: "retired", error: null });
-  expect(rows.get("image:aidenhq/board:local|openssl|3.0.1|CVE-2024-0001")).toMatchObject({ present: false, resolved_reason: /no container runs this image and no configured image names it/ });
+  // The image is not one of the fleet's computer images, so its absence from a fresh batch is not proof it retired: its
+  // finding stays present and unverified, and the absence is an error row.
+  expect(rows.get("image:aidenhq/board:local|openssl|3.0.1|CVE-2024-0001")).toMatchObject({ present: true, resolved_at: null });
+  expect(runs.find((r) => r.scope === "image:aidenhq/board:local" && r.error)?.error).toMatch(/absent from this pass's SBOM inventory/);
 
   // A stale batch (the host timer stopped) resolves nothing and is reported.
   now += 86_400_000;
@@ -168,7 +167,7 @@ it("src_security: a mapped target absent from a fresh batch is retired against i
   // Next pass: the retired and the unmapped target are gone from the inventory; only the replacement is scanned.
   now += 86_400_000;
   runs.length = 0;
-  expect(await scanPass(store, deps([replacement]))).toBe(3); // the retired target's two findings, plus the unmapped image's
+  expect(await scanPass(store, deps([replacement]))).toBe(2); // the retired target's two findings
 
   // Retired, not absent: a status marker with no error, so scan-health does not read it as a failing target.
   const run = runs.find((x) => x.scope === retired)!;
@@ -184,10 +183,10 @@ it("src_security: a mapped target absent from a fresh batch is retired against i
   expect(rows.get(carried)!.resolved_reason).toMatch(/covered by replacement/);
   expect(rows.get(replacementRow)).toMatchObject({ present: true, resolved_at: null });
 
-  // An image with no mapping and no same-repository target in the batch retires with no replacement: retired, no error,
-  // and its finding settled without naming another image as the one that covers it.
-  expect(runs.find((x) => x.scope === unmapped)).toMatchObject({ status: "retired", error: null });
-  expect(rows.get(unmappedRow)).toMatchObject({ present: false, resolved_reason: /no container runs this image and no configured image names it/ });
+  // An image that is neither mapped nor a configured computer image keeps the absent/unverified path: with no clean
+  // target of its repository, nothing shows it is out of scope, so its finding stays present.
+  expect(runs.find((x) => x.scope === unmapped)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(unmappedRow)).toMatchObject({ present: true, resolved_at: null });
 });
 
 it("src_security: an absent image target retires against the one clean target of its repository in this pass", async () => {
@@ -231,7 +230,7 @@ it("src_security: an absent image target retires against the one clean target of
   expect(rows.get(`${newTag}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
 });
 
-it("src_security: an absent image target with no same-repository target in the batch retires without claiming one", async () => {
+it("src_security: an absent computer image with no same-repository target in the batch retires without claiming one, and another image keeps the error", async () => {
   const { store, rows, runs } = fakeStore();
   const gone = "image:aidenhq/computer-agent-base:cb94c7b36572";
   const mapped = "image:aidenhq/github-mcp:local";
@@ -253,17 +252,17 @@ it("src_security: an absent image target with no same-repository target in the b
   now += 86_400_000;
   runs.length = 0;
   // Only another repository's image is in the batch: neither absent target has a same-repository target to retire against.
-  expect(await scanPass(store, deps(["image:aidenhq/board:local"]))).toBe(3); // the board scan, and the two retirements
+  expect(await scanPass(store, deps(["image:aidenhq/board:local"]))).toBe(2); // the board scan, and the computer image's retirement
 
-  for (const target of [gone, mapped]) {
-    const run = runs.find((x) => x.scope === target)!;
-    expect(run).toMatchObject({ status: "retired", error: null });
-    expect(run.error).toBeNull();
-    expect(runs.filter((x) => x.scope === target)).toHaveLength(1);
-    expect(runs.find((x) => x.scope === target && /absent from this pass's SBOM inventory/.test(x.error ?? ""))).toBeUndefined();
-  }
+  // A configured computer image may retire claiming no replacement: the writer enumerates the fleet's images every pass.
+  const computer = runs.find((x) => x.scope === gone)!;
+  expect(computer).toMatchObject({ status: "retired", error: null });
+  expect(runs.filter((x) => x.scope === gone)).toHaveLength(1);
   expect(rows.get(`${gone}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
-  expect(rows.get(`${mapped}|curl|7.88.1|CVE-2023-0001`)).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
+
+  // Any other image with no same-repository target in the batch keeps the absent error: absence is not proof of scope.
+  expect(runs.find((x) => x.scope === mapped)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(`${mapped}|curl|7.88.1|CVE-2023-0001`)).toMatchObject({ present: true, resolved_at: null });
 });
 
 it("src_security: an image target absent from a batch that does not claim a complete inventory keeps the absent error", async () => {
@@ -363,6 +362,28 @@ it("src_security: an absent image whose repository is in the batch but did not s
   expect(await scanPass(store, deps(`${alias}\t-\tdocker save: no room\t`))).toBe(0);
   expect(runs.find((x) => x.scope === hashTag)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
   expect(rows.get(`${hashTag}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
+});
+
+it("src_security: a bare digest target is never retired by repository name, since it names no repository", async () => {
+  // A container keyed by its own image id has no repository, so no other image can claim to replace it and it may not
+  // retire with no replacement: its absence keeps the absent error.
+  const { store, rows, runs } = fakeStore();
+  const digest = `image:sha256:${"a".repeat(64)}`;
+  const sboms: Record<string, unknown> = { "digest.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
+  let now = Date.parse("2026-11-25T00:00:00Z");
+  const deps = (index: string) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps(`${digest}\tdigest.json\t\t`))).toBe(1);
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps("image:aidenhq/computer-engineer:h2\th2.json\t\t\nimage:aidenhq/computer-engineer:h3\th3.json\t\t"))).toBe(0);
+  expect(runs.find((x) => x.scope === digest)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(`${digest}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
 });
 
 it("src_security: a non-image target absent from a fresh batch keeps the absent error, since the batch does not enumerate it", async () => {

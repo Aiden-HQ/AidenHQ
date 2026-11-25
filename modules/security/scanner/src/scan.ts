@@ -221,6 +221,16 @@ export function imageRepository(target: string): string | null {
 }
 
 /**
+ * Whether an `image:` target is one of the fleet's computer images (`aidenhq/computer-browser`, `-agent-base`,
+ * `-engineer`, `-session`). Only these may retire with no replacement: the writer enumerates them from
+ * config/computers.json every pass, so absence says the build is no longer current. Any other image target's absence is
+ * not proof it is out of scope, because the writer lists only what runs and what is configured.
+ */
+export function isComputerImage(target: string): boolean {
+  return imageRepository(target)?.startsWith("aidenhq/computer-") === true;
+}
+
+/**
  * A retired target's present findings, settled against its replacement's rows from the same pass: the replacement's
  * own rows stay present; the retired target's rows become present = false, with the reason saying covered or gone. With
  * no replacement (null), every row is settled with NO_REPLACEMENT_REASON, claiming no other target for it.
@@ -313,6 +323,9 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
   //           One exception: when its repository is in the batch but nothing of it scanned cleanly, the image may be
   //           running under another name whose scan failed (an alias, say), so absence is not proof it is gone: the
   //           target keeps the absent/unverified row until a pass scans its repository again.
+  //           Retiring with no replacement at all is only for a configured computer image (`image:aidenhq/computer-*`),
+  //           which the writer enumerates every pass; any other image keeps the absent error when no same-repository
+  //           target was scanned, and a bare `image:sha256:…` id never matches a repository at all.
   //   other:  the batch does not enumerate these completely, so absence is not proof of retirement: the findings stay
   //           present and unverified, and the absence is an ingest_run error row so readers can see it.
   // A replacement from the shipped map (a cross-repository rename) is used when it was scanned cleanly in this pass.
@@ -347,7 +360,13 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
           await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
           continue;
         }
+        // One cleanly-scanned target of the repository is the replacement. With none (or several, so none can be named),
+        // only a configured computer image may retire claiming no replacement; anything else keeps the absent error.
         if (same.length === 1) replacement = same[0]!;
+        else if (!isComputerImage(target)) {
+          await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
+          continue;
+        }
       }
       // A failed retirement rolls back as a whole and is recorded as absent, so it stays visible and the next pass retries.
       const retired = target.startsWith("image:") || replacement
