@@ -697,11 +697,16 @@ stagedComposeFiles() {
 # Step 1 of spec §5.7.2: everything that can refuse, before anything is touched. Sets `why` on a refusal.
 validate() {
   # The compile's diagnostic goes in the generation's reason, where fleet_generation_status shows it (the log stays on the
-  # host): its message line (`compile: …`, or a thrown Error's, which follows a source pointer in node's output), else its first.
+  # host): from its message line (`compile: …`, or a thrown Error's, which follows a source pointer in node's output; else
+  # its first line) on, one bounded line.
   local err; err="$(mktemp)"
   if ! AIDENHQ_COMPILE_STAGE=1 node scripts/compile.ts 2>"$err"; then
     cat "$err" >&2
-    local diag; diag="$( { grep -m1 -E '^(compile:|[A-Za-z]*Error\b)' "$err" || grep -m1 . "$err"; } | cut -c1-300)"
+    # From the message line on, its source pointer included, joined on one line and bounded.
+    local at diag; at="$(grep -n -m1 -E '^(compile:|[A-Za-z]*Error\b)' "$err" | cut -d: -f1)"
+    diag="$(tail -n +"${at:-1}" "$err" | grep . | paste -sd $'\036' -)"
+    diag="${diag//$'\036'/ | }"
+    [ "${#diag}" -le 300 ] || diag="${diag:0:300}..."
     why="the staged compile failed: ${diag:-no error text on stderr}"; rm -f "$err"; return 1
   fi
   cat "$err" >&2; rm -f "$err"
