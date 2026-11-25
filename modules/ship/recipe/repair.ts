@@ -8,7 +8,8 @@
 // ({ globs, commands: [{ dir, cmd }] }: ship's generated paths and generators, from the target branch or the repo's setting).
 //   1. Merge the base into the head (a history made from the three trees).
 //   2. A conflicted generated path a generator covers takes the base side; a conflicted lockfile takes the base side and its
-//      package manager rewrites it (npm, pnpm, Go); anything else is a leftover for the Engineer.
+//      package manager rewrites it (npm, pnpm); a conflicted go.sum keeps both sides' lines, sorted (go.mod is never rewritten:
+//      `go mod tidy` would); anything else is a leftover for the Engineer.
 //   3. Run the generators; put back a lockfile they only re-spaced.
 // Result ($AIDENHQ_RESULT): { leftovers: [paths] }, { merge_failed: "<git's words>" } or { failed: "<the generator's words>" }
 // (nothing kept for any of them), or { changed: n } with
@@ -24,7 +25,6 @@ const OUT = process.env.AIDENHQ_OUT ?? "/aidenhq-out";
 const LOCK_CMD: Record<string, string> = {
   "package-lock.json": "npm install --package-lock-only --ignore-scripts --no-audit --no-fund",
   "pnpm-lock.yaml": "pnpm install --lockfile-only --ignore-scripts",
-  "go.sum": "go mod tidy",
 };
 const LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
@@ -38,6 +38,30 @@ export function missingTool(out: string): string | undefined {
     ?? /^make(?:\[\d+\])?: ([\w.+-]{1,60}): No such file or directory$/m.exec(out)
     ?? /^env: '?([\w.+-]{1,60})'?: No such file or directory$/m.exec(out);
   return m?.[1];
+}
+
+/** go.sum's own line order (golang.org/x/mod module.Sort): module path, then semantic version, a `/go.mod` line after its version's. */
+export function goSumOrder(a: string, b: string): number {
+  const key = (l: string) => { const [path = "", v = ""] = l.split(" "); return { path, gomod: v.endsWith("/go.mod"), ver: v.replace(/\/go\.mod$/, "").replace(/^v/, "").replace(/\+.*$/, "") }; };
+  const x = key(a), y = key(b);
+  if (x.path !== y.path) return x.path < y.path ? -1 : 1;
+  const [xc = "", xp] = x.ver.split(/-(.*)/s), [yc = "", yp] = y.ver.split(/-(.*)/s);
+  const xn = xc.split(".").map(Number), yn = yc.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((xn[i] ?? 0) !== (yn[i] ?? 0)) return (xn[i] ?? 0) < (yn[i] ?? 0) ? -1 : 1;
+  if (xp !== yp) {
+    if (xp === undefined || yp === undefined) return xp === undefined ? 1 : -1; // a release sorts after its prereleases
+    const xi = xp.split("."), yi = yp.split(".");
+    for (let i = 0; i < Math.max(xi.length, yi.length); i++) {
+      const m = xi[i], n = yi[i];
+      if (m === undefined || n === undefined) return m === undefined ? -1 : 1;
+      if (m === n) continue;
+      const mn = /^\d+$/.test(m), nn = /^\d+$/.test(n);
+      if (mn && nn) return Number(m) < Number(n) ? -1 : 1;
+      if (mn !== nn) return mn ? -1 : 1;
+      return m < n ? -1 : 1;
+    }
+  }
+  return x.gomod === y.gomod ? 0 : x.gomod ? 1 : -1;
 }
 
 export function repair(ws: string, out: string, spec: Record<string, string>) {
@@ -76,7 +100,15 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   // Every path the repair decides (a conflict it resolved, a file a generator touched) is named in the result, even when it ends
   // as the head had it: github re-makes the merge itself and takes these, and only these, from the box.
   const decided = new Set<string>();
+  const side = (n: number, p: string) => { try { return g(["show", `:${n}:${p}`]).split("\n"); } catch { return []; } };
   for (const p of unmerged()) {
+    if (name(p) === "go.sum") {
+      // Every line of go.sum is a checksum that stays valid: both sides' lines together are the merge (a stale one is harmless).
+      writeFileSync(join(repo, p), `${[...new Set([...side(2, p), ...side(3, p)].filter(Boolean))].sort(goSumOrder).join("\n")}\n`);
+      g(["add", "--", p]);
+      decided.add(p);
+      continue;
+    }
     const lock = LOCKS.includes(name(p));
     if (lock ? !LOCK_CMD[name(p)] : !(generated.includes(p) && covered(p))) continue;
     if (ok(["checkout", "--theirs", "--", p])) g(["add", "--", p]); else g(["rm", "-q", "--", p]);

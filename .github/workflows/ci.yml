@@ -15,6 +15,8 @@ name: ci
 
 on:
   pull_request:
+    # edited: a fixed title re-runs the `policy` job's title check (no push needed).
+    types: [opened, synchronize, reopened, edited]
   push:
     # merge-train/<n>: the merge queue's trains (modules/github merge-gate.ts), main plus the PRs it tests together,
     # made in one push at the finished commit (they are built on merge-build/<n>, which runs nothing).

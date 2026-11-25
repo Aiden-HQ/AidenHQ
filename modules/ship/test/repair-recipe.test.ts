@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { repair } from "../recipe/repair.ts";
+import { goSumOrder, repair } from "../recipe/repair.ts";
 
 test("ship-repair: generated conflicts regenerated into the files on top of the head; a source conflict is left over", () => {
   const root = mkdtempSync(join(tmpdir(), "ship-recipe-"));
@@ -55,4 +55,29 @@ test("ship-repair: generated conflicts regenerated into the files on top of the 
   assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "echo broken >&2; exit 3" }] }).result as any).failed), /exited 3: broken/);
   // A tool the box doesn't have is said first, plainly (ship holds and suggests the repo's own workflow).
   assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "webrpc-gen-not-here -schema x.ridl" }] }).result as any).failed), /^toolchain missing: webrpc-gen-not-here\n/);
+});
+
+test("ship-repair: a conflicted go.sum keeps both sides' lines and no command runs (go.mod stays as merged)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ship-gosum-"));
+  const origin = join(root, "origin");
+  const git = (...a: string[]) => execFileSync("git", ["-C", origin, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", "-b", "main", origin]);
+  writeFileSync(join(origin, "go.sum"), "a v1 h1:a\n");
+  git("add", "-A"); git("commit", "-qm", "init");
+  const mb = git("rev-parse", "HEAD");
+  git("checkout", "-qb", "feature"); writeFileSync(join(origin, "go.sum"), "a v1 h1:a\nb v1 h1:b\n"); git("commit", "-qam", "b");
+  const head = git("rev-parse", "HEAD");
+  git("checkout", "-q", "main"); writeFileSync(join(origin, "go.sum"), "a v1 h1:a\nc v1 h1:c\n"); git("commit", "-qam", "c");
+  const base = git("rev-parse", "HEAD");
+  const snap = (sha: string, dir: string) => { mkdirSync(dir, { recursive: true }); execFileSync("sh", ["-c", `git -C "${origin}" archive ${sha} | tar -x -C "${dir}"`]); return dir; };
+  const out = mkdtempSync(join(root, "out-"));
+  snap(base, join(out, "base")); snap(mb, join(out, "merge_base"));
+  const r = repair(snap(head, mkdtempSync(join(root, "ws-"))), out, { base, merge_base: mb, base_ref: "main", plan: "{}" });
+  assert.deepEqual(r.result, { changed: 1 });
+  assert.equal(Buffer.from(r.keep!.entries[0]!.content!, "base64").toString(), "a v1 h1:a\nb v1 h1:b\nc v1 h1:c\n");
+});
+
+test("go.sum order: path, then semantic version, /go.mod after its version", () => {
+  const lines = ["b v1.0.0/go.mod h1:x", "a v1.10.0 h1:x", "a v1.9.0 h1:x", "b v1.0.0 h1:x", "a v1.9.0-rc.1 h1:x", "a v1.9.0/go.mod h1:x"];
+  assert.deepEqual(lines.sort(goSumOrder), ["a v1.9.0-rc.1 h1:x", "a v1.9.0 h1:x", "a v1.9.0/go.mod h1:x", "a v1.10.0 h1:x", "b v1.0.0 h1:x", "b v1.0.0/go.mod h1:x"]);
 });
