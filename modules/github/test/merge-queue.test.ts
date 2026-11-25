@@ -1552,7 +1552,7 @@ test("a review reason is cleared when another gate takes the PR over, not only w
   // A required check is rerun on the same head: CI holds the merge now, so the review reason is no longer the record's wait.
   prs["acme-agents/widget"].checks = "PENDING";
   await merges.step();
-  assert.equal(waits.at(-1).reason, "1 check(s) still running on its head", "the review reason gives way to the checks' own when they take over");
+  assert.equal(waits.at(-1).reason, "checks are still running on its head", "the review reason gives way to the checks' own when they take over");
   assert.equal(merges.status("k-00000000000000c1").state, "running");
   // The checks come back green and the review passes: nothing is republished, nothing stale is left.
   prs["acme-agents/widget"].checks = "SUCCESS";
@@ -1638,7 +1638,7 @@ test("a queue written by the previous implementation republishes its reason on t
   });
   await merges.step();
   // CI holds the merge now, so the stale review reason must be cleared rather than assumed already delivered.
-  assert.deepEqual(waits.map((w) => w.reason), ["1 check(s) still running on its head"], "the stale reason is replaced on the first poll after the upgrade");
+  assert.deepEqual(waits.map((w) => w.reason), ["checks are still running on its head"], "the stale reason is replaced on the first poll after the upgrade");
 });
 
 test("a wait is recorded only after the kernel takes it: a restart mid-delivery republishes, never assumes it arrived", async () => {

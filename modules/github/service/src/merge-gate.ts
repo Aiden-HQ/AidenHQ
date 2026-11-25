@@ -175,7 +175,7 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
     // A required name nothing reported on this head (renamed, path-filtered) is named: GitHub won't merge until it reports.
     const missing = ship.required.filter((name) => !ship.checks.some((c) => c.name === name));
     if (missing.length && !ship.checks.some((c) => c.pending)) return { do: "wait", why: `required check(s) never reported on its head: ${missing.map((m) => `\`${m.replace(/`/g, "")}\``).join(", ")} (a person reruns or fixes the workflow)` };
-    if (judged.some((c) => c.pending)) return { do: "wait", why: `${judged.filter((c) => c.pending).length} required check(s) still running on its head` };
+    if (judged.some((c) => c.pending)) return { do: "wait", why: "required checks are still running on its head" };
   } else {
     const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
     if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail", why: "more than 100 checks on its head, so not all of them can be read" };
@@ -185,7 +185,7 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
     // Check names are set by whoever can push to the repo: counted, never quoted.
     const red = named.filter((c) => !c.ok && !c.pending);
     if (red.length) return { do: "fail", why: `${red.length} check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)` };
-    if (named.some((c) => c.pending)) return { do: "wait", why: `${named.filter((c) => c.pending).length} check(s) still running on its head` };
+    if (named.some((c) => c.pending)) return { do: "wait", why: "checks are still running on its head" };
   }
   if (skippedImageScan(pr)) return { do: ship ? "fix_ci" : "fail", why: "it changes an image but its image-scan check was skipped" };
   // Code review gates the repo: its pass is the review (code review unreachable is a wait); open important findings are the PR's to fix.
