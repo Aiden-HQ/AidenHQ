@@ -222,6 +222,8 @@ export function adoptedPass(o: AdoptedOptions) {
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
       // The PR's own stops hold a retarget too: a draft, the stop label, or a person assigned.
       const stopped = isStopped(repo, view, a);
+      // Intake may have changed the adoption since see() (a hand-off clears `assigned`): its stop is read again here.
+      { const s = stoppedPrs.get(repo.toLowerCase()) ?? new Set<number>(); if (stopped) s.add(pr.number); else s.delete(pr.number); stoppedPrs.set(repo.toLowerCase(), s); }
       if (!stopped && !ctx.stackedOn && a.stack && a.stack.branch === view.base && view.base !== main.name && await retargeted(a, view, main.name)) return;
       // A stack that reached the default branch (ship's retarget, or GitHub's own once the parent's branch was deleted): its base
       // is merged in first, a new head code review reviews whole; nothing moves on the old head. A conflict goes to the repair.
