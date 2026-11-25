@@ -76,4 +76,15 @@ test("ship checkout fetches the PR's head by its sha; ship push files the fix on
   git(app, "checkout", "-q", "-B", "ship-pr-7", head);
   await assert.rejects(aidenhq("ship", "push", link, head, "3"), (e: { code?: number }) => e.code === 2);
   assert.equal(writes.length, 1);
+
+  // `ship title` files one codehost.retitle naming the PR, its head and the generation: no checkout, no clone, no commit.
+  writes.length = 0;
+  const title = "fix(widget): keep the drawer open";
+  assert.match((await aidenhq("ship", "title", link, head, "3", title)).stdout, /k-1: done/);
+  assert.deepEqual(writes, [{ kind: "codehost.retitle", args: { repo: "acme/app", number: 7, head, generation: 3, title } }]);
+  // The arguments are required: a title with no words, or a missing generation, is a usage error and files nothing.
+  assert.equal(writes.length, 1);
+  await assert.rejects(aidenhq("ship", "title", link, head, "3"), (e: { code?: number }) => e.code === 2);
+  await assert.rejects(aidenhq("ship", "title", link, head, "x", title), (e: { code?: number }) => e.code === 2);
+  assert.equal(writes.length, 1);
 });

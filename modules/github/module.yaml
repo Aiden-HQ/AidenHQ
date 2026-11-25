@@ -340,6 +340,10 @@ writes:
   enqueue: { args: schemas/enqueue.json, floor: 0, filed_by: [ ship ], card: *card }
   # retarget: a stacked adopted PR whose base PR merged, onto the default branch (GitHub retargets it only when that branch is deleted).
   retarget: { args: schemas/retarget.json, floor: 0, filed_by: [ ship ], card: *card }
+  # retitle: an adopted PR whose only red check is the PR title (the `policy` job's Conventional Commit check): the title alone,
+  # at the bound head and generation, which the PR's own task Engineer files with `aidenhq ship title`. A title is a judgement, so
+  # ship never files one itself; plan.ts still refuses any PR that isn't that adoption's, at the head and generation it names.
+  retitle: { args: schemas/retitle.json, floor: 0, filed_by: [ ship ], card: *card }
   # repair: ship's deterministic repair of one adopted PR (its `ship-repair` check job, no model), written as the App.
   repair: { args: schemas/repair.json, floor: 0, filed_by: [ ship ], card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>

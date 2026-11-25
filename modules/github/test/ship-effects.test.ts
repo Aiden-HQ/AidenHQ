@@ -105,7 +105,9 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "PATCH" && path === `/repos/${REPO}/pulls/8`) return { status: 200, body: { number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } } };
     // A new PR the publish opens (a branch with none yet): its head is whatever the branch holds when it asks.
     if (method === "POST" && path === `/repos/${REPO}/pulls`) return { status: 201, body: { number: 9, html_url: `https://github.com/${REPO}/pull/9`, head: { sha: bare(["rev-parse", `refs/heads/${body.head}`]), ref: body.head }, base: { ref: body.base, sha: main }, user: { login: "owner1" } } };
-    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
+    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", title: pr.title ?? "wip", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
+    // The title write: only the title changes; the fake keeps the rest as it read it (a body, base or state sent would show here).
+    if (method === "PATCH" && path === `/repos/${REPO}/pulls/7`) { pr.title = body?.title ?? pr.title; return { status: 200, body: { number: 7, title: pr.title, state: "open", head: { sha: pr.head }, base: { ref: pr.base ?? "main" } } }; }
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
@@ -712,4 +714,35 @@ test("a publish whose bundle carries H cannot rewind a branch at F, a child of H
   const toMain = await run("k-00000000000000f6", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "main", sha: H }] });
   assert.equal(toMain.ok, true, toMain.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/main"), H, "the default branch moved forward, unleased");
+});
+
+test("retitle is ship's alone, Tier 0 at the head, and refuses a moved head, a stale generation or a non-adopted PR; a valid one writes only the title", async (t) => {
+  const { c1, calls, call, run, adoption, pr } = await setup(t);
+  const title = "fix(widget): keep the drawer open";
+  const a = { repo: REPO, number: 7, head: c1, generation: 2, title };
+  // The Engineer's own `aidenhq ship title` files it on the adoption's task (its task differs from the adoption's is refused).
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: { kind: "job", roles: ["platform-engineer"] }, task: "t9" })).json.error, /adoption's task/);
+  // A stale generation, a moved head and a PR no longer adopted are each refused before any PATCH.
+  adoption.generation = 1;
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" })).json.error, /generation 2 is stale/);
+  adoption.generation = null;
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" })).json.error, /isn't adopted/);
+  adoption.generation = 2;
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: { ...a, head: "f".repeat(40) }, requester: SHIP, task: "t1" })).json.error, /head moved|moved to/);
+
+  // At the plan's own head the write is Tier 0 (no raise), and it PATCHes the title alone.
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  assert.equal(plan.json.raise, undefined);
+  const out = await run("k-00000000000000ea", "github.retitle", a);
+  assert.equal(out.ok, true, out.text);
+  assert.equal(pr.title, title);
+  const patches = calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`);
+  assert.deepEqual(patches.map((c) => c.body), [{ title }], "only the title is sent: never the body, base or state");
+
+  // Read again off its head after filing: the write is refused, and nothing is sent.
+  pr.head = "e".repeat(40);
+  const moved = await run("k-00000000000000eb", "github.retitle", a);
+  assert.match(moved.text, /^ship-head-moved/);
+  assert.equal(calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length, 1, "no PATCH on a moved head");
 });

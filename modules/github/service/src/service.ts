@@ -456,7 +456,7 @@ export function createService(o: Options) {
         current: at ? at.generation : undefined, ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
       };
     };
-    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget")) {
+    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget") || kind.endsWith(".retitle")) {
       const s = slugOf(a.repo);
       const n = Number(a.number);
       const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
@@ -478,7 +478,7 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
+      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : kind.endsWith(".retitle") ? `Retitle ${url} ${at} to \`${a.title}\` (only the title: the PR's head, base and body stay as they are)` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
       return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha), { base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? "") }) } : {}),
@@ -736,6 +736,7 @@ export function createService(o: Options) {
       if (action === "enqueue") return enqueue(a);
       if (action === "repair") return repairPr(a);
       if (action === "retarget") return retarget(a);
+      if (action === "retitle") return retitle(a);
       if (action === "push" && a.pr) return pushOnto(a);
       if (action === "push" || action === "pr") {
         for (const b of a.only) {
@@ -863,6 +864,24 @@ export function createService(o: Options) {
     if (ended) return { ok: false, text: ended };
     const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
     return r.status < 300 ? { ok: true, text: `${url} now targets \`${a.to}\`.` } : { ok: false, text: `GitHub refused the retarget of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+  }
+  /**
+   * An adopted PR's title, replaced with a Conventional Commit one (ship's `retitle`): the `policy` job's title check is red and no
+   * commit can make it pass. Only the title is written (never the body, base or state), only at the bound head and generation, and
+   * only while the PR is open and still says what the record read. Already that title is done.
+   */
+  async function retitle(a: any): Promise<{ ok: boolean; text: string }> {
+    const s = slugOf(a.repo);
+    const n = Number(a.number);
+    const url = `https://github.com/${s.slug}/pull/${n}`;
+    const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    if (pr.state !== "open") return { ok: false, text: `${url} is ${pr.state}: not retitled.` };
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not retitled.` };
+    const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head));
+    if (ended) return { ok: false, text: ended };
+    if (pr.title === a.title) return { ok: true, text: `${url} is titled \`${a.title}\`.` };
+    const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { title: a.title });
+    return r.status < 300 ? { ok: true, text: `${url} is now titled \`${a.title}\`.` } : { ok: false, text: `GitHub refused the retitle of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
   async function adoptionEnded(repo: string, n: number, generation: number, head: string, check?: ShipCheck): Promise<string | undefined> {
     const at = o.ship ? await o.ship.generation(repo, n, head, check).catch(() => undefined) : undefined;

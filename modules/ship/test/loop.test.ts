@@ -267,6 +267,50 @@ test("a task's PR red on its own head wakes its task once per head; past a cap i
 });
 
 
+// The `policy` job's "Conventional Commit title" step (and `ci-required`, its aggregate) is the only red: no commit can fix it.
+const titleOnlyPr = (n, names = ["policy", "ci-required"], o = {}) => ({
+  commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: names.map((name, i) => ({ __typename: "CheckRun", databaseId: 77 + i, name, status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } })) } } } }] }, ...o,
+});
+
+test("a fix_ci whose only red check is the PR title wakes the task to retitle it, never to commit; a red code check still gets the commit line", async (t) => {
+  const c = await rig(t);
+  c.set([c.agentPr(5, titleOnlyPr(5))]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.length, 1);
+  const text = c.woke[0].text;
+  assert.match(text, /required checks are red at head h5: `policy`, `ci-required`/);
+  assert.match(text, /Conventional Commit title/);
+  assert.match(text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/5 h5 1 /);
+  assert.doesNotMatch(text, /one commit/);
+  assert.doesNotMatch(text, /aidenhq ship push/);
+  assert.doesNotMatch(text, /aidenhq ship checkout/);
+
+  // `policy` alone (its aggregate not yet reported) is metadata too.
+  const alone = await rig(t);
+  alone.set([alone.agentPr(6, titleOnlyPr(6, ["policy"]))]);
+  await alone.watch.tick(); await alone.watch.tick();
+  assert.equal(alone.woke.length, 1);
+  assert.match(alone.woke[0].text, /aidenhq ship title .*\/pull\/6 h6 /);
+  assert.doesNotMatch(alone.woke[0].text, /one commit|aidenhq ship push/);
+
+  // `ci-required` alone is another job's failure rolled up, not the title: the commit instruction stays.
+  const aggregate = await rig(t);
+  aggregate.set([aggregate.agentPr(8, titleOnlyPr(8, ["ci-required"]))]);
+  await aggregate.watch.tick(); await aggregate.watch.tick();
+  assert.equal(aggregate.woke.length, 1);
+  assert.match(aggregate.woke[0].text, /one commit, never weaken a check\./);
+  assert.doesNotMatch(aggregate.woke[0].text, /aidenhq ship title/);
+
+  // A red code check (even beside policy) is not metadata-only: the commit instruction stays, and no title line is offered.
+  const code = await rig(t);
+  code.set([code.agentPr(7, titleOnlyPr(7, ["policy", "test"]))]);
+  await code.watch.tick(); await code.watch.tick();
+  assert.equal(code.woke.length, 1);
+  assert.match(code.woke[0].text, /Fix what this PR broke as the `ship` skill says: one commit, never weaken a check\./);
+  assert.match(code.woke[0].text, /aidenhq ship push https:\/\/github\.com\/acme\/app\/pull\/7 h7 1/);
+  assert.doesNotMatch(code.woke[0].text, /aidenhq ship title/);
+});
+
 test("red checks whose job never started are re-run once at the head, with no wake", async (t) => {
   const c = await rig(t, { steps: [] });
   c.set([c.agentPr(4, redPr(4))]);

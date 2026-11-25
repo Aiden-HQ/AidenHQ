@@ -14,6 +14,7 @@ import { renderReport, type Facts } from "./report.ts";
 import { staleApproval, type Judged, type Risk } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
+import { GATE_CHECK } from "./aidenhq-sdk/checks.ts";
 
 /** merge-gate's decide answer for the PR at its head, with ship's context (github's merge-gate.ts Action). */
 export type Decision = { do: "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "enqueue" | "merge" | "done" | "stall" | "fail"; why?: string };
@@ -317,12 +318,21 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           if (over(c.ci, caps.ci_rounds)) return hold(`${c.ci} CI fix rounds (ci_rounds)`);
           c.ci++;
         }
+        // The `policy` job's title step (and `ci-required`, the aggregate that rolls it up) is the PR's metadata, not its code: no
+        // commit can turn it green (ci.yml re-runs `policy` on `edited`), so the wake asks for the title instead of "one commit".
+        // Only `policy` or `policy` beside `ci-required`: `ci-required` alone is some other job's failure rolled up.
+        const title = failing.includes("policy") && failing.every((n) => n === "policy" || n === GATE_CHECK);
         return wake("fix_ci", [
           `${pr.url}: required checks are red at head ${pr.head}: ${failing.map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
           viaQueue ? "They passed on the PR's head but failed on the merge queue's run for it (the `merge_group` run): read that run's logs, the failure is in the PR merged onto the base." : "",
           onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
-          "Fix what this PR broke as the `ship` skill says: one commit, never weaken a check.",
-          push(),
+          ...(title ? [
+            "The red check is the PR's Conventional Commit title (the `policy` job's title step), which no commit can fix: a title edit re-runs `policy` in place.",
+            `Fix the title with \`aidenhq ship title ${pr.url} ${pr.head} ${a!.generation} "<type>(<scope>): <summary>"\` (types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert), giving the title that describes this PR. Change nothing in the code for it: a check, test or lint rule stays as strict as you found it.`,
+          ] : [
+            "Fix what this PR broke as the `ship` skill says: one commit, never weaken a check.",
+            push(),
+          ]),
         ].filter(Boolean).join("\n"));
       }
       case "fix_review": {
