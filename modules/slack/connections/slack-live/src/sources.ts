@@ -86,14 +86,16 @@ const tombstone = (channel: string, ts: string, type?: string): Row => ({ channe
  * A Slack message object as its write: a message row, or a tombstone for a deleted thread parent (Slack keeps it as
  * subtype "tombstone", "This message was deleted.", while the thread has replies).
  */
-/** May this conversation be a DM? A public channel is not; `im`, and an unknown type (Slack didn't say), may be. */
-const mayBeDm = (type: string | undefined): boolean => type !== "public";
+/** May this conversation be a DM (or a group DM)? Only `im`/`mpim` and an unknown type (Slack didn't say) are: a public or
+ * private channel never is, and a code-shaped message there is ordinary text that must be kept. */
+const mayBeDm = (type: string | undefined): boolean => type === "im" || type === "mpim" || type === undefined;
 
 export function messageWrite(channel: string, m: Record<string, any>, type: string | undefined, mayBeDirect = mayBeDm(type)): { table: Table; row: Row } {
   if (m.subtype === "tombstone") return { table: TOMBSTONE, row: tombstone(channel, m.ts, type) };
   // A pairing code is a live credential: a history read (the gap sync) can see it through the owner's own sign-in, and it must
   // never land in src_slack, which agents read. Its metadata is kept, its text blanked. An edit's code sits under `message.text`,
   // and an edit can arrive with no outer channel_type, so an unknown type counts as possibly a DM and the text is blanked anyway.
+  // A channel (public or private) is never a DM: the same shape there is ordinary text and is kept.
   if (mayBeDirect && carriesCode(m)) return { table: MESSAGE, row: { ...messageRow(channel, { ...m, text: "" }, type), text: null } };
   return { table: MESSAGE, row: messageRow(channel, m, type) };
 }
@@ -104,8 +106,10 @@ export function eventWrite(body: unknown): { table: Table; row: Row } | null {
   const channel = str(ev?.channel);
   if (!ev || ev.type !== "message" || !channel) return null;
   const type = channelType(ev.channel_type);
-  // Slack may omit channel_type on an edit; unknown counts as possibly a DM, so a code is still blanked.
-  const mayBeDirect = str(ev.channel_type) !== "channel" && str(ev.channel_type) !== "group";
+  // Slack may omit channel_type on an edit; unknown counts as possibly a DM, so a code is still blanked. A public or private
+  // channel is not, and keeps the text.
+  const raw = str(ev.channel_type);
+  const mayBeDirect = raw === "im" || raw === "mpim" || raw === undefined;
   if (ev.subtype === "message_deleted") {
     const ts = str(ev.deleted_ts);
     return ts ? { table: TOMBSTONE, row: tombstone(channel, ts, type) } : null;
@@ -265,8 +269,8 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
   const replay = async (id: string, type: string | undefined, m: Record<string, any>, r: string, baseline: boolean, fresh: boolean) => {
     if (!forward || baseline || !fresh || r !== "new" || m.subtype === "tombstone") return;
     // A pairing code is a live credential: the warehouse row is blanked, and the router must not see its raw text either. An
-    // unknown type may be a DM, so it is skipped too.
-    if (type !== "public" && type !== "private" && type !== "mpim" && carriesCode(m)) return;
+    // unknown type may be a DM, so it is skipped too; a public or private channel keeps and replays its ordinary text.
+    if ((type === "im" || type === "mpim" || type === undefined) && carriesCode(m)) return;
     const e = toSourceEvent({ event: { ...m, type: "message", channel: id, channel_type: type }, authorizations: [{ is_bot: false }] });
     if (e) await forward(e).catch((err: unknown) => log?.warn({ err: String(err) }, "gap replay failed"));
   };

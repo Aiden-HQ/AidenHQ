@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventWrite, gapSync, MESSAGE, type Api } from "../src/sources.js";
+import { eventWrite, gapSync, MESSAGE, messageWrite, type Api } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer side against a fake store: what lands, and with which baseline flag (the SQL itself was smoke-run on postgres:17).
@@ -35,6 +35,9 @@ describe("src_slack", () => {
     expect(eventWrite({ event: { type: "message", channel: "D1", channel_type: "im", ts: "6.6", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: null, user_id: "U1", ts: "6.6" });
     // In a public channel the same shape is ordinary text and is kept.
     expect(eventWrite({ event: { type: "message", channel: "C1", channel_type: "channel", ts: "7.7", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: "A".repeat(22) });
+    // A private channel is not a DM either: its ordinary text is kept, live and in history.
+    expect(eventWrite({ event: { type: "message", channel: "G1", channel_type: "group", ts: "7.8", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: "A".repeat(22) });
+    expect(messageWrite("G1", { ts: "7.9", text: "A".repeat(22) }, "private")?.row).toMatchObject({ text: "A".repeat(22) });
     // An edit carries its new text under `message`, and Slack may omit channel_type on it: blanked all the same.
     expect(eventWrite({ event: { type: "message", subtype: "message_changed", channel: "D1", message: { ts: "8.8", user: "U1", text: "B".repeat(22) } } })?.row).toMatchObject({ ts: "8.8", text: null });
     expect(eventWrite({ event: { type: "message", subtype: "message_changed", channel: "D1", channel_type: "im", message: { ts: "8.9", user: "U1", text: "B".repeat(22) } } })?.row).toMatchObject({ ts: "8.9", text: null });
@@ -81,6 +84,23 @@ describe("src_slack", () => {
     const before = sent.length;
     await gapSync(store, api, 260_000, undefined, undefined, forward);
     expect(sent.slice(before).map((e) => e.text)).toEqual(["hello there", "ordinary"]);
+  });
+
+  it("gap sync replays a code-shaped message that sat in a private channel: there it is ordinary text", async () => {
+    const { store } = fakeStore();
+    const history: any[] = [];
+    const api: Api = async (method, p) => {
+      if (method === "users.conversations") return { ok: true, channels: [{ id: "G1", name: "secret", is_private: true }] };
+      if (method === "conversations.history") return { ok: true, messages: history.filter((m) => Number(m.ts) > Number(p.oldest)) };
+      return { ok: true, members: [], messages: [] };
+    };
+    const sent: any[] = [];
+    const forward = async (e: unknown) => void sent.push(e);
+    await gapSync(store, api, 200_000, undefined, undefined, forward); // the baseline
+    const before = sent.length;
+    history.push({ ts: "150.0", text: "D".repeat(22), user: "U1" });
+    await gapSync(store, api, 260_000, undefined, undefined, forward);
+    expect(sent.slice(before).map((e) => e.text)).toEqual(["D".repeat(22)]);
   });
 
   it("gap sync: a newly inserted message is replayed to the event router; the baseline is not", async () => {
