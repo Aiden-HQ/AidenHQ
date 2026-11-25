@@ -336,7 +336,7 @@ function main(argv: string[]): number {
     }
   } catch (e) { console.log(`::error::${(e as Error).message}`); return 1; }
   const root = process.cwd();
-  console.log("image-scan scans each image's directory (lock files, manifests) and the base images its Dockerfile names, without building it.");
+  console.log("image-scan scans each image's directory (lock files, manifests), the base images its Dockerfile names and each module service image named outright, without building anything.");
   console.log("::warning::Not covered: packages that RUN steps install (apt, pip, downloads) and ADD downloads. Only base-image and lock-file changes are proven here.");
   let p: ReturnType<typeof plan>;
   try { p = plan(dockerfiles, { root, local, services }); } catch (e) { console.log(`::error::${(e as Error).message}`); return 1; }

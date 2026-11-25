@@ -658,6 +658,12 @@ jobs:
           fi
           # A base whose scanner predates --accepted gets no list (its scan is unchanged).
           grep -q -- '--accepted' "$RUNNER_TEMP/image-scan.ts" && accepted=(--accepted "$RUNNER_TEMP/accepted.yaml") || accepted=()
+          # Likewise a base whose scanner predates --service-image: its scan is the Dockerfile one, and the service image is
+          # scanned from the first change after the scanner that reads it lands (the same rule as --accepted).
+          if [ -n "$SERVICES" ] && ! grep -q -- '--service-image' "$RUNNER_TEMP/image-scan.ts"; then
+            echo "::warning::the base commit's scanner predates --service-image: $SERVICES not scanned by it; the first change after it lands is"
+            SERVICES=""
+          fi
           mkdir -p "$RUNNER_TEMP/grype-db"
           # The computer images build FROM each other (an ARG default: session on engineer, engineer on agent-base, agent-base on the browser
           # image): each scanned through its own Dockerfile, never pulled from a registry image of the same name. DOCKERFILES is split on spaces, never globbed (set -f); the
