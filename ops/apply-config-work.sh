@@ -958,7 +958,7 @@ switchOver() {
   if systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null && ! cmp -s ops/units/aidenhq-computers.service "$cu"; then
     cp ops/units/aidenhq-computers.service "$cu" && systemctl --user daemon-reload && launcherRestart \
       && echo "computer launcher unit updated, launcher restarted"
-  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- services/computer/launcher.ts services/computer/lib.ts services/computer/standing.ts kernel/src/gateway/token.ts \
+  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- ':(glob)services/computer/*.ts' kernel/src/gateway/token.ts \
      && systemctl --user is-enabled --quiet aidenhq-computers 2>/dev/null; then
     launcherRestart && echo "computer launcher restarted"
   fi
