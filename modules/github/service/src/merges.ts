@@ -214,7 +214,7 @@ export function createMerges(d: {
   }
   /** The branch's required checks (undefined: classic protection unreadable) and whether it merges through a merge queue, kept
    * RULES_MS per repo and branch: ship asks for every open PR on every pass, and branch rules rarely change. */
-  const rulesCache = new Map<string, { at: number; v: { required: string[] | undefined; queue: boolean } }>();
+  const rulesCache = new Map<string, { at: number; v: { required: string[] | undefined; queue: boolean; /** The plan has no branch rules to read: none is enforced, but ship still judges every check (its fallback). */ noPlan?: boolean } }>();
   async function rulesOf(repo: string, branch: string) {
     const k = `${repo.toLowerCase()}@${branch}`;
     const hit = rulesCache.get(k);
@@ -222,7 +222,7 @@ export function createMerges(d: {
     const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);
     // A private repo on a plan without branch rules answers 403 "Upgrade to GitHub Pro": GitHub enforces none there, so none is required.
     if (noRulesPlan(rules)) {
-      const v = { required: [] as string[], queue: false };
+      const v = { required: undefined, queue: false, noPlan: true };
       rulesCache.set(k, { at: Date.now(), v });
       return v;
     }
@@ -230,9 +230,14 @@ export function createMerges(d: {
     const queue = mergePath(rules.body) === "queue";
     const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
     if (classic.status >= 300 && ![403, 404].includes(classic.status)) throw new Error(`GitHub GET required_status_checks: ${classic.status}`);
-    const v = { required: classic.status === 403 && !noRulesPlan(classic) ? undefined : requiredChecks(rules.body, classic.status === 404 || classic.status === 403 ? undefined : classic.body), queue };
+    const v = { required: classic.status === 403 ? undefined : requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body), queue };
     rulesCache.set(k, { at: Date.now(), v });
     return v;
+  }
+  /** Whether the branch is known to require no check: its rules say so, or the plan has none to enforce. */
+  async function noneRequired(repo: string, branch: string) {
+    const r = await rulesOf(repo, branch);
+    return r.noPlan || r.required?.length === 0;
   }
   /** The required checks red on the PR's latest merge_group run (GitHub's `gh-readonly-queue/<base>/pr-<n>-…` branch). */
   async function groupFailing(repo: string, number: number, base: string, required: string[]) {
@@ -350,7 +355,7 @@ export function createMerges(d: {
       if (!q.ship && pr0 && !namedChecks(pr0.commits?.nodes?.[0]?.commit?.statusCheckRollup).length) p.noChecks ??= now().toISOString();
       else delete p.noChecks;
       const noChecksOk = Boolean(p.noChecks && now().getTime() - Date.parse(p.noChecks) >= NO_CHECKS_GRACE_MS && pr0?.mergeStateStatus === "CLEAN" && !hasGate(pr0?.baseRef?.target?.statusCheckRollup)
-        && (await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")))?.length === 0);
+        && await noneRequired(p.repo, String(data.repository.defaultBranchRef?.name ?? "")));
       const v = decide(data, p.head, ship, noChecksOk);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
       const pull = data.repository.pullRequest;
