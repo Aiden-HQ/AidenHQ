@@ -33,8 +33,12 @@ import { AuthError, SignInError, type Auth } from "./oauth.js";
 
 /** A connection's own logic, where it has any. */
 export interface Hooks {
-  /** After each connect (Jira: find the configured site); a throw fails the connect. */
-  connected?(client: Client, tools: Tool[]): Promise<void>;
+  /**
+   * After each connect (Jira: find the configured site); a throw fails the connect. It returns a commit function when its work
+   * publishes state other calls read (Jira's cloudId): the proxy runs it only if this connect becomes the session, so a connect a
+   * sign-in or reset superseded never writes its state over the winner's. Work that publishes nothing may return nothing.
+   */
+  connected?(client: Client, tools: Tool[]): Promise<void | (() => void)>;
   /** The tools as agents see them (a pinned argument dropped from the schema, a lead line in a description). */
   tools?(tools: Tool[]): Tool[];
   /**
@@ -112,10 +116,9 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
   // A reset (a new sign-in, the periodic reconnect) invalidates every connect already in flight: such a connect is stale and must
   // not become the cached session, or calls would run under the account the owner just replaced.
   let generation = 0;
-  // Concurrent calls share one connect rather than each opening a session; connects run one at a time so a stale connect's
-  // connected hook (Jira: the site's cloudId) can't land after the newer session's and overwrite it.
+  // Concurrent calls in one generation share that generation's connect; a new generation starts its own at once, so a stalled
+  // connect can never hold up the calls after it. Which one becomes the session is decided at commit (see `commit`).
   let pending: { gen: number; p: Promise<Upstream> } | undefined;
-  let queue: Promise<unknown> = Promise.resolve();
   let resetting: { refresh: boolean; p: Promise<void> } | undefined;
   // A new sign-in (a different account or grant), not a refresh of the same one. A call that started under the previous sign-in is
   // never replayed on the new one: its arguments and its results belong to the owner who sent it, not the account that replaced it.
@@ -125,6 +128,14 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
 
   /** The connect started before a reset, whose session belongs to the account or token that reset replaced. */
   class StaleConnect extends Error {}
+
+  /** A different sign-in replaced this call's while it waited: it is not sent (or replayed) under the new account. */
+  class StaleSignIn extends Error {}
+
+  /** The token endpoint failed (a 5xx, a timeout): the vendor never refused the grant, so nothing is marked expired. */
+  class RefreshFailed extends Error {
+    constructor(readonly reason: unknown) { super(String(reason)); }
+  }
 
   async function open(gen: number): Promise<Upstream> {
     if (!o.upstream) throw new AuthError(notConnected());
@@ -138,10 +149,12 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
         tools.push(...page.tools);
         cursor = page.nextCursor;
       } while (cursor);
-      await hooks.connected?.(client, tools);
-      // A reset ran while this connect did (the owner signed in again, or the session was replaced): its session is the one to
-      // keep, so this one closes and the caller retries on that one.
+      // A connect a reset superseded never runs the hook: it would do work (and reach the vendor) for an account already replaced.
       if (gen !== generation) throw new StaleConnect();
+      const commitHook = await hooks.connected?.(client, tools);
+      // It may have been superseded while the hook ran: its state must not land over the winner's, and its session is not the one.
+      if (gen !== generation) throw new StaleConnect();
+      commitHook?.();
       // The session this one replaces (a racing reconnect's) is retired, never left open.
       if (upstream) retire(upstream);
       upstream = { client, tools, at: Date.now(), active: 0, retired: false };
@@ -162,14 +175,13 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     return upstream;
   }
 
-  function connect(fresh = false): Promise<Upstream> {
+  function connect(): Promise<Upstream> {
     // A connect already running for this generation is the one to wait on: starting a second would have the two replace each
-    // other, and every caller waiting on them would lose its session in turn. A sign-in (`fresh`) skips the queue instead: the
-    // connect ahead of it may be stalled on the account it just replaced, and the board waits only 20 seconds for the sign-in.
+    // other, and every caller waiting on them would lose its session in turn. A new generation opens its own at once (nothing
+    // queues): a stalled connect on a replaced sign-in must not hold up the calls after it, and `commit` decides the winner.
     if (pending && pending.gen === generation) return pending.p;
     const gen = generation;
-    const entry = { gen, p: (fresh ? open(gen) : queue.then(() => open(gen))) };
-    queue = entry.p.catch(() => undefined);
+    const entry = { gen, p: open(gen) };
     pending = entry;
     const done = () => { if (pending === entry) pending = undefined; };
     void entry.p.then(done, done);
@@ -196,9 +208,10 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       generation += 1;
       upstream = undefined;
       if (old) retire(old);
-      if (refresh) await auth.refresh();
+      // A token endpoint failure is the vendor's, not a refusal of the grant: pass it on as it is, with nothing marked expired.
+      if (refresh) await auth.refresh().catch((err) => { throw new RefreshFailed(err); });
       // A newer reset took over while this one ran: it owns the session now, so there is nothing left to connect here.
-      await connect(force).catch((err) => {
+      await connect().catch((err) => {
         // A sign-in that still could not connect is a real failure for the board; a stale one is the newer reset's business.
         if (!(err instanceof StaleConnect)) throw err;
       });
@@ -232,10 +245,22 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     }
   }
 
+  /**
+   * One dispatch on the current session, bound to the sign-in the call started under: the check runs after every wait (a reset, a
+   * refresh, a connect), immediately before the tool call, so a sign-in that lands meanwhile fails the call instead of sending it —
+   * and its results — through the account that replaced the owner who asked.
+   */
+  async function dispatch<T>(under: number, fn: (u: Upstream) => Promise<T>): Promise<T> {
+    const u = await acquire();
+    if (signIn !== under) throw new StaleSignIn();
+    return await on(u, fn);
+  }
+
   /** One attempt on the current session; a 401 from a session another call already replaced is retried on the current one. */
   async function run<T>(fn: (u: Upstream) => Promise<T>): Promise<T> {
     const under = signIn;
     const u = await acquire();
+    if (signIn !== under) throw new StaleSignIn();
     try {
       return await on(u, fn);
     } catch (err) {
@@ -245,7 +270,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       if (signIn !== under) throw err;
       // The session that failed is no longer the current one (another call replaced it, or the token was refreshed): its 401
       // belongs to the token it was opened with, so retry on the current session and decide nothing about this one.
-      return await on(await acquire(), fn);
+      return await dispatch(under, fn);
     }
   }
 
@@ -269,17 +294,23 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       try {
         await reset(true);
       } catch (err) {
-        // The refresh produced a grant the vendor's MCP endpoint still refuses (the handshake 401s): that is a refused sign-in, not
-        // a transient error. A sign-in that replaced this one meanwhile owns the decision, so only the current sign-in is marked.
-        if (signIn === under && (isAuthFailure(err) || err instanceof AuthError) && (await auth.refused?.() ?? true)) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        // The token endpoint failed (a 5xx, a timeout): the vendor never refused the grant, so this is a transient error, never an
+        // expiry. Only a handshake that still 401s with the fresh token is a refused sign-in.
+        if (err instanceof RefreshFailed) throw err.reason;
+        // A sign-in that replaced this one meanwhile owns the decision, so only the current sign-in is marked — and only after the
+        // refusal probe, which may itself have taken long enough for a new sign-in to land.
+        const refused = isAuthFailure(err) && (await auth.refused?.() ?? true);
+        if (refused && signIn === under) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
         throw err;
       }
       const r = await acquire();
+      if (signIn !== under) throw new StaleSignIn();
       try {
         return await on(r, fn);
       } catch (again) {
         // A late 401 from a session another call replaced while this retry ran decides nothing about the sign-in saved now.
-        if (r === upstream && isAuthFailure(again) && (await auth.refused?.() ?? true)) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        const refused = r === upstream && isAuthFailure(again) && (await auth.refused?.() ?? true);
+        if (refused && signIn === under) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
         throw again;
       }
     }

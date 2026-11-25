@@ -61,6 +61,9 @@ export interface Auth {
   check?(): Promise<void>;
   /** Whether the vendor refuses the current token right now (its own cheap authenticated read): a 401 or a refused refresh proves nothing alone. Absent: the connection can't tell. */
   refused?(): Promise<boolean>;
+  /** How many sign-ins this connection has completed: a refresh keeps it, a new sign-in (a different account or grant) bumps it, so a
+   *  caller can tell a token the same sign-in refreshed from one a different sign-in replaced. Absent: the connection can't tell. */
+  signInCount?(): number;
   mark(state: "ok" | "expired", detail?: string): void;
   signedIn(): boolean;
   signIn?: SignInFlow;
@@ -70,7 +73,7 @@ export interface Auth {
 /** A connection that signs in to nothing (a local server), with fixed headers. */
 export function staticAuth(headers: Record<string, string> = {}): Auth {
   const since = new Date().toISOString();
-  return { headers: async () => headers, refresh: async () => {}, status: () => ({ state: "none", since }), mark: () => {}, signedIn: () => true };
+  return { headers: async () => headers, refresh: async () => {}, status: () => ({ state: "none", since }), mark: () => {}, signedIn: () => true, signInCount: () => 0 };
 }
 
 export interface OAuthOptions {
@@ -162,6 +165,8 @@ export function oauth(o: OAuthOptions): Auth {
     }
   };
   let status: AuthStatus = { state: usable() ? "ok" : "unknown", since: new Date().toISOString() };
+  // A completed sign-in, not a refresh: a caller holding a token from before can tell the two apart (proxy.ts, client.ts).
+  let signedInCount = 0;
 
   // JSON asked for explicitly: GitHub's OAuth endpoints answer form-encoded otherwise.
   const json = async (url: string, init?: RequestInit) => {
@@ -388,6 +393,7 @@ export function oauth(o: OAuthOptions): Auth {
         throw new SignInError(`${o.name} refused the sign-in: ${String((err as Error).message).slice(0, 200)}`);
       }
       save({ ...parsed, client_id: p.client.id, ...(p.client.secret ? { client_secret: p.client.secret } : {}), token_endpoint: p.ep.token, ...(resource ? { resource } : {}) });
+      signedInCount += 1;
       mark("ok");
     },
   };
@@ -431,6 +437,7 @@ export function oauth(o: OAuthOptions): Auth {
             const parsed = parse(p.body);
             if (run !== me || me.state.state !== "pending") return; // cancelled while the answer was on its way: nothing saved
             save({ ...parsed, client_id: d.client_id, token_endpoint: tokenUrl });
+            signedInCount += 1;
             mark("ok");
             end({ state: "ok" });
             onSignedIn?.();
@@ -473,6 +480,7 @@ export function oauth(o: OAuthOptions): Auth {
     ...(o.accepts ? { refused } : {}),
     signedIn: () => existsSync(tokenPath),
     signIn,
+    signInCount: () => signedInCount,
     ...(device ? { device } : {}),
   };
 }

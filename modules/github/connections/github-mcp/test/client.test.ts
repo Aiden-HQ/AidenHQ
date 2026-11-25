@@ -126,6 +126,33 @@ it("a retried 401 whose token another call replaced never marks the saved sign-i
   expect(sent).toBe(2); // the original attempt and its one retry
 });
 
+it("a 401 after a different account signs in is not retried under the new account", async () => {
+  // A private read goes out on the old account's token; a new account signs in while it is in flight, and the old token's 401 comes
+  // back. Resending would return the new account's private data to the caller who asked under the old one.
+  let n = 0;
+  const a = {
+    ...auth(),
+    headers: async () => ({ authorization: `Bearer ${n === 0 ? "gho_old" : "gho_new"}` }),
+    signInCount: () => n,
+    refused: async () => false,
+  };
+  const sent: string[] = [];
+  const access = createAccess({
+    auth: a,
+    fetchImpl: async (_u, init) => {
+      const authz = String((init?.headers as Record<string, string>).authorization);
+      sent.push(authz);
+      if (authz.endsWith("gho_old")) { n = 1; return answer(401, { message: "Bad credentials" }); } // the new sign-in landed
+      return answer(200, { private: true });
+    },
+  });
+  const r = await access.rest("GET", "/repos/acme/private").catch((e) => e);
+  // It fails with the old token's answer and sends nothing under the new account; the saved sign-in is not marked expired.
+  expect(r.status).toBe(401);
+  expect(sent.filter((t) => t.endsWith("gho_new"))).toHaveLength(0);
+  expect(a.status().state).toBe("ok");
+});
+
 it("rate_limited and write_busy stay plain errors with their codes", () => {
   const busy = needResult(new GitHubNeed({ cause: "write_busy" }));
   expect(busy.isError).toBe(true);

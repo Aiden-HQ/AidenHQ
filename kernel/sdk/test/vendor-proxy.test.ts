@@ -808,6 +808,238 @@ describe("the read gate is checked on the session that retries", () => {
   });
 });
 
+describe("a connect that stalls never holds up the calls after it", () => {
+  // The upstream accepts the connection but stalls tools/list on the first session. Every later call that needs a session must not
+  // wait behind it: a new generation opens its own connect at once, and the stalled one is dropped when it is finally released.
+  let releaseStall: () => void = () => {};
+  let stallStarted: () => void = () => {};
+  const stallIn = new Promise<void>((r) => { stallStarted = r; });
+  const stallGate = new Promise<void>((r) => { releaseStall = r; });
+  let lists = 0;
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/list") {
+      lists += 1;
+      if (lists === 1) { stallStarted(); await stallGate; }
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "ping", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("a call after a sign-in connects without waiting for the stalled connect", async () => {
+    const up = await listen(vendor);
+    let account = "old";
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (account = "new"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth: auth as never, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const callTool = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "ping", arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>);
+    try {
+      const stuck = callTool(); // its connect stalls in tools/list
+      await stallIn;
+      // The sign-in opens its own connect; the call after it must answer without the stalled one being released.
+      await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } });
+      const answered = await Promise.race([callTool(), new Promise<string>((r) => setTimeout(() => r("timed out"), 3000))]);
+      expect(typeof answered).toBe("object");
+      expect(answered).not.toBe("timed out");
+      releaseStall();
+      await stuck.catch(() => undefined);
+    } finally {
+      releaseStall();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a retry after a refresh waits bound to the sign-in that started it", () => {
+  // A call's 401 starts a refresh; while that refresh is still running the owner signs in as a different account. The retry must not
+  // be sent through the new account: its arguments and results belong to the caller who asked under the old one.
+  let refreshRelease: () => void = () => {};
+  let refreshStarted: () => void = () => {};
+  const refreshIn = new Promise<void>((r) => { refreshStarted = r; });
+  const refreshGate = new Promise<void>((r) => { refreshRelease = r; });
+  let account = "owner-a";
+  const seen: string[] = [];
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/call") {
+      seen.push(String(req.headers.authorization ?? ""));
+      if (String(req.headers.authorization ?? "").endsWith("owner-a")) return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "401 unauthorized" }));
+      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "owner-b private" }] } }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "private", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the retry is not sent through the account that signed in during the refresh", async () => {
+    const up = await listen(vendor);
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      refresh: async () => { refreshStarted(); await refreshGate; },
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (account = "owner-b"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth: auth as never, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    try {
+      const call = fetch(`${url}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "private", arguments: {} } }),
+      }).then((r) => r.json() as Promise<any>);
+      await refreshIn;
+      await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } });
+      refreshRelease();
+      const r = await call;
+      expect(JSON.stringify(r)).not.toContain("owner-b private");
+      expect(seen.filter((a) => a.endsWith("owner-b"))).toHaveLength(0);
+    } finally {
+      refreshRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a stale connect never publishes the hook's shared state", () => {
+  // Jira's hook records the configured site's cloudId in the connection's shared state. A connect the owner has since replaced (a
+  // sign-in to an account that can't reach that site) must not run the hook at all: if it did, it would clear the cloudId the winner
+  // published and every site-scoped call would fail on a valid session.
+  let oldHookRelease: () => void = () => {};
+  let oldHookStarted: () => void = () => {};
+  const oldHookIn = new Promise<void>((r) => { oldHookStarted = r; });
+  const oldHookGate = new Promise<void>((r) => { oldHookRelease = r; });
+  let account = "old";
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string; params?: { name?: string } };
+    if (body.method === "tools/call" && body.params?.name === "whoami") {
+      // The old account's site lookup stalls; the new account's answers at once.
+      if (String(req.headers.authorization ?? "").endsWith("old")) { oldHookStarted(); await oldHookGate; }
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "whoami", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async (r) => ({ content: [{ type: "text", text: JSON.stringify({ site: String(req.headers.authorization ?? "").endsWith("old") ? null : "site-1" }) }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the hook runs for the winning connect only, so its state survives the stale one", async () => {
+    const up = await listen(vendor);
+    let site: string | null = null;
+    const hooks = {
+      // Jira's shape: discover, then publish only when this connect becomes the session.
+      async connected(client: any) {
+        const r = await client.callTool({ name: "whoami", arguments: {} });
+        const found = JSON.parse(String(r.content?.[0]?.text ?? "{}")).site;
+        return () => void (site = found);
+      },
+    };
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      // /auth/finish awaits the connect, so the test sees the new session published (and its hook committed).
+      signIn: { start: async () => ({ url: "https://auth.example.com/authorize" }), finish: async () => void (account = "new"), scopes: async () => ({ supported: [], recommended: [] }) },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth: auth as never, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp(), hooks });
+    const url = await listen(p);
+    const list = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }).then((r) => r.json() as Promise<any>);
+    try {
+      const stale = list(); // the old account's connect stalls inside its hook
+      await oldHookIn;
+      // The new account's connect runs its hook and publishes site-1 (the old one is stalled and must never commit).
+      const signed = await fetch(`${url}/auth/finish`, { method: "POST", headers: { authorization: "Bearer board", "content-type": "application/json" }, body: JSON.stringify({ state: "s", code: "c" }) });
+      expect(signed.status).toBe(200);
+      expect(site).toBe("site-1");
+      oldHookRelease(); // the old hook now returns "no site" — and must not have been run at all
+      await stale.catch(() => undefined);
+      expect(site).toBe("site-1");
+    } finally {
+      oldHookRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a token endpoint outage is not an expired sign-in", () => {
+  // The vendor's MCP endpoint 401s and the OAuth token endpoint is down (503). oauth.ts throws AuthError without marking the grant,
+  // and the proxy must pass that on as a transient error rather than telling the owner to reconnect.
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    // The MCP client's error carries this body, and the proxy reads the 401 from it (as it does a real vendor's).
+    if (body.method === "tools/call") return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "401 unauthorized: token expired" }));
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "boom", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the call fails as a transient error and the sign-in stays ok", async () => {
+    const up = await listen(vendor);
+    let state: "ok" | "expired" = "ok";
+    const auth = {
+      ...staticAuth(),
+      // What oauth.ts does on a 5xx: throw, without marking the grant.
+      refresh: async () => { throw new AuthError("Vendor token endpoint answered 503"); },
+      status: () => ({ state, since: "" }),
+      mark: (s: "ok" | "expired") => void (state = s),
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    try {
+      const res = await fetch(`${url}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "boom", arguments: {} } }),
+      });
+      const result = ((await res.json()) as any).result;
+      expect(result.isError).toBe(true);
+      expect(readNeed(result)).toBeUndefined(); // a plain error, not needs_owner
+      expect(state).toBe("ok");
+    } finally {
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
 describe("sign-in", () => {
   const MCP = "https://mcp.example.com/v1/mcp?tools=all";
   function fakeVendor() {

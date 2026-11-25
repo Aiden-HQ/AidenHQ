@@ -414,6 +414,8 @@ export function createAccess(o: {
     // creates nothing, so nothing lands after a caller was told it failed.
     const read = !createsContent(method, path, body);
     await admit(p, resource, background, deadline, read, caller === "feed");
+    // The sign-in this request belongs to: a 401 is retried only within it (see `replaced` below).
+    const signedInAt = as ? undefined : o.auth.signInCount?.();
     const t = as ? await as.token(retried) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();
@@ -442,9 +444,11 @@ export function createAccess(o: {
     // The owner's 401 is a refusal only when GitHub refuses the token itself: a stray 401 (another resource, a blip) is an answer.
     let stray = false;
     if (!as && res.status === 401) {
-      // Another call (or a reconnect) replaced the token this one was sent with: its 401 is the old token's, so send again with the new one.
-      // Kept apart from the retry budget: a replaced token says nothing about the token saved now, so it never marks that one expired.
+      // Another call (or a refresh) replaced the token this one was sent with: its 401 is the old token's, so send again with the
+      // new one. Only within the same sign-in: a different account's sign-in is a new identity, and resending would return its
+      // private data to the caller who asked under the old one, so the request fails instead.
       const replaced = async () => {
+        if (signedInAt !== undefined && o.auth.signInCount?.() !== signedInAt) return false;
         const now = String((await o.auth.headers().catch(() => ({}) as Record<string, string>)).authorization ?? "").replace(/^Bearer\s+/i, "");
         return now !== "" && now !== t;
       };
@@ -464,12 +468,19 @@ export function createAccess(o: {
         stray = true;
         o.log?.("github 401 on a token GitHub still accepts; sign-in kept", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
       } else if (!retried) {
-        // A token that ran out: refresh once and send again. A refusal marks the sign-in expired inside the refresh; any other
-        // failure (the token endpoint's 5xx) is passed on as it is, so the next call tries again and nothing is marked.
-        try { await o.auth.refresh(); } catch (err) {
-          if (o.auth.status().state !== "expired") throw err;
+        // A different account signed in while this request ran: its answer belongs to the owner who asked, so it is not refreshed
+        // or resent under the new account. The 401 is the old sign-in's, and nothing about the saved one is decided here.
+        if (signedInAt !== undefined && o.auth.signInCount?.() !== signedInAt) {
+          stray = true;
+          o.log?.("github 401 on a token a different sign-in replaced; not retried", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
+        } else {
+          // A token that ran out: refresh once and send again. A refusal marks the sign-in expired inside the refresh; any other
+          // failure (the token endpoint's 5xx) is passed on as it is, so the next call tries again and nothing is marked.
+          try { await o.auth.refresh(); } catch (err) {
+            if (o.auth.status().state !== "expired") throw err;
+          }
+          return again();
         }
-        return again();
       }
     }
     const need = classify(p, path, res, parsed, Boolean(as) || stray);
