@@ -35,7 +35,7 @@ test("builds the config from the job", () => {
   assert.equal((c as Record<string, unknown>).mcp, undefined);
   assert.equal(c.permission.webfetch, "deny");
   assert.equal(c.permission.external_directory, "allow");
-  assert.equal(c.permission.doom_loop, "allow");
+  assert.equal(c.permission.doom_loop, "deny");
   assert.deepEqual(c.instructions, ["/s/AGENTS.md", "/s/aidenhq-tools/README.md"]);
   assert.throws(() => opencodeConfig({ ...spec, tools: undefined }, { plugins: [], stateDir: "/s", limits }), /no tool index/);
   assert.equal(c.autoupdate, false);
