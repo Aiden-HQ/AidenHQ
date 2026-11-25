@@ -61,12 +61,14 @@ function fakes() {
     }
     throw new Error(`no route ${path}`);
   };
+  // `instanceText`: the instance.yaml this fake answers with, so a test can move the instance (a settings push) without a commit.
+  const state = { instanceText: undefined };
   const github = {
     tip: async () => ({ tip: NEW, green: true }),
-    text: async (repo, path) => (path === "instance.yaml" ? INSTANCE : undefined),
+    text: async (repo, path) => (path === "instance.yaml" ? (state.instanceText ?? INSTANCE) : undefined),
     commits: async (repo, from, to) => [{ repo, sha: to, subject: "(#1)" }],
   };
-  return { k, kernel, github };
+  return { k, kernel, github, state };
 }
 const train = (dir, f, clock, extra = {}) => createReleaseTrain({
   dir, productRepo: "acme/aidenhq", instanceRepo: "acme/aidenhq-instance", windowMinutes: 15,
@@ -212,6 +214,34 @@ test("a target that doesn't compile the instance is neither committed nor filed,
   await train(dir, f, clock, { compile: f.compile }).step();
   assert.equal(asked.length, 1, "the same tip is never tried again");
   assert.equal(f.k.writes.length, 0);
+});
+
+/**
+ * A refusal is about the instance that was compiled. Once the instance's own text changes (the owner fixes the setting the target
+ * refuses), the same product tip is checked again instead of waiting for another product merge.
+ */
+test("a refused target is checked again once the instance changes, not only on a newer product merge", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  f.compile = async (to) => (asked.push(to), { ok: false, error: "compile: settings.code_review: per tier now", base: BASE });
+  const t = train(dir, f, clock, { compile: f.compile });
+  await t.step();
+  assert.deepEqual(asked, [NEW], "the target is refused once");
+  // The instance is fixed (its text changes) and is pushed: the same tip is due again.
+  f.state.instanceText = `product: ${OLD}\nmodules: [core]\nsettings: { code_review: { by_tier: {} } }\n`;
+  await t.refresh();
+  clock.t = new Date("2026-11-18T10:40:00Z");
+  await t.step();
+  clock.t = new Date("2026-11-18T11:00:00Z");
+  await t.step();
+  assert.deepEqual(asked, [NEW, NEW], "the same target is checked against the fixed instance");
+  // With no instance change, it stays refused: no further check until something moves.
+  await t.step();
+  assert.deepEqual(asked, [NEW, NEW], "and is not checked again in a loop");
 });
 
 test("a target that compiles the instance files the bump as today", async () => {

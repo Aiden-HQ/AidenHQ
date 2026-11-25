@@ -56,6 +56,11 @@ type State = {
   filing?: { to: string; sha?: string; base?: string; task: string; identifier: string };
   flight?: { to: string; record: string; task: string; identifier: string };
   lastTried?: string;
+  /**
+   * A target the preflight refused, with the instance text it refused: the refusal is a fact about that instance, so the same tip
+   * is checked again once the instance's own text changes (the owner fixes the setting), not only on a newer product merge.
+   */
+  refused?: { to: string; text: string };
 };
 const MOVING = ["review", "owner", "approved", "claimed"];
 /** A land refused because main moved on, or the eval still running: that bump is over, and its commits are filed again. */
@@ -165,9 +170,11 @@ export function createReleaseTrain(o: TrainOptions) {
       if (!compiled.ok) {
         log(`release bump not filed: the target product ${to.slice(0, 12)} doesn't compile the instance`, { to, err: compiled.error });
         s.lastTried = to;
+        s.refused = { to, text };
         delete s.open;
         return;
       }
+      delete s.refused;
       const carries = await o.github.commits(o.productRepo, pinned, to);
       const source = `release:instance:${to}`;
       // Idempotent per source: a restart adopts the task an earlier process filed for this commit instead of opening a second.
@@ -232,6 +239,13 @@ export function createReleaseTrain(o: TrainOptions) {
       const head = await o.github.tip(o.productRepo);
       if (!head) return;
       const { tip, green } = head;
+      // A refusal is about the instance that was compiled: once its text changes (the setting the target refuses is fixed), the same
+      // tip is checked again rather than waiting for another product merge.
+      if (s.refused && s.refused.to === tip && s.refused.text !== (instance ?? "")) {
+        log("release bump rechecked: the instance changed since the target refused it", { to: tip });
+        delete s.lastTried;
+        delete s.refused;
+      }
       const d = trainStep({ tip, green, pinned, lastTried: s.lastTried, open: s.open, flight: s.flight, now: now().toISOString(), windowMinutes: o.windowMinutes });
       if (d.do === "open") s.open = { since: now().toISOString() };
       else if (d.do === "close") delete s.open;

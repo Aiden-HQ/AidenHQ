@@ -28,7 +28,7 @@ export type CompileCheck = Verdict & { base: string };
 /** The host's inputs the apply's compile reads, as absolute paths. */
 export type Inputs = { configDir: string; dataDir: string; secretsDir: string };
 /** What the staged compile is handed: the two trees and the env the apply's own staged compile runs with. */
-export type RunInput = { productDir: string; instanceDir: string; repo: string; env: NodeJS.ProcessEnv };
+export type RunInput = { productDir: string; instanceDir: string; repo: string; env: NodeJS.ProcessEnv; until?: number };
 export type CompileDeps = {
   /** This host's product checkout (AIDENHQ_DIR): its git has the product commits, its .env and data are the host's inputs. */
   repo: string;
@@ -65,10 +65,17 @@ export function firstDiagnostic(stderr: unknown): string {
   return first.slice(0, 300);
 }
 
+/** The most `until` leaves for this step, at most `cap`: every child is bounded by both, so one slow step can't outrun the check. */
+function left(until: number, cap: number) {
+  const ms = Math.min(cap, until - Date.now());
+  if (ms <= 0) throw new Error("the compile check ran out of time");
+  return ms;
+}
+
 /** `git` in the product checkout, asynchronously (a slow fetch must not stall the kernel's event loop). */
-function git(repo: string, args: string[]): Promise<Buffer> {
+function git(repo: string, args: string[], until = Number.POSITIVE_INFINITY): Promise<Buffer> {
   return new Promise<Buffer>((ok, no) => {
-    execFile("git", ["-C", repo, ...args], { timeout: 120_000, maxBuffer: 256 * 1024 * 1024, encoding: "buffer" }, (e, out, err) => {
+    execFile("git", ["-C", repo, ...args], { timeout: left(until, 120_000), maxBuffer: 256 * 1024 * 1024, encoding: "buffer" }, (e, out, err) => {
       if (e) return no(new Error(`git ${args[0]}: ${String(err ?? e.message).toString().trim().slice(0, 300)}`));
       ok(out as Buffer);
     });
@@ -80,27 +87,27 @@ function git(repo: string, args: string[]): Promise<Buffer> {
  * comes from the change feed, which may be ahead of this checkout) and only a commit on main is staged, as the apply refuses
  * anything unmerged. A commit the checkout doesn't have after the fetch, or one not on main, is operational: the caller retries.
  */
-async function stageProduct(repo: string, sha: string, to: string) {
+async function stageProduct(repo: string, sha: string, to: string, until: number) {
   // The host's checkout has `origin`; a bare repo a test made may not. A failed fetch of a remote that is there is
   // operational (a network the train retries), never a verdict on the target.
-  const remotes = (await git(repo, ["remote"])).toString().split("\n").map((l) => l.trim());
-  if (remotes.includes("origin")) await git(repo, ["fetch", "--quiet", "origin", "main"]);
-  await git(repo, ["cat-file", "-e", `${sha}^{commit}`]);
+  const remotes = (await git(repo, ["remote"], until)).toString().split("\n").map((l) => l.trim());
+  if (remotes.includes("origin")) await git(repo, ["fetch", "--quiet", "origin", "main"], until);
+  await git(repo, ["cat-file", "-e", `${sha}^{commit}`], until);
   // Nothing unmerged runs (ops/apply-config-work.sh: the pin must be on product main). Compare against the fetched main when
   // there is one, else the local main the checkout has.
   let mainRef: string | undefined;
   for (const r of ["refs/remotes/origin/main", "refs/heads/main"]) {
-    try { await git(repo, ["rev-parse", "--verify", "--quiet", `${r}^{commit}`]); mainRef = r; break; } catch {}
+    try { await git(repo, ["rev-parse", "--verify", "--quiet", `${r}^{commit}`], until); mainRef = r; break; } catch {}
   }
   if (mainRef) {
-    try { await git(repo, ["merge-base", "--is-ancestor", sha, mainRef]); }
+    try { await git(repo, ["merge-base", "--is-ancestor", sha, mainRef], until); }
     catch { throw new Error(`the target product ${sha.slice(0, 12)} isn't on the product's main`); }
   }
-  await extract(repo, sha, to);
+  await extract(repo, sha, to, until);
 }
 
 /** A commit's tree (from this checkout) into `to`. */
-async function extract(repo: string, sha: string, to: string) {
+async function extract(repo: string, sha: string, to: string, until: number) {
   mkdirSync(to, { recursive: true });
   await new Promise<void>((ok, no) => {
     const tar = spawn("tar", ["-x", "-C", to], { stdio: ["pipe", "ignore", "pipe"] });
@@ -108,7 +115,7 @@ async function extract(repo: string, sha: string, to: string) {
     tar.stderr.on("data", (d) => (err += String(d)));
     tar.on("error", no);
     tar.on("close", (code) => (code === 0 ? ok() : no(new Error(`tar: ${err.trim().slice(0, 300)}`))));
-    void git(repo, ["archive", "--format=tar", sha]).then((tree) => tar.stdin.end(tree), (e) => { tar.stdin.destroy(); no(e); });
+    void git(repo, ["archive", "--format=tar", sha], until).then((tree) => tar.stdin.end(tree), (e) => { tar.stdin.destroy(); no(e); });
   });
 }
 
@@ -154,7 +161,7 @@ async function installCompiler(o: RunInput) {
     }
     // Installs run the target's own lifecycle scripts: they get no path to the host's config, data or vault, unlike the
     // compiler below, which the apply's own staged compile reads those with.
-    const installed = await run("npm", ["ci", "--prefix", d, "--silent"], o.productDir, { ...o.env, AIDENHQ_CONFIG_DIR: "", AIDENHQ_DATA_DIR: "", AIDENHQ_SECRETS_DIR: "" }, 300_000);
+    const installed = await run("npm", ["ci", "--prefix", d, "--silent"], o.productDir, { ...o.env, AIDENHQ_CONFIG_DIR: "", AIDENHQ_DATA_DIR: "", AIDENHQ_SECRETS_DIR: "" }, left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
     if (!installed.ok) throw new Error(`the target product's ${d} deps didn't install: ${firstDiagnostic(installed.stderr) || "npm ci failed"}`);
   }
 }
@@ -162,7 +169,7 @@ async function installCompiler(o: RunInput) {
 /** The default `run`: the target tree's compiler deps, then its own compiler, staged — as the apply does both. */
 async function stagedCompile(o: RunInput, install: (o: RunInput) => Promise<void>): Promise<Verdict> {
   await install(o);
-  const compiled = await run(process.execPath, [COMPILER], o.productDir, o.env, 300_000);
+  const compiled = await run(process.execPath, [COMPILER], o.productDir, o.env, left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
   if (compiled.ok) return { ok: true };
   // A compiler that never finished (a timeout, a killed child) is operational: the caller retries, never records a refusal the
   // compiler didn't make. Only a real non-zero exit is the target refusing the instance.
@@ -176,23 +183,26 @@ async function stagedCompile(o: RunInput, install: (o: RunInput) => Promise<void
  * apply fetches it. A fork that doesn't descend from the target is what the apply refuses, so it is operational here (the train
  * retries; the pin has not moved to a target the fork covers), never a compile verdict on the target.
  */
-async function kernelTree(repo: string, product: string, instanceDir: string): Promise<string> {
+async function kernelTree(repo: string, product: string, instanceDir: string, until: number): Promise<string> {
   let fork: { sha?: unknown; url?: unknown; source?: unknown; repo?: unknown } | undefined;
   try { fork = (YAML.parse(readFileSync(join(instanceDir, "instance.yaml"), "utf8")) ?? {}).product_fork; } catch { return product; }
   if (fork == null) return product;
   const sha = String(fork.sha ?? "");
   if (!SHA.test(sha)) throw new Error("instance.yaml product_fork: a fork needs a 40-character sha");
   const url = fork.source === "github" ? `https://github.com/${String(fork.repo ?? "")}.git` : String(fork.url ?? "");
-  const present = async (c: string) => { try { await git(repo, ["cat-file", "-e", `${c}^{commit}`]); return true; } catch { return false; } };
+  const present = async (c: string) => { try { await git(repo, ["cat-file", "-e", `${c}^{commit}`], until); return true; } catch { return false; } };
   if (!(await present(sha))) {
     if (!url) throw new Error(`couldn't fetch product_fork ${sha.slice(0, 12)}: no url or github repo`);
-    try { await git(repo, ["-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", url, sha]); }
+    try { await git(repo, ["-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", url, sha], until); }
     catch (e) { throw new Error(`couldn't fetch product_fork ${sha.slice(0, 12)} from ${url}: ${(e as Error).message.slice(0, 200)}`); }
   }
-  try { await git(repo, ["merge-base", "--is-ancestor", product, sha]); }
+  try { await git(repo, ["merge-base", "--is-ancestor", product, sha], until); }
   catch { throw new Error(`product_fork ${sha.slice(0, 12)} does not descend from product ${product.slice(0, 12)}`); }
   return sha;
 }
+
+/** The whole check's own bound: a target that changes both lockfiles installs two dep trees, then compiles. */
+export const CHECK_DEADLINE_MS = 540_000;
 
 /** The compile preflight: `POST /v1/compile/check {product, instance?}` -> `{ok, base}`, or `{ok: false, error, base}`. */
 export function createCompileCheck(d: CompileDeps) {
@@ -207,20 +217,21 @@ export function createCompileCheck(d: CompileDeps) {
     let productDir = join(dir, "product");
     const instanceDir = join(dir, "instance");
     const t0 = Date.now();
+    const until = t0 + CHECK_DEADLINE_MS;
     try {
       // The product first, so a target this checkout doesn't have costs no instance read.
-      await stageProduct(d.repo, product, productDir);
+      await stageProduct(d.repo, product, productDir, until);
       await d.tree(base, instanceDir);
       // The tree the apply actually runs: the instance's fork when it descends from the target, in its own folder. Compiling the
       // pin while the apply runs the fork would check different inputs.
-      const kernelSha = await kernelTree(d.repo, product, instanceDir);
+      const kernelSha = await kernelTree(d.repo, product, instanceDir, until);
       if (kernelSha !== product) {
         productDir = join(dir, "kernel-fork");
-        await extract(d.repo, kernelSha, productDir);
+        await extract(d.repo, kernelSha, productDir, until);
       }
       seedInputs(d.repo, productDir);
       const env = stagedEnv(productDir, instanceDir, d.inputs);
-      const o = { productDir, instanceDir, repo: d.repo, env };
+      const o = { productDir, instanceDir, repo: d.repo, env, until };
       const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? installCompiler);
       log("compile check", { product, instance: base, ok: r.ok, ms: Date.now() - t0 });
       return { ...r, base };

@@ -1656,8 +1656,9 @@ export function createService(o: Options) {
     // target's own staged compiler exactly as the apply does. Its throw is transient (the next poll retries); a refusal is the
     // compiler's own first message.
     async compile(to) {
-      // A staged compile can outlast the kernel's other reads (it installs the target's deps on a lockfile change): its own bound.
-      const r = await kernel("POST", "/v1/compile/check", { product: to }, 400_000);
+      // The kernel bounds the whole check (two dep installs then the compile, `CHECK_DEADLINE_MS`); this client waits past that
+      // bound so a slow host's completed verdict is never discarded and the deps reinstalled on the next poll.
+      const r = await kernel("POST", "/v1/compile/check", { product: to }, 600_000);
       if (typeof r?.ok !== "boolean" || typeof r?.base !== "string") throw new Error("the kernel's compile check answered no verdict");
       // `base` is the instance commit compiled: the bump is committed on it, so a verdict is never applied to another revision.
       return r.ok ? { ok: true, base: r.base } : { ok: false, base: r.base, error: String(r.error ?? "the staged compile failed").slice(0, 300) };
