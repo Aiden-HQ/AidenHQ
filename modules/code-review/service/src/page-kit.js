@@ -110,9 +110,18 @@ const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
 const editor = (k) => {
   const fire = (el, ev, get) => el.addEventListener(ev, () => { const v = get(); if (v !== undefined) k.set(v); });
   if (k.kind === "checks") return h("div", { className: "checks" }, ...k.values.map((v) => { const c = h("input", { type: "checkbox", checked: (k.value ?? []).includes(v), title: k.titles?.[v] }); c.dataset.f = `${k.f}:${v}`; c.addEventListener("change", () => k.set(k.values.filter((x) => x === v ? c.checked : (k.value ?? []).includes(x)))); return h("label", {}, c, v); }));
+  if (k.kind === "seg") return h("div", { className: "seg", role: "radiogroup", ariaLabel: k.label }, ...k.values.map((v) => { const b = h("button", { type: "button", role: "radio", textContent: v, title: k.titles?.[v] }); b.setAttribute("aria-checked", String(v === k.value)); b.dataset.v = v; b.dataset.f = `${k.f}:${v}`; b.addEventListener("click", () => { if (v !== k.value) k.set(v); }); return b; }));
+  if (k.kind === "chips") {
+    const items = k.value ?? [], inp = h("input", { type: "text", ariaLabel: k.label, placeholder: k.placeholder ?? "Add one, press Enter", autocomplete: "off", spellcheck: false });
+    inp.dataset.f = k.f;
+    const add = () => { const v = inp.value.trim(); inp.value = ""; if (v && !items.includes(v)) k.set([...items, v]); };
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } else if (e.key === "Backspace" && !inp.value && items.length) k.set(items.slice(0, -1)); });
+    inp.addEventListener("blur", add);
+    return h("div", { className: "chips" }, ...items.map((x) => { const b = h("button", { type: "button", className: "x", ariaLabel: `Remove ${x}`, textContent: "\u00d7" }); b.addEventListener("click", () => k.set(items.filter((y) => y !== x))); return h("span", { className: "chip", title: x }, h("span", { textContent: x }), b); }), inp);
+  }
   const el = k.kind === "select" ? h("select", { ariaLabel: k.label }, ...k.values.map((v) => h("option", { value: v, textContent: v, title: k.titles?.[v], selected: v === k.value })))
     : k.kind === "list" ? h("textarea", { rows: Math.min(6, Math.max(2, (k.value ?? []).length)), value: (k.value ?? []).join("\n"), ariaLabel: k.label, spellcheck: false })
-    : h("input", { type: "text", value: k.value ?? "", ariaLabel: k.label, autocomplete: "off", spellcheck: false, placeholder: k.kind === "num" ? "unlimited" : "" });
+    : h("input", { type: "text", value: k.value ?? "", ariaLabel: k.label, autocomplete: "off", spellcheck: false, placeholder: k.placeholder ?? (k.kind === "num" ? "unlimited" : "") });
   el.dataset.f = k.f;
   // A text control proposes as you type (after a short pause, without a redraw, so the caret stays) and again on change, so the proposal the host shows is the latest by the time Save is pressed.
   const read = (quiet) => k.kind === "list" ? lines(el.value) : k.kind === "num" ? (el.value.trim() === "" ? null : Number.isInteger(Number(el.value)) && Number(el.value) >= 0 ? Number(el.value) : (quiet || say("Use a whole number, or leave it blank.", true), undefined)) : el.value;
