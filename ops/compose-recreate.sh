@@ -5,7 +5,9 @@
 #      stopped container a leftover, and nothing here should guess at what the config runs;
 #   2. only the services whose image, compose config or mounted secret content moved are recreated; every other container
 #      keeps running. When there are any, a fresh dump of the warehouse (when this host runs one) is taken first (see
-#      dump); a step that recreates nothing dumps nothing;
+#      dump); a step that recreates nothing dumps nothing, and neither does one the apply says moved no product code
+#      (AIDENHQ_DUMP_WAREHOUSE=0: a settings-only apply recreates containers on the same code, so no migration runs
+#      and the nightly dump is the copy);
 #   3. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
 #   4. a service still left `created` (never started) is started;
 #   5. a container, running or already stopped, of a service this config dropped (a removed or replaced module's, or Caddy
@@ -170,6 +172,7 @@ dumpTo() {
 dump() {
   [ "$dumped" = 0 ] || return 0
   dumped=1
+  [ "${AIDENHQ_DUMP_WAREHOUSE:-1}" != 0 ] || { echo "compose: product unchanged: the warehouse is not dumped"; return 0; }
   [ -d "$secrets/apps/warehouse" ] || { echo "compose: no warehouse on this host: nothing dumped"; return 0; }
   [ "$(docker inspect -f '{{.State.Running}}' "$warehouse_container" 2>/dev/null || true)" = "true" ] || {
     echo "compose: $warehouse_container is not running: nothing dumped"

@@ -696,6 +696,15 @@ stagedComposeFiles() {
 
 # Step 1 of spec §5.7.2: everything that can refuse, before anything is touched. Sets `why` on a refusal.
 validate() {
+  # The health baseline (about 5 s of probes, read-only) runs beside the checks and builds below; both must be done before the switch.
+  scripts/healthcheck.sh > "$baseline" 2>&1 & local hc=$! rc=0
+  validateChecks || rc=$?
+  wait "$hc" || true
+  [ "$rc" != 0 ] || echo "health baseline: $(grep -c '^  ok    ' "$baseline" || true) ok, $(grep -c '^  FAIL  ' "$baseline" || true) failing (not counted)"
+  return "$rc"
+}
+
+validateChecks() {
   # The compile's diagnostic goes in the generation's reason, where fleet_generation_status shows it (the log stays on the
   # host): from its message line (`compile: …`, or a thrown Error's, which follows a source pointer in node's output; else
   # its first line) on, one bounded line.
@@ -741,9 +750,6 @@ validate() {
   # Only when what the images build from moved since they were last built here (imageInputs), or one is missing.
   build_files="$files"
   stepRun images imageInputs env COMPOSE_FILE="$files" docker compose build || { why="an image failed to build"; return 1; }
-  # The health baseline: only checks passing now count after the switch.
-  scripts/healthcheck.sh > "$baseline" 2>&1 || true
-  echo "health baseline: $(grep -c '^  ok    ' "$baseline" || true) ok, $(grep -c '^  FAIL  ' "$baseline" || true) failing (not counted)"
 }
 
 # What this host's images were built from, for the compose files in build_files: each service's build config, the tracked
@@ -987,7 +993,10 @@ switchOver() {
   # A rollback to a product from before the script has none to run.
   pgtuned=0; if [ -x ops/paperclip-pg-tune.sh ]; then ops/paperclip-pg-tune.sh || pgtuned=$?; fi
   [ "$pgtuned" = 0 ] || [ "$pgtuned" = 10 ] || exit "$pgtuned"
-  ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
+  # The warehouse dump (320 MB, ~30 s on the live host) guards a recreate against new product code (a migration); a recreate
+  # on the product already running (a settings-only apply) runs the same code, so it dumps nothing.
+  dumpwh=1; [ "$before" != "$product" ] || dumpwh=0
+  AIDENHQ_DUMP_WAREHOUSE="$dumpwh" ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
   if [ "$pgtuned" = 10 ]; then docker compose restart paperclip; fi
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune
