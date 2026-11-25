@@ -80,9 +80,9 @@ export async function remoteHead(env: GitEnv, app: App): Promise<string> {
 
 /**
  * The app's bare repo (created on first use), fetched up to date; returns its --git-dir arg. A module app's source is the
- * product commit the instance pins, which the host's product checkout already holds: its origin/<branch> is copied from
- * there (apply-config fetched it from GitHub and refused a pin not on it), so the reachability check below still means
- * "on the product's origin/<branch>", and no token is needed for the product repo.
+ * product commit the instance pins, which the host's product checkout already holds: the pin itself is copied from there,
+ * not origin/<branch>, because an applied `product_fork` commit is fetched by sha and checked out without moving
+ * origin/main (ops/apply-config-work.sh kernelRun), and no token is needed for the product repo.
  */
 async function fetchAll(env: GitEnv, app: App): Promise<string> {
   const gd = `--git-dir=${env.gitDir}/${app.name}.git`;
@@ -90,20 +90,26 @@ async function fetchAll(env: GitEnv, app: App): Promise<string> {
     mkdirSync(env.gitDir, { recursive: true });
     await git(["init", "--bare", "-q", `${env.gitDir}/${app.name}.git`]);
   }
-  if (app.module) await git([gd, "fetch", "--prune", productSource(env, app), `+refs/remotes/origin/${app.branch}:refs/remotes/origin/${app.branch}`]);
+  if (app.module) await git([gd, "fetch", "--prune", productSource(env, app), `+${pin(env, app)}:refs/remotes/pin`]);
   else if (viaOps(env, app)) await env.ops!.fetch(app.repo, "refs/heads/*", `${env.gitDir}/${app.name}.git`);
   else await git([...source(env, app).pre, gd, "fetch", "--prune", source(env, app).url, "+refs/heads/*:refs/remotes/origin/*"]);
   return gd;
 }
 
+/** A module app's applied product commit: the compiler records it, and its source in the host's checkout is that commit. */
+function pin(env: GitEnv, app: App): string {
+  if (!app.pin) throw new Error(`${app.name} is a module app without a pin: the compiler sets it on the product commit the instance applies`);
+  return app.pin;
+}
+
 /**
  * origin/<branch> again, straight from the app's own origin: fetchAll's copy can come from a host checkout that has not
  * fetched since a merge, while GitHub has the commit. Only refs/heads/<branch> is copied, so it can add history but never
- * make a commit reachable that origin/<branch> doesn't have.
+ * make a commit reachable that origin/<branch> doesn't have. A module app: its pin, from the product checkout.
  */
 const fetchBranch = async (env: GitEnv, app: App): Promise<void> => {
   // A module app comes from the product checkout too, never from app.repo: its repo is the compiled product_repo setting.
-  if (app.module) return void (await git([`--git-dir=${env.gitDir}/${app.name}.git`, "fetch", "--prune", productSource(env, app), `+refs/remotes/origin/${app.branch}:refs/remotes/origin/${app.branch}`]));
+  if (app.module) return void (await git([`--git-dir=${env.gitDir}/${app.name}.git`, "fetch", "--prune", productSource(env, app), `+${pin(env, app)}:refs/remotes/pin`]));
   if (viaOps(env, app)) return env.ops!.fetch(app.repo, `refs/heads/${app.branch}`, `${env.gitDir}/${app.name}.git`);
   await git([...source(env, app).pre, `--git-dir=${env.gitDir}/${app.name}.git`, "fetch", "--prune", source(env, app).url, `+refs/heads/${app.branch}:refs/remotes/origin/${app.branch}`]);
 };
@@ -113,9 +119,7 @@ const fetchBranch = async (env: GitEnv, app: App): Promise<void> => {
  * product commit this host applied and never runs code the instance hasn't applied; any other app's origin/<branch>.
  */
 function ceiling(env: GitEnv, app: App): string {
-  if (!app.module) return `origin/${app.branch}`;
-  if (!app.pin) throw new Error(`${app.name} is a module app without a pin: the compiler sets it on the product commit the instance applies`);
-  return app.pin;
+  return app.module ? pin(env, app) : `origin/${app.branch}`;
 }
 
 /** From what fetchAll brought; when that doesn't hold (a checkout that lags origin), origin/<branch> once from the app's own origin, then once again. */

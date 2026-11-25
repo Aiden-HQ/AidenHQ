@@ -47,6 +47,20 @@ describe("module apps", () => {
     await expect(checkout(env, moduleApp(p.sha), newer)).rejects.toThrow(/not at or below the applied product pin/);
   });
 
+  it("check out an applied fork pin that origin/main does not hold", async () => {
+    const p = product();
+    // An applied `product_fork` commit: checked out by the host, but origin/main stays at the product's own main.
+    sh(p.dir, "checkout", "-q", "-b", "fork");
+    writeFileSync(`${p.dir}/apps/warehouse/compose.yaml`, "services:\n  web:\n    image: fork\n");
+    sh(p.dir, "commit", "-qam", "fork");
+    const fork = sh(p.dir, "rev-parse", "HEAD");
+    sh(p.dir, "checkout", "-q", "--detach", p.sha);
+    const env = { appsData: `${p.t}/apps`, gitDir: `${p.t}/git`, productDir: p.dir, orgs: [] };
+    const co = await checkout(env, moduleApp(fork));
+    expect(co.sha).toBe(fork);
+    expect(readFileSync(`${co.dir}/apps/warehouse/compose.yaml`, "utf8")).toContain("image: fork");
+  });
+
   it("need the host's product checkout, and never go to GitHub without it", async () => {
     const p = product();
     const env = { appsData: `${p.t}/apps`, gitDir: `${p.t}/git2`, orgs: [] };
