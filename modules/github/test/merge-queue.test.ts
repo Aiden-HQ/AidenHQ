@@ -39,7 +39,7 @@ function fakeGitHub(prs) {
           mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: p.base ?? "main",
           files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
           commits: { nodes: [{ commit: { statusCheckRollup: rollup(p.checks, p) } }] },
-          baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup("SUCCESS", { names: p.baseNames }) } },
+          baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup(p.baseState ?? "SUCCESS", { names: p.baseNames }) } },
         } } } } };
       }
       return { status: 400, body: { errors: [{ message: "fake GitHub: unknown query" }] } };
@@ -64,6 +64,12 @@ function fakeGitHub(prs) {
       const p = prs[rules[1]] ?? Object.entries(prs).find(([k]) => k.startsWith(`${rules[1]}#`))?.[1];
       if (p?.noRules) return { status: 403, body: { message: "Upgrade to GitHub Pro or make this repository public to enable this feature." } };
       return rules[2].startsWith("rules") ? { status: 200, body: [] } : { status: 404, body: { message: "Branch not protected" } };
+    }
+    // Workflows: a repo has CI unless the PR says `noCi`.
+    const wf = /^\/repos\/([^/]+\/[^/]+)\/actions\/workflows/.exec(path);
+    if (wf) {
+      const p = prs[wf[1]] ?? Object.entries(prs).find(([k]) => k.startsWith(`${wf[1]}#`))?.[1];
+      return { status: 200, body: { total_count: p?.noCi ? 0 : 1, workflows: [] } };
     }
     const commit = /^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})$/.exec(path);
     if (commit) {
@@ -265,28 +271,28 @@ test("a partial GraphQL answer and an empty 200 are waited on, not taken as a de
   assert.equal(empty.outcomes.length, 0, "an empty answer waits");
 });
 
-test("a repo with no checks merges after a grace: GitHub calls the PR CLEAN and no rule requires a check (a plan without branch rules included)", async (t) => {
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", names: [], noRules: true } };
-  const { handle, github, outcomes, merge, settle, clock } = await setup(t, { prs });
+test("a repo with no CI at all merges with no checks (a plan without branch rules included), but the base's CI rule still applies", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", names: [], noRules: true, noCi: true, baseNames: ["build"], baseState: "FAILURE" } };
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs });
   await merge("k-00000000000000c0", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
   await handle.stepMerges();
-  assert.deepEqual(github.merges(), [], "waits first: a workflow may still register on a fresh head");
-  clock.t += 3 * 60_000;
+  assert.deepEqual(github.merges(), [], "the base is red: the merge waits, as for any PR whose head proved nothing");
+  prs["acme-agents/widget"].baseState = "SUCCESS";
   await handle.stepMerges();
   await settle();
   assert.equal(github.merges().length, 1);
   assert.equal(outcomes[0]?.ok, true);
 });
 
-test("missing evidence never counts as passing: no checks wait a grace, a truncated page of checks, the base's gate check not yet on the head", async (t) => {
+test("missing evidence never counts as passing: no checks wait with no time limit where CI exists, a truncated page of checks, the base's gate check not yet on the head", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", names: [] } };
   const { handle, github, outcomes, merge, settle, clock } = await setup(t, { prs });
   await merge("k-00000000000000c1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
   await handle.stepMerges();
-  clock.t += 60_000;
+  clock.t += 7 * 24 * 3600_000;
   await handle.stepMerges();
   await settle();
-  assert.equal(outcomes.length, 0, "no checks yet: still waiting for one to register, never failed for the time");
+  assert.equal(outcomes.length, 0, "a repo with workflows and no checks yet: still waiting, never failed for the time");
   assert.deepEqual(github.merges(), []);
   prs["acme-agents/widget"] = { head: HEAD, checks: "SUCCESS", names: ["build"] };
   await handle.stepMerges();

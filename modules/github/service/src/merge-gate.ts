@@ -97,7 +97,7 @@ export function supersededDesignReview(marker: Json, pr: Json) {
  * The aggregate gate check a repository's CI may end with (the product's ci.yml `ci-required`): it appears only once the jobs it
  * covers finish, so a head can look all green before it. When the base branch's rollup has it, a head without it is pending.
  */
-export const hasGate = (rollup: Json) => (rollup?.contexts?.nodes ?? []).some((n: Json) => (n.name ?? n.context) === GATE_CHECK);
+const hasGate = (rollup: Json) => (rollup?.contexts?.nodes ?? []).some((n: Json) => (n.name ?? n.context) === GATE_CHECK);
 export function withGate(data: Json) {
   const pr = data?.repository?.pullRequest;
   if (pr?.state && pr.state !== "OPEN") return data;
@@ -203,7 +203,8 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
       // lands, and the tip's own CI is no wait). One behind a red or still-running tip waits for it. The tip is in the reason,
       // so each new tip gets its own wait.
       const base = baseCi(pr.baseRef?.target?.statusCheckRollup), tip = String(pr.baseRef?.target?.oid ?? "").slice(0, 12);
-      const behind = pr.baseRef?.compare?.behindBy !== 0;
+      // Waived head checks proved no tree, so a PR on the tip waits for a red or running base like one behind it.
+      const behind = noChecksOk || pr.baseRef?.compare?.behindBy !== 0;
       if (behind && base === "pending") return { do: "wait", why: `CI is running on \`${def}\` at \`${tip}\`` };
       if (behind && base === "red") return { do: "wait", why: `\`${def}\` is red at \`${tip}\`: merged once it is green again` };
       return ship ? { do: ship.queue ? "enqueue" : "merge", why: "ready" } : { do: "merge" };
