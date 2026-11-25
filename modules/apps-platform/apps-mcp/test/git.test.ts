@@ -34,6 +34,25 @@ describe("module apps", () => {
     expect(readFileSync(`${co.dir}/apps/warehouse/compose.yaml`, "utf8")).toContain("services:");
   });
 
+  it("never fetch from their repo: a commit above the applied pin is refused", async () => {
+    const p = product();
+    // A newer commit on the product's origin/main that this instance has not applied (its pin is the older one).
+    writeFileSync(`${p.dir}/apps/warehouse/compose.yaml`, "services:\n  web:\n    image: y\n");
+    sh(p.dir, "commit", "-qam", "newer");
+    const newer = sh(p.dir, "rev-parse", "HEAD");
+    sh(p.dir, "update-ref", "refs/remotes/origin/main", newer);
+    const env = { appsData: `${p.t}/apps`, gitDir: `${p.t}/git`, productDir: p.dir, orgs: [] };
+    const atNewer = await checkout(env, moduleApp(newer));
+    expect(atNewer.sha).toBe(newer);
+    await expect(checkout(env, moduleApp(p.sha), newer)).rejects.toThrow(/not at or below the applied product pin/);
+  });
+
+  it("need the host's product checkout, and never go to GitHub without it", async () => {
+    const p = product();
+    const env = { appsData: `${p.t}/apps`, gitDir: `${p.t}/git2`, orgs: [] };
+    await expect(checkout(env, moduleApp(p.sha))).rejects.toThrow(/product checkout, and none is configured/);
+  });
+
   it("are not what exempts a user app: the same repo without module still rejects", async () => {
     const p = product();
     const app = parseApp({ name: "warehouse", repo: "Aiden-HQ/AidenHQ", path: "apps/warehouse", owner: "a", description: "d", port: 8080 });
