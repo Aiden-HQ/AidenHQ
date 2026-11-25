@@ -697,9 +697,10 @@ stagedComposeFiles() {
 # Step 1 of spec §5.7.2: everything that can refuse, before anything is touched. Sets `why` on a refusal.
 validate() {
   # The health baseline (about 5 s of probes, read-only) runs beside the checks and builds below; both must be done before the switch.
-  scripts/healthcheck.sh > "$baseline" 2>&1 & local hc=$! rc=0
+  # Without the apply lock's descriptor (9), so a probe that outlives a refused apply never holds the lock.
+  scripts/healthcheck.sh > "$baseline" 2>&1 9>&- & local hc=$! rc=0
   validateChecks || rc=$?
-  if [ "$rc" != 0 ]; then kill "$hc" 2>/dev/null || true; fi   # a refused apply never waits on probes
+  if [ "$rc" != 0 ]; then pkill -P "$hc" 2>/dev/null || true; kill "$hc" 2>/dev/null || true; fi   # a refused apply never waits on probes
   wait "$hc" 2>/dev/null || true
   [ "$rc" != 0 ] || echo "health baseline: $(grep -c '^  ok    ' "$baseline" || true) ok, $(grep -c '^  FAIL  ' "$baseline" || true) failing (not counted)"
   return "$rc"

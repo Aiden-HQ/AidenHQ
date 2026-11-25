@@ -303,7 +303,12 @@ step() {
   refresh
   secretDigests || exit 1
   IMAGE_MOVED=0
-  for service in $desired; do moved "$service" && recreate+=("$service"); done
+  for service in $desired; do
+    moved "$service" || continue
+    recreate+=("$service")
+    # A service with no explicit image (build-only) has a replacement image that can't be compared: counted as moved.
+    [ -n "${SERVICE_IMAGE[$service]-}" ] || IMAGE_MOVED=1
+  done
   if [ "${#recreate[@]}" -gt 0 ]; then
     if [ "$IMAGE_MOVED" = 1 ] || [ "${AIDENHQ_PRODUCT_MOVED:-1}" != 0 ]; then dump || return 1; else echo "compose: same product, no image moved: the warehouse is not dumped"; fi
     stale=1
