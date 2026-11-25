@@ -89,7 +89,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       // A settings change the tool proposed: shown on the bar below, saved only by the owner's click (/save checks it).
       const changes = (r.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
       if (live && Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
-      if (loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
+      if (live && loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
     }
     window.addEventListener("message", onMessage);
     return () => (live = false, window.removeEventListener("message", onMessage));
@@ -102,16 +102,17 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
     let live = true;
     const release = () => (APPLYING.delete(id), setApplying(""));
     const t = setInterval(async () => {
-      const f = await api.settingsChanges().then((r) => r.changes.find((c) => c.identifier === pending.identifier), () => undefined);
-      if (!live) return;
+      const got = await api.settingsChanges().then((r) => ({ f: r.changes.find((c) => c.identifier === pending.identifier) }), () => undefined);
+      if (!live || !got) return; // a failed read proves nothing: keep waiting
+      const { f } = got;
       // The list holds recent changes only: one it no longer shows is long done.
       if (!f) return void (Date.now() - pending.since > 60_000 && release());
       if (IN_FLIGHT.includes(f.stage)) return;
       release();
       if (f.stage !== "applied") return setSaid(`${pending.identifier} was not applied (${f.stage})${f.detail ? `: ${f.detail}` : ""}. Save again to retry.`);
-      if (!proposalNow.current) return setSaid(`${pending.identifier} is live.`);
+      // Whatever the page shows or proposed may predate the change: it starts over from the live settings.
+      setSaid(proposalNow.current ? `${pending.identifier} is live. The edit you made meanwhile was started before it, so make it again.` : `${pending.identifier} is live.`);
       setProposal(null), setAttempt((a) => a + 1);
-      setSaid(`${pending.identifier} is live. The edit you made meanwhile was started before it, so make it again.`);
     }, 3_000);
     return () => (live = false, clearInterval(t));
   }, [applying, id]);
