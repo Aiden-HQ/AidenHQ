@@ -45,7 +45,8 @@ Read the repo's `settings` in `github_issue_list` first; they are the owner's ru
      (version, steps, the log line); the issue stays open and unlabelled.
    - **Spam:** no action.
 4. An issue that reports several separate defects: the verdict above covers its main one. On the product repo, each other
-   defect is reported in this run as its own product bug (deduped first) and linked from your comment; on another repo,
+   defect is checked against the code as in step 1 and, when it holds, reported in this run as its own product bug (deduped
+   first) and linked from your comment; on another repo,
    your comment lists them as separate reports for the reporter to file. The comment states what this run did.
 
 ## The comment
