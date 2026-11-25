@@ -47,7 +47,7 @@ const CAUTIOUS: ShipSettings = {
 };
 const FULL: ShipSettings = {
   // Unguarded at ship's own policy layer. Host rules, human code-owner reviews and kernel authority still apply.
-  ...CAUTIOUS, handoff: "all", rebase: "behind", protected: [],
+  ...CAUTIOUS, handoff: "all", protected: [],
   by_tier: { skip: { approve: "off", merge: "ready" }, trivial: { approve: "on", merge: "ready" }, standard: { approve: "on", merge: "ready" }, sensitive: { approve: "on", merge: "ready" } },
   caps: Object.fromEntries(CAP_KEYS.map((k) => [k, null])) as Caps,
 };

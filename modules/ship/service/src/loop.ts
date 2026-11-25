@@ -38,7 +38,7 @@ export type LoopOptions = {
   /** A PR's CI recoveries (ci-recover.ts), with the repo's slice of the loop's state. */
   recover: (repo: string, pr: Json, state: Json, save: () => void) => Promise<Recovery>;
   /** The one engine (adopted.ts): every open PR but Dependabot's, with the task that opened it (if one did), and the PRs that left. */
-  adopted: { begin(): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery>; bump?: boolean }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
+  adopted: { begin(): void; see(repo: string, defaultBranch: string, prs: Json[]): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery>; bump?: boolean }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
 };
 
 /**
@@ -121,15 +121,16 @@ export function startLoop(o: LoopOptions) {
     const opened: Json = await o.openers();
     let next: number | undefined;
     const after = (ms: number) => { next = Math.min(next ?? ms, ms); };
+    // A Dependabot PR is the Engineer's once its checks fail (or always, under `all`); a green one under `failing` goes through the round like any PR.
+    // Green means at least one check reported and all finished: no checks yet is not green.
+    const bumpOf = (pr: Json) => { const reported = namedChecks(rollupOf(pr)); return isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending); };
+    o.adopted.see(repo, main.name, open.filter((pr) => !isDependabot(pr) || bumpOf(pr)));
     for (const pr of [...open].reverse()) { // oldest first
       const url = pr.url.toLowerCase();
       const opener = opened[url];
       // The task that opened it, when the code host opened this very branch for it (a reused PR number belongs to nobody).
       const task = pr.isCrossRepository === false && opener?.branch === pr.headRefName ? opener.task : undefined;
-      // A Dependabot PR is the Engineer's once its checks fail (or always, under `all`); a green one under `failing` goes through the round like any PR.
-      // Green means at least one check reported and all finished: no checks yet is not green.
-      const reported = namedChecks(rollupOf(pr));
-      const bump = isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending);
+      const bump = bumpOf(pr);
       if (isDependabot(pr) && !bump) continue;
       // One PR's failure (a recovery read, a round) never stops the repo's others.
       try {

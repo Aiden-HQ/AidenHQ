@@ -60,9 +60,32 @@ test("under rebase: conflict, only the earliest hand-off among the repo's open a
   const pr = (number) => ({ number, url: `https://github.com/acme/app/pull/${number}`, headRefOid: "a".repeat(40), baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } });
   const main = { name: "main", rollup: { contexts: { nodes: [] } } };
   const open = new Set([5, 6]);
+  pass.see("acme/app", "main", [pr(5), pr(6)]);
   await pass.open("acme/app", main, pr(6), open);
   await pass.open("acme/app", main, pr(5), open);
   assert.deepEqual(updated, ["/repos/acme/app/pulls/5/update-branch"]);
+});
+
+test("the merge order's front is only a PR this scan runs a round on toward the default branch, and nobody stopped", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const kept = (number, at) => ({ repo: "acme/app", number, generation: 1, trigger: { kind: "label", event: `e${number}`, actor: "maria", at, head: "a".repeat(40) }, task: `T${number}`, hold: null });
+  [[1, "08:00"], [2, "08:30"], [3, "09:00"], [4, "09:30"]].forEach(([n, t]) => state.put(kept(n, `2026-11-24T${t}:00Z`)));
+  const updated = [];
+  const pass = adoptedPass({
+    gh: async (method, path) => (method === "PUT" && updated.push(path), { status: 200, body: {} }), state,
+    kernel: { call: async (m, path) => (path.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}) },
+    settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: "repair", why: "behind", failing: [], dirty: false }),
+    effects: { comment: async () => 1, askReview: async () => {}, verdict: async () => verdict() },
+  });
+  const pr = (number, extra = {}) => ({ number, url: `https://github.com/acme/app/pull/${number}`, headRefOid: "a".repeat(40), baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] }, ...extra });
+  const main = { name: "main", rollup: { contexts: { nodes: [] } } };
+  const all = [pr(1, { baseRefName: "release" }), pr(2, { isDraft: true }), pr(3, { author: { __typename: "Bot", login: "dependabot[bot]" } }), pr(4)];
+  // 1 is on another base, 2 is a draft, 3 is a Dependabot PR the loop leaves out of the scan: 4 is the front.
+  pass.see("acme/app", "main", [all[0], all[1], all[3]]);
+  const open = new Set([1, 2, 3, 4]);
+  await pass.open("acme/app", main, all[3], open);
+  assert.deepEqual(updated, ["/repos/acme/app/pulls/4/update-branch"]);
 });
 
 test("a held adoption whose PR was closed is read once, then never again", async () => {

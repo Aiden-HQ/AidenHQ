@@ -57,13 +57,19 @@ export function viewOf(repo: string, defaultBranch: string, pr: Json): PrView {
 export const ended = (a: Pick<Kept, "counters" | "reportStale">) => a.counters?.lastRound === "closed" || (!!a.counters?.lastRound?.endsWith(":done") && !a.reportStale);
 
 export function adoptedPass(o: AdoptedOptions) {
+  /** A PR stopped by its own hand: a draft, the stop label, or a person assigned (not by ship). No hold is set for it. */
+  const isStopped = (repo: string, view: PrView, a: Kept | undefined) =>
+    view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop") || view.assignees.some((x) => !(a?.assigned ?? []).includes(x));
+  /** Per repo, the PRs this scan runs a round on toward the default branch and nobody stopped (see(), kept current by open()): the only ones front() ranks. */
+  const eligible = new Map<string, Set<number>>();
   /**
    * Whether the PR is first in the repo's merge order (item 19): the earliest hand-off among the repo's open adoptions that ship
-   * still works (not held). Under `rebase: conflict` only that one is brought up to date; the rest wait their turn.
+   * still works (eligible, not held). Under `rebase: conflict` only that one is brought up to date; the rest wait their turn.
    */
   const front = (repo: string, number: number, open: Set<number>) => {
+    const live = eligible.get(repo.toLowerCase());
     const order = (o.state.all() as Kept[])
-      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept && !a.stack)
+      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept && !a.stack && !!live?.has(a.number))
       .sort((x, y) => String(x.trigger.at ?? "").localeCompare(String(y.trigger.at ?? "")) || x.number - y.number);
     return order[0]?.number === number;
   };
@@ -109,7 +115,7 @@ export function adoptedPass(o: AdoptedOptions) {
    * newer PR of the same task into the same base, or done with this head half an hour old, each with no merge of it in flight:
    * closed, and its branch deleted only while still at this head with no other open PR on it. True when the round is skipped.
    */
-  const lifecycle = async (a: Kept, view: PrView, pr: Json, work: Json, task: string, newer?: string): Promise<boolean> => {
+  const lifecycle = async (a: Kept, view: PrView, pr: Json, work: Json, task: string, newer: string | undefined, stopped: boolean): Promise<boolean> => {
     if (work.status === "cancelled") {
       if (a.kept === task) return true;
       const text = `Left open by the code host: ${task}, the task this PR was for, is cancelled. The PR and its branch \`${pr.headRefName}\` are left as they are for a successor task to finish, and this PR is not closed or deleted while it waits. A successor takes it over by checking \`${pr.headRefName}\` out and publishing to it (\`aidenhq publish\` with that branch): that records the successor as the PR's task and the PR is worked for it again.`;
@@ -126,7 +132,7 @@ export function adoptedPass(o: AdoptedOptions) {
     const merging = pr.isInMergeQueue === true || (work.records ?? []).some((r: Json) => ["github.merge", "github.enqueue"].includes(r.kind) && ["review", "owner", "approved", "claimed"].includes(r.state) && ours(r));
     if (a.seen?.head !== view.head) { a = { ...a, seen: { head: view.head, at: new Date().toISOString() } }; o.state.put(a); }
     // Only a known task status retires a PR (a read without one says nothing about cancellation).
-    const why = merging || !work.status ? undefined
+    const why = merging || stopped || !work.status ? undefined
       : newer ? `Closing: superseded by ${newer}, the newer PR ${task} published for the same task.`
       : work.status === "done" && Date.now() - Date.parse(a.seen!.at) >= HALF_HOUR ? `Closing: its task ${task} is done; its change landed elsewhere or isn't needed.` : undefined;
     if (!why) return false;
@@ -172,6 +178,13 @@ export function adoptedPass(o: AdoptedOptions) {
     /** A new pass: roles are read again. */
     begin() { roles.clear(); },
     /**
+     * A repo's scan, before any of its PRs runs: `prs` are the ones the scan will run a round on. Those into the default branch
+     * that nobody stopped are the merge order's candidates (front()), the one definition of who can hold the front.
+     */
+    see(repo: string, defaultBranch: string, prs: Json[]) {
+      eligible.set(repo.toLowerCase(), new Set(prs.filter((pr) => pr.baseRefName === defaultBranch && !isStopped(repo, viewOf(repo, defaultBranch, pr), o.state.get(repo, pr.number) as Kept | undefined)).map((pr) => Number(pr.number))));
+    },
+    /**
      * One open PR: intake, then a round once adopted. `ctx.opener`: the task the code host opened it for (its identifier);
      * `ctx.newer`: a newer open PR of that same task; `ctx.recover`: its CI recoveries (ci-recover.ts), run once its task's
      * lifecycle has kept it (a PR about to be closed or left for a successor spends no CI).
@@ -184,11 +197,14 @@ export function adoptedPass(o: AdoptedOptions) {
       // A task's PR whose task couldn't be read waits a pass: never taken in as a member's meanwhile (the loop reads it again).
       if (ctx.opener && !work) throw new Error(`its task ${ctx.opener} couldn't be read`);
       let a = await intake(handoff, view, taskId, ctx.bump) as Kept | undefined;
-      if (!a) { await ctx.recover?.(); return; }
+      // A stopped PR gets no CI re-run either: recovery runs only for one nobody stopped.
+      const recover = (x: Kept | undefined) => isStopped(repo, view, x) ? Promise.resolve(undefined) : ctx.recover?.();
+      if (!a) { await recover(a); return; }
       if (a.owner?.kind === "task") {
         // Closed by ship (a stop): nothing more until a successor publishes to it.
         if (a.hold?.kind === "stopped") return;
-        if (work && await lifecycle(a, view, pr, work, ctx.opener!, ctx.newer)) return;
+        // A stopped PR is never closed for its task (lifecycle keeps its bookkeeping all the same).
+        if (work && await lifecycle(a, view, pr, work, ctx.opener!, ctx.newer, isStopped(repo, view, a))) return;
         // A done task starts nothing new (its leftover PR waits for its close); a merge of it its task filed itself is left to run.
         if (work?.status === "done") return;
         const own = new Set([a.merge?.record, (a as Kept & { queue?: { record: string } }).queue?.record].filter(Boolean).map(String));
@@ -198,7 +214,7 @@ export function adoptedPass(o: AdoptedOptions) {
         const w = await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(a.task)}`).catch(() => undefined);
         if (w?.status === "cancelled") { handBack(o.state, repo, pr.number, "its task was cancelled"); return; }
       }
-      const recovery = await ctx.recover?.();
+      const recovery = await recover(a);
       a = o.state.get(repo, pr.number) as Kept;
       // A parent recorded before stays the parent while the branch now only feeds another base (a backport): once it merged into
       // the default branch, the child follows it there.
@@ -211,7 +227,9 @@ export function adoptedPass(o: AdoptedOptions) {
       const resumes = a.hold?.kind === "stalled" && !!a.counters && a.counters.head !== view.head;
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
       // The PR's own stops hold a retarget too: a draft, the stop label, or a person assigned.
-      const stopped = view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop") || view.assignees.some((x) => !(a!.assigned ?? []).includes(x));
+      const stopped = isStopped(repo, view, a);
+      // Intake may have changed the adoption since see() (a hand-off clears `assigned`): its stop is read again here.
+      if (stopped) eligible.get(repo.toLowerCase())?.delete(pr.number);
       if (!stopped && !ctx.stackedOn && a.stack && a.stack.branch === view.base && view.base !== main.name && await retargeted(a, view, main.name)) return;
       // A stack that reached the default branch (ship's retarget, or GitHub's own once the parent's branch was deleted): its base
       // is merged in first, a new head code review reviews whole; nothing moves on the old head. A conflict goes to the repair.
