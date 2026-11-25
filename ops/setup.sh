@@ -472,6 +472,8 @@ if [ -n "$vault_dir" ]; then
     [ -z "$vf" ] || vault_paths+=("$vault_dir/$vf")
   done
   as_user mkdir -p "${vault_paths[@]}"
+elif grep -q '^VAULT_FOLDERS=.' "$ENVF" 2>/dev/null; then
+  set_env VAULT_FOLDERS ""   # no vault path: a folder left behind makes compile refuse ("VAULT_DIR must be an absolute path")
 fi
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
 set_env BOARD_LAN_HOSTS "${BOARD_HOST:-${PUBLIC_IP:+$PUBLIC_IP,}127.0.0.1:3121,localhost:3121}"

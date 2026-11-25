@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -99,6 +99,18 @@ test("the plan keeps the vault folder default and creates the vault folders as t
   assert.ok(!out.split("\n").some((l) => l.trim() === "+ .env: VAULT_FOLDERS="), `blanked VAULT_FOLDERS\n${out}`);
   assert.ok(out.includes("+ .env: VAULT_FOLDERS=Meetings"), out);
   assert.ok(out.includes("(as alice) mkdir -p /home/alice/obsidian/vault /home/alice/obsidian/vault/Meetings"), out);
+});
+
+// A rerun after the owner drops the vault: setup clears the folders too, since compile refuses a folder with no VAULT_DIR.
+test("a rerun with no vault path clears VAULT_FOLDERS, so compile accepts .env", () => {
+  const repo = mkdtempSync(join(tmpdir(), "setup-checkout-"));
+  const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
+  const text = readFileSync(join(root, ".env.example"), "utf8").replace(/^VAULT_DIR=.*$/m, "VAULT_DIR=").replace(/^VAULT_FOLDERS=.*$/m, "VAULT_FOLDERS=Meetings");
+  writeFileSync(join(repo, ".env"), text);
+  for (const name of readdirSync(root)) if (name !== ".env") symlinkSync(join(root, name), join(repo, name));  // the checkout
+  const out = execFileSync("bash", [setup, "--dry-run", "--config", conf(person), "--checkout", repo], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  assert.ok(out.split("\n").some((l) => l.trim() === "+ .env: VAULT_FOLDERS="), `kept folders with no vault path\n${out}`);
+  assert.ok(!out.includes("/obsidian/vault"), `still made the folders\n${out}`);
 });
 
 test("is_loopback_url knows every loopback form and no real one", () => {
