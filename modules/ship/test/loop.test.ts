@@ -587,6 +587,17 @@ test("a dependabot-only repo gets no CI rerun and no branch cleanup", async (t) 
   assert.ok(!m.gh.some((g) => g !== "POST /graphql"), `only the PR list is read: ${m.gh}`);
 });
 
+test("under failing only a bump with a red check gets a task; under off none does", async (t) => {
+  const red = (n) => dep("other/lib", n, { commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] } });
+  const open = { "other/lib": [dep("other/lib", 1), red(2)] };
+  const m = await multi(t, [{ repo: "other/lib", duties: "dependabot", dependabot: "failing" }], open);
+  await m.watch.tick();
+  assert.deepEqual(m.tasks.map((x) => x.source), ["dependabot:other/lib/2"]);
+  const off = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "off" }], { "acme/app": [dep("acme/app", 1)] });
+  await off.watch.tick();
+  assert.deepEqual(off.tasks, []);
+});
+
 test("a Dependabot PR with no checks is filed", async (t) => {
   const none = dep("acme/app", 3, { commits: { nodes: [{ commit: { statusCheckRollup: null } }] } });
   const m = await multi(t, [{ repo: "acme/app", duties: "all" }], { "acme/app": [none] });

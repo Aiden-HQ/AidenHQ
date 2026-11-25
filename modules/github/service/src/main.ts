@@ -41,7 +41,8 @@ if (!key) throw new Error("github: CODEHOST_KEY_FILE is empty");
 const { access, reportNeed, sync, sources } = await startGithubMcp();
 const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
-const maintained = parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "");
+// A list the parser refuses (an old key after an upgrade) leaves no repo maintained and says why, rather than taking the code host down.
+const maintained = (() => { try { return parseRepos(env.GITHUB_MAINTAINER_REPOS ?? ""); } catch (e) { log("maintainer_repos refused: no repo is maintained until it is fixed", { err: String((e as Error).message).slice(0, 300) }); return []; } })();
 // DELETE in the release after #1065: compile sets GITHUB_MIGRATE_FROM_APP to the retired App's id; the first sign-in with the
 // new scopes rewrites the repos' rules that name that App (migrate.ts), and merges hold until then.
 const retiredAppId = Number(env.GITHUB_MIGRATE_FROM_APP ?? "");

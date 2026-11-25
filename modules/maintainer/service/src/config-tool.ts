@@ -2,12 +2,12 @@
 // `maintainer_config` reads each maintained repo's settings, `maintainer_configure` proposes one change.
 // The change is the owner's own call: it comes back as a typed settings change for the board to show and file on his Save
 // (structuredContent._aidenhq.settings_change), the same as ship's. Nothing is filed here.
-import { CLOSE_REASONS, EXEMPT_LABELS, PRESETS, PRESET_NAMES, TRIAGE, TRUST_ROLES, parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
+import { CLOSE_REASONS, DEPENDABOT, EXEMPT_LABELS, PRESETS, PRESET_NAMES, TRIAGE, TRUST_ROLES, parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import type { Tool } from "./mcp.ts";
 
 type Dict = Record<string, unknown>;
 /** The entry fields the page edits (everything but `repo`, which is the Ship page's to add); parseRepos checks each value. */
-export const FIELDS = ["label", "trusted", "issues", "features", "dependabot", "contributor_prs", "stale_days", "preset", "triage", "triage_cap_per_author_day", "triage_labels", "close", "needs_info_close_days", "stale_issues", "resolved_check"] as const;
+export const FIELDS = ["fix_label", "trusted", "fixes", "features", "dependabot", "contributor_prs", "stale_days", "preset", "triage", "triage_cap_per_author_day", "triage_labels", "close", "needs_info_close_days", "stale_issues", "resolved_check"] as const;
 
 /** maintainer_repos as the instance holds it: its entries, a bare "owner/name" or a map. */
 export function rawRepos(text: string): Dict[] {
@@ -40,7 +40,7 @@ export function applyRepoChange(list: Dict[], c: { fields?: Record<string, Dict>
 /** What every field is when an entry says nothing, and what each preset sets: the page shows them as "Default". */
 export function defaults() {
   const { repo: _r, owner: _o, name: _n, ...base } = parseRepos("x/y")[0]!;
-  return { base, presets: PRESETS, preset_names: PRESET_NAMES, triage: TRIAGE, close: CLOSE_REASONS, roles: TRUST_ROLES, exempt_labels: EXEMPT_LABELS };
+  return { base, dependabot: DEPENDABOT, presets: PRESETS, preset_names: PRESET_NAMES, triage: TRIAGE, close: CLOSE_REASONS, roles: TRUST_ROLES, exempt_labels: EXEMPT_LABELS };
 }
 
 export function configTools(d: { repos: () => string; ship: () => boolean }): Tool[] {

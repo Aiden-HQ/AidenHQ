@@ -70,18 +70,25 @@ const flow: Flow = {
 
 // The repos the loop watches: the product repo and every maintained repo ship works (all duties), and the other maintained repos
 // with Dependabot on (that duty only).
-const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { log("maintainer_repos unreadable: only the product repo is watched", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
-const repos = new Map<string, "all" | "dependabot">();
-if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) repos.set(env.SHIP_PRODUCT_REPO, "all");
+let unreadable = false;
+const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { unreadable = true; log("maintainer_repos unreadable: only the product repo is watched, and no Dependabot task is filed", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
+const dataDir = dirname(stateFile);
+/** Whether the loop still tracks a Dependabot task it filed on this repo (its loop.json). */
+const tracked = (repo: string) => { try { return Object.keys(JSON.parse(readFileSync(join(dataDir, "loop.json"), "utf8"))[repo.toLowerCase()]?.dependabot ?? {}).length > 0; } catch { return false; } };
+const repos = new Map<string, { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }>();
+// Which Dependabot bumps get a task comes from the repo's maintainer_repos entry (the product repo, unlisted, takes every one).
+// A list that can't be read files none: a read failure is never the `all` default.
+const bumps = (repo: string) => unreadable ? "off" as const : maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot;
+if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) repos.set(env.SHIP_PRODUCT_REPO, { duties: "all", dependabot: bumps(env.SHIP_PRODUCT_REPO) });
 for (const m of maintained) {
   if (repos.has(m.repo)) continue;
-  if (settingsOf(m.repo)) repos.set(m.repo, "all");
-  else if (m.dependabot) repos.set(m.repo, "dependabot");
+  if (settingsOf(m.repo)) repos.set(m.repo, { duties: "all", dependabot: bumps(m.repo) });
+  // `off` is polled only while tasks it filed are still open: the loop closes them once their PR is gone and files no new ones.
+  else if (m.dependabot !== "off" || tracked(m.repo)) repos.set(m.repo, { duties: "dependabot", dependabot: m.dependabot });
 }
 const effects = shipEffects(kernel, { codeReview: "http://code-review:8098", key: token });
-const dataDir = dirname(stateFile);
 startLoop({
-  repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, flow, paused,
+  repos: [...repos].map(([repo, v]) => ({ repo, ...v })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, flow, paused,
   openers: () => github("GET", "openers"),
   recover: ciRecover({ gh, log }),
   // Every PR but Dependabot's: the hand-off (or a task's own PR) and its rounds (handoff.ts, rounds.ts), on GitHub through the same routes.
@@ -92,7 +99,7 @@ startLoop({
     effects,
   }),
 });
-log("ship watch loop", { repos: [...repos].map(([r, d]) => `${r}:${d}`) });
+log("ship watch loop", { repos: [...repos].map(([r, v]) => `${r}:${v.duties}:${v.dependabot ?? "all"}`) });
 
 // The contributor_prs pass (contributor.ts): its one state value in data/contributor-prs.json, checked every five minutes (at most
 // hourly reads).

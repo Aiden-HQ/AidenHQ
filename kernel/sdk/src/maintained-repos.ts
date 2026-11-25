@@ -9,6 +9,7 @@ export const BUILD_LABEL = "agent-build";
 // from it (default admin and maintain); triage, read and custom roles never count.
 export const TRUST_ROLES = ["admin", "maintain", "write"] as const;
 const DEFAULT_TRUSTED = ["admin", "maintain"];
+export const DEPENDABOT = ["off", "failing", "all"] as const;
 export const TRIAGE = ["off", "new", "new+backlog"] as const;
 export const PRESET_NAMES = ["quiet", "triage", "full"] as const;
 /** What a preset sets for a repo that doesn't say: its feature-request duty and how much triage it gets. An entry's own field wins. */
@@ -21,22 +22,22 @@ export const PRESETS = {
 export const CLOSE_REASONS = ["duplicate", "invalid", "empty", "incorrect"] as const;
 /** Labels that keep an issue out of the resolved-check and the stale-issue sweep, unless the entry names its own. */
 export const EXEMPT_LABELS = ["roadmap", "wip", "blocked"];
-const KEYS = ["repo", "label", "trusted", "issues", "features", "dependabot", "contributor_prs", "stale_days", "preset", "triage", "triage_cap_per_author_day", "triage_labels", "close", "needs_info_close_days", "stale_issues", "resolved_check"];
-const SHAPE = "{ repo, label, trusted, issues, features, dependabot, contributor_prs, stale_days, preset, triage, triage_cap_per_author_day, triage_labels, close, needs_info_close_days, stale_issues, resolved_check }";
+const KEYS = ["repo", "fix_label", "trusted", "fixes", "features", "dependabot", "contributor_prs", "stale_days", "preset", "triage", "triage_cap_per_author_day", "triage_labels", "close", "needs_info_close_days", "stale_issues", "resolved_check"];
+const SHAPE = "{ repo, fix_label, trusted, fixes, features, dependabot, contributor_prs, stale_days, preset, triage, triage_cap_per_author_day, triage_labels, close, needs_info_close_days, stale_issues, resolved_check }";
 
 export interface MaintainedRepo {
   repo: string;
   owner: string;
   name: string;
   /** The label that asks for a fix. */
-  label: string;
+  fix_label: string;
   trusted: string[];
-  /** Validate `label` issues, hand fixes over and see them through (default on). */
-  issues: boolean;
+  /** Validate `fix_label` issues, hand fixes over and see them through (default on). */
+  fixes: boolean;
   /** Triage feature requests, and build the ones carrying BUILD_LABEL (default from the preset: off). */
   features: boolean;
-  /** Every open Dependabot PR has an Engineer task (default off). */
-  dependabot: boolean;
+  /** Which Dependabot PRs get an Engineer task: none, only the ones whose checks fail, or all of them (default failing). */
+  dependabot: (typeof DEPENDABOT)[number];
   /** Nudge, then close, quiet human PRs (default off). */
   contributor_prs: boolean;
   /** Quiet days before the nudge, and again before the close; drafts get double. */
@@ -85,14 +86,15 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     const e = typeof entry === "string" ? { repo: entry } : entry;
     if (!e || typeof e !== "object" || Array.isArray(e)) throw new Error(`${where}: an entry is ${SHAPE}`);
     const unknown = Object.keys(e).filter((k) => !KEYS.includes(k));
-    if (unknown.length) throw new Error(`${where}: unknown key ${unknown.join(", ")}`);
+    const renamed: Record<string, string> = { label: "fix_label", issues: "fixes" };
+    if (unknown.length) throw new Error(`${where}: unknown key ${unknown.map((k) => (renamed[k] ? `${k} (it is now ${renamed[k]})` : k)).join(", ")}`);
     const m = String(e.repo ?? "").trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
     if (!m) throw new Error(`${where}: repo must be owner/name`);
     const key = `${m[1]}/${m[2]}`.toLowerCase();
     if (seen.has(key)) throw new Error(`${where}: ${m[1]}/${m[2]} is listed twice`);
     seen.add(key);
-    const label = e.label === undefined ? AGENT_FIX : String(e.label);
-    if (!/^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,49}$/.test(label)) throw new Error(`${where}: label must be 1-50 letters, digits, spaces or ._:-`);
+    const fix_label = e.fix_label === undefined ? AGENT_FIX : String(e.fix_label);
+    if (!/^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,49}$/.test(fix_label)) throw new Error(`${where}: fix_label must be 1-50 letters, digits, spaces or ._:-`);
     const trusted = e.trusted === undefined ? DEFAULT_TRUSTED : e.trusted;
     if (!Array.isArray(trusted) || !trusted.length || trusted.some((r) => !(TRUST_ROLES as readonly string[]).includes(r)))
       throw new Error(`${where}: trusted must be one or more of ${TRUST_ROLES.join(", ")}`);
@@ -103,7 +105,7 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     };
     const one = <T extends string>(k: string, values: readonly T[], dflt: T): T => {
       if (e[k] === undefined) return dflt;
-      if (!values.includes(e[k])) throw new Error(`${where}: ${k} must be one of ${values.join(", ")}`);
+      if (!values.includes(e[k])) throw new Error(`${where}: ${k} must be one of ${values.join(", ")}${typeof e[k] === "boolean" ? ` (${e[k]} is ${e[k] ? "all" : "off"})` : ""}`);
       return e[k] as T;
     };
     const days = (k: string, v: unknown, dflt: number, min = 1) => {
@@ -124,9 +126,9 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     const rc = e.resolved_check ?? {};
     if (typeof rc !== "object" || Array.isArray(rc) || Object.keys(rc).some((k) => !["max_closes", "exempt_labels"].includes(k))) throw new Error(`${where}: resolved_check is { max_closes, exempt_labels }`);
     return {
-      repo: `${m[1]}/${m[2]}`, owner: m[1]!, name: m[2]!, label, trusted: [...new Set(trusted as string[])],
-      issues: bool("issues", true), features: bool("features", PRESETS[preset].features), contributor_prs: bool("contributor_prs", false), stale_days: days("stale_days", e.stale_days, 7),
-      dependabot: bool("dependabot", false), preset, triage: one("triage", TRIAGE, PRESETS[preset].triage),
+      repo: `${m[1]}/${m[2]}`, owner: m[1]!, name: m[2]!, fix_label, trusted: [...new Set(trusted as string[])],
+      fixes: bool("fixes", true), features: bool("features", PRESETS[preset].features), contributor_prs: bool("contributor_prs", false), stale_days: days("stale_days", e.stale_days, 7),
+      dependabot: one("dependabot", DEPENDABOT, "failing"), preset, triage: one("triage", TRIAGE, PRESETS[preset].triage),
       triage_cap_per_author_day: days("triage_cap_per_author_day", e.triage_cap_per_author_day, 5, 0), triage_labels: bool("triage_labels", true),
       close: [...new Set(close as MaintainedRepo["close"])], needs_info_close_days: nic, stale_issues,
       resolved_check: { max_closes: days("resolved_check.max_closes", rc.max_closes, 10, 0), exempt_labels: rc.exempt_labels === undefined ? EXEMPT_LABELS : labelList(where, "resolved_check.exempt_labels", rc.exempt_labels) },
@@ -139,4 +141,4 @@ export const inMaintained = (repos: MaintainedRepo[], slug: string): boolean => 
 
 /** One line per repo, for tool descriptions: what the Maintainer may act on there. */
 export const describeRepos = (repos: MaintainedRepo[]) =>
-  repos.length ? repos.map((r) => `${r.repo} (label ${r.label}, trusted ${r.trusted.join("/")})`).join("; ") : "none configured (setting maintainer_repos)";
+  repos.length ? repos.map((r) => `${r.repo} (label ${r.fix_label}, trusted ${r.trusted.join("/")})`).join("; ") : "none configured (setting maintainer_repos)";

@@ -65,12 +65,11 @@ settings:
     default: issues
     values: ["off", "issues"]
   # The repos the Maintainer watches, triages and fixes, each reachable by the owner's GitHub sign-in:
-  # [{ repo: owner/name, label: agent-fix, trusted: [admin, maintain] }]. `label` is the label that asks
+  # [{ repo: owner/name, fix_label: agent-fix, trusted: [admin, maintain] }]. `fix_label` is the label that asks
   # for a fix (default agent-fix). `trusted` is who may vouch for it (the owner's login is an admin): admin, maintain or write (default
-  # admin and maintain; github-mcp refuses any other role). It lists every role that counts: [write] alone trusts no admin. Duties, each per repo: `issues` (default true: validate `label` issues and see
+  # admin and maintain; github-mcp refuses any other role). It lists every role that counts: [write] alone trusts no admin. Duties, each per repo: `fixes` (default true: validate `fix_label` issues and see
   # fixes through), `features` (default false: triage feature requests, label feature-request, and build those the owner or
-  # a trusted collaborator labels agent-build), `dependabot` (default false: every open Dependabot PR has an Engineer task, filed by
-  # the ship module), `contributor_prs` (default false: the ship module has the Maintainer nudge, then close, a human's PR that has been quiet), `stale_days` (default 7: quiet
+  # a trusted collaborator labels agent-build), `dependabot` (off, failing, all; default failing: the ship module files an Engineer task for the open Dependabot PRs whose checks fail, or for every one with `all`), `contributor_prs` (default false: the ship module has the Maintainer nudge, then close, a human's PR that has been quiet), `stale_days` (default 7: quiet
   # days before the nudge and again before the close; drafts wait twice as long). The Maintainer's other per-repo rules, all optional (the
   # Maintainer page edits them; kernel/sdk/src/maintained-repos.ts checks them): `preset` (quiet, triage, full: what `features` and `triage` default to),
   # `triage` (off, new, new+backlog), `triage_cap_per_author_day` (5), `triage_labels` (true), `close` (what triage may close: duplicate, invalid, empty,
@@ -87,7 +86,7 @@ settings:
       - { path: "*", new: true }
       - { path: "*.repo", new: true }
       - { path: "*.features", to: true, default: false }
-      - { path: "*.dependabot", to: true, default: false }
+      - { path: "*.dependabot", to: all, default: failing }
       - { path: "*.contributor_prs", to: true, default: false }
   # Paths the churn pass ignores (service/src/churn.ts; kernel/sdk/src/churn.ts): globs, one per entry.
   churn_exclude:

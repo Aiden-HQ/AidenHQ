@@ -196,7 +196,7 @@ test("the Fleet Steward's grants: reads, its predecessors' writes and settling s
   // fleet_operate: the operator's typed kernel.fleet_op (pause/resume, stop, restart, roll back; AI-reviewed); task_rebind: a
   // graded task's deliverable moved to the work that landed (owner, 2026-11-23: the Steward owns fleet operations).
   assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.fleet_operate", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_amend_rubric", "paperclip_tasks.task_block", "paperclip_tasks.task_cancel", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_rebind", "paperclip_tasks.task_route", "paperclip_tasks.task_wait"]);
-  assert.deepEqual(a.enabled_tools.github, ["github_product_issue_status", "github_issue_link"]);
+  assert.deepEqual(a.enabled_tools.github, ["github_product_issue_status", "github_issue_link", "github_issue_list"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));
   // product-issues: the digest's live-fix check reads the product-bug issues' status (github_product_issue_status); filing is the Maintainer's.

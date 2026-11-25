@@ -21,6 +21,7 @@ import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
 import { oldShape } from "../modules/ship/service/src/settings.ts";
+import { parseRepos } from "../kernel/sdk/src/maintained-repos.ts";
 import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
 import { KERNEL_KINDS, KERNEL_ROLES, repoKey } from "../kernel/src/kinds.ts";
 import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
@@ -808,6 +809,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       // `repo`), and then by that field. Any other setting's list holds strings: a map would reach its service as JSON that its
       // reader takes for text.
       const applies = Object.entries(d?.when ?? {}).every(([w, v]) => String(settings[w]) === String(v));
+      // maintainer_repos is the parser's, whole: an entry it refuses fails the compile (naming why) rather than the pattern check dropping the
+      // list for its default, which would be a valid but different policy.
+      if (k === "maintainer_repos" && Array.isArray(settings[k]) && settings[k].length) { try { parseRepos(JSON.stringify(settings[k])); } catch (e) { fail(`settings.maintainer_repos: ${(e as Error).message}`); } }
       if (d?.pattern && settings[k] !== "" && settings[k] != null && applies) {
         const bad = [settings[k]].flat().find((x) => {
           if (d.entry == null && x && typeof x === "object") return true;
