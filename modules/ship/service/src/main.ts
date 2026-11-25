@@ -11,6 +11,7 @@ import { ciRecover } from "./ci-recover.ts";
 import { configTools } from "./config-tool.ts";
 import { contributorPrs, contributorPrWake, prTick } from "./contributor.ts";
 import { shipEffects } from "./effects.ts";
+import { effectRefusal } from "./safe.ts";
 import { startLoop, type Flow } from "./loop.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { effective, scopeFrom } from "./settings.ts";
@@ -77,6 +78,7 @@ for (const m of maintained) {
   if (settingsOf(m.repo)) repos.set(m.repo, "all");
   else if (m.dependabot) repos.set(m.repo, "dependabot");
 }
+const effects = shipEffects(kernel, { codeReview: "http://code-review:8098", key: token });
 const dataDir = dirname(stateFile);
 startLoop({
   repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, flow, paused,
@@ -87,7 +89,7 @@ startLoop({
     gh, state, settings: settingsOf, paused, kernel, log,
     // The list read's node and default branch go along, so github reads neither again.
     decision: (repo, number, head, view) => github("POST", "decision", { repo, number, head, pr: view.pr, main: view.main, ...(view.stackedOn ? { stackedOn: view.stackedOn } : {}) }),
-    effects: shipEffects(kernel, { codeReview: "http://code-review:8098", key: token }),
+    effects,
   }),
 });
 log("ship watch loop", { repos: [...repos].map(([r, d]) => `${r}:${d}`) });
@@ -112,7 +114,21 @@ createServer(async (req, res) => {
     const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "github");
     if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end();
     const q = new URL(req.url, "http://x").searchParams;
-    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(generationOf(state, paused() || !settingsOf(q.get("repo") ?? ""), q.get("repo") ?? "", Number(q.get("pr")))));
+    const repo = q.get("repo") ?? "", n = Number(q.get("pr")), what = q.get("do");
+    let gen = generationOf(state, paused() || !settingsOf(repo), repo, n);
+    // The final tier check before an approve, a merge or an enqueue (risk tiers §7), with github's live head, base and author: this
+    // adoption's tier says whether the write may go; a verdict that can't be read, or a head not classified, is a no.
+    let refused: { why: string; retry: boolean } | undefined;
+    const s = settingsOf(repo);
+    if ((what === "approve" || what === "merge") && s && gen.generation !== null && !gen.hold) {
+      try {
+        const v = await effects.verdict(repo, n, q.get("head") ?? "", { base: q.get("base") ?? undefined, association: q.get("association") ?? undefined });
+        refused = effectRefusal(s, v, what, (state.get(repo, n) as { approve?: { head: string; why?: string; policy?: string } } | undefined)?.approve, q.get("head") ?? "", q.get("policy") ?? undefined);
+      } catch (e) { refused = { why: `code review's verdict couldn't be read (${String((e as Error).message).slice(0, 150)})`, retry: true }; }
+      // The adoption is read again after the verdict: a hand-back, a stop or a re-adoption meanwhile ends the write.
+      gen = generationOf(state, paused() || !settingsOf(repo), repo, n);
+    }
+    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...gen, ...(refused ? { refused: refused.why, ...(refused.retry ? { retry: true } : {}) } : {}) }));
   }
   res.writeHead(req.url === "/healthz" ? 200 : 404).end();
 }).listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101 }));

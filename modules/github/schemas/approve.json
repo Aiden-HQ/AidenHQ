@@ -1,5 +1,5 @@
 {
-  "title": "github.approve: the reviewer App's approval of this adopted PR at exactly this head, for this adoption.",
+  "title": "github.approve: the reviewer App's approval of this adopted PR at exactly this head, for this adoption (or, with dismiss, the dismissal of its earlier approvals).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -31,6 +31,16 @@
       "minLength": 1,
       "maxLength": 200,
       "pattern": "^[\\w./-]+$"
+    },
+    "policy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "The review policy the approval is issued under (code review's verdict): the approval stands only while it is the head's current policy."
+    },
+    "dismiss": {
+      "type": "boolean",
+      "description": "Dismiss the App's approvals of this PR instead of approving."
     }
   }
 }

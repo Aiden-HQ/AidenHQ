@@ -814,7 +814,8 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);' "$rq" \
   && grep -qF 'const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);' "$rq" \
   && grep -qF 'const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);' "$rq" \
-  && grep -qF 'if (q.ship && (await d.ship?.generation(p.repo, p.number))?.generation !== q.ship.generation) return fail(' "$rq" \
+  && grep -qF 'if (q.ship && at?.generation !== q.ship.generation) return fail(' "$rq" \
+  && grep -qF 'if (at?.refused) return fail(' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}`);' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/pulls/${number}`);' "$rq" \
   && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });' "$rq" \

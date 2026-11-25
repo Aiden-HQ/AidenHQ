@@ -2,14 +2,15 @@
 // repo, `ship_configure` changes one repo's entry. Built like code-review's: the change is applied to the raw value, the whole
 // result validated, and one typed settings change filed as the calling job (POST /v1/settings/agent).
 // A change that loosens anything (loosens()) is the owner's: the tool refuses it and the owner makes it from the board.
-import { CAP_KEYS, CONTROLS, covers, effective, FIELDS, loosens, PRESETS, validate, type Scope } from "./settings.ts";
+import { CAP_KEYS, CONTROLS, covers, effective, FIELDS, loosens, PRESETS, TIERS, validate, type Scope } from "./settings.ts";
 import { status } from "./status.ts";
 import type { State } from "./state.ts";
 import type { Tool } from "./mcp.ts";
 
 type Dict = Record<string, unknown>;
-/** What a change's `reset` may name: a field (not the preset), a cap, or one of safe's three fields. `actions` is allowed ahead of its validation landing. */
-const RESETTABLE = new Set([...FIELDS.filter((k) => !["preset", "caps", "safe"].includes(k)), "actions", ...CAP_KEYS.map((k) => `caps.${k}`), "safe.max_lines", "safe.max_files", "safe.deny"]);
+/** What a change's `reset` may name: a field (not the preset), a cap, a tier's approve or merge, or the unwatched merge. */
+const RESETTABLE = new Set([...FIELDS.filter((k) => !["preset", "caps", "by_tier", "unwatched"].includes(k)), ...CAP_KEYS.map((k) => `caps.${k}`),
+  ...TIERS.flatMap((t) => (t === "skip" ? [`by_tier.${t}.merge`] : [`by_tier.${t}.approve`, `by_tier.${t}.merge`])), "unwatched.merge"]);
 export interface Change {
   /** `owner/name`, or `defaults` for the entry every uncovered-by-entry repo takes. */
   repo: string;
@@ -32,14 +33,23 @@ export function applyShipChange(raw: Dict, c: Change): { value: Dict; summary: s
   else if (c.change && typeof c.change === "object" && !Array.isArray(c.change)) {
     const base = typeof old === "string" ? { preset: old } : (old as Dict) ?? {};
     const { reset, ...ch } = c.change as Dict;
-    // caps and safe merge field by field: lowering one cap keeps the others.
-    const entry: Dict = { ...base, ...ch, ...Object.fromEntries(["caps", "safe"].filter((k) => ch[k] && typeof ch[k] === "object").map((k) => [k, { ...((base as Dict)[k] as Dict), ...(ch[k] as Dict) }])) };
-    // `reset: ["caps.usd", "approve"]` drops those fields from the entry, so the preset's value applies again.
-    if (reset !== undefined && !Array.isArray(reset)) throw new Error("reset is a list of fields, such as [\"caps.usd\", \"approve\"]");
+    // caps, unwatched and each tier of by_tier merge field by field: lowering one cap, or one tier's merge, keeps the others.
+    const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Dict) : undefined);
+    const entry: Dict = { ...base, ...ch, ...Object.fromEntries(["caps", "unwatched"].filter((k) => obj(ch[k])).map((k) => [k, { ...obj((base as Dict)[k]), ...obj(ch[k]) }])) };
+    if (obj(ch.by_tier)) entry.by_tier = Object.fromEntries([...new Set([...Object.keys(obj((base as Dict).by_tier) ?? {}), ...Object.keys(obj(ch.by_tier)!)])].map((t) => [t, (obj(ch.by_tier)![t] !== undefined && !obj(obj(ch.by_tier)![t]) ? obj(ch.by_tier)![t] : { ...obj(obj((base as Dict).by_tier)?.[t]), ...obj(obj(ch.by_tier)![t]) })]));
+    // `reset: ["caps.usd", "by_tier.trivial.approve"]` drops those fields from the entry, so the preset's value applies again.
+    if (reset !== undefined && !Array.isArray(reset)) throw new Error("reset is a list of fields, such as [\"caps.usd\", \"by_tier.trivial.approve\"]");
     for (const p of reset ?? []) {
       if (!RESETTABLE.has(String(p))) throw new Error(`can't reset ${String(p).slice(0, 40)} (one of ${[...RESETTABLE].join(", ")})`);
-      const [k, sub] = String(p).split(".");
-      if (sub && entry[k] && typeof entry[k] === "object") { const m = { ...(entry[k] as Dict) }; delete m[sub]; if (Object.keys(m).length) entry[k] = m; else delete entry[k]; } else if (!sub) delete entry[k];
+      // A path of one to three parts (`caps.usd`, `by_tier.trivial.approve`): the leaf goes, and a map it leaves empty goes with it.
+      const drop = (m: Dict, path: string[]): Dict | undefined => {
+        const [k, ...rest] = path;
+        if (rest.length) { const sub = obj(m[k]); if (!sub) return m; const left = drop({ ...sub }, rest); const out = { ...m }; if (left && Object.keys(left).length) out[k] = left; else delete out[k]; return out; }
+        const out = { ...m }; delete out[k]; return out;
+      };
+      const left = drop(entry, String(p).split(".")) ?? {};
+      for (const k of Object.keys(entry)) delete entry[k];
+      Object.assign(entry, left);
     }
     next = entry;
     summary = `${c.repo}: ${[...Object.keys(ch), ...(Array.isArray(reset) && reset.length ? [`reset ${reset.join(", ")}`] : [])].join(", ")} changed`;
@@ -123,7 +133,7 @@ export function configTools(d: {
     },
     {
       name: "ship_configure", roles: ["ship-admin"],
-      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (reset: [field or caps.x or safe.x to drop back to the preset], enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label, actions { conflict | behind | before_merge: [ { comment: /rebase } | { workflow: pr-rebase.yml, inputs? } ] }: the repo's own commands and workflows, before_merge workflows only, an ordinary change) or null to drop the entry } and/or { paused: true | false } for the kill switch (its own setting, ship_paused: it works whatever state the repo entries are in); { edits: { repos: { <repo>: change, … }, paused? } } applies several together (the Fleet page's pending edits); or { repo, add: true } (the owner's: lists a new repo for the Maintainer and code review and gives it its ship entry), or { repo, remove: true } (the owner's: it takes a listed repo off ship, the Maintainer and code review). A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
+      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (reset: [field, caps.x, by_tier.<tier>.approve or merge, or unwatched.merge to drop back to the preset], enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label, actions { conflict | behind | before_merge: [ { comment: /rebase } | { workflow: pr-rebase.yml, inputs? } ] }: the repo's own commands and workflows, before_merge workflows only, an ordinary change) or null to drop the entry } and/or { paused: true | false } for the kill switch (its own setting, ship_paused: it works whatever state the repo entries are in); { edits: { repos: { <repo>: change, … }, paused? } } applies several together (the Fleet page's pending edits); or { repo, add: true } (the owner's: lists a new repo for the Maintainer and code review and gives it its ship entry), or { repo, remove: true } (the owner's: it takes a listed repo off ship, the Maintainer and code review). A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a tier's approve or merge raised, a wider fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
       inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {}, paused: { type: "boolean" }, add: { type: "boolean" }, remove: { type: "boolean" }, edits: { type: "object" } }, additionalProperties: false },
       run: async (a, caller) => {
         const raw = d.raw(), scope = d.scope(), owner = caller.kind === "owner";

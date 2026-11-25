@@ -48,7 +48,8 @@ export type Kept = Adoption & {
   /** The repair filed for a head (github's `repair`, ship's check job), and whether its leftovers have woken the Engineer. */
   repair?: { head: string; record: string; woke?: boolean; retried?: boolean };
   /** The App's approval filed for a head (github's `approve`): its record and attempt, and why it ended without one (no App). */
-  approve?: { head: string; attempt: number; record: string; why?: string };
+  /** The App's approval: its record, the policy it was issued under (risk tiers §7), and `dismissed`: the record dismissing it. */
+  approve?: { head: string; attempt: number; record: string; why?: string; policy?: string; dismissed?: string };
   /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
   freshAsked?: string;
   /** The repo's own steps at a stage (actions.ts): which step, at which head, and how it ended. */
@@ -157,7 +158,7 @@ async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger:
   for (const t of was ? tasksOf(was) : []) await closeTask(d, t, `${pr.url} was handed over again (generation ${generation}).`);
   // A fresh trigger resumes a hold and clears the assignment ship added.
   if (was?.assigned?.length) await d.unassign(pr.repo, pr.number, was.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
-  const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(was?.report ? { report: was.report } : {}), did: [] };
+  const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(was?.report ? { report: was.report } : {}), ...(was?.approve && !was.approve.why ? { approve: was.approve } : {}), did: [] };
   // A fork's review starts with its adoption (code review holds forks until a member asks), its summary on the records task.
   if (pr.fork) a.holder = await recordTask(d.kernel, pr, a);
   d.state.put(a);
