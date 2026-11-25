@@ -232,7 +232,8 @@ export function createMerges(d: {
     rulesCache.set(k, { at: Date.now(), v });
     return v;
   }
-  /** Whether the repo has no CI at all: GitHub lists no workflow (a definitive answer; anything else, an error included, is "has CI"). Kept briefly. */
+  /** Whether the repo has no CI at all: GitHub lists no workflow (a definitive answer; anything else, an error included, is "has CI").
+   * Only "has CI" is kept briefly: "none" is asked again on every poll, so a first workflow added later is seen before any waiver. */
   const ciCache = new Map<string, { at: number; none: boolean }>();
   async function noCi(repo: string) {
     const k = repo.toLowerCase();
@@ -240,7 +241,7 @@ export function createMerges(d: {
     if (hit && Date.now() - hit.at < RULES_MS) return hit.none;
     const r = await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);
     const none = r.status === 200 && (r.body as { total_count?: number } | undefined)?.total_count === 0;
-    ciCache.set(k, { at: Date.now(), none });
+    if (!none) ciCache.set(k, { at: Date.now(), none });
     return none;
   }
   /** The required checks red on the PR's latest merge_group run (GitHub's `gh-readonly-queue/<base>/pr-<n>-…` branch). */
