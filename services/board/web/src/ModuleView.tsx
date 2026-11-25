@@ -13,6 +13,8 @@ import "./modules.css";
 const PROTOCOL = "2026-01-26";
 type Msg = { jsonrpc?: string; id?: string | number; method?: string; params?: Record<string, any> };
 type Proposal = { changes: { kind: string; key: string; value: unknown }[] };
+/** A page's saved change that is still being applied, kept across leaving and coming back to the page. */
+const APPLYING = new Map<string, { identifier: string; since: number }>();
 
 /** The MCP Apps style variables a page uses, from the board's tokens (ui/tokens.css) as written: light-dark() values resolve in
  *  the frame by the `theme` the view sets as its color-scheme. */
@@ -41,11 +43,10 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   const [saving, setSaving] = useState(false);
   const [said, setSaid] = useState("");
   // The change this page saved while it is still being applied. A page proposes from the settings as applied, so a proposal made now
-  // would build on stale values and overwrite the saved one: Save waits, and the tool call that made it runs again once the change is live.
-  const [applying, setApplying] = useState("");
-  const lastProposing = useRef<{ name: string; args: unknown } | null>(null);
-  // The frame's document: the bridge serves only the first one each attempt loads (a view that navigates itself is stopped),
-  // and one that hasn't said ui/initialize a few seconds after loading failed (its module is down, or the view is broken).
+  // builds on stale values and would overwrite the saved one: Save waits, and when the change is live the page starts over from it.
+  const [applying, setApplying] = useState(() => APPLYING.get(page?.id ?? "")?.identifier ?? "");
+  const proposalNow = useRef(proposal);
+  proposalNow.current = proposal;
   const [attempt, setAttempt] = useState(0);
   const [broken, setBroken] = useState("");
   const loads = useRef(0);
@@ -65,6 +66,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   useEffect(() => {
     if (!id) return;
     const answer = (req: Msg, body: { result: unknown } | { error: { code: number; message: string } }) => frame.current?.contentWindow?.postMessage({ jsonrpc: "2.0", id: req.id, ...body }, "*");
+    let live = true;
     async function onMessage(e: MessageEvent) {
       // Only the frame this page made, never another window or frame; its origin is "null" (opaque), so the source is the check.
       if (!frame.current || e.source !== frame.current.contentWindow || loads.current > 1) return;
@@ -86,28 +88,30 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       });
       // A settings change the tool proposed: shown on the bar below, saved only by the owner's click (/save checks it).
       const changes = (r.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
-      if (Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid(""), (lastProposing.current = { name: String(m.params?.name ?? ""), args: m.params?.arguments });
+      if (live && Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
       if (loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
     }
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [id, sub, onSignIn]);
+    return () => (live = false, window.removeEventListener("message", onMessage));
+  }, [id, sub, onSignIn, attempt]);
 
-  // While a saved change is under way, follow it; when it lands, propose again from the live settings.
+  // While a saved change is under way, follow it. Once it is live a proposal made meanwhile is dropped and the page starts over from it.
   useEffect(() => {
-    if (!applying || !id) return;
+    const pending = APPLYING.get(id ?? "");
+    if (!pending || !id) return;
     let live = true;
+    const release = () => (APPLYING.delete(id), setApplying(""));
     const t = setInterval(async () => {
-      const f = await api.settingsChanges().then((r) => r.changes.find((c) => c.identifier === applying), () => undefined);
-      if (!live || !f || IN_FLIGHT.includes(f.stage)) return;
-      setApplying("");
-      if (f.stage !== "applied") return setSaid(`${applying} was not applied (${f.stage})${f.detail ? `: ${f.detail}` : ""}. Save again to retry.`);
-      setSaid(`${applying} is live.`);
-      const again = lastProposing.current;
-      if (!again) return;
-      const r = await api.viewCall(id, again.name, again.args).catch(() => undefined);
-      const next = (r?.result as { structuredContent?: { _aidenhq?: { settings_change?: Proposal["changes"] } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
-      if (live) setProposal(next?.length ? { changes: next } : null);
+      const f = await api.settingsChanges().then((r) => r.changes.find((c) => c.identifier === pending.identifier), () => undefined);
+      if (!live) return;
+      // The list holds recent changes only: one it no longer shows is long done.
+      if (!f) return void (Date.now() - pending.since > 60_000 && release());
+      if (IN_FLIGHT.includes(f.stage)) return;
+      release();
+      if (f.stage !== "applied") return setSaid(`${pending.identifier} was not applied (${f.stage})${f.detail ? `: ${f.detail}` : ""}. Save again to retry.`);
+      if (!proposalNow.current) return setSaid(`${pending.identifier} is live.`);
+      setProposal(null), setAttempt((a) => a + 1);
+      setSaid(`${pending.identifier} is live. The edit you made meanwhile was started before it, so make it again.`);
     }, 3_000);
     return () => (live = false, clearInterval(t));
   }, [applying, id]);
@@ -124,6 +128,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
     try {
       const r = await api.viewSave(page!.id, proposal.changes);
       setProposal(null);
+      APPLYING.set(page!.id, { identifier: r.identifier, since: Date.now() });
       setApplying(r.identifier);
       setSaid(`Saved as ${r.identifier}: the change applies in a moment.`);
     } catch (e) {
@@ -139,7 +144,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
         <div className="mv-proposal" role="region" aria-label="Proposed change">
           <div className="mv-proposal-text">
             <b>Save this change to {page.module}'s settings?</b>
-            {applying && <p className="mv-said">Applying your last change ({applying}) first: this one is then built on it.</p>}
+            {applying && <p className="mv-said">Applying your last change ({applying}) first: you can save this once it is live.</p>}
             {proposal.changes.map((c) => (
               <pre key={c.key}>
                 {c.key} = {JSON.stringify(c.value, null, 2)}

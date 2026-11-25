@@ -130,13 +130,13 @@ let views = [
 // A module's Fleet page (board.pages): the example view (web/dev/example-view.html) and its two tools, as the kernel would relay them.
 const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }, { id: "code-review", title: "Reviews", icon: "reviews", order: 5, module: "code-review" }];
 // The Notes page's last Save stays "applying" for 8 seconds, then lands (the Save-while-applying state).
-let savedAt = 0;
-const notesChange = () => (savedAt ? [{ identifier: "WOR-901", title: "Keep notes", createdAt: new Date(savedAt).toISOString(), items: [], stage: Date.now() - savedAt < 8_000 ? "applying" : "applied" }] : []);
+let savedAt = 0, savedId = "WOR-901";
+const notesChange = () => (savedAt ? [{ identifier: savedId, title: "Keep notes", createdAt: new Date(savedAt).toISOString(), items: [], stage: Date.now() - savedAt < 8_000 ? "applying" : "applied" }] : []);
 function pageRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
   if (url.pathname === "/api/pages") return [200, { pages: mock.empty ? [] : PAGES }];
-  if (method === "POST" && url.pathname === "/api/pages/code-review/save") return [200, { identifier: "WOR-902", record: "k-0000000000000902", tier: 2, state: "approved" }];
+  if (method === "POST" && url.pathname === "/api/pages/code-review/save") return (savedAt = Date.now(), savedId = "WOR-902", [200, { identifier: "WOR-902", record: "k-0000000000000902", tier: 2, state: "approved" }]);
   if (method === "POST" && url.pathname === "/api/pages/code-review/call") { const r = reviewCall(body.name, body.arguments ?? {}); return r ? [200, r] : [403, { error: `${body.name} isn't one of this page's tools` }]; }
-  if (method === "POST" && url.pathname === "/api/pages/notes/save") return (savedAt = Date.now(), [200, { identifier: "WOR-901", record: "k-0000000000000901", tier: 2, state: "approved" }]);
+  if (method === "POST" && url.pathname === "/api/pages/notes/save") return (savedAt = Date.now(), savedId = "WOR-901", [200, { identifier: "WOR-901", record: "k-0000000000000901", tier: 2, state: "approved" }]);
   if (method !== "POST" || url.pathname !== "/api/pages/notes/call") return undefined;
   if (body.name === "example_notes") return [200, { result: { content: [{ type: "text", text: "3 notes" }], structuredContent: { notes: [{ text: "Renewal call with Acme moved to Thursday", at: "2h ago" }, { text: "Invoices export shipped", at: "yesterday" }, { text: "Draft the Q1 offsite agenda", at: "3 days ago" }] } } }];
   if (body.name === "example_configure") return [200, { result: { content: [{ type: "text", text: `Proposed keeping ${body.arguments?.limit} notes: save it above.` }], structuredContent: { _aidenhq: { settings_change: [{ kind: "setting", key: "example_limit", value: body.arguments?.limit }] } } } }];
