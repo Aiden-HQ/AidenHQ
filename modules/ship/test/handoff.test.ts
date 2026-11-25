@@ -205,6 +205,9 @@ test("a fork's new commit from its author stops ship until a member hands it off
   const fork = { fork: true, canModify: true, author: "outsider" };
   const on = w.ev("c1", "comment", "writer", "2026-11-24T01:00:00Z", { body: "/ship" });
   assert.equal((await intake(w.deps, w.pr({ ...fork, events: [on] })))?.trigger.head, H1);
+  // At github's effect, a fork's write stands only on the covered head (an author push the loop hasn't seen yet is refused).
+  assert.equal(generationOf(w.state, false, "a/b", 7, H1).hold, null);
+  assert.equal(generationOf(w.state, false, "a/b", 7, H2).hold?.kind, "stopped");
   // Ship's own repair made H2 from H1, and H3 only merged the base in (same own change): both stay covered.
   w.made.add(`${H1}>${H2}`);
   w.same.add(`${H2}>${H3}`);
@@ -213,7 +216,15 @@ test("a fork's new commit from its author stops ship until a member hands it off
   // The author pushes H4: held, nothing runs, every write is refused at its effect, and the report says why.
   const H4 = "4".repeat(40);
   const pushed = w.pr({ ...fork, head: H4, events: [on] });
+  // Its Engineer task is closed; a close the kernel refuses is tried again next pass.
+  w.state.put({ ...(w.state.get("a/b", 7) as any), task: "T7" });
+  const call = w.deps.kernel.call;
+  let refuse = true;
+  w.deps.kernel.call = async (m: string, path: string, b?: any) => { if (path === "/v1/tasks/T7/close" && refuse) { refuse = false; throw new Error("kernel 503"); } return call(m, path, b); };
   const held = (await intake(w.deps, pushed))!;
+  assert.deepEqual(held.closing, ["T7"]);
+  assert.equal((await intake(w.deps, pushed))?.closing, undefined, "closed on the next pass");
+  assert.equal(w.of("POST /v1/tasks/T7/close").length, 1);
   assert.deepEqual([held.hold?.kind, held.hold?.reason], ["stopped", AUTHOR_PUSHED]);
   assert.equal(await round(w.deps, pushed, { do: "merge", why: "ready" }), "stopped");
   assert.equal(generationOf(w.state, false, "a/b", 7).hold?.kind, "stopped");

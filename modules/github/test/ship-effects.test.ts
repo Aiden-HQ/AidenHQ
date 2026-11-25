@@ -91,7 +91,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   const gh = async (method, path, body) => {
     calls.push({ method, path, body, as: body?.as });
     if (path === "/graphql" && body.query.includes("enqueuePullRequest")) return enqueueAnswer(queue);
-    if (path === "/graphql") return { status: 200, body: { data: { repository: { pullRequest: { id: "PR_7", state: "OPEN", headRefOid: pr.head, baseRefName: "main", isInMergeQueue: Boolean(queue.head), mergeQueueEntry: queue.head ? { headCommit: { oid: queue.head } } : null } } } } };
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { pullRequest: { id: "PR_7", state: "OPEN", headRefOid: pr.head, baseRefName: "main", isInMergeQueue: Boolean(queue.head), mergeQueueEntry: queue.head ? { headCommit: { oid: queue.head } } : null, ...queue.review } } } } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
     if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
@@ -149,7 +149,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   };
   const adoption = { generation, refused: undefined };
   // Ship's answer, and its final tier check where github passes the write and the live head, base and author.
-  const ship = { generation: async (_r, _n, check) => ({ generation: adoption.generation, task: "t1", ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
+  const ship = { generation: async (_r, _n, _at, check) => ({ generation: adoption.generation, task: "t1", ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg: "acme-agents", productRepo: "acme/aidenhq",
@@ -334,6 +334,11 @@ test("an enqueue GitHub didn't answer is reconciled by reading the queue entry, 
   const lost = await run("k-00000000000000d2", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 2, base: "main" });
   assert.equal(lost.ok, false);
   assert.equal(sent, 2);
+  // GitHub still counts an earlier commit's approval, but none is on this head: not queued, asked again once there is one.
+  queue.review = { reviewDecision: "APPROVED", latestOpinionatedReviews: { nodes: [{ state: "APPROVED", authorCanPushToRepository: true, author: { __typename: "User", login: "maria" }, commit: { oid: "e".repeat(40) } }] } };
+  const stale = await run("k-00000000000000d3", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 3, base: "main" });
+  assert.match(stale.text, /^ship-tier-pending: .*no approval on/);
+  assert.equal(sent, 2, "never sent");
 });
 
 test("one readiness rule: ship's actions with its context, the merge queue's without", () => {
@@ -396,13 +401,13 @@ test("plan: an adopted PR's merge is refused when the generation is stale or shi
 
 test("an adoption's direct merge: no checks and none required merges at its bound target; a hand-back before the call ends it", async () => {
   const H = "a".repeat(40);
-  const run = async (adopted, plain = false, taskStatus = "in_progress", classic = 404, runs = []) => {
+  const run = async (adopted, plain = false, taskStatus = "in_progress", classic = 404, runs = [], o = {}) => {
     const calls = [];
     const gh = async (method, path) => {
       calls.push(`${method} ${path}`);
       if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
         number: 7, state: calls.some((c) => c.startsWith("PUT")) ? "MERGED" : "OPEN", headRefOid: H, baseRefName: "main", isDraft: false, mergeStateStatus: "CLEAN", reviewDecision: null, isInMergeQueue: false,
-        mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: plain ? { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] } } : null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] },
+        mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: plain ? { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] } } : null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] }, ...o.pr,
       } } } } };
       if (path.includes("/rules/branches/")) return { status: 200, body: [] };
       if (path.includes("/check-runs")) return { status: 200, body: { check_runs: runs } };
@@ -413,7 +418,7 @@ test("an adoption's direct merge: no checks and none required merges at its boun
     };
     const outcomes = [];
     const { createMerges } = await import("../service/src/merges.ts");
-    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) }, taskStatus: async () => taskStatus });
+    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) }, taskStatus: async () => taskStatus, ...(o.reviewer ? { reviewer: o.reviewer } : {}) });
     if (plain) void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H }] }, "T1", undefined, undefined, true);
     else void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H, base: "main" }], generation: 2, attempt: 1 });
     await m.step();
@@ -421,6 +426,10 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   };
   const merged = await run(true);
   assert.equal(merged.calls.filter((c) => c.startsWith("PUT")).length, 1, merged.calls.join("\n"));
+  // GitHub asks for a review: the reviewer App's approval on the head merges it; with no App known, the same approval waits.
+  const appApproved = { pr: { reviewDecision: "APPROVED", latestOpinionatedReviews: { nodes: [{ state: "APPROVED", authorCanPushToRepository: false, author: { __typename: "Bot", login: "acme-reviewer" }, commit: { oid: H } }] } }, reviewer: async () => ({ login: "acme-reviewer[bot]" }) };
+  assert.equal((await run(true, false, "in_progress", 404, [], appApproved)).calls.filter((c) => c.startsWith("PUT")).length, 1, "the App's approval counts in the queue too");
+  assert.equal((await run(true, false, "in_progress", 404, [], { pr: appApproved.pr })).calls.filter((c) => c.startsWith("PUT")).length, 0);
   assert.equal(merged.outcomes[0]?.ok, true);
   const ended = await run(false);
   assert.equal(ended.calls.filter((c) => c.startsWith("PUT")).length, 0);

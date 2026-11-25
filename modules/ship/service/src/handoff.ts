@@ -70,6 +70,10 @@ export type Kept = Adoption & {
   kept?: string;
   /** The head whose wedged check run its owner was told about. */
   wedgedTold?: string;
+  /** A fork's adoption: every write stands on the head it covers (`trigger.head`), checked at github's effect (generationOf). */
+  fork?: true;
+  /** Tasks a fork's author-push hold still has to close (a close the kernel refused is tried again each pass). */
+  closing?: string[];
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
 };
@@ -131,6 +135,9 @@ async function newest(d: HandoffDeps, pr: PrView, after?: { at: string; event: s
 export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: boolean): Promise<Kept | undefined> {
   const s = d.settings(pr.repo);
   let was = d.state.get(pr.repo, pr.number) as Kept | undefined;
+  if (was?.closing?.length) was = await closeHeld(d, pr, was);
+  // An adoption kept from before forks were bound (`fork`) is marked at first sight, so github's effect checks its head from now on.
+  if (was && pr.fork && !was.fork && was.owner?.kind !== "task") { was = { ...was, fork: true }; d.state.put(was); }
   if (!s?.enabled || d.paused() || pr.state !== "open") return was;
   // A task's PR: adopted at first sight, generation 1, on the task that opened it (an adoption kept from before owners were
   // recorded is given its owner here).
@@ -174,11 +181,10 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
       d.state.put(was);
     } else {
       // Held at this head; the report says so (posted by the held path's report retry this pass).
-      const held: Kept = { ...was, hold: { kind: "stopped", reason: AUTHOR_PUSHED, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { state: "on hold", stopLabel: s.stop_label } } };
+      const held: Kept = { ...was, hold: { kind: "stopped", reason: AUTHOR_PUSHED, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { state: "on hold", stopLabel: s.stop_label } }, closing: tasksOf(was) };
       d.state.put(held);
       d.log("fork moved past its hand-off: held", { pr: pr.url, from: was.trigger.head, head: pr.head });
-      for (const t of tasksOf(was)) await closeTask(d, t, `${pr.url} has new commits from its author since it was handed off: ship stopped until a member hands it off again.`);
-      return held;
+      return closeHeld(d, pr, held);
     }
   }
   // A fork's review ask that failed (code review down, a timeout) is asked again each pass until it lands.
@@ -198,7 +204,7 @@ async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger:
   for (const t of was ? tasksOf(was) : []) await closeTask(d, t, `${pr.url} was handed over again (generation ${generation}).`);
   // A fresh trigger resumes a hold and clears the assignment ship added.
   if (was?.assigned?.length) await d.unassign(pr.repo, pr.number, was.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
-  const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(was?.report ? { report: was.report } : {}), ...(was?.approve && !was.approve.why ? { approve: was.approve } : {}), did: [] };
+  const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(pr.fork ? { fork: true as const } : {}), ...(was?.report ? { report: was.report } : {}), ...(was?.approve && !was.approve.why ? { approve: was.approve } : {}), did: [] };
   if (late) {
     const held: Kept = { ...a, hold: { kind: "stopped", reason: HEAD_UNSEEN, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { state: "on hold", stopLabel: d.settings(pr.repo)?.stop_label } } };
     d.state.put(held);
@@ -257,18 +263,34 @@ export async function recordTask(kernel: HandoffDeps["kernel"], pr: PrView, a: K
   return String(t.id);
 }
 
+/** Closes the tasks a fork's author-push hold left (`closing`), keeping any the kernel refused for the next pass. */
+async function closeHeld(d: HandoffDeps, pr: PrView, a: Kept): Promise<Kept> {
+  const left: string[] = [];
+  for (const t of a.closing ?? []) {
+    try { await d.kernel.call("POST", `/v1/tasks/${t}/close`, { status: "done", body: `${pr.url} has new commits from its author since it was handed off: ship stopped until a member hands it off again.` }); }
+    catch (e) { left.push(t); d.log("task close failed: tried again next pass", { task: t, err: String((e as Error).message).slice(0, 200) }); }
+  }
+  const { closing: _, ...rest } = a;
+  const next: Kept = left.length ? { ...rest, closing: left } : rest;
+  d.state.put(next);
+  return next;
+}
+
 const closeTask = (d: HandoffDeps, task: string, body: string) =>
   d.kernel.call("POST", `/v1/tasks/${task}/close`, { status: "done", body }).catch((e) => d.log("task close failed", { task, err: String((e as Error).message).slice(0, 200) }));
 
 /**
- * github's check before each adopted-PR write (GET /v1/generation): the current generation, the hold (a pause reads as one) and the
- * adoption's task, so a write for a handed-back, stopped or paused adoption is refused at the effect.
+ * github's check before each adopted-PR write (GET /v1/generation, `at`: the head the write stands on): the current generation, the
+ * hold (a pause reads as one, and so does a fork's head its hand-off doesn't cover) and the adoption's task, so a write for a
+ * handed-back, stopped or paused adoption, or on a fork's uncovered head, is refused at the effect.
  */
-export function generationOf(state: State, paused: boolean, repo: string, number: number) {
-  const a = state.get(repo, number);
+export function generationOf(state: State, paused: boolean, repo: string, number: number, at?: string) {
+  const a = state.get(repo, number) as Kept | undefined;
   if (!a) return { generation: null, hold: null };
-  const task = a.task ?? (a as Kept).holder;
-  return { generation: a.generation, hold: paused ? { kind: "stopped", reason: "ship is paused" } : a.hold, ...(task ? { task } : {}) };
+  const task = a.task ?? a.holder;
+  // A fork's write stands only on the head its hand-off covers: a head the author pushed since (before the loop held it) is refused.
+  const unbound = a.fork && at !== a.trigger.head ? { kind: "stopped", reason: "the write isn't on the head handed off" } : null;
+  return { generation: a.generation, hold: paused ? { kind: "stopped", reason: "ship is paused" } : a.hold ?? unbound, ...(task ? { task } : {}) };
 }
 
 /** A cancelled ship task ends its adoption (the loop reads the task's state): a hold, never a close of the PR or a touch of its ref. */

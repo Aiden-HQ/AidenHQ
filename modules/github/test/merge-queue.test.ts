@@ -395,8 +395,12 @@ test("a Tier 0 product merge fails at merge once its eligibility is lost: file t
   const prs = { "acme/aidenhq": { head: HEAD, checks: "SUCCESS", names: ["build", "ci-required"] } };
   const verdict = { v: { pass: true } };
   const { handle, github, outcomes, merge, settle } = await setup(t, { prs, reviewGate: async () => verdict.v });
-  verdict.v = { pass: true, unreviewed: true };
+  // Code review unreachable at the merge: it waits for the verdict, never ends the merge.
+  verdict.v = { wait: "code review can't be reached: the merge waits until it answers" };
   await merge("k-00000000000000e1", [{ repo: "acme/aidenhq", number: 1, head: HEAD }], undefined, undefined, 0);
+  await handle.stepMerges();
+  assert.deepEqual([github.merges(), outcomes.length], [[], 0], "waiting, not failed");
+  verdict.v = { pass: true, unreviewed: true };
   await handle.stepMerges();
   await settle();
   assert.deepEqual(github.merges(), [], "never merged without the pass it was tiered on");

@@ -115,7 +115,18 @@ export function adoptedPass(o: AdoptedOptions) {
         return (r.body?.files ?? []) as ChangedFile[];
       };
       const [was, now] = await Promise.all([read(from), read(pr.head)]);
-      return !!was && !!now && sameChange(was, now);
+      if (!was || !now || !sameChange(was, now)) return false;
+      // A compare's patches carry no file mode: each changed path's mode is read from both heads' trees (a tree GitHub cut short, or
+      // one it can't read, is a change).
+      const modes = async (h: string) => {
+        const r = await o.gh("GET", `/repos/${pr.repo}/git/trees/${h}?recursive=1`);
+        // A transient failure is retried next pass (the loop's error path), never read as a change.
+        if (r.status >= 500 || r.status === 429 || r.status === 403) throw new Error(`GitHub GET tree: ${r.status}`);
+        if (r.status >= 300 || r.body?.truncated !== false) return undefined;
+        return new Map(((r.body?.tree ?? []) as { path: string; mode: string }[]).map((e) => [e.path, e.mode]));
+      };
+      const [a, b] = await Promise.all([modes(from), modes(pr.head)]);
+      return !!a && !!b && now.every((f) => [f.filename, f.previous_filename].every((p) => p === undefined || a.get(p) === b.get(p)));
     },
   };
   const rounds: RoundDeps = {

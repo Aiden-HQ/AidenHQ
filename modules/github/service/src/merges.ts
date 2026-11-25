@@ -106,6 +106,9 @@ export function createMerges(d: {
   now?: () => Date;
   everyMs?: number;
 }) {
+  /** The reviewer App's login as GraphQL names its Bot (no `[bot]`), the one bot whose approval counts (merge-gate approvedAt);
+   * unreadable or not installed, none does. */
+  const reviewerLogin = async (repo: string) => (await d.reviewer?.(repo).catch(() => undefined))?.login.replace(/\[bot\]$/, "");
   const log = d.log ?? (() => {});
   const now = d.now ?? (() => new Date());
   const platform = [d.productRepo].filter(Boolean) as string[];
@@ -350,7 +353,9 @@ export function createMerges(d: {
       // Unreadable rules (an error, or a 403 that is not the plan's) wait for a check to judge; a plan with no rules has none to read.
       if (open && !rules && !required.length && !rr?.noPlan) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
       // Code review's verdict is read below, once decide says merge (its wait is the record's reason there).
-      const ship = open ? { queue: false, approve: false, required, checks } : undefined;
+      // The reviewer App's approval on the head counts as in ship's own decision (reviewerLogin).
+      const app = open ? await reviewerLogin(p.repo) : undefined;
+      const ship = open ? { queue: false, approve: false, required, checks, ...(app ? { app } : {}) } : undefined;
       // A repo with no CI at all (GitHub lists no workflow) never reports a check: with none on the head and GitHub calling the PR
       // CLEAN, decide goes on without them. A repo that has workflows always waits for their checks.
       const pr0 = data.repository.pullRequest;
@@ -394,8 +399,6 @@ export function createMerges(d: {
       if (v.do !== "merge") return;
       // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
       const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
-      // A Tier 0 product merge rests on its eligibility at this head now, by the same rule the plan used.
-      if (q.tier0 && d.productRepo && same(p.repo, d.productRepo) && !productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");
       if (review && "wait" in review) {
         // Why this PR still waits: the record's own reason is built from every PR still waiting after the poll (publishWait), so
         // one PR leaving its wait never clears another's.
@@ -403,13 +406,16 @@ export function createMerges(d: {
         p.note = review.wait;
         return wait("review");
       }
+      // A Tier 0 product merge rests on its eligibility at this head now, by the same rule the plan used (after a wait: code review
+      // unreachable or still running waits for its verdict rather than ending the merge).
+      if (q.tier0 && d.productRepo && same(p.repo, d.productRepo) && !productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");
       // Code review passed on this head: this PR no longer waits on it (the queue publishes whatever the others still wait on).
       delete p.note;
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
       // An adoption's merge is still that adoption's right before the call: a hand-back, a stop or a pause since ends it.
       // The same call asks ship's final tier check (the tier's merge, no App approval of another policy standing), with the live head, base and author.
-      const at = q.ship || (q.byShip && d.ship) ? await d.ship?.generation(p.repo, p.number, { do: "merge", head: p.head, base: String(pull?.baseRefName ?? ""), association: String(pull?.authorAssociation ?? "") }) : undefined;
+      const at = q.ship || (q.byShip && d.ship) ? await d.ship?.generation(p.repo, p.number, p.head, { do: "merge", head: p.head, base: String(pull?.baseRefName ?? ""), association: String(pull?.authorAssociation ?? "") }) : undefined;
       if (q.ship && at?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
       if (at?.refused) return fail(`${at.retry ? "ship-tier-pending: " : ""}ship's tier check refused the merge: ${at.refused}`);
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
@@ -737,8 +743,7 @@ export function createMerges(d: {
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
-      // The reviewer App's login as GraphQL names its Bot (no `[bot]`); unreadable, no bot's approval counts.
-      const app = (await d.reviewer?.(repo).catch(() => undefined))?.login.replace(/\[bot\]$/, "");
+      const app = await reviewerLogin(repo);
       const ctx = { queue, verdict: g, required, checks, ...(app ? { app } : {}), ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       const v = decide(data, head, { ...ctx, approve: false });
       const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";

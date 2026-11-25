@@ -29,6 +29,7 @@ import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
 import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
+import { approvedAt } from "./merge-gate.ts";
 import { MIGRATION_WAIT, createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
@@ -125,15 +126,15 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
 }
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
  * now or is on hold (stalled, handed back, stopped or paused): nothing is written for it then. */
-export type ShipAdoptions = { generation(repo: string, number: number, check?: ShipCheck): Promise<{ generation: number | null; task?: string; refused?: string; retry?: boolean }> };
+export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; task?: string; refused?: string; retry?: boolean }> };
 /** Ship's final tier check before a write (risk tiers §7): what is about to happen and the PR as GitHub has it right now (head, base branch, author association). */
 export type ShipCheck = { do: "approve" | "merge"; head: string; base: string; association: string; /** The policy an approval was filed under. */ policy?: string };
 /** Ship's adoptions read from its service with this module's own token (`url`: compiled only when the ship module is on). */
 export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typeof fetch }): ShipAdoptions {
   const fetchFn = o.fetchFn ?? fetch;
   return {
-    async generation(repo, number, check) {
-      const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), ...(check ? { do: check.do, head: check.head, base: check.base, association: check.association, ...(check.policy ? { policy: check.policy } : {}) } : {}) });
+    async generation(repo, number, at, check) {
+      const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), at, ...(check ? { do: check.do, head: check.head, base: check.base, association: check.association, ...(check.policy ? { policy: check.policy } : {}) } : {}) });
       const r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/generation?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
       const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown };
@@ -183,7 +184,7 @@ const slugOf = (repo: unknown) => {
 };
 
 /** A PR's merge-queue state, for an enqueue and its reconcile. */
-const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation isInMergeQueue mergeQueueEntry { headCommit { oid } } } } }`;
+const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation isInMergeQueue mergeQueueEntry { headCommit { oid } } reviewDecision latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
 
 /** GitHub's enqueue, bound to the head: it refuses when the PR's head isn't `head`. */
 const ENQUEUE = `mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { state } } }`;
@@ -452,7 +453,7 @@ export function createService(o: Options) {
     const byShip = requester?.kind === "module" && requester.module === SHIP;
     const adoption = async (repo: string, number: number, generation: unknown, expected: unknown, pr: any, bound?: unknown): Promise<Ship> => {
       if (!Number.isInteger(generation) || typeof expected !== "string") throw fail(400, "a write for an adopted PR names its generation and the head it expects");
-      const at = o.ship ? await o.ship.generation(repo, number) : undefined;
+      const at = o.ship ? await o.ship.generation(repo, number, expected) : undefined;
       return {
         number, generation: generation as number, expected, head: pr?.head?.sha, headRepo: pr?.head?.repo ? String(pr.head.repo.full_name) : null, headRef: pr?.head?.ref, canModify: pr?.maintainer_can_modify === true,
         ...(typeof bound === "string" ? { bound, baseRef: String(pr?.base?.ref ?? "") } : {}),
@@ -862,13 +863,13 @@ export function createService(o: Options) {
     if (pr.base?.ref !== a.base) return { ok: false, text: `ship-scope: ${url} now targets \`${pr.base?.ref}\`, not \`${a.base}\`: not retargeted.` };
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not retargeted.` };
     if (a.to !== await defaultBranch(s.slug)) return { ok: false, text: `ship-scope: \`${a.to}\` isn't ${s.slug}'s default branch: not retargeted.` };
-    const ended = await adoptionEnded(s.slug, n, a.generation);
+    const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head));
     if (ended) return { ok: false, text: ended };
     const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
     return r.status < 300 ? { ok: true, text: `${url} now targets \`${a.to}\`.` } : { ok: false, text: `GitHub refused the retarget of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
-  async function adoptionEnded(repo: string, n: number, generation: number, check?: ShipCheck): Promise<string | undefined> {
-    const at = o.ship ? await o.ship.generation(repo, n, check).catch(() => undefined) : undefined;
+  async function adoptionEnded(repo: string, n: number, generation: number, head: string, check?: ShipCheck): Promise<string | undefined> {
+    const at = o.ship ? await o.ship.generation(repo, n, head, check).catch(() => undefined) : undefined;
     if (at?.generation === generation && at.refused) return `${at.retry ? "ship-tier-pending" : "ship-tier"}: https://github.com/${repo}/pull/${n}: ${at.refused}: nothing was done.`;
     return at?.generation === generation ? undefined : `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
   }
@@ -893,7 +894,7 @@ export function createService(o: Options) {
     if (!pr.head?.repo || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainers to push: nothing was pushed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
     if (pr.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${pr.state}: nothing was pushed.` };
-    const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
+    const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected));
     if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
     const who = await writer();
@@ -901,7 +902,7 @@ export function createService(o: Options) {
     if (fork) {
       // The lease guards a race; the fix itself must build on the head, never rewrite the contributor's history.
       if (!(await git(dir, ["merge-base", "--is-ancestor", String(a.expected), String(b.sha)]).then(() => true, () => false))) return { ok: false, text: `ship-scope: \`${String(b.sha).slice(0, 12)}\` doesn't build on ${url}'s head \`${String(a.expected).slice(0, 12)}\`: nothing was pushed.` };
-      const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
+      const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected));
       if (late) return { ok: false, text: late };
       const pushed = await forkPush(dir, into, String(pr.head.ref), String(a.expected), String(b.sha), who, url);
       if (pushed) return pushed;
@@ -913,7 +914,7 @@ export function createService(o: Options) {
     const made = await apiCommits(who.rest, into, dir, String(a.expected), String(b.sha));
     if ("refused" in made) return { ok: false, text: `${made.refused.startsWith("ship-") ? "" : "GitHub refused the commit: "}${made.refused} (${url}): nothing was pushed.` };
     // The adoption once more, right before the branch moves: a pause or a hand-back during the upload refuses it.
-    const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
+    const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected));
     if (late) return { ok: false, text: late };
     // The PR once more, as the repair reads it: a close or a retarget during the upload refuses it rather than move its branch.
     const again = await api("GET", `/repos/${s.slug}/pulls/${Number(a.pr.number)}`);
@@ -1049,7 +1050,7 @@ export function createService(o: Options) {
       }
     } finally { rmSync(tmp, { recursive: true, force: true }); }
     // The adoption and the PR once more, right before the branch moves: a pause, a hand-back or a push during the run refuses it.
-    const ended = await adoptionEnded(s.slug, n, a.generation);
+    const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head));
     if (ended) return { ok: false, text: ended };
     pr = await read();
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
@@ -1155,7 +1156,7 @@ export function createService(o: Options) {
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not approved.` };
     // A dismissal asks ship nothing but the adoption; an approval also asks its final tier check (the tier's approve is `on` and code
     // review passed this head), with the live base and author.
-    const ended = await adoptionEnded(s.slug, n, a.generation, a.dismiss === true ? undefined : { do: "approve", head: a.head, base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? ""), ...(typeof a.policy === "string" ? { policy: a.policy } : {}) });
+    const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head), a.dismiss === true ? undefined : { do: "approve", head: a.head, base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? ""), ...(typeof a.policy === "string" ? { policy: a.policy } : {}) });
     if (ended) return { ok: false, text: ended };
     const app = await o.reviewer?.(s.slug);
     if (!app) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App isn't installed on this repo).` };
@@ -1216,9 +1217,13 @@ export function createService(o: Options) {
     if (now) return now;
     if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
     if (pr.baseRefName !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed: it now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
-    const ended = await adoptionEnded(s.slug, n, a.generation, { do: "merge", head: a.head, base: String(pr.baseRefName ?? ""), association: String(pr.authorAssociation ?? "") });
+    const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head), { do: "merge", head: a.head, base: String(pr.baseRefName ?? ""), association: String(pr.authorAssociation ?? "") });
     if (ended) return { ok: false, text: ended };
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
+    // Where GitHub's rules ask for a review, an approval on this exact head (merge-gate approvedAt), read right before the enqueue:
+    // GitHub may still count an earlier commit's.
+    const app = (await o.reviewer?.(s.slug).catch(() => undefined))?.login.replace(/\[bot\]$/, "");
+    if ((pr.reviewDecision === "REVIEW_REQUIRED" || pr.reviewDecision === "APPROVED") && !approvedAt(pr, a.head, app)) return { ok: false, text: `ship-tier-pending: ${url} has no approval on \`${String(a.head).slice(0, 12)}\` from someone who can push: not queued; queued again once it has one.` };
     let r: { status: number; body: any } | undefined;
     try { r = await gh("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head: a.head } }); } catch (e) { log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
     // Success is GitHub's queue entry, not a bare 200: an answer without one is read back like a lost answer.
