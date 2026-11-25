@@ -809,7 +809,7 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
 rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"; rdr="modules/github/service/src/design-review.ts"
-[ "$(grep -c 'd\.gh(' "$rq")" = 8 ] && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+[ "$(grep -c 'd\.gh(' "$rq")" = 9 ] && grep -qF 'await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/actions/runs?event=merge_group&per_page=50`);' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);' "$rq" \
   && grep -qF 'const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);' "$rq" \
@@ -834,7 +834,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (pr.headRefOid !== head) return { do: "fail"' "$rm_" \
   && grep -qF 'if (!def || pr.baseRefName !== def) return ship ? { do: "wait"' "$rm_" && grep -qF ': { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch' "$rm_" \
   && grep -qF 'if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail"' "$rm_" \
-  && grep -qF 'if (!named.length) return { do: "wait"' "$rm_" \
+  && grep -qF 'if (!named.length && !noChecksOk) return { do: "wait"' "$rm_" \
   && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW_CHECK,' "$rdr" \
   && grep -qF 'if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge"' "$rplan" \
   && grep -qF 'export const ownRepo = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos) => inOrg(fleetOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/git-auth.ts \

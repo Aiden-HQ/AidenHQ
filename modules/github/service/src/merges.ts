@@ -46,6 +46,8 @@ const CONNECTED_WAIT = "GitHub is signed out: waiting for the owner to reconnect
 export const MIGRATION_WAIT = "GitHub App migration in progress: merges are held until it finishes";
 /** The record-level reasons the queue itself sets and clears (never a PR's own wait or a failure's note). */
 const HOLD_WAITS = [CONNECTED_WAIT, MIGRATION_WAIT];
+/** GitHub's answer for branch rules on a plan that has none (a private repo without Pro): nothing is enforced there. */
+const noRulesPlan = (r: { status: number; body?: unknown }) => r.status === 403 && /upgrade to github pro|make this repository public/i.test(JSON.stringify(r.body ?? ""));
 const isHoldWait = (note?: string) => note !== undefined && HOLD_WAITS.includes(note);
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
 /** The fixed start of a merge outcome's first line: the PRs merged at their bound head, this queue's or already (finish). */
@@ -210,12 +212,18 @@ export function createMerges(d: {
   }
   /** The branch's required checks (undefined: classic protection unreadable) and whether it merges through a merge queue, kept
    * RULES_MS per repo and branch: ship asks for every open PR on every pass, and branch rules rarely change. */
-  const rulesCache = new Map<string, { at: number; v: { required: string[] | undefined; queue: boolean } }>();
+  const rulesCache = new Map<string, { at: number; v: { required: string[] | undefined; queue: boolean; /** The plan has no branch rules to read: none is enforced, but ship still judges every check (its fallback). */ noPlan?: boolean } }>();
   async function rulesOf(repo: string, branch: string) {
     const k = `${repo.toLowerCase()}@${branch}`;
     const hit = rulesCache.get(k);
     if (hit && Date.now() - hit.at < RULES_MS) return hit.v;
     const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);
+    // A private repo on a plan without branch rules answers 403 "Upgrade to GitHub Pro": GitHub enforces none there, so none is required.
+    if (noRulesPlan(rules)) {
+      const v = { required: undefined, queue: false, noPlan: true };
+      rulesCache.set(k, { at: Date.now(), v });
+      return v;
+    }
     if (rules.status >= 300) throw new Error(`GitHub GET rules: ${rules.status}`);
     const queue = mergePath(rules.body) === "queue";
     const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
@@ -223,6 +231,18 @@ export function createMerges(d: {
     const v = { required: classic.status === 403 ? undefined : requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body), queue };
     rulesCache.set(k, { at: Date.now(), v });
     return v;
+  }
+  /** Whether the repo has no CI at all: GitHub lists no workflow (a definitive answer; anything else, an error included, is "has CI").
+   * Only "has CI" is kept briefly: "none" is asked again on every poll, so a first workflow added later is seen before any waiver. */
+  const ciCache = new Map<string, { at: number; none: boolean }>();
+  async function noCi(repo: string) {
+    const k = repo.toLowerCase();
+    const hit = ciCache.get(k);
+    if (hit && Date.now() - hit.at < RULES_MS) return hit.none;
+    const r = await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);
+    const none = r.status === 200 && (r.body as { total_count?: number } | undefined)?.total_count === 0;
+    if (!none) ciCache.set(k, { at: Date.now(), none });
+    return none;
   }
   /** The required checks red on the PR's latest merge_group run (GitHub's `gh-readonly-queue/<base>/pr-<n>-…` branch). */
   async function groupFailing(repo: string, number: number, base: string, required: string[]) {
@@ -328,12 +348,18 @@ export function createMerges(d: {
       const checks = open ? await allChecks(p.repo, p.head) : [];
       // Only the checks the rules require are judged, and none required counts as green (a merge outside ship needs a check on
       // the head); when the rules can't be read (403), every check on the head is judged instead.
-      const rules = open ? await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")) : [];
+      const rr = open ? await rulesOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")) : undefined;
+      const rules = open ? rr?.required : [];
       const required = rules ?? fallbackRequired(checks);
-      if (open && !rules && !required.length) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
+      // Unreadable rules (an error, or a 403 that is not the plan's) wait for a check to judge; a plan with no rules has none to read.
+      if (open && !rules && !required.length && !rr?.noPlan) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
       // Code review's verdict is read below, once decide says merge (its wait is the record's reason there).
       const ship = open ? { queue: false, approve: false, required, checks } : undefined;
-      const v = decide(data, p.head, ship);
+      // A repo with no CI at all (GitHub lists no workflow) never reports a check: with none on the head and GitHub calling the PR
+      // CLEAN, decide goes on without them. A repo that has workflows always waits for their checks.
+      const pr0 = data.repository.pullRequest;
+      const noChecksOk = !q.ship && pr0?.state === "OPEN" && pr0.mergeStateStatus === "CLEAN" && !namedChecks(pr0.commits?.nodes?.[0]?.commit?.statusCheckRollup).length && await noCi(p.repo);
+      const v = decide(data, p.head, ship, noChecksOk);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
       const pull = data.repository.pullRequest;
       // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. Every unanswered
