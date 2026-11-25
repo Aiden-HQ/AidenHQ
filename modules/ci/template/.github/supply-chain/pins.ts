@@ -842,7 +842,7 @@ function modulePins(path: string, text: string): { pins: Pin[]; problems: string
   // Each service's declaration, in the order the file first names it.
   const services = new Map<string, { image?: { ref: string; line: number }; build: boolean }>();
   const stack: { indent: number; key: string }[] = [];
-  let flow = 0; // the first `services`/`services.run` written as a flow map: its images can't be read below
+  let flow = 0; // the first `services`, `services.run` or service written as a flow map: its images can't be read below
   text.split("\n").forEach((raw, i) => {
     const line = raw.replace(/\r$/, "");
     if (/^\s*(#.*)?$/.test(line)) return;
@@ -853,7 +853,8 @@ function modulePins(path: string, text: string): { pins: Pin[]; problems: string
     while (stack.length && stack.at(-1)!.indent >= indent) stack.pop();
     stack.push({ indent, key });
     const keys = stack.map((s) => s.key);
-    const flowMap = /^[{[\[]/.test(value ?? "") && ((key === "services" && keys.length === 1) || (key === "run" && keys.length === 2 && keys[0] === "services"));
+    // `services: {…}`, `run: {…}` and a service `db: {image: …}` are flow maps: their images are past this walk.
+    const flowMap = /^[{[\[]/.test(value ?? "") && keys[0] === "services" && (keys.length === 1 || (keys.length === 2 && keys[1] === "run") || (keys.length === 3 && keys[1] === "run"));
     if (flowMap && !flow) flow = i + 1;
     if (keys.length === 3 && keys[0] === "services" && keys[1] === "run") {
       if (!services.has(key)) services.set(key, { build: false });
