@@ -1293,4 +1293,5 @@ test("a head's checks are probed at most every five minutes however often the lo
   const m = calls.length;
   await recover("acme/app", queued("h2"), state, () => {});
   assert.ok(calls.length > m, "a failed read is not stamped: the next pass reads again");
+  assert.equal((await recover("acme/app", queued("h2"), state, () => {})).again, true, "and the loop is told to read the repo again");
 });

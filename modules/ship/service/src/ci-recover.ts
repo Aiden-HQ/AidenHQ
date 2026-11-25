@@ -30,7 +30,7 @@ const NEVER_STARTED_RESERVE = 2;
 
 /** `wedgedDue`: a check run on the head still pending 20 minutes after its re-run was asked: "accepted" (GitHub took the re-run),
  * "refused" (it refused it), or false. */
-export type Recovery = { envRed: boolean | "unknown"; wedgedDue: "accepted" | "refused" | false };
+export type Recovery = { envRed: boolean | "unknown"; wedgedDue: "accepted" | "refused" | false; again?: true };
 
 export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unknown>): void }) {
   const log = o.log;
@@ -44,7 +44,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
     const seen = `${pr.mergeable}|${rollupOf(pr)?.state}|${(rollupOf(pr)?.contexts?.nodes ?? []).map((n: Json) => `${n.id ?? n.name ?? n.context}:${n.status ?? n.state}:${n.conclusion ?? ""}`).join(",")}`;
     const stamp = stamps[pr.url.toLowerCase()];
     if (stamp && stamp.head === pr.headRefOid && stamp.seen === seen && Date.now() - stamp.at < PROBE_EVERY_MS) return stamp.result;
-    let deferred = false, read = false; // a listing failed (the next pass reads again: not stamped); and whether any REST read was made (else nothing to suppress)
+    let deferred = false, read = false; // a listing failed or the job budget ran out (the next pass resumes: not stamped, `again`); and whether any REST read was made (else nothing to suppress)
     state.reran ??= {}; state.wedged ??= {}; state.wedgedAt ??= {}; state.neverStartedJudged ??= {};
     /** The head's latest check runs from REST, every page: `runs` and whether GitHub's own `total_count` was all read (a
      * partly read list never stands in for the head's). Null when the read itself failed. */
@@ -219,7 +219,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
       const rollup = rollupOf(pr);
       if (!rollup?.contexts?.pageInfo?.hasNextPage && (rollup?.contexts?.nodes ?? []).every((n: Json) => n.__typename !== "CheckRun" || n.status === "COMPLETED")) return [];
       const listed = await latestRuns(head);
-      if (!listed || listed === "permanent") { log("wedged check runs' read failed", { pr: pr.url, head }); deferred = true; return []; }
+      if (!listed || listed === "permanent") { log("wedged check runs' read failed", { pr: pr.url, head }); deferred = !listed; return []; }
       const { runs } = listed;
       if (!listed.complete) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length });
       const out: { at: number; accepted: boolean; name: string; nodeId: string | undefined; key: string }[] = [];
@@ -256,7 +256,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
           save();
           continue;
         }
-        if (!job) { state.wedgedAt[cursorKey] = (start + i) % candidates.length; save(); break; } // budget spent: resume here
+        if (!job) { state.wedgedAt[cursorKey] = (start + i) % candidates.length; save(); deferred = true; break; } // budget spent: resume here
         // Only a job that itself finished, on this head, for this very check run can leave it wedged: one still queued or
         // running is not stuck, and a details URL never points another head's or check's job here.
         // A rate limit or an outage on the read backs off like an unanswered one: GitHub is not asked again on every tick.
@@ -318,7 +318,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
     const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS && !!w.nodeId && pendingIds.has(w.nodeId));
     const wedgedDue = !due.length ? false : due.every((w) => w.accepted) ? "accepted" as const : "refused" as const;
     const envRed = pr.mergeable === "MERGEABLE" ? await neverStarted(pr) : false;
-    const result = { envRed, wedgedDue };
+    const result: Recovery = { envRed, wedgedDue, ...(deferred ? { again: true as const } : {}) };
     // Only a quiet answer is stamped (nothing to re-run, report or retry): an answer with work in flight is asked again at the next pass.
     const retrying = Object.entries<string>(state.reran).some(([k, v]) => v.startsWith("retry:") && Date.parse(v.slice(6)) > Date.now() && k.split(":").includes(pr.headRefOid));
     if (envRed === false && wedgedDue === false && read && !retrying && !deferred && !wedged.length) { stamps[pr.url.toLowerCase()] = { head: pr.headRefOid, seen, at: Date.now(), result }; save(); }
