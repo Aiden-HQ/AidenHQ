@@ -45,9 +45,16 @@ export type LoopOptions = {
  * When a repo is read again with no event (scan's `next`, RECHECK_MS): GitHub computes a PR's mergeability lazily and announces
  * nothing when it has, and a round can move with GitHub quiet: its task's state, a merge record's outcome, a re-run's backoff, a
  * check run left wedged after its job finished. A repo with nothing of either is read only when the feed names it. One read is one
- * GraphQL list (4 points a page of 50 PRs), so a minute costs at most 240 of the 5,000 points an hour per active repo.
+ * GraphQL list (about 4 points a page of 50 PRs), so a minute costs at most 240 of the 5,000 points an hour per active repo.
+ * A heavy repo's page times out at 50, so its pages shrink (see PAGE_MAX) and its reads cost proportionally more pages.
  */
 export const RECHECK_MS = 60_000;
+/** PRs per list page: starts at PAGE_MAX; a timeout halves it (down to PAGE_MIN) and a page answered under FAST_PAGE_MS doubles it back,
+ * no sooner than GROW_AFTER_MS after the last shrink (so a size known to time out isn't probed every pass). */
+const PAGE_MAX = 50, PAGE_MIN = 5, FAST_PAGE_MS = 3_000, GROW_AFTER_MS = 10 * 60_000;
+// A timeout is a 502/504, or a timeout error with no PR list at all. A 200 that carries the list alongside a timeout error (one
+// slow PR's nested field) is a partial page: read as it is, its missing PRs skipped this pass, since a smaller page can't help.
+const timedOut = (g: Json) => g.status === 502 || g.status === 504 || (!g.body?.data?.repository?.pullRequests && /time ?out|timed out/i.test(String(g.body?.errors?.[0]?.message ?? "")));
 /** How long a CI re-run that came due still keeps its repo read again: a slow pass may reach it after its due time. */
 const RETRY_GRACE_MS = 5 * 60_000;
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
@@ -83,17 +90,32 @@ export function startLoop(o: LoopOptions) {
     const [owner, name] = repo.split("/");
     let r: Json;
     const open: Json[] = [];
+    const state = (all[repo.toLowerCase()] ??= {});
     for (let after: string | null = null; ;) {
-      const g = await gh("POST", "/graphql", { variables: { owner, repo: name, after } });
+      let g: Json, first: number = state.pageSize ?? PAGE_MAX, t = Date.now(), shrunk = false;
+      for (; ; first = Math.max(PAGE_MIN, first >> 1), t = Date.now()) {
+        // A call that hit the client's own deadline throws; it counts as a timeout like GitHub's 502/504.
+        g = await gh("POST", "/graphql", { variables: { owner, repo: name, after, first } }).catch((e) => { if (!/time ?out|timed out|aborted/i.test(String(e?.message ?? e))) throw e; return { status: 504, body: {} }; });
+        if (!timedOut(g) || first <= PAGE_MIN) break;
+        log("page size changed", { repo, from: first, to: Math.max(PAGE_MIN, first >> 1), why: `GitHub /graphql: ${g.status}` });
+        state.pageSize = Math.max(PAGE_MIN, first >> 1);
+        shrunk = true;
+        state.shrunkAt = Date.now();
+      }
+      if (shrunk) writeJson(stateFile, all);
       const page = g.body?.data?.repository;
       if (g.status >= 300 || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
+      if (!shrunk && first < PAGE_MAX && Date.now() - t < FAST_PAGE_MS && Date.now() - (state.shrunkAt ?? 0) > GROW_AFTER_MS) {
+        state.pageSize = Math.min(PAGE_MAX, first * 2);
+        log("page size changed", { repo, from: first, to: state.pageSize, why: `page answered in ${Date.now() - t} ms` });
+        writeJson(stateFile, all);
+      }
       r ??= page;
-      open.push(...(page.pullRequests.nodes ?? []));
+      open.push(...(page.pullRequests.nodes ?? []).filter(Boolean));
       after = page.pullRequests.pageInfo?.hasNextPage ? page.pullRequests.pageInfo.endCursor : null;
       if (!after) break;
     }
     const main = { name: r.defaultBranchRef?.name, oid: r.defaultBranchRef?.target?.oid, rollup: r.defaultBranchRef?.target?.statusCheckRollup };
-    const state = (all[repo.toLowerCase()] ??= {});
     state.dependabot ??= {}; // PR url -> its task's id
     const save = () => writeJson(stateFile, all);
 

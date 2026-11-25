@@ -27,9 +27,5 @@ export function loadInputs(repo: string, env = hostEnv(repo)) {
   // previous product's bundle from the apply (AIDENHQ_OLD_BUNDLE, a JSON list).
   let bundleState: Obj | undefined; try { bundleState = JSON.parse(readFileSync(join(repo, "data", "bundle-state.json"), "utf8")); } catch {}
   let oldBundle: Obj | undefined; try { oldBundle = JSON.parse(env("AIDENHQ_OLD_BUNDLE") || "null") ?? undefined; } catch {}
-  // DELETE in the release after #1065: the retired GitHub App's id (compile.ts keeps it beside the vault's github-app dir).
-  const dir = env("AIDENHQ_SECRETS_DIR");
-  const kept = dir && join(dir, "github_retired_app_id"), old = dir && join(dir, "github-app", "app_id");
-  const retiredAppId = (kept && existsSync(kept) ? readFileSync(kept, "utf8") : old && existsSync(old) ? readFileSync(old, "utf8") : "").trim();
-  return { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") }, legacyAgentsOrg: env("AIDENHQ_GITHUB_AGENTS_ORG") ?? "", retiredAppId };
+  return { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") } };
 }

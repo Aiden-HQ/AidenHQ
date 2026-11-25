@@ -85,7 +85,7 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, kernelReply, kernelBefore, putFails = () => false, graphql, repo = () => 404, pull = () => 404, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug), reviewGate = async () => undefined }) {
+async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, kernelReply, kernelBefore, putFails = () => false, graphql, repo = () => 404, pull = () => 404, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug), reviewGate = async () => undefined }) {
   const outcomes = [];
   const waits = [];
   const taken = new Set();
@@ -130,7 +130,7 @@ async function setup(t, { prs, connected = { on: true }, hold, holdReason, cache
   };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir, access, fleetOrg: "acme-agents", remoteUrl,
-    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate, ...(hold ? { holdMerges: () => hold.on } : {}), ...(holdReason ? { mergeHoldReason: holdReason } : {}),
+    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate,
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -1336,6 +1336,14 @@ test("a red default branch takes no merge on top, except the PR that already hol
   assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD), { do: "merge" }, "a cancelled run never judged the base");
   assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD), { do: "merge" });
   assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD), { do: "merge" }, "a base whose CI runs on PRs only");
+  // The base tip is judged by each name's newest run too (baseCi): a cancelled run an edit superseded is not the tip's verdict,
+  // while a later red or running run of that name still holds it.
+  assert.deepEqual(decide(data(rollup("SUCCESS", { runs: [{ name: "ci-required", state: "CANCELLED", rank: 1 }, { name: "ci-required", state: "SUCCESS", rank: 2 }] }), 2), HEAD), { do: "merge" },
+    "a base whose cancelled run was superseded by a green one is green");
+  assert.deepEqual(decide(data(rollup("SUCCESS", { runs: [{ name: "build", state: "CANCELLED", rank: 1 }, { name: "build", state: "FAILURE", rank: 2 }] }), 2), HEAD), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" },
+    "a base whose cancelled run was superseded by a red one is red");
+  assert.equal(decide(data(rollup("SUCCESS", { runs: [{ name: "build", state: "CANCELLED", rank: 1 }, { name: "build", state: "PENDING", rank: 2 }] }), 2), HEAD).do, "wait",
+    "a base whose cancelled run was superseded by a running one waits");
 });
 
 test("each check name on a head is judged by its newest run: a cancelled run an edit superseded is not red, and a later red or running one still holds", () => {
@@ -1544,32 +1552,8 @@ test("the review gate's findings key follows the whole set of reasons, not the c
   assert.ok(one && "findingsKey" in one && two && "findingsKey" in two && one.findingsKey !== two.findingsKey);
 });
 
-test("a migration hold says so, and never claims GitHub is signed out", async (t) => {
-  // An App migration holds merges while GitHub is connected (migrate.ts, service.ts holdMerges): reconnecting cannot lift it, so
-  // the card's reason must be the migration's, never the reconnect's — the owner cannot act on a sign-out that isn't one.
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  const hold = { on: true };
-  const { handle, github, merge, settle, outcomes, waits } = await setup(t, { prs, hold });
-  await merge("k-00000000000000ba", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  assert.deepEqual(github.merges(), [], "nothing merges while the migration holds");
-  assert.deepEqual(waits.map((w) => [w.id, w.reason]), [["k-00000000000000ba", "GitHub App migration in progress: merges are held until it finishes"]]);
-  assert.ok(!waits.some((w) => /signed out/i.test(String(w.reason))), "a migration hold is never published as a sign-out");
-  // The same reason is not posted again on the next poll.
-  await handle.stepMerges();
-  assert.equal(waits.length, 1, "a repeat of the same hold is not re-posted");
-  // The hold lifts: the reason is cleared before anything else, and the merge proceeds.
-  hold.on = false;
-  await handle.stepMerges();
-  assert.equal(waits.length, 2, "the migration reason is cleared once merges are no longer held");
-  assert.equal(waits[1].reason, null);
-  assert.equal(github.merges().length, 1, "merged once the migration finished");
-  await settle();
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-});
-
 test("a sign-out still says signed out, and is cleared when GitHub reconnects", async (t) => {
-  // The other half of the split: `connected` false with no hold is a real sign-out, and its reason is the reconnect's.
+  // The other half of the split: `connected` false is a sign-out, and its reason is the reconnect's.
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const connected = { on: false };
   const { handle, merge, waits } = await setup(t, { prs, connected });
@@ -1637,33 +1621,6 @@ test("the record's wait is the whole queue's: one PR leaving its wait never clea
   assert.equal(typeof last, "string", "the widget's reason is still on the record, never cleared by the other PR");
   assert.match(last, /acme-agents\/widget/);
   assert.doesNotMatch(last, /gadget/);
-});
-
-test("a hold is a decision, not its text: a blank custom reason still holds every merge", async (t) => {
-  // `holdMerges()` true with `mergeHoldReason()` empty is still a hold. If the reason doubled as the flag, an empty string would
-  // read as "not held" and the queue would poll and merge during the App migration.
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  const hold = { on: true };
-  const { handle, github, merge, settle, outcomes, waits } = await setup(t, { prs, hold, holdReason: () => "" });
-  await merge("k-00000000000000bc", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  assert.deepEqual(github.merges(), [], "a blank reason never lifts the hold: nothing merges during the migration");
-  assert.deepEqual(waits.map((w) => w.reason), ["GitHub App migration in progress: merges are held until it finishes"], "the default reason is published");
-  // Its own text, when it has one, replaces the default.
-  hold.on = false;
-  await handle.stepMerges();
-  assert.equal(github.merges().length, 1);
-  await settle();
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-});
-
-test("a custom hold reason is published as given", async (t) => {
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  const hold = { on: true };
-  const { handle, merge, waits } = await setup(t, { prs, hold, holdReason: () => "migrating the GitHub App: merges are held" });
-  await merge("k-00000000000000bd", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  assert.deepEqual(waits.map((w) => w.reason), ["migrating the GitHub App: merges are held"]);
 });
 
 test("a queue written by the previous implementation republishes its reason on the first poll, not trusting an absent one", async () => {

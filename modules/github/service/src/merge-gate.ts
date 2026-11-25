@@ -40,11 +40,10 @@ type Json = any;
  * The one judgement per check name on a head, as GitHub's branch protection makes it: each name's newest run at that head, and
  * each name's newest status (a check run and a status that share a name are two judgements, so the worst of the two holds).
  * `rank` (checks.ts contextRank) decides the newest, never the rollup's node order: an edited PR starts a new run that cancels
- * the old one, and the cancelled run's check stays on the head forever. An entry without `kind` (an older caller's list) is its
- * own judgement, counted as before.
+ * the old one, and the cancelled run's check stays on the head forever.
  */
 export function headChecks<T extends NamedCheck>(checks: T[]): T[] {
-  return latestChecks(checks.map((c) => ({ ...c, ...(c.kind ? {} : { kind: "run" as const }) })));
+  return latestChecks(checks);
 }
 
 export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $pullRef: String!) {
@@ -125,7 +124,9 @@ export function withGate(data: Json) {
  * (a newer push superseded its run), and the aggregate gate check fails along with it, so neither makes the base red.
  */
 function baseCi(rollup: Json) {
-  const named = namedChecks(rollup);
+  // Each name's newest run at the tip, as on a head: a run an edit or a re-run superseded is not the tip's verdict. Cancelled
+  // stays a result that never judged the commit, as before.
+  const named = latestChecks(namedChecks(rollup));
   const cancelled = named.some((c) => c.status === "CANCELLED");
   if (named.some((c) => !c.ok && !c.pending && c.status !== "CANCELLED" && !(cancelled && c.name === GATE_CHECK))) return "red";
   return named.some((c) => c.pending) ? "pending" : "green";

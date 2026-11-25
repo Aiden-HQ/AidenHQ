@@ -34,7 +34,8 @@ test("the newest run of a name is picked by its id, never by the order GitHub li
   assert.deepEqual(both.map((c) => [c.kind, c.status]).sort(), [["run", "SUCCESS"], ["status", "FAILURE"]]);
   // An entry with no rank proves no order, so it stays its own judgement rather than being folded away.
   assert.equal(latestChecks(namedChecks(rollup(at("build", "SUCCESS", 1), { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "FAILURE" }))).length, 2);
-  // A status ranks by when it was created; a run falls back to its completion time when it carries no id.
+  // A status ranks by when it was created; a run by its databaseId, and by its completion time when it carries no id.
   assert.equal(contextRank({ __typename: "StatusContext", context: "ci", state: "SUCCESS", createdAt: "2026-01-02T00:00:00Z" }), Date.parse("2026-01-02T00:00:00Z"));
   assert.equal(contextRank(at("build", "SUCCESS", 7)), 7);
+  assert.equal(contextRank({ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS", completedAt: "2026-01-03T00:00:00Z" }), Date.parse("2026-01-03T00:00:00Z"));
 });

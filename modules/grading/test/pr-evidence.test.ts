@@ -636,6 +636,26 @@ test("a head with no aidenhq/review status adds no such fact", async () => {
   assert.ok(ev.facts.every((f) => !f.includes("aidenhq/review")), "an absent status stays not shown");
 });
 
+test("the gate check is read from its newest run at the head, and two judgements of its name take the worst", async () => {
+  // An edit re-runs CI and cancels the run before it: the cancelled check stays on the head, but the newer run is the verdict, so
+  // the head reads green and the PR is graded rather than waiting on a superseded run.
+  const superseded = { ...merged(1505, "i", "j"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    { __typename: "CheckRun", databaseId: 10, name: "ci-required", status: "COMPLETED", conclusion: "CANCELLED" },
+    { __typename: "CheckRun", databaseId: 11, name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" },
+  ] } } } }] } };
+  const ev = await prEvidence([{ repo: REPO, number: 1505, url: url(1505), heads: ["branch-i"] }], "", depsFor([superseded]));
+  const line = ev.facts.find((f) => f.startsWith(`${url(1505)}: merged`));
+  assert.match(line, /checks: ci-required green/, "the newer successful run is the gate's verdict, not the cancelled one");
+  // A status sharing the gate's name is a second judgement: the failed one makes the gate red, never green.
+  const twoJudgements = { ...merged(1506, "k", "l"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    { __typename: "CheckRun", databaseId: 12, name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" },
+    { __typename: "StatusContext", context: "ci-required", state: "FAILURE", createdAt: "2026-01-01T00:00:00Z" },
+  ] } } } }] } };
+  const red = await prEvidence([{ repo: REPO, number: 1506, url: url(1506), heads: ["branch-k"] }], "", depsFor([twoJudgements]));
+  const redLine = red.facts.find((f) => f.startsWith(`${url(1506)}: merged`));
+  assert.match(redLine, /checks: ci-required not green \(failed\)/, "a red judgement beside a green run is not papered over");
+});
+
 test("a check run merely named aidenhq/review is not code review's status", async () => {
   // Code review publishes a commit status; a check run wearing the name is something else and proves nothing about its verdict.
   const pr = { ...merged(1504, "g", "h"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [

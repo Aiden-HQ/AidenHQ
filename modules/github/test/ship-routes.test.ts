@@ -28,7 +28,8 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
   assert.equal((await gh({ method: "PATCH", path: "/repos/acme/app/pulls/1", body: { state: "closed", base: "x" } })).status, 403, "a close only");
   assert.equal((await gh({ method: "GET", path: "/repos/other/repo/pulls/1" })).status, 403, "a repo the fleet doesn't work");
   assert.equal((await gh({ method: "POST", path: "/graphql", body: { variables: { owner: "other", repo: "repo" } } })).status, 403, "the open PRs of a repo the fleet doesn't work");
-  assert.equal((await gh({ method: "POST", path: "/graphql", body: { query: "mutation { mergePullRequest }", variables: { owner: "acme", repo: "app" } } })).status, 200);
+  assert.equal((await gh({ method: "POST", path: "/graphql", body: { query: "mutation { mergePullRequest }", variables: { owner: "acme", repo: "app", first: 10 } } })).status, 200);
+  for (const first of [undefined, 0, 51, 2.5, "10"]) assert.equal((await gh({ method: "POST", path: "/graphql", body: { variables: { owner: "acme", repo: "app", first } } })).status, 403, `a page size of ${first}`);
   assert.deepEqual(called, ["PUT /repos/acme/app/pulls/1/update-branch", "POST /graphql"]);
   // A branch is deleted only as an opener's PR branch on that repo, never the default branch or anyone else's.
   assert.equal((await gh({ method: "DELETE", path: "/repos/acme/app/git/refs/heads/main" })).status, 403);

@@ -224,11 +224,20 @@ const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
  */
 function gateOn(pr: any, checks: any[]): string {
   // The gate's newest run at the head (checks.ts latestChecks): an edit re-runs CI and cancels the run before it, and that
-  // superseded run's check stays on the head forever. It cannot make a head whose latest `ci-required` passed read red.
-  const gate = latestChecks(checks.filter((c: any) => c.name === GATE_CHECK)).find((c: any) => c.name === GATE_CHECK);
-  if (gate) return gate.pending ? "running" : gate.status === "SUCCESS" ? "green" : "red";
+  // superseded run's check stays on the head forever. It cannot make a head whose latest `ci-required` passed read red. A check
+  // run and a status sharing the gate's name are two judgements: the worst one counts, as the merge gate reads them.
+  const gates = latestChecks(checks.filter((c: any) => c.name === GATE_CHECK));
+  if (gates.length) return gates.some((c: any) => c.pending) ? "running" : gates.every((c: any) => c.status === "SUCCESS") ? "green" : "red";
   if (pr.state !== "OPEN" || !checks.length) return "missing";
   return namedChecks(pr.baseRef?.target?.statusCheckRollup).some((c: any) => c.name === GATE_CHECK) ? "running" : "missing";
+}
+
+/** Each name once, as its worst judgement: a red (0) outranks a still-running (1) check, which outranks a green (2) one. */
+function worstPerName(checks: any[]): any[] {
+  const severity = (c: any) => (c.pending ? 1 : c.ok ? 2 : 0);
+  const out = new Map<string, any>();
+  for (const c of checks) { const had = out.get(c.name); if (!had || severity(c) < severity(had)) out.set(c.name, c); }
+  return [...out.values()];
 }
 
 /**
@@ -627,9 +636,11 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     }
     if (pr.state === "CLOSED") return { awaiting: `${p.url} was closed without merging` };
     // Each name's newest run at the head, as GitHub's branch protection reads it: a cancelled run an edit superseded is not a
-    // judgement of this head, and a name whose only runs were cancelled reads not green rather than still running.
-    const checks = latestChecks(namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
-    const gate = gateOn(pr, checks);
+    // judgement of this head, and a name whose only runs were cancelled reads not green rather than still running. A name still
+    // reported twice (a check run and a status) is stated once, as its worst judgement: that is the one the merge gate holds on.
+    const latest = latestChecks(namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
+    const checks = worstPerName(latest);
+    const gate = gateOn(pr, latest);
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
     // a whole as PENDING until they all finish, so the individual states are the finer read), and so is a head whose
     // aggregate required check is not written yet: its jobs appear only as it finishes.
