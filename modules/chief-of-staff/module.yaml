@@ -40,7 +40,7 @@ agents:
       ship?: [ ship_config, ship_configure ]
       # The live product pin and the last applies, and the owner's stale todos for the brief (the fleet-steward module's connection, when it is on).
       fleet_steward?: [ fleet_generation_status, fleet_stale_followups, fleet_followup_snooze, flow_report ]
-      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_team, task_delegate, task_amend_rubric, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, app_request_from_owner ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_team, task_delegate, task_amend_rubric, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, chat_open, app_request_from_owner ]
     # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/heartbeat.md); events wake it sooner (board wake.ts).
     heartbeat: true
     # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).

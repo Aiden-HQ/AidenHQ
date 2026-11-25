@@ -20,6 +20,7 @@ const keyOf = (a: Agent) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, ""
 
 export const ControlSchema = z.object({ action: z.enum(["run_routine", "pause_agent", "resume_agent", "pause_routine", "resume_routine"]), target: z.string().trim().min(4).max(200), quote: z.string().max(2000), task: z.string().max(64) }).strict();
 export const RelaySchema = z.object({ comment_id: z.string().regex(/^[0-9a-f-]{36}$/), target: z.string().trim().min(1).max(64) }).strict();
+export const OpenChatSchema = z.object({ comment_id: z.string().regex(/^[0-9a-f-]{36}$/), agent: z.string().trim().min(1).max(64) }).strict();
 export const CostsSchema = z.object({ days: z.number().optional() }).strict();
 
 /**

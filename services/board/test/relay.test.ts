@@ -19,9 +19,10 @@ const agents: Agent[] = [
   { id: "00000000-0000-0000-0000-0000000000d2", name: "Scout", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:scout" } },
   // An agent that edited its own metadata to look like the Chief of Staff: the grants table, not metadata, decides.
   { id: "00000000-0000-0000-0000-0000000000d3", name: "Impostor", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } },
+  { id: "00000000-0000-0000-0000-0000000000d5", name: "Agent Architect", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:architect" } },
   { id: "00000000-0000-0000-0000-0000000000d4", name: "Fleet Ops", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:fleet-ops" } },
 ];
-const [COS, FLEET, RESEARCHER, SCOUT, IMPOSTOR, FLEET_OPS] = agents.map((a) => a.id) as [string, string, string, string, string, string];
+const [COS, FLEET, RESEARCHER, SCOUT, IMPOSTOR, ARCHITECT, FLEET_OPS] = agents.map((a) => a.id) as [string, string, string, string, string, string, string];
 // The grants table setup writes: only the Chief of Staff holds fleet-admin.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
 writeFileSync(grantsFile, JSON.stringify({ agents: { [COS]: { key: "chief-of-staff", roles: ["fleet-admin"] }, [SCOUT]: { key: "scout", roles: [] }, [IMPOSTOR]: { key: "impostor", roles: [] }, [FLEET_OPS]: { key: "fleet-ops", roles: ["fleet-read"] } } }));
@@ -113,6 +114,22 @@ describe("/internal/relay", () => {
     expect(posted!.body).toBe(`apply\n\n_Written in chat on ${chat.identifier}._\n\n<!-- aidenhq-from:${chat.identifier}:${c.id} -->\n<!-- aidenhq-relay -->`);
     expect((await relay({ comment_id: c.id, target: eng.identifier })).status).toBe(403);
     expect(comments.get(eng.id)).toHaveLength(1);
+  });
+
+  it("opens a chat with the Architect on the owner's own message: the owner opened it, never an agent", async () => {
+    const c = say(chat, "[telegram] I need an agent that chases PR reviews");
+    const res = await relay({ comment_id: c.id, agent: "architect" }, COS, "/internal/chat");
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ opened: true, to: "Agent Architect" });
+    const opened = issues.find((i) => i.identifier === res.json.chat)!;
+    // The shape the kernel reads as the owner writing there (escalate.ts ownerWroteAt): the owner's key made it, no agent did, and it
+    // carries the chat marker, so the Architect's forms reach him directly.
+    expect(opened).toMatchObject({ assigneeAgentId: ARCHITECT, createdByUserId: ME });
+    expect(opened.createdByAgentId ?? null).toBeNull();
+    expect(opened.description).toBe(`I need an agent that chases PR reviews\n\n<!-- aidenhq-chat-agent:${ARCHITECT} -->`);
+    expect((await relay({ comment_id: c.id, agent: "architect" }, COS, "/internal/chat")).status).toBe(403);
+    expect((await relay({ comment_id: say(chat, "hi").id, agent: "chief-of-staff" }, COS, "/internal/chat")).status).toBe(403);
+    expect((await relay({ comment_id: say(chat, "hi").id, agent: "architect" }, IMPOSTOR, "/internal/chat")).status).toBe(403);
   });
 
   it("binds the approval to the task the owner meant", async () => {
