@@ -348,7 +348,7 @@ export class Workspace {
       try {
         m = await this.g.get<GmailMessage>(`${GMAIL}/messages/${encodeURIComponent(id)}`, { format: "metadata" });
       } catch (err) {
-        if (/Google API 404/.test(String(err))) continue; // deleted since the listing
+        if (/^Google API 404:/.test((err as Error).message)) continue; // deleted since the listing
         throw err;
       }
       const at = Number(m.internalDate ?? 0);
