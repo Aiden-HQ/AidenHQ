@@ -89,16 +89,16 @@ export function createFlow(d: FlowDeps) {
   // The owner's backfill sends its facts straight to the kernel in batches (it stops and says so on a failure); every other fact queues.
   const emit = (x: FactIn) => { const y = { ...x, at: utc(x.at) }; return y.source === "backfill" ? backfillSend(y) : emitter.emit(y); };
   let selfName: string | undefined;
-  const writers = new Map<string, boolean>();
-  /** Whether `who` has write on `repo` (one read per repo and author; a failed read is asked again next time). */
+  const writers = new Map<string, { write: boolean; at: number }>();
+  /** Whether `who` has write on `repo` (one read per repo and author an hour, so a revoked grant lapses; a failed read is asked again next time). */
   async function canWrite(repo: string, who: string): Promise<boolean> {
     const k = `${repo.toLowerCase()} ${who.toLowerCase()}`;
-    if (!writers.has(k)) {
+    if (!writers.has(k) || Date.now() - writers.get(k)!.at > 60 * 60_000) {
       const r = await d.gh!("GET", `/repos/${repo}/collaborators/${encodeURIComponent(who)}/permission`).catch(() => undefined);
       if (!r || r.status >= 300) return false;
-      writers.set(k, WRITERS.has(String(r.body?.permission)));
+      writers.set(k, { write: WRITERS.has(String(r.body?.permission)), at: Date.now() });
     }
-    return writers.get(k)!;
+    return writers.get(k)!.write;
   }
   /** Whether GitHub itself says `who` belongs to the repo: the owner's login, an OWNER, MEMBER or COLLABORATOR association, or write on `repo`. */
   async function isMember(who?: string | null, association?: string | null, repo?: string): Promise<boolean> {
