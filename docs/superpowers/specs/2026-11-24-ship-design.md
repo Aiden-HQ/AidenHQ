@@ -96,7 +96,7 @@ outside them is adopted only once it has an explicit `ship` entry, so quiet star
 | field | `cautious` | `full` | meaning |
 |---|---|---|---|
 | `handoff` | `label` | `all` | `label`: a trusted `ship` label, a `/ship` comment, or the `ship` tool. `all`: every non-draft PR by an author with write access. `none`: fleet PRs only |
-| `rebase` | `conflict` | `behind` | Update only on a conflict or failing guard, or whenever the branch is behind |
+| `rebase` | `conflict` | `conflict` | Update only on a conflict or failing guard, or whenever the branch is behind |
 | `generated` | discovered | discovered | `{ globs, commands }` overrides; see §3 |
 | `fix` | `[conflicts, ci, review]` | same | What the Engineer may work on |
 | `protected` | lockfiles, `.github/**`, test and lint config, CODEOWNERS | `[]` | A model fix touching these goes on `hold`. Deterministic repair may still regenerate lockfiles |
