@@ -146,15 +146,18 @@ test("a module files another module's kind only when that kind's filed_by names 
 });
 
 test("a module-filed write on a task records that task's identifier, and GET /v1/work?record= reads it", async (t) => {
-  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE, "TASK-11": { id: "TASK-11", identifier: "", status: "open" } } });
-  // A module files on a task by its UUID (ship's github.merge: no job, no workspace): the record carries its identifier.
-  const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  // A task's canonical id is a UUID (the control plane's own form); the identifier (WOR-8637) is what people and pr-tasks.json
+  // use. A module files on the UUID (ship's github.merge: no job, no workspace), so the record keeps the UUID as `task` and
+  // carries the identifier beside it.
+  const uuid = "3f2a6b8e-27c1-4f0d-9a41-6d5e0c7b9a12";
+  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE, [uuid]: { ...TRIAGE["TASK-9"], id: uuid }, "TASK-11": { id: "TASK-11", identifier: "", status: "open" } } });
+  const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: uuid }, "other-key");
   assert.equal(filed.status, 200, JSON.stringify(filed.json));
   const rec = k.records.get(filed.json.id);
-  assert.deepEqual([rec.task, rec.identifier, rec.identifier_checked, rec.requester.kind], ["TASK-9", "WOR-8637", true, "module"]);
+  assert.deepEqual([rec.task, rec.identifier, rec.identifier_checked, rec.requester.kind], [uuid, "WOR-8637", true, "module"]);
   const read = await k.v1("GET", `/v1/work?record=${filed.json.id}`);
   assert.equal(read.status, 200, JSON.stringify(read.json));
-  assert.deepEqual([read.json.task, read.json.identifier], ["TASK-9", "WOR-8637"]);
+  assert.deepEqual([read.json.task, read.json.identifier], [uuid, "WOR-8637"]);
   // A job's own workspace is never re-read or overwritten: its record keeps the row's identifier.
   const job = mintToken("job-secret", { kind: "job", job: "jw:twin.post", agentId: "ag-bo", issueId: "TASK-7" });
   const byJob = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job);
