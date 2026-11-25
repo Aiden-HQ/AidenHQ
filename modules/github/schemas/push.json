@@ -66,6 +66,13 @@
     "generation": {
       "type": "integer",
       "minimum": 1
+    },
+    "heads": {
+      "title": "the head each published branch had when the plan read it (filled by the plan, never by the caller): the record's own args carry it, so the card can only rewrite the branch from the head it was filed at (a null value: the branch did not exist then)",
+      "type": "object",
+      "additionalProperties": {
+        "pattern": "^([0-9a-f]{40})?$"
+      }
     }
   }
 }

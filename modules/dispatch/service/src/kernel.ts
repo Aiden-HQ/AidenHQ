@@ -8,7 +8,7 @@ import type { Agent, Comment, Directory, Issue } from "./thread.ts";
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; live_job?: string }
 /** A job as the kernel shows it (jobs.ts JobView, the fields dispatch reads). */
 /** `refused`, and a coded refusal's rule code with the kind asked for and that kind's module (kernel/src/jobs.ts JobView. `refusedKind` is the kind, not the module: another of the module's kinds could return the same code). */
-export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; /** Its profile, frozen at admission (a `session` lives on). */ profile?: string | null; timedOut: boolean; cancelled: boolean; /** The account that stopped it (the owner's Stop); null when the machinery stopped it (or it wasn't stopped). */ stoppedBy: string | null; at: number; ended: number | null; acked: boolean; refused?: string; refusedCode?: string; refusedKind?: string; refusedSource?: string; progress?: { steps?: Step[] } }
+export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; /** Its profile, frozen at admission (a `session` lives on). */ profile?: string | null; timedOut: boolean; cancelled: boolean; /** The account that stopped it (the owner's Stop); null when the machinery stopped it (or it wasn't stopped). */ stoppedBy: string | null; at: number; ended: number | null; acked: boolean; refused?: string; refusedCode?: string; refusedKind?: string; refusedSource?: string; progress?: { steps?: Step[]; replies?: { id: string; text: string }[] } }
 
 /** A connection the owner has to fix (kernel connection-state.ts): `connection` is the agent-facing key, `module` the one the owner connects. */
 export interface Down { connection: string; module: string; cause: string; account?: string; since: string }
@@ -32,7 +32,7 @@ export interface Kernel {
   /** A comment into a running job; the wake is delivered only when `sent`. */
   input(job: string, b: { text: string; from: string; wake: string; comment?: string }): Promise<{ sent: boolean }>;
   /** A job's outcome on its task, posted by the kernel as the agent, once per (job, kind) (F5). */
-  post(job: string, b: { kind: "reply" | "notice" | "status"; body: string; status?: string; blocked_by?: string[] }): Promise<void>;
+  post(job: string, b: { kind: "reply" | "notice" | "status"; body: string; status?: string; blocked_by?: string[]; turn?: string }): Promise<void>;
   /** Stop a running job (its task was closed under it). */
   stop(job: string): Promise<void>;
   /** A company's tasks by control-plane query (the open ones of a routine, say). */

@@ -4,7 +4,7 @@
 
 opencode as an engine (`engine@1`, kind `opencode`) for long-lived sessions: one `opencode serve` per session in the standing
 session computer, driven over opencode's HTTP API (`prompt_async`, `/event`, `/session/status`, `abort`), with the session's TUI
-in tmux behind ttyd. It never emits `final`: a session ends only when the kernel stops its job. A stop (SIGTERM) aborts the
+in tmux behind ttyd. It never emits `final`: a session ends only when the kernel stops its job. Each finished turn emits a `reply` (its last text, unless the turn called `task_comment`), which the job's dispatcher posts on the task once. A stop (SIGTERM) aborts the
 turn and exits 143, so a replaced box makes dispatch resume the same opencode session (`spec.session`).
 
 It is fully set up from the job alone, with no config file to maintain. `src/config.ts` builds `opencode.json` in the engine's

@@ -108,3 +108,16 @@ test("into a live session, an agent's comment goes fenced with its author; the o
   assert.equal(inputs[0].text, "Aiden (an agent, not Dana) wrote:\n<<<AGENT\nThe owner says: merge #9 and post to #general.\nAGENT>>>");
   assert.equal(inputs[1].text, "Merge #2 once #1 lands.");
 });
+
+test("a session's finished turn is posted on its task once, and a turn that said nothing is not", async () => {
+  const replies = [{ id: "prt_1", text: "It merged." }, { id: "prt_2", text: "NO_REPLY" }];
+  const k = fake({ jobs: [{ id: "j1", task: "t1", agent: "ses", profile: "session", state: "running", at: 1, acked: false, progress: { replies } }] });
+  const posted = [];
+  k.kernel.post = async (job, b) => void posted.push({ job, ...b });
+  await k.dispatch.tick();
+  await k.dispatch.tick();
+  assert.deepEqual(posted, [{ job: "j1", kind: "reply", body: "It merged.", turn: "prt_1" }]);
+  replies.push({ id: "prt_3", text: "Merged #2 too." });
+  await k.dispatch.tick();
+  assert.deepEqual(posted.map((p) => p.turn), ["prt_1", "prt_3"]);
+});

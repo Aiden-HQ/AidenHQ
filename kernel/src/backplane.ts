@@ -73,8 +73,8 @@
 //                              every open task (and every task closed since `closed_since`, no id limit), in one snapshot, with the needs-you, failed and unexplained-idle counts (task-state-read.ts)
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
-//   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
-//                              task as its agent, once per kind (outcomes.ts)
+//   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?, turn?}: posted on the job's
+//                              task as its agent, once per kind (per `turn` for a session's turn reply, outcomes.ts)
 //   POST /v1/checks, GET /v1/checks/:check, POST /v1/receipts/verify  (a module with role kernel.checks) a credential-free check
 //                              job of repo@head and its signed receipt (?after=<version>&wait=<ms>), a receipt checked against
 //                              {repo, head, run, judge?, policy?} (checkjobs.ts)
@@ -1175,7 +1175,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
               const b = await json(req);
               if (!JOB_KINDS.includes(b.kind) || typeof b.body !== "string") throw fail(400, "bad_request", `send {kind: ${JOB_KINDS.join("|")}, body, status?, blocked_by?}`);
               if (b.blocked_by !== undefined && !(Array.isArray(b.blocked_by) && b.blocked_by.every((x: unknown) => typeof x === "string"))) throw fail(400, "bad_request", "blocked_by is a list of task ids");
-              return send(res, 200, await outcomes.post(job, { kind: b.kind, body: b.body, ...(typeof b.status === "string" ? { status: b.status } : {}), ...(b.blocked_by ? { blockedBy: b.blocked_by } : {}) }));
+              if (b.turn !== undefined && !(typeof b.turn === "string" && /^[\w-]{1,100}$/.test(b.turn))) throw fail(400, "bad_request", "turn is a turn's id");
+              return send(res, 200, await outcomes.post(job, { kind: b.kind, body: b.body, ...(b.turn ? { turn: b.turn } : {}), ...(typeof b.status === "string" ? { status: b.status } : {}), ...(b.blocked_by ? { blockedBy: b.blocked_by } : {}) }));
             }
           }
         } catch (e) {
