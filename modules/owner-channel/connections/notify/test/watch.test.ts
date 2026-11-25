@@ -24,7 +24,7 @@ describe("watch", () => {
   it("a tool's own authentication warning in a failed job is not a rejected API key", async () => {
     const store = openStore(":memory:");
     const notify = vi.fn(async (_text: string, _kind: "alert" | "done") => true);
-    const work = async () => ({ recent: [job("failed", -1, "The job failed: W: WS authentication failed with token:")] });
+    const work = async () => ({ recent: [job("failed", -1, "The job failed: W: WS authentication failed with token:"), job("failed", -2, "gh: HTTP 401: Bad credentials (https://api.github.com/user)")] });
     await tick({ work, api, notify, store, now: NOW });
     expect(notify.mock.calls).toEqual([]);
   });
