@@ -232,9 +232,10 @@ fi
 # snapshot time and only this file says it is in scope. Read through jq, which rejects an unreadable file, a document that
 # is not JSON and a value that is not a string: any of those leaves the pass without a complete inventory, so it publishes
 # no batch rather than a short one. The browser image is always built (ops/computer-images.sh) and always part of the fleet.
-# Every entry must be a non-empty string: an invalid one is refused here rather than skipped, because the inventory would
-# then be missing an image it cannot show is out of scope, and an absent target would read as retired.
-if ! jq -e '(.images | type) == "object" and ([.images[] | type == "string" and . != ""] | all)' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" >/dev/null 2>"$work/configured.err"; then
+# Every entry must be a reference `docker image inspect` can resolve: `<repository>[:<tag>]`, no whitespace, no shell
+# metacharacters. An invalid one is refused here rather than skipped, because the inventory would then be missing an image
+# it cannot show is out of scope, and an absent target would read as retired.
+if ! jq -e '(.images | type) == "object" and ([.images[] | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")] | all)' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" >/dev/null 2>"$work/configured.err"; then
   echo "security-sbom: config/computers.json is missing, unreadable or names an image that is not a tag ($(tr '\t\n' '  ' < "$work/configured.err" | tail -c 200)); keeping the previous batch" >&2
   exec 8>&-
   rm -rf "$next" "$work" "$archives"
@@ -589,6 +590,10 @@ snapshot() {
   # resolved on the server platform (there is no container to say which variant is in play), and its pin is the image id
   # the tag names now, read once here like every other reference under the lock.
   local -A u_configured_tag=()
+  # Whether a tag names the one platform manifest a configured image stands for, on the server platform: `pin_of` checks
+  # that the tag resolves and that `docker image inspect --platform` reports that manifest for it, which a tag moved to
+  # another build (or naming another variant) fails. Read once and kept, so the key decision below and the plan agree.
+  local -A u_configured_pin=()
   # A configured tag is planned once, even if the file repeats it.
   local -A u_tag_seen=()
   while IFS= read -r tag; do
@@ -596,6 +601,7 @@ snapshot() {
     [ -z "${u_tag_seen[$tag]:-}" ] || continue
     u_tag_seen[$tag]=1
     pin_now="$(pin_of "$tag" "$platform")"
+    u_configured_pin[$tag]="$pin_now"
     unit="$tag|$platform|-"
     [ -z "${unit_seen[$unit]:-}" ] || continue
     unit_seen[$unit]=1; units+=("$unit")
@@ -607,11 +613,29 @@ snapshot() {
   # Every unit is resolved and sized first, before any bytes are written: a save is only worth making for a target whose
   # scan can be planned. The wave driver uses these sizes to decide which images go in this pass at all. A unit's image
   # is its platform manifest, or the reference when the pin is unknown: two names for one image on one platform are one
-  # unit, and container units come first, so a configured tag naming an image a container runs keeps that container's
-  # target key (findings reconcile by exact target name, and the container's key is what they were written under).
+  # unit, and container units come first, so a configured tag naming an image a container runs is planned once (the key
+  # itself is decided below).
   local -A unit_pin=() unit_done=()
   # Units that get a row this pass: every one admitted to the plan, whether it scans or records its own error line.
   images_planned=0
+  # The configured tag that names each image on each platform: the key a container running that image takes, and the key
+  # the configured unit itself takes. Configuring is what makes a name stable, so a configured tag is read first and wins
+  # over a container's own alias, and a container's tag names the images no configured tag names. A configured tag lands
+  # here only when the tag resolving now reports the pin the configured unit recorded (a tag moved off it by another pull
+  # names no known image and is not an alias).
+  local -A u_alias=()
+  for unit in "${units[@]}"; do
+    [ -n "${u_configured_tag[$unit]:-}" ] || continue
+    tag="${u_tag[$unit]}"; pin="${u_pinned[$unit]:-}"
+    [ -n "$pin" ] && [ "${u_configured_pin[$tag]:-}" = "$pin" ] || continue
+    [ -n "${u_alias["${u_plat[$unit]}|$pin"]:-}" ] || u_alias["${u_plat[$unit]}|$pin"]="$tag"
+  done
+  for unit in "${units[@]}"; do
+    # A container's own tag is also a name for its image while the tag check above proved it names what runs.
+    tag="${u_tag[$unit]:-}"; pin="${u_pinned[$unit]:-}"
+    [ -n "$tag" ] && [ -n "$pin" ] || continue
+    [ -n "${u_alias["${u_plat[$unit]}|$pin"]:-}" ] || u_alias["${u_plat[$unit]}|$pin"]="$tag"
+  done
   for unit in "${units[@]}"; do
     if [ -z "${u_pinned[$unit]:-}" ]; then
       pin_now="$(pin_of "${u_tag[$unit]:-${u_label[$unit]:-${u_image[$unit]}}}" "${u_plat[$unit]}")"
@@ -626,16 +650,21 @@ snapshot() {
     if [ -n "${unit_pin[$unit]}" ] && [ -n "${unit_done["$plat|${unit_pin[$unit]}"]:-}" ]; then continue; fi
     if [ -n "${unit_pin[$unit]}" ]; then unit_done["$plat|${unit_pin[$unit]}"]=1; fi
     images_planned=$((images_planned + 1))
-    # The image the container runs: its tag while the tag still names what runs, else the platform manifest compose
-    # recorded, else the container's own top-level id. The target stays `image:<container id>` when the tag has moved: the
-    # store reconciles findings by target name, so keying the same image by its manifest id would leave the findings
-    # already held under its id unverified beside the new ones.
+    # The image the container runs: a configured tag that names the same image on the same platform (a fleet computer
+    # image, whose browser render runs `computer-browser:current` for its hash build while the config names the hash),
+    # else its own tag while the tag still names what runs, else the platform manifest compose recorded, else the
+    # container's own top-level id. The configured name wins because it does not depend on a render running: keying the
+    # same image by the container's own alias would flip the target's name each time a render started or stopped, and the
+    # store reconciles findings by exact target name. For the same reason the target stays `image:<container id>` when the
+    # tag has moved: keying the image by its manifest id instead would leave the findings already held under its id
+    # unverified beside the new ones.
     # The key is a function of the variant alone, never of which other variants happen to run: the platform the daemon
     # itself runs keeps the plain key (the tag, or the image id), and a variant on any other platform is always suffixed
     # with its platform. Counting the variants first would rename a target the moment a second one appeared (an emulated
     # container running alone is plain, then `@<platform>` once its own platform's container starts), and findings
     # reconcile by exact target name, so the rename alone would leave the old name's findings unverified.
-    if [ "$plat" = "$platform" ]; then key="${u_tag[$unit]:-$image}"
+    if [ "$plat" = "$platform" ]; then key="${u_alias["$plat|${unit_pin[$unit]}"]:-${u_tag[$unit]:-$image}}"
+    elif [ -n "${u_alias["$plat|${unit_pin[$unit]}"]:-}" ]; then key="${u_alias["$plat|${unit_pin[$unit]}"]}@${plat}"
     elif [ -n "${u_tag[$unit]:-}" ]; then key="${u_tag[$unit]}@${plat}"
     else key="${man:-$image}@${plat}"; fi
     want="${u_tag[$unit]:-${u_label[$unit]:-$image}}"

@@ -1,6 +1,9 @@
 import { expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseFeed } from "../src/zerowire.js";
-import { DDL, parseTargets, scanPass, type Batch } from "../src/scan.js";
+import { DDL, parseTargets, readSbomBatch, scanPass, type Batch } from "../src/scan.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer against an in-memory store that keys rows like Postgres would (the SQL itself follows the other writers).
@@ -384,6 +387,87 @@ it("src_security: a bare digest target is never retired by repository name, sinc
   expect(await scanPass(store, deps("image:aidenhq/computer-engineer:h2\th2.json\t\t\nimage:aidenhq/computer-engineer:h3\th3.json\t\t"))).toBe(0);
   expect(runs.find((x) => x.scope === digest)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
   expect(rows.get(`${digest}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
+});
+
+it("src_security: a running image that failed under its own digest keeps an absent image of its repository unverified", async () => {
+  // An old browser image may run under a bare `image:sha256:…` key (a container keyed by its image id), and that row's
+  // export failed while the new configured hash scanned cleanly. The digest names no repository, so only its failure says
+  // the old hash's image may still be running: it must not be retired against the clean hash.
+  const { store, rows, runs } = fakeStore();
+  const oldHash = "image:aidenhq/computer-browser:b000";
+  const newHash = "image:aidenhq/computer-browser:h2";
+  const digest = `image:sha256:${"d".repeat(64)}`;
+  const sboms: Record<string, unknown> = {
+    "old.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] },
+    "new.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/usr/bin/openssl")] },
+  };
+  let now = Date.parse("2026-11-25T00:00:00Z");
+  const deps = (index: string) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps(`${oldHash}\told.json\t\t`))).toBe(1);
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps(`${newHash}\tnew.json\t\t\n${digest}\t-\tdocker save: no room\t`))).toBe(1);
+  expect(runs.find((x) => x.scope === digest)?.error).toMatch(/no room/);
+  expect(runs.find((x) => x.scope === oldHash)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(`${oldHash}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
+});
+
+it("src_security: a mapped image retirement also needs a batch that claims a complete image inventory", async () => {
+  // The map (a cross-repository rename) is evidence of what replaced what, never that the replacement ran: a batch short
+  // of its own units may also be one whose writer listed no replacement at all. Only a complete batch may settle.
+  const { store, rows, runs } = fakeStore();
+  const retired = "image:aidenhq/github-mcp:local";
+  const replacement = "image:aidenhq/github-github:local";
+  const sboms: Record<string, unknown> = {
+    "retired.json": { matches: [match("curl", "7.88.1", "CVE-2023-0001", "/usr/bin/curl")] },
+    "replacement.json": { matches: [match("curl", "7.88.1", "CVE-2023-0001", "/usr/bin/curl")] },
+  };
+  let now = Date.parse("2026-11-25T00:00:00Z");
+  const deps = (index: string, imagesComplete?: boolean) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), ...(imagesComplete ? { imagesComplete } : {}) }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps(`${retired}\tretired.json\t\t`, true))).toBe(1);
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps(`${replacement}\treplacement.json\t\t`))).toBe(1); // the replacement's own scan
+  expect(runs.find((x) => x.scope === retired)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(`${retired}|curl|7.88.1|CVE-2023-0001`)).toMatchObject({ present: true, resolved_at: null });
+});
+
+it("src_security: a batch is read from one generation, even after the writer swaps current/ mid-read", () => {
+  // The writer replaces current/ wholesale (the old one moves to prev/, the new one in). A pass reading targets.tsv,
+  // images.complete and the SBOMs through separate opens of the path could pair one generation's target list with
+  // another's files, or read a removed file as a missing one. One handle on the directory pins the generation.
+  const root = mkdtempSync(join(tmpdir(), "scanner-batch-"));
+  const current = join(root, "current");
+  const prev = join(root, "prev");
+  mkdirSync(current, { recursive: true });
+  writeFileSync(join(current, "targets.tsv"), "image:aidenhq/board:local\t001.json\t\t\n");
+  writeFileSync(join(current, "001.json"), '{"matches":[{"generation":"old"}]}');
+  writeFileSync(join(current, "images.complete"), "");
+  const batch = readSbomBatch(current);
+  // The writer's swap: current/ becomes the next generation, the generation this pass opened is moved away.
+  rmSync(prev, { recursive: true, force: true });
+  renameSync(current, prev);
+  mkdirSync(current);
+  writeFileSync(join(current, "targets.tsv"), "host\t-\tnew pass\t\n");
+  writeFileSync(join(current, "images.complete"), "");
+  expect(batch.imagesComplete).toBe(true);
+  expect(batch.targets.map((t) => t.target)).toEqual(["image:aidenhq/board:local"]);
+  // The SBOM path still reaches the generation the index came from, not the new generation's name for it.
+  expect(JSON.parse(readFileSync(batch.targets[0]!.file!, "utf8")).matches[0].generation).toBe("old");
+  expect(readSbomBatch(join(root, "missing"))).toEqual({ finishedAt: null, targets: [] });
+  rmSync(root, { recursive: true, force: true });
 });
 
 it("src_security: a non-image target absent from a fresh batch keeps the absent error, since the batch does not enumerate it", async () => {

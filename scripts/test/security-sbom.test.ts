@@ -736,12 +736,48 @@ test("security-sbom: without config/computers.json the previous batch stays, so 
 
   // A file that names no image, or names one entry that is not a tag, is the same incomplete inventory: the entries must
   // not be silently skipped, since the image a skipped one names would then look retired.
-  for (const config of [{ images: {} }, { images: { browser: "aidenhq/computer-browser:h1", engineer: null } }, { images: { session: "" } }]) {
+  // A value that is not a reference `docker image inspect` can resolve (whitespace, a shell metacharacter) is refused the
+  // same way, rather than becoming a target key nothing scans and every pass then retries.
+  for (const config of [
+    { images: {} },
+    { images: { browser: "aidenhq/computer-browser:h1", engineer: null } },
+    { images: { session: "" } },
+    { images: { browser: "aidenhq/computer-browser h1" } },
+    { images: { browser: "$(touch /tmp/x)" } },
+  ]) {
     const bad = await run({}, { computers: config, seed });
     assert.equal(bad.status, 0, bad.out);
     assert.match(bad.out, /names no image|names an image that is not a tag/, bad.out);
     assert.equal(bad.batchRaw, sentinel, `the previous batch is left exactly as it was:\n${JSON.stringify(config)}`);
     assert.ok(!bad.calls.some((c) => c.startsWith("run ") || c.startsWith("save ")), `nothing was scanned or saved:\n${bad.calls.join("\n")}`);
+  }
+});
+
+test("security-sbom: a browser render starting or stopping does not move the target's name", { skip: NOT_LINUX }, async () => {
+  // ops/computer-images.sh runs the browser under `computer-browser:current` while a render is open, and the configured
+  // image is the hash tag that alias points at. The same image is therefore a container unit on one pass and a configured
+  // unit on the next. The batch keys it by the configured tag either way: the store reconciles findings by exact target
+  // name, so a key that followed the render would settle them when it started and re-open them when it ended.
+  const computers = { images: { browser: "aidenhq/computer-browser:h1" } };
+  const renderRunning = await run({}, {
+    computers,
+    containers: [{ id: "c1", image: "sha256:index1", config: "aidenhq/computer-browser:current", label: "sha256:bbbb" }],
+    tags: { "aidenhq/computer-browser:current": "sha256:index1", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "aidenhq/computer-browser:current": "sha256:bbbb", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    held: ["sha256:index1"],
+    sizes: { "sha256:index1": 1024, "sha256:bbbb": 1024 },
+  });
+  const idle = await run({}, {
+    computers,
+    containers: [{ id: "c1", image: "sha256:gggg", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:gggg", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "aidenhq/board:local": "sha256:gggg", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    sizes: { "sha256:bbbb": 1024 },
+  });
+  for (const r of [renderRunning, idle]) {
+    assert.equal(r.status, 0, r.out);
+    const keys = r.targets.filter((t) => t[0].startsWith("image:aidenhq/computer-browser")).map((t) => t[0]);
+    assert.deepEqual(keys, ["image:aidenhq/computer-browser:h1"], `one target, under the configured name:\n${r.targets.map((t) => t.join("\t")).join("\n")}`);
   }
 });
 
