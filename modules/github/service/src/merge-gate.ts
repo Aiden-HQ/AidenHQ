@@ -130,11 +130,18 @@ function baseCi(rollup: Json) {
   // stays a result that never judged the commit, as before.
   const named = latestChecks(namedChecks(rollup));
   // A cancelled run never judged the commit, so a cancelled check (the aggregate gate among them) is no verdict: it is neither
-  // red nor pending. But nothing else is excused — a gate or a job that completed red at the tip is red beside any cancellation,
-  // since an unrelated cancelled run must never mask a failure. A whole run whose jobs were cancelled is superseded by the next
-  // run's own checks of the same names, which is what newest-run resolution reads here.
-  if (named.some((c) => !c.ok && !c.pending && c.status !== "CANCELLED")) return "red";
-  return named.some((c) => c.pending) ? "pending" : "green";
+  // red nor pending.
+  const red = named.filter((c) => !c.ok && !c.pending && c.status !== "CANCELLED");
+  const pending = named.some((c) => c.pending);
+  // A job that completed red is red, whatever else was cancelled: an unrelated cancellation never masks a failure, and a check
+  // still running does not excuse one either.
+  if (red.some((c) => c.name !== GATE_CHECK)) return "red";
+  // The aggregate gate's own red is the one that can be a cancelled run's leftover: `ci-required` fails when a job it covers is
+  // cancelled, and the re-run that replaced it reports its own checks first. While anything on the tip is still running, that
+  // newer run is judging the commit, so the tip is pending rather than red — a base whose re-run comes back green reads green
+  // instead of holding every merge on a failure that was only the cancellation.
+  if (pending) return "pending";
+  return red.length ? "red" : "green";
 }
 
 /** The merge method: squash, then merge commit, then rebase, as the repository allows. */

@@ -1349,6 +1349,15 @@ test("a red default branch takes no merge on top, except the PR that already hol
     "an unrelated cancellation does not mask a failed base gate");
   assert.deepEqual(decide(data(rollup("SUCCESS", { runs: [{ name: "build", state: "CANCELLED", rank: 1 }, { name: "lint", state: "FAILURE", rank: 2 }] }), 2), HEAD), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" },
     "a failing job is red even beside a cancelled one");
+  // `ci-required` fails when a job it covers is cancelled, and the re-run that replaced it reports its own checks before the
+  // aggregate: while the replacement is in flight the tip is pending, not red, so a base whose re-run comes back green reads
+  // green instead of holding every merge on the cancellation.
+  assert.equal(decide(data(rollup("SUCCESS", { runs: [{ name: "packages (1)", state: "CANCELLED", rank: 100 }, { name: "ci-required", state: "FAILURE", rank: 102 }, { name: "packages (1)", state: "SUCCESS", rank: 200 }, { name: "modules (1)", state: "PENDING", rank: 201 }] }), 2), HEAD).do, "wait",
+    "a superseded gate failure beside the replacement run still going is pending, never red");
+  assert.deepEqual(decide(data(rollup("SUCCESS", { runs: [{ name: "packages (1)", state: "CANCELLED", rank: 100 }, { name: "ci-required", state: "FAILURE", rank: 102 }, { name: "packages (1)", state: "SUCCESS", rank: 200 }, { name: "ci-required", state: "SUCCESS", rank: 202 }] }), 2), HEAD), { do: "merge" },
+    "and the same base merges once the re-run's gate is green");
+  assert.deepEqual(decide(data(rollup("SUCCESS", { runs: [{ name: "build", state: "CANCELLED", rank: 100 }, { name: "ci-required", state: "FAILURE", rank: 102 }, { name: "build", state: "SUCCESS", rank: 200 }] }), 2), HEAD), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" },
+    "a gate that failed with nothing left running is still red, not excused by the cancellation");
   // A truncated base list proves nothing about the tip: a red past the first page must never read as a green base.
   assert.equal(decide(data(rollup("SUCCESS", { more: true }), 2), HEAD).do, "wait", "a base whose check list GitHub truncated waits, never merges on a partial read");
 });
