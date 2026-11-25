@@ -60,7 +60,11 @@ RUN cd /opt/gitleaks \
 RUN npm i -g pnpm@10.34.9 typescript@5.9.3 && npm cache clean --force
 # The `aidenhq` commands of a kernel job (bin/aidenhq: calls to the kernel with the job's own token), and the job's wrappers
 # first on its PATH (/opt/aidenhq/bin): a read-only gh, a capped sleep and aidenhq-browse (screenshots of the app it builds).
-COPY --chmod=755 bin/aidenhq /usr/local/bin/aidenhq
+# The CLI imports the box's one MCP client beside its folder (../lib/tools.ts), which code mode's tool files import too; on PATH
+# through the link (Node resolves it to /opt/aidenhq/bin/aidenhq, so the import finds /opt/aidenhq/lib).
+COPY lib/tools.ts /opt/aidenhq/lib/tools.ts
+COPY --chmod=755 bin/aidenhq /opt/aidenhq/bin/aidenhq
+RUN ln -s /opt/aidenhq/bin/aidenhq /usr/local/bin/aidenhq
 COPY --chmod=755 bin/sleep bin/aidenhq-browse /opt/aidenhq/bin/
 # An Engineer's review of its own change before it publishes: the code-review check's engine and brief (synced from modules/code-review/recipe by
 # scripts/sync-shared.ts), run as `node /opt/aidenhq/code-review/self-review.ts <base-branch> <branch>` (skill publish).

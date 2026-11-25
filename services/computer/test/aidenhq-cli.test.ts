@@ -34,6 +34,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
       }
       if (req.url === "/v1/jobtools/review") return json(200, { decision: "reject", text: "The AI reviewer (~acme/model-a) would reject it. Nothing was filed.", reason: "say which login loop" });
       if (req.url === "/v1/jobtools/reset") return json(200, { text: "The next turn starts with a fresh session." });
+      if (req.url === "/c/paperclip_tasks/mcp" && body.method === "notifications/initialized") return res.writeHead(202).end();
       if (req.url === "/c/paperclip_tasks/mcp" && body.method === "initialize") return json(200, { jsonrpc: "2.0", id: 1, result: {} }, { "mcp-session-id": "s1" });
       if (req.url === "/c/paperclip_tasks/mcp") return res.writeHead(200, { "content-type": "text/event-stream" }).end(`data: ${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: `${body.params.name} ${JSON.stringify(body.params.arguments)}` }] } })}\n\n`);
       json(404, { error: { message: "no such route" } });
