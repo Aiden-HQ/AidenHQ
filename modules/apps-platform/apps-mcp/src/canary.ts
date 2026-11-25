@@ -104,12 +104,28 @@ const canaryTree = (text, refs) => {
   }
   return nodes;
 };
-// The heading that names the container's own section, if any: the last heading that is a direct child of the container and
-// sits above the field. A heading in a nested sibling (a "Tips" sidebar) or outside the dialog/form (a page-level heading)
-// never names its fields, and a nearer "Account" heading wins over an earlier "Feedback" one.
+// The heading that names the container's own section, if any: the last heading above the field that sits on the container's
+// own spine. A heading wrapped in a plain header/div (a generic/group/banner with no wording of its own) still counts as the
+// container's heading; a heading under a named or interactive sibling subtree (a "Tips" sidebar) does not, and outside the
+// dialog/form (a page-level heading) never names its fields. A nearer "Account" heading wins over an earlier "Feedback" one.
+const WRAPPER = /^(generic|group|banner|header|none|presentation)$/i;
+const onSpine = (nodes, container, n) => {
+  const siblings = (i) => nodes.filter((x) => x.parent === i);
+  let p = n.parent;
+  while (p >= 0 && p !== container.i) {
+    // A header block is transparent: it is the container's first child (a <header>, or a header div, holding the title and
+    // its description). So is a wrapper around nothing but the heading. A later, many-part subtree is a section of its own
+    // ("Tips" with advice under it), and its heading names that section, not the dialog or form.
+    const first = siblings(container.i)[0];
+    if (!WRAPPER.test(String(nodes[p].role || "")) || named(nodes[p])) return false;
+    if (first !== nodes[p] && siblings(p).length !== 1) return false;
+    p = nodes[p].parent;
+  }
+  return p === container.i;
+};
 const headingOver = (nodes, container, field) => {
-  const direct = nodes.filter((n) => n.parent === container.i && n.i < field.i && /^heading$/i.test(n.role));
-  return direct.length > 0 && feedbackNamed(direct[direct.length - 1]);
+  const above = nodes.filter((n) => n.i < field.i && /^heading$/i.test(n.role) && onSpine(nodes, container, n));
+  return above.length > 0 && feedbackNamed(above[above.length - 1]);
 };
 const inFeedback = (nodes, n) => n.ancestors.some((c) => CONTAINER.test(c.role) && (feedbackNamed(c) || headingOver(nodes, c, n)));
 // The feedback field. A textbox whose own label is feedback wording wins, so a dialog asking for a contact email before the
@@ -131,19 +147,38 @@ const canaryEntries = (nodes) => [
   ...nodes.filter((n) => /^link$/i.test(n.role) && feedbackNamed(n) && !LINK_ACTION.test(named(n))),
   ...nodes.filter((n) => /^button$/i.test(n.role) && feedbackNamed(n) && !BUTTON_ACTION.test(named(n))),
 ].filter((n) => n.ref);
-// The field, opening the page's own feedback control when the form isn't on the page yet. Candidates are tried in turn (a
-// history link that leads nowhere must not hide the button that opens the dialog), each at most once, and only a field with
-// feedback context ends the walk: another page's lone textbox stops it rather than being filled.
-const canaryFindField = async (snap, click) => {
+// The field, opening the page's own feedback control when the form isn't on the page yet. Candidates are tried in turn, each
+// at most once, and a control from the page the walk started on is retried if a navigation (a "Feedback history" link) led to
+// a page without it, so a history link never hides the button that opens the dialog. Only a field with feedback context ends
+// the walk: another page's lone textbox stops it rather than being filled. When the page has moved, the walk goes back first.
+const canaryFindField = async (snap, click, back) => {
   let nodes = (await snap()).tree, field = canaryField(nodes);
+  // A control's identity is its role and wording, not its ref: refs are reassigned on every snapshot, so a ref taken before
+  // a navigation is meaningless on the page the walk comes back to. Names are what the walk selects on anyway.
+  const key = (n) => n.role + ":" + n.name;
+  // The controls on the page the walk started on: a navigation away from it must be able to come back and try the button a
+  // history link hid.
+  const start = new Set(canaryEntries(nodes).map(key));
   const tried = new Set();
-  for (let i = 0; i < 5 && !field; i++) {
-    const entry = canaryEntries(nodes).find((n) => !tried.has(n.role + ":" + n.name + ":" + n.ref));
+  for (let i = 0; i < 6 && !field; i++) {
+    let entry = canaryEntries(nodes).find((n) => !tried.has(key(n)));
+    if (!entry && back) {
+      // The click moved to a page with no feedback control left (a "Feedback history" link): go back to where the walk
+      // started and use a control from there that has not been tried yet.
+      await back();
+      nodes = (await snap()).tree;
+      field = canaryField(nodes);
+      if (field) break;
+      entry = canaryEntries(nodes).find((n) => !tried.has(key(n)) && start.has(key(n)));
+    }
     if (!entry) break;
-    tried.add(entry.role + ":" + entry.name + ":" + entry.ref);
+    const before = JSON.stringify(canaryEntries(nodes).map(key));
+    tried.add(key(entry));
     await click(entry);
     nodes = (await snap()).tree;
     field = canaryField(nodes);
+    // A click that changed nothing (the same controls, no field) is not retried; the loop moves to the next candidate.
+    if (!field && JSON.stringify(canaryEntries(nodes).map(key)) === before) continue;
   }
   return field;
 };
@@ -154,7 +189,7 @@ const canarySubmit = (controls, inForm) => {
   // A real submit control (a submit button or input) sends its form. A dialog that is not a <form> has no such control: there
   // only a button that names the feedback send ("Send feedback", "Submit feedback") counts, never a generic "Share page" or
   // "Post update" that happens to sit in the same dialog. Being in the dialog proves nothing about sending the filled field.
-  const explicit = (controls || []).filter((c) => c && (/^(submit|image)$/i.test(String(c.type || "")) || (!inForm && c.tag === "BUTTON")))
+  const explicit = (controls || []).filter((c) => c && !c.nested && (/^(submit|image)$/i.test(String(c.type || "")) || (!inForm && c.tag === "BUTTON")))
     .map((c) => ({ ...c, word: String(c.text || "") }));
   const sends = explicit.filter((c) => inForm
     ? /send|submit|share|post|publish/i.test(c.word) && !/draft|preview|discard|cancel/i.test(c.word)
@@ -234,6 +269,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const field = await canaryFindField(snap, async (entry) => {
       await within(ab("click", "@" + entry.ref), 8000, null);
       await new Promise((ok) => setTimeout(ok, 1200));
+    }, async () => {
+      // A feedback link that navigated away (a history page) leaves no way in there: go back and try the page's own button.
+      await within(ab("back"), 8000, null);
+      await new Promise((ok) => setTimeout(ok, 1200));
     });
     if (!field) return out({ error: "no feedback field on the page", finalUrl: scrub(landed), pageTitle: title });
     const box = field.ref;
@@ -244,12 +283,16 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // not a <form> (a div role=dialog) has no form to own the control, so there the field's own dialog is the scope. The
     // browser lists the controls; the send rule (canarySubmit) runs here, in Node, so a dialog's "Send feedback" is judged by
     // the same code the tests exercise.
-    const SCOPE = "const a = document.activeElement, f = a && a.form, scope = f || (a && a.closest ? a.closest('[role=dialog],[role=alertdialog],dialog') : null);" +
+    const SEL = "'[role=dialog],[role=alertdialog],dialog'";
+    const SCOPE = "const a = document.activeElement, f = a && a.form, dialogOf = (b) => b.closest ? b.closest(" + SEL + ") : null, dlg = dialogOf(a), scope = f || dlg;" +
       "const inScope = (b) => f ? b.form === f : !!scope && scope.contains(b) && !b.form;" +
+      // Where the field has no form, the scope is its dialog: a control inside a dialog nested in that dialog belongs to the
+      // other dialog, so it is not this form's submit (a confirmation dialog's "Send feedback" must not be clicked).
+      "const own = (b) => f ? true : dialogOf(b) === dlg;" +
       "const isSubmit = (b) => b.tagName === 'INPUT' ? /^(submit|image)$/i.test(b.type) : ((b.getAttribute('type') || 'submit').toLowerCase() === 'submit');";
     const controls = await within(ab("eval", "(() => {" + SCOPE +
       "if (!f && !scope) return 'null';" +
-      "return JSON.stringify({ form: !!f, list: [...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((b) => (f ? isSubmit(b) : b.tagName === 'BUTTON' || isSubmit(b)) && inScope(b)).map((b) => ({ tag: b.tagName, type: b.tagName === 'INPUT' ? b.type.toLowerCase() : ((b.getAttribute('type') || 'submit').toLowerCase()), text: (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '' })) });" +
+      "return JSON.stringify({ form: !!f, list: [...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((b) => (f ? isSubmit(b) : b.tagName === 'BUTTON' || isSubmit(b)) && inScope(b)).map((b) => ({ tag: b.tagName, type: b.tagName === 'INPUT' ? b.type.toLowerCase() : ((b.getAttribute('type') || 'submit').toLowerCase()), text: (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '', nested: !own(b) })) });" +
       "})()"), 4000, {});
     const scopeOf = JSON.parse(String(controls.result ?? "null"));
     const submit = canarySubmit(scopeOf && scopeOf.list, scopeOf && scopeOf.form);
@@ -259,7 +302,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // one that was chosen, and a control that stopped being a submit is not clicked.
     const marked = await within(ab("eval", "(() => {" + SCOPE +
       "if (!f && !scope) return '';" +
-      "const isSend = (b) => (f ? isSubmit(b) : !!scope && !b.form);" +
+      "const isSend = (b) => (f ? isSubmit(b) : !!scope && !b.form) && own(b);" +
       "const word = " + JSON.stringify(submit.word.trim()) + ", tag = " + JSON.stringify(submit.tag) + ", type = " + JSON.stringify(submit.type) + ";" +
       "const same = [...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((b) => isSend(b) && inScope(b) && b.tagName === tag && (b.tagName === 'INPUT' ? b.type.toLowerCase() : ((b.getAttribute('type') || 'submit').toLowerCase())) === type && ((b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '').trim() === word);" +
       "if (same.length !== 1) return '';" +
