@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accessFor } from "./fake-access.js";
-import { NoticeArgsSchema, SCALES, anchors, modelName, plain, redact, renderFinding, renderNotice, renderReview, renderStatus, rightLines, type Review } from "../src/review-render.js";
+import { ACK_HEAD, NoticeArgsSchema, SCALES, anchors, modelName, plain, redact, renderFinding, renderNotice, renderReview, renderStatus, rightLines, type Review } from "../src/review-render.js";
 
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
@@ -184,7 +184,7 @@ describe("the refused-post notice", () => {
     const m = { engine: "codex" as const, model: "~openai/gpt-6.2-sol", effort: "medium" as const };
     expect(renderNotice({ ...base, phase: "queued", ...m, ...std })).toContain("**Review queued** · GPT 6.2 Sol (medium)\nRisk: \u{1F535} **Standard** \u00B7 293 lines in 4 files, by a member");
     expect(renderNotice({ ...base, phase: "running", ...m })).toContain("**Review running** · GPT 6.2 Sol (medium)");
-    expect(renderNotice({ ...base, phase: "done", ...m, important: 0, nit: 2 })).toContain("**Review passed** \u00B7 no important findings \u00B7 2 nits");
+    expect(renderNotice({ ...base, phase: "done", ...m, important: 0, nit: 2 })).toContain("**No important findings** \u00B7 2 nits");
     const done = renderNotice({ ...base, phase: "done", ...m, important: 2, review: "https://github.com/acme/payments/pull/12#pullrequestreview-9" });
     expect(done).toContain("**2 important findings** to fix \u00B7 [see the review](https://github.com/acme/payments/pull/12#pullrequestreview-9)");
     expect(renderNotice({ ...base, phase: "skipped", reason: "draft" })).toContain("**Review skipped** \u00B7 this is a draft pull request");
@@ -197,6 +197,10 @@ describe("the refused-post notice", () => {
     expect(evil).not.toMatch(/<!-- aidenhq-review-ack -->.*<!-- aidenhq-review-ack -->/s);
     expect(evil).not.toContain("](https://evil");
     expect(evil).toContain("a\\_b\\_c");
+    expect(renderNotice({ ...base, phase: "classified", tier: "skip", tier_why: "into http://x.test www.x.test" })).not.toMatch(/https?:\/\/|www\.x/);
+    for (const phase of ["queued", "running", "done", "skipped", "failed"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase }))).toBe(true);
+    for (const answer of ["help", "always", "focus", "focus_cleared", "no_review"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase: "answered", answer }))).toBe(true);
+    expect(ACK_HEAD.test("<!-- aidenhq-review-ack -->\n**Release notes**\nmine")).toBe(false);
     expect(NoticeArgsSchema.safeParse({ ...base, phase: "classified", tier: "skip", tier_why: "a `@x`\nmention" }).success).toBe(false);
   });
   it("names the post's own fate, never the approval's, when a post fails in the executor", () => {

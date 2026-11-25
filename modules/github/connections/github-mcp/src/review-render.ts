@@ -176,9 +176,12 @@ export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run:
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
-/** A notice's generated header, exactly as `renderNotice` writes it at the start of a comment: the marker, then the bold status
- * on the next line. A comment that merely quotes a notice carries the marker further down, so it never matches. */
-export const ACK_HEAD = new RegExp(`^\\s*${ACK_MARK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r?\\n\\*\\*`);
+/** The words a notice's bold status line starts with, in every phase: fixed, so only a comment `renderNotice` wrote matches. */
+const STATUS_STARTS = ["Review ", "No review needed", "No important findings", "\\d+ important findings? ", "Commands", ...Object.values(ANSWERS).filter((a) => a !== ANSWERS.help).map((a) => (a[0]!.toUpperCase() + a.slice(1)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))];
+/** A notice's generated header, exactly as `renderNotice` writes it at the start of a comment: the marker, then a bold status (one of
+ * the fixed starts above) on the next line. A comment that merely quotes a notice carries the marker further down, so it never
+ * matches, and an ordinary comment that happens to open with the marker and some bold text doesn't either. */
+export const ACK_HEAD = new RegExp(`^\\s*${ACK_MARK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r?\\n\\*\\*(?:${STATUS_STARTS.join("|")})`);
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
 const ORDER = ["important", "nit", "pre_existing"] as const;
@@ -380,15 +383,15 @@ export function renderNotice(n: NoticeArgs): string {
     case "classified": status = n.tier === "skip" ? "**No review needed** for this risk" : "**Review not started yet**"; break;
     case "queued": status = `**Review queued**${who ? ` · ${who}` : ""}`; break;
     case "running": status = `**Review running**${who ? ` · ${who}` : ""}`; break;
-    case "done": status = `${important ? `**${plural(important, "important finding")}** to fix` : "**Review passed** · no important findings"}${minor ? ` · ${minor}` : ""}${link}`; break;
+    case "done": status = `${important ? `**${plural(important, "important finding")}** to fix` : "**No important findings**"}${minor ? ` · ${minor}` : ""}${link}`; break;
     case "skipped": status = `**Review skipped** · ${NOTICE_REASONS[(n.reason ?? "unchanged") as NoticeReason]}`; break;
     case "answered": status = n.answer === "help" || !n.answer ? `**Commands** (a comment that starts with one): ${COMMANDS}` : `**${ANSWERS[n.answer][0]!.toUpperCase()}${ANSWERS[n.answer].slice(1)}**`; help = !(n.answer === "help" || !n.answer); break;
     case "failed": status = n.reason && n.reason in REFUSED_REASONS
       ? `**Review finished but was not posted** · ${REFUSED_REASONS[n.reason as keyof typeof REFUSED_REASONS]} · \`aiden review\` runs it again`
       : `**Review failed** · comment \`aiden review\` to try again`; break;
   }
-  // The tier's why comes from the PR's own paths and counts: inert text, with Markdown's own marks escaped.
-  const risk = n.tier ? `\nRisk: ${TIER[n.tier][0]} **${TIER[n.tier][1]}**${n.tier_why ? ` · ${plain(n.tier_why, 500).replace(/[\\*_~[\]]/g, "\\$&")}` : ""}` : "";
+  // The tier's why comes from the PR's own paths and counts: inert text: Markdown's marks escaped and no URL left to autolink.
+  const risk = n.tier ? `\nRisk: ${TIER[n.tier][0]} **${TIER[n.tier][1]}**${n.tier_why ? ` · ${plain(n.tier_why, 500).replace(/[\\*_~[\]]/g, "\\$&").replace(/:\/\//g, ":\u200B//").replace(/\bwww\./gi, "www\u200B.")}` : ""}` : "";
   const footer = [short(n.head), ...(n.run ? [`run ${n.run}`] : []), ...(help ? ["`aiden review help` for commands"] : [])].join(" · ");
   return `${ACK_MARK}\n${status}${risk}\n\n<sub>${footer}</sub>`;
 }
