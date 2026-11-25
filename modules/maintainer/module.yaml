@@ -7,28 +7,23 @@ requires:
 contributes:
   # The Fleet page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules").
   board.pages:
-    - { id: maintainer, title: Maintainer, icon: shield, order: 20, connection: maintainer, view: "ui://maintainer/page", tools: [ maintainer_config, maintainer_configure ], settings: [ maintainer_repos, external_triage ] }
+    - { id: maintainer, title: Maintainer, icon: shield, order: 20, connection: maintainer, view: "ui://maintainer/page", tools: [ maintainer_config, maintainer_configure ], settings: [ maintainer_repos ] }
 roles:
   # product-issues (the chief of staff's): the Fleet Steward's product-bug reports, filed upstream as the owner.
   requests: [ product-issues, ship-admin?, kernel.tasks, kernel.facts ] # kernel.tasks: the issue watcher files a task per labelled or new issue; kernel.facts: its issue.triaged fact
   declares:
     - { id: maintainer, description: "Issues as the owner, labelled as AidenHQ, on the repos in settings.maintainer_repos only (github-mcp github_issue_*, github_label_events, github_pr_list, github_repo_* tools)." }
+# The change feed's issue events on the repos maintainer_repos lists (service/src/watcher.ts; kernel events.ts log, read with the
+# module's own committed cursor). The declaration is the grant: the log answers only these kinds and repos.
+subscribes:
+  github:
+    kinds: [ issues.opened, issues.labeled, issues.unlabeled, issues.closed, issues.reopened, github.resync ]
+    resources: { setting: maintainer_repos, path: "[].repo" }
 # Flow (docs/design/flow.md): an issue is triaged when its fix label lands; the stage runs from the issue's creation.
 facts:
   issue.triaged: { subject: issue }
 stages:
   - { name: triage, label: Triage, from: issue.triaged, to: issue.triaged, start: issue_created_at }
-settings:
-  # Whether unlabelled issues on the maintained repos are triaged: each new one within a watcher poll of its filing (a
-  # task per issue), and the backlog by the daily run (the budget caps it). Off by default (a model run per stranger's issue
-  # is spend before the owner asks for it): the owner turns it on with `external_triage: true` in instance.yaml settings.
-  external_triage: { default: false }
-  # The most invalid new-issue triage runs a day the watcher starts for one issue author: past it an
-  # issue is left to the daily triage run, so a flood of reports can't buy a run each. An issue that proves valid (the repo's
-  # fix label or feature-request) doesn't count, so a tester's real reports are all triaged.
-  triage_invalid_per_author_day: { default: 5 }
-  # Minutes between the watcher's checks for a newly labelled issue on any maintained repo (MAINTAINER_POLL_MINUTES).
-  maintainer_poll_minutes: { default: 5 }
 agents:
   maintainer:
     skills: [ maintainer.report-product-bug, maintainer.triage, maintainer.resolved-check, tasks.delegate-work ]
@@ -64,10 +59,11 @@ routines:
     title: "Maintainer: external triage"
     agent: maintainer
     description: |
-      Today is {{date}}. On every maintained repo, pick up the open labelled issues that have no open labelled-issue task,
-      then, when external_triage is ${settings.external_triage}, the open issues that carry no fix label yet, as "Each run — external triage" in your instructions says
-      (with external_triage false, only the labelled issues): judge each by the skill `triage`, check the open ones by the skill `resolved-check`, one verdict per issue, each write
-      its own tool call. Close this task with one verdict line per issue you considered.
+      Today is {{date}}. Work each maintained repo by its own settings (the `settings` of `github_issue_list`), as "Each run — the daily run"
+      in your instructions says: the open labelled issues that have no open labelled-issue task; where `triage` is `new+backlog`, the open issues
+      that carry no fix label yet, judged by the skill `triage`; the open ones checked by the skill `resolved-check`; where `needs_info_close_days`
+      or `stale_issues` is set, the issues waiting on their reporter or gone quiet. One verdict per issue, each write its own tool call.
+      Close this task with one verdict line per issue you considered.
     concurrency: skip_if_active
     schedules:
       - { cron: "30 7 * * *", timezone: "${settings.timezone}", label: "daily" }
@@ -80,7 +76,7 @@ routines:
     concurrency: skip_if_active
     schedules:
       - { cron: "0 8 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
-# The Fleet page's connection: the owner's reads and proposed changes to maintainer_repos (each repo's duties) and external_triage
+# The Fleet page's connection: the owner's reads and proposed changes to maintainer_repos (each repo's duties and rules)
 # (service/src/config-tool.ts). No agent holds it; the board's save files the change.
 connections:
   maintainer:
@@ -91,9 +87,10 @@ connections:
     tools:
       read: [ maintainer_config ]
       write: [ maintainer_configure ]
-# The issue watcher (service/src/watcher.ts): every maintainer_poll_minutes it asks github-mcp for the issues labelled (and
-# the new unlabelled ones) on each maintained repo and files one task per issue for the Maintainer (kernel.tasks: fixed text
-# naming the repo and number, never the issue's own words; filing the same issue twice is one task). github-mcp knows the
+# The issue watcher (service/src/watcher.ts): every few seconds it reads the kernel's log of the github change feed's issue events on
+# the maintained repos (`subscribes:`) and files one task per issue for the Maintainer (kernel.tasks: fixed text naming the repo
+# and number, never the issue's own words; filing the same issue twice is one task). A label's trust is github-mcp's one read of
+# that issue, and at a first start, a feed gap or a resync its bootstrap read of every open labelled issue. github-mcp knows the
 # watcher by its module token (kernel whoami), so no secret is shared with the github module.
 services:
   data: true
@@ -112,10 +109,6 @@ services:
         MAINTAINER_REPOS: "${settings.maintainer_repos}"
         MAINTAINER_SHIP: "${settings.ship_enabled}" # set when Ship is on: it owns a listed repo's removal (its page clears all three entries)
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
-        MAINTAINER_POLL_MINUTES: "${settings.maintainer_poll_minutes}"
-        # Each new unlabelled issue's triage task (off with external_triage false).
-        MAINTAINER_EXTERNAL_TRIAGE: "${settings.external_triage}"
-        MAINTAINER_TRIAGE_INVALID_PER_AUTHOR_DAY: "${settings.triage_invalid_per_author_day}"
 generated_secrets:
   - maintainer_token
   - maintainer_service_key

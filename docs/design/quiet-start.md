@@ -29,7 +29,7 @@ tightening (a lower limit, pausing again) tiers as usual.
 
 **Services that spend on their own follow it too.** The Fleet Steward's detector keeps checking, but files its check task only
 once the owner turns the Steward on (resuming its "Fleet Ops: daily digest" routine; its `stewardOn`). The Maintainer's
-`external_triage` defaults to false: no task per stranger's issue until `external_triage: true`.
+triage defaults to off (preset `quiet`): no task per stranger's issue until a repo's `triage` is `new` or `new+backlog`.
 
 **No catch-up burst on resume.** Paperclip catches a missed tick up (one run per tick, at most 25). Resuming a routine
 (the board's Resume or `fleet_control`, services/board/src/fleet.ts `setRoutinePaused`) re-saves its schedule triggers first, which moves each next run to the next

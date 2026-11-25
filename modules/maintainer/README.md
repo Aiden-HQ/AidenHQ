@@ -8,15 +8,15 @@ contributor PRs.
 
 ## Connect
 
-Needs the `github` module with the owner signed in to GitHub, and the owner's account able to reach each listed repo. The Fleet page (Maintainer) lists the repos with their duties (issues, features, dependabot, contributor PRs) and the `external_triage` switch; it is a module view the `maintainer` connection serves (`maintainer_config`, `maintainer_configure`, the owner's own calls, never an agent's).
+Needs the `github` module with the owner signed in to GitHub, and the owner's account able to reach each listed repo. The Fleet page (Maintainer) shows each repo with a preset (quiet, triage, full) and every setting in a drawer: fix label and trusted roles, triage (off, new, new+backlog) with its per-author cap, labels and closes, days waiting on a reporter, quiet issues, the resolved-check limit, Dependabot and contributor PRs; it is a module view the `maintainer` connection serves (`maintainer_config`, `maintainer_configure`, the owner's own calls, never an agent's).
 
 ## What agents get
 
 The `maintainer` agent holds the roles `maintainer` and `product-issues` and uses `github` tools to read, label, comment
-and set state on issues, list PRs and read repo files. A watcher service looks for newly labelled issues every
-`maintainer_poll_minutes` (default 5).
+and set state on issues, list PRs and read repo files. A watcher service reads the github change feed's issue events from the kernel's log and files a task for each newly
+labelled issue within about a minute of its label.
 
-Settings: `external_triage`, `triage_invalid_per_author_day` (5, invalid issues only: a fix-labelled or feature-request issue doesn't count) bounds new-issue triage runs a day (per repo they are unlimited).
+Every setting is per repo, a field of its `maintainer_repos` entry (`preset`, `triage`, `triage_cap_per_author_day`, `triage_labels`, `close`, `needs_info_close_days`, `stale_issues`, `resolved_check`, beside `label`, `trusted`, `issues`, `features`, `dependabot`, `contributor_prs`, `stale_days`); the agent reads each repo's through `github_issue_list`. The cap bounds invalid new-issue triage runs a day per author (a fix-labelled or feature-request issue doesn't count).
 
 ## New installs
 

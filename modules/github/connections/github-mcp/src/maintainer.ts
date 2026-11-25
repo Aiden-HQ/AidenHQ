@@ -18,9 +18,6 @@ const PERMISSION_TTL_MS = 60_000;
 const TREE_CAP = 5000;
 const TREE_DEPTH = 20;
 const FILE_CAP = 256 * 1024;
-// How many new unlabelled issues one look hands the board's watcher per repo (each is one triage run): the rest come on the
-// next look, so a burst of reports is spread out rather than started at once.
-const TRIAGE_BATCH = 10;
 // The open PRs one pr_list reads in full (each human PR costs a handful of reads): the rest wait for a later look.
 const PR_CAP = 100;
 
@@ -304,7 +301,8 @@ export class Maintainer {
       }
       if (pageIssues.length < 100) break;
     }
-    return { repo: r.repo, label: asked, trusted_roles: r.trusted, features: r.features, issues };
+    const { owner: _o, name: _n, repo: _r, ...settings } = r;
+    return { repo: r.repo, label: asked, trusted_roles: r.trusted, settings, issues };
   }
 
   /** Every page of a GET list (capped), as the owner. */
@@ -843,41 +841,34 @@ export class Maintainer {
   }
 
   /**
-   * The board watcher's read: every listed repo, each from its own cursor (`cursors[repo]`). One repo's failure is its
-   * `error` and never holds up another's. With `triage` (the triage cursors, when the board triages each new issue), each
-   * repo also carries its new unlabelled issues (`untriaged`, `triage_cursor`), or `triage_error` without failing the rest.
+   * The Maintainer's bootstrap read (its watcher's start, a feed gap or resync; `only` names the repos to read, else every listed one): per listed repo, the open issues carrying its
+   * fix label (`issues` duty on), and, with `features` on, those carrying agent-build (`builds`) and the trusted
+   * feature-request ones (`featured`, which the per-author triage cap leaves uncounted). One repo's failure is its `error` and
+   * holds up no other. A label-event read that failed is also an `error`: the bootstrap is retried rather than commit over an
+   * issue it never read. Read-only, no model call.
    */
-  async issuesSince(cursors: Record<string, string> = {}, triage?: Record<string, string>, builds: Record<string, string> = {}) {
+  async bootstrap(only?: string[]) {
     if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
-    type Triage = Partial<Awaited<ReturnType<Maintainer["untriaged"]>>> & { triage_error?: string };
-    // A repo with `features` on also brings its issues labelled agent-build (`builds`, from its own cursor `build_cursor`).
-    type Build = { builds?: Awaited<ReturnType<Maintainer["repoSince"]>>["issues"]; build_cursor?: string | null; build_error?: string; featured?: number[] };
-    type Row = ({ repo: string; error: string } | ({ repo: string } & Awaited<ReturnType<Maintainer["repoSince"]>>)) & Triage & Build;
+    type Read = Awaited<ReturnType<Maintainer["repoSince"]>>;
+    type Row = { repo: string; issues?: Read["issues"]; builds?: Read["issues"]; featured?: number[]; incomplete?: string; error?: string };
     const out: Row[] = [];
-    const at = (m: Record<string, string>, repo: string) => Object.entries(m).find(([k]) => same(k, repo))?.[1];
-    for (const r of this.repos) {
-      let row: Row;
-      try {
-        row = { repo: r.repo, ...(r.issues ? await this.repoSince(r.repo, at(cursors, r.repo)) : { issues: [], skipped: [], cursor: at(cursors, r.repo) ?? null }) };
-      } catch (err) {
-        row = { repo: r.repo, error: (err as Error).message.slice(0, 300) };
-      }
+    for (const r of this.repos.filter((x) => !only || only.some((o) => same(o, x.repo)))) {
+      const row: Row = { repo: r.repo };
+      // What was read is always handed over; an issue whose label events failed to read marks the repo `incomplete`, so it is read again.
+      const part = async (label: string | undefined) => {
+        const read = await this.repoSince(r.repo, label);
+        const unread = read.skipped.filter((s) => s.unread);
+        if (unread.length) row.incomplete = `${row.incomplete ? `${row.incomplete}; ` : ""}${label ?? r.label}: ${unread.length} issue(s) whose label events couldn't be read (${unread[0]!.reason})`.slice(0, 300);
+        return read.issues;
+      };
+      // Each list is its own read: one that fails marks the repo `incomplete` and hands over the others.
+      const tolerate = async (fn: () => Promise<void>) => {
+        try { await fn(); } catch (err) { row.incomplete = `${row.incomplete ? `${row.incomplete}; ` : ""}${(err as Error).message}`.slice(0, 300); }
+      };
+      if (r.issues) await tolerate(async () => { row.issues = await part(undefined); });
       if (r.features) {
-        try {
-          const b = await this.repoSince(r.repo, at(builds, r.repo), BUILD_LABEL);
-          Object.assign(row, { builds: b.issues, build_cursor: b.cursor });
-        } catch (err) {
-          row.build_error = (err as Error).message.slice(0, 300);
-        }
-        // Unread, the day's feature requests count as invalid until the next tick reads them.
-        row.featured = await this.recentFeatureRequests(r.repo).catch(() => undefined);
-      }
-      if (triage && (r.issues || r.features)) {
-        try {
-          Object.assign(row, await this.untriaged(r.repo, at(triage, r.repo)));
-        } catch (err) {
-          row.triage_error = (err as Error).message.slice(0, 300);
-        }
+        await tolerate(async () => { row.builds = await part(BUILD_LABEL); });
+        await tolerate(async () => { row.featured = (await part(FEATURE_LABEL)).map((i) => i.number); });
       }
       out.push(row);
     }
@@ -885,65 +876,40 @@ export class Maintainer {
   }
 
   /**
-   * The numbers of the issues labelled feature-request (by a trusted labeler) in the last day, open or closed: the watcher's valid reports that
-   * its per-author triage cap leaves uncounted. Counted only when the label's latest event passes the same trust check as the
-   * fix label (a collaborator with a trusted role): a template or a stranger can't self-exempt.
+   * One open issue as the Maintainer's watcher files it, after a feed event named its label: the issue as it stands now, with
+   * its label's latest event and trust verdict (the event's own actor never decides). `issue` is null when the issue is closed,
+   * a pull request, or no longer carries the label. A read that fails throws, so the watcher's batch is redelivered.
    */
-  async recentFeatureRequests(repo: string): Promise<number[]> {
+  async oneIssue(repo: string | undefined, number: number, label?: string) {
     const r = this.target(repo);
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues?state=all&labels=${FEATURE_LABEL}&since=${since}&per_page=100`);
-    if (res.status !== 200) throw new Error(`couldn't list ${r.repo}'s feature requests (GitHub said ${res.status})`);
-    const trusted: number[] = [];
-    for (const i of ((Array.isArray(res.body) ? res.body : []) as GhIssue[]).filter((i) => !i.pull_request)) {
-      const { latest } = await this.latestOrError(r, i.number, FEATURE_LABEL);
-      if (latest?.trusted) trusted.push(i.number);
+    const asked = label ?? r.label;
+    const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
+    // A deleted issue is a definite no, never a retry that would stall the watcher's feed.
+    if (res.status === 404) return { repo: r.repo, number, issue: null };
+    if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number} (GitHub said ${res.status})`);
+    const i = res.body as GhIssue & { state?: string };
+    if (i.pull_request || i.state !== "open" || !labelNames(i).some((l) => named(l, asked))) return { repo: r.repo, number, issue: null };
+    let latest: LabelEvent | undefined;
+    try {
+      latest = this.latestLabel(r, (await this.labelEvents(r.repo, number, asked)).events, asked);
+    } catch (err) {
+      // A timeline that can never be read (past the page cap) is a definite no, never a retry that would stall the watcher's feed.
+      if (err instanceof GitHubRefused) return { repo: r.repo, number, issue: null, refused: err.message.slice(0, 200) };
+      throw err;
     }
-    return trusted;
+    if (!latest) return { repo: r.repo, number, issue: null };
+    return { repo: r.repo, number, issue: { number, trusted: latest.trusted, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null, created_at: i.created_at, labels: labelNames(i) } };
   }
 
   /**
-   * One repo's open issues opened after `since` that carry no repo label (the fleet's own product bugs
-   * included): the reports the Maintainer triages one by one. Oldest first, at most TRIAGE_BATCH; `triage_cursor`
-   * is the newest one read (the last one handed over when the batch is full). With no `since` (the first look) nothing is
-   * handed over and the cursor is now: reports already open are the daily triage's, never a burst of runs. Each carries its
- * author's login, which the board counts toward its per-author triage limit.
+   * One repo's open issues carrying `label` (default the repo's), each with its trust verdict, plus the untrusted and unreadable
+   * ones in `skipped` (`unread`: the label events couldn't be read). Every page is read, and past the page cap the read refuses
+   * rather than guess.
    */
-  async untriaged(repo: string, since?: string) {
-    const r = this.target(repo);
-    if (!since) return { untriaged: [] as { number: number; created_at: string; author: string }[], triage_cursor: new Date().toISOString() };
-    if (Number.isNaN(Date.parse(since))) throw new GitHubRefused("a triage cursor must be an ISO 8601 timestamp");
-    const after = (i: GhIssue) => Date.parse(String(i.created_at)) > Date.parse(since);
-    const newer: GhIssue[] = [];
-    for (let page = 1; page <= PAGE_CAP; page++) {
-      const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues?state=open&sort=created&direction=desc&per_page=100&page=${page}`);
-      if (res.status !== 200) throw new Error(`couldn't list ${r.repo}'s new issues (GitHub said ${res.status})`);
-      const pageIssues = (Array.isArray(res.body) ? res.body : []) as GhIssue[];
-      newer.push(...pageIssues.filter(after));
-      if (pageIssues.length < 100 || !pageIssues.every(after)) break;
-    }
-    const fresh = newer
-      .filter((i) => !i.pull_request && !labelNames(i).some((l) => same(l, r.label) || l === FEATURE_LABEL || l === BUILD_LABEL))
-      .sort((a, b) => Date.parse(String(a.created_at)) - Date.parse(String(b.created_at)))
-      .slice(0, TRIAGE_BATCH)
-      .map((i) => ({ number: i.number, created_at: String(i.created_at), author: String(i.user?.login ?? "") }));
-    const newest = newer.reduce((m, i) => (Date.parse(String(i.created_at)) > Date.parse(m) ? String(i.created_at) : m), since);
-    return { untriaged: fresh, triage_cursor: fresh.length === TRIAGE_BATCH ? fresh.at(-1)!.created_at : newest };
-  }
-
-  /**
-   * One repo's open labelled issues updated after `since`, each with its trust verdict, plus the untrusted and unreadable
-   * ones in `skipped`. `cursor` is the newest updated_at seen (or `since`), so the next poll passes it back.
-   */
-  async repoSince(repo: string, since?: string, label?: string) {
+  async repoSince(repo: string, label?: string) {
     const r = this.target(repo);
     const asked = label ?? r.label;
     const { owner, name } = r;
-    // The board's first poll has no cursor yet: that means from the start, like no since at all.
-    since = since || undefined;
-    if (since !== undefined && Number.isNaN(Date.parse(since))) throw new GitHubRefused("since must be an ISO 8601 timestamp");
-    // Every page before the cursor moves: an issue past the first page would otherwise be marked done unread. Past the cap
-    // the read refuses rather than guess, so the watcher retries instead of skipping the tail.
     const listed: GhIssue[] = [];
     let page = 1;
     for (; page <= PAGE_CAP; page++) {
@@ -955,21 +921,14 @@ export class Maintainer {
     }
     if (page > PAGE_CAP) throw new GitHubRefused(`${owner}/${name} has more than ${PAGE_CAP * 100} open ${asked} issues; refusing to read only part of them`);
     const issues: { number: number; trusted: boolean; labeled_at: string; actor: string | null; created_at?: string; labels: string[] }[] = [];
-    const skipped: { number: number; reason: string }[] = [];
+    const skipped: { number: number; reason: string; unread?: true }[] = [];
     const seen = new Set<number>();
-    // Progress is recorded per issue only once its label events were read: a failed read stays behind the cursor, so the
-    // next poll retries it instead of the failure counting as done.
-    const read: string[] = [];
-    const failed: number[] = [];
-    let cursor = since ?? null;
     for (const i of listed) {
       if (i.pull_request || seen.has(i.number)) continue;
       seen.add(i.number);
-      if (since && !(Date.parse(i.updated_at) > Date.parse(since))) continue;
       try {
         const { events } = await this.labelEvents(r.repo, i.number, asked);
         const latest = this.latestLabel(r, events, asked);
-        read.push(i.updated_at);
         if (!latest) {
           skipped.push({ number: i.number, reason: `no ${asked} label event` });
           continue;
@@ -980,13 +939,10 @@ export class Maintainer {
         }
         issues.push({ number: i.number, trusted: true, labeled_at: latest.created_at, actor: latest.actor ?? latest.app_slug ?? null, created_at: i.created_at, labels: labelNames(i) });
       } catch (err) {
-        failed.push(Date.parse(i.updated_at));
-        skipped.push({ number: i.number, reason: `could not read its label events: ${(err as Error).message.slice(0, 120)}` });
+        // A refusal (a timeline past the page cap) is permanent: skipped like an untrusted label. Anything else is a failed read, retried.
+        skipped.push({ number: i.number, reason: `could not read its label events: ${(err as Error).message.slice(0, 120)}`, ...(err instanceof GitHubRefused ? {} : { unread: true as const }) });
       }
     }
-    // The newest timestamp whose read (and every earlier one's) succeeded, so nothing past the oldest failure is skipped.
-    const oldestFailure = failed.length ? Math.min(...failed) : Infinity;
-    for (const at of read) if (Date.parse(at) < oldestFailure && (cursor === null || Date.parse(at) > Date.parse(cursor))) cursor = at;
-    return { issues, skipped, cursor };
+    return { issues, skipped };
   }
 }

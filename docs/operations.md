@@ -158,26 +158,28 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   only its own pauses, and a resume starts a fresh count. Setup keeps a paused routine paused across applies. The `missed` group raises an active routine whose next schedule fire (`nextRunAt`, read with
   kernel.cp-read) is over 15 minutes overdue: Paperclip's scheduler has stopped.
 
-- The Maintainer (the maintainer module's `maintainer-watcher` service, `modules/maintainer/service/src/watcher.ts`): every
-  `maintainer_poll_minutes` (default 5; it reads `MAINTAINER_POLL_MINUTES`) the watcher asks
-  github-mcp for the issues labelled since each repo's cursor on every repo in the github setting `maintainer_repos`
-  (`[{ repo, label, trusted }]`; github-mcp holds the list, the watcher only its cursors) and files one
-  task for the Maintainer per trusted issue (`POST /v1/tasks`, source `maintainer-issue:<repo>#<number>`: the same issue is
-  never two tasks; the text names the repo and number only, never the issue's title). A label from anyone
-  else is logged once and starts nothing; one repo's failed read holds up no other. Each repo's cursor and fired issues
-  are in the watcher's data file (`data/modules/maintainer/state.json`), so a restart repeats and skips none. A fix is its merged PR, and
+- The Maintainer (the maintainer module's `maintainer-watcher` service, `modules/maintainer/service/src/watcher.ts`): it has no GitHub
+  timer. The github module's change feed posts each issue event to the kernel, and every few seconds the watcher reads the kernel's
+  log of the `issues.opened`, `issues.labeled`, `issues.closed` and `github.resync` events on the repos in the github setting
+  `maintainer_repos` (the module's `subscribes:`; `GET /v1/events/log` with its own committed cursor) and files one task for the Maintainer
+  per trusted issue (`POST /v1/tasks`, source `maintainer-issue:<repo>#<number>`: the same issue is never two tasks; the text names the
+  repo and number only, never the issue's title). An event naming the repo's fix label (or `agent-build`) costs one trust read of that
+  issue through github-mcp (`/internal/maintainer/issue`), whose verdict, never the event's actor, decides; a label from anyone else is
+  logged once and starts nothing. At a first start, after a feed gap (the log is kept 3 days), after a `github.resync` and for a repo
+  whose settings changed, github-mcp's bootstrap read (`/internal/maintainer/issues`) lists every open labelled issue and files the
+  ones with no task. The cursor and the filed issues are in the watcher's data file (`data/modules/maintainer/state.json`); the cursor
+  moves only after a batch's effects are written, so a refused filing or a failed read is retried on the next look and a restart repeats
+  and skips none. A fix is its merged PR, and
   the list grants no merge authority: product and official-modules PRs (and agents-org repos) merge on their approved
   card, while a PR on any other maintained repo goes through that repo's own GitHub review and its maintainers merge it.
   A fix PR closes its issue itself through `Fixes <owner>/<repo>#<n>` in its body (`aidenhq publish <owner/repo> <branch> --body-file <body> --fixes <owner>/<repo>#<n>`; `--fixes` needs a body file, since a publish without one keeps an existing PR's description). It reads the host's
   `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, its mirror in `board/` mounted at `/generations`) for the
   `fleet_generation_status` tool (now the fleet-steward service's, from the kernel): the current pin (the newest generation that got past validation) and the last 20
-  generations, newest first. The watcher runs once the module's own token (`maintainer_token`, `MAINTAINER_TOKEN_FILE`) has its content; github-mcp lets that token open its one issue read (`/internal/maintainer/issues`, never `/mcp`) by asking the kernel's `/v1/whoami`, so the github module shares no secret with it. Each tick reads the token file again: the watcher logs "maintainer issue watcher waiting" until it is filled, then "maintainer issue watcher on", with no restart. With the maintainer module's
-  `external_triage` on, the same read
-  brings each repo's issues opened since its triage cursor with no fix label that our App didn't file (at most 10 per repo
-  per tick, oldest first), and each files a triage task once (source `maintainer-triage:<repo>#<number>`), naming the repo and number only.
-  The first look only sets the cursor to now; issues already open, and any a per-issue run missed, are the daily triage's.
-  Those runs read a stranger's text before a trusted label, so they are capped a day per issue author on invalid issues (`triage_invalid_per_author_day`, default 5; an issue carrying the fix label or `feature-request`, the latter labelled by a trusted labeler, is valid and
-  uncounted; per repo there is no cap); past it, the issue is held and triaged the tick a slot frees (the daily run has it after a day). A fix that a label leads to still passes the Engineer's gates, the AI reviewer and the merge checks.
+  generations, newest first. The watcher runs once the module's own token (`maintainer_token`, `MAINTAINER_TOKEN_FILE`) has its content; github-mcp lets that token open its two issue reads (`/internal/maintainer/*`, never `/mcp`) by asking the kernel's `/v1/whoami`, so the github module shares no secret with it. Each look reads the token file again: the watcher logs "maintainer issue watcher waiting" until it is filled, then "maintainer issue watcher on", with no restart. On a repo whose `triage` setting isn't `off`, each `issues.opened` with no fix label, `feature-request` or `agent-build` that the fleet didn't file
+  files a triage task once (source `maintainer-triage:<repo>#<number>`), naming the repo and number only.
+  Issues already open when the watcher starts, and any a per-issue run missed, are the daily triage's.
+  Those runs read a stranger's text before a trusted label, so they are capped a day per issue author on invalid issues (the repo's `triage_cap_per_author_day`, default 5; an issue carrying the fix label or `feature-request`, the latter labelled by a trusted labeler, is valid and
+  uncounted); past it, the issue is held and triaged the look a slot frees (the daily run has it after a day). A fix that a label leads to still passes the Engineer's gates, the AI reviewer and the merge checks.
 
 - Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
   Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `CoreServiceDown`
