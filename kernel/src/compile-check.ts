@@ -15,8 +15,13 @@ import { join } from "node:path";
 import YAML from "yaml";
 
 const SHA = /^[0-9a-f]{40}$/;
-/** A failure that says a source couldn't be fetched (not the target refusing the instance): the compiler's own network errors. */
-const NETWORK = /(could not resolve host|unable to access '|failed to connect|connection (timed out|refused)|operation timed out|could not read from remote repository|the remote end hung up|network is unreachable|\b(ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET)\b|SSL|TLS)/i;
+/**
+ * A failure that says a source couldn't be fetched (not the target refusing the instance): the compiler's own network errors, each
+ * matched by the phrase git/npm/node print, never by a bare `SSL`/`TLS` token — a target's *refusal* can legitimately name TLS
+ * (a setting the new product dropped reads "kernel TLS module … is gone"), and reading that as operational would retry the tip
+ * for ever instead of refusing it.
+ */
+const NETWORK = /(could not resolve host|unable to access ['"]|failed to connect|connection (timed out|refused|reset)|operation timed out|could not read from remote repository|the remote end hung up|network is unreachable|\b(ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|EHOSTUNREACH|ERR_TLS_[A-Z_]+|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_HAS_EXPIRED)\b|ssl certificate problem|(ssl|tls)[^.\n]{0,40}handshake|certificate verify failed|self[- ]signed certificate|unable to (get|verify) (the )?(local )?issuer)/i;
 /** The apply's compiler (ops/apply-config-work.sh validate), run from the product tree it applies. */
 export const COMPILER = "scripts/compile.ts";
 

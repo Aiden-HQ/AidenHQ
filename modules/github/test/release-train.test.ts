@@ -318,6 +318,27 @@ test("a filing restored without a preflight is checked before it commits, on its
 });
 
 /**
+ * A filing restored with a saved commit but no base (a state the previous version could leave) was never preflighted: the commit
+ * is only this service's train ref, never pushed, so filing its card would file an unchecked bump — the #1730 break. It is
+ * checked now; a refusal files no card and settles the task it restored.
+ */
+test("a restored filing with a saved commit but no preflight is checked, and a refusal files nothing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  // The previous version's state: a task and a commit, written down with no verdict.
+  writeState(dir, { open: { since: "2026-11-18T10:00:00Z" }, filing: { to: NEW, sha: "9".repeat(40), task: `t-release:instance:${NEW}`, identifier: "ACME-7" } });
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: false, error: "compile: settings.modules: the kernel TLS module is gone", base: BASE }) }).step();
+  assert.deepEqual(asked, [NEW], "the restored commit is preflighted before its card is filed");
+  assert.equal(f.k.writes.length, 0, "a refused target files no card, even though a commit was saved");
+  assert.deepEqual(f.k.closed.map((c) => c.task), [`t-release:instance:${NEW}`], "and the restored task is settled, not stranded");
+  assert.match(String(f.k.closed[0].body), new RegExp(`${NEW.slice(0, 12)}.*doesn't compile|doesn't compile the instance`));
+});
+
+/**
  * A 409 (instance main moved between the check and the commit) drops the verdict, not the task: the next poll checks the new main,
  * commits on it and files the card on the task already filed for this target.
  */
@@ -337,6 +358,21 @@ test("a 409 keeps the filed task, so the next poll rechecks and files rather tha
   assert.equal(f.k.tasks.length, 1, "no second task was opened");
   assert.equal(f.k.writes.length, 1, "the card is filed on the task that already existed");
   assert.equal(f.k.closed.length, 0, "and nothing was cancelled");
+});
+
+test("a restored filing with a saved commit is rebuilt on the checked revision when the target compiles", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  writeState(dir, { open: { since: "2026-11-18T10:00:00Z" }, filing: { to: NEW, sha: "9".repeat(40), task: `t-release:instance:${NEW}`, identifier: "ACME-7" } });
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  await train(dir, f, clock, { compile: async () => ({ ok: true, base: BASE }) }).step();
+  assert.equal(f.commitBase, BASE, "the bump is recommitted on the revision the check passed");
+  assert.equal(f.committed, bumpText(NEW));
+  assert.equal(f.k.writes.length, 1, "then filed on the task already filed for this target");
+  assert.equal(f.k.tasks.length, 0, "with no second task opened");
+  assert.equal(f.k.closed.length, 0, "and nothing cancelled");
 });
 
 test("a compile check that throws is transient: nothing is filed or closed, and the next poll retries the same tip", async () => {

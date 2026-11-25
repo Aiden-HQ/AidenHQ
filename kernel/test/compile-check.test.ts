@@ -172,6 +172,35 @@ test("the compiler runs in a git checkout at the target, so its revision input i
   assert.equal(seen.head, one, "and HEAD is the target sha");
 });
 
+test("a refusal that merely names TLS or SSL is the target's verdict, not a network failure", async () => {
+  // A new product that dropped a setting says so in its own words: "kernel TLS module … is gone". Matching a bare SSL/TLS token
+  // would read that as operational and retry the tip for ever instead of refusing it (#1730's own class of refusal).
+  const { dir, one } = productRepo();
+  writeFileSync(join(dir, "scripts", "compile.ts"), `#!/usr/bin/env node
+if (process.env.AIDENHQ_COMPILE_STAGE !== "1") { console.error("compile: not staged"); process.exit(1); }
+console.error("compile: settings.modules: the kernel TLS module is gone; drop modules.tls (see the Modules page)");
+process.exit(1);
+`);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "tls-refusal");
+  const sha = git(dir, "rev-parse", "HEAD");
+  const inst = mkdtempSync(join(tmpdir(), "compile-check-inst-"));
+  const bare = join(inst, "instance.git");
+  const src = join(inst, "src");
+  mkdirSync(src);
+  writeFileSync(join(src, "instance.yaml"), YAML.stringify({ product: one, modules: ["tls"] }));
+  git(src, "init", "-q");
+  git(src, "add", "-A");
+  git(src, "commit", "-qm", "init");
+  git(inst, "clone", "-q", "--bare", src, bare);
+  const project = join(inst, "config");
+  mkdirSync(project, { recursive: true });
+  const realModules = join(product, "scripts", "node_modules");
+  const check = createCompileCheck({ repo: dir, main: async () => ({ base: git(bare, "rev-parse", "main") }), tree: checkoutTree(bare), inputs: { configDir: project, dataDir: join(inst, "data"), secretsDir: join(inst, "secrets") },
+    install: async (o) => { execFileSync("ln", ["-s", realModules, join(o.productDir, "scripts", "node_modules")]); } });
+  assert.deepEqual(await check({ product: sha }), { ok: false, base: git(bare, "rev-parse", "main"), error: "compile: settings.modules: the kernel TLS module is gone; drop modules.tls (see the Modules page)" });
+});
+
 test("a compile that failed reaching a source is operational, not the target refusing the instance", async () => {
   // The compiler fetches third-party modules and releases while it runs; a network failure there says nothing about the target.
   const { dir, one } = productRepo();

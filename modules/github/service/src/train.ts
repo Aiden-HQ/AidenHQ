@@ -162,10 +162,12 @@ export function createReleaseTrain(o: TrainOptions) {
     // `adopt`: the bump's task was filed before, by this process (its own file) or one this process replaced (the kernel's
     // idempotent re-file answers `deduplicated`). Either way its card, if any, is on that task.
     let adopt = Boolean(s.filing?.to === to);
-    // A filing with no `base` and no commit was written before the preflight existed (a bump held by a process running the previous
-    // code), or its base was dropped because main moved. It is checked now, never committed on a verdict it never had. A filing whose
-    // commit already exists has its card filed: a compile verdict can no longer unfile it, so it is only followed.
-    if (!s.filing || s.filing.to !== to || (!s.filing.base && !s.filing.sha)) {
+    // A filing with no `base` was written before the preflight existed (a bump held by a process running the previous code), or its
+    // base was dropped because main moved. It is checked now, never filed on a verdict it never had — including one that already
+    // carries a saved `sha`: that commit is only this service's train ref (`refs/train/<sha>`), never pushed, so the bump is still
+    // uncommitted on the instance, and filing its card would be exactly the #1730 break. A filing that has a base passed the check;
+    // it is committed and filed as before.
+    if (!s.filing || s.filing.to !== to || !s.filing.base) {
       if (!s.filing || s.filing.to !== to) edit(text); // refused before a task is filed for it
       // The target must compile the instance it would pin, before anything is committed or filed: the apply's own staged
       // compile against the target product (#1730). A target that doesn't is never tried again (the next merge files the next
@@ -177,10 +179,10 @@ export function createReleaseTrain(o: TrainOptions) {
         s.lastTried = to;
         s.refused = { to, text, base: compiled.base, instance: (await o.github.tip(o.instanceRepo))?.tip, at: now().toISOString() };
         delete s.open;
-        // The task filed for this bump (an earlier process's, or one this process restored) is settled here: it has no card, and the
-        // tip will not be tried again, so leaving it open would strand it. Not lasting-refused through step(): that path assumes the
-        // task came from this attempt's own filing write.
-        const filed = s.filing && s.filing.to === to && !s.filing.sha ? s.filing.task : undefined;
+        // The task filed for this bump (an earlier process's, or one this process restored) is settled here, with or without a saved
+        // commit: it has no card and never gets one (the target is refused), so leaving it open would strand it. Not lasting-refused
+        // through step(): that path assumes the task came from this attempt's own filing write.
+        const filed = s.filing && s.filing.to === to ? s.filing.task : undefined;
         delete s.filing;
         if (filed) s.orphan = { to, task: filed, error: compiled.error };
         save(s);
@@ -199,7 +201,10 @@ export function createReleaseTrain(o: TrainOptions) {
         s.filing = { to, base: compiled.base, task: task.id, identifier: task.identifier };
         adopt ||= Boolean(task.deduplicated);
       } else {
-        // The task was filed before (or a 409 dropped its base): this is the same bump, now checked on the current main.
+        // The task was filed before (or a 409 dropped its base): this is the same bump, now checked on the current main. A commit
+        // saved before any check existed is rebuilt on the revision that just passed — it is a train ref, never pushed — so no
+        // card is ever filed at a commit built on a main the check never compiled.
+        if (!s.filing.base) delete s.filing.sha;
         s.filing = { ...s.filing, base: compiled.base };
       }
       save(s);
