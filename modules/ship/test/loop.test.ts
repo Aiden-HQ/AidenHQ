@@ -1298,11 +1298,14 @@ test("a head's checks are probed at most every five minutes however often the lo
 
 test("a list page that times out is retried at half the size, the size is kept, and a quick page grows it back", async (t) => {
   const sizes = [];
+  let full = false;
   const gh = async (method, path, body) => {
     if (path !== "/graphql") return { status: 404, body: {} };
     sizes.push(body.variables.first);
-    if (body.variables.first > 10) return { status: 504, body: {} };
-    return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] } } } } };
+    if (!full && body.variables.first > 10) return { status: 504, body: {} }; // GitHub is quick again once pages are full
+    // A full page (more to come) is what may grow the size; the empty last page after it isn't.
+    const more = full && !body.variables.after;
+    return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { pageInfo: { hasNextPage: more, endCursor: more ? "c1" : null }, nodes: [] } } } } };
   };
   const m = await multi(t, [{ repo: "acme/app", duties: "all" }], {}, { gh });
   await m.watch.tick();
@@ -1315,5 +1318,8 @@ test("a list page that times out is retried at half the size, the size is kept, 
   db["acme/app"].shrunkAt = Date.now() - 11 * 60_000;
   writeFileSync(join(m.cacheDir, "loop.json"), JSON.stringify(db));
   await m.watch.tick();
-  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick page doubles it once the cooldown passed");
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 6, "a quick but short page doesn't grow it");
+  full = true;
+  await m.watch.tick();
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick full page doubles it once the cooldown passed");
 });

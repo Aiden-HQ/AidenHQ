@@ -102,7 +102,10 @@ export function startLoop(o: LoopOptions) {
       if (shrunk) writeJson(stateFile, all);
       const page = g.body?.data?.repository;
       if (g.status >= 300 || timedOut(g) || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
-      if (!shrunk && first < PAGE_MAX && Date.now() - t < FAST_PAGE_MS && Date.now() - (state.shrunkAt ?? 0) > GROW_AFTER_MS) {
+      // Any error or missing PR makes the list incomplete: the pass stops here, since everything below reads absence as closed.
+      if (g.body?.errors?.length || (page.pullRequests.nodes ?? []).some((n: Json) => !n)) throw new Error(`GitHub /graphql: incomplete page (${String(g.body?.errors?.[0]?.message ?? "a PR came back empty").slice(0, 200)})`);
+      const full = (page.pullRequests.nodes?.length ?? 0) >= first || !!page.pullRequests.pageInfo?.hasNextPage;
+      if (!shrunk && full && first < PAGE_MAX && Date.now() - t < FAST_PAGE_MS && Date.now() - (state.shrunkAt ?? 0) > GROW_AFTER_MS) {
         state.pageSize = Math.min(PAGE_MAX, first * 2);
         log("page size changed", { repo, from: first, to: state.pageSize, why: `page answered in ${Date.now() - t} ms` });
         writeJson(stateFile, all);
