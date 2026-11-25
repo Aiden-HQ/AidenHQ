@@ -40,7 +40,7 @@ export async function run(cmd: string, args: string[], o: { cwd: string; env: Re
   return { code: aborted ? null : code, stdout, stderr, timedOut, aborted };
 }
 export const stopped = (r: { code: number | null; stderr: string; timedOut: boolean; aborted?: string }, said = "") =>
-  r.aborted ?? (r.timedOut ? "timed out" : /cap_reached/i.test(said + r.stderr) ? "the install's spend limit was reached" : /\b402\b/.test(said + r.stderr) ? "the model provider refused the call (402)" : `the engine stopped (exit ${r.code})`);
+  r.aborted ?? (r.timedOut ? "timed out" : /cap_reached/i.test(said + r.stderr) ? "the install's spend limit was reached" : /spend_held/i.test(said + r.stderr) ? "the gateway held the call for room (503), a retry follows" : /\b402\b/.test(said + r.stderr) ? "the model provider refused the call (402)" : `the engine stopped (exit ${r.code})`);
 
 /** A small regular file, never through a link; undefined otherwise. */
 export function readSmall(file: string, max = 20_000) {

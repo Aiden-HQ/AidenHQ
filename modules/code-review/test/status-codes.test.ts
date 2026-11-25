@@ -19,5 +19,8 @@ test("only the gateway's cap_reached is the install's spend limit; any other 402
   const r = (stderr: string) => ({ code: 1, stderr, timedOut: false });
   assert.match(stopped(r('402 {"error":"cap_reached"}')), /spend limit/);
   assert.match(stopped(r("HTTP 402 Payment Required")), /model provider refused the call \(402\)/);
+  const held = stopped(r('503 {"error":"spend_held","message":"the rest of the spend limit is held by calls in flight"}'));
+  assert.match(held, /held the call/);
+  assert.doesNotMatch(held, /spend limit|spend cap|cap_reached/i);
   assert.doesNotMatch(stopped(r("HTTP 402 Payment Required")), /spend limit|spend cap|cap_reached/i);
 });
