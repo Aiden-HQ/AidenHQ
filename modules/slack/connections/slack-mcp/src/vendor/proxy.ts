@@ -81,6 +81,11 @@ export interface ProxyOptions {
   callTimeoutMs?: number;
   /** Remembers the tool list here (tools.json), for stand-ins while not connected. */
   stateDir?: string;
+  /**
+   * How long a call waits on a connect another call (or a reset) started before it opens a session of its own; default 20 s, the
+   * board's budget for one handshake. Without the bound, one stalled handshake would hold up every call after it.
+   */
+  resetWaitMs?: number;
   hooks?: Hooks;
   /** More routes on the same port (a write kind's executor); true when it answered. */
   routes?(req: IncomingMessage, res: ServerResponse): Promise<boolean>;
@@ -220,11 +225,31 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     return entry.p;
   }
 
+  /**
+   * Waits on a reset another call started, but never past `resetWaitMs`: a handshake that stalls there (a cold start, a periodic
+   * reconnect) must not hold up every call after it. A reset left waiting that long is abandoned, and this call opens a session of
+   * its own at once; the stalled connect is superseded, so it can never become the session.
+   */
+  async function settled(): Promise<void> {
+    const entry = resetting;
+    if (!entry) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stalled = await Promise.race([
+      entry.p.then(() => false, () => false),
+      new Promise<boolean>((r) => { timer = setTimeout(() => r(true), o.resetWaitMs ?? 20_000); timer.unref?.(); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!stalled) return;
+    log.warn(`${o.name}: a ${entry.refresh ? "token refresh" : "reconnect"} stalled; opening a session of its own`);
+    if (resetting === entry) resetting = undefined;
+    generation += 1;
+  }
+
   /** The current session, or a fresh one; a connect a reset invalidated is retried on the session that reset opened. */
   async function acquire(): Promise<Upstream> {
     // A reset in flight is replacing the token (a refresh) or the account (a sign-in): a handshake started now would go out with
     // the old one and come back 401 after the refresh succeeded, so wait for it and use the session it opened.
-    if (resetting) await resetting.p.catch(() => undefined);
+    await settled();
     if (upstream) return upstream;
     try {
       return await connect();
@@ -278,7 +303,9 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     const under = signIn;
     // Reconnect every 30 minutes or after an auth failure (inside the try: a token revoked early fails connect() too).
     try {
-      if (!upstream || Date.now() - upstream.at > 30 * 60_000) await reset(false);
+      // A periodic reconnect: only a session that exists can be too old. Without one, `acquire` opens it (bounded by `settled`), so
+      // a call never joins a reset another call started and waits on it for as long as that connect hangs.
+      if (upstream && Date.now() - upstream.at > 30 * 60_000) await reset(false);
       return await run(fn);
     } catch (err) {
       if (!auth.signedIn() || !isAuthFailure(err)) throw err;
@@ -288,7 +315,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       // A new session with the current token (the cached one's headers are fixed at connect time); no refresh grant is used.
       if (auth.refused && !(await auth.refused())) {
         await reset(false);
-        return await run(fn);
+        return await dispatch(under, fn);
       }
       log.warn(`${o.name} rejected the token; refreshing and retrying once`);
       try {
@@ -405,10 +432,15 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     if (!o.upstream || !auth.signedIn()) return { ok: false, message: notConnected(), fix: "Connect" };
     try {
       await withUpstream((u) => u.client.listTools());
-      return { ok: true };
+      // Signed in and answering, and still unusable: Jira's account can't reach the configured site. The hook names it.
+      const problem = hooks.health?.();
+      return problem ? { ok: false, message: `${o.name} is signed in but can't be used: ${problem}`, fix: "Reconnect" } : { ok: true };
     } catch (err) {
-      const signIn = auth.status().state === "expired" || ((err instanceof AuthError || isAuthFailure(err)) && (await auth.refused?.() ?? true));
-      return signIn ? { ok: false, message: `${o.name} no longer accepts the sign-in.`, fix: "Reconnect" } : { ok: false, message: `${o.name} didn't answer: ${String((err as Error).message).slice(0, 200)}` };
+      // A sign-in the vendor refused is marked expired by the refresh path; a 401 it still refuses is the same answer. An AuthError
+      // from the token endpoint (a 5xx, a timeout) leaves the grant untouched, so it is the vendor's outage, not the owner's sign-in.
+      const expired = auth.status().state === "expired";
+      const refused = !expired && !(err instanceof AuthError) && isAuthFailure(err) && (await auth.refused?.() ?? true);
+      return expired || refused ? { ok: false, message: `${o.name} no longer accepts the sign-in.`, fix: "Reconnect" } : { ok: false, message: `${o.name} didn't answer: ${String((err as Error).message).slice(0, 200)}` };
     }
   }
 

@@ -407,15 +407,16 @@ export function createAccess(o: {
     calls.n.set(k, (calls.n.get(k) ?? 0) + 1);
   };
 
-  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string, caller?: string): Promise<{ status: number; body: any; headers: Headers }> {
+  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string, caller?: string, since?: number): Promise<{ status: number; body: any; headers: Headers }> {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
     // A read's `deadline` bounds only its rate-limit wait (admit): the attempt that follows has its own timeout, and a read
     // creates nothing, so nothing lands after a caller was told it failed.
     const read = !createsContent(method, path, body);
     await admit(p, resource, background, deadline, read, caller === "feed");
-    // The sign-in this request belongs to: a 401 is retried only within it (see `replaced` below).
-    const signedInAt = as ? undefined : o.auth.signInCount?.();
+    // The sign-in this request belongs to: a 401 is retried only within it (see `replaced` below). A retry keeps the count its
+    // first attempt captured, so a sign-in that lands between the two is not mistaken for the same one.
+    const signedInAt = as ? undefined : (since ?? o.auth.signInCount?.());
     const t = as ? await as.token(retried) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();
@@ -452,7 +453,7 @@ export function createAccess(o: {
         const now = String((await o.auth.headers().catch(() => ({}) as Record<string, string>)).authorization ?? "").replace(/^Bearer\s+/i, "");
         return now !== "" && now !== t;
       };
-      const again = () => attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
+      const again = () => attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller, signedInAt);
       // Replaced while the probe was out: its verdict is on the old token, so the saved one is left alone.
       const replacedNow = async () => {
         if (!(await replaced())) return false;
@@ -479,7 +480,12 @@ export function createAccess(o: {
           try { await o.auth.refresh(); } catch (err) {
             if (o.auth.status().state !== "expired") throw err;
           }
-          return again();
+          // A different account signed in while the refresh ran: the retry would go out under it, and its answer (private data
+          // included) would reach the caller who asked under the old one, so the 401 stays the answer instead.
+          if (signedInAt !== undefined && o.auth.signInCount?.() !== signedInAt) {
+            stray = true;
+            o.log?.("github 401 on a sign-in a refresh replaced; not retried", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
+          } else return again();
         }
       }
     }

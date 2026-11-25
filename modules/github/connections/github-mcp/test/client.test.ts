@@ -153,6 +153,52 @@ it("a 401 after a different account signs in is not retried under the new accoun
   expect(a.status().state).toBe("ok");
 });
 
+it("a 401 whose refresh races a new sign-in is not retried under the new account", async () => {
+  // The 401 starts a refresh; a different account signs in while it runs. The retry would carry the new account's token, and its
+  // answer (private data included) would reach the caller who asked under the old one, so the 401 stays the answer.
+  let n = 0;
+  const a = {
+    ...auth(),
+    headers: async () => ({ authorization: `Bearer ${n === 0 ? "gho_old" : "gho_new"}` }),
+    refresh: async () => void (n = 1),
+    signInCount: () => n,
+    refused: async () => true,
+  };
+  const sent: string[] = [];
+  const access = createAccess({
+    auth: a,
+    fetchImpl: async (_u, init) => {
+      sent.push(String((init?.headers as Record<string, string>).authorization));
+      return answer(401, { message: "Bad credentials" });
+    },
+  });
+  const r = await access.rest("GET", "/repos/acme/private").catch((e) => e);
+  expect(r.status).toBe(401);
+  expect(sent.filter((t) => t.endsWith("gho_new"))).toHaveLength(0);
+});
+
+it("a 401 a refresh answers within the same sign-in is retried once", async () => {
+  let token = "gho_old";
+  const sent: string[] = [];
+  const a = {
+    ...auth(),
+    headers: async () => ({ authorization: `Bearer ${token}` }),
+    refresh: async () => void (token = "gho_new"),
+    signInCount: () => 0,
+    refused: async () => true,
+  };
+  const access = createAccess({
+    auth: a,
+    fetchImpl: async (_u, init) => {
+      const authz = String((init?.headers as Record<string, string>).authorization);
+      sent.push(authz);
+      return authz.endsWith("gho_old") ? answer(401, { message: "Bad credentials" }) : answer(200, { ok: true });
+    },
+  });
+  expect((await access.rest("GET", "/repos/acme/api")).status).toBe(200);
+  expect(sent.map((t) => t.replace("Bearer ", ""))).toEqual(["gho_old", "gho_new"]);
+});
+
 it("rate_limited and write_busy stay plain errors with their codes", () => {
   const busy = needResult(new GitHubNeed({ cause: "write_busy" }));
   expect(busy.isError).toBe(true);
