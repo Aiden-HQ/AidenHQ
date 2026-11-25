@@ -99,7 +99,7 @@ test("pins: a module.yaml service image is a pin, and an agent-level image line 
   assert.equal(wanted("modules/agent-builder/templates/digest-writer/module.yaml"), false);
   // The pin is dated once it changes against the base: scanRef visits the file at both refs, so a re-pin is a new pin.
   const base = scanFile("modules/primer/module.yaml", text.replace(`17.12${d("a")}`, `17.12${d("b")}`)).pins;
-  const date = async (p: { name: string }) => ({ published: day(p.name === "postgres:17.12" ? 2 : 30), via: "registry" });
+  const date = async () => ({ published: day(2), via: "registry" });
   assert.equal((await checkAges({ pins: r.pins, basePins: base, date, now })).length, 1);
   assert.deepEqual(await checkAges({ pins: r.pins, basePins: r.pins, date, now }), []);
 });
