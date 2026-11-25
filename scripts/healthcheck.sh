@@ -78,9 +78,17 @@ check "paperclip bootstrap (account claimed)" sh -c 'curl -fsS --max-time 5 http
 if module_on meetings; then
   ops_health="$(curl -s -m 10 "$(svc ops-mcp 8080)/healthz" 2>/dev/null)"
   check "ops-mcp reachable" test -n "$ops_health"
-  for k in sqlite_writable transcripts_readable vault_available vault_writable paperclip_api; do
+  for k in sqlite_writable transcripts_readable paperclip_api; do
     check "ops-mcp $k" health_has_ok "$ops_health" "$k"
   done
+  # An unmounted vault (VAULT_FOLDERS blank) is not set up yet, not a failure: its checks are skipped the way an
+  # unconfigured connection is. An upgrade from the image whose own /vault always read as available would otherwise fail
+  # a check that passed in the baseline and roll back, before the live agent check that accepts state "missing".
+  if unconfigured "$ops_health"; then
+    for k in vault_available vault_writable; do skip "ops-mcp $k (vault not configured)"; done
+  else
+    for k in vault_available vault_writable; do check "ops-mcp $k" health_has_ok "$ops_health" "$k"; done
+  fi
 else
   skip "ops-mcp (meetings module not installed)"
 fi

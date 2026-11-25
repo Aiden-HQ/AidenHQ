@@ -20,6 +20,18 @@ describe("healthChecks vault", () => {
     expect(h.detail).toContain("vault_writable: not writable: Meetings");
   });
 
+  it("is a named failure, not missing, when a folder is mounted but write_roots names none of it", async () => {
+    // VAULT_FOLDERS names Notes while the shipped write_roots still says Meetings: a misconfigured vault, not an unset one.
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Notes"));
+    const env = makeEnv({ cfg: vaultAt(root, ["Meetings"]) });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(false);
+    expect(h.state).toBeUndefined();
+    expect(h.detail).toContain("vault_available:");
+    expect(h.detail).toContain("vault_writable: not writable: Meetings");
+  });
+
   it("stays a named failure, not missing, when the vault is mounted but unwritable", async () => {
     const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
     mkdirSync(join(root, "Meetings"));
@@ -29,6 +41,18 @@ describe("healthChecks vault", () => {
     expect(h.ok).toBe(false);
     expect(h.state).toBeUndefined();
     expect(h.detail).toContain("vault_writable: not writable: Meetings");
+  });
+
+  it("needs a searchable write root, not only a writable one", async () => {
+    // A rw-only directory cannot be traversed, so a note cannot be created in it even though W_OK passes.
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Meetings"));
+    chmodSync(join(root, "Meetings"), 0o644);
+    const env = makeEnv({ cfg: vaultAt(root, ["Meetings"]) });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(false);
+    expect(h.checks.vault_available?.ok).toBe(false);
+    expect(h.checks.vault_writable?.ok).toBe(false);
   });
 
   it("is ok when the configured write roots take writes", async () => {

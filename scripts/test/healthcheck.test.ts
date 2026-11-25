@@ -263,3 +263,22 @@ test("a set-up connection whose sign-in failed fails with its detail, apostrophe
   }
 });
 
+
+test("an ops-mcp health body names a failing vault check", async () => {
+  const dir = checkout({ healthz: { 8080: JSON.stringify({ ok: false, detail: "vault_writable: not writable: Meetings", checks: { sqlite_writable: { ok: true }, transcripts_readable: { ok: true }, vault_available: { ok: false }, vault_writable: { ok: false }, paperclip_api: { ok: true } } }) } });
+  writeFileSync(join(dir, "config/modules.json"), JSON.stringify([{ name: "meetings", enabled: true }]) + "\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  FAIL  ops-mcp vault_available/m, r.out);
+  assert.match(r.out, /^  FAIL  ops-mcp vault_writable/m, r.out);
+});
+
+test("an ops-mcp vault that is not configured is skipped, never a failed check", async () => {
+  // A blank VAULT_FOLDERS install upgrades from an image whose own /vault read as available: its vault checks must not
+  // turn a baseline ok into a FAIL, which the apply takes for a regression and rolls back.
+  const dir = checkout({ healthz: { 8080: JSON.stringify({ ok: false, state: "missing", detail: "vault not configured (set VAULT_DIR and VAULT_FOLDERS in .env); vault_available: not usable: Meetings; vault_writable: not writable: Meetings", checks: { sqlite_writable: { ok: true }, transcripts_readable: { ok: true }, vault_available: { ok: false }, vault_writable: { ok: false }, paperclip_api: { ok: true } } }) } });
+  writeFileSync(join(dir, "config/modules.json"), JSON.stringify([{ name: "meetings", enabled: true }]) + "\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  skip  ops-mcp vault_available/m, r.out);
+  assert.match(r.out, /^  skip  ops-mcp vault_writable/m, r.out);
+  assert.doesNotMatch(r.out, /^  FAIL  ops-mcp vault/m, r.out);
+});
