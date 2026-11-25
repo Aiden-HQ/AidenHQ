@@ -18,6 +18,13 @@ test("checks are read as named results; the design review and code review are ad
   assert.equal(skippedImageScan(pr("services/x/Dockerfile")), true);
   assert.equal(skippedImageScan(pr("src/a.ts")), false);
   assert.equal(skippedImageScan(pr("src/a.ts", { files: { pageInfo: { hasNextPage: true }, nodes: [] } })), true);
+  // The scan's newest run at the head is its judgement: a replacement run that scanned the Dockerfile clears an obsolete skip.
+  const scanned = (conclusion, databaseId) => ({ commits: { nodes: [{ commit: { statusCheckRollup: rollup(
+    { __typename: "CheckRun", name: "image-scan", databaseId: 30, status: "COMPLETED", conclusion: "SKIPPED" },
+    { __typename: "CheckRun", name: "image-scan", databaseId, status: "COMPLETED", conclusion },
+  ) } }] }, files: { nodes: [{ path: "services/x/Dockerfile" }] } });
+  assert.equal(skippedImageScan(scanned("SUCCESS", 31)), false, "a newer scan that ran is not a skip");
+  assert.equal(skippedImageScan(scanned("SKIPPED", 31)), true, "a newer skip is still a skip");
 });
 
 test("the newest run of a name is picked by its id, never by the order GitHub lists the contexts in", () => {

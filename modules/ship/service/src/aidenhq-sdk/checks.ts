@@ -79,9 +79,14 @@ export function namedChecks(rollup: Json): Check[] {
 }
 
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
-/** `image-scan` skipped on a PR that changes an image definition (or whose files can't all be read): nothing was scanned. */
+/**
+ * `image-scan` skipped on a PR that changes an image definition (or whose files can't all be read): nothing was scanned.
+ * The scan's newest run at the head is the judgement (latestChecks), like every other name: a run that scanned the head after
+ * an edit superseded a skip cleared the question, so the obsolete skip is not one, and a skip that is the newest run is.
+ */
 export function skippedImageScan(pr: Json): boolean {
   const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  if (!nodes.some((n: Json) => n.name === "image-scan" && n.status === "COMPLETED" && n.conclusion === "SKIPPED")) return false;
+  const scans = latestChecks(contextChecks({ contexts: { nodes } }).filter((c) => c.name === "image-scan"));
+  if (!scans.some((c) => c.status === "SKIPPED")) return false;
   return !pr.files || pr.files.pageInfo?.hasNextPage || (pr.files.nodes ?? []).some((f: Json) => IMAGE_FILE.test(f.path ?? ""));
 }
