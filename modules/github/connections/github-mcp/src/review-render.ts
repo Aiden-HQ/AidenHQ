@@ -176,9 +176,9 @@ export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run:
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
-/** A notice's generated header, exactly as `renderNotice` writes it at the start of a comment: the marker, then the bold title on
- * the next line. A comment that merely quotes a notice carries the marker further down, so it never matches. */
-export const ACK_HEAD = new RegExp(`^\\s*${ACK_MARK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r?\\n\\*\\*Aiden review\\*\\*`);
+/** A notice's generated header, exactly as `renderNotice` writes it at the start of a comment: the marker, then the bold status
+ * on the next line. A comment that merely quotes a notice carries the marker further down, so it never matches. */
+export const ACK_HEAD = new RegExp(`^\\s*${ACK_MARK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r?\\n\\*\\*`);
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
 const ORDER = ["important", "nit", "pre_existing"] as const;
@@ -360,30 +360,37 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   return { summary: lines.join("\n"), comments, listed };
 }
 
-const usd = (n: number | undefined) => (n === undefined ? "" : ` ($${n.toFixed(2)})`);
-/** The acknowledgement comment's text, from fixed words only. */
+const TIER = { skip: ["\u26AA", "Skip"], trivial: ["\u{1F7E2}", "Trivial"], standard: ["\u{1F535}", "Standard"], sensitive: ["\u{1F7E0}", "Sensitive"] } as const;
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** A model's name and effort as a person reads them: `GPT 6.2 Sol (medium)`. */
+const reviewer = (n: NoticeArgs) => (n.model && n.effort ? `${modelName(n.model)} (${n.effort})` : "");
+/**
+ * The acknowledgement comment's text, from fixed words only, for a person to read at a glance: the status they act on (bold),
+ * the risk with its plain-words reason, and a small footer (the head, the run, how to ask for commands). Every phase has the
+ * same three parts, so the one comment reads the same whatever the review is doing.
+ */
 export function renderNotice(n: NoticeArgs): string {
-  const who = n.engine && n.model && n.effort ? ` with ${code(comboText({ engine: n.engine, model: n.model, effort: n.effort }))}` : "";
-  const sha = code(short(n.head));
-  const c: Counts = { important: n.important ?? 0, nit: n.nit ?? 0, pre_existing: n.pre_existing ?? 0 };
-  const head = `${ACK_MARK}\n**Aiden review**`;
-  const help = "`aiden review help` lists the commands.";
-  // The tier line rides every phase of the one comment, so the risk shows whatever the review is doing.
-  const tier = n.tier ? `\nRisk tier **${n.tier}**${n.tier_why ? `: ${code(n.tier_why)}` : ""}` : "";
-  return noticeText(n, { who, sha, c, head, help }) + tier;
-}
-function noticeText(n: NoticeArgs, { who, sha, c, head, help }: { who: string; sha: string; c: Counts; head: string; help: string }): string {
+  const link = n.review ? ` · [see the review](${n.review})` : "";
+  const who = reviewer(n);
+  const minor = [n.nit ? plural(n.nit, "nit") : "", n.pre_existing ? `${n.pre_existing} pre-existing` : ""].filter(Boolean).join(" · ");
+  const important = n.important ?? 0;
+  let status: string;
+  let help = true;
   switch (n.phase) {
-    case "classified": return `${head}: classified ${sha}. ${help}`;
-    case "queued": return `${head}: queued${who} for ${sha}. ${help}`;
-    case "running": return `${head}: reviewing ${sha}${who}…`;
-    case "done": return `${head}: reviewed ${sha}${who}: ${countLine(c)}${usd(n.cost_usd)}. ${help}`;
-    case "skipped": return `${head}: skipped ${sha}: ${NOTICE_REASONS[(n.reason ?? "unchanged") as NoticeReason]}. ${help}`;
-    case "answered": return `${head}: ${ANSWERS[n.answer ?? "help"]}.${n.answer === "help" ? "" : ` ${help}`}`;
-    case "failed": return n.reason && n.reason in REFUSED_REASONS
-      ? `${head}: the review of ${sha}${who} was not posted (${REFUSED_REASONS[n.reason as keyof typeof REFUSED_REASONS]}${n.run ? `, run ${n.run}` : ""}). Ask again with \`@aiden review\`. ${help}`
-      : `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`@aiden review\` to try again. ${help}`;
+    case "classified": status = n.tier === "skip" ? "**No review needed** for this risk" : "**Review not started yet**"; break;
+    case "queued": status = `**Review queued**${who ? ` · ${who}` : ""}`; break;
+    case "running": status = `**Review running**${who ? ` · ${who}` : ""}`; break;
+    case "done": status = `${important ? `**${plural(important, "important finding")}** to fix` : "**Review passed** · no important findings"}${minor ? ` · ${minor}` : ""}${link}`; break;
+    case "skipped": status = `**Review skipped** · ${NOTICE_REASONS[(n.reason ?? "unchanged") as NoticeReason]}`; break;
+    case "answered": status = n.answer === "help" || !n.answer ? `**Commands** (a comment that starts with one): ${COMMANDS}` : `**${ANSWERS[n.answer][0]!.toUpperCase()}${ANSWERS[n.answer].slice(1)}**`; help = !(n.answer === "help" || !n.answer); break;
+    case "failed": status = n.reason && n.reason in REFUSED_REASONS
+      ? `**Review finished but was not posted** · ${REFUSED_REASONS[n.reason as keyof typeof REFUSED_REASONS]} · \`aiden review\` runs it again`
+      : `**Review failed** · comment \`aiden review\` to try again`; break;
   }
+  // The tier's why comes from the PR's own paths and counts: inert text, with Markdown's own marks escaped.
+  const risk = n.tier ? `\nRisk: ${TIER[n.tier][0]} **${TIER[n.tier][1]}**${n.tier_why ? ` · ${plain(n.tier_why, 500).replace(/[\\*_~[\]]/g, "\\$&")}` : ""}` : "";
+  const footer = [short(n.head), ...(n.run ? [`run ${n.run}`] : []), ...(help ? ["`aiden review help` for commands"] : [])].join(" · ");
+  return `${ACK_MARK}\n${status}${risk}\n\n<sub>${footer}</sub>`;
 }
 
 /** The right-side line numbers of a unified diff patch: where GitHub accepts an inline comment. */
