@@ -474,6 +474,7 @@ test("maintainer_repos: an old key or a boolean dependabot fails the compile nam
   assert.throws(bad({ repo: "acme/app", dependabot: true }), /settings.maintainer_repos: .*dependabot must be one of off, failing, all \(true is all\)/);
   assert.throws(bad({ repo: "acme/app", label: "fix" }), /label \(it is now fix_label\)/);
   assert.throws(bad({ repo: "acme/app", issues: false }), /issues \(it is now fixes\)/);
+  assert.throws(bad({ repo: "acme//tools" }), /settings.maintainer_repos: .*repo must be owner\/name/);
   assert.doesNotThrow(bad({ repo: "acme/app", dependabot: "all", fix_label: "fix", fixes: false }));
 });
 

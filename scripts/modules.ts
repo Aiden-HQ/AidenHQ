@@ -809,6 +809,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       // `repo`), and then by that field. Any other setting's list holds strings: a map would reach its service as JSON that its
       // reader takes for text.
       const applies = Object.entries(d?.when ?? {}).every(([w, v]) => String(settings[w]) === String(v));
+      // maintainer_repos is the parser's, whole: an entry it refuses fails the compile (naming why) rather than the pattern check dropping the
+      // list for its default, which would be a valid but different policy.
+      if (k === "maintainer_repos" && Array.isArray(settings[k]) && settings[k].length) { try { parseRepos(JSON.stringify(settings[k])); } catch (e) { fail(`settings.maintainer_repos: ${(e as Error).message}`); } }
       if (d?.pattern && settings[k] !== "" && settings[k] != null && applies) {
         const bad = [settings[k]].flat().find((x) => {
           if (d.entry == null && x && typeof x === "object") return true;
@@ -857,9 +860,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
   settings.ship_enabled = enabled.includes("ship") ? "1" : "";
   // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (risk tiers §11).
-  // maintainer_repos is checked by the parser every service reads it with: an entry it refuses (an old key such as `label`, `issues` or a
-  // boolean `dependabot`) fails the compile, naming the new key, so the last good generation keeps running rather than a service refusing the list.
-  if (Array.isArray(settings.maintainer_repos) && settings.maintainer_repos.length) { try { parseRepos(JSON.stringify(settings.maintainer_repos)); } catch (e) { fail(`settings.maintainer_repos: ${(e as Error).message}`); } }
   if (enabled.includes("ship") && oldShape(settings.ship).length) fail(`settings.ship: ${oldShape(settings.ship).join(", ")}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
