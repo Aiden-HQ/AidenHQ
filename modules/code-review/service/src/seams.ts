@@ -77,6 +77,12 @@ export interface PrSource {
    * thread is Aiden's own is the service's record (its comments table), never this. */
   threads(repo: string, number: number): Promise<Thread[]>;
 }
+/** One event of the kernel's log of the github change feed (kernel/src/events.ts LoggedEvent): what the watcher reads of it.
+ * `text` and `author` are a stranger's. */
+export type FeedEvent = { seq: number; resource: string; id: string; kind: string; author?: string; text?: string; truncated?: boolean; data?: Record<string, unknown> };
+/** The log after `after` (the last seq handled); no `after`: no events and `next` at the log's end (the watermark). `gap`: rows
+ * after `after` were pruned (kept 3 days). */
+export type Feed = (after?: number) => Promise<{ events: FeedEvent[]; next: number; gap: boolean }>;
 export type Thread = { finding: string | null; comment: number; replies: { id: number; author: string; body: string }[] };
 
 /** What one review run reviews: the check job's spec (lane E's recipe takes exactly these). */

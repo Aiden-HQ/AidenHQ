@@ -33,6 +33,7 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, areas = undef
   // A plan run keeps its plan and answers with the summary (recipe/plan.ts).
   const planned = (check, r) => { kept.set(check, Buffer.from(JSON.stringify(r.review))); results.set(check, { ...r, review: { ...r.review, areas: r.review.areas.length } }); };
   const engine = createEngine({
+    feed: async () => ({ events: [], next: 0, gap: false }),
     db, config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
     runner: { start: async (s) => (s.profile === "code-review-plan" ? (plans.push(s), planned(`p-${plans.length}`, planResult(s, areas)), { check: `p-${plans.length}` }) : (started.push(s), { check: `c-${started.length}` })), result: async (c) => results.get(c) ?? { state: "running" },
@@ -49,7 +50,7 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, areas = undef
   const finish = (i, o = {}, billed = 0) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed,
     review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null, ...(started[i].tools ? { options: Object.keys(started[i].tools) } : { counts: { eligible: 0, reviewed: 0 } }) }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
   // A tick that started a plan run also takes its answer and starts the runs it files (the plan is never what a test waits on).
-  const tick = async () => { const n = plans.length; await engine.tick({ github: false }); if (plans.length > n) await engine.tick({ github: false }); };
+  const tick = async () => { const n = plans.length; await engine.tick(); if (plans.length > n) await engine.tick(); };
   return { db, engine, heads, started, results, published, setups, branch, finish, finding, held, inputs, kept, plans, tick, later: (ms) => (t += ms) };
 }
 

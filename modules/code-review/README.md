@@ -13,8 +13,8 @@ The review computer is the only boundary, as for Engineers; nothing is jailed in
 ## Connect
 
 Needs the `github` module. Add repos by asking Aiden (the Reviewer Manager changes `code_review`) or in the module's
-settings. `code_review_poll_seconds` (default 60) sets how often it looks
-at watched repos.
+settings. It hears what changes on watched repos from the github module's change feed (within about a minute), so nothing
+polls GitHub.
 
 ## What agents get
 

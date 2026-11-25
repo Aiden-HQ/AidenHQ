@@ -90,13 +90,14 @@ test("a plan of several areas files each per-area option per area, a stack optio
   const started = [], results = new Map(), kept = new Map();
   let t = Date.parse("2026-11-24T10:00:00Z");
   const engine = createEngine({
+    feed: async () => ({ events: [], next: 0, gap: false }),
     db: new DatabaseSync(":memory:"), config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t, source: { open: async () => [] }, poster: {}, catalog: () => CATALOG,
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async (c) => kept.get(c) },
     codehost: { tree: async () => ({ sha: sha("1"), paths: ["svc/a.ts", "svc/b.ts", "web/c.tsx"] }) },
     publisher: { file: async () => ({ state: "refused", write: "p", why: "off" }), outcome: async () => ({ state: "refused" }) }, deepsec: { read: () => undefined, write: () => {} },
   });
   const b = await engine.repoReview({ target: { repo: REPO }, options: ["cor.review", "perf.react", "sec.solidity", "maint.arch", "sec.deepsec"] });
-  await engine.tick({ github: false });
+  await engine.tick();
   // deepsec (whole repo) and the plan start at once; the rest wait for the plan.
   assert.deepEqual(started.map((s) => s.profile === "code-review-plan" ? "plan" : s.option), ["sec.deepsec", "plan"]);
   assert.deepEqual([started[1].combo.model, Object.keys(started[1].stacks).sort()], ["anthropic/claude-haiku-5.5", ["react", "solidity"]]);
@@ -104,7 +105,7 @@ test("a plan of several areas files each per-area option per area, a stack optio
   const plan = { version: 1, repo: REPO, head: sha("1"), eligible: 3, lines: 40, planned_by: "model", note: null };
   kept.set("c-2", Buffer.from(JSON.stringify({ ...plan, areas: AREAS })));
   results.set("c-2", { state: "done", billed_usd: 0.02, review: { ...plan, areas: 2 } });
-  await engine.tick({ github: false });
+  await engine.tick();
   const filed = started.slice(2).map((s) => `${s.option}${s.area ? `@${s.area.id}` : ""}${s.area_map ? "+map" : ""}`);
   assert.deepEqual(filed, ["cor.review@a01", "cor.review@a02", "perf.react@a02", "maint.arch+map"]);
   assert.deepEqual(started[2].area.files, { svc: ["a.ts", "b.ts"] });
@@ -113,11 +114,11 @@ test("a plan of several areas files each per-area option per area, a stack optio
   const done = (i, counts, billed) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed, review: { version: 1, repo: REPO, pr: 0, base: sha("1"), head: sha("1"), coverage: { reviewed: [], excluded: [], incomplete: null, counts }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [] } });
   done(0, { eligible: 3, reviewed: 3 }, 5); done(2, { eligible: 2, reviewed: 2 }, 1); done(4, { eligible: 1, reviewed: 1 }, 0.5); done(5, { eligible: 3, reviewed: 3 }, 2);
   results.set("c-4", { state: "failed", why: "the engine stopped", billed_usd: 0.7 });
-  await engine.tick({ github: false });
+  await engine.tick();
   t += 120_000;
-  await engine.tick({ github: false });
+  await engine.tick();
   results.set(`c-${started.length}`, { state: "failed", why: "the engine stopped again", billed_usd: 0.3 });
-  await engine.tick({ github: false });
+  await engine.tick();
   assert.equal(started.at(-1).area.id, "a02", "a failed area is retried alone, with its own spec");
   const [batch] = engine.batches({});
   assert.equal(batch.status, "done");
@@ -145,17 +146,18 @@ test("a failed plan fails every option that waited for it; the whole-repo ones k
   const started = [], results = new Map(), kept = new Map();
   let t = Date.parse("2026-11-24T10:00:00Z");
   const engine = createEngine({
+    feed: async () => ({ events: [], next: 0, gap: false }),
     db: new DatabaseSync(":memory:"), config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t, source: { open: async () => [] }, poster: {}, catalog: () => CATALOG,
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async (c) => kept.get(c) },
     codehost: { tree: async () => ({ sha: sha("1"), paths: ["svc/a.ts", "web/c.tsx"] }) },
     publisher: { file: async () => ({ state: "refused", write: "p", why: "off" }), outcome: async () => ({ state: "refused" }) }, deepsec: { read: () => undefined, write: () => {} },
   });
   const b = await engine.repoReview({ target: { repo: REPO }, options: ["cor.review", "sec.deepsec"] });
-  await engine.tick({ github: false });
+  await engine.tick();
   results.set("c-1", { state: "done", billed_usd: 1, review: { version: 1, repo: REPO, pr: 0, base: sha("1"), head: sha("1"), coverage: { reviewed: [], excluded: [], incomplete: null, counts: { eligible: 2, reviewed: 2 } }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [] } });
   kept.set("c-2", Buffer.from(JSON.stringify({ version: 1, repo: REPO, head: sha("1"), areas: [{ id: "x", name: 3 }] })));
   results.set("c-2", { state: "done", billed_usd: 0, review: { version: 1, repo: REPO, head: sha("1"), areas: 1 } });
-  await engine.tick({ github: false });
+  await engine.tick();
   assert.equal(engine.batches({})[0].status, "done");
   const md = engine.report(b.batch);
   assert.match(md, /sec\.deepsec: ran/);
@@ -166,6 +168,7 @@ test("a rerun reviews only the areas with a changed file and shows the rest as u
   const started = [], results = new Map(), kept = new Map();
   let t = Date.parse("2026-11-24T10:00:00Z"), head = sha("1"), blob = { "svc/a.ts": `100644:${sha("a")}`, "svc/b.ts": `100644:${sha("b")}`, "web/c.tsx": `100644:${sha("c")}` };
   const engine = createEngine({
+    feed: async () => ({ events: [], next: 0, gap: false }),
     db: new DatabaseSync(":memory:"), config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t, source: { open: async () => [] }, poster: {}, catalog: () => CATALOG,
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async (c) => kept.get(c) },
     codehost: { tree: async () => ({ sha: head, paths: Object.keys(blob) }) },
@@ -176,16 +179,16 @@ test("a rerun reviews only the areas with a changed file and shows the rest as u
   const review = async (full, combo) => {
     const first = started.length;
     const b = await engine.repoReview({ target: { repo: REPO }, options: ["cor.review"], ...(full ? { full: true } : {}), ...(combo ? { combo } : {}) });
-    await engine.tick({ github: false });
+    await engine.tick();
     const plan = { version: 1, repo: REPO, head, blobs: blob, eligible: 3, lines: 40, planned_by: "model", note: null };
     kept.set(`c-${first + 1}`, Buffer.from(JSON.stringify({ ...plan, areas: AREAS })));
     results.set(`c-${first + 1}`, { state: "done", billed_usd: 0.02, review: { ...plan, blobs: undefined, areas: 2 } });
-    await engine.tick({ github: false });
+    await engine.tick();
     for (const s of started.slice(first + 1)) {
       const files = Object.entries(s.area.files).flatMap(([d, ns]) => ns.map((n) => `${d}/${n}`));
       results.set(`c-${started.indexOf(s) + 1}`, { state: "done", billed_usd: 1, review: { version: 1, repo: REPO, pr: 0, base: head, head, coverage: { reviewed: files, excluded: [], incomplete: null, counts: { eligible: files.length, reviewed: files.length } }, findings: [finding(files[0])], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [] } });
     }
-    await engine.tick({ github: false });
+    await engine.tick();
     return { b, ran: started.slice(first + 1).map((s) => s.area.id) };
   };
   assert.deepEqual((await review(false)).ran, ["a01", "a02"], "the first review reads everything");

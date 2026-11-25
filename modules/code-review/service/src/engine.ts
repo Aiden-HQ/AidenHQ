@@ -1,6 +1,8 @@
 // The code-review state service's decisions: which PR head gets which review, when, and whether it may spend.
 //
-// Every tick: each watched repo's open PRs and new comments are read (PrSource); a new PR is reviewed with each of the repo's
+// What changed on GitHub comes from the github module's change feed (the kernel's event log, read every tick; feed()): each PR it
+// names is read once (PrSource), each PR comment checked for a command, each review reply read as an answer, and a repo is read
+// whole at this process's start, a gap in the log, the feed's resync, or an event whose handling failed (bootstrap()). A new PR is reviewed with each of the repo's
 // on_open combos, a push with each on_push combo (incrementally), and `aiden review …` from someone with write access now does
 // what it says. One trigger is a batch: one run per combo (engine, model, effort), each posting its own review; only its first run rechecks the PR's still-open findings. Queued runs start when due, each
 // starting while the day's real spend is under the repo's and the instance's day caps, in one transaction; running ones are polled, and
@@ -42,7 +44,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, gatesAny, openOnly, policyOf, PRESETS, tierCfg, type Combo, type Config, type Entry, type Repo } from "./config.ts";
 import { authorKind, classify, factsOf, tooMany, TOO_MANY_FILES, type Facts, type Tier } from "./aidenhq-sdk/tiers.ts";
-import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
+import type { Ack, CodeHost, Feed, Finding, Posted, Poster, PrComment, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
 import { detect, toolSpec, whyNot, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
@@ -53,6 +55,11 @@ import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 const REOPENED = { title: "Reopened, its answer found unsafe: ", why: "The recheck found the answer to this finding unsafe: its fix or reason hides the problem or adds one.\n\n" };
 
 export const DEBOUNCE = 60_000;
+/** A PR head whose tier couldn't be classified (its files unreadable, or the head moved during the read) is read again after this. */
+const AGAIN_MS = 60_000;
+/** The idle pass (every open PR's triggers from its row: a run settling or failing can change them) and the status mirror's
+ * retries run at least this often, with no GitHub read. */
+const IDLE_MS = 60_000;
 /** A post refused by something other than a decision (stale after a restart, a failed GitHub call, a rate limit) is filed again
  * after this, doubling each time (2 to 32 minutes), up to POST_TRIES times while its PR is open. */
 export const POST_RETRY = 2 * 60_000;
@@ -217,6 +224,8 @@ export type EngineDeps = {
   codehost: CodeHost; catalog: () => Option[]; publisher: Publisher;
   /** deepsec's records per repo (this service's /data). */
   deepsec: DeepsecStore;
+  /** The kernel's log of the github change feed's events this module subscribes to (module.yaml `subscribes:`). */
+  feed: Feed;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
 export class RequestError extends Error {
@@ -307,9 +316,13 @@ export function createEngine(d: EngineDeps) {
     if (!cfg) return { state: "unwatched" };
     const p = prRow(repo, n);
     const i = p?.cls ? (JSON.parse(p.cls) as Inputs) : undefined;
-    if (!p || !i || !p.tier || p.head !== head || i.head !== head || i.config !== cfg.hash || (live.base !== undefined && live.base !== i.ref) || (live.association !== undefined && live.association !== i.association)) return { state: "pending" };
+    // A caller's live read that differs (a PR retargeted or its author's role changed, which the feed doesn't announce): the PR is
+    // read again on the next tick.
+    const moved = !!p?.open && !!i && i.head === head && ((live.base !== undefined && live.base !== i.ref) || (live.association !== undefined && live.association !== i.association));
+    if (moved && !again.has(`${repo}#${n}`)) again.set(`${repo}#${n}`, 0);
+    if (!p || !i || !p.tier || p.head !== head || i.head !== head || i.config !== cfg.hash || moved) return { state: "pending" };
     const policy = policyOf(cfg, p.tier, i.ref);
-    // A policy the poll hasn't started its run of heads for yet (a settings edit since): nothing reviewed under it counts.
+    // A policy the watcher hasn't started its run of heads for yet (a settings edit since): nothing reviewed under it counts.
     return { state: "classified", tier: p.tier, rule: p.rule ?? -1, why: p.why ?? "", facts: p.facts ? JSON.parse(p.facts) : null, c: tierCfg(cfg, p.tier), policy, at: p.policy === policy ? (p.policy_at ?? 0) : Infinity };
   }
   /** The tier a classified head runs, with its policy and when that policy's run of heads started; undefined while pending. */
@@ -824,7 +837,7 @@ export function createEngine(d: EngineDeps) {
     const count = (s: string) => review.findings.filter((f) => f.severity === s).length;
     const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
     // A result for a head the PR has moved on from is kept for analysis, never applied: its findings and fixes belong to an old head.
-    // The PR's head as GitHub has it now (a push since the last poll supersedes this result too); the last poll's when it can't say.
+    // The PR's head as GitHub has it now (a push since the last look supersedes this result too); the last look's when it can't say.
     const pr = prRow(r.repo, r.number);
     // Unreadable now: the run stays running and the next tick finishes it again (nothing is applied on a guess).
     const gh = pr ? await d.source.get(r.repo, r.number).catch(() => undefined) : undefined;
@@ -1247,6 +1260,8 @@ export function createEngine(d: EngineDeps) {
     // A run that has just posted is finished now: its fact says where it ended (superseded and closed runs never get here).
     if (ended) end(runRow(r.id)!);
     if (refused || o.state === "posted") settled(r, o);
+    // A mandatory review's findings gate once posted: replies left unread until then are read now.
+    if (o.state === "posted" && r.mandatory) claimsDue.add(`${r.repo}#${r.number}`);
   }
 
   /** A post due to be filed again. */
@@ -1275,7 +1290,7 @@ export function createEngine(d: EngineDeps) {
       // The pull request moved on while this notice waited: the head it speaks for is gone, so the notice is too. Otherwise a
       // delayed refusal for head A would later edit the one acknowledgement to say A's review was not posted, wiping the newer
       // head's own (a done notice or a queued one), and ask for a review of a head nobody is looking at. A review of the newer
-      // head that is refused has its own notice. Its head is the one GitHub has now where the watcher doesn't poll it: a one-off's
+      // head that is refused has its own notice. Its head is the one GitHub has now where the watcher doesn't watch it: a one-off's
       // row is a snapshot from when the review was asked for, so a push after it would otherwise pass this check unseen.
       // Read once where nothing polls the repo: that read also says whether the PR is closed (gone() below takes it whole).
       const live = repoCfg(r.repo) ? undefined : await d.source.get(r.repo, r.number).catch(() => undefined);
@@ -1305,15 +1320,15 @@ export function createEngine(d: EngineDeps) {
     }
   }
   /** Whether a run's pull request is gone (closed unmerged) before its notice landed, from the row and GitHub: `fresh` is the
-   * live read the delivery already made for an unwatched repo, so a delivery asks GitHub once. A watched repo's poll keeps its
+   * live read the delivery already made for an unwatched repo, so a delivery asks GitHub once. A watched repo's feed keeps its
    * row current; nothing polls an unwatched repo's PR (a one-off elsewhere, a repo since dropped), so there the row is only a
    * snapshot and GitHub's own answer decides. A row written before this service recorded merges says `open = 0` for a merged PR
    * too, and a merged PR still takes its notice; a PR that can't be read is not given up on. */
   async function gone(r: RunRow, fresh?: PullRequest): Promise<boolean> {
     const p = fresh ?? prRow(r.repo, r.number);
-    // A watched repo's poll keeps its row current, so a row that says the PR still stands (open, or merged: which still takes a
+    // A watched repo's feed keeps its row current, so a row that says the PR still stands (open, or merged: which still takes a
     // notice) is the answer. Nothing seen yet means nothing about a close.
-    // A row that says closed without merged is not proof: the poll's own detail read can fail just as the PR leaves the open
+    // A row that says closed without merged is not proof: the watcher's own detail read can fail just as the PR leaves the open
     // list, and a merged PR still takes its notice. GitHub is asked once more there (and for a row written before this service
     // recorded merges at all); a read that fails leaves the notice pending, never dropped on a guess.
     if (repoCfg(r.repo)) return !!p && !p.open && (p.merged ? false : away(r));
@@ -1688,7 +1703,7 @@ export function createEngine(d: EngineDeps) {
   /**
    * A head's risk tier, when any input changed since its last classification (head, base, author kind or association, the repo's
    * class and rules): one consistent read of its files (the snapshot), the repo's rules, stored on its row with those inputs. A read
-   * that fails or a PR that moved meanwhile leaves it pending; the next poll tries again.
+   * that fails or a PR that moved meanwhile leaves it pending; it is read again after AGAIN_MS.
    */
   async function classifyPr(cfg: Entry, p: PullRequest) {
     const row = prRow(p.repo, p.number);
@@ -1696,7 +1711,7 @@ export function createEngine(d: EngineDeps) {
     // Changed inputs make the stored tier stale at once: pending until a snapshot of the new inputs lands, never the old tier.
     if (row?.cls) (run("UPDATE prs SET tier = NULL, rule = NULL, why = NULL, facts = NULL, cls = NULL WHERE repo = ? AND number = ?", p.repo, p.number), mirrorDue = true);
     let s: Awaited<ReturnType<PrSource["snapshot"]>>;
-    try { s = await d.source.snapshot(p.repo, p.number); } catch (e) { return void log("a pull request's files couldn't be read; its tier waits for the next poll", { repo: p.repo, pr: p.number, err: String((e as Error).message).slice(0, 200) }); }
+    try { s = await d.source.snapshot(p.repo, p.number); } catch (e) { return void log("a pull request's files couldn't be read; its tier is read again later", { repo: p.repo, pr: p.number, err: String((e as Error).message).slice(0, 200) }); }
     if ("moved" in s || s.pr.head !== p.head) return;
     const i = inputsOf(s.pr, cfg);
     const facts = factsOf(s.files, { author: i.author as Facts["author"], base: s.pr.base_ref, repo_class: cfg.repo_class });
@@ -1707,7 +1722,7 @@ export function createEngine(d: EngineDeps) {
   }
 
   /**
-   * The comment says the tier on every PR, edited in place. Reconciled each poll: a head or tier the comment hasn't said (stored in
+   * The comment says the tier on every PR, edited in place. Reconciled on each look at the PR and each idle pass: a head or tier the comment hasn't said (stored in
    * `noted` once its write is taken) is said now, so a failed write, a restart or an upgrade all end with it said. Only when the PR's
    * slot is free (never over a waiting notice); a rule edit that changes only the why leaves the comment be.
    */
@@ -1720,66 +1735,148 @@ export function createEngine(d: EngineDeps) {
     if (reported || await ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
   }
 
-  /** One watched repo: its PRs' heads (each classified first) and its new comments. The first look reviews what is open like a new PR. */
-  async function poll(cfg: Entry) {
+  /**
+   * One PR as GitHub has it now (an event's read, or the bootstrap's list): its row, its tier (classified when an input changed), then
+   * decide(). A head whose tier stays pending (its files couldn't be read, or the head moved during the read) is read again after
+   * AGAIN_MS.
+   */
+  async function observe(cfg: Entry, p: PullRequest) {
+    const was = prRow(p.repo, p.number);
+    upsertPr(p);
+    mirrorDue = true;
+    await classifyPr(cfg, p);
+    void noteTier(p); // not awaited: a slow comment write never delays queueing a review (the PR's slot, taken inside, guards a second)
+    if (!decide(cfg, p, was)) again.set(`${p.repo}#${p.number}`, now() + AGAIN_MS);
+    else again.delete(`${p.repo}#${p.number}`);
+  }
+  /**
+   * The triggers for an open PR against its row before this look (`was`): a new PR or head, a draft marked ready, a PR never
+   * reviewed, and a gated head missing a mandatory reviewer. With `was` the row itself (nothing changed on GitHub) only the last
+   * two can act: the idle pass runs that every IDLE_MS, as a run settling or failing can change them. False while the head's tier
+   * is pending: nothing is queued, never on a guessed tier.
+   */
+  function decide(cfg: Entry, p: PullRequest, was: PrRow | undefined): boolean {
+    const t = current(p.repo, p.number, p.head);
+    if (!t) return false;
+    // The head the triggers last ran for: a push seen while its tier was pending is still a push once it is classified.
+    const seen = was?.handled ?? was?.head;
+    run("UPDATE prs SET handled = ? WHERE repo = ? AND number = ?", p.head, p.repo, p.number);
+    const row = prRow(p.repo, p.number)!;
+    // A head whose policy differs from the head before it starts a new run of heads under that policy.
+    if (row.policy !== t.policy) {
+      run("UPDATE prs SET policy = ?, policy_since = ?, policy_at = ? WHERE repo = ? AND number = ?", t.policy, p.head, now(), p.repo, p.number);
+      t.at = now();
+    }
+    const c = t.c;
+    // A draft too, where the repo reviews drafts.
+    if ((!p.draft || c.drafts) && opening(c, p, t.policy, t.at)) return true;
+    if (!was) trigger(c, p, "open");
+    else if (seen !== p.head) trigger(c, p, pushed(p) ? "push" : "open");
+    else if (was.draft && !p.draft && !runsOn(p)) trigger(c, p, "open");
+    else if (!p.draft && !anyRun(p)) trigger(c, p, "open");
+    // A gated tier's open head missing a mandatory reviewer under its policy gets it.
+    else if (!p.draft && gated(c)) missing(c, p, t.policy, t.at);
+    return true;
+  }
+  /** A PR's row as the PullRequest decide() takes: what the triggers read of it. */
+  const rowPr = (r: PrRow): PullRequest => ({ repo: r.repo, number: r.number, head: r.head, base: r.base, base_ref: "", draft: !!r.draft, fork: !!r.fork, author: r.author, open: !!r.open, url: `https://github.com/${r.repo}/pull/${r.number}` });
+  /** A PR that left the open list: its findings' outcome (merged: open at merge; else open at close), queued runs skipped, its review task's close due. */
+  function closePr(repo: string, n: number, merged: boolean | undefined) {
+    if (one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL", repo, n) && merged !== undefined)
+      run("UPDATE findings SET outcome = ?, outcome_at = ? WHERE repo = ? AND number = ? AND outcome IS NULL", merged ? "open_at_merge" : "open_at_close", iso(), repo, n);
+    for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued'", repo, n)) skipQueued(q.id, "closed");
+    // Its review task held only its posts' approvals: done with the PR. The close is tried each tick until it lands (closeTasks).
+    run("UPDATE prs SET open = 0, merged = COALESCE(?, merged), close_due = EXISTS (SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL) WHERE repo = ? AND number = ?", merged === undefined ? null : merged ? 1 : 0, repo, n, repo, n);
+    again.delete(`${repo}#${n}`);
+    mirrorDue = true;
+  }
+  /** One PR named by the feed (or due again): read once, then observed while open, closed otherwise. */
+  async function prEvent(cfg: Entry, n: number) {
+    const p = await d.source.get(cfg.repo, n);
+    if (p.open) await observe(cfg, p);
+    else if (prRow(cfg.repo, n)?.open) closePr(cfg.repo, n, !!p.merged);
+  }
+  /** One PR conversation comment, once (its id, recorded once handled): a command from someone with write access. A transient
+   * failure throws (the comment stays unhandled); a refusal (a 4xx) is final: the comment is seen and passed over. */
+  async function comment(cfg: Entry, c: PrComment) {
+    if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, c.id)) return;
+    try {
+      await command(cfg, c);
+    } catch (e) {
+      if (!permanent(e)) throw e;
+      log("review command refused by GitHub; passed over", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) });
+    }
+    run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, c.id);
+  }
+
+  /**
+   * One watched repo read whole (the feed's catch-up: this service's start, a gap in the kernel's log, the feed's resync of the
+   * repo, or an event whose handling failed): its open PRs' heads (each classified first), the PRs that left the list, the comments
+   * since the last bootstrap, and the answers on every PR with findings. The first look reviews what is open like a new PR.
+   */
+  async function bootstrap(cfg: Entry) {
     const cursor = one<{ comments: string }>("SELECT comments FROM cursors WHERE repo = ?", cfg.repo);
     const open = await d.source.open(cfg.repo);
     const seenNow = new Set(open.map((p) => p.number));
-    for (const p of open) {
-      const was = prRow(p.repo, p.number);
-      upsertPr(p);
-      await classifyPr(cfg, p);
-      void noteTier(p); // not awaited: a slow comment write never delays queueing a review (the PR's slot, taken inside, guards a second)
-      // Pending (no current tier): nothing is queued, never on a guessed tier.
-      const t = current(p.repo, p.number, p.head);
-      if (!t) continue;
-      // The head the triggers last ran for: a push seen while its tier was pending is still a push once it is classified.
-      const seen = was?.handled ?? was?.head;
-      run("UPDATE prs SET handled = ? WHERE repo = ? AND number = ?", p.head, p.repo, p.number);
-      const row = prRow(p.repo, p.number)!;
-      // A head whose policy differs from the head before it starts a new run of heads under that policy.
-      if (row.policy !== t.policy) {
-        run("UPDATE prs SET policy = ?, policy_since = ?, policy_at = ? WHERE repo = ? AND number = ?", t.policy, p.head, now(), p.repo, p.number);
-        t.at = now();
-      }
-      const c = t.c;
-      // A draft too, where the repo reviews drafts.
-      if ((!p.draft || c.drafts) && opening(c, p, t.policy, t.at)) continue;
-      if (!was) trigger(c, p, "open");
-      else if (seen !== p.head) trigger(c, p, pushed(p) ? "push" : "open");
-      else if (was.draft && !p.draft && !runsOn(p)) trigger(c, p, "open");
-      else if (!p.draft && !anyRun(p)) trigger(c, p, "open");
-      // A gated tier's open head missing a mandatory reviewer under its policy gets it.
-      else if (!p.draft && gated(c)) missing(c, p, t.policy, t.at);
-    }
+    for (const p of open) await observe(cfg, p);
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       if (seenNow.has(gone.number)) continue;
-      // Read once: its merge or close says whether its findings are open at a merge or at a close (unknown when GitHub can't be
-      // read now), and whether a notice still waiting may land (a merged PR takes one; a closed one doesn't).
-      const closed = await d.source.get(cfg.repo, gone.number).catch((e) => void log("closed PR not read; its findings' outcome stays unknown", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) }));
-      if (one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL", cfg.repo, gone.number) && closed && !closed.open)
-        run("UPDATE findings SET outcome = ?, outcome_at = ? WHERE repo = ? AND number = ? AND outcome IS NULL", closed.merged ? "open_at_merge" : "open_at_close", iso(), cfg.repo, gone.number);
-      for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued'", cfg.repo, gone.number)) skipQueued(q.id, "closed");
-      // Its review task held only its posts' approvals: done with the PR. The close is retried after the tick's main work (closeTasks).
-      run("UPDATE prs SET open = 0, merged = COALESCE(?, merged), close_due = EXISTS (SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL) WHERE repo = ? AND number = ?", closed ? (closed.merged ? 1 : 0) : null, cfg.repo, gone.number, cfg.repo, gone.number);
+      // Read once: still open (the list shifted between pages) is observed, a merge or close says whether its findings are open at a
+      // merge or at a close. A read that fails throws: the repo is read whole again, never closed on a guess.
+      await prEvent(cfg, gone.number).catch((e) => { if (!permanent(e)) throw e; closePr(cfg.repo, gone.number, undefined); });
     }
-    reconciled.add(cfg.repo);
-    if (!cursor) return void run("INSERT INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
-    const got = await d.source.comments(cfg.repo, cursor.comments);
-    for (const c of got.comments) {
-      // Each comment is handled once (its id, recorded once handled). One that fails (a read GitHub didn't answer) stops here:
-      // the cursor stays, and the next tick asks again from it (what was handled before it is skipped by id).
-      if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, c.id)) continue;
-      try {
-        await command(cfg, c);
-      } catch (e) {
-        // A refusal (a 4xx) is final: the comment is seen and passed over. Anything else is tried again next tick.
-        if (!permanent(e)) return void log("review command not handled; the next tick tries again", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) });
-        log("review command refused by GitHub; passed over", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) });
-      }
-      run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, c.id);
+    if (!cursor) run("INSERT INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
+    else {
+      const got = await d.source.comments(cfg.repo, cursor.comments);
+      // One that fails stops here: the cursor stays, and the repo is read again from it (what was handled is skipped by id).
+      for (const c of got.comments) await comment(cfg, c);
+      run("UPDATE cursors SET comments = ? WHERE repo = ?", got.cursor, cfg.repo);
     }
-    run("UPDATE cursors SET comments = ? WHERE repo = ?", got.cursor, cfg.repo);
+    // Every watched repo: an earlier mandatory run's finding may still hold a merge whatever the tiers now say, so its answers count.
+    for (const p of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) await claims(cfg, p.number);
+    idleAt = now();
+  }
+
+  /**
+   * The feed: the kernel's log of the github change feed's events on the watched repos (module.yaml `subscribes:`), read each tick
+   * after the last seq handled. Each PR it names is read once and observed; a comment is a command; a review reply reads that PR's
+   * threads; a resync reads the repo whole. Nothing is lost when a handler fails: its repo is read whole on the next tick (a
+   * refusal, a 4xx, is final and logged). The cursor is this process's: a start reads every repo whole (an apply restarts it, so a
+   * settings change is read whole too), as does a gap in the log.
+   */
+  async function feed() {
+    const repos = new Map(d.config().repos.map((c) => [c.repo, c]));
+    if (after === undefined) {
+      after = (await d.feed()).next;
+      for (const r of repos.keys()) boot.add(r);
+    }
+    const page = await d.feed(after);
+    if (page.gap) for (const r of repos.keys()) boot.add(r);
+    // Coalesced: each PR once per page, each comment once, each PR's threads once.
+    const prs = new Map<string, { cfg: Entry; n: number }>(), threads = new Map<string, { cfg: Entry; n: number }>();
+    const comments: { cfg: Entry; c: PrComment }[] = [];
+    for (const e of page.events) {
+      const cfg = repos.get(e.resource.toLowerCase());
+      if (!cfg) continue;
+      const n = Number(e.data?.number);
+      if (e.kind === "github.resync") boot.add(cfg.repo);
+      else if (e.kind === "pull_request_review_comment.created") threads.set(`${cfg.repo}#${n}`, { cfg, n });
+      else if (e.kind.startsWith("pull_request.")) prs.set(`${cfg.repo}#${n}`, { cfg, n });
+      // A clipped comment (over 2,000 characters) is never a command: a command is one short line, and the rest can't be checked.
+      else if (e.kind === "issue_comment.created" && e.data?.pr === true && !e.truncated)
+        comments.push({ cfg, c: { id: e.id.replace(/^comment:/, ""), number: n, author: e.author ?? "", body: e.text ?? "", created_at: String(e.data?.created_at ?? iso()) } });
+    }
+    const failed = (repo: string, what: string, e: unknown) => {
+      if (permanent(e)) return void log(`${what} refused by GitHub; passed over`, { repo, err: String((e as Error).message).slice(0, 200) });
+      log(`${what} not handled; the repo is read whole next tick`, { repo, err: String((e as Error).message).slice(0, 200) });
+      boot.add(repo);
+    };
+    for (const { cfg, n } of prs.values()) if (!boot.has(cfg.repo)) await prEvent(cfg, n).catch((e) => failed(cfg.repo, `pull request #${n}`, e));
+    // A comment is kept until it is handled: one on a repo still to be read whole, or whose handling failed, is tried again each tick
+    // (a bootstrap's comment read starts only where the last one ended, so it can't stand in for these).
+    for (const x of comments) commentsDue.set(`${x.cfg.repo}:${x.c.id}`, x);
+    for (const { cfg, n } of threads.values()) claimsDue.add(`${cfg.repo}#${n}`);
+    after = page.next;
   }
   const anyRun = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ?", p.repo, p.number);
   /** A new head is a push (on_push, from the baseline) once any review of the PR (but a one-off) completed, whatever became of
@@ -1808,10 +1905,9 @@ export function createEngine(d: EngineDeps) {
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
 
   const CLOSE_MS = 10_000;
-  /** Closes the review tasks of PRs a poll found closed, side by side and each bounded; one that fails or hangs is tried again next tick. */
-  const reconciled = new Set<string>(); // repos whose open and closed PRs this tick's poll has read
+  /** Closes the review tasks of PRs found closed, side by side and each bounded; one that fails or hangs is tried again next tick. */
   async function closeTasks() {
-    await Promise.all(all<{ repo: string; number: number }>("SELECT repo, number FROM prs WHERE open = 0 AND close_due = 1").filter((g) => reconciled.has(g.repo)).map(async (g) => {
+    await Promise.all(all<{ repo: string; number: number }>("SELECT repo, number FROM prs WHERE open = 0 AND close_due = 1").map(async (g) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([d.poster.close(g.repo, g.number, "The pull request is closed."), new Promise((_, no) => { timer = setTimeout(() => no(new Error("close timed out")), CLOSE_MS); })]);
@@ -1826,33 +1922,56 @@ export function createEngine(d: EngineDeps) {
   }
 
   const errors = new Map<string, string>();
-  /** Something a verdict reads changed since the status mirror last ran (the fast tick runs it only then). */
-  let mirrorDue = true;
+  const said = (key: string, msg: string, what: string, f: Record<string, unknown>) => { if (errors.get(key) !== msg) log(what, { ...f, err: msg }); errors.set(key, msg); };
+  /** Something a verdict reads changed since the status mirror last ran (the tick runs it then, and every IDLE_MS for its retries). */
+  let mirrorDue = true, mirroredAt = 0;
+  /** The feed's cursor (the last log seq handled; undefined until this process's first read), the repos to read whole, the PRs
+   * whose tier is pending (read again when due) and the PRs whose review threads are to be read. */
+  let after: number | undefined;
+  const boot = new Set<string>(), again = new Map<string, number>(), claimsDue = new Set<string>(), commentsDue = new Map<string, { cfg: Entry; c: PrComment }>();
+  /** When the idle pass (decide() on every open PR from its row: no GitHub read) last ran. */
+  let idleAt = 0;
   /**
-   * One tick. `github` (the default): read the watched repos (their PRs, comments and answers) too; without it (main.ts's short
-   * timer) only what the kernel answers moves: finished checks, filed posts, due runs, and the status mirror.
+   * One tick (every 10 seconds): the feed's events and the repos it asks to read whole, then what the kernel answers (finished
+   * checks, filed posts, due runs) and the status mirror.
    */
-  async function tick(o: { github?: boolean } = {}) {
-    const github = o.github !== false;
-    reconciled.clear();
+  async function tick() {
     try {
-      await tickWork(github);
+      await tickWork();
     } finally {
-      if (github) await closeTasks();
+      await closeTasks();
     }
   }
-  async function tickWork(github: boolean) {
-    if (github) for (const cfg of d.config().repos) {
-      try {
-        await poll(cfg);
-        // Every watched repo: an earlier mandatory run's finding may still hold a merge whatever the tiers now say, so its answers count.
-        await claims(cfg);
-        errors.delete(cfg.repo);
-      } catch (e) {
-        const msg = String((e as Error).message).slice(0, 200);
-        if (errors.get(cfg.repo) !== msg) log("repo not read; the next tick asks again", { repo: cfg.repo, err: msg });
-        errors.set(cfg.repo, msg);
-      }
+  async function tickWork() {
+    const repos = new Map(d.config().repos.map((c) => [c.repo, c]));
+    try { await feed(); errors.delete("feed"); } catch (e) { said("feed", String((e as Error).message).slice(0, 200), "the feed's log not read; the next tick asks again", {}); }
+    for (const r of [...boot]) {
+      const cfg = repos.get(r);
+      if (!cfg) { boot.delete(r); continue; }
+      try { await bootstrap(cfg); boot.delete(r); errors.delete(r); } catch (e) { said(r, String((e as Error).message).slice(0, 200), "repo not read; the next tick asks again", { repo: r }); }
+    }
+    for (const [k, { cfg, c }] of [...commentsDue]) {
+      if (!repos.has(cfg.repo)) { commentsDue.delete(k); continue; }
+      if (boot.has(cfg.repo)) continue;
+      try { await comment(cfg, c); commentsDue.delete(k); } catch (e) { log("review command not handled; tried again next tick", { repo: cfg.repo, pr: c.number, err: String((e as Error).message).slice(0, 200) }); }
+    }
+    for (const [k, due] of [...again]) {
+      if (due > now()) continue;
+      const [r, n] = [k.slice(0, k.lastIndexOf("#")), Number(k.slice(k.lastIndexOf("#") + 1))];
+      const cfg = repos.get(r);
+      if (!cfg) { again.delete(k); continue; }
+      again.set(k, now() + AGAIN_MS);
+      await prEvent(cfg, n).catch((e) => { if (permanent(e)) again.delete(k); log("a pull request not read; asked again later", { repo: r, pr: n, err: String((e as Error).message).slice(0, 200) }); });
+    }
+    for (const k of [...claimsDue]) {
+      const r = k.slice(0, k.lastIndexOf("#")), cfg = repos.get(r);
+      if (cfg) await claims(cfg, Number(k.slice(k.lastIndexOf("#") + 1)));
+      else claimsDue.delete(k);
+    }
+    if (now() - idleAt >= IDLE_MS) {
+      idleAt = now();
+      // The tier comment too: one whose write failed is said again here.
+      for (const r of all<PrRow>("SELECT * FROM prs WHERE open = 1")) { const cfg = repos.get(r.repo); if (cfg) { decide(cfg, rowPr(r), r); void noteTier(rowPr(r)); } }
     }
     await replies();
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
@@ -1906,7 +2025,7 @@ export function createEngine(d: EngineDeps) {
     // Last, and in one pass: every refusal this tick is recorded by now (a settled post, a re-filed one, a run that finished), so
     // each pending notice is delivered exactly once this tick, by the only path that does it.
     for (const r of all<RunRow>("SELECT * FROM runs WHERE notice = 'pending' AND (notice_due IS NULL OR notice_due <= ?)", now())) await deliver(r);
-    if (github || mirrorDue) { mirrorDue = false; await mirror(); }
+    if (mirrorDue || now() - mirroredAt >= IDLE_MS) { mirrorDue = false; mirroredAt = now(); await mirror(); }
     // Every one-off summary a request settled in this tick (or an earlier tick couldn't send) goes now, one per asker.
     await sendSummaries();
   }
@@ -2074,12 +2193,14 @@ export function createEngine(d: EngineDeps) {
    * The next mandatory recheck reads each claim and opens the finding again only if it finds the fix or the reason unsafe. Any
    * other reply is conversation. Each reply is read once.
    */
-  async function claims(cfg: Entry) {
-    for (const p of all<{ number: number; author: string; fork: number; head: string }>("SELECT number, author, fork, head FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
+  async function claims(cfg: Entry, n: number) {
+    claimsDue.delete(`${cfg.repo}#${n}`);
+    for (const p of all<{ number: number; author: string; fork: number; head: string }>("SELECT number, author, fork, head FROM prs WHERE repo = ? AND number = ? AND open = 1", cfg.repo, n)) {
       const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
       // Only a PR with an important finding a mandatory run made: an answer to anything else can't move a merge.
       if (!one("SELECT 1 FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.severity = 'important' AND r.mandatory = 1", cfg.repo, p.number)) continue;
-      const threads = await d.source.threads(cfg.repo, p.number).catch((e) => (log("a pull request's threads couldn't be read; its replies wait for the next poll", { repo: cfg.repo, pr: p.number, err: String((e as Error).message).slice(0, 200) }), [] as Thread[]));
+      // A read that fails is asked again on a later tick.
+      const threads = await d.source.threads(cfg.repo, p.number).catch((e) => (claimsDue.add(`${cfg.repo}#${p.number}`), log("a pull request's threads couldn't be read; its replies are read again next tick", { repo: cfg.repo, pr: p.number, err: String((e as Error).message).slice(0, 200) }), [] as Thread[]));
       for (const t of threads) {
         // Each reply is read once, whether or not its finding is open now: one that arrives while the finding is closed is consumed
         // as nothing, so only a reply posted after it reopens can close it again.
@@ -2095,12 +2216,15 @@ export function createEngine(d: EngineDeps) {
           const key = `reply:${r.id}`;
           if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
           if (!open.has(t.finding)) {
-            // Not gating: consumed, unless it is an important finding of a mandatory run whose post hasn't settled (left unread for the poll that sees it gate).
+            // Not gating: consumed, unless it is an important finding of a mandatory run whose post hasn't settled (left unread: its
+            // post settling reads the PR's threads again).
             if (!one("SELECT 1 FROM findings f JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.outcome IS NULL AND f.severity = 'important' AND x.mandatory = 1 AND x.posted != 'posted'", cfg.repo, p.number, t.finding)) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
             continue;
           }
           const m = answerOf(r.body);
-          const may = !!m && ((r.author.toLowerCase() === p.author && !p.fork) || WRITERS.has(await d.source.permission(cfg.repo, r.author)));
+          let may = !!m && r.author.toLowerCase() === p.author && !p.fork;
+          // A writer's role read that fails leaves the reply unread (the PR's threads are read again next tick); a refusal is no write access.
+          if (m && !may) { try { may = WRITERS.has(await d.source.permission(cfg.repo, r.author)); } catch (e) { if (!permanent(e)) { claimsDue.add(`${cfg.repo}#${p.number}`); log("an answer's author couldn't be checked; read again next tick", { repo: cfg.repo, pr: p.number, err: String((e as Error).message).slice(0, 200) }); return; } } }
           if (m && !may) log("an answer from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
           if (m && may) {
             answer({ repo: cfg.repo, number: p.number, head: p.head }, t.finding, m.word, m.reason, `reply:${r.author.slice(0, 40)}`, r.body, `answered by ${r.author.slice(0, 40)}`);
@@ -2148,7 +2272,7 @@ export function createEngine(d: EngineDeps) {
       return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [], requires_review: false, tier, policy: t.policy };
     }
     // Each mandatory reviewer that reviewed the head (reviewers()) has a run there that is done (whole or partial: a partial review
-    // is still a review, a carried one too) or failed past its retries; queued or running ones wait. None yet: the next poll starts it.
+    // is still a review, a carried one too) or failed past its retries; queued or running ones wait. None yet: the watcher starts it.
     const latest = gateRuns(cfg, repo, n, head, t.policy, t.at);
     const busy = latest.filter((r) => r.status === "queued" || r.status === "running");
     // A review whose first post is still being decided: its findings gate once they have threads, so the merge waits for it. A

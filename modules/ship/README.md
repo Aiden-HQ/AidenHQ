@@ -6,7 +6,9 @@ Owns the lifecycle of every pull request on the repos it covers: the fleet's own
 repo) and every repo in `maintainer_repos`. One `ship` setting holds per-repo entries and two presets (`cautious`, the
 default, and `full`), every knob a per-repo setting with no floor in code (`null` caps are unlimited).
 
-Its watch loop reads the open PRs once a minute (one list read per repo) and runs every PR through one engine (`round()`). A PR
+Its watch loop reads a repo's open PRs (one list read) when the github module's change feed reports a change there (a PR
+opened, pushed, labelled, reviewed or closed, a check or status finished, main moved), and again after 5 minutes while a PR it
+works can move with GitHub quiet (its task's state, a merge's outcome, a wedged check run). It runs every PR through one engine (`round()`). A PR
 the code host opened for a task is adopted when first seen and owned by that task; any other PR is a hand-off: a member's `ship`
 label or `/ship` comment adopts it. For either, ship repairs a conflict (its no-model repair first), has GitHub update a branch
 that is behind (once, before asking for a fix, when it is red behind a green base), wakes the PR's task for red required checks

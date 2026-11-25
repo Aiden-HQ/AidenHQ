@@ -13,7 +13,7 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
   const called = [], sent = [];
   const routes = shipRoutes({
     gh: async (method, path, body) => (called.push(`${method} ${path}`), sent.push(body), { status: 200, body: path === "/repos/acme/app" ? { default_branch: "main" } : { ok: true } }),
-    flow: { closed: async () => {} }, gate: async () => undefined, cacheDir,
+    gate: async () => undefined, cacheDir,
     allowed: (repo) => repo === "acme/app", isShip: async (auth) => auth === "Bearer ship",
   });
   const s = createServer((req, res) => void routes(req, res).then((done) => done || res.writeHead(404).end()));
@@ -54,10 +54,6 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
     ["GET", "/repos/acme/app/actions/workflows/x.yml/runs?a=%5c"], ["POST", "/repos/acme/app/actions/workflows/../../../other/repo/actions/workflows/x.yml/dispatches", { ref: "b1" }],
     ["POST", "/repos/other/repo/actions/workflows/x.yml/dispatches", { ref: "b1" }]])
     assert.equal((await gh({ method, path, body })).status, 403, path);
-  // A fact names a repo the fleet works.
-  const flow = (args) => fetch(`${url}/flow`, { method: "POST", headers: { authorization: "Bearer ship" }, body: JSON.stringify({ fn: "closed", args }) });
-  assert.equal((await flow(["other/repo", 1, "h", "2026-11-24T00:00:00Z"])).status, 403);
-  assert.equal((await flow(["acme/app", 1, "h", "2026-11-24T00:00:00Z"])).status, 200);
   assert.equal(sent[1].query, OPEN_PRS_QUERY, "the one fixed query, never ship's");
   assert.deepEqual(await (await fetch(`${url}/openers`, { headers: { authorization: "Bearer ship" } })).json(), { "https://github.com/acme/app/pull/1": { task: "ACME-1", branch: "b1" } });
 });
@@ -76,7 +72,7 @@ test("a close or branch delete whose PR a successor took over while the lock was
       called.push(`${method} ${path}`);
       return { status: 200, body: path === "/repos/acme/app" ? { default_branch: "main" } : path === "/repos/acme/app/pulls/6" ? { head: { ref: "b6" } } : { ok: true } };
     },
-    flow: { closed: async () => {} }, gate: async () => undefined, cacheDir,
+    gate: async () => undefined, cacheDir,
     allowed: (repo) => repo === "acme/app", isShip: async (auth) => auth === "Bearer ship",
   });
   const s = createServer((req, res) => void routes(req, res).then((done) => done || res.writeHead(404).end()));
@@ -91,7 +87,7 @@ test("a close or branch delete whose PR a successor took over while the lock was
   let sent;
   const own = shipRoutes({
     gh: async (method, path, body) => { sent = body; return { status: 200, body: path === "/repos/acme/app" ? { default_branch: "main" } : { ok: true } }; },
-    flow: { closed: async () => {} }, gate: async () => undefined, cacheDir,
+    gate: async () => undefined, cacheDir,
     allowed: (repo) => repo === "acme/app", isShip: async () => true,
   });
   const s2 = createServer((req, res) => void own(req, res).then((done) => done || res.writeHead(404).end()));

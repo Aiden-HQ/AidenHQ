@@ -67,7 +67,15 @@ function world(settings = {}) {
     },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
     emit: (f) => facts.push(f),
+    // The change feed's log: what a test queues (`w.events`), and a resync of every watched repo on a tick that reads GitHub.
+    feed: async (after) => {
+      if (after === undefined) return { events: [], next: seq, gap: false };
+      const events = feedQueue.splice(0).map((e) => ({ seq: ++seq, ...e }));
+      return { events, next: seq, gap: false };
+    },
   };
+  let seq = 0;
+  const feedQueue = [];
   const engine = createEngine(deps);
   const review = (s, o = {}) => ({ version: 1, repo: REPO, pr: s.number, base: s.merge_base, head: s.head, ...s.combo, incremental_from: s.incremental_from, full: s.full,
     coverage: { reviewed: ["a.ts"], excluded: [], incomplete: null }, findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }],
@@ -75,7 +83,9 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  const w = { db, engine, posts, snaps, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, classifieds, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, tick: (o) => w.engine.tick(o), restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
+  const w = { db, engine, posts, snaps, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, classifieds, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, events: feedQueue,
+    // A tick reads every watched repo whole (the feed's resync), as GitHub changes in a test aren't announced; `{ github: false }`: only what the feed holds.
+    tick: (o) => { if (o?.github !== false) for (const r of cfg.repos) feedQueue.push({ resource: r.repo, id: `resync:${seq}`, kind: "github.resync" }); return w.engine.tick(); }, restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
   // `w` is returned after createEngine's deps, so the fake's ack can read acksDown from it.
   return w;
 }
@@ -1978,4 +1988,46 @@ test("every classified head gets the tier notice once: nothing changed is quiet,
   await w.tick();
   assert.equal(w.classifieds.at(-1).head, sha("4"));
   assert.equal(w.classifieds.length, 2);
+});
+
+test("the change feed drives it: a PR's events read only that PR, a comment is a command, a reply answers its finding, a close settles the findings; a failed read reads the repo whole instead", async () => {
+  const w = gatedWorld();
+  // The first look (this process's start) reads the repo whole; from here on only what the feed names is read.
+  await w.tick({ github: false });
+  const real = w.prs;
+  const ev = (kind, n, o = {}) => w.events.push({ resource: REPO, id: `${kind}:${n}:${w.now()}`, kind, ...o, data: { number: n, ...o.data } });
+  w.later(1000);
+  w.pr(2, sha("2"));
+  await w.tick({ github: false });
+  assert.equal(w.started.length, 0, "nothing is read until the feed names it");
+  ev("pull_request.opened", 2);
+  await w.tick({ github: false });
+  assert.deepEqual(w.started.map((s) => [s.number, s.head]), [[2, sha("2")]]);
+  w.finish(0); w.outcomes.set("k-1", { state: "posted" }); await w.tick({ github: false });
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"]);
+  // A reply on the finding's thread, announced by the feed, closes it.
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 70, author: "bob", body: "fixed: the lock is taken first" }] }]);
+  ev("pull_request_review_comment.created", 2);
+  await w.tick({ github: false });
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+  // A command in a comment the feed carries.
+  ev("issue_comment.created", 2, { id: "comment:900", author: "alice", text: "aiden review", data: { pr: true } });
+  await w.tick({ github: false });
+  assert.equal(w.started.length, 2, "the command queued a review");
+  ev("issue_comment.created", 2, { id: "comment:900", author: "alice", text: "aiden review", data: { pr: true } });
+  await w.tick({ github: false });
+  assert.equal(w.started.length, 2, "a comment is handled once");
+  // A read GitHub didn't answer: the repo is read whole instead, so the push is still seen.
+  w.pr(2, sha("3"));
+  w.readsDown.push(502);
+  ev("pull_request.synchronize", 2);
+  await w.tick({ github: false });
+  assert.deepEqual(w.readsDown, [], "the PR's own read failed");
+  w.later(DEBOUNCE + 1); await w.tick({ github: false });
+  assert.deepEqual(w.started.slice(2).map((s) => s.head), [sha("3")]);
+  // Merged: the close the feed names settles what is still open as open at merge and closes the review task.
+  real.set(2, { ...real.get(2), open: false, merged: true });
+  ev("pull_request.closed", 2);
+  await w.tick({ github: false });
+  assert.deepEqual(w.closed.map((c) => c.slice(0, 2)), [[REPO, 2]]);
 });

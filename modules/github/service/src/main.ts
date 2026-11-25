@@ -14,7 +14,7 @@
 // Its loops start here: the change feed (feed.ts: the one timer-driven reader of GitHub, which also schedules the src_github sync
 // and Flow's churn and backfill, and feeds Flow, the design reviews and the release train in-process), the merge queue, the held
 // writes, the release train's kernel-only minute, the design reviews' retries and the reviewed refs' tidying. The PR watch is the
-// ship module's (modules/ship): it reaches GitHub, Flow, code review's verdict and pr-tasks.json through /internal/ship/* here
+// ship module's (modules/ship): it reaches GitHub, code review's verdict and pr-tasks.json through /internal/ship/* here
 // (ship-routes.ts), with its own module token.
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -90,7 +90,7 @@ const feed = createFeed({
   member: (who, association, repo) => handle.flow.isMember(who, association, repo),
   started: (repo, prs, head, at) => { for (const n of prs) handle.flow.checksStarted(repo, n, head, at); },
   hooks: [
-    handle.flow.observe({ runs: (repo, sha) => feed.runs(repo, sha) }),
+    handle.flow.observe({ runs: (repo, sha) => feed.runs(repo, sha), rollup: (repo, sha) => feed.rollup(repo, sha) }),
     handle.designReviews.observe({ pr: (repo, n) => feed.pr(repo, n) }),
     // The train reads instance.yaml again when the instance repo's default branch moves.
     (e) => { if (e.kind === "push" && env.INSTANCE_REPO && e.resource === env.INSTANCE_REPO.toLowerCase()) void handle.train?.refresh(String(e.data?.after ?? "") || undefined).catch((err: Error) => log("instance.yaml read failed", { err: err.message.slice(0, 200) })); },
@@ -107,7 +107,7 @@ access.onWrite((_method, path) => { const m = /^\/repos\/([^/]+\/[^/?]+)(\/[^?]*
 feed.start();
 startTidy({ cacheDir, log });
 const ship = shipRoutes({
-  gh: access.rest, decision: handle.shipDecision, flow: handle.flow, gate: watchGate, cacheDir,
+  gh: access.rest, decision: handle.shipDecision, gate: watchGate, cacheDir,
   allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),
   isShip: (auth) => isModule(kernelUrl, auth, "ship"),
 });
