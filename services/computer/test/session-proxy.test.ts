@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createSessionProxy } from "../session-proxy.ts";
+import { createSessionProxy, withAuthToken } from "../session-proxy.ts";
 
 const KEY = "k".repeat(48);
 const LEASE = "l-0a0b0c0d";
@@ -39,11 +39,11 @@ test("proxies HTTP and WS to the lease, adding the box-side credential the clien
   const s = await setup();
   try {
     const bearer = { authorization: `Bearer ${KEY}` };
-    assert.equal(await s.call(`/session/${LEASE}/term/token?x=1`, bearer), 200);
+    assert.equal(await s.call(`/session/${LEASE}/term/page?x=1`, bearer), 200);
     assert.equal(await s.call(`/session/${LEASE}/web/session`, bearer), 200);
     assert.equal(await s.call(`/session/${LEASE}/term/ws`, bearer, true), 101);
     assert.deepEqual(s.seen, [
-      { path: "/token?x=1", auth: basic("aidenhq:term-secret") },
+      { path: "/page?x=1", auth: basic("aidenhq:term-secret") },
       { path: "/session", auth: basic("opencode:serve-secret") },
       { path: "/ws", auth: basic("aidenhq:term-secret") },
     ]);
@@ -72,4 +72,26 @@ test("a released or unknown lease is a 404", async () => {
   } finally {
     s.close();
   }
+});
+
+test("ttyd's token never reaches the browser: /token answers empty here, and the first frame's AuthToken is swapped in", async () => {
+  const s = await setup();
+  try {
+    assert.equal(await s.call(`/session/${LEASE}/term/token`, { authorization: `Bearer ${KEY}` }), 200);
+    assert.deepEqual(s.seen, []); // answered here, never asked of ttyd
+  } finally {
+    s.close();
+  }
+  const mask = Buffer.from([1, 2, 3, 4]);
+  const body = Buffer.from(JSON.stringify({ AuthToken: "", columns: 80, rows: 24 }));
+  const frame = Buffer.concat([Buffer.from([0x82, 0x80 | body.length]), mask, body.map((b, i) => b ^ mask[i % 4]!)]);
+  const out = withAuthToken(Buffer.concat([frame, Buffer.from("tail")]), "aidenhq:term-secret")!;
+  const m = out.frame.subarray(2, 6), len = out.frame[1]! & 0x7f;
+  const json = JSON.parse(Buffer.from(out.frame.subarray(6, 6 + len)).map((b, i) => b ^ m[i % 4]!).toString());
+  assert.equal(json.AuthToken, Buffer.from("aidenhq:term-secret").toString("base64"));
+  assert.equal(json.columns, 80);
+  assert.equal(out.rest.toString(), "tail");
+  assert.equal(withAuthToken(frame.subarray(0, 10), "x"), undefined);
+  const big = Buffer.concat([Buffer.from([0x82, 0x80 | 126, 0, 130]), mask, Buffer.alloc(130)]);
+  assert.equal(withAuthToken(big.subarray(0, 3), "x"), undefined); // a split extended header waits for the rest
 });

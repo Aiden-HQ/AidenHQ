@@ -150,6 +150,8 @@ function StartDialog({ open, agent, onClose, onStarted }: { open: boolean; agent
   const repoBad = repo.trim() !== "" && !/^[\w.-]+\/[\w.-]+$/.test(repo.trim());
   const ready = !!agent && !!title.trim() && !repoBad && !busy;
   const made = useRef<{ id: string; identifier: string } | null>(null);
+  // Cancelling ends the attempt: a task made for it is not reused by the next one.
+  const cancel = () => ((made.current = null), onClose());
   async function start() {
     if (!ready || !agent) return;
     setBusy(true);
@@ -171,7 +173,7 @@ function StartDialog({ open, agent, onClose, onStarted }: { open: boolean; agent
     }
   }
   return (
-    <Dialog open={open} onClose={() => !busy && onClose()} title="Start a session" actions={<><Button onClick={onClose} disabled={busy}>Cancel</Button><Button variant="primary" disabled={!ready} onClick={() => void start()}>{busy ? "Starting…" : "Start session"}</Button></>}>
+    <Dialog open={open} onClose={() => !busy && cancel()} title="Start a session" actions={<><Button onClick={cancel} disabled={busy}>Cancel</Button><Button variant="primary" disabled={!ready} onClick={() => void start()}>{busy ? "Starting…" : "Start session"}</Button></>}>
       <form className="ses-form" onSubmit={(e) => (e.preventDefault(), void start())}>
         {!agent && <Banner tone="warn">The Session agent isn't set up on this instance yet.</Banner>}
         <Field label="Name">{(id) => <Input id={id} autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Merge the widgets stack" maxLength={120} />}</Field>
@@ -438,7 +440,7 @@ function Thread({ row, prefix, onSignIn, text, setText }: { row: SessionRow; pre
           value={text}
           disabled={!open}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), void send())}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && (e.preventDefault(), void send())}
           placeholder={open ? "Tell the session something. It wakes up to read it." : "This session has ended."}
           aria-label="Message the session"
         />

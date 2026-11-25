@@ -385,7 +385,7 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {}, lease }: { t
     ...(lease ? {
       HOME: `${lease.workdir}/.aidenhq/home`, AIDENHQ_TASK_WORKTREE: lease.workdir, CODEX_HOME: lease.stateIn,
       AIDENHQ_SESSION_PORT: String(lease.ports.serve), AIDENHQ_TERM_PORT: String(lease.ports.term),
-      OPENCODE_SERVER_PASSWORD: lease.secrets.serve, AIDENHQ_TERM_CREDENTIAL: lease.secrets.term,
+      OPENCODE_SERVER_PASSWORD: lease.secrets.serve, AIDENHQ_TERM_CREDENTIAL: `aidenhq:${lease.secrets.term}`, // ttyd's --credential is user:password
     } : {}),
   };
   return JOB_ENV_NAMES.filter((k) => env[k]).map((k) => `${k}=${env[k]}`).join("\n") + "\n";
