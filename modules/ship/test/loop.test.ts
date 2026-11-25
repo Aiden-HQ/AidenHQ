@@ -26,8 +26,12 @@ const decisionOf = (reviewGate) => async (repo, number, head, { pr, main, stacke
   const checks = namedChecks(rollup);
   const data = { repository: { defaultBranchRef: { name: main.name }, pullRequest: { ...pr, state: "OPEN", baseRefName: pr.baseRefName ?? main.name, reviews: { nodes: [] }, baseRef: { compare: { behindBy: 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } } } } };
   const g = reviewGate ? await reviewGate(repo, number, head) : undefined;
-  const v = decide(data, head, { queue: false, approve: false, verdict: g, required: checks.map((c) => c.name), checks, ...(stackedOn ? { stackedOn } : {}) });
-  return { ...v, failing: checks.filter((c) => !c.ok && !c.pending).map((c) => c.name), dirty: pr.mergeStateStatus === "DIRTY", ...(g && g.findingsKey ? { findingsKey: g.findingsKey } : {}) };
+  // `requiredChecks` on the node stands in for branch protection: only those names are required (the product requires
+  // `ci-required` alone), while every named check is still read from the rollup.
+  const required = pr.requiredChecks ?? checks.map((c) => c.name);
+  const v = decide(data, head, { queue: false, approve: false, verdict: g, required, checks, ...(stackedOn ? { stackedOn } : {}) });
+  const red = checks.filter((c) => !c.ok && !c.pending).map((c) => c.name);
+  return { ...v, failing: red.filter((n) => required.includes(n)), redChecks: red, dirty: pr.mergeStateStatus === "DIRTY", ...(g && g.findingsKey ? { findingsKey: g.findingsKey } : {}) };
 };
 /** Task-owned adoptions whose heads were first seen at `at` (a done task's PR closes once its head is half an hour old). */
 const seen = (dir, prs, at) => writeFileSync(join(dir, "state.json"), JSON.stringify({ records: Object.fromEntries(prs.map((n) => [`acme/app#${n}`, { repo: "acme/app", number: n, generation: 1, trigger: { kind: "fleet", event: `opened:${n}`, actor: `ACME-${n}`, at, head: `h${n}` }, task: `ACME-${n}`, owner: { kind: "task", task: `ACME-${n}` }, hold: null, seen: { head: `h${n}`, at } }])) }));
@@ -120,7 +124,7 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, refTip, branchUses, tasks, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, refTip, branchUses, tasks, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, mainChecks, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -160,7 +164,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     gh.push(`${method} ${path}${body?.update_method ? ` ${body.update_method}` : ""}`);
     sent.push({ method, path, body });
     if (method === "GET" && /^\/repos\/acme\/app\/actions\/jobs\/\d+$/.test(path)) jobProbeOpts.push(opts ?? {});
-    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: mainBefore?.() ?? "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: mainBefore?.() ?? "m1", statusCheckRollup: mainChecks?.() ?? checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     // REST check runs for a head, as GitHub lists them: the full Actions job id is carried in details_url.
     const headRuns = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/);
     if (headRuns) {
@@ -268,9 +272,8 @@ test("a task's PR red on its own head wakes its task once per head; past a cap i
 
 
 // The `policy` job's "Conventional Commit title" step (and `ci-required`, its aggregate) is the only red: no commit can fix it.
-const titleOnlyPr = (n, names = ["policy", "ci-required"], o = {}) => ({
-  commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: names.map((name, i) => ({ __typename: "CheckRun", databaseId: 77 + i, name, status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } })) } } } }] }, ...o,
-});
+const redNodes = (names) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: names.map((name, i) => ({ __typename: "CheckRun", databaseId: 77 + i, name, status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } })) } });
+const titleOnlyPr = (n, names = ["policy", "ci-required"], o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redNodes(names) } }] }, ...o });
 
 test("a fix_ci whose only red check is the PR title wakes the task to retitle it, never to commit; a red code check still gets the commit line", async (t) => {
   const c = await rig(t);
@@ -284,6 +287,42 @@ test("a fix_ci whose only red check is the PR title wakes the task to retitle it
   assert.doesNotMatch(text, /one commit/);
   assert.doesNotMatch(text, /aidenhq ship push/);
   assert.doesNotMatch(text, /aidenhq ship checkout/);
+
+  // The product's branch protection requires `ci-required` alone, so the `policy` job's own red is not a required failure: only
+  // the aggregate is. The title is still the cause, read from the head's named checks.
+  const behind = await rig(t);
+  behind.set([behind.agentPr(9, titleOnlyPr(9, ["policy", "ci-required"], { requiredChecks: ["ci-required"] }))]);
+  await behind.watch.tick(); await behind.watch.tick();
+  assert.equal(behind.woke.length, 1);
+  assert.match(behind.woke[0].text, /required checks are red at head h9: `ci-required`, `policy`/);
+  assert.match(behind.woke[0].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/9 h9 1 /);
+  assert.doesNotMatch(behind.woke[0].text, /one commit|aidenhq ship push/);
+
+  // A code check red beside the aggregate (`ci-required` only required) is not metadata-only: the commit instruction stays.
+  const hidden = await rig(t);
+  hidden.set([hidden.agentPr(10, titleOnlyPr(10, ["policy", "checks", "ci-required"], { requiredChecks: ["ci-required"] }))]);
+  await hidden.watch.tick(); await hidden.watch.tick();
+  assert.equal(hidden.woke.length, 1);
+  assert.match(hidden.woke[0].text, /one commit, never weaken a check\./);
+  assert.match(hidden.woke[0].text, /aidenhq ship push https:\/\/github\.com\/acme\/app\/pull\/10 h10 1/);
+  assert.doesNotMatch(hidden.woke[0].text, /aidenhq ship title/);
+
+  // A check red on the base as well is pre-existing: it must not hide the metadata case, so only this head's own reds are judged
+  // (the base's is named for the Engineer to compare).
+  const onBase = await rig(t, { mainChecks: () => redNodes(["test"]) });
+  onBase.set([onBase.agentPr(11, titleOnlyPr(11, ["policy", "ci-required", "test"]))]);
+  await onBase.watch.tick(); await onBase.watch.tick();
+  assert.equal(onBase.woke.length, 1);
+  assert.match(onBase.woke[0].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/11 h11 1 /);
+  assert.match(onBase.woke[0].text, /These fail on `main`'s latest run too: `test`/);
+  assert.doesNotMatch(onBase.woke[0].text, /one commit|aidenhq ship push/);
+
+  // `policy` itself red on the base too is not this PR's title: there the commit instruction stays.
+  const basePolicy = await rig(t, { mainChecks: () => redNodes(["policy"]) });
+  basePolicy.set([basePolicy.agentPr(13, titleOnlyPr(13, ["policy", "ci-required"]))]);
+  await basePolicy.watch.tick(); await basePolicy.watch.tick();
+  assert.equal(basePolicy.woke.length, 1);
+  assert.doesNotMatch(basePolicy.woke[0].text, /aidenhq ship title/);
 
   // `policy` alone (its aggregate not yet reported) is metadata too.
   const alone = await rig(t);
@@ -309,6 +348,19 @@ test("a fix_ci whose only red check is the PR title wakes the task to retitle it
   assert.match(code.woke[0].text, /Fix what this PR broke as the `ship` skill says: one commit, never weaken a check\./);
   assert.match(code.woke[0].text, /aidenhq ship push https:\/\/github\.com\/acme\/app\/pull\/7 h7 1/);
   assert.doesNotMatch(code.woke[0].text, /aidenhq ship title/);
+});
+
+test("a metadata-only wake does not spend the head's CI round: a real red check at the same head still wakes the commit fix", async (t) => {
+  const c = await rig(t);
+  c.set([c.agentPr(12, titleOnlyPr(12))]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.length, 1);
+  assert.doesNotMatch(c.woke[0].text, /one commit/);
+  // The title was edited (no push, same head) and a code check turned red meanwhile.
+  c.set([c.agentPr(12, titleOnlyPr(12, ["checks", "ci-required"]))]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.length, 2, "the same head's code failure is a new wake");
+  assert.match(c.woke[1].text, /one commit, never weaken a check\./);
 });
 
 test("red checks whose job never started are re-run once at the head, with no wake", async (t) => {

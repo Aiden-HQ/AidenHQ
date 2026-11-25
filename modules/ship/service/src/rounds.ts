@@ -30,6 +30,9 @@ export interface RoundFacts extends QueueFacts {
   queue?: boolean;
   /** Required checks red on the head, and the same names red on the target branch's latest completed run. */
   failing?: string[]; onBase?: string[];
+  /** Every named check red on the head, required or not: the product's branch protection requires only `ci-required`, so the
+   * `policy` job's own red check is not in `failing` there, and the title-only wake needs it. */
+  redChecks?: string[];
   /** Discovery on the target branch (discover.ts); the repo's `generated` setting wins over it. */
   discovered?: Discovered;
   /** safe.ts judge()'s answer at the head, where approval is needed: what the App approves on (and decide's ShipContext.approve). */
@@ -75,7 +78,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const s = d.settings(pr.repo);
   // Check names are set by whoever can push to the repo: no backtick or line break reaches a wake or the report.
   const clean = (l?: string[]) => l?.map((n) => n.replace(/[`\r\n]/g, ""));
-  f = { ...f, failing: clean(f.failing), onBase: clean(f.onBase), groupFailing: clean(f.groupFailing) };
+  f = { ...f, failing: clean(f.failing), onBase: clean(f.onBase), groupFailing: clean(f.groupFailing), redChecks: clean(f.redChecks) };
   let a = d.state.get(pr.repo, pr.number) as (Kept & { queue?: Queued }) | undefined;
   if (!a || !s) return "nothing";
   a = await retryReport(d, a, pr);
@@ -224,7 +227,21 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
   // A wait is said again when what it waits on, or its approval line, changes; every other action once per head.
   // Review findings are keyed by their digest: a new set at the same head is asked again.
-  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do;
+  // The `policy` job's title step (and `ci-required`, the aggregate that rolls it up) is the PR's metadata, not its code: no
+  // commit can turn it green (ci.yml re-runs `policy` on `edited`), so the wake asks for the title instead of "one commit". The
+  // test is on this head's own required reds: a check that also fails on the base is pre-existing and its name must not hide the
+  // metadata case. Since branch protection may require only `ci-required`, the `policy` job's own red is read from every named
+  // check at the head (`redChecks`), and `policy` failing on the base too is not this PR's. A queue run is the merge tree's, not
+  // this head's: there the commit instruction stays.
+  const baseRed = new Set(f.onBase ?? []);
+  const ownFailing = (f.failing ?? []).filter((n) => !baseRed.has(n));
+  // Every red check this head itself has (a name red on the base too is pre-existing): the required ones, plus the rest of the
+  // rollup's, so a code check red beside the aggregate keeps the commit instruction.
+  const ownRed = [...new Set([...ownFailing, ...(f.redChecks ?? [])])].filter((n) => !baseRed.has(n));
+  const metadata = (n: string) => n === "policy" || n === GATE_CHECK;
+  const titleOnly = v.do === "fix_ci" && !viaQueue && ownRed.length > 0 && ownRed.every(metadata) && ownRed.includes("policy");
+  // A title-only CI wake is its own action at the head: it fixes no commit, so a real red check at the same head is still woke for.
+  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do === "fix_ci" && titleOnly ? "fix_ci:title" : v.do;
   const key = v.do === "wait" ? `${pr.head}:wait:${v.why ?? ""}:${facts.approval ?? ""}` : `${pr.head}:${act}`;
   // A wait with an App approval to dismiss (or a dismissal in flight) is followed too: its record is read each pass.
   const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true) || (v.do === "wait" && !!risk && staleApproval(a.approve, pr.head, risk));
@@ -318,15 +335,11 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           if (over(c.ci, caps.ci_rounds)) return hold(`${c.ci} CI fix rounds (ci_rounds)`);
           c.ci++;
         }
-        // The `policy` job's title step (and `ci-required`, the aggregate that rolls it up) is the PR's metadata, not its code: no
-        // commit can turn it green (ci.yml re-runs `policy` on `edited`), so the wake asks for the title instead of "one commit".
-        // Only `policy` or `policy` beside `ci-required`: `ci-required` alone is some other job's failure rolled up.
-        const title = failing.includes("policy") && failing.every((n) => n === "policy" || n === GATE_CHECK);
         return wake("fix_ci", [
-          `${pr.url}: required checks are red at head ${pr.head}: ${failing.map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
+          `${pr.url}: required checks are red at head ${pr.head}: ${(titleOnly ? [...new Set([...failing, ...(f.redChecks ?? [])])] : failing).map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
           viaQueue ? "They passed on the PR's head but failed on the merge queue's run for it (the `merge_group` run): read that run's logs, the failure is in the PR merged onto the base." : "",
           onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
-          ...(title ? [
+          ...(titleOnly ? [
             "The red check is the PR's Conventional Commit title (the `policy` job's title step), which no commit can fix: a title edit re-runs `policy` in place.",
             `Fix the title with \`aidenhq ship title ${pr.url} ${pr.head} ${a!.generation} "<type>(<scope>): <summary>"\` (types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert), giving the title that describes this PR. Change nothing in the code for it: a check, test or lint rule stays as strict as you found it.`,
           ] : [

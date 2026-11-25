@@ -462,6 +462,11 @@ export function createService(o: Options) {
     if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget") || kind.endsWith(".retitle")) {
       const s = slugOf(a.repo);
       const n = Number(a.number);
+      // Outside our own repos a PR's text names none of our tooling: the title is public text on the PR, exactly as a `.pr`'s is.
+      if (kind.endsWith(".retitle") && !ownRepo(s.slug, o.fleetOrg, o.productRepo)) {
+        const leak = leakIn(a.title);
+        if (leak) throw fail(422, `Not done: the PR title mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools or local paths; reword it and ask again.`);
+      }
       const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
       const ship = await adoption(s.slug, n, a.generation, a.head, pr, a.base);
       // An enqueue is a merge by the queue: the reviewer reads the PR's diff at its head when the head isn't the runner's own.
@@ -481,7 +486,7 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : kind.endsWith(".retitle") ? `Retitle ${url} ${at} to \`${a.title}\` (only the title: the PR's head, base and body stay as they are)` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
+      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : kind.endsWith(".retitle") ? `Retitle ${url} ${at} to \`${String(a.title).replace(/`/g, "")}\` (only the title: the PR's head, base and body stay as they are)` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
       return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha), { base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? "") }) } : {}),

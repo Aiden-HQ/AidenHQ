@@ -26,7 +26,7 @@ export type AdoptedOptions = {
   /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
    * whether the branch merges through a merge queue, the required checks red on the PR's latest merge_group run, and whether an
    * approval of the head is all it waits on. */
-  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
+  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }): Promise<Decision & { failing?: string[]; redChecks?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
   /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
   effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string, live?: { base?: string; association?: string }): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
@@ -319,7 +319,7 @@ export function adoptedPass(o: AdoptedOptions) {
       // Red while behind a green base: round() has GitHub update the branch once at this head before asking for a fix.
       const behindGreen = v.do === "fix_ci" && main.rollup?.state === "SUCCESS" && main.oid && a.counters?.updated !== view.head
         ? Number((await o.gh("GET", `/repos/${repo}/compare/${main.oid}...${view.head}`)).body?.behind_by) > 0 : false;
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], ...(v.redChecks ? { redChecks: v.redChecks } : {}), groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
     },
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {

@@ -18,7 +18,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), app = true } = {}) {
+async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), app = true, fleetOrg = "acme-agents", maintained = [] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -154,7 +154,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   const ship = { generation: async (_r, _n, _at, check) => ({ generation: adoption.generation, task: "t1", ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
-    remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg: "acme-agents", productRepo: "acme/aidenhq",
+    remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg, productRepo: "acme/aidenhq", maintained,
     reviewGate: async () => undefined, ship,
     // The App, installed on the repo: its writes are recorded like the owner's (`as` marks whose they are).
     reviewer: async () => (app ? { login: "acme-app[bot]", token: async () => "app-token", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
@@ -745,4 +745,17 @@ test("retitle is ship's alone, Tier 0 at the head, and refuses a moved head, a s
   const moved = await run("k-00000000000000eb", "github.retitle", a);
   assert.match(moved.text, /^ship-head-moved/);
   assert.equal(calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length, 1, "no PATCH on a moved head");
+});
+
+test("a retitle outside the fleet's own repos is refused when the title names our tooling, and nothing is sent", async (t) => {
+  // The same repo, not in the agents org and not maintained: its PR's title is public text, read as a `.pr`'s is.
+  const { c1, calls, call } = await setup(t, { fleetOrg: "other-agents", maintained: [] });
+  const args = { repo: REPO, number: 7, head: c1, generation: 2, title: "fix(widget): run it from the aidenhq worktree" };
+  const refused = await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args, requester: SHIP, task: "t1" });
+  assert.equal(refused.status >= 400, true, JSON.stringify(refused.json));
+  assert.match(String(refused.json?.error ?? refused.json?.message ?? ""), /mentions "aidenhq"|internal names/);
+  assert.equal(calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length, 0, "nothing is sent");
+  // The same title in the fleet's own repo is the fleet's to write.
+  const own = await setup(t);
+  assert.equal((await own.call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: { ...args, head: own.c1 }, requester: SHIP, task: "t1" })).status, 200);
 });
