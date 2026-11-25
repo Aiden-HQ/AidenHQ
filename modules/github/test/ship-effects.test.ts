@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -886,6 +886,31 @@ test("the tree construction looks a changed path up as itself, never as a pathsp
     assert.equal(tree.find((e) => e.path === p)?.sha, sha(p), p);
     assert.equal(tree.find((e) => e.path === p)?.mode, "100644", p);
   }
+});
+
+test("the tree construction carries git's own mode: a symlink's 120000 and a file's 100644, never a mode it invented", async () => {
+  const { treeWrites } = await import("../service/src/service.ts");
+  const dir = mkdtempSync(join(tmpdir(), "tree-modes-"));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@b", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@b" };
+  const g = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env }).trim();
+  const raw = async (args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env });
+  g("init", "--quiet", "-b", "main", ".");
+  writeFileSync(join(dir, "target.txt"), "target\n");
+  g("add", "-A");
+  g("commit", "--quiet", "-m", "before");
+  const before = g("rev-parse", "HEAD");
+  writeFileSync(join(dir, "run.sh"), "#!/bin/sh\n");
+  chmodSync(join(dir, "run.sh"), 0o755);
+  symlinkSync("target.txt", join(dir, "link"));
+  g("add", "-A");
+  g("commit", "--quiet", "-m", "executable and symlink");
+  const after = g("rev-parse", "HEAD");
+  const { tree } = await treeWrites(raw, before, after);
+  const mode = (p) => tree.find((e) => e.path === p)?.mode;
+  assert.equal(mode("run.sh"), "100755", "an executable keeps git's 100755, not a default 100644");
+  assert.equal(mode("link"), "120000", "a symlink is 120000");
+  assert.equal(tree.find((e) => e.path === "link")?.sha, g("rev-parse", "HEAD:link"), "and the symlink's own blob sha");
+  assert.equal(tree.find((e) => e.path === "link")?.type, "blob");
 });
 
 test("ship's repair's refusal text names the tree diff and the entry GitHub refused, never a bare 422", async (t) => {
