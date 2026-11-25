@@ -238,18 +238,22 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // check at the head (`redChecks`), and `policy` failing on the base too is not this PR's. A queue run is the merge tree's, not
   // this head's: there the commit instruction stays.
   const baseRed = new Set(f.onBase ?? []);
-  const ownFailing = (f.failing ?? []).filter((n) => !baseRed.has(n));
-  // Every red check this head itself has (a name red on the base too is pre-existing): the required ones, plus the rest of the
-  // rollup's, so a code check red beside the aggregate keeps the commit instruction.
-  const ownRed = [...new Set([...ownFailing, ...(f.redChecks ?? [])])].filter((n) => !baseRed.has(n));
+  const headRed = [...new Set([...(f.failing ?? []), ...(f.redChecks ?? [])])];
   const metadata = (n: string) => n === "policy" || n === GATE_CHECK;
-  const titleOnly = v.do === "fix_ci" && !viaQueue && ownRed.length > 0 && ownRed.every(metadata) && ownRed.includes("policy");
+  // `policy` is judged by its own job's steps below, never by its base-red name alone: a base run red on the age check says
+  // nothing about whether this head's title step is the failure.
+  const ownHead = headRed.filter((n) => n !== "policy" && !baseRed.has(n));
+  const candidate = v.do === "fix_ci" && !viaQueue && headRed.includes("policy") && ownHead.every(metadata);
   // The `policy` job also runs the lockfile age and pin checks: a title edit clears only the title step. Read the job's own steps
   // before the action is keyed, so the wake that is actually sent is the one recorded (a code-fix wake at this head leaves the
   // title wake to follow). Already asked at this head: nothing to read, the dedup below answers.
   const titleAsked = (c.acted ?? []).includes("fix_ci:title");
-  const policyStep = titleOnly && d.policyStep && !titleAsked ? await d.policyStep(pr.repo, pr.head).catch(() => "unknown" as const) : undefined;
-  const titleFix = titleOnly && policyStep !== "other";
+  const policyStep = candidate && d.policyStep && !titleAsked ? await d.policyStep(pr.repo, pr.head).catch(() => "unknown" as const) : undefined;
+  // This head's own policy failure is the title step only when the job says so; where its steps can't be read, the older
+  // inference stands (a `policy` name not red on the base). Another failing step keeps the commit instruction.
+  const policyTitle = candidate && (policyStep === "title" || (policyStep !== "other" && !baseRed.has("policy")));
+  // Already asked at this head: the same action again, so the dedup below answers instead of a second wake (the steps aren't read).
+  const titleFix = (policyTitle || (candidate && titleAsked)) && policyStep !== "other";
   // A title-only CI wake is its own action at the head: it fixes no commit, so a real red check at the same head is still woke for.
   const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do === "fix_ci" && titleFix ? "fix_ci:title" : v.do;
   const key = v.do === "wait" ? `${pr.head}:wait:${v.why ?? ""}:${facts.approval ?? ""}` : `${pr.head}:${act}`;
@@ -350,9 +354,11 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           c.ci++;
         }
         return wake("fix_ci", [
-          `${pr.url}: required checks are red at head ${pr.head}: ${(titleOnly ? [...new Set([...failing, ...(f.redChecks ?? [])])] : failing).map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
+          `${pr.url}: required checks are red at head ${pr.head}: ${(titleFix ? [...new Set([...failing, ...(f.redChecks ?? [])])] : failing).map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
           viaQueue ? "They passed on the PR's head but failed on the merge queue's run for it (the `merge_group` run): read that run's logs, the failure is in the PR merged onto the base." : "",
-          onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
+          // A `policy` red on the base is a step of that job, not necessarily the title step: the wake says so only where the job
+          // itself named the title step as this head's failure.
+          onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].filter((n) => !(n === "policy" && titleFix)).map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
           ...(titleFix ? [
             "The red check is the PR's Conventional Commit title (the `policy` job's title step), which no commit can fix: a title edit re-runs `policy` in place.",
             ...(policyStep === "unknown" ? ["(The job's steps couldn't be read to confirm which one failed: if the title is already Conventional Commit, read the `policy` run's log.)"] : []),

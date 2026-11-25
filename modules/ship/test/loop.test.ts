@@ -317,12 +317,20 @@ test("a fix_ci whose only red check is the PR title wakes the task to retitle it
   assert.match(onBase.woke[0].text, /These fail on `main`'s latest run too: `test`/);
   assert.doesNotMatch(onBase.woke[0].text, /one commit|aidenhq ship push/);
 
-  // `policy` itself red on the base too is not this PR's title: there the commit instruction stays.
-  const basePolicy = await rig(t, { mainChecks: () => redNodes(["policy"]) });
+  // `policy` itself red on the base too: the job's own steps decide. Its age check red on `main` says nothing about this head; the
+  // title step is this head's only failure, so the title wake stands.
+  const basePolicy = await rig(t, { mainChecks: () => redNodes(["policy"]), job: { steps: [{ name: "Age check (lockfiles) and pins (images, actions, apt, global installs)", conclusion: "success" }, { name: "Conventional Commit title", conclusion: "failure" }] } });
   basePolicy.set([basePolicy.agentPr(13, titleOnlyPr(13, ["policy", "ci-required"]))]);
   await basePolicy.watch.tick(); await basePolicy.watch.tick();
   assert.equal(basePolicy.woke.length, 1);
-  assert.doesNotMatch(basePolicy.woke[0].text, /aidenhq ship title/);
+  assert.match(basePolicy.woke[0].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/13 h13 1 /);
+  assert.doesNotMatch(basePolicy.woke[0].text, /one commit|aidenhq ship push/);
+  // Where the job's steps can't say (nothing readable), a base-red `policy` is left to the commit instruction rather than guessed.
+  const unreadable = await rig(t, { mainChecks: () => redNodes(["policy"]), jobRead: () => 404 });
+  unreadable.set([unreadable.agentPr(14, titleOnlyPr(14, ["policy", "ci-required"]))]);
+  await unreadable.watch.tick(); await unreadable.watch.tick();
+  assert.equal(unreadable.woke.length, 1, JSON.stringify(unreadable.woke.map((w) => w.text)));
+  assert.doesNotMatch(unreadable.woke[0].text, /aidenhq ship title/);
 
   // `policy` alone (its aggregate not yet reported) is metadata too.
   const alone = await rig(t);
