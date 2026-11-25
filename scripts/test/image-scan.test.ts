@@ -29,6 +29,9 @@ const scratch = (t: { after: (f: () => void) => void }) => {
 
 test("image-changes selects a module.yaml-only service image re-pin, and never an agent-level image line", (t) => {
   const { dir, git, put, env } = scratch(t);
+  // The step reads services.run through the repository's own parser (scripts/supply-chain/pins.ts), as CI runs it.
+  put("scripts/supply-chain/pins.ts", readFileSync(join(root, "scripts/supply-chain/pins.ts"), "utf8"));
+  put("scripts/supply-chain/best-version.ts", readFileSync(join(root, "scripts/supply-chain/best-version.ts"), "utf8"));
   const d = (c: string) => `@sha256:${c.repeat(64)}`;
   const manifest = (ref: string, agent = "agent-base") => `name: primer\nagents:\n  ui-designer:\n    image: ${agent}\nservices:\n  run:\n    primer-db:\n      image: ${ref}\n    primer-server:\n      build: ./server\n`;
   // A quoted service key (`"primer-db":`) is the same service to the compiler, so the selector must read it too.
@@ -56,6 +59,16 @@ test("image-changes selects a module.yaml-only service image re-pin, and never a
   put("modules/primer/module.yaml", manifest(`postgres:17.12${d("b")}`).replace("    primer-db:", '    "primer-db":'));
   git("commit", "-qam", "re-pin");
   assert.equal(select(), `dockerfiles=\nservices=postgres:17.12${d("b")}`);
+  // The forms the compiler reads as the same ref select too: a plain scalar continued on the next line, and a `build:` with
+  // only a comment after it (YAML null, so the service still names an image).
+  const multiline = `name: primer\nservices:\n  run:\n    primer-db:\n      build: # use the published image\n      image:\n        postgres:17.12${d("c")}\n`;
+  put("modules/primer/module.yaml", multiline);
+  git("commit", "-qam", "re-pin, multi-line");
+  assert.equal(select(), `dockerfiles=\nservices=postgres:17.12${d("c")}`);
+  // A bare `build:` with a real value is this repository's own image: it selects nothing.
+  put("modules/primer/module.yaml", `name: primer\nservices:\n  run:\n    primer-db:\n      build: ./server\n      image: postgres:17.12${d("d")}\n`);
+  git("commit", "-qam", "built");
+  assert.equal(select(), "dockerfiles=\nservices=");
 });
 
 test("plan scans a selected service image from the registry, never as a build", (t) => {

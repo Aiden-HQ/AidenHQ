@@ -94,13 +94,27 @@ test("pins: a module.yaml service image is a pin, and an agent-level image line 
   // A tag alone is a problem, with the Dockerfile path's message; a flow-style services map is refused rather than read past.
   assert.deepEqual(scanFile("modules/x/module.yaml", "services:\n  run:\n    db:\n      image: postgres:17\n").problems, ["modules/x/module.yaml:4: image postgres:17 has no digest (name:tag@sha256:…)"]);
   assert.match(scanFile("modules/x/module.yaml", `services: { run: { db: { image: postgres:17${d("a")} } } }\n`).problems[0]!, /flow map/);
-  // The compiler's YAML: a `>-`/`|` block scalar is the ref, and a bare `build:` is null, so the service names an image.
-  for (const form of [`image: >-\n        postgres:17.12${d("c")}`, `image: |\n        postgres:17.12${d("c")}`, `build:\n      image: postgres:17.12${d("c")}`]) {
+  // The compiler's YAML: a `>-`/`|` block scalar or a plain scalar continued on the next line is the ref, and a `build:`
+  // with nothing after it (or only a comment) is null, so the service names an image.
+  for (const form of [
+    `image: >-\n        postgres:17.12${d("c")}`,
+    `image: |\n        postgres:17.12${d("c")}`,
+    `image:\n        postgres:17.12${d("c")}`,
+    `image: # pinned\n        postgres:17.12${d("c")}`,
+    `image: postgres:17.12${d("c")} # pinned`,
+    `build:\n      image: postgres:17.12${d("c")}`,
+    `build: # use the published image\n      image: postgres:17.12${d("c")}`,
+    `build: ~\n      image: postgres:17.12${d("c")}`,
+  ]) {
     const p = scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      ${form}\n`);
     assert.deepEqual(p.problems, [], form);
     assert.equal(p.pins.length, 1, form);
     assert.equal(p.pins[0]!.digest, `sha256:${"c".repeat(64)}`, form);
   }
+  // A value that is a nested map under `image` (which the schema forbids) is reported, never silently skipped.
+  assert.match(scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      image:\n        name: x\n`).problems[0]!, /nested value/);
+  // A real `build:` value (`.`) still means the image is this repository's own: no pin, no problem.
+  assert.deepEqual(scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      build: .\n      image: postgres:17${d("a")}\n`).pins, []);
   // Only modules/<name>/module.yaml: a template's manifest is not a service the instance runs.
   assert.equal(wanted("modules/primer/module.yaml"), true);
   assert.equal(wanted("modules/agent-builder/templates/digest-writer/module.yaml"), false);

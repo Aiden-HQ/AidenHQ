@@ -829,21 +829,22 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   if (/;;\s*$/.test(cmd)) state.arm = undefined;
 }
 
+/** A service's `image:` and `build:` as the manifest declares them; `nested` is the line of a value that is not a scalar. */
+interface ServiceDecl { image?: { ref: string; line: number }; build: boolean; nested?: number }
+
 /**
- * modules/<name>/module.yaml: each service's `image:` under `services.run` is a registry pin, by digest like a compose
- * service's (a `build:` service is this repository's own image, and the agent-level `image:` lines name a computer image:
- * neither is one). Read with a small indentation-aware walk of the one key path, not a YAML parser (this file takes no
- * dependencies): the modules write `services` in block form, and a flow-style map is refused rather than read past, since it
- * would hide an image from the check.
+ * modules/<name>/module.yaml's `services.run`, each service's `image:` and `build:` as the compiler reads them, in the order
+ * the file first names the service. A small indentation-aware walk of the one key path, not a YAML parser (this file takes
+ * no dependencies), and the one place both supply-chain checks read it: a quoted key is the same key, a `>-`/`|` block
+ * scalar or a plain scalar continued on the next, more-indented line is the value, a trailing comment is dropped, and a
+ * `build:` with nothing after it (or only a comment) is YAML null. A flow-style `services`/`run`/service map is reported
+ * (`flow`, its line): it would hide an image from the check.
  */
-function modulePins(path: string, text: string): { pins: Pin[]; problems: string[] } {
-  const pins: Pin[] = [], problems: string[] = [];
-  const at = (n: number) => `${path}:${n}`;
-  // Each service's declaration, in the order the file first names it.
-  const services = new Map<string, { image?: { ref: string; line: number }; build: boolean }>();
+export function moduleServices(text: string): { services: Map<string, ServiceDecl>; flow?: number } {
+  const services = new Map<string, ServiceDecl>();
   const stack: { indent: number; key: string }[] = [];
   const lines = text.split("\n").map((l) => l.replace(/\r$/, ""));
-  let flow = 0; // the first `services`, `services.run` or service written as a flow map: its images can't be read below
+  let flow: number | undefined;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (/^\s*(#.*)?$/.test(line)) continue;
@@ -855,37 +856,61 @@ function modulePins(path: string, text: string): { pins: Pin[]; problems: string
     while (stack.length && stack.at(-1)!.indent >= indent) stack.pop();
     stack.push({ indent, key });
     const keys = stack.map((s) => s.key);
+    const under = keys.length === 4 && keys[0] === "services" && keys[1] === "run";
     // `services: {…}`, `run: {…}` and a service `db: {image: …}` are flow maps: their images are past this walk.
-    const flowMap = /^[{[\[]/.test(raw ?? "") && keys[0] === "services" && (keys.length === 1 || (keys.length === 2 && keys[1] === "run") || (keys.length === 3 && keys[1] === "run"));
-    if (flowMap && !flow) flow = i + 1;
-    // A block scalar (`>-`, `|`, `|2`, …): its value is the indented lines below, folded to one string (a ref is one token,
-    // so the folding style and chomping never matter). The compiler reads it as the ref, so this must too.
-    let value = raw;
-    if (raw !== undefined && /^[>|][+-]?\d*$/.test(raw.trim())) {
-      const body: string[] = [];
-      let j = i + 1;
-      for (; j < lines.length; j++) {
-        const l = lines[j]!;
-        if (l.trim() !== "" && l.search(/\S/) <= indent) break;
-        body.push(l);
+    if (/^[{[\[]/.test(raw ?? "") && keys[0] === "services" && (keys.length === 1 || (keys.length === 2 && keys[1] === "run") || (keys.length === 3 && keys[1] === "run"))) flow ??= lineNo;
+    // A plain scalar's text: a trailing comment dropped (a `#` at the start or after whitespace), as YAML reads it.
+    let value = raw === undefined ? undefined : (raw.trim().startsWith("#") ? "" : raw.replace(/\s#.*$/, "").trim());
+    let nested = 0;
+    // A leaf key's value may be a block scalar (`>-`, `|`, `|2`) or a plain scalar continued on the next, more-indented
+    // line (`image:\n  postgres:17@sha256:…`): those lines, folded to one string, are the value. A line that is itself a
+    // key, a list item or a flow map under `image` is a nested value, which the schema forbids: it is reported, never read.
+    if (under && (key === "image" || key === "build")) {
+      const block = raw !== undefined && /^[>|][+-]?\d*$/.test(raw.trim());
+      if (block || value === undefined || value === "") {
+        const body: string[] = [];
+        let j = i + 1;
+        for (; j < lines.length; j++) {
+          const l = lines[j]!;
+          if (l.trim() === "" || l.search(/\S/) <= indent) break;
+          if (!block && /^(?:[-[{|>]|(?:[A-Za-z0-9_.-]+|"[^"]*"|'[^']*'):(?:\s|$))/.test(l.trim())) { nested = j + 1; break; }
+          body.push(l);
+        }
+        if (block || body.length) value = body.join(" ").trim();
+        i = j - 1; // the value's lines are not keys of their own
       }
-      value = body.join(" ").trim();
-      i = j - 1; // the body's lines are this value, not keys
     }
     if (keys.length === 3 && keys[0] === "services" && keys[1] === "run") {
       if (!services.has(key)) services.set(key, { build: false });
-    } else if (keys.length === 4 && keys[0] === "services" && keys[1] === "run") {
+    } else if (under) {
       const svc = services.get(keys[2]!);
       if (!svc) continue;
-      // The compiler's `build != null`: `build:` with nothing after it is YAML null, so the service names an image after all.
+      // The compiler's `build != null`: `build:` with nothing after it (or only a comment) is YAML null, so the service
+      // names an image after all.
       if (key === "build") svc.build = value !== undefined && !/^(?:~|null)?$/i.test(value.trim());
-      // A plain scalar's ref: quotes and a trailing comment dropped. A ref never holds whitespace.
-      const ref = value === undefined ? undefined : /^["']?([^\s"'#]+)/.exec(value)?.[1];
-      if (key === "image" && ref && !ref.includes("$") && !svc.image) svc.image = { ref, line: lineNo };
+      if (key === "image") {
+        if (nested) { svc.nested = nested; continue; }
+        // A plain scalar's ref: quotes dropped. A ref never holds whitespace, so its first token is the whole of it.
+        const ref = value === undefined ? undefined : /^["']?([^\s"'#]+)/.exec(value)?.[1];
+        if (ref && !ref.includes("$") && !svc.image) svc.image = { ref, line: lineNo };
+      }
     }
   }
+  return { services, flow };
+}
+
+/**
+ * modules/<name>/module.yaml: each service's `image:` under `services.run` is a registry pin, by digest like a compose
+ * service's (a `build:` service is this repository's own image, and the agent-level `image:` lines name a computer image:
+ * neither is one).
+ */
+function modulePins(path: string, text: string): { pins: Pin[]; problems: string[] } {
+  const { services, flow } = moduleServices(text);
+  const pins: Pin[] = [], problems: string[] = [];
+  const at = (n: number) => `${path}:${n}`;
   if (flow) problems.push(`${at(flow)}: services is written as a flow map; only the block form's service images can be checked`);
-  for (const { image, build } of services.values()) {
+  for (const { image, build, nested } of services.values()) {
+    if (nested) { problems.push(`${at(nested)}: image is a nested value, not a plain reference`); continue; }
     if (build || !image) continue;
     DIGEST.test(image.ref) ? pins.push(imagePin(image.ref, at(image.line))) : problems.push(`${at(image.line)}: image ${image.ref} has no digest (name:tag@sha256:…)`);
   }
