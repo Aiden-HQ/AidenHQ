@@ -38,7 +38,7 @@ export type LoopOptions = {
   /** A PR's CI recoveries (ci-recover.ts), with the repo's slice of the loop's state. */
   recover: (repo: string, pr: Json, state: Json, save: () => void) => Promise<Recovery>;
   /** The one engine (adopted.ts): every open PR but Dependabot's, with the task that opened it (if one did), and the PRs that left. */
-  adopted: { begin(): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery>; bump?: boolean }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
+  adopted: { begin(): void; see(repo: string, defaultBranch: string, prs: Json[]): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery>; bump?: boolean }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
 };
 
 /**
@@ -121,6 +121,7 @@ export function startLoop(o: LoopOptions) {
     const opened: Json = await o.openers();
     let next: number | undefined;
     const after = (ms: number) => { next = Math.min(next ?? ms, ms); };
+    o.adopted.see(repo, main.name, open);
     for (const pr of [...open].reverse()) { // oldest first
       const url = pr.url.toLowerCase();
       const opener = opened[url];

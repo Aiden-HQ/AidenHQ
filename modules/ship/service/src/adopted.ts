@@ -57,16 +57,19 @@ export function viewOf(repo: string, defaultBranch: string, pr: Json): PrView {
 export const ended = (a: Pick<Kept, "counters" | "reportStale">) => a.counters?.lastRound === "closed" || (!!a.counters?.lastRound?.endsWith(":done") && !a.reportStale);
 
 export function adoptedPass(o: AdoptedOptions) {
+  /** A PR stopped by its own hand: a draft, the stop label, or a person assigned (not by ship). No hold is set for it. */
+  const isStopped = (repo: string, view: PrView, a: Kept | undefined) =>
+    view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop") || view.assignees.some((x) => !(a?.assigned ?? []).includes(x));
+  /** Per repo, the open PRs stopped by their own hand in the current scan (see()), so front() skips them. */
+  const stoppedPrs = new Map<string, Set<number>>();
   /**
    * Whether the PR is first in the repo's merge order (item 19): the earliest hand-off among the repo's open adoptions that ship
-   * still works (not held). Under `rebase: conflict` only that one is brought up to date; the rest wait their turn.
+   * still works (not held, not stopped). Under `rebase: conflict` only that one is brought up to date; the rest wait their turn.
    */
-  // The PRs ship last saw stopped by their own hand (a draft, the stop label, a person assigned): no hold, so front() skips them
-  // by this, or a stopped earlier PR would keep every later one behind its base. Kept for the process; a pass refreshes it.
-  const stoppedPrs = new Set<string>();
   const front = (repo: string, number: number, open: Set<number>) => {
+    const stopped = stoppedPrs.get(repo.toLowerCase());
     const order = (o.state.all() as Kept[])
-      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept && !a.stack && !stoppedPrs.has(`${a.repo.toLowerCase()}#${a.number}`))
+      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept && !a.stack && !stopped?.has(a.number))
       .sort((x, y) => String(x.trigger.at ?? "").localeCompare(String(y.trigger.at ?? "")) || x.number - y.number);
     return order[0]?.number === number;
   };
@@ -174,6 +177,10 @@ export function adoptedPass(o: AdoptedOptions) {
   return {
     /** A new pass: roles are read again. */
     begin() { roles.clear(); },
+    /** A repo's scan, before any of its PRs runs: which open PRs are stopped by their own hand, read from this one snapshot. */
+    see(repo: string, defaultBranch: string, prs: Json[]) {
+      stoppedPrs.set(repo.toLowerCase(), new Set(prs.filter((pr) => isStopped(repo, viewOf(repo, defaultBranch, pr), o.state.get(repo, pr.number) as Kept | undefined)).map((pr) => Number(pr.number))));
+    },
     /**
      * One open PR: intake, then a round once adopted. `ctx.opener`: the task the code host opened it for (its identifier);
      * `ctx.newer`: a newer open PR of that same task; `ctx.recover`: its CI recoveries (ci-recover.ts), run once its task's
@@ -214,8 +221,7 @@ export function adoptedPass(o: AdoptedOptions) {
       const resumes = a.hold?.kind === "stalled" && !!a.counters && a.counters.head !== view.head;
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
       // The PR's own stops hold a retarget too: a draft, the stop label, or a person assigned.
-      const stopped = view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop") || view.assignees.some((x) => !(a!.assigned ?? []).includes(x));
-      if (stopped) stoppedPrs.add(`${repo.toLowerCase()}#${pr.number}`); else stoppedPrs.delete(`${repo.toLowerCase()}#${pr.number}`);
+      const stopped = isStopped(repo, view, a);
       if (!stopped && !ctx.stackedOn && a.stack && a.stack.branch === view.base && view.base !== main.name && await retargeted(a, view, main.name)) return;
       // A stack that reached the default branch (ship's retarget, or GitHub's own once the parent's branch was deleted): its base
       // is merged in first, a new head code review reviews whole; nothing moves on the old head. A conflict goes to the repair.
