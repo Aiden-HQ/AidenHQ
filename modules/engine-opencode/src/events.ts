@@ -1,5 +1,6 @@
 // opencode's /event stream (1.19.6) as engine events: tool calls become steps, finished text parts become the job's words,
 // each finished assistant message its token use; endTurn() gives a finished turn's last words as a `reply`. Events of other sessions on the same server are ignored.
+import { basename } from "node:path";
 import type { EngineEvent, JobSpec } from "../sdk/types.ts";
 import { tracker, withArg } from "../sdk/progress.ts";
 
@@ -10,6 +11,8 @@ export function sseEvents(spec: JobSpec, emit: (e: EngineEvent) => void, session
   // The turn in progress: its last finished text, and whether the agent already told the task itself (task_comment).
   let last: { id: string; text: string } | undefined;
   let commented = false;
+  // This task as task_comment names it: its id, or its identifier (the folder the engine runs in).
+  const here = new Set([spec.task, basename(process.cwd())]);
   return {
     /** A turn the engine starts: nothing of an earlier one (a turn typed in the terminal) carries into it. */
     beginTurn() { last = undefined, commented = false; },
@@ -26,7 +29,7 @@ export function sseEvents(spec: JobSpec, emit: (e: EngineEvent) => void, session
       if (ev.type === "message.part.updated") {
         const part = props.part;
         // The agent told this task itself: a task_comment that went through, on no other task.
-        if (part?.type === "tool" && part.state?.status === "completed" && /task_comment$/.test(String(part.tool)) && (!part.state.input?.issue || part.state.input.issue === spec.task)) commented = true;
+        if (part?.type === "tool" && part.state?.status === "completed" && /task_comment$/.test(String(part.tool)) && (!part.state.input?.issue || here.has(part.state.input.issue))) commented = true;
         if (part?.type === "tool" && part.state?.status === "running" && !started.has(part.id)) {
           started.add(part.id);
           if (p.step(withArg(String(part.tool), part.state.input))) emit(p.snapshot());
