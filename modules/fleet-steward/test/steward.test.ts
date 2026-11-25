@@ -289,6 +289,9 @@ test("gate activity counts only the holder's or a fleet-audit agent's comment, n
   // The Steward's own comment is the work moving too.
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-audit", body: "routing it", createdAt: minsAgo(2) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(2));
+  // The holder's own comment keeps its kernel op/job tag: it is still the work moving.
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-eng", body: "Rebasing.\n\n<!-- aidenhq:job=abc kind=cp -->", createdAt: minsAgo(3) }];
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(3));
   // Another agent's comment alone is no activity at all.
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-reviewer", body: "looks odd", createdAt: minsAgo(1) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), undefined);
@@ -480,4 +483,7 @@ test("the kernel's wait-park note is not an answer: an owner wait stays quiet, a
   assert.match(incident.reason, /WOR-T1 has not resumed 120 min after its owner's answer arrived/);
   const agentPark = [{ authorType: "agent", authorAgentId: "maintainer", body: park, createdAt: ago(2) }];
   assert.deepEqual((await unresumedWaits([wait("delegator_wait", "eng")], NOW, read(agentPark), async () => "eng")).found, [], "another agent's park note is no delegator answer");
+  // An agent's own comment carries the kernel's op/job tag too; that one is a real answer.
+  const tagged = [{ authorType: "agent", authorAgentId: "maintainer", body: "Approved: rebase and go.\n\n<!-- aidenhq:job=abc kind=cp -->", createdAt: ago(2) }];
+  assert.deepEqual((await unresumedWaits([wait("delegator_wait", "eng")], NOW, read(tagged), async () => "eng")).found.map((f) => f.key), ["t1"], "a tagged but genuine agent comment still answers");
 });

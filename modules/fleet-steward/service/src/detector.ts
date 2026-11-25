@@ -277,8 +277,11 @@ interface JobRow { id: string; agent: string; task?: string; routine?: string | 
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
-/** A comment the fleet's own machinery wrote, never someone's words: its body carries an internal HTML comment, `<!-- aidenhq-…` or `<!-- aidenhq:…` (the kernel's notices, a wake, the wait-park note). */
-const internalNote = (c: CommentRow) => /<!--\s*aidenhq[:-]/.test(String(c.body));
+// A comment the fleet's own machinery wrote, never someone's words: its body carries an internal HTML comment, `<!-- aidenhq-…`
+// (the kernel's wake, approval and notice markers) or the kernel's own job tag `<!-- aidenhq:job=kernel …` (the wait-park,
+// routed, unblocked and grade notes). An agent's own comment carries `<!-- aidenhq:op=…` or `<!-- aidenhq:job=<id> kind=cp` —
+// its real words, posted through the plugin — so a colon alone is no marker.
+const internalNote = (c: CommentRow) => /<!--\s*aidenhq(?:-|:job=kernel\b)/.test(String(c.body));
 interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
