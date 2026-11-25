@@ -97,7 +97,7 @@ test("a background hit only records and queues nothing; the digest pulls it once
 // A loopback board origin (local exposure, through the SSH tunnel) is not reachable from the owner's machine: both
 // owner-facing lines say so next to the link, and how the install gets a real address.
 test("a loopback board origin adds the caveat to the notice and the digest line", async () => {
-  const caveat = /this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a public address, run sudo ops\/setup\.sh --unattended --exposure public/;
+  const caveat = /this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a real address, run sudo ops\/setup\.sh --unattended --exposure public, or --exposure tailscale/;
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] }, undefined, [], "http://localhost:3121");
   await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
   assert.equal(w.queued.length, 1);

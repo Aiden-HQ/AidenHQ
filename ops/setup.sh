@@ -260,7 +260,17 @@ setup_link() {
 }
 
 if [ "$LINK_ONLY" = 1 ]; then
-  if [ "$UNATTENDED" = 1 ]; then ADMIN_URL="${AIDENHQ_ADMIN_URL:-http://localhost:3120}"; setup_link; exit 0; fi
+  # A rerun prints only the link: when the board is on loopback, print the tunnel the caveat names here too.
+  if [ "$UNATTENDED" = 1 ]; then
+    ADMIN_URL="${AIDENHQ_ADMIN_URL:-http://localhost:3120}"
+    board_lan="$(sed -n 's/^BOARD_LAN_URL=//p' "$ENVF" 2>/dev/null | tail -1)"
+    case "$board_lan" in ""|http://localhost:*|http://127.0.0.1:*) board_lan="" ;; esac
+    if [ -z "$board_lan" ]; then
+      echo "From your own computer, open a tunnel first and leave it open:"
+      echo "  ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 $U@$(hostname -f 2>/dev/null || hostname)"
+    fi
+    setup_link; exit 0
+  fi
   echo "Link for $OWNER_NAME (open it on their laptop, on the tailnet; one use):"
   owner_link
   exit 0

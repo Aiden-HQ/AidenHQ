@@ -61,7 +61,7 @@ export const isLoopback = (url: string): boolean => {
   }
 };
 /** Next to a loopback link: it opens on the host or through the SSH tunnel, and this is how the install gets a real address. */
-export const LOOPBACK_CAVEAT = "(this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a public address, run sudo ops/setup.sh --unattended --exposure public)";
+export const LOOPBACK_CAVEAT = "(this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a real address, run sudo ops/setup.sh --unattended --exposure public, or --exposure tailscale for remote access over a tailnet)";
 
 const verb = (n: { cause: Cause; scope?: string; org?: string }) =>
   ({ not_connected: "connect it", expired: "reconnect it", scope: `grant the ${n.scope ?? "missing"} permission`, sso: `authorize SSO for ${n.org ?? "the organization"}`, restricted: `request access for ${n.org ?? "the organization"}` })[n.cause];
