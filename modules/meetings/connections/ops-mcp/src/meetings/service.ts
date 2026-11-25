@@ -703,7 +703,7 @@ export class MeetingService {
       }
     }
 
-    // Every action stays in the notes and in src_meetings.meetings; Intake files the owner's own as tasks (open-loops, meeting-actions).
+    // Every action stays in the notes and in src_meetings.meetings; Intake files the owner's own as tasks (intake, meeting-actions).
     this.sources.setStatus(s.id, result.status === "processed" ? "processed" : "obsidian_write_pending", result.status === "processed" ? undefined : "vault unavailable");
     if (result.status === "processed") result.transcript = this.finishOrganizing(s.id);
     this.finishRun(runId, "ok", { note: result.canonical_note, targets: result.targets });

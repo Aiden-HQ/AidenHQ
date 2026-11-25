@@ -48,7 +48,7 @@ describe("module.yaml: the write tools are reviewed records", () => {
   it("tags every calendar and Gmail write destructive, and only gmail_label unreviewed", () => {
     expect(list("destructive").sort()).toEqual(["calendar_create_event", "calendar_delete_event", "calendar_respond", "calendar_update_event", "gmail_draft", "gmail_label", "gmail_send"]);
     expect(list("unreviewed")).toEqual(["gmail_label"]);
-    expect(list("write")).toEqual([]);
+    expect(list("write")).toEqual(["gmail_inbox_ack"]);
   });
 });
 

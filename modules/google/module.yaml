@@ -82,8 +82,9 @@ connections:
     url: http://google-workspace-mcp:8081/mcp
     auth: google_service_key
     tools:
-      read: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read ]
-      write: []
+      read: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_inbox_new, gmail_read_thread, docs_read ]
+      # gmail_inbox_ack moves only the caller's own inbox cursor (like source_ack).
+      write: [ gmail_inbox_ack ]
       # Writes act as the owner on one account (`account`, default the primary): destructive, so only a grant naming one reaches
       # it and every call is a record the AI reviewer decides first (floor 1), except gmail_label: upkeep of the owner's own
       # labels (never system ones, never a new one; checked in code), which runs at once (Tier 0) like GitHub issue labels.
