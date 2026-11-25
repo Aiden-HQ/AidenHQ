@@ -9,12 +9,46 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 /*kit:css*/
-  .row { grid-template-columns: minmax(150px, 1.4fr) 64px repeat(2, minmax(104px, 0.8fr)) minmax(280px, 3fr) 72px; }
-  .repo .link { display: flex; margin-top: 2px; font-weight: 400; }
-  .row .repo { align-self: start; }
-  .dhead { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
-  .tiers { align-self: center; color: var(--soft); font-size: 12.5px; overflow-wrap: anywhere; }
-  .tiers b { color: var(--color-text-primary, CanvasText); font-weight: 560; }
+  :root { --danger: var(--color-text-danger, #d4351c); }
+  .intro { color: inherit; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+  .how { max-width: 78ch; }
+  .how > summary { display: inline-flex; cursor: pointer; color: var(--accent); font-size: 12.5px; list-style: none; }
+  .how > summary::-webkit-details-marker { display: none; }
+  .how > summary::before { content: ""; width: 5px; height: 5px; margin: 5px 6px 0 0; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .12s; }
+  .how[open] > summary::before { transform: rotate(45deg); }
+  .how p { margin: 6px 0 0; }
+  .head .ttl { display: flex; align-items: baseline; gap: 8px; } .head .ttl small { font-size: 12.5px; }
+  .head .acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+  button.ic { width: 28px; padding: 0; color: var(--soft); font-size: 15px; line-height: 1; }
+  button.ic:hover { color: var(--color-text-primary, CanvasText); border-color: var(--accent); }
+  .card.paused { border-color: var(--danger); }
+  .card.paused > .head { background: color-mix(in srgb, var(--danger) 9%, transparent); }
+  .pbanner { padding: 7px 14px; color: var(--danger); font-weight: 560; border-bottom: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line)); background: color-mix(in srgb, var(--danger) 6%, transparent); }
+  .row { grid-template-columns: minmax(150px, 1.2fr) 48px 140px 160px minmax(180px, 2fr) 64px; column-gap: 14px; }
+  .row .repo { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .row .repo .lnk { color: inherit; text-decoration: none; } .row .repo .lnk:hover { color: var(--accent); text-decoration: underline; }
+  .row:not(.cols) { cursor: pointer; }
+  .chev { width: 22px; height: 22px; padding: 0; border: 0; background: none; display: inline-grid; place-items: center; color: var(--soft); flex: none; }
+  .chev::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .12s; }
+  .chev[aria-expanded=true]::before { transform: rotate(45deg); } .chev:hover { color: var(--color-text-primary, CanvasText); }
+  .row .acts { justify-self: end; }
+  .rm { height: 22px; padding: 0 6px; border: 0; background: none; color: var(--soft); font-size: 12px; } .rm:hover { color: var(--danger); }
+  .confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 14px; border-top: 1px solid color-mix(in srgb, var(--danger) 40%, var(--line)); background: color-mix(in srgb, var(--danger) 7%, transparent); }
+  .confirm button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .pol { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .pc { --c: #8b8f98; display: inline-flex; align-items: center; gap: 7px; height: 22px; padding: 0 8px 0 7px; border-radius: 5px; border-left: 3px solid var(--c); background: color-mix(in srgb, var(--c) 13%, transparent); font-size: 12px; white-space: nowrap; }
+  .pol .pc { flex: 1 1 0; min-width: 110px; max-width: 220px; } .pc b { font-weight: 560; margin-right: auto; } .pc i { font-style: normal; font-weight: 500; font-size: 12px; letter-spacing: .02em; color: var(--soft); }
+  .pc i.y { color: var(--color-text-primary, CanvasText); font-weight: 700; } .pc i.o { color: #c98a1b; font-weight: 700; }
+  .draft { padding: 12px 14px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 6%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+  .draft .top { display: flex; flex-wrap: wrap; align-items: start; gap: 10px 18px; }
+  .draft .nm { flex: 1 1 260px; max-width: 420px; } .draft .nm input { height: 30px; }
+  .draft .fl { display: block; margin-bottom: 4px; font-size: 12.5px; font-weight: 560; }
+  .draft .from { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; } .draft .from select { width: auto; max-width: 240px; height: 26px; }
+  .draft .msg { min-height: 17px; margin: 6px 0 0; font-size: 12px; color: var(--soft); } .draft .msg.bad { color: var(--danger); }
+  .draft .sd { margin-top: 8px; border: 1px solid var(--line); border-radius: var(--r); }
+  .draft .btns { display: flex; gap: 8px; margin-top: 10px; }
+  .dsum { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 10px 14px; }
+  .dsum .k { color: var(--soft); } .dsum b { font-weight: 560; }
   .t-skip { --c: #8b8f98; } .t-trivial { --c: #2f9e6a; } .t-standard { --c: #3b78d8; } .t-sensitive { --c: #d6603b; } .t-unwatched { --c: #8b8f98; }
   .sd { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 10px; align-items: start; padding: 12px clamp(10px, 2vw, 18px) 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--line) 8%, transparent); }
   .sdc { display: grid; gap: 10px; align-content: start; min-width: 0; }
@@ -42,38 +76,48 @@
   .mx .mh { font-size: 11.5px; color: var(--soft); }
   .mx .tn { display: flex; align-items: center; gap: 7px; font-weight: 560; font-size: 12.5px; white-space: nowrap; }
   .mx .tn::before { content: ""; width: 3px; height: 18px; border-radius: 2px; background: var(--c); }
-  .mx .cell { position: relative; display: flex; min-width: 0; justify-self: start; }
-  .mx .cell .rs { position: absolute; top: -7px; right: -5px; width: 14px; height: 14px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--color-text-inverse, #fff); font-size: 10px; line-height: 1; }
+  .mx .cell { display: flex; align-items: center; gap: 5px; min-width: 0; justify-self: start; }
+  .mx .cell .rs { flex: none; width: 14px; height: 14px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--color-text-inverse, #fff); font-size: 10px; line-height: 1; }
   .mx .cell.chg .seg { border-color: var(--accent); }
   @media (max-width: 420px) { .mx { grid-template-columns: 1fr 1fr; } .mx > :first-child { display: none; } .mx .tn { grid-column: 1 / -1; } }
   .mx .na { color: var(--soft); padding-left: 6px; }
   .pause { display: flex; align-items: center; gap: 8px; }
   .pause .sw { flex: none; }
-  .pause.on { color: var(--color-text-danger, red); }
-  .hold { display: grid; grid-template-columns: minmax(150px, 1fr) 96px 2.4fr 84px; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line); align-items: baseline; }
+  .pause.on { color: var(--danger); font-weight: 560; }
+  .hold { display: grid; grid-template-columns: minmax(180px, 1fr) 110px 2.4fr 100px; column-gap: 14px; padding: 8px 14px; border-top: 1px solid var(--line); align-items: baseline; }
   .hold:first-of-type { border-top: 0; }
-  .q { display: inline-block; width: 15px; height: 15px; line-height: 15px; text-align: center; border: 1px solid var(--line); border-radius: 50%; font-size: 10px; cursor: help; margin-left: 6px; }
+  .hold .when { justify-self: end; }
+  .tag.k-stalled { --c: #c98a1b; } .tag.k-stopped { --c: #8b8f98; } .tag.k-handed_back { --c: #3b78d8; }
+  .tag[class*=k-] { color: var(--color-text-primary, CanvasText); border-color: color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 15%, transparent); }
   @media (max-width: 860px) {
     .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; }
-    .row .repo { grid-column: 1; } .row .onoff { grid-column: 2; justify-self: end; } .row .tiers { grid-column: 1 / -1; }
-    .hold { grid-template-columns: 1fr auto; gap: 2px 10px; } .hold .why { grid-column: 1 / -1; } .hold .when { grid-column: 2; grid-row: 1; justify-self: end; } .hold .tag { grid-column: 1; grid-row: 2; }
+    .row .repo { grid-column: 1; } .row .onoff { grid-column: 2; justify-self: end; } .row .pol, .row .acts { grid-column: 1 / -1; } .row .acts { justify-self: start; }
+    .hold { grid-template-columns: 1fr auto; gap: 2px 10px; } .hold .why { grid-column: 1 / -1; } .hold .when { grid-column: 2; grid-row: 1; } .hold .tag { grid-column: 1; grid-row: 2; }
+    .head { flex-wrap: wrap; }
   }
+  @media (max-width: 420px) { .draft .nm { max-width: none; } .head .acts { justify-content: flex-start; } }
 </style>
 </head>
 <body>
-<p class="intro">Ship carries a pull request from open to merged: it rebases, repairs conflicts and failing CI, answers review comments, and merges once the PR is ready. A PR reaches Ship when a member adds the <code>ship</code> label or comments <code>/ship</code> on it, or, if you choose, when any member opens one (see Hand-off). A PR from a fork waits for a member to hand it off.</p>
-<div class="card">
-  <div class="head"><div><b>Repos</b> <small id="count"></small></div><div class="pause" id="pausebox"><span id="pausetxt">Running</span><button class="sw" id="pause" role="switch" aria-checked="true" aria-label="Ship is running"></button><span id="pausehelp"></span></div></div>
+<div class="intro"><span>Ship carries a pull request from open to merged once a member hands it off.</span>
+  <details class="how"><summary>How Ship works</summary><p>Ship carries a pull request from open to merged: it rebases, repairs conflicts and failing CI, answers review comments, and merges once the PR is ready. A PR reaches Ship when a member adds the <code>ship</code> label or comments <code>/ship</code> on it, or, if you choose, when any member opens one (see Hand-off). A PR from a fork waits for a member to hand it off.</p></details></div>
+<div class="card" id="repocard">
+  <div class="head"><div class="ttl"><b>Repos</b><small id="count"></small></div>
+    <div class="acts"><div class="pause" id="pausebox"><span id="pausetxt">Running</span><button class="sw" id="pause" role="switch" aria-checked="true" aria-label="Ship is running" title="The kill switch. While paused, Ship adopts, pushes, approves and merges nothing, and PRs resume where they were when you switch it back on. It works whatever each repo is set to."></button></div>
+      <button type="button" class="ic" id="refresh" aria-label="Refresh" title="Reload the saved settings. Your proposed edits stay until you Save or Discard in the bar above.">&#8635;</button>
+      <button type="button" class="primary" id="addbtn" aria-expanded="false" aria-controls="draft">+ Add repo</button></div></div>
+  <div class="pbanner" id="pbanner" hidden>Ship is paused: nothing is adopted, pushed, approved or merged.</div>
+  <div class="draft" id="draft" hidden></div>
   <div id="rows"></div>
-  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><span id="addhelp"></span><button type="button" id="refresh" title="Reload the saved settings. Your proposed edits stay until you Save or Discard in the bar above.">Refresh</button></form>
   <div class="note" id="note" role="status"></div>
 </div>
 <div class="card" id="defcard">
-  <div class="dhead"><b id="defhead"></b><small>What new and fleet repos inherit</small><button type="button" class="link toggle" id="deftoggle" aria-expanded="false" aria-controls="defdrawer">Settings</button></div>
+  <div class="head"><b>Defaults for new repos</b><button type="button" class="link toggle" id="deftoggle" aria-expanded="false" aria-controls="defdrawer">Edit</button></div>
+  <div class="dsum" id="defsum"></div>
   <div id="defdrawer"></div>
 </div>
 <div class="card">
-  <div class="head"><b id="holdhead"></b><small>PRs Ship stopped on, and why</small></div>
+  <div class="head"><div class="ttl"><b>On hold</b><small id="holdcount"></small></div><span id="holdhelp"></span></div>
   <div id="holds"></div>
 </div>
 <script>
@@ -93,6 +137,11 @@
   const HOLDS = { stalled: "Ship made no progress and gave up for now.", handed_back: "Ship gave it back to its author.", stopped: "A stop label or a person paused it." };
   const hd = (key, current) => { const [label, text, options, note] = COLS[key]; return help(label, text, { options, current, note }); };
   let controls = {}, presets = {}, status = { paused: false, repos: [], held: [] };
+  // The repo being added: its name, what it starts from (defaults | cautious | full | copy) and its settings edits. Its fields live here, not in the
+  // proposal: the Save bar gets nothing until Add. A repo row asked to be removed waits for its confirmation.
+  const DRAFT = "+new";
+  let draft = null, confirming = null;
+  const pend = (key) => (key === DRAFT ? draft?.fields : pending.repos[key]);
   // The edits the owner hasn't saved yet, one proposal for the page: field changes per repo, and the pause. Each edit merges into it.
   let pending = { repos: {}, paused: undefined };
   // What the proposal shows of a repo's headline fields: its preset, and the effective on, hand-off, approve and merge with the pending edits and resets.
@@ -101,6 +150,7 @@
   // The last proposal the host accepted: a refused edit drops back to it, so one bad value never blocks the next proposal (and the page is what the Save bar holds).
   let lastGood = { repos: {}, paused: undefined };
   async function propose(fields, repo, whole, live) {
+    if (repo === DRAFT) { draft.fields = fields; if (!live) render(); return; }
     const next = { repos: { ...pending.repos }, paused: pending.paused };
     if (repo && whole && !Object.keys(fields).length) delete next.repos[repo]; // an entry edited back to nothing is no proposal at all
     else if (repo) next.repos[repo] = whole ? fields : { ...(next.repos[repo] ?? {}), ...fields };
@@ -131,13 +181,13 @@
   const get = (o, path) => path.split(".").reduce((x, k) => x?.[k], o);
   const put = (o, path, v) => { const ks = path.split("."); const last = ks.pop(); const t = ks.reduce((x, k) => (x[k] ??= {}), o); t[last] = v; };
   const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-  const target = (key) => (key === "defaults" ? status.defaults : status.repos.find((r) => r.repo === key));
+  const target = (key) => (key === "defaults" ? status.defaults : key === DRAFT ? { repo: DRAFT, own: {}, inherits: draft.inherits, preset: "cautious", settings: status.defaults.settings } : status.repos.find((r) => r.repo === key));
   // An entry with no preset of its own follows the defaults' preset, pending change included.
-  const presetFor = (key) => pending.repos[key]?.preset ?? (key !== "defaults" && target(key).inherits ? presetFor("defaults") : target(key).preset);
+  const presetFor = (key) => pend(key)?.preset ?? (key !== "defaults" && target(key).inherits ? (key === DRAFT ? status.defaults.preset : presetFor("defaults")) : target(key).preset);
   // Generated and actions are one setting each (an entry's value replaces the inherited one whole), so a reset takes the whole of it.
   const rootOf = (path) => (/^(generated|actions)\./.test(path) ? path.split(".")[0] : path);
   // What a field returns to: the defaults' settings for an entry with no preset of its own (what effective() applies), else its preset's.
-  const baseOf = (key) => (key !== "defaults" && target(key).inherits && !pending.repos[key]?.preset ? view("defaults") : presets[presetFor(key)] ?? {});
+  const baseOf = (key) => (key !== "defaults" && target(key).inherits && !pend(key)?.preset ? (key === DRAFT ? status.defaults.settings : view("defaults")) : presets[presetFor(key)] ?? {});
   const dflt = (key, path) => get(baseOf(key), path);
   // The settings as the proposal would leave them: the base, then the fields the entry sets (minus the pending resets), then the pending edits.
   // Fields that merge leaf by leaf (a cap, one tier's approve or merge): an edit or a reset names the leaf, the rest keep their values.
@@ -152,7 +202,7 @@
   // A leaf removed from a map, and the maps it leaves empty.
   function drop(o, path) { const [k, ...rest] = path.split("."); if (rest.length) { if (!o[k]) return; drop(o[k], rest.join(".")); if (!Object.keys(o[k]).length) delete o[k]; } else delete o[k]; }
   function view(key) {
-    const t = target(key), p = pending.repos[key] ?? {}, resets = new Set(p.reset ?? []), s = structuredClone(baseOf(key));
+    const t = target(key), p = pend(key) ?? {}, resets = new Set(p.reset ?? []), s = structuredClone(baseOf(key));
     const apply = (src, skipReset) => { for (const [k, v] of Object.entries(src ?? {})) {
       if (["preset", "reset"].includes(k)) continue;
       if (DEEP.includes(k)) { if (!skipReset || !resets.has(k)) mergeInto(s[k] ??= {}, v, k, resets, skipReset); }
@@ -162,11 +212,11 @@
     return s;
   }
   // Whether the entry itself sets the field: an own field not being reset, or a pending edit.
-  const owns = (key, path) => { const p = pending.repos[key] ?? {}, r = rootOf(path), has = (o, x) => get(o, x) !== undefined;
+  const owns = (key, path) => { const p = pend(key) ?? {}, r = rootOf(path), has = (o, x) => get(o, x) !== undefined;
     if (has(p, r)) return true;
     return !(p.reset ?? []).includes(r) && has(target(key).own, r); };
   function edit(key, path, value, live) {
-    const p = { ...(pending.repos[key] ?? {}) }, [root, sub] = path.split(".");
+    const p = { ...(pend(key) ?? {}) }, [root, sub] = path.split(".");
     p.reset = (p.reset ?? []).filter((x) => x !== path && x !== root);
     if (DEEP.includes(root)) { p[root] = structuredClone(p[root] ?? {}); put(p, path, value); }
     else if (sub) p[root] = { ...(view(key)[root] ?? {}), [sub]: value };
@@ -175,7 +225,7 @@
     propose(p, key, true, live);
   }
   function reset(key, path) {
-    const p = structuredClone(pending.repos[key] ?? {}), r = rootOf(path);
+    const p = structuredClone(pend(key) ?? {}), r = rootOf(path);
     drop(p, r);
     p.reset = [...new Set([...(p.reset ?? []), r])];
     propose(p, key, true);
@@ -228,9 +278,9 @@
     };
     const rs = (path) => { const { d } = state(path), b = h("button", { type: "button", className: "rs", textContent: "Reset", title: `Back to the ${resetTo(path)}: ${fmt(path, show(path, d))}` });
       // A preset change is only pending: drop it. The server has no reset for a preset.
-      b.addEventListener("click", () => { if (path !== "preset") return reset(key, path); const p = structuredClone(pending.repos[key] ?? {}); delete p.preset; propose(p, key, true); }); return b; };
+      b.addEventListener("click", () => { if (path !== "preset") return reset(key, path); const p = structuredClone(pend(key) ?? {}); delete p.preset; propose(p, key, true); }); return b; };
     const sf = (path, wide) => {
-      const { label, text, kind } = info(path), { changed } = state(path), loose = pending.repos[key] && looser(path, get(base, path), get(s, path));
+      const { label, text, kind } = info(path), { changed } = state(path), loose = key !== DRAFT && pend(key) && looser(path, get(base, path), get(s, path));
       return h("div", { className: `sf${changed ? " chg" : ""}${wide || kind === "chips" || kind === "checks" ? " wide" : ""}`, title: LOOSE.has(path) ? `${text} Loosening this is the owner's call: an agent's change is refused, your Save applies it.` : text },
         h("div", { className: "sl" }, h("span", { className: "sn", textContent: label }), changed ? rs(path) : null), control(path),
         loose ? h("span", { className: "warn", textContent: "Loosens this guard: it needs the owner's Save." }) : null);
@@ -254,55 +304,130 @@
     const limits = section("limits", "Limits", CAPS, [h("div", { className: "grid" }, ...CAPS.map((p) => sf(p)))], { fold: true, summary: set ? `${set} limit${set === 1 ? "" : "s"} set` : "No limits", note: "How many times a PR is re-reviewed (and so fixed) is code review's 'Reviews per push' setting on the Reviews page. A blank limit is unlimited." });
     const advPaths = ["stop_label", "generated.globs", "generated.command", "protected", ...("actions" in base ? Object.keys(STAGES).map((x) => `actions.${x}`) : [])];
     const changedN = advPaths.filter((p) => state(p).changed).length;
-    const adv = section("adv", "Advanced", advPaths, [h("div", { className: "grid" }, sf("stop_label"), sf("generated.command")), ...advPaths.slice(1).filter((p) => p !== "generated.command").map((p) => sf(p, true))], { fold: true, summary: changedN ? `${changedN} changed` : "Defaults", note: "Extra steps Ship takes at a stage (actions): comment: text, or workflow: file.yml key=value." });
+    const adv = section("adv", "Advanced", advPaths, [h("div", { className: "grid" }, sf("stop_label")), ...advPaths.slice(1).map((p) => sf(p, true))], { fold: true, summary: [get(s, "generated")?.globs?.length || get(s, "generated")?.command ? "" : "No generator set", changedN ? `${changedN} changed` : ""].filter(Boolean).join(" \u00b7 ") || "Defaults", note: "Extra steps Ship takes at a stage (actions): comment: text, or workflow: file.yml key=value." });
     return h("div", { className: "sd", id: `drawer-${key}` }, h("div", { className: "sdc" }, merging), h("div", { className: "sdc" }, repair, limits), h("div", { className: "sdc" }, adv));
   }
   const LOOSE = new Set(["generated.globs"]);
   const open = new Set();
 
+  // One headline control of a row: a segmented control over the server's values (the column header carries the help), with its name above it on a phone.
   function choice(r, key) {
-    const c = controls[key];
-    const sel = h("select", { ariaLabel: `${c.label} for ${r.repo}` });
-    for (const v of c.values) sel.append(h("option", { value: v, textContent: v, title: COLS[key][2][v], selected: shown(r)[key] === v }));
-    sel.addEventListener("change", () => edit(r.repo, key, sel.value));
-    return h("div", {}, h("span", { className: "lab" }, hd(key, shown(r)[key])), sel);
+    const c = controls[key], cur = shown(r)[key];
+    const seg = editor({ kind: "seg", label: `${c.label} for ${r.repo}`, f: `row|${r.repo}|${key}`, value: cur, values: c.values, titles: COLS[key][2], set: (x) => edit(r.repo, key, x) });
+    return h("div", { className: "cell" }, h("span", { className: "lab" }, hd(key, cur)), seg);
   }
 
-  // The row's one-line summary of by_tier: which tiers the App approves and which Ship merges.
-  const names = (list, all) => !list.length ? "none" : list.length === all ? "all" : list.join(", ");
-  const tiersCell = (r) => { const on = (f, v) => TIERS.filter((t) => r.by_tier?.[t]?.[f] === v); return h("div", { className: "tiers", ariaLabel: `Risk tier policy for ${r.repo}` }, "Approves ", h("b", { textContent: names(on("approve", "on"), 3) }), " · merges ", h("b", { textContent: names(on("merge", "ready"), 4) })); };
+  // The risk tiers as chips: A is the App's approval, M is Ship's merge; each shows a tick (on), a circle (observe: reported only) or a dash (off).
+  const MARK = { on: ["✓", "y", "approves"], ready: ["✓", "y", "merges"], observe: ["○", "o", "reports only"], off: ["–", "", "never"] };
+  const policy = (s, label) => {
+    const chip = (t, a, m) => {
+      const part = (letter, word, v) => { const [mark, cls, what] = MARK[v] ?? MARK.off; return [h("i", { className: cls, textContent: `${letter}${mark}` }), `${word} ${what}`]; };
+      const parts = [a ? part("A", "approve", a) : null, part("M", "merge", m)].filter(Boolean);
+      return h("span", { className: `pc t-${t}`, title: `${cap(t)}: ${parts.map((p) => p[1]).join(", ")}`, ariaLabel: `${cap(t)}: ${parts.map((p) => p[1]).join(", ")}` }, h("b", { textContent: t }), ...parts.map((p) => p[0]));
+    };
+    return h("div", { className: "pol", role: "group", ariaLabel: label }, ...TIERS.map((t) => chip(t, t === "skip" ? null : s.by_tier?.[t]?.approve, s.by_tier?.[t]?.merge)), chip("unwatched", null, s.unwatched?.merge));
+  };
   const redraw = () => keepFocus(draw);
   function render() { soon(redraw); }
+
+  // ---- Add repo: a draft panel with the name, what it starts from, and the same settings editor a repo's drawer has.
+  const NAME = /^[\w.-]+\/[\w.-]+$/;
+  const FROM = { "Defaults": "defaults", "Cautious": "cautious", "Full": "full", "Copy of…": "copy" };
+  const FROM_HELP = { "Defaults": "Follows the Defaults card, including its later changes. Only the fields you set below are the repo's own.", "Cautious": "Starts on the cautious preset: caps on rounds and spend, protected files held for you.", "Full": "Starts on the full preset: no caps and no protected files.", "Copy of…": "Starts as a copy of a listed repo's own settings." };
+  function seed(from, src) {
+    // A copy is of the row as the owner sees it: its saved overrides with the proposed edits over them, and its shown preset.
+    const own = {}; if (from === "copy") { Object.assign(own, structuredClone(src.own)); const p = pending.repos[src.repo] ?? {}; mergeInto(own, structuredClone(p), "", new Set(), false); for (const r of p.reset ?? []) drop(own, r); delete own.reset; delete own.preset; }
+    const inherits = from === "defaults" || (from === "copy" && src.inherits && !pending.repos[src.repo]?.preset);
+    draft = { ...draft, from, copy: src?.repo, inherits, fields: inherits ? own : { ...own, preset: from === "copy" ? presetFor(src.repo) : from } };
+  }
+  const nameError = (name) => !name ? "" : !NAME.test(name) ? "Use owner/name, for example acme/api." : status.repos.some((r) => r.repo.toLowerCase() === name.toLowerCase()) ? `${name} is already on Ship: change it in the table.` : "";
+  function openDraft() { if (!draft) { draft = { name: "", from: "defaults", inherits: true, fields: {} }; } render(); setTimeout(() => $("draft").querySelector("input")?.focus(), 0); }
+  function closeDraft() { draft = null; render(); }
+  async function addRepo() {
+    // A limit the number box refused (not a whole number) is not in the draft: say so rather than add without it.
+    const badNum = [...$("draft").querySelectorAll("input[placeholder='no limit']")].find((i) => i.value.trim() && !/^\d+$/.test(i.value.trim()));
+    if (badNum) { say("Use a whole number, or leave the limit blank.", true); badNum.focus(); return; }
+    // A chip box's typed-but-not-entered text counts: commit it before reading the fields.
+    $("draft").querySelectorAll(".chips input").forEach((i) => i.value.trim() && i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true })));
+    const repo = draft.name.trim(), { reset: _r, ...change } = draft.fields;
+    await inOrder(async () => { try { proposed(await tool("ship_configure", { repo, add: true, change })); pending = lastGood = { repos: {}, paused: undefined }; draft = null; render(); } catch (err) { say(err.message, true); } });
+  }
+  function draftPanel() {
+    const msg = h("p", { className: "msg", role: "status" }), add = h("button", { type: "button", className: "primary", textContent: "Add repo" });
+    const check = () => { const bad = nameError(draft.name.trim()); msg.textContent = bad || (draft.name.trim() ? `Lists it for Ship and the Maintainer, then applies the settings below. Code review is separate: turn it on from the Reviews page.${Object.keys(pending.repos).length || pending.paused !== undefined ? " It replaces the edits already proposed in the bar above." : ""}` : "owner/name of the GitHub repo."); msg.className = bad ? "msg bad" : "msg"; add.disabled = !NAME.test(draft.name.trim()) || !!bad; };
+    const name = h("input", { type: "text", id: "newrepo", value: draft.name, placeholder: "owner/name", ariaLabel: "Repo to add", autocomplete: "off", spellcheck: false });
+    name.addEventListener("input", () => { draft.name = name.value; check(); });
+    name.addEventListener("keydown", (e) => { if (e.key === "Enter" && !add.disabled) addRepo(); else if (e.key === "Escape") closeDraft(); });
+    const label = Object.keys(FROM).find((k) => FROM[k] === draft.from);
+    const from = [editor({ kind: "seg", label: "Start from", f: "draft|from", value: label, values: Object.keys(FROM).filter((k) => FROM[k] !== "copy" || status.repos.length), titles: FROM_HELP, set: (x) => { if (FROM[x] === draft.from) return; if (FROM[x] !== "copy") seed(FROM[x]); else seed("copy", status.repos[0]); render(); } })];
+    if (draft.from === "copy") {
+      const sel = h("select", { ariaLabel: "Repo to copy" }, ...status.repos.map((r) => h("option", { value: r.repo, textContent: r.repo, selected: r.repo === draft.copy })));
+      sel.addEventListener("change", () => { seed("copy", status.repos.find((r) => r.repo === sel.value)); render(); });
+      from.push(sel);
+    }
+    add.addEventListener("click", addRepo);
+    const cancel = h("button", { type: "button", textContent: "Cancel" }); cancel.addEventListener("click", closeDraft);
+    check();
+    return [h("div", { className: "top" }, h("label", { className: "nm" }, h("span", { className: "fl", textContent: "Repo" }), name), h("div", {}, h("span", { className: "fl", textContent: "Start from" }), h("div", { className: "from" }, ...from))), msg, drawer(DRAFT), h("div", { className: "btns" }, add, cancel)];
+  }
+
+  // ---- Remove: asks first, in the row's own place.
+  async function removeRepo(repo) {
+    await inOrder(async () => { try { const x = await tool("ship_configure", { repo, remove: true }); pending = lastGood = { repos: {}, paused: undefined }; confirming = null; proposed(x); render(); } catch (e) { say(e.message, true); } });
+  }
+  const GH = (path) => `https://github.com/${path}`;
+
   function draw() {
     closeHelp();
-    $("pausehelp").replaceChildren(help("Pause", "The kill switch. While paused, Ship adopts, pushes, approves and merges nothing, and PRs resume where they were when you switch it back on.", { note: "It works whatever each repo is set to." }));
-    $("addhelp").replaceChildren(help("Add repo", "Lists a repo as owner/name for Ship, the Maintainer and code review. It starts on the cautious preset.", { bare: true }));
-    $("holdhead").replaceChildren(help("On hold", "A hold means Ship stopped working a PR and is waiting for a person. It stays held until a member hands the PR off again: add the ship label or comment /ship.", { options: HOLDS, note: "A PR carrying the stop label (ship:stop by default) is left alone until the label is removed." }));
-    $("count").textContent = status.repos.length ? `${status.repos.length}` : "";
+    $("holdhelp").replaceChildren(help("On hold", "A hold means Ship stopped working a PR and is waiting for a person. It stays held until a member hands the PR off again: add the ship label or comment /ship.", { bare: true, options: HOLDS, note: "A PR carrying the stop label (ship:stop by default) is left alone until the label is removed." }));
+    $("count").textContent = status.repos.length ? `(${status.repos.length})` : "";
     const paused = pending.paused ?? status.paused;
     setSwitch($("pause"), !paused);
     $("pause").classList.toggle("unsaved", pending.paused !== undefined);
     $("pause").setAttribute("aria-label", paused ? "Ship is paused" : "Ship is running");
-    $("pausetxt").textContent = paused ? "Paused: nothing is adopted, pushed, approved or merged" : "Running";
+    $("pausetxt").textContent = paused ? "Paused" : "Running";
     $("pausebox").className = paused ? "pause on" : "pause";
+    $("repocard").classList.toggle("paused", !!paused);
+    $("pbanner").hidden = !paused;
+    $("addbtn").setAttribute("aria-expanded", String(!!draft));
+    $("draft").hidden = !draft;
+    $("draft").replaceChildren(...(draft ? draftPanel() : []));
     const rows = status.repos.map((raw) => {
-      const r = shown(raw);
+      const r = shown(raw), id = `drawer-${raw.repo}`, isOpen = open.has(raw.repo);
       const sw = toggle(r.enabled, `Ship on ${r.repo}`, () => edit(r.repo, "enabled", !r.enabled));
       sw.classList.toggle("unsaved", "enabled" in own(raw));
-      const rm = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
-      rm.addEventListener("click", async () => { try { const x = await tool("ship_configure", { repo: r.repo, remove: true }); pending = lastGood = { repos: {}, paused: undefined }; proposed(x); render(); } catch (e) { say(e.message, true); } });
+      const chev = h("button", { type: "button", className: "chev", ariaLabel: `Settings for ${r.repo}`, title: "Settings" });
+      chev.setAttribute("aria-expanded", String(isOpen)); chev.setAttribute("aria-controls", id);
+      const flip = () => { isOpen ? open.delete(raw.repo) : open.add(raw.repo); render(); };
+      const rm = h("button", { type: "button", className: "rm", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
+      rm.addEventListener("click", () => { confirming = raw.repo; render(); });
       const row = h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
-        h("div", { className: "repo" }, r.repo, (() => { const b = linkBtn("Settings", () => { open.has(r.repo) ? open.delete(r.repo) : open.add(r.repo); render(); }); b.className = "link toggle"; b.setAttribute("aria-expanded", String(open.has(r.repo))); b.setAttribute("aria-controls", `drawer-${r.repo}`); return b; })()), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: ON[0] }), sw),
-        choice(raw, "preset"), choice(raw, "handoff"), tiersCell(r), rm);
-      return open.has(raw.repo) ? [row, drawer(raw.repo)] : [row];
+        h("div", { className: "repo" }, chev, link(GH(r.repo), r.repo)), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: ON[0] }), sw),
+        choice(raw, "preset"), choice(raw, "handoff"), policy(r, `Risk tier policy for ${r.repo}`), h("div", { className: "acts" }, raw.removable ? rm : null));
+      // A click on the row's own space opens Settings; a click on a control, switch or link does only its own job.
+      row.addEventListener("click", (e) => { if (!e.target.closest("button, a, input, select, label")) flip(); });
+      chev.addEventListener("click", flip);
+      const more = [];
+      if (confirming === raw.repo) {
+        const yes = h("button", { type: "button", className: "danger", textContent: "Remove" }), no = h("button", { type: "button", textContent: "Cancel" });
+        yes.addEventListener("click", () => removeRepo(raw.repo)); no.addEventListener("click", () => { confirming = null; render(); });
+        more.push(h("div", { className: "confirm", role: "alert" }, h("span", { textContent: `Remove ${r.repo} from Ship, the Maintainer and code review?` }), yes, no));
+      }
+      if (isOpen) more.push(drawer(raw.repo));
+      return [row, ...more];
     }).flat();
     $("defcard").hidden = !status.defaults;
-    $("defhead").replaceChildren(help("Defaults", "The settings a new repo and the fleet's own repos start from until a repo's own entry changes them. The same fields as a repo's Settings.", { note: "A repo's own value wins over the default." }));
+    if (status.defaults) {
+      const d = view("defaults");
+      $("defsum").replaceChildren(h("span", {}, h("span", { className: "k", textContent: "Preset " }), h("b", { textContent: presetFor("defaults") })), h("span", {}, h("span", { className: "k", textContent: "Hand-off " }), h("b", { textContent: d.handoff })), policy(d, "Default risk tier policy"), h("span", { className: "soft", textContent: "A new repo that starts from Defaults follows these." }));
+    }
+    $("deftoggle").textContent = open.has("defaults") ? "Close" : "Edit";
     $("deftoggle").setAttribute("aria-expanded", String(open.has("defaults")));
     $("defdrawer").replaceChildren(...(open.has("defaults") && status.defaults ? [drawer("defaults")] : []));
-    const cols = h("div", { className: "row cols" }, h("span", { textContent: "Repo" }), help(ON[0], ON[1]), ...["preset", "handoff"].map((k) => hd(k)), help("Policy", "Which risk tiers code review gives a PR the App approves and Ship merges. Open Settings to change a tier.", { options: Object.fromEntries(TIERS.map((t) => [t, TIER_HELP[t]])), note: "Which PRs are in which tier is set on the Reviews page." }), h("span", {}));
-    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Type owner/name below and choose Add repo to start. Ship stays quiet until a repo is on.")]));
-    $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { className: "repo", textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", title: HOLDS[x.hold?.kind], textContent: String(x.hold?.kind ?? "").replace("_", " ").replace(/^./, (c) => c.toUpperCase()) }), h("span", { className: "why", textContent: x.hold?.reason || HOLDS[x.hold?.kind] || "" }), h("span", { className: "soft when", textContent: x.hold?.at ? ago(x.hold.at) : "" }))) : [h("div", { className: "empty" }, h("b", { textContent: "No holds. " }), "Nothing is waiting on you.")]));
+    const cols = h("div", { className: "row cols" }, h("span", { textContent: "Repo" }), help(ON[0], ON[1]), ...["preset", "handoff"].map((k) => hd(k)), help("Policy", "Which risk tiers code review gives a PR, and what Ship does for each: A is the App's approval, M is Ship's merge. A tick is on, a circle reports only, a dash is off. Open Settings to change a tier.", { options: Object.fromEntries(TIERS.map((t) => [t, TIER_HELP[t]])), note: "Which PRs are in which tier is set on the Reviews page." }), h("span", {}));
+    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Choose + Add repo to start. Ship stays quiet until a repo is on.")]));
+    $("holdcount").textContent = status.held.length ? `(${status.held.length})` : "";
+    $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => { const kind = x.hold?.kind ?? ""; return h("div", { className: "hold" }, h("span", { className: "repo" }, link(GH(`${x.repo}/pull/${x.number}`), `${x.repo}#${x.number}`)), h("span", { className: `tag k-${kind}`, title: HOLDS[kind], textContent: cap(kind.replace("_", " ")) }), h("span", { className: "why", textContent: x.hold?.reason || HOLDS[kind] || "" }), h("span", { className: "soft when", textContent: x.hold?.at ? ago(x.hold.at) : "" })); }) : [h("div", { className: "empty", textContent: "Nothing on hold." })]));
   }
 
   async function load() {
@@ -316,12 +441,7 @@
   $("deftoggle").addEventListener("click", () => { open.has("defaults") ? open.delete("defaults") : open.add("defaults"); render(); });
   $("pause").addEventListener("click", () => propose({ paused: !(pending.paused ?? status.paused) }));
   $("refresh").addEventListener("click", () => { say(""); load(); });
-  $("add").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const repo = $("newrepo").value.trim();
-    if (!repo) return;
-    try { proposed(await tool("ship_configure", { repo, add: true })); pending = lastGood = { repos: {}, paused: undefined }; render(); } catch (err) { say(err.message, true); }
-  });
+  $("addbtn").addEventListener("click", () => (draft ? closeDraft() : openDraft()));
   start("ship", load);
 </script>
 </body>

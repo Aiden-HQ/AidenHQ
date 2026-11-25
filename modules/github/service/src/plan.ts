@@ -8,10 +8,10 @@
 // `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
 // revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
 
-import { productMergeEligible, type Verdict } from "./merge-gate.ts";
+import { headChecks, productMergeEligible, type Verdict } from "./merge-gate.ts";
 
 interface Part { tier: 0 | 1 | 2; rule: string; reason: string; reject?: boolean }
-interface Check { name?: string; ok?: boolean; pending?: boolean; skipped?: boolean }
+interface Check { name?: string; kind?: "run" | "status"; rank?: number; ok?: boolean; pending?: boolean; skipped?: boolean }
 interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string; /** A push onto an adopted PR's branch (ship). */ ship?: Ship; /** An explicit handoff: an open PR on this branch whose recorded owner task is no longer open (service.ts reads both facts). */ handoff?: boolean; /** A PR on this branch already recorded to this task (a successor republishing what it adopted): the branch name is the old task's. */ adopted?: boolean; /** The base the change is reviewed against (the PR's own base); `defaultBranch` stays the repo's, so the default-branch guard still holds. */ destination?: string }
 interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string; /** Code review's verdict for the head (product merges). */ verdict?: Verdict; /** A merge the ship module filed for an adoption. */ ship?: Ship }
 /**
@@ -267,7 +267,9 @@ function mergeFriction(p: Pr, ref: string) {
   if (!p.headMatches) return REJECT("head-moved", `${ref} moved since it was asked for: ask again for its new head`);
   if (!isLocal(p.repo)) return undefined;
   if (!(p.checks ?? []).length) return REJECT("no-checks", `${ref} has no named checks on its head: its repo needs CI (a copy of the product's CI template runs at once), or CI didn't start; fix that and ask again`);
-  const red = p.checks.filter((c) => !c.ok && !c.pending);
+  // Each name's newest run at the head, as the merge gate judges it (merge-gate.ts headChecks): not every context, or a run an
+  // edit superseded would refuse a change request on a red that is no longer there.
+  const red = headChecks(p.checks).filter((c) => !c.ok && !c.pending);
   // A count, never the names: check names are repo-controlled text, and this reason reaches the agent as the runner's.
   if (red.length) return REJECT("checks-not-green", `${ref}: ${red.length} named check(s) failed on the head (\`aidenhq status\` names them). Fix it and publish again`);
   return undefined;
@@ -317,7 +319,8 @@ function mergeParts(p: Pr, s: State): Part[] {
     : T(1, "agents-org-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo}`));
   // Merged at once when CI is green (owner, 2026-11-12): the PR merges on its own (an independent queue), strict and bound to
   // this head, only once every named check passed on it; red leaves it unmerged. None yet or still running waits.
-  const c = checkStatus(p.checks);
+  // Each name's newest run (headChecks), the queue's own judgement: a superseded cancelled run must not read as a red here.
+  const c = checkStatus(headChecks(p.checks));
   // A change request on this server: no CI code-review job read it (that needs GitHub's OIDC), so the AI reviewer reads the
   // card's diff and the request chain (owner, 2026-11-17). Merged only once every named check is green on this head.
   if (isLocal(p.repo)) parts.push(T(1, "local-merge", `${ref}: a change request on this server; ${c.text}`));
@@ -340,7 +343,7 @@ function productMergeParts(p: Pr, ref: string, s: State): Part[] {
   if (!p.ownHead) return [T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`)];
   // Plain wording, and no "skipped counts as passed": the reviewer reads this line as code's description of the gate, and a
   // sentence that reads as a weakened check made every product merge card a false reject (issue #1449).
-  const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head and only after every named check has finished without failure`;
+  const gates = `On its head: ${checkCounts(headChecks(p.checks))}. Code merges it only at that head and only after every named check has finished without failure`;
   const eligible = productMergeEligible({ repo: p.repo, head: String(p.head ?? ""), checks: p.checks, verdict: p.verdict, productRepo: String(s.productRepo ?? "") });
   const parts = [eligible ? T(0, "product-merge-reviewed", `${ref}: ci-required is green and code review passed its head`) : T(1, "product-merge", `${ref}: a product PR whose head the code host pushed. ${gates}`)];
   if (eligible && p.files.some((f) => GITHUB.test(f))) parts.push(T(1, "github-dir", `${ref} changes ${p.files.filter((f) => GITHUB.test(f)).length} file(s) under .github/`));

@@ -11,7 +11,7 @@
 // with its own module token (main.ts). Started by main.ts.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import { latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
 
 type Json = any;
@@ -52,16 +52,15 @@ export const RECHECK_MS = 60_000;
 /** PRs per list page: starts at PAGE_MAX; a timeout halves it (down to PAGE_MIN) and a page answered under FAST_PAGE_MS doubles it back,
  * no sooner than GROW_AFTER_MS after the last shrink (so a size known to time out isn't probed every pass). */
 const PAGE_MAX = 50, PAGE_MIN = 5, FAST_PAGE_MS = 3_000, GROW_AFTER_MS = 10 * 60_000;
-// A timeout is a 502/504, or a timeout error with no PR list at all. A 200 that carries the list alongside a timeout error (one
-// slow PR's nested field) is a partial page: read as it is, its missing PRs skipped this pass, since a smaller page can't help.
-const timedOut = (g: Json) => g.status === 502 || g.status === 504 || (!g.body?.data?.repository?.pullRequests && /time ?out|timed out/i.test(String(g.body?.errors?.[0]?.message ?? "")));
+const timedOut = (g: Json) => g.status === 502 || g.status === 504 || /time ?out|timed out/i.test(String(g.body?.errors?.[0]?.message ?? ""));
 /** How long a CI re-run that came due still keeps its repo read again: a slow pass may reach it after its due time. */
 const RETRY_GRACE_MS = 5 * 60_000;
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json, which: "off" | "failing" | "all") {
   if (which === "off" || !isDependabot(pr)) return false;
-  const checks = namedChecks(rollupOf(pr));
+  // Each name's newest run: an edit re-ran CI and cancelled the run before it, which is no failure of this head.
+  const checks = latestChecks(namedChecks(rollupOf(pr)));
   if (checks.some((c) => c.pending)) return false; // a PR with no named checks has none to wait for
   // Past the query's first page of contexts a red one can't be ruled out, so the bump counts as failing.
   return which === "all" || checks.some((c) => !c.ok) || !!rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
@@ -103,14 +102,17 @@ export function startLoop(o: LoopOptions) {
       }
       if (shrunk) writeJson(stateFile, all);
       const page = g.body?.data?.repository;
-      if (g.status >= 300 || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
-      if (!shrunk && first < PAGE_MAX && Date.now() - t < FAST_PAGE_MS && Date.now() - (state.shrunkAt ?? 0) > GROW_AFTER_MS) {
+      if (g.status >= 300 || timedOut(g) || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
+      // Any error or missing PR makes the list incomplete: the pass stops here, since everything below reads absence as closed.
+      if (g.body?.errors?.length || (page.pullRequests.nodes ?? []).some((n: Json) => !n)) throw new Error(`GitHub /graphql: incomplete page (${String(g.body?.errors?.[0]?.message ?? "a PR came back empty").slice(0, 200)})`);
+      const full = (page.pullRequests.nodes?.length ?? 0) >= first || !!page.pullRequests.pageInfo?.hasNextPage;
+      if (!shrunk && full && first < PAGE_MAX && Date.now() - t < FAST_PAGE_MS && Date.now() - (state.shrunkAt ?? 0) > GROW_AFTER_MS) {
         state.pageSize = Math.min(PAGE_MAX, first * 2);
         log("page size changed", { repo, from: first, to: state.pageSize, why: `page answered in ${Date.now() - t} ms` });
         writeJson(stateFile, all);
       }
       r ??= page;
-      open.push(...(page.pullRequests.nodes ?? []).filter(Boolean));
+      open.push(...(page.pullRequests.nodes ?? []));
       after = page.pullRequests.pageInfo?.hasNextPage ? page.pullRequests.pageInfo.endCursor : null;
       if (!after) break;
     }
@@ -148,7 +150,8 @@ export function startLoop(o: LoopOptions) {
     const after = (ms: number) => { next = Math.min(next ?? ms, ms); };
     // A Dependabot PR is the Engineer's once its checks fail (or always, under `all`); a green one under `failing` goes through the round like any PR.
     // Green means at least one check reported and all finished: no checks yet is not green.
-    const bumpOf = (pr: Json) => { const reported = namedChecks(rollupOf(pr)); return isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending); };
+    // The same each-name newest run `dependabotDue` judges on, so a superseded run never files a task and never holds the bump back.
+    const bumpOf = (pr: Json) => { const reported = latestChecks(namedChecks(rollupOf(pr))); return isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending); };
     o.adopted.see(repo, main.name, open.filter((pr) => !isDependabot(pr) || bumpOf(pr)));
     for (const pr of [...open].reverse()) { // oldest first
       const url = pr.url.toLowerCase();

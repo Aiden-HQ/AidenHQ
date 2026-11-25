@@ -17,7 +17,7 @@ owner is told: a task's PR wakes whoever asked for the task, a member's PR gets 
 push resumes it. Checks whose jobs never started, and check runs wedged after their job finished, are re-run for any PR. Ship
 also closes a cancelled, superseded or finished task's leftover PR, files a Dependabot PR's task, and has the Maintainer nudge,
 then close, a quiet contributor PR on repos with `contributor_prs`. The pause stops all of it, merges already filed included.
-The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: per repo on or off, preset, which PRs to adopt (`handoff`), `by_tier` (per risk tier: whether the App approves and whether ship merges), a global pause, and the holds. The module's settings are for the advanced options only.
+The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: Add repo (a draft panel: the name, a start from Defaults, Cautious, Full or a copy of a listed repo, and the same settings editor; a repo that starts from Defaults follows later changes to them) and, per repo, on or off, preset, which PRs to adopt (`handoff`), `by_tier` (per risk tier: whether the App approves and whether ship merges), a global pause, and the holds. The module's settings are for the advanced options only.
 
 ## Connect
 
@@ -29,7 +29,7 @@ Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq me
 ## What agents get
 
 The `ship` connection. Read: `ship_config`. Write: `ship_configure`. Both need the `ship-admin` role (the Maintainer and Aiden
-hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page, as one change covering its `maintainer_repos`, `code_review` and `ship` entries. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised) is the owner's, made from the
+hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page, as one change covering its `maintainer_repos` and `ship` entries. Code review is separate: adding a repo to ship never turns it on (the owner does that from the Reviews page), and a repo it doesn't watch merges by the `unwatched` setting. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised) is the owner's, made from the
 Fleet page.
 
 ## New installs

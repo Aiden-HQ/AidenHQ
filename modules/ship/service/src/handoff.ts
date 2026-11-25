@@ -296,5 +296,5 @@ export function generationOf(state: State, paused: boolean, repo: string, number
 /** A cancelled ship task ends its adoption (the loop reads the task's state): a hold, never a close of the PR or a touch of its ref. */
 export function handBack(state: State, repo: string, number: number, reason: string) {
   const a = state.get(repo, number);
-  if (a && !a.hold) state.put({ ...a, hold: { kind: "handed_back", reason } });
+  if (a && !a.hold) state.put({ ...a, hold: { kind: "handed_back", reason, at: new Date().toISOString() } });
 }

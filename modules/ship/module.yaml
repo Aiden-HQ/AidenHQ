@@ -10,7 +10,7 @@ license: MIT
 # (the Fleet page).
 requires:
   - github # the covered repos' reads (/internal/ship/*) and the effects ship files (github.merge, approve, enqueue, repair, retarget, retitle)
-  - code-review # a new repo is added to settings.code_review with the others (the Fleet page's Add repo)
+  - code-review # the risk tier and verdict ship's merge gate reads; a repo it doesn't watch merges by `unwatched` (adding a repo to Ship leaves code review alone)
   - board # contributes.board.pages
 contributes:
   # The Fleet page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules").

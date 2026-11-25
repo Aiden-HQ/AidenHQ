@@ -53,8 +53,8 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
       number title body url state isDraft createdAt headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion externalId checkSuite { app { slug } } } ... on StatusContext { context state } } } } } } }
-      baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt externalId checkSuite { app { slug } } } ... on StatusContext { context state createdAt } } } } } } }
+      baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt } ... on StatusContext { context state createdAt } } } } } } }
     }
   }
 }`;
