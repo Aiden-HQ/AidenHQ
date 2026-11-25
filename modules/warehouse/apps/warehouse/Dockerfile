@@ -18,16 +18,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-17-p
 RUN rm -rf /var/lib/apt/lists/*
 # The upstream image's gosu is its prebuilt 1.20 release, cut with go1.24.6: 60 stdlib rows in the 2026-11-25 scan. gosu
 # 1.20 is the newest release and its amd64 asset still carries go1.24.6, so this replaces /usr/local/bin/gosu with one
-# built from gosu 1.20's source by Go 1.26.9. Both downloads are verified by sha256. This stays in the final stage: a
-# golang build stage would add that image to image-scan's registry scan. The toolchain, sources and downloader are
-# deleted before the layer ends, so the image keeps only the rebuilt binary. .github/image-scan-exceptions.yaml ignores
-# this path when the final `RUN gosu --version` is present.
+# built from gosu 1.20's source by Go 1.26.9. Both downloads are verified by sha256, per architecture: the base is
+# multi-arch and the documented hosts are amd64 and arm64. This stays in the final stage: a golang build stage would add
+# that image to image-scan's registry scan. The toolchain, sources and downloader are deleted before the layer ends, so
+# the image keeps only the rebuilt binary. .github/image-scan-exceptions.yaml ignores this path when the final
+# `RUN gosu --version` is present.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
     mkdir -p /tmp/gosu-build; \
-    curl -fsSLo /tmp/gosu-build/go.tar.gz https://go.dev/dl/go1.26.9.linux-amd64.tar.gz; \
-    echo "42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d  /tmp/gosu-build/go.tar.gz" | sha256sum -c -; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) goarch=amd64; gosum=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d ;; \
+      arm64) goarch=arm64; gosum=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052 ;; \
+      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/gosu-build/go.tar.gz "https://go.dev/dl/go1.26.9.linux-$goarch.tar.gz"; \
+    echo "$gosum  /tmp/gosu-build/go.tar.gz" | sha256sum -c -; \
     curl -fsSLo /tmp/gosu-build/gosu.tar.gz https://github.com/tianon/gosu/archive/refs/tags/1.20.tar.gz; \
     echo "207a2045e890d3ca3326027c5f585733085960b401a49dbc00e3bb628c054cf8  /tmp/gosu-build/gosu.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/gosu-build/go.tar.gz -C /tmp/gosu-build; \
