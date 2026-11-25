@@ -1,7 +1,9 @@
 // best-version.ts (which version to pin) and pins.ts (everything pinned, nothing new under 7 days), offline.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { checkAges, dateApt, scanFile, wanted } from "../supply-chain/pins.ts";
@@ -100,6 +102,38 @@ test("pins: a module.yaml service image is a pin, and an agent-level image line 
   const date = async (p: { name: string }) => ({ published: day(p.name === "postgres:17.12" ? 2 : 30), via: "registry" });
   assert.equal((await checkAges({ pins: r.pins, basePins: base, date, now })).length, 1);
   assert.deepEqual(await checkAges({ pins: r.pins, basePins: r.pins, date, now }), []);
+});
+
+test("pins: a module.yaml re-pin is dated at the head and not at the base", async () => {
+  // The path scanRef walks, on a real repository: wanted() lists the module.yaml at both refs, and only the head's ref is new.
+  const dir = mkdtempSync(join(tmpdir(), "pins-module-"));
+  try {
+    const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+    const git = (...a: string[]) => execFileSync("git", a, { cwd: dir, env, encoding: "utf8" }).trim();
+    const manifest = (c: string) => `name: primer\nservices:\n  run:\n    primer-db:\n      image: postgres:17.12@sha256:${c.repeat(64)}\n`;
+    git("init", "-q", "-b", "main");
+    mkdirSync(join(dir, "modules/primer"), { recursive: true });
+    writeFileSync(join(dir, "modules/primer/module.yaml"), manifest("a"));
+    git("add", "-A");
+    git("commit", "-qm", "base");
+    const base = git("rev-parse", "HEAD");
+    writeFileSync(join(dir, "modules/primer/module.yaml"), manifest("b"));
+    git("commit", "-qam", "re-pin");
+    const head = git("rev-parse", "HEAD");
+    // scanRef: every wanted path at the ref, read from the tree.
+    const ref = (r: string) => git("ls-tree", "-r", "--name-only", r).split("\n").filter((f) => wanted(f))
+      .flatMap((f) => scanFile(f, execFileSync("git", ["show", `${r}:${f}`], { cwd: dir, encoding: "utf8" })).pins);
+    assert.deepEqual(ref(base).map((p) => p.digest), [`sha256:${"a".repeat(64)}`]);
+    assert.deepEqual(ref(head).map((p) => p.digest), [`sha256:${"b".repeat(64)}`]);
+    // Only the re-pin is dated: the same pin at both refs is old, the head's new digest is not.
+    const date = async () => ({ published: day(2), via: "registry" });
+    assert.equal((await checkAges({ pins: ref(head), basePins: ref(head), date, now })).length, 0);
+    const problems = await checkAges({ pins: ref(head), basePins: ref(base), date, now });
+    assert.equal(problems.length, 1);
+    assert.match(problems[0]!, /modules\/primer\/module\.yaml:5: postgres:17\.12@sha256:bbbbbbbbbbbb… was published 2\.0 days ago/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("pins: a debian:sid-slim base dates its apt pin from Debian sid", async () => {
