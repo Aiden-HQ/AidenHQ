@@ -346,8 +346,10 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // Files the repo's own .gitattributes (at the merge base) marks linguist-generated are left out, as its ignore globs are.
   let declared: ReturnType<typeof generatedRules> = [];
   if (!tree) try { declared = generatedRules(h.git(["show", `${h.base}:.gitattributes`])); } catch {}
-  const { reviewed, excluded } = scope(changed(h.git, h.from), combo.ignore ?? [], tree ? new Set() : prChanged, declared);
-  const mine = tree ? { reviewed, excluded } : scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), combo.ignore ?? [], prChanged, declared);
+  // A file this PR adds is never left out by that declaration: it is for what the repo already had, never a place to hide new code.
+  const added = new Set(tree ? [] : h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--diff-filter=A", "--name-only", "-z", h.base, "HEAD"]).split("\0").filter(Boolean));
+  const { reviewed, excluded } = scope(changed(h.git, h.from), combo.ignore ?? [], tree ? new Set() : prChanged, declared, added);
+  const mine = tree ? { reviewed, excluded } : scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), combo.ignore ?? [], prChanged, declared, added);
   const reviewedSet = new Set(reviewed), own = new Set(mine.reviewed), out_ = new Set([...excluded, ...mine.excluded].map((e) => e.path));
   const diff = reviewed.length ? h.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", h.from, "HEAD", "--", ...reviewed.map((p) => `:(literal)${p}`)]) : "";
   const baseTree = existsSync(join(out, "base")) ? join(out, "base") : undefined;
@@ -555,7 +557,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // A pull request that is only documents (its docs folder's plans, specs, designs: the whole PR, whatever this run's diff) never has an important
   // finding: at most 3 become design notes (a pre_existing finding, which never gates, marked in its why: the summary shows them
   // under their own heading), the rest nits. Guidance files and skills are behaviour, not prose.
-  if (!tree && !addressed && mine.reviewed.length && mine.reviewed.every((p) => matches(p, PROSE) && !matches(p, INSTRUCTIONS))) {
+  if (!tree && !addressed && prChanged.size && [...prChanged].every((p) => matches(p, PROSE) && !matches(p, INSTRUCTIONS))) {
     let notes = 0;
     // (A note already reported on this PR is not made again.)
     candidates = candidates.filter((f) => f.severity !== "important" || !reported.has(f.id)).map((f) => (f.severity !== "important" ? f : notes++ < 3 ? { ...f, severity: "pre_existing" as const, why: `${DESIGN_NOTE}${f.why}` } : { ...f, severity: "nit" as const }));

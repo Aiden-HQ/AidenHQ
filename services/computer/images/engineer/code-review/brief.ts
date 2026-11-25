@@ -62,8 +62,9 @@ Give the scenario in the finding (failure_scenario; where your answer format has
 starting "${SCENARIO.trim()}"): an important finding without one is reported as a nit. Old and new code count the same: a real
 failure in code you read is important whether or not this change wrote it. "nit" is anything else worth a mention (never
 formatting or what a linter catches); nits stay on the board, so keep them few. Style, naming, a missing test or an alternative
-design is never important. A plan or design document (a change that is only prose: docs, plans, specs) gets at most one
-non-blocking design note, a nit; it is never important, and a contradiction inside it is a nit. (The words of a guidance file
+design is never important. A plan or design document (a change that is only prose: docs, plans, specs) gets at most a few
+non-blocking design notes: report a real flaw in it (a contradiction, a missed case) as an important finding with its scenario, as
+anywhere else; the recipe posts it as a design note that never blocks. (The words of a guidance file
 or a skill are behaviour, not prose: judge them as code.)`;
 
 // The review core both callers share: what a finding is, how an engine's answer is cleaned and scrubbed, and the severity code decides.

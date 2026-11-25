@@ -77,9 +77,10 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const prChanged = new Set(raw("diff", "--no-renames", "--ignore-submodules=none", "--name-only", "-z", base, head).split("\0").filter(Boolean));
   let declared: ReturnType<typeof generatedRules> = [];
   try { declared = generatedRules(git("show", `${base}:.gitattributes`)); } catch {}
-  const { reviewed, excluded } = scope(changed((a) => raw(...a), from, head), [], prChanged, declared);
+  const added = new Set(raw("diff", "--no-renames", "--diff-filter=A", "--name-only", "-z", base, head).split("\0").filter(Boolean));
+  const { reviewed, excluded } = scope(changed((a) => raw(...a), from, head), [], prChanged, declared, added);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
-  const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged, declared);
+  const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged, declared, added);
   const left = new Set([...excluded, ...mine.excluded].map((x) => x.path));
   const gapNote = gaps.length ? `generated files this change adds are not reviewed: ${gaps.slice(0, 5).join(", ")}` : "";
   if (!reviewed.length) {

@@ -311,7 +311,7 @@ export function createEngine(d: EngineDeps) {
   const prRow = (repo: string, n: number) => one<PrRow>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
   /** What a head's classification was computed from: a stored one whose inputs differ from these is stale (pending). */
   type Inputs = { head: string; base: string; ref: string; author: string; association: string; config: string };
-  const inputsOf = (p: PullRequest, cfg: Entry): Inputs => ({ head: p.head, base: p.base, ref: p.base_ref, author: authorKind(p.author, p.association, p.own), association: String(p.association ?? ""), config: cfg.hash });
+  const inputsOf = (p: PullRequest, cfg: Entry): Inputs => ({ head: p.head, base: p.base, ref: p.base_ref, author: authorKind(p.author, p.association, p.own, p.fork), association: String(p.association ?? ""), config: cfg.hash });
   /** A PR head's tier as code review serves it: classified (current inputs), pending (none yet, or stale), or unwatched. `live` is a
    * caller's own read of the PR (its base branch and author association): one that differs from what the tier came from is pending. */
   type TierState = { state: "unwatched" } | { state: "pending" } | { state: "classified"; tier: Tier; rule: number; why: string; facts: Facts | null; c: Repo; policy: string; at: number };
@@ -654,7 +654,8 @@ export function createEngine(d: EngineDeps) {
       const pr = await d.source.get(r.repo, r.number);
       const intent = pr.fork ? "" : [pr.title, pr.body].filter(Boolean).join("\n\n");
       // What others already raised on the PR's threads (not Aiden's own, which `previous` carries): the review skips what is said.
-      const threads = await d.source.threads(r.repo, r.number).then(othersOf, () => "");
+      // None on a fork: its commenters are strangers (as the PR text is: `intent`).
+      const threads = pr.fork ? "" : await d.source.threads(r.repo, r.number).then(othersOf, () => "");
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", focus: r.focus, intent, threads,
         incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5, ...await deepsecData(r) });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
@@ -2212,7 +2213,7 @@ export function createEngine(d: EngineDeps) {
         else {
           const t = (await d.source.threads(q.repo, q.number)).find((x) => x.finding === q.finding);
           // The agent already gave this answer on the thread itself (a reply that starts with the word and gives a reason): one answer per thread, so no mirror.
-          if (t?.replies.some((x) => { const m = answerOf(x.body); return m && wordOf(m.word) === q.body.split(":")[0]; })) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
+          if (t?.replies.some((x) => { const m = answerOf(x.body); return m && `${wordOf(m.word)}: ${m.reason}`.replace(/\s+/g, " ").trim().startsWith(q.body.replace(/\s+/g, " ").trim()); })) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
           if (!t) o = { state: "refused", why: "its thread isn't on the pull request (yet)", retry: true };
           else o = await d.poster.reply({ repo: q.repo, number: q.number, head: prRow(q.repo, q.number)!.head, comment: t.comment, body: q.body });
           if (o.write) run("UPDATE replies SET write = ? WHERE repo = ? AND number = ? AND finding = ?", o.write, ...key);

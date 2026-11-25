@@ -22,7 +22,7 @@ export const MANIFESTS = ["**/package.json", "**/go.mod", "**/Cargo.toml", "**/p
 // Globs are case-sensitive, so the default list spells the common capitalised forms too (Auth, Session…).
 const RISKY = ["auth", "secur", "token", "session", "permission"].flatMap((w) => [w, w[0]!.toUpperCase() + w.slice(1)]).flatMap((w) => [`**/*${w}*`, `**/*${w}*/**`]);
 /** Prose: the docs folder's documents (plans, specs, designs). A change that is only these is judged by what it says, not by a keyword in a path. */
-export const PROSE = ["docs/**/*.md", "docs/**/*.mdx", "docs/**/*.rst"];
+export const PROSE = ["docs/**/*.md", "docs/**/*.rst"]; // not mdx: it can run code
 /** The files that steer an agent (a reviewer reads them as guidance): prose, but never demoted. */
 export const INSTRUCTIONS = ["**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE.md", "**/REVIEW.md"];
 /** The default sensitive paths: what CI's critical-path regex and ship's safe.deny meant, in one list. */
@@ -58,10 +58,11 @@ export function factsOf(files: FileChange[], o: { author: AuthorKind; base: stri
   return { lines: counted.reduce((n, f) => n + f.additions + f.deletions, 0), files: counted.length, paths, ...o };
 }
 
-/** Who opened the PR: the instance's own App is a member (`own`), any other `*[bot]` a bot, an owner, member or collaborator a member. */
-export function authorKind(login: string, association: string | undefined, own = false): AuthorKind {
+/** Who opened the PR: the instance's own App is a member (`own`), Dependabot and Renovate (exact logins, never from a fork) bots,
+ * an owner, member or collaborator a member. Any other `*[bot]` is judged by its association, as a person is. */
+export function authorKind(login: string, association: string | undefined, own = false, fork = false): AuthorKind {
   if (own) return "member";
-  if (/\[bot\]$/i.test(login)) return "bot";
+  if (!fork && /^(dependabot|renovate)\[bot\]$/i.test(login)) return "bot";
   return ["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase()) ? "member" : "outsider";
 }
 
