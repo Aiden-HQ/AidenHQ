@@ -142,6 +142,11 @@ describe("app_page_canary", () => {
     expect(script).toContain("const own = (b) => f ? true : dialogOf(b) === dlg;");
     expect(script).toContain("data-aidenhq-canary-submit");
     expect(script).toContain("no submit control in the feedback form");
+    // The fill is tied to the element that was marked, never to whatever has focus after a re-render, and the control's
+    // accessible name is read the same way when it is listed and when it is marked (an icon-only button has no text).
+    expect(script).toContain("data-aidenhq-canary-field");
+    expect(script).toContain("the feedback field did not keep the text");
+    expect(script).toContain("const nameOf = (b) =>");
     // Evidence starts at the click: a POST a fill triggered is never read as the submission's intake.
     expect(script.indexOf("const submittedAt = Date.now();")).toBeLessThan(script.indexOf('await ab("click", "[data-aidenhq-canary-submit]")'));
     // The handoff's code and state never come back in a URL or an error the tool returns.
@@ -175,7 +180,7 @@ describe("app_page_canary", () => {
       canaryTree: (text: string, refs?: Record<string, { role: string; name: string }>) => { role: string; name: string; ref: string }[];
       canaryField: (nodes: unknown[]) => { role: string; name: string; ref: string } | null;
       canaryEntries: (nodes: unknown[]) => { role: string; name: string; ref: string }[];
-      canaryFindField: (snap: () => Promise<{ tree: unknown[] }>, click: (entry: { role: string; name: string; ref: string }) => Promise<void>, back?: () => Promise<void>) => Promise<{ role: string; name: string; ref: string } | null>;
+      canaryFindField: (snap: () => Promise<{ tree: unknown[] }>, click: (entry: { role: string; name: string; ref: string }) => Promise<boolean | void>, back?: () => Promise<void>) => Promise<{ role: string; name: string; ref: string } | null>;
       canarySubmit: (controls: unknown[], inForm: boolean) => { tag: string; type: string; word: string } | null;
     };
     // The page as roadmap-keeper's /?intake=feedback renders it (WOR-11418): a banner button, the page's own display-name box,
@@ -440,6 +445,88 @@ describe("app_page_canary", () => {
   - button "Send feedback" [ref=e4]`))).toMatchObject({ name: "What should change?", ref: "e3" });
     });
 
+    it("reads the closest heading of the field's own section, not an earlier page heading", () => {
+      const { canaryTree, canaryField } = api();
+      // An unnamed form: "Feedback" titles it, then a wrapper holding "Account" and the display-name box. The wrapper holds
+      // the field, so it is the field's own section; the nearer "Account" heading wins and the form is not feedback.
+      expect(canaryField(canaryTree(`
+- form
+  - heading "Feedback" [level=2, ref=e1]
+  - generic
+    - heading "Account" [level=3, ref=e2]
+    - textbox "Display name" [ref=e3]
+  - button "Save" [ref=e4]`))).toBeNull();
+    });
+
+    it("reads the ref from snapshot metadata, never from a quoted accessible name", () => {
+      const { canaryTree, canaryEntries } = api();
+      // An item's title carries the literal text "ref=e1"; the button's own ref is e2. Discovery must use e2, or the click
+      // lands on whatever control happens to own e1.
+      const along = canaryTree(`
+- button "Provide feedback ref=e9"
+- button "Provide feedback" [ref=e1]`);
+      // The first button has no ref of its own, but its accessible name contains "ref=e9"; discovery must not take that for
+      // a ref, so the only clickable opener is the second one with the real ref.
+      expect(along[0]).toMatchObject({ name: "Provide feedback ref=e9", ref: "" });
+      expect(along[1]).toMatchObject({ ref: "e1" });
+      expect(canaryEntries(along).map((e) => e.ref)).toEqual(["e1"]);
+    });
+
+    it("follows a control that opens the form, never a feedback write control, and tells two same-named openers apart", async () => {
+      const { canaryTree, canaryEntries, canaryFindField } = api();
+      // A listing with write controls (a link handled in script, a reaction button) before the real opener. None of the writes
+      // is ever clicked; both "Provide feedback" buttons are different controls, so a disabled first one does not hide the
+      // second.
+      const listing = `
+- button "Withdraw feedback" [ref=e1]
+- link "Upvote feedback" [ref=e2]
+- button "Add feedback reaction" [ref=e3]
+- link "Feedback history" [ref=e4]
+- button "Provide feedback" [ref=e5]
+- button "Provide feedback" [ref=e6]`;
+      expect(canaryEntries(canaryTree(listing)).map((e) => e.ref)).toEqual(["e4", "e5", "e6"]);
+      let shown = listing;
+      const clicks: string[] = [];
+      const field = await canaryFindField(async () => ({ tree: canaryTree(shown) }), async (entry) => {
+        clicks.push(entry.ref);
+        if (entry.name === "Provide feedback" && entry.ref === "e6") shown = listing + DIALOG;
+        return false;
+      });
+      // The history link does not navigate here, so the walk simply goes on to the openers; e5 is a dead control and e6 opens it.
+      expect(clicks).toEqual(["e4", "e5", "e6"]);
+      expect(field).toMatchObject({ name: "What should change?", ref: "e10" });
+    });
+
+    it("climbs back through every page it navigated, not just one", async () => {
+      const { canaryTree, canaryFindField } = api();
+      // landing -> feedback center -> feedback history, and only the landing page has the button that opens the form.
+      const landing = `
+- link "Feedback center" [ref=e1]
+- button "Provide feedback" [ref=e2]`;
+      const center = `
+- link "Feedback history" [ref=e3]`;
+      const history = `
+- heading "Feedback history" [level=1, ref=e4]`;
+      const pages = [landing, center, history];
+      let at = 0, shown = landing;
+      const backs: number[] = [], clicks: string[] = [];
+      const field = await canaryFindField(async () => ({ tree: canaryTree(shown) }), async (entry) => {
+        clicks.push(entry.name);
+        if (entry.name === "Feedback center") { at = 1; shown = center; return true; }
+        if (entry.name === "Feedback history") { at = 2; shown = history; return true; }
+        shown = landing + DIALOG;
+        return false;
+      }, async () => {
+        at = Math.max(0, at - 1);
+        backs.push(at);
+        shown = pages[at]!;
+      });
+      expect(clicks).toEqual(["Feedback center", "Feedback history", "Provide feedback"]);
+      // Two steps back: history -> center, center -> landing.
+      expect(backs).toEqual([1, 0]);
+      expect(field).toMatchObject({ name: "What should change?", ref: "e10" });
+    });
+
     it("refuses two fields that both name themselves feedback", () => {
       const { canaryTree, canaryField } = api();
       expect(canaryField(canaryTree(`
@@ -498,6 +585,20 @@ describe("app_page_canary", () => {
     - text "Keep it short."
   - textbox "What should change?" [ref=e3]
   - button "Send feedback" [ref=e4]`))).toMatchObject({ name: "What should change?", ref: "e3" });
+    });
+
+    it("takes a feedback send, not a share or settings control that merely mentions feedback", () => {
+      const { canarySubmit } = api();
+      // Both labels mention feedback; only "Send feedback" submits the filled field. A lone share/settings control is refused
+      // rather than clicked.
+      expect(canarySubmit([
+        { tag: "BUTTON", type: "button", text: "Share feedback link" },
+        { tag: "BUTTON", type: "button", text: "Send feedback" },
+      ], false)).toMatchObject({ word: "Send feedback" });
+      expect(canarySubmit([{ tag: "BUTTON", type: "button", text: "Share feedback link" }], false)).toBeNull();
+      expect(canarySubmit([{ tag: "BUTTON", type: "button", text: "Feedback settings" }], false)).toBeNull();
+      // An icon-only button's accessible name is what it is marked by, so the listing and the marking see the same word.
+      expect(canarySubmit([{ tag: "BUTTON", type: "button", text: "Submit your feedback" }], false)).toMatchObject({ word: "Submit your feedback" });
     });
 
     it("never submits a control from a dialog nested inside the field's dialog", () => {
