@@ -9,7 +9,7 @@ A wait is always a kernel wake. The wake arrives as the next message on the task
 
 **Arm.** For "when PR A merges": call `watch_arm` with `connection: "github"`, `kind: "pull_request.closed"`, `resource: "owner/repo"`,
 `match: { number: <n>, merged: true }` and a `note`, the line you will be woken with (name the follow-up, for example "PR A merged:
-merge acme/widgets#2"). It answers `armed`, or `fired` when the PR has already merged: act at once on `fired`. A repo the code host
+merge acme/widgets#2"). It answers `armed`, or `fired` when the PR has already merged; either way the wake notice is your one trigger, so end the turn and act when it arrives. A repo the code host
 does not manage is refused with the setting to add it to (`maintainer_repos`). `watch_list` shows this task's watches and `watch_cancel`
 removes one. For a time, call `task_wait` with an `until`.
 
