@@ -170,6 +170,15 @@ test("the connection's tools check the caller's signed roles", async () => {
   assert.match(forged.result.content[0].text, /Refused: no caller assertion/);
 });
 
+test("fleet_generation_status's description names data_versions as each module's data format version", () => {
+  const tools = fleetTools({ flow: async () => ({}), detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }), snooze: (t, d) => ({ task: t, days: d }), routing: async (op, _a, assertion) => ({ op, assertion }) });
+  const status = tools.find((t) => t.name === "fleet_generation_status");
+  assert.ok(status, "the tool is listed");
+  assert.match(status.description, /`data_versions`/, "it names the field");
+  assert.match(status.description, /each data module's data-directory format version as that generation compiled it/, "it says what the field is");
+  assert.match(status.description, /`0` means never migrated, and is not evidence that the module did not run/, "it says what 0 means");
+});
+
 test("/alerts and /metrics take only the monitoring module's token: no key or a wrong one is a 401 and files nothing", async (t) => {
   const { createStewardServer } = await import("../service/src/server.ts");
   const received = [];
