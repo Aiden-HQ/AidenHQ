@@ -257,6 +257,29 @@ test("a conflict runs ship's repair job first and wakes the Engineer only for wh
   assert.match(String((g.state.get("a/b", 7) as any).hold.reason), /maintainer edits/);
   assert.equal(g.of("POST /v1/writes").length, 0);
   assert.equal(g.jobs().length, 0, "no Engineer: the fork's review summary lands on its quiet records task");
+
+  // A red Conventional Commit title on that same fork is not a code fix: neither a title edit nor a log read touches the fork's
+  // branch, so the fork gets the title wake (with an invalid title, the job naming its title step) where a code fix would hold.
+  const t = world();
+  await intake(t.deps, t.pr({ fork: true, title: "Ship PR", events: [on] }));
+  (t.deps as any).policyJob = async () => ({ job: "77", step: "title" as const });
+  await round(t.deps, t.pr({ fork: true, title: "Ship PR" }), { do: "fix_ci", why: "policy is red" }, { failing: [], redChecks: ["policy", "ci-required"] });
+  const wake = t.jobs().at(-1) ?? "";
+  assert.match(wake, /aidenhq ship title https:\/\/github\.com\/a\/b\/pull\/7 1111111111111111111111111111111111111111 1 /);
+  assert.doesNotMatch(wake, /maintainer edits|one commit/);
+  assert.equal((t.state.get("a/b", 7) as any).hold, null, "the fork is not held for a title edit");
+
+  // Unreadable steps: the same fork is told to wait on ship's re-run, not held for its branch's permission.
+  const u = world();
+  await intake(u.deps, u.pr({ fork: true, title: "Ship PR", events: [on] }));
+  const reruns: string[] = [];
+  (u.deps as any).policyJob = async () => ({ job: "77", step: "unknown" as const });
+  (u.deps as any).policyRerun = async (_repo: string, _head: string, job: string) => (reruns.push(job), "accepted" as const);
+  await round(u.deps, u.pr({ fork: true, title: "Ship PR" }), { do: "fix_ci", why: "policy is red" }, { failing: [], redChecks: ["policy", "ci-required"] });
+  assert.equal((u.state.get("a/b", 7) as any).hold, null, "an unreadable policy on a fork is a re-run, never a hold for branch access");
+  assert.deepEqual(reruns, ["77"], "the fork's policy job is re-run once at the head");
+  assert.match(u.jobs().at(-1) ?? "", /re-run `policy` once at this head/);
+  assert.doesNotMatch(u.jobs().at(-1) ?? "", /maintainer edits/);
 });
 
 test("a fork's new commit from its author stops ship until a member hands it off again; ship's own push and a base merge don't", async () => {

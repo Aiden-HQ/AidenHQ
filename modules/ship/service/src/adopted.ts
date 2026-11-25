@@ -46,7 +46,7 @@ function eventOf(n: Json): TriggerEvent | undefined {
 export function viewOf(repo: string, defaultBranch: string, pr: Json, extra: { baseOid?: string; headSeen?: string } = {}): PrView {
   return {
     ...(extra.baseOid && pr.baseRefName === defaultBranch ? { baseOid: extra.baseOid } : {}), ...(extra.headSeen ? { headSeen: extra.headSeen } : {}),
-    repo, number: pr.number, url: pr.url, head: pr.headRefOid, base: pr.baseRefName, defaultBranch,
+    repo, number: pr.number, url: pr.url, head: pr.headRefOid, base: pr.baseRefName, defaultBranch, ...(pr.title === undefined ? {} : { title: String(pr.title) }),
     author: String(pr.author?.login ?? ""), authorBot: pr.author?.__typename !== "User",
     fork: pr.isCrossRepository === true, canModify: pr.maintainerCanModify === true, ...(pr.headRepository?.nameWithOwner ? { headRepo: String(pr.headRepository.nameWithOwner) } : {}), draft: pr.isDraft === true, state: "open",
     labels: (pr.labels?.nodes ?? []).map((l: Json) => String(l.name)), assignees: (pr.assignees?.nodes ?? []).map((a: Json) => String(a.login)),
@@ -132,18 +132,28 @@ export function adoptedPass(o: AdoptedOptions) {
   };
   const rounds: RoundDeps = {
     state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, comment: o.effects.comment, askFresh: o.effects.askFresh, log: o.log, gh: o.gh,
-    policyStep: async (repo, head) => {
+    policyJob: async (repo, head) => {
       // The `policy` job's newest run at the head, and its steps: the title step's own failure is the one a title edit clears.
       const runs = await o.gh("GET", `/repos/${repo}/commits/${head}/check-runs?per_page=100`);
       const run = (Array.isArray(runs.body?.check_runs) ? runs.body.check_runs : []).find((c: Json) => c.name === "policy" && /actions\/runs\/\d+\/job\/\d+/.test(String(c.details_url ?? "")));
-      if (!run) return "unknown";
-      const jobId = String(run.details_url).match(/\/job\/(\d+)/)?.[1];
-      if (!jobId) return "unknown";
+      const jobId = String(run?.details_url ?? "").match(/\/job\/(\d+)/)?.[1];
+      if (!jobId) return undefined;
       const job = await o.gh("GET", `/repos/${repo}/actions/jobs/${jobId}`);
-      if (job.status >= 300 || !Array.isArray(job.body?.steps)) return "unknown";
+      // A job whose steps can't be read (a timed-out or deleted attempt): `unknown`, so the round asks for a re-run rather than
+      // guessing a title. Its id is still handed back: that is what a re-run names.
+      if (job.status >= 300 || !Array.isArray(job.body?.steps)) return { job: jobId, step: "unknown" };
       const failed = job.body.steps.filter((s: Json) => s.conclusion === "failure");
-      if (!failed.length) return "unknown";
-      return failed.length === 1 && /conventional commit title/i.test(String(failed[0].name ?? "")) ? "title" : "other";
+      if (!failed.length) return { job: jobId, step: "unknown" };
+      return { job: jobId, step: failed.length === 1 && /conventional commit title/i.test(String(failed[0].name ?? "")) ? "title" : "other" };
+    },
+    policyRerun: async (repo, head, job) => {
+      try {
+        const r = await o.gh("POST", `/repos/${repo}/actions/jobs/${job}/rerun`);
+        return r.status < 300 ? "accepted" : "refused";
+      } catch (e) {
+        o.log("policy re-run failed", { repo, head, job, err: String((e as Error).message).slice(0, 200) });
+        return "refused";
+      }
     },
     updateBranch: async (repo, n, head) => void (await must("PUT", `/repos/${repo}/pulls/${n}/update-branch`, { expected_head_sha: head })),
     assign: async (repo, n, logins) => void (await must("POST", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),

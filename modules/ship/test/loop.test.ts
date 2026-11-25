@@ -226,7 +226,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate, ...(settings ? { settings } : {}) });
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, merges, sent, closed, watch, cacheDir, kernelUrl: kernel.url, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
+  return { woke, gh, merges, sent, closed, watch, cacheDir, kernelUrl: kernel.url, agentPr, jobProbeOpts, headRunsOpts, reran, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -273,7 +273,9 @@ test("a task's PR red on its own head wakes its task once per head; past a cap i
 
 // The `policy` job's "Conventional Commit title" step (and `ci-required`, its aggregate) is the only red: no commit can fix it.
 const redNodes = (names) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: names.map((name, i) => ({ __typename: "CheckRun", databaseId: 77 + i, name, status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } })) } });
-const titleOnlyPr = (n, names = ["policy", "ci-required"], o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redNodes(names) } }] }, ...o });
+// The title the `policy` job's Conventional Commit check rejects: what a retitle wake needs to see on the PR itself.
+const BAD_TITLE = "Ship PR 1823";
+const titleOnlyPr = (n, names = ["policy", "ci-required"], o = {}) => ({ title: BAD_TITLE, commits: { nodes: [{ commit: { statusCheckRollup: redNodes(names) } }] }, ...o });
 // The `policy` job's own steps at a head whose only failure is the title step: the positive evidence a retitle wake needs.
 const titleJob = (o = {}) => ({ steps: [{ name: "Age check (lockfiles) and pins (images, actions, apt, global installs)", conclusion: "success" }, { name: "Conventional Commit title", conclusion: "failure" }], ...o });
 
@@ -404,20 +406,24 @@ test("the policy job's own failing step decides the wake: another of its steps k
   assert.match(turned.woke[1].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/23 h23 1 /);
 });
 
-test("a metadata-only red whose policy steps can't be read asks for the log, never for a retitle or a commit", async (t) => {
-  // A `policy` job that timed out in its age step leaves no step with a failure: nothing proves the title failed, so the wake asks
-  // for the run's log and names no fix on a guess (a retitle of an already-valid title changes nothing).
+test("a metadata-only red whose policy steps can't be read re-runs the job once at the head, never asking for a retitle or a commit", async (t) => {
+  // A `policy` job that timed out leaves no step with a failure: nothing proves the title failed, so the wake names a re-run (the
+  // recovery: a fresh attempt's steps can be read) and names no fix on a guess (a retitle of an already-valid title changes nothing).
   let readable = false;
   const unclear = await rig(t, { job: titleJob(), jobRead: () => (readable ? undefined : 404) });
   unclear.set([unclear.agentPr(24, titleOnlyPr(24))]);
   await unclear.watch.tick(); await unclear.watch.tick();
   assert.equal(unclear.woke.length, 1, JSON.stringify(unclear.woke.map((w) => w.text)));
-  assert.match(unclear.woke[0].text, /policy.*job's own steps don't show the title step failing|say on the task which step failed/);
+  assert.match(unclear.woke[0].text, /job's own steps at this head don't show which step failed/);
+  assert.match(unclear.woke[0].text, /re-run `policy` once at this head/);
   assert.doesNotMatch(unclear.woke[0].text, /aidenhq ship title/);
   assert.doesNotMatch(unclear.woke[0].text, /one commit|aidenhq ship push/);
-  // The same head asks for no second log read while the steps stay unreadable.
+  // The recovery is a real one: the `policy` job itself is re-run at this head, once, not merely described to the Engineer.
+  assert.equal(unclear.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length, 1, "the policy job is re-run once at the head");
+  // The same head asks for no second log read and no second re-run while the steps stay unreadable.
   await unclear.watch.tick(); await unclear.watch.tick();
   assert.equal(unclear.woke.length, 1, "the unclear wake is not repeated at the same head");
+  assert.equal(unclear.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length, 1, "no second re-run at the same head");
   // Once the job's steps can be read and name the title step, the title fix is asked for at that same head.
   readable = true;
   await unclear.watch.tick(); await unclear.watch.tick();
@@ -425,6 +431,20 @@ test("a metadata-only red whose policy steps can't be read asks for the log, nev
   assert.match(unclear.woke[1].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/24 h24 1 /);
   assert.doesNotMatch(unclear.woke[1].text, /one commit|aidenhq ship push/);
 });
+
+test("a title step that fails on a title the rule already accepts is a third case: re-run and diagnose, never a retitle", async (t) => {
+  // The job's title step also fails when its own request to GitHub failed. The title here passes the Conventional Commit rule, so a
+  // retitle writes nothing (the write answers "already this title") and `policy` never re-runs: the wake must not ask for one.
+  const c = await rig(t, { job: titleJob() });
+  c.set([c.agentPr(26, titleOnlyPr(26, ["policy", "ci-required"], { title: "fix(ship): give the ship task a title edit" }))]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.length, 1, JSON.stringify(c.woke.map((w) => w.text)));
+  assert.match(c.woke[0].text, /already passes the Conventional Commit rule/);
+  assert.doesNotMatch(c.woke[0].text, /aidenhq ship title/);
+  assert.doesNotMatch(c.woke[0].text, /one commit|aidenhq ship push/);
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length, 1, "the recovery is the job re-run");
+});
+
 
 test("a new policy failure after a title wake is judged on its own run, not deduplicated against the retitle", async (t) => {
   // The title edit re-runs `policy` in place (same head, `edited`). Its new run fails another of its steps, and the job says so:

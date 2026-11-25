@@ -29,6 +29,10 @@ side of generated paths and regenerating them. Its wake says what it left.
 - If the wake says the only red check is the PR's Conventional Commit title (the `policy` job's title step, alone or with
   `ci-required`), no commit can fix it: give the PR a title in that form with the wake's `aidenhq ship title …` line. A title
   edit re-runs `policy` in place. Change nothing in the code for it.
+- When the wake says the job's own steps don't show which step failed, ship has re-run `policy` once at the head (or says why it
+  couldn't): wait for that run. If its steps are still unreadable afterwards, read the run and say on the task what failed; do
+  not guess a title or a commit. The same applies when the job blames its title step on a title that already passes the rule
+  (the step's own GitHub request failed): a title edit there writes nothing.
 - Otherwise fix what the PR broke, with a test where it fits.
 
 **Review findings.** Verify each finding against the code.
