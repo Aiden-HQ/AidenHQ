@@ -1389,6 +1389,18 @@ test("merge queue waits while disconnected", async (t) => {
   assert.deepEqual(facts.filter((f) => f.type === "work.resumed").map((f) => f.data.reason), ["github"]);
 });
 
+test("a merge waiting on its checks publishes why to the record", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
+  const github = fakeGitHub(prs);
+  const waits = [];
+  const merges = createMerges({ dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(), evalGate: async () => undefined, report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }) });
+  void merges.enqueue("k-00000000000000h9", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  await merges.step();
+  assert.equal(waits.length, 1, "once, not per poll");
+  assert.match(String(waits[0].reason), /check/i);
+});
+
 test("a code review wait posts its reason to the kernel once per distinct reason, never per poll, and keeps its no-time-limit wait", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
@@ -1540,7 +1552,7 @@ test("a review reason is cleared when another gate takes the PR over, not only w
   // A required check is rerun on the same head: CI holds the merge now, so the review reason is no longer the record's wait.
   prs["acme-agents/widget"].checks = "PENDING";
   await merges.step();
-  assert.equal(waits.at(-1).reason, null, "the review reason is cleared when checks take over");
+  assert.equal(waits.at(-1).reason, "checks are still running on its head", "the review reason gives way to the checks' own when they take over");
   assert.equal(merges.status("k-00000000000000c1").state, "running");
   // The checks come back green and the review passes: nothing is republished, nothing stale is left.
   prs["acme-agents/widget"].checks = "SUCCESS";
@@ -1626,7 +1638,7 @@ test("a queue written by the previous implementation republishes its reason on t
   });
   await merges.step();
   // CI holds the merge now, so the stale review reason must be cleared rather than assumed already delivered.
-  assert.deepEqual(waits.map((w) => w.reason), [null], "the stale reason is cleared on the first poll after the upgrade");
+  assert.deepEqual(waits.map((w) => w.reason), ["checks are still running on its head"], "the stale reason is replaced on the first poll after the upgrade");
 });
 
 test("a wait is recorded only after the kernel takes it: a restart mid-delivery republishes, never assumes it arrived", async () => {

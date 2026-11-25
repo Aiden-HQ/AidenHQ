@@ -2,7 +2,7 @@
 // person sees on each chat, and which agent a new message goes to.
 import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
-import { NOTICE_MARKER, relayed, displayText as strip, hasMarker as has } from "./board.js";
+import { NOTICE_MARKER, isSystemNote, relayed, displayText as strip, hasMarker as has } from "./board.js";
 import type { Agent, Comment, Issue } from "./paperclip.js";
 
 /** A label that reads like an approval ("approve WOR-184"): agents may not offer one; only a card or the owner's own words decide. */
@@ -162,7 +162,7 @@ export function conversation(issue: { id: string; description: string | null; cr
     // Board and runner markers count only on comments they wrote (an agent could paste one to fake a notice).
     // The board (through the kernel) and runner post as the owner or as no user; another user's comment is never a system message.
     const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
-    if (system && (has(c.body, APPROVAL_MARKER) || has(c.body, NOTICE_MARKER))) out.push({ kind: "notice", id: c.id, text: strip(c.body), at: c.createdAt });
+    if (system && (has(c.body, APPROVAL_MARKER) || isSystemNote(c.body))) out.push({ kind: "notice", id: c.id, text: strip(c.body), at: c.createdAt });
     else if (system && relayed(c.body)) note(c, "Someone else");
     else if (c.authorType === "agent") {
       const name = agentName(c.authorAgentId);

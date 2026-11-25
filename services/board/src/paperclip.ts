@@ -202,8 +202,11 @@ export class Paperclip {
     return this.cached("company", 3_600_000, () => this.request("GET", `/api/companies/${this.companyId}`));
   }
 
-  agents(): Promise<Agent[]> {
-    return this.cached("agents", 300_000, () => this.request<Agent[]>("GET", `/api/companies/${this.companyId}/agents`));
+  /** `fresh` reads the list again (an agent an apply just created is not in the cached one). */
+  agents(fresh = false): Promise<Agent[]> {
+    if (fresh) this.cache.delete("agents");
+    // `fresh` also gets past the kernel's few-seconds cache of this read (cplimit.ts keys it by URL): an agent setup just created is not in it.
+    return this.cached("agents", 300_000, () => this.request<Agent[]>("GET", `/api/companies/${this.companyId}/agents${fresh ? `?fresh=${Date.now()}` : ""}`));
   }
 
   labels(): Promise<Label[]> {

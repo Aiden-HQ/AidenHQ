@@ -19,7 +19,7 @@ import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type Live
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
 import { ROUTINE_PREFIX, RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
-import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, onMyDay, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
+import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, isSystemNote, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, onMyDay, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
@@ -1299,7 +1299,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const task = await userTaskOf(issue, ctx);
         if (!task) throw new HttpError(400, "only on the user's tasks and their agents' parts");
         const c = (await pc.comments(issue.id)).find((x) => x.id === comment && !x.deletedAt);
-        if (!c || c.authorType !== "user" || c.authorUserId !== ctx.me || hasMarker(c.body, NOTICE_MARKER) || forOthers(c.body)) throw new HttpError(400, "pass on a comment the user wrote on this task");
+        if (!c || c.authorType !== "user" || c.authorUserId !== ctx.me || isSystemNote(c.body) || forOthers(c.body)) throw new HttpError(400, "pass on a comment the user wrote on this task");
         const named = ctx.assignees.find((a) => a.kind !== "me" && a.key === to);
         const byName = withHandle(ctx.assignees, to);
         const agent = named ?? (byName.length === 1 ? byName[0] : undefined);
@@ -1606,8 +1606,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "GET", path: /^\/api\/agents$/, handle: () => served("agents", async () => activity(await context(), true)) },
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
     // brings that, with each agent's last run, after).
-    { method: "GET", path: /^\/api\/agents\/roster$/, handle: async () => {
-        const [agents, routines, act] = await Promise.all([pc.agents(), pc.routines().catch(() => []), kernelActivity()]);
+    { method: "GET", path: /^\/api\/agents\/roster$/, handle: async (_m, _b, url) => {
+        const [agents, routines, act] = await Promise.all([pc.agents(url.searchParams.has("fresh")), pc.routines().catch(() => []), kernelActivity()]);
         return { roster: roster(agents, routines, new Map(), act) };
       },
     },

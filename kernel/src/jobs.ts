@@ -241,11 +241,12 @@ export function stripSentinels(text: string): string {
   return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
 }
 /** A log line that says something went wrong (an engine's startup banner, such as "listening on …", is not one). */
+const WARNING = /^(\[[^\]]*\]\s*)?W:/;
 const ERRORISH = /error|fail|fatal|exception|panic|cannot|can't|unable|denied|refused|invalid|not set|not found|enoent|timed out/i;
 export function firstError(logPath: string): string {
   let head = "";
   try { head = readFrom(logPath, 0, 256 * 1024).toString("utf8"); } catch { return ""; }
-  const line = head.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("{") && ERRORISH.test(l));
+  const line = head.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("{") && !WARNING.test(l) && ERRORISH.test(l));
   return line ? clip(redact(line), 300) : "";
 }
 /** Codex's refusal to resume a session its home has no record of (one made before the box, or by a home since rebuilt). */
@@ -557,7 +558,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
             .run(state, exit, lastMessage, JSON.stringify({ timedOut, cancelled, ...(stoppedBy ? { by: stoppedBy } : {}) }), offset, session, Date.now(), id);
           // `stopped_by`: the account that stopped it (the owner's Stop), null for one the machinery stopped, so the task's state
           // and its dispatcher can tell a Stop from a run that never got to finish.
-          jobFact(r, "job.ended", { state, exit, stopped_by: stoppedBy ?? null, why: state === "done" ? "" : state === "cancelled" ? `stopped${stoppedBy ? ` by ${stoppedBy}` : ""}` : state === "timeout" ? `ran past ${cfg.timeout_minutes} minutes` : clip(lastMessage, 200) });
+          jobFact(r, "job.ended", { state, exit, stopped_by: stoppedBy ?? null, why: state === "done" ? "" : state === "cancelled" ? `stopped${stoppedBy ? ` by ${stoppedBy}` : ""}` : state === "timeout" ? `ran past ${cfg.timeout_minutes} minutes` : exit === 143 && !lastMessage ? "stopped" : clip(lastMessage, 200) });
         });
       } catch (e) {
         log("job end not recorded; tried again next tick", { job: id, task: r.task, state, err: (e as Error).message });
@@ -581,7 +582,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       }
       // A failed run that said nothing: its first error line is its last message, so the ledger, the Steward and the task's
       // failure notice carry the cause.
-      const error = !lastMessage && code !== 0 && !timedOut && !cancelled ? firstError(logPath) : "";
+      // SIGTERM (143) is a stop, a restart or a box replaced: not a failure, so no log line is quoted as its reason.
+      const error = !lastMessage && code !== 0 && code !== 143 && !timedOut && !cancelled ? firstError(logPath) : "";
       if (error) lastMessage = `The job failed: ${error}`;
       if (lastMessage) writeLastMessage(logPath, lastMessage, log);
       // No status: the run died without its shell, by its own stop or timeout (killed), else by hand (a failure).

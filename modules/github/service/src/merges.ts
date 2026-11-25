@@ -327,7 +327,9 @@ export function createMerges(d: {
       delete p.mergeCalls;
       q.said.push(`**Not merged:** ${p.url}: ${why}.`);
     };
-    const wait = (key: string) => {
+    // `why` is the reason the record shows (publishWait reads p.note): a wait with none leaves what the poll already set (review's).
+    const wait = (key: string, why?: string) => {
+      if (why) p.note = why;
       if (p.wait?.key !== key) p.wait = { key, since: now().toISOString() };
     };
     // Outside the fleet org, the product repo and maintainer_repos the code host is PR-only: it merges nothing there (a repo taken
@@ -351,7 +353,7 @@ export function createMerges(d: {
       const rules = open ? rr?.required : [];
       const required = rules ?? fallbackRequired(checks);
       // Unreadable rules (an error, or a 403 that is not the plan's) wait for a check to judge; a plan with no rules has none to read.
-      if (open && !rules && !required.length && !rr?.noPlan) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
+      if (open && !rules && !required.length && !rr?.noPlan) { const why = "no checks have reported on its head yet, and the branch's rules can't be read"; return wait(why, why); }
       // Code review's verdict is read below, once decide says merge (its wait is the record's reason there).
       // The reviewer App's approval on the head counts as in ship's own decision (reviewerLogin).
       const app = open ? await reviewerLogin(p.repo) : undefined;
@@ -395,7 +397,7 @@ export function createMerges(d: {
         return void q.said.push(ours ? `Merged ${p.url}.` : `${p.url} was ${v.why}.`);
       }
       if (v.do === "fail") return fail(v.why ?? "");
-      if (v.do === "wait") return wait(v.why ?? "");
+      if (v.do === "wait") return wait(v.why ?? "", v.why);
       if (v.do !== "merge") return;
       // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
       const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
@@ -434,7 +436,7 @@ export function createMerges(d: {
           log("merge queue: task status not read (retrying)", { pr: p.url, task: q.task, err: says(e).slice(0, 300) });
           return undefined;
         });
-        if (status === undefined) return wait("task-status");
+        if (status === undefined) return wait("task-status", "waiting to read the status of the task this merge is for");
         if (status === "cancelled") return fail(`${q.task}, the task this merge was for, is cancelled: its PR is left open for a successor task, and this merge does not land`);
         // The PR itself may have changed owners since the card was filed (a done task handed it to a successor): pr-tasks.json's
         // current row is the authority, and a row naming another task ends this card rather than merging the successor's PR.
@@ -442,14 +444,14 @@ export function createMerges(d: {
         // A record a module filed (ship's) names its task by id: the row's identifier is resolved to its task's id once, and kept.
         if (now && now !== q.task && !q.taskIdentifier && d.taskIdOf) {
           const id = await d.taskIdOf(now).catch((e: Error) => { log("merge queue: task id not read (retrying)", { pr: p.url, task: now, err: says(e).slice(0, 300) }); return null; });
-          if (id === null) return wait("task-status");
+          if (id === null) return wait("task-status", "waiting to read the status of the task this merge is for");
           if (id === q.task) { q.taskIdentifier = now; save(); }
         }
         // The record's identifier is still owed (a read that failed, or one that answered "pending" because the kernel's
         // upgrade reconcile has not filled it in yet): a row naming it is not proof this is another task's PR, and a fail here
         // could never be undone (a later poll only reads a pending PR), so the merge waits for the identifier instead of
         // refusing on a comparison the missing identifier makes incomplete.
-        if (now && now !== q.task && identifierOwed(q)) return wait("task-identifier");
+        if (now && now !== q.task && identifierOwed(q)) return wait("task-identifier", "waiting for the task's identifier");
         if (now && now !== q.task && now !== q.taskIdentifier) return fail(`${p.url} now belongs to ${now}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
@@ -468,7 +470,7 @@ export function createMerges(d: {
         // this attempt's commit only; an earlier PUT that went unanswered may still have landed, so its token is kept.
         if (/try the merge again|base branch was modified/i.test(says(e))) {
           p.mergeCalls = (p.mergeCalls ?? []).filter((c) => c !== attempt);
-          return wait("retry");
+          return wait("retry", "the base branch moved while merging: trying again");
         }
         // Only a 4xx is GitHub's answer. A timeout or a 5xx may have merged: the next poll reads the PR and sees which.
         const status = (e as { status?: number }).status ?? 0;
@@ -497,13 +499,13 @@ export function createMerges(d: {
             const n = p.refusal?.head === p.head ? p.refusal.n + 1 : 1;
             if (n < 2) {
               p.refusal = { head: p.head, n };
-              return wait("retry");
+              return wait("retry", `GitHub refused the merge, reading the PR again: ${says(e)}`);
             }
           }
           return fail(`GitHub refused the merge: ${says(e)}`);
         }
         log("merge call unanswered", { pr: p.url, err: says(e) });
-        return wait("put");
+        return wait("put", "GitHub did not answer the merge call: checking the PR again");
       }
       const mergedAt = now().toISOString();
       Object.assign(p, { status: "merged", mergedAt });
@@ -517,7 +519,7 @@ export function createMerges(d: {
       // A repository or PR that no longer exists is finished with a reason, never waited on: nothing will bring it back.
       if (e instanceof Gone) return fail("the repository or PR no longer exists (or this token can no longer see it)");
       log("merge poll failed", { repo: p.repo, number: p.number, err: says(e) });
-      wait("error");
+      wait("error", `could not read the PR: ${says(e)}`);
     }
   }
 
