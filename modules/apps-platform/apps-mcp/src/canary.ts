@@ -60,8 +60,9 @@ const startPath = (req: CanaryRequest) => (req.path && req.path.startsWith("/") 
  *
  * The field is a `textbox` (a textarea is one in the tree) that is feedback-worded itself, or sits in a feedback-named
  * `dialog` or `form` (or under a feedback-named heading inside one), so a prompt label such as "What should change?" is
- * enough. A page's lone textbox is never: a profile page's display-name box, or a header search box, must not be filled, and
- * a "Feedback" control elsewhere on the page is not context for it. The entry walk follows the page's own feedback `link` or
+ * enough. agent-browser's refs carry only role and name, which is what the rule reads. A page's lone textbox is never: a
+ * profile page's display-name box, or a header search box, must not be filled, and a "Feedback" control elsewhere on the page
+ * is not context for it. The entry walk follows the page's own feedback `link` or
  * `button` (the starter's is a button that opens the dialog), never one that sends or destroys, so it opens the form instead
  * of submitting it. The submit is then the send-named control in the form that owns the filled field (canarySubmit below).
  */
@@ -81,10 +82,13 @@ const CONTAINER = /^(dialog|alertdialog|form)$/i;
 const BUTTON_ACTION = /send|submit|share|post|publish|draft|preview|discard|cancel|delete|remove|archive|reset|clear|save/i;
 const LINK_ACTION = /draft|preview|discard|cancel|delete|remove|archive|reset|clear|save/i;
 const named = (n) => String((n && n.name) || "");
-// The accessible description counts too: a textbox labelled "Your message" whose hint says "Tell us what you think" is a
-// feedback field, exactly as the renderer read it before.
-const worded = (n) => [named(n), String((n && n.description) || "")].filter(Boolean).join(" ");
-const feedbackNamed = (n) => FEEDBACK.test(worded(n));
+// A button is a way into the form only when it says it opens one ("Provide feedback", "Give feedback", "Leave feedback").
+// That is an allowlist, not a denylist of destructive verbs: a feedback listing's "Withdraw feedback", "Resolve feedback" or
+// "Upvote feedback" is feedback-named too, and clicking it would change a real record under the test identity.
+const BUTTON_OPEN = /^(provide|give|leave|write|open|start|create|add|new)\b/i;
+// The accessibility snapshot gives a control's role and its accessible name (verified in real Chrome: aria-describedby and
+// aria-description text is not in the refs map), so the name is what a feedback field is recognised by.
+const feedbackNamed = (n) => FEEDBACK.test(named(n));
 // The page's accessibility snapshot as nodes: role, name, ref, its depth in the outline, and its ancestors (the same nodes).
 const canaryTree = (text, refs) => {
   const nodes = [], stack = [];
@@ -98,7 +102,7 @@ const canaryTree = (text, refs) => {
     const inline = (/\bref=(e\d+)/.exec(raw) || [])[1];
     const key = inline || ((Object.entries(refs || {}).find(([, v]) => v && v.role === m[2] && v.name === name) || [])[0]) || "";
     const parent = stack.length ? stack[stack.length - 1].i : -1;
-    const node = { i: nodes.length, role: m[2], name, description: String(((refs || {})[key] || {}).description || ""), depth, parent, ref: key, ancestors: stack.slice() };
+    const node = { i: nodes.length, role: m[2], name, depth, parent, ref: key, ancestors: stack.slice() };
     nodes.push(node);
     stack.push(node);
   }
@@ -141,11 +145,12 @@ const canaryField = (nodes) => {
   const contextual = boxes.filter((n) => inFeedback(nodes, n));
   return contextual.length === 1 ? contextual[0] : null;
 };
-// The walk's candidates, in order: a feedback-named link (a link navigates, so "Submit feedback" to /feedback is a fine way
-// in), then a feedback-named button that neither sends nor destroys (the starter's "Provide feedback" opens the dialog).
+// The walk's candidates, in order: a feedback-named link that does not destroy (a link navigates, so "Submit feedback" to
+// /feedback is a fine way in), then a feedback-named button whose wording says it opens the form ("Provide feedback" is the
+// starter's) and that neither sends nor destroys.
 const canaryEntries = (nodes) => [
   ...nodes.filter((n) => /^link$/i.test(n.role) && feedbackNamed(n) && !LINK_ACTION.test(named(n))),
-  ...nodes.filter((n) => /^button$/i.test(n.role) && feedbackNamed(n) && !BUTTON_ACTION.test(named(n))),
+  ...nodes.filter((n) => /^button$/i.test(n.role) && feedbackNamed(n) && BUTTON_OPEN.test(named(n)) && !BUTTON_ACTION.test(named(n))),
 ].filter((n) => n.ref);
 // The field, opening the page's own feedback control when the form isn't on the page yet. Candidates are tried in turn, each
 // at most once, and a control from the page the walk started on is retried if a navigation (a "Feedback history" link) led to
@@ -277,6 +282,9 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     if (!field) return out({ error: "no feedback field on the page", finalUrl: scrub(landed), pageTitle: title });
     const box = field.ref;
     await ab("fill", "@" + box, r.text);
+    // Focus the field that was filled before the scope is read: the scope is its form (or its dialog), and it is pinned on
+    // that element so both passes below judge the same one even if a validation step moves focus elsewhere.
+    await within(ab("focus", "@" + box), 4000, null);
     // The button is the one in the form that owns the filled field, never "the first submit-like button on the page" (a header
     // search form or a "Send message" button would otherwise be sent instead). Ownership is the DOM form property, so a footer
     // button associated with the form by a form attribute counts and a descendant of another form does not. A dialog that is
@@ -284,14 +292,20 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // browser lists the controls; the send rule (canarySubmit) runs here, in Node, so a dialog's "Send feedback" is judged by
     // the same code the tests exercise.
     const SEL = "'[role=dialog],[role=alertdialog],dialog'";
-    const SCOPE = "const a = document.activeElement, f = a && a.form, dialogOf = (b) => b.closest ? b.closest(" + SEL + ") : null, dlg = dialogOf(a), scope = f || dlg;" +
+    // The scope is the filled field's own form, else its own dialog, pinned by the attribute set just before the listing. The
+    // listing and the marking both read the pin, never the page's focus at the time, so the control that gets marked belongs
+    // to the field whose text was written.
+    const pinned = await within(ab("eval", "(() => { const a = document.activeElement, s = a && a.form || (a && a.closest ? a.closest(" + SEL + ") : null);" +
+      "if (!s) return ''; s.setAttribute('data-aidenhq-canary-scope', '1'); return s.tagName; })()"), 4000, {});
+    if (!pinned.result) return out({ error: "no submit control in the feedback form (not sending anything else)", finalUrl: scrub(landed), pageTitle: title });
+    const SCOPE = "const scope = document.querySelector('[data-aidenhq-canary-scope]'), f = scope && scope.tagName === 'FORM' ? scope : null, dlg = f ? null : scope, dialogOf = (b) => b.closest ? b.closest(" + SEL + ") : null;" +
       "const inScope = (b) => f ? b.form === f : !!scope && scope.contains(b) && !b.form;" +
       // Where the field has no form, the scope is its dialog: a control inside a dialog nested in that dialog belongs to the
       // other dialog, so it is not this form's submit (a confirmation dialog's "Send feedback" must not be clicked).
       "const own = (b) => f ? true : dialogOf(b) === dlg;" +
       "const isSubmit = (b) => b.tagName === 'INPUT' ? /^(submit|image)$/i.test(b.type) : ((b.getAttribute('type') || 'submit').toLowerCase() === 'submit');";
     const controls = await within(ab("eval", "(() => {" + SCOPE +
-      "if (!f && !scope) return 'null';" +
+      "if (!scope) return 'null';" +
       "return JSON.stringify({ form: !!f, list: [...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((b) => (f ? isSubmit(b) : b.tagName === 'BUTTON' || isSubmit(b)) && inScope(b)).map((b) => ({ tag: b.tagName, type: b.tagName === 'INPUT' ? b.type.toLowerCase() : ((b.getAttribute('type') || 'submit').toLowerCase()), text: (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '', nested: !own(b) })) });" +
       "})()"), 4000, {});
     const scopeOf = JSON.parse(String(controls.result ?? "null"));
@@ -301,7 +315,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // validation step that inserted another button between the two reads must not make a different control be clicked than the
     // one that was chosen, and a control that stopped being a submit is not clicked.
     const marked = await within(ab("eval", "(() => {" + SCOPE +
-      "if (!f && !scope) return '';" +
+      "if (!scope) return '';" +
       "const isSend = (b) => (f ? isSubmit(b) : !!scope && !b.form) && own(b);" +
       "const word = " + JSON.stringify(submit.word.trim()) + ", tag = " + JSON.stringify(submit.tag) + ", type = " + JSON.stringify(submit.type) + ";" +
       "const same = [...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((b) => isSend(b) && inScope(b) && b.tagName === tag && (b.tagName === 'INPUT' ? b.type.toLowerCase() : ((b.getAttribute('type') || 'submit').toLowerCase())) === type && ((b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '').trim() === word);" +

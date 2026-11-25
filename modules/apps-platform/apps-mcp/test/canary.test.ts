@@ -129,13 +129,16 @@ describe("app_page_canary", () => {
     expect(script).toContain("const field = await canaryFindField(snap");
     // The submit is chosen from the form that owns the filled field (the DOM form property, so a footer button linked by
     // form="…" counts), never from the page at large, and the send rule runs in Node (the tests exercise it directly).
-    expect(script).toContain("const a = document.activeElement, f = a && a.form, dialogOf = (b) => b.closest ? b.closest(");
+    expect(script).toContain("data-aidenhq-canary-scope");
+    expect(script).toContain("const scope = document.querySelector('[data-aidenhq-canary-scope]')");
     expect(script).toContain("const own = (b) => f ? true : dialogOf(b) === dlg;");
     expect(script).toContain("const inScope = (b) => f ? b.form === f : !!scope && scope.contains(b) && !b.form;");
     expect(script).toContain("const isSubmit = (b) =>");
     expect(script).toContain("const submit = canarySubmit(scopeOf && scopeOf.list, scopeOf && scopeOf.form);");
     // A dialog that is not a <form> scopes the submit to the field's own dialog, and only there may a type=button button send.
     expect(script).toContain("const SEL = \"'[role=dialog],[role=alertdialog],dialog'\"");
+    // The scope is pinned to the field that was filled, not to whatever has focus when the controls are listed.
+    expect(script.indexOf('data-aidenhq-canary-scope')).toBeLessThan(script.indexOf("const controls = await within"));
     expect(script).toContain("const own = (b) => f ? true : dialogOf(b) === dlg;");
     expect(script).toContain("data-aidenhq-canary-submit");
     expect(script).toContain("no submit control in the feedback form");
@@ -224,6 +227,28 @@ describe("app_page_canary", () => {
       expect(field).toMatchObject({ role: "textbox", name: "What should change?", ref: "e10" });
     });
 
+    it("only follows a button that says it opens the form, never a feedback listing's write control", async () => {
+      const { canaryTree, canaryEntries, canaryFindField } = api();
+      // A member-visible listing: "Withdraw feedback" and "Resolve feedback" would change real records under the test identity.
+      // Only "Provide feedback" is an opener, so it is the one clicked.
+      const listing = `
+- heading "Feedback for this page" [level=2, ref=e1]
+- listitem
+  - text "Wording is unclear"
+  - button "Withdraw feedback" [ref=e2]
+  - button "Resolve feedback" [ref=e3]
+- button "Provide feedback" [ref=e4]`;
+      expect(canaryEntries(canaryTree(listing)).map((e) => e.name)).toEqual(["Provide feedback"]);
+      const clicks: string[] = [];
+      let shown = listing;
+      const field = await canaryFindField(async () => ({ tree: canaryTree(shown) }), async (entry) => {
+        clicks.push(entry.name);
+        shown = listing + DIALOG;
+      });
+      expect(clicks).toEqual(["Provide feedback"]);
+      expect(field).toMatchObject({ name: "What should change?", ref: "e10" });
+    });
+
     it("never fills a lone non-feedback textbox, even when the page has a separate feedback control", async () => {
       const { canaryTree, canaryField, canaryEntries, canaryFindField } = api();
       // A profile page: one display-name box, and a "Provide feedback" control that opens nothing (its dialog never renders).
@@ -274,13 +299,19 @@ describe("app_page_canary", () => {
 - form
   - textbox "What should change?" [ref=e1]
   - button "Send feedback" [ref=e2]`))).toEqual([]);
-      // A feedback listing's "Delete feedback" is feedback-named, and clicking it would destroy a record: never an entry.
+      // A feedback listing's write controls are feedback-named too, and clicking one would change a real record. Only a
+      // control that says it opens the form is an entry; the destructive and state-changing ones never are.
       const listing = canaryTree(`
 - listitem
   - text "Looks good"
-  - button "Delete feedback" [ref=e1]
-  - button "Provide feedback" [ref=e2]`);
-      expect(canaryEntries(listing)[0]).toMatchObject({ role: "button", name: "Provide feedback", ref: "e2" });
+  - button "Withdraw feedback" [ref=e1]
+  - button "Resolve feedback" [ref=e2]
+  - button "Upvote feedback" [ref=e3]
+  - button "Delete feedback" [ref=e4]
+  - button "Feedback history" [ref=e5]
+  - button "Provide feedback" [ref=e6]`);
+      expect(canaryEntries(listing).map((e) => e.name)).toEqual(["Provide feedback"]);
+      expect(canaryEntries(listing)[0]).toMatchObject({ role: "button", name: "Provide feedback", ref: "e6" });
     });
 
     it("still follows an ordinary 'Submit feedback' link that navigates to the intake page", () => {
@@ -305,14 +336,19 @@ describe("app_page_canary", () => {
       expect(field).toMatchObject({ name: "Your feedback", ref: "e3" });
     });
 
-    it("reads a field's accessible description as feedback wording too", () => {
+    it("uses the accessible name the snapshot gives, which is where a described field's wording appears", () => {
       const { canaryTree, canaryField } = api();
-      // "Your message" alone is not feedback wording, but its own hint is; the description comes from the snapshot's refs map.
-      const nodes = canaryTree(`
+      // agent-browser's refs map carries only role and name (verified in real Chrome: aria-describedby and aria-description
+      // text is absent), so a field is recognised by its accessible name — here the hint Chrome folds into the description is
+      // part of what the snapshot prints. A field named "Your message" with no feedback context is not a guess to make.
+      expect(canaryField(canaryTree(`
 - form
   - textbox "Your message" [ref=e1]
-  - button "Send" [ref=e2]`, { e1: { role: "textbox", name: "Your message", description: "Tell us what you think" } as never, e2: { role: "button", name: "Send" } });
-      expect(canaryField(nodes)).toMatchObject({ name: "Your message", ref: "e1" });
+  - button "Send feedback" [ref=e2]`, { e1: { role: "textbox", name: "Your message" }, e2: { role: "button", name: "Send feedback" } }))).toBeNull();
+      expect(canaryField(canaryTree(`
+- form
+  - textbox "Tell us what you think" [ref=e1]
+  - button "Send feedback" [ref=e2]`))).toMatchObject({ name: "Tell us what you think", ref: "e1" });
     });
 
     it("never fills a feedback-named search box, even inside a feedback dialog", () => {
