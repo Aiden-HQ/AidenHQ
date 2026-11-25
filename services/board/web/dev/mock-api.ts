@@ -131,7 +131,7 @@ let views = [
 const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }, { id: "code-review", title: "Reviews", icon: "reviews", order: 5, module: "code-review" }];
 // The Notes page's last Save stays "applying" for 8 seconds, then lands (the Save-while-applying state).
 let savedAt = 0, savedId = "WOR-901";
-const notesChange = () => (savedAt ? [{ identifier: savedId, title: "Keep notes", createdAt: new Date(savedAt).toISOString(), items: [], stage: Date.now() - savedAt < 8_000 ? "applying" : "applied" }] : []);
+const notesChange = () => (savedAt ? [{ identifier: savedId, title: "Keep notes", createdAt: new Date(savedAt).toISOString(), items: [{ kind: "setting", key: "example_limit", value: 30 }, { kind: "setting", key: "code_review", value: {} }], stage: Date.now() - savedAt < 8_000 ? "applying" : "applied" }] : []);
 function pageRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
   if (url.pathname === "/api/pages") return [200, { pages: mock.empty ? [] : PAGES }];
   if (method === "POST" && url.pathname === "/api/pages/code-review/save") return (savedAt = Date.now(), savedId = "WOR-902", [200, { identifier: "WOR-902", record: "k-0000000000000902", tier: 2, state: "approved" }]);
