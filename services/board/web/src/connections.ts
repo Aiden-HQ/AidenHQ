@@ -94,7 +94,7 @@ export const displayName = (name: string) => NAMES[name] ?? name.replace(/[_-]+/
 // A bare "Not connected yet" made a working bot's DMs read as Slack itself being broken. The tile clamps its reason to two
 // lines (ui.css .ui-tile-desc), so the bot distinction comes first and the generic lead is left to the status label.
 const NOT_CONNECTED: Record<string, string> = {
-  slack: "Aiden's bot is a separate connection and its DMs work without this sign-in, which lets agents read Slack as you.",
+  slack: "Aiden's bot is a separate connection, so its DMs to you don't depend on this sign-in; this one lets agents read Slack as you.",
 };
 const notConnectedReason = (name: string, reason: string) =>
   NOT_CONNECTED[name] ? [NOT_CONNECTED[name], reason === "Not connected yet." ? null : reason].filter(Boolean).join(" ") : reason;

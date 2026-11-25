@@ -24,12 +24,12 @@ describe("the Slack sign-in tile", () => {
     expect(displayName("slack_live")).toBe("Slack: Aiden's bot");
   });
 
-  it("says what its absent sign-in gates, and that the bot works without it, when it has no fields", () => {
+  it("says what its absent sign-in gates, and that the bot doesn't depend on it, when it has no fields", () => {
     const v = connectionStatus(row("slack", { state: "missing", configured: true, since }), can);
     expect(v.status).toBe("not_connected");
     expect(v.reason).toMatch(/read Slack as you/i);
     expect(v.reason).toMatch(/separate connection/i);
-    expect(v.reason).toMatch(/work without/i);
+    expect(v.reason).toMatch(/do(?:n.t| not) depend on/i);
     expect(v.action).toEqual({ label: "Connect", href: "/slack/connect" });
   });
 
