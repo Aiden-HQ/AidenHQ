@@ -99,7 +99,8 @@ export function adoptedPass(o: AdoptedOptions) {
       const tasks = [a.task, a.holder].filter((t): t is string => Boolean(t));
       if (!tasks.length) return undefined;
       const records = (await Promise.all(tasks.map((t) => o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(t)}`)))).flatMap((w: Json) => (w?.records ?? []) as Json[])
-        .filter((r: Json) => ["codehost.push", "github.repair"].includes(r.kind) && r.args?.generation === a.generation && (r.args?.expected ?? r.args?.head) === from);
+        // The kernel files `aidenhq ship push` (codehost.push) as its host's kind: github.push, as /v1/work lists it.
+        .filter((r: Json) => ["github.push", "github.repair"].includes(r.kind) && r.args?.generation === a.generation && (r.args?.expected ?? r.args?.head) === from);
       if (records.some((r: Json) => r.state === "claimed")) return "writing";
       const made = await o.kernel.call("GET", `/v1/objects?ref=${encodeURIComponent(`github:${pr.headRepo.toLowerCase()}@${pr.head}`)}`);
       return made?.ours && records.some((r: Json) => r.state === "done" && String(r.id) === String(made.record)) ? "ours" : undefined;

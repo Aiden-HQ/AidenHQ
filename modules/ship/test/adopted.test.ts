@@ -280,8 +280,8 @@ test("a fork's head counts as ship's own only when this adoption's write made it
   state.put({ repo: "acme/app", number: 9, generation: 1, trigger: { kind: "comment", event: "c9", actor: "maria", at: "2026-11-24T09:00:00Z", head: H1 }, owner: { kind: "member", login: "maria" }, task: "T9", asked: true, hold: null });
   // The Engineer's pushes on T9: H1 -> H2 (from the hand-off), then H3 -> H4 (on top of the author's own H3).
   const records = [
-    { id: "p1", kind: "codehost.push", state: "done", args: { pr: { repo: "acme/app", number: 9 }, expected: H1, generation: 1 } },
-    { id: "p2", kind: "codehost.push", state: "done", args: { pr: { repo: "acme/app", number: 9 }, expected: H3, generation: 1 } },
+    { id: "p1", kind: "github.push", state: "done", args: { pr: { repo: "acme/app", number: 9 }, expected: H1, generation: 1 } },
+    { id: "p2", kind: "github.push", state: "done", args: { pr: { repo: "acme/app", number: 9 }, expected: H3, generation: 1 } },
   ];
   const objects = { [`github:outsider/app@${H2}`]: "p1", [`github:outsider/app@${H4}`]: "p2" };
   const kernel = { call: async (m, path) => {
