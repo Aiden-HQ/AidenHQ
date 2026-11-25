@@ -61,9 +61,12 @@ export function adoptedPass(o: AdoptedOptions) {
    * Whether the PR is first in the repo's merge order (item 19): the earliest hand-off among the repo's open adoptions that ship
    * still works (not held). Under `rebase: conflict` only that one is brought up to date; the rest wait their turn.
    */
+  // The PRs ship last saw stopped by their own hand (a draft, the stop label, a person assigned): no hold, so front() skips them
+  // by this, or a stopped earlier PR would keep every later one behind its base. Kept for the process; a pass refreshes it.
+  const stoppedPrs = new Set<string>();
   const front = (repo: string, number: number, open: Set<number>) => {
     const order = (o.state.all() as Kept[])
-      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept && !a.stack)
+      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept && !a.stack && !stoppedPrs.has(`${a.repo.toLowerCase()}#${a.number}`))
       .sort((x, y) => String(x.trigger.at ?? "").localeCompare(String(y.trigger.at ?? "")) || x.number - y.number);
     return order[0]?.number === number;
   };
@@ -212,6 +215,7 @@ export function adoptedPass(o: AdoptedOptions) {
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
       // The PR's own stops hold a retarget too: a draft, the stop label, or a person assigned.
       const stopped = view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop") || view.assignees.some((x) => !(a!.assigned ?? []).includes(x));
+      if (stopped) stoppedPrs.add(`${repo.toLowerCase()}#${pr.number}`); else stoppedPrs.delete(`${repo.toLowerCase()}#${pr.number}`);
       if (!stopped && !ctx.stackedOn && a.stack && a.stack.branch === view.base && view.base !== main.name && await retargeted(a, view, main.name)) return;
       // A stack that reached the default branch (ship's retarget, or GitHub's own once the parent's branch was deleted): its base
       // is merged in first, a new head code review reviews whole; nothing moves on the old head. A conflict goes to the repair.
