@@ -902,9 +902,10 @@ export function createService(o: Options) {
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not retitled.` };
     const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head));
     if (ended) return { ok: false, text: ended };
+    // Already the title this write asks for: it landed (a replay after a lost answer), so there is nothing to send.
+    if (pr.title === a.title) return { ok: true, text: `${url} is titled \`${a.title}\`.` };
     // The title the plan read: an author's own correction while the record waited is theirs, not overwritten.
     if (pr.title !== a.from) return { ok: false, text: `ship-scope: ${url}'s title changed since the write was filed (it now reads ${JSON.stringify(String(pr.title).slice(0, 80))}): read it again.` };
-    if (pr.title === a.title) return { ok: true, text: `${url} is titled \`${a.title}\`.` };
     const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { title: a.title });
     return r.status < 300 ? { ok: true, text: `${url} is now titled \`${a.title}\`.` } : { ok: false, text: `GitHub refused the retitle of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
@@ -1319,7 +1320,9 @@ export function createService(o: Options) {
   const askersFile = join(o.cacheDir, "askers.json");
   const readAskers = (): Record<string, Asker> => { try { return JSON.parse(readFileSync(askersFile, "utf8")); } catch { return {}; } };
   /** A request without the head its plan bound (`heads`, carried in the record's own args): who asked is the same request either way. */
-  const askedOf = (args: unknown) => { const { heads: _heads, ...rest } = (args ?? {}) as Record<string, unknown>; return rest; };
+  // The caller's own words of a request: the heads the plan bound and the title a retitle bound are the plan's reads, stripped
+  // from both the note and the lookup so a held write finds the requester that filed it.
+  const askedOf = (args: unknown) => { const { heads: _heads, from: _from, ...rest } = (args ?? {}) as Record<string, unknown>; return rest; };
   const askerOf = (kind: string, args: unknown): Asker | undefined => { const all = readAskers(); return all[askerKey(kind, askedOf(args))]; };
   function noteAsker(kind: string, args: unknown, who: Asker) {
     const all = readAskers();

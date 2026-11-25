@@ -244,18 +244,21 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // nothing about whether this head's title step is the failure.
   const ownHead = headRed.filter((n) => n !== "policy" && !baseRed.has(n));
   const candidate = v.do === "fix_ci" && !viaQueue && headRed.includes("policy") && ownHead.every(metadata);
-  // The `policy` job also runs the lockfile age and pin checks: a title edit clears only the title step. Read the job's own steps
-  // before the action is keyed, so the wake that is actually sent is the one recorded (a code-fix wake at this head leaves the
-  // title wake to follow). Already asked at this head: nothing to read, the dedup below answers.
-  const titleAsked = (c.acted ?? []).includes("fix_ci:title");
-  const policyStep = candidate && d.policyStep && !titleAsked ? await d.policyStep(pr.repo, pr.head).catch(() => "unknown" as const) : undefined;
-  // This head's own policy failure is the title step only when the job says so; where its steps can't be read, the older
-  // inference stands (a `policy` name not red on the base). Another failing step keeps the commit instruction.
-  const policyTitle = candidate && (policyStep === "title" || (policyStep !== "other" && !baseRed.has("policy")));
-  // Already asked at this head: the same action again, so the dedup below answers instead of a second wake (the steps aren't read).
-  const titleFix = (policyTitle || (candidate && titleAsked)) && policyStep !== "other";
+  // The `policy` job also runs the lockfile age and pin checks: a title edit clears only the title step. Its own steps are read on
+  // every pass a metadata-only red sits at the head, not only the first: a title edit re-runs the job at the same SHA, and a new
+  // run's failure (an age or pin step red now) is judged on its own instead of deduplicating against the old title diagnosis.
+  const policyStep = candidate && d.policyStep ? await d.policyStep(pr.repo, pr.head).catch(() => "unknown" as const) : undefined;
+  // Only the job naming its title step is the evidence a title edit is asked for: unreadable steps prove nothing, and another
+  // failing step (the age or pin checks) is a code fix, never a retitle.
+  const titleFix = candidate && policyStep === "title";
+  // Metadata-only, yet the job can't say its title step failed: the wake asks for the run's log, not for a retitle on a guess.
+  const policyUnclear = candidate && !titleFix && policyStep !== "other";
   // A title-only CI wake is its own action at the head: it fixes no commit, so a real red check at the same head is still woke for.
-  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do === "fix_ci" && titleFix ? "fix_ci:title" : v.do;
+  // The unclear case is keyed apart too, so a later confirmed diagnosis wakes as its own action.
+  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}`
+    : v.do === "fix_ci" && titleFix ? "fix_ci:title"
+    : v.do === "fix_ci" && policyUnclear ? "fix_ci:policy-unread"
+    : v.do;
   const key = v.do === "wait" ? `${pr.head}:wait:${v.why ?? ""}:${facts.approval ?? ""}` : `${pr.head}:${act}`;
   // A wait with an App approval to dismiss (or a dismissal in flight) is followed too: its record is read each pass.
   const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true) || (v.do === "wait" && !!risk && staleApproval(a.approve, pr.head, risk));
@@ -345,8 +348,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         const own = failing.filter((n) => !onBase.has(n));
         // Failing on the target branch too: likely pre-existing. The Engineer judges it with evidence; it spends no CI round. A
         // title-only wake spends no CI round either: it asks for no code, so a real code failure at the same head after it still
-        // has the head's rounds to fix (titleFix was computed above).
-        if (own.length && !titleFix) {
+        // has the head's rounds to fix (titleFix was computed above). The wake that only asks for the job's log spends none either.
+        if (own.length && !titleFix && !policyUnclear) {
           for (const n of own) c.red[n] = [...new Set([...(c.red[n] ?? []), pr.head])];
           const repeat = own.find((n) => over(c.red[n]!.length, caps.same_check_heads));
           if (repeat) return hold(`required check \`${repeat}\` failed on ${c.red[repeat]!.length} heads (same_check_heads)`);
@@ -354,15 +357,16 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           c.ci++;
         }
         return wake("fix_ci", [
-          `${pr.url}: required checks are red at head ${pr.head}: ${(titleFix ? [...new Set([...failing, ...(f.redChecks ?? [])])] : failing).map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
+          `${pr.url}: required checks are red at head ${pr.head}: ${(titleFix || policyUnclear ? [...new Set([...failing, ...(f.redChecks ?? [])])] : failing).map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
           viaQueue ? "They passed on the PR's head but failed on the merge queue's run for it (the `merge_group` run): read that run's logs, the failure is in the PR merged onto the base." : "",
           // A `policy` red on the base is a step of that job, not necessarily the title step: the wake says so only where the job
           // itself named the title step as this head's failure.
           onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].filter((n) => !(n === "policy" && titleFix)).map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
           ...(titleFix ? [
             "The red check is the PR's Conventional Commit title (the `policy` job's title step), which no commit can fix: a title edit re-runs `policy` in place.",
-            ...(policyStep === "unknown" ? ["(The job's steps couldn't be read to confirm which one failed: if the title is already Conventional Commit, read the `policy` run's log.)"] : []),
             `Fix the title with \`aidenhq ship title ${pr.url} ${pr.head} ${a!.generation} "<type>(<scope>): <summary>"\` (types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert), giving the title that describes this PR. Change nothing in the code for it: a check, test or lint rule stays as strict as you found it.`,
+          ] : policyUnclear ? [
+            `Only metadata is red here, but the \`policy\` job's own steps don't show the title step failing at this head: read that job's run (${pr.url}/checks) and say on the task which step failed. Ship wakes the fix that matches it; nothing here asks you to guess, and no title edit is asked for until the job says the title is what failed.`,
           ] : [
             "Fix what this PR broke as the `ship` skill says: one commit, never weaken a check.",
             push(),
