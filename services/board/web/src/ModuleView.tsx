@@ -3,9 +3,11 @@
 // (the board serves it with a sandbox CSP), so everything it does goes through here: its tool calls go to the board's
 // /api/pages/<page>/call (the kernel lets through only the tools its page declares), and a setting it proposes is saved only by
 // the owner's own click on the bar below the frame. Docs: docs/design/board-ui.md "Modules".
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, SignInRequired } from "./api";
 import type { PageRow } from "./types";
+import { IN_FLIGHT } from "./settings-ui";
+import type { FiledChange } from "./types";
 import { Button, Page, PageHeader } from "./ui";
 import "./modules.css";
 
@@ -39,8 +41,22 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [saving, setSaving] = useState(false);
   const [said, setSaid] = useState("");
-  // The frame's document: the bridge serves only the first one each attempt loads (a view that navigates itself is stopped),
-  // and one that hasn't said ui/initialize a few seconds after loading failed (its module is down, or the view is broken).
+  // A page proposes from the settings as applied, so a proposal built while another change to the same settings is still under way
+  // (filed from any page, a refresh ago, or a Save whose answer was lost) would overwrite it. The filed changes are the one truth:
+  // Save waits while one touching the proposal's settings is in flight, and when it lands the page starts over from the live settings.
+  const [changes, setChanges] = useState<FiledChange[]>([]);
+  const latest = useRef(0);
+  // Only the newest request's answer counts: an older read must not undo what a newer one showed.
+  const refresh = useCallback(() => { const n = ++latest.current; return api.settingsChanges().then((r) => void (n === latest.current && setChanges(r.changes)), () => {}); }, []);
+  useEffect(() => {
+    void refresh();
+    const t = setInterval(() => document.visibilityState === "visible" && void refresh(), 3_000);
+    return () => clearInterval(t);
+  }, [refresh]);
+  const keys = new Set(proposal?.changes.map((c) => c.key));
+  const blocking = changes.find((c) => IN_FLIGHT.includes(c.stage) && c.items.some((i) => "key" in i && keys.has(i.key)));
+  // Every change this page has had to wait for, or saved: the page starts over once one of them is applied.
+  const watched = useRef(new Set<string>());
   const [attempt, setAttempt] = useState(0);
   const [broken, setBroken] = useState("");
   const loads = useRef(0);
@@ -60,6 +76,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   useEffect(() => {
     if (!id) return;
     const answer = (req: Msg, body: { result: unknown } | { error: { code: number; message: string } }) => frame.current?.contentWindow?.postMessage({ jsonrpc: "2.0", id: req.id, ...body }, "*");
+    let live = true;
     async function onMessage(e: MessageEvent) {
       // Only the frame this page made, never another window or frame; its origin is "null" (opaque), so the source is the check.
       if (!frame.current || e.source !== frame.current.contentWindow || loads.current > 1) return;
@@ -81,12 +98,23 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       });
       // A settings change the tool proposed: shown on the bar below, saved only by the owner's click (/save checks it).
       const changes = (r.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
-      if (Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
-      if (loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
+      if (live && Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
+      if (live && loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
     }
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [id, sub, onSignIn]);
+    return () => (live = false, window.removeEventListener("message", onMessage));
+  }, [id, sub, onSignIn, attempt]);
+
+  useEffect(() => {
+    for (const c of changes) if (IN_FLIGHT.includes(c.stage) && c.items.some((i) => "key" in i && keys.has(i.key))) watched.current.add(c.identifier);
+    for (const id of [...watched.current]) {
+      const f = changes.find((c) => c.identifier === id);
+      if (!f || IN_FLIGHT.includes(f.stage)) continue;
+      watched.current.delete(id);
+      if (f.stage === "applied") return watched.current.clear(), setSaid(`${id} is live; the page starts over from it.`), setProposal(null), setAttempt((a) => a + 1);
+      setSaid(`${id} was not applied (${f.stage})${f.detail ? `: ${f.detail}` : ""}.`);
+    }
+  }, [changes, proposal]);
 
   if (!page)
     return (
@@ -99,11 +127,12 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
     setSaving(true);
     try {
       const r = await api.viewSave(page!.id, proposal.changes);
-      setProposal(null);
+      watched.current.add(r.identifier);
       setSaid(`Saved as ${r.identifier}: the change applies in a moment.`);
     } catch (e) {
       setSaid(`Not saved: ${(e as Error).message}`);
     } finally {
+      await refresh(); // even a lost answer may have filed it: the lock then follows it
       setSaving(false);
     }
   }
@@ -114,6 +143,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
         <div className="mv-proposal" role="region" aria-label="Proposed change">
           <div className="mv-proposal-text">
             <b>Save this change to {page.module}'s settings?</b>
+            {blocking && <p className="mv-said">{blocking.identifier} changes the same settings and is {blocking.stage === "waiting" ? "waiting for approval" : "being applied"}: Save unlocks once it is decided, and it starts the page over from the result.</p>}
             {proposal.changes.map((c) => (
               <pre key={c.key}>
                 {c.key} = {JSON.stringify(c.value, null, 2)}
@@ -122,7 +152,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
           </div>
           <div className="mv-proposal-actions">
             <Button variant="quiet" onClick={() => (setProposal(null), setAttempt((a) => a + 1))} /* a discarded edit must not linger in the page: it starts over from what is saved */ disabled={saving}>Discard</Button>
-            <Button variant="primary" onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+            <Button variant="primary" onClick={() => void save()} disabled={saving || !!blocking}>{saving ? "Saving…" : blocking ? "Applying…" : "Save"}</Button>
           </div>
         </div>
       )}
