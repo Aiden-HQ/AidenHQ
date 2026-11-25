@@ -107,7 +107,9 @@ export function dockerRunArgs({ name, image, agentId, network, limits, mounts, u
   home?: string;
   workdir?: string;
 }) {
-  const args = ["run", "-d", "--name", name, "--runtime=runsc", "--network", network,
+  // --init: a reaping PID 1, so a tool's exited processes are collected (with `sleep infinity` as PID 1 they stayed zombies
+  // and opencode waited forever on a finished bash call, found live 2026-11-25).
+  const args = ["run", "-d", "--name", name, "--runtime=runsc", "--init", "--network", network,
     "--memory", limits.memory, "--memory-swap", limits.memory, "--cpus", String(limits.cpus), "--shm-size", limits.shm, "--pids-limit", String(limits.pids),
     "--label", "aidenhq.computer=1", "--label", `aidenhq.agent=${agentId}`, ...labels.flatMap((l) => ["--label", l]),
     ...(user ? ["--user", user] : []), "-e", `HOME=${home}`, "-w", workdir];
