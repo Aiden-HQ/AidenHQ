@@ -165,6 +165,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
       if (code && !box.stateIn) throw new JobError(500, "codemode-unavailable", `the ${a.engine} engine reaches its tools as code, and its box names no engine home`);
       if (code) await publishTools({ kernelUrl: kernelUrl!, token, servers, stateRoot: normalize(cfg.stateDir), home: state, inBox: box.stateIn!, ...(toolsClient ? { client: toolsClient } : {}), log: (msg, f) => log(msg, { job: job.id, ...f }) })
         .catch((e: Error) => { throw new JobError(500, "codemode-failed", `the job's tool files couldn't be generated (${String(e.message).slice(0, 300)})`); });
+      // A kernel that began draining while the tools were listed (its backplane closing) starts no session on that listing.
+      if (code && stopping()) throw new JobError(503, "draining", "the kernel is restarting; the job starts on the next one");
       const notes = a.profile === "engineer" ? await cloneNamed(job, box) : [];
       const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
       const withNotes = (text: string) => (notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${text}` : text);

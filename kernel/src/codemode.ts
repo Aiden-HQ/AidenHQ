@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mcp, ToolError } from "../sdk/src/tools-client.ts";
+import { insideNoLinks } from "./jobs.ts";
 import type { McpServer } from "./sandbox.ts";
 import { stagedPublish } from "./sandbox.ts";
 
@@ -24,7 +25,7 @@ const DEADLINE_MS = 20_000;
 const CONCURRENCY = 4;
 const MAX_PAGES = 50;
 const MAX_TOOLS = 500;
-/** Every byte written for one job's tools. */
+/** Every byte of tool metadata one launch keeps (listed, then written). */
 const MAX_BYTES = 16 * 1024 * 1024;
 /** A type deeper or bigger than this becomes `unknown` where it stops. */
 const MAX_DEPTH = 6;
@@ -131,6 +132,8 @@ ${listings.length ? listings.map(line).join("\n") : "- none: this job is granted
 async function discover(kernelUrl: string, token: string, servers: McpServer[], deadlineMs: number): Promise<Listing[]> {
   const client = mcp({ url: (c) => `${kernelUrl}/c/${encodeURIComponent(c)}/mcp`, headers: { authorization: `Bearer ${token}` } });
   const signal = AbortSignal.timeout(deadlineMs);
+  // One budget across every connection's listing: past it, a listing stops and is marked incomplete.
+  let kept = 0;
   const list = async (server: McpServer): Promise<Listing> => {
     const tools: Tool[] = [];
     const seen = new Set<string>();
@@ -142,8 +145,10 @@ async function discover(kernelUrl: string, token: string, servers: McpServer[], 
         if (message.error || !Array.isArray(message.result?.tools)) return { server, state: "unavailable", tools: [], why: "it refused the listing" };
         for (const t of message.result.tools as { name?: unknown; description?: unknown; inputSchema?: unknown }[]) {
           if (typeof t?.name !== "string" || !t.name) continue;
-          if (tools.length >= MAX_TOOLS) return { server, state: "incomplete", tools };
-          tools.push({ name: t.name, description: typeof t.description === "string" ? t.description : "", inputSchema: t.inputSchema ?? null });
+          const tool = { name: t.name, description: typeof t.description === "string" ? t.description : "", inputSchema: t.inputSchema ?? null };
+          kept += Buffer.byteLength(JSON.stringify(tool));
+          if (tools.length >= MAX_TOOLS || kept > MAX_BYTES) return { server, state: "incomplete", tools };
+          tools.push(tool);
         }
         const next = message.result.nextCursor;
         if (typeof next !== "string" || !next) return { server, state: "available", tools };
@@ -172,7 +177,10 @@ export async function publishTools({ kernelUrl, token, servers, stateRoot, home,
 }): Promise<{ dir: string; index: string }> {
   const listings = await discover(kernelUrl, token, servers, deadlineMs);
   const dir = `${inBox}/${TOOLS_DIR}`;
-  stagedPublish(stateRoot, join(home, TOOLS_DIR), (to) => {
+  // The home is re-checked after the listing (sessions share the standing box's state mount): a real folder under the state
+  // root, reached through no link, so the publish never lands outside it.
+  const real = insideNoLinks(stateRoot, home, "engine home");
+  stagedPublish(stateRoot, join(real, TOOLS_DIR), (to) => {
     let bytes = 0;
     const put = (file: string, text: string) => { bytes += Buffer.byteLength(text); writeFileSync(file, text); chmodSync(file, 0o444); };
     const folders = new Set<string>();

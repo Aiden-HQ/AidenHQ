@@ -143,7 +143,7 @@ async function settle(connection: string, tool: string, id: string): Promise<Too
     if (r.tier > 0 && (r.state === "review" || r.state === "owner" || r.state === "approved")) throw new ToolPending(connection, tool, id, r.tier, r.state);
     if (r.state === "done") return { text: r.outcome?.text ?? "", images: [] };
     if (r.state !== "approved" && r.state !== "claimed") throw new ToolError(connection, tool, r.state, r.outcome?.text ?? r.reason ?? `the write ended ${r.state}`, id);
-    if (Date.now() > until) throw new ToolError(connection, tool, "timeout", `write ${id} is still running after ${WRITE_WAIT_MS / 60_000} minutes; it is never sent again: its outcome lands on your task`, id);
+    if (Date.now() > until) throw new ToolError(connection, tool, "timeout", `write ${id} is still running after ${WRITE_WAIT_MS / 60_000} minutes. It is never sent again: don't repeat the call; its record id is ${id}`, id);
     await sleep(1000);
   }
 }
