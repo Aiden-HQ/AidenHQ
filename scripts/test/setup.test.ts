@@ -151,6 +151,21 @@ test("a dry run reads .env without executing it", () => {
   assert.throws(() => vaultPlan(["VAULT_DIR=$(touch /tmp/pwned-setup-test)", 'VAULT_FOLDERS="Meetings"']), /must be an absolute path/);
 });
 
+// Compile reads .env itself (hostEnv): an unquoted list with a space never reaches the shell variable (the apply runs the
+// second word as a command), so compile mounts the raw "Meetings, Ark" — a rerun must keep and make both, not rewrite it.
+test("an unquoted multi-word folder list is kept, as compile reads it", () => {
+  const out = vaultPlan(["VAULT_DIR=/srv/v", "VAULT_FOLDERS=Meetings, Ark"]);
+  assert.ok(!out.includes("+ .env: VAULT_FOLDERS="), `rewrote a configured list
+${out}`);
+  assert.ok(out.includes("(as alice) mkdir -p /srv/v /srv/v/Meetings /srv/v/Ark"), out);
+});
+
+// A later line may use an earlier one, as the apply's shell has it: $NOTES_ROOT is resolved in order, not left literal.
+test("a vault path may use a variable set earlier in .env", () => {
+  const out = vaultPlan(["NOTES_ROOT=/srv/notes", "VAULT_DIR=$NOTES_ROOT/vault", 'VAULT_FOLDERS="Meetings"']);
+  assert.ok(out.includes("(as alice) mkdir -p /srv/notes/vault /srv/notes/vault/Meetings"), out);
+});
+
 // $PWD is the checkout, as it is where the apply sources .env, so setup makes the directory compile mounts.
 test("$PWD in a vault path is the checkout the apply sources .env in", () => {
   const out = vaultPlan(["VAULT_DIR=$PWD/notes", 'VAULT_FOLDERS="Meetings"']);

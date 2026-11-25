@@ -455,10 +455,10 @@ set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry comm
 # the file: a dry run may be run as root over a checkout a user owns, and no step of a preview runs that code. $PWD is the
 # checkout, as the apply (ops/apply-config-work.sh) has it. A dry run has no .env yet (only the write above is printed):
 # the path comes from the .env.example a new install copies.
-vault_val() { # FILE KEY: the value `set -a; . FILE` gives for KEY, read without running FILE (setup may read a user's .env)
-  local raw v='' c n i=0 st=u len
-  raw="$(sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -1 || true)"
-  len=${#raw}
+declare -A VAULT_M=()
+vault_expand() { # RAW: the value the shell gives for one KEY= line, without running it; sets VAULT_UNSET when it would not set it
+  local raw=$1 v='' c n i=0 st=u len=${#1}
+  VAULT_UNSET=0
   while [ "$i" -lt "$len" ]; do
     c="${raw:$i:1}"
     if [ "$st" = s ]; then                                                                    # single quotes: literal, till '
@@ -472,13 +472,34 @@ vault_val() { # FILE KEY: the value `set -a; . FILE` gives for KEY, read without
       if [ "${raw:$i:1}" = '{' ]; then n="${raw:i+1}"; n="${n%%\}*}"; i=$((i+${#n}+1))
       else while [ "$i" -lt "$len" ]; do case "${raw:$i:1}" in [A-Za-z0-9_]) n+="${raw:$i:1}"; i=$((i+1)) ;; *) break ;; esac; done
            i=$((i-1)); fi
-      case "$n" in '') v+='$' ;; HOME) v+=$H ;; PWD) v+=$REPO ;; *) v+="${!n-}" ;; esac
+      case "$n" in '' ) v+='$' ;; HOME) v+=$H ;; PWD) v+=$REPO ;; *) v+="${VAULT_M[${n}]-}" ;; esac
       i=$((i+1)); continue
     fi
     if [ "$c" = '~' ] && [ "$st" = u ] && [ -z "$v" ]; then v=$H; i=$((i+1)); continue; fi     # a word-leading ~ is HOME
-    if { [ "$c" = ' ' ] || [ "$c" = "$(printf '\t')" ]; } && [ "$st" = u ]; then break; fi     # ends an unquoted value
+    if { [ "$c" = ' ' ] || [ "$c" = "$(printf '\t')" ]; } && [ "$st" = u ]; then
+      case "${raw:$i}" in " #"*|"$(printf '\t')#"*) break ;; esac                            # a ' #' comment: a valid value
+      VAULT_UNSET=1; break                                                                    # a second word: the shell runs it, so KEY stays unset
+    fi
     v+=$c; i=$((i+1))
   done
+  VAULT_EXPANDED=$v
+}
+vault_read() { # FILE: every KEY=value in order (a later line may use an earlier $VAR), the way the apply and compile read it
+  VAULT_M=()
+  local line key rest
+  while IFS= read -r line || [ -n "$line" ]; do                                                # a last line with no newline counts
+    key="${line%%=*}"; [ "$key" != "$line" ] || continue
+    key="${key#"${key%%[![:space:]]*}"}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    rest="${line#*=}"; vault_expand "$rest"
+    if [ "$VAULT_UNSET" = 1 ]; then                                                           # hostEnv's fallback: the raw text
+      VAULT_M["$key"]="${rest%\"}"; VAULT_M["$key"]="${VAULT_M[$key]#\"}"; VAULT_M["$key"]="${VAULT_M[$key]%\'}"; VAULT_M["$key"]="${VAULT_M[$key]#\'}"
+    else VAULT_M["$key"]=$VAULT_EXPANDED; fi
+  done < "$1"
+}
+vault_val() { # FILE KEY
+  vault_read "$1"
+  local v="${VAULT_M[$2]-}"
   [ "$1" = "$ENVF" ] || v="${v//\/home\/USER/$H}"                                            # the example's placeholder
   printf '%s' "$v"
 }
