@@ -14,7 +14,7 @@ export async function fakeGateway(port: number) {
     req.on("data", (d) => (b += d));
     req.on("end", () => {
       const j = b ? JSON.parse(b) : {};
-      if (req.method === "GET" && req.url?.endsWith("/models")) {
+      if (req.method === "GET" && /\/models(\?|$)/.test(req.url ?? "")) {
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({ object: "list", data: MODELS }));
       }

@@ -17,8 +17,9 @@
 //                                 every granted agent and any other that spent today (the board's header and Costs tab)
 //   GET /v1/models/catalog        (Bearer gateway_board_key) the text models of OpenRouter's list the gateway already holds, for the
 //                                 board's model picker: {models: [{id, name, provider, created, context, in, out, tools, reasoning}]}
-//   GET /api/v1/models            (a job's or check's own credential) the same list for an engine to size its context window from:
-//                                 {object: "list", data: [{id, object: "model", context_length, max_completion_tokens}]}
+//   GET /api/v1/models?ids=a,b    (a job's or check's own credential) the same list for an engine to size its context window from:
+//                                 {object: "list", data: [{id, object: "model", context_length, max_completion_tokens}]}; an id the
+//                                 list lacks is looked up again first (at most once a minute, as a call's is)
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
 //   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at, review}: an opaque CI
@@ -1153,6 +1154,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       if (req.method === "GET" && path === "/api/v1/models") {
         // An engine reads each model's real window here (its config's context limit); any credential a model call takes may.
         await identify(bearer(req), "agent");
+        const ids = (new URL(req.url ?? "", "http://gateway").searchParams.get("ids") ?? "").split(",").filter(Boolean);
+        if (ids.length) await prices.lookup(ids);
         return send(res, 200, { object: "list", data: (await prices.catalog()).map((m) => ({ id: m.id, object: "model", context_length: m.context, max_completion_tokens: m.output })) });
       }
       const m = ROUTE.exec(path);

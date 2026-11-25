@@ -27,16 +27,17 @@ export interface Limits { context: number; output: number }
 const COMPACT_AT = 0.8;
 
 /**
- * Every model the job offers, sized from the gateway's own list (GET <base_url>/models with the run token): opencode compacts
+ * Every model the job offers, sized from the gateway's own list (GET <base_url>/models with the run token, through the launcher): opencode compacts
  * only for a model with a context limit, and the window it assumes is the model's real one. A model the list doesn't size
  * stops the session at start.
  */
 export async function modelLimits(spec: JobSpec, token: string, get: typeof fetch = fetch): Promise<Record<string, Limits>> {
-  const res = await get(`${spec.model.base_url}/models`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+  const ids = [...new Set([spec.model.id, ...(spec.model.models ?? [])].map(modelId))];
+  const res = await get(`${spec.model.base_url}/models?ids=${encodeURIComponent(ids.join(","))}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`the gateway's model list answered ${res.status}`);
   const listed = new Map(((await res.json()) as { data: { id: string; context_length?: number; max_completion_tokens?: number }[] }).data.map((m) => [m.id, m]));
   const limits: Record<string, Limits> = {};
-  for (const id of new Set([spec.model.id, ...(spec.model.models ?? [])].map(modelId))) {
+  for (const id of ids) {
     const m = listed.get(id);
     if (!m?.context_length || !m.max_completion_tokens) throw new Error(`the gateway lists no context window for model ${id}`);
     limits[id] = { context: m.context_length, output: m.max_completion_tokens };

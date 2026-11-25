@@ -9,6 +9,7 @@
 // kernel job's token (ahqj_), which the launcher knows by its hash (the job record):
 //   POST /api/v1/responses | /api/v1/chat/completions | /api/v1/messages   model calls (messages: Claude Code's Anthropic format),
 //                             passed on to the kernel's model gateway with that token
+//   GET /api/v1/models?ids=…  the model list (context windows), the same way
 //   /c/<connection>/mcp       tool calls to a connection (X-Agent-Key = the job token), passed on to the kernel's proxy
 //                             (aidenhq-kernel) with that token as the bearer: the kernel checks the grants and holds the keys
 //   POST /repo {repo, sha}    the box's `repo-checkout`: the kernel's code host snapshot (no .git, no credentials) of an agents-org
@@ -41,7 +42,7 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_CHECK_MIN, WARM_MS, standingMounts,  forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
+import { MAX_CHECK_MIN, WARM_MS, standingMounts,  forwardModel, forwardModelList, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
 import { STANDING_AGENT, Standing, dropStandingFiles } from "./standing.ts";
 import { createSessionProxy } from "./session-proxy.ts";
@@ -542,6 +543,12 @@ const gatewayServer = http.createServer(async (req, res) => {
       if (!who) return deny(401, "not a live computer");
       boxes.get(who.container) && (boxes.get(who.container)!.lastUsed = Date.now());
       return await forwardModel(req, res, `${MODEL_GATEWAY_URL}/api/v1/${model[1]}`, token);
+    }
+    if (req.method === "GET" && (req.url ?? "").split("?")[0] === "/api/v1/models") {
+      // The model list an engine sizes its context window from (modules/engine-opencode): the same live-box check, on to the gateway.
+      const token = bearer(req);
+      if (!liveBox(token)) return deny(401, "not a live computer");
+      return await forwardModelList(res, `${MODEL_GATEWAY_URL}/api/v1/models${new URL(req.url!, "http://launcher").search}`, token);
     }
     if (req.method === "POST" && req.url === "/repo") {
       const who = liveBox(String(req.headers["x-agent-key"] ?? ""));

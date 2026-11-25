@@ -232,7 +232,7 @@ test("gateway: the install's day and month limits count every call, every caller
   assert.deepEqual(models.find((x) => x.id === "anthropic/claude-haiku-5.5"), { id: "anthropic/claude-haiku-5.5", name: "anthropic/claude-haiku-5.5", provider: "anthropic", created: 0, context: 0, output: 4096, in: 1, out: 1, tools: false, reasoning: false });
   // An engine sizes its context window from /api/v1/models, with its own job credential.
   assert.equal((await fetch(`${front.url}/api/v1/models`, { headers: { authorization: "Bearer nope" } })).status, 401);
-  const listed = await (await fetch(`${front.url}/api/v1/models`, { headers: { authorization: `Bearer ${job()}` } })).json();
+  const listed = await (await fetch(`${front.url}/api/v1/models?ids=anthropic%2Fclaude-haiku-5.5`, { headers: { authorization: `Bearer ${job()}` } })).json();
   assert.deepEqual(listed.data.find((x) => x.id === "anthropic/claude-haiku-5.5"), { id: "anthropic/claude-haiku-5.5", object: "model", context_length: 0, max_completion_tokens: 4096 });
   // Past the day's limit every caller is refused, the reviewer, the source writers and the board's side chat included; the
   // owner is told once.

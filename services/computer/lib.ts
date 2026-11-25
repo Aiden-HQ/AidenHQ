@@ -513,6 +513,19 @@ export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse
   });
 }
 
+/**
+ * A box's read of the model gateway's model list (GET /api/v1/models?ids=…: an engine sizes its context window from it), passed
+ * on with the job token. An unreachable gateway is a 502 the engine fails on, loudly.
+ */
+export async function forwardModelList(res: http.ServerResponse, url: string, token: string) {
+  try {
+    const up = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+    res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" }).end(Buffer.from(await up.arrayBuffer()));
+  } catch (e) {
+    res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 502, type: "gateway_unreachable", message: `the model gateway is unreachable (${(e as Error).message})` } }));
+  }
+}
+
 /** How long a draining launcher keeps serving the calls it holds (the kernel's DRAIN_MS). */
 export const DRAIN_MS = 5 * 60_000;
 

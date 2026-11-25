@@ -1,5 +1,5 @@
 // The engine over a stand-in opencode (test/bin/opencode): first turn, resume, the busy-session queue, the terminal, stop.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,7 +12,7 @@ const engine = join(import.meta.dirname, "../bin/engine");
 let port = 24000 + (process.pid % 1000) * 4;
 const gwPort = 23000 + (process.pid % 1000);
 const gw = await fakeGateway(gwPort);
-process.on("exit", () => gw.close());
+after(() => gw.close());
 
 function setup(session?: string, known = session ?? "", pending?: string[], extra: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), "oc-engine-"));
