@@ -232,9 +232,6 @@ owner_link() {
   else die "the kernel gave no setup link for $OWNER_EMAIL (HTTP ${code:-none}; is it up? systemctl --user status aidenhq-kernel)"; fi
 }
 
-# Unattended: the kernel's first-run page (/setup), its single-use link the last line of the output, exactly once, for the
-# installer to read: AIDENHQ_SETUP_URL=<url>. The vault's recovery key moves from root's home into the vault for that page,
-# which shows it once.
 # Whether a URL is one of this host's loopback addresses (`localhost`, 127.0.0.1, [::1]): a setup link at one of them
 # opens on this host (or through the SSH tunnel), never from another machine.
 is_loopback_url() {
@@ -243,11 +240,19 @@ is_loopback_url() {
     *) return 1 ;;
   esac
 }
-# The tunnel to the board, sign-in and backplane: the user's own SSH login, and the address the owner reached this server
-# by (a hostname -f can be a private name their laptop can't resolve; the login's own destination is what worked).
+# The tunnel to the board, sign-in and backplane: the user's own SSH login. Its destination is the address this SSH session
+# came in on, when that is one a laptop could have reached (SSH_CONNECTION reports the server-side socket address, which
+# behind a forward or NAT is the VM's own private one, so a private or loopback one falls back to the host's name), and
+# its port when the session came in on one other than 22: the owner reuses what worked to get here.
 ssh_tunnel() {
-  local host; host="$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $3}')"
-  printf 'ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 %s@%s' "$U" "${host:-$(hostname -f 2>/dev/null || hostname)}"
+  local dest="" port="" client cport server sport
+  if [ -n "${SSH_CONNECTION:-}" ]; then
+    read -r client cport server sport <<< "$SSH_CONNECTION"
+    case "$server" in ""|127.*|::1|0.0.0.0|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|fe80:*|fc*|fd*) server="" ;; esac
+    dest="$server"
+    case "$sport" in ""|22) ;; *) port=" -p $sport" ;; esac
+  fi
+  printf 'ssh -N%s -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 %s@%s' "$port" "$U" "${dest:-$(hostname -f 2>/dev/null || hostname)}"
 }
 # The setup link is a loopback address when the install has none of its own: say so, and how to give it one. The
 # AIDENHQ_SETUP_URL line itself stays a bare URL (an installer parses it), so this is the line just before it. A live
@@ -263,10 +268,13 @@ loopback_link_note() { # [URL]
 link_tunnel() { # [URL]
   if [ -n "${1:-}" ]; then is_loopback_url "$1" || return 0
   else [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ] || return 0; fi
-  echo "From your own computer, open a tunnel first and leave it open:"
+  echo "From your own computer, open a tunnel first and leave it open: use the same host and port as your own ssh login (the one below is a guess; -p <port> if yours is not 22):"
   echo "  $(ssh_tunnel)"
 }
 
+# Unattended: the kernel's first-run page (/setup), its single-use link the last line of the output, exactly once, for the
+# installer to read: AIDENHQ_SETUP_URL=<url>. The vault's recovery key moves from root's home into the vault for that page,
+# which shows it once.
 setup_link() {
   if [ "$DRY" = 1 ]; then [ "$LINK_ONLY" = 1 ] && link_tunnel; loopback_link_note; echo "  + kernel: the first-run page's one-time link, last: AIDENHQ_SETUP_URL=<url>"; return 0; fi
   for _ in $(seq 60); do curl -fsS -o /dev/null "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/healthz" 2>/dev/null && break; sleep 2; done

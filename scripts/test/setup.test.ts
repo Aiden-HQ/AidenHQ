@@ -76,6 +76,15 @@ test("unattended --link prints the tunnel to the address the owner reached this 
   assert.ok(out.includes("ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 alice@203.0.113.7"), out);
 });
 
+test("the tunnel keeps the host and port that reach the server, never the VM's private server-side address", () => {
+  // A forward or NAT to a private VM: SSH_CONNECTION's server side is the VM's own address, unreachable from the laptop.
+  const out = linkRun(conf(here), ["--unattended", "--exposure", "local"], { SSH_CONNECTION: "10.0.0.9 51234 10.231.0.4 2222" });
+  const line = (out.split("\n").find((l) => l.includes("ssh -N")) ?? "").trim();
+  assert.ok(line.startsWith("ssh -N -p 2222 -L 3121:127.0.0.1:3121"), line);
+  assert.ok(!line.includes("alice@10.231.0.4"), `printed the VM's private address\n${out}`);
+  assert.ok(line.includes("alice@"), line);
+});
+
 test("a config-based --link on a local install says the link is loopback-only rather than 'on the tailnet'", () => {
   const out = linkRun(conf(here), ["--exposure", "local"]);
   assert.ok(out.includes("the owner's one-time setup link"), out);
