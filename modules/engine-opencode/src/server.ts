@@ -38,11 +38,16 @@ export async function serve(o: { bin?: string; port: number; password: string; e
     let connected!: () => void;
     let failed!: (e: Error) => void;
     const ready = new Promise<void>((r, j) => { connected = r; failed = j; });
+    const deadline = setTimeout(() => failed(new Error("opencode's event stream never connected")), 120_000);
+    void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
     void (async () => {
       while (!stopped) {
         if (dead) { failed(new Error("opencode serve exited before its event stream connected")); return; }
         try {
-          const r = await fetch(url + "/event", { headers: { authorization: auth } });
+          // The stream's headers get 10 s; once they arrive the stream stays open as long as the server keeps it.
+          const ac = new AbortController();
+          const timer = setTimeout(() => ac.abort(), 10_000);
+          const r = await fetch(url + "/event", { headers: { authorization: auth }, signal: ac.signal }).finally(() => clearTimeout(timer));
           if (!r.ok || !r.body) throw new Error(`/event answered ${r.status}`);
           connected();
           const dec = new TextDecoder();
