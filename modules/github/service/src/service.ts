@@ -163,37 +163,30 @@ const REPAIR_LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.su
 /** A glob (`**` any folders, `*` within one) as a whole-path pattern. */
 const globRe = (glob: string) => new RegExp(`^${String(glob).split("**/").map((part) => part.split("**").map((p) => p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*")).join("(?:.*/)?")}$`);
 /** One path of a tree: its mode and object sha, as git's own tree has them (never a diff's). */
-type TreeEntry = { path: string; mode: string; sha: string };
+export type TreeEntry = { path: string; mode: string; sha: string };
 /** An entry of `POST /git/trees`: a blob or gitlink by sha, or a deletion (`sha: null`). */
 type TreeWrite = { path: string; mode: string; type: string; sha: string | null };
 /** What a `POST /git/trees` call was asking for, kept for its refusal's evidence. */
 type TreeTry = { diff: string; tree: TreeWrite[]; dirs: Set<string> };
 /** How many paths one `ls-tree` lookup names: the output stays proportional to the change, never the repository's size. */
 const TREE_CHUNK = 200;
-/**
- * Which of `shas` GitHub already has: a `GET /git/blobs/<sha>` answers 200 for one it holds, 404 for one it doesn't. That is the
- * blob store itself, so a blob git found at another path (a rename, the base's own copy) is reused rather than uploaded again —
- * and only a blob it lacks is read here, never a whole tree.
- */
-const missingBlobs = async (rest: Gh, repo: string, shas: string[]) => {
-  const missing: string[] = [];
-  for (const sha of new Set(shas)) {
-    const r = await rest("GET", `/repos/${repo}/git/blobs/${sha}`);
-    if (r.status === 404) missing.push(sha);
-    else if (r.status >= 300) throw Object.assign(new Error(`GitHub refused the blob read on ${repo}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
-  }
-  return missing;
-};
-/** A git run that keeps stdout exactly as git wrote it: a tree path may start with whitespace, which a trim would eat. */
-type Raw = (args: string[]) => Promise<string>;
+/** A git run that keeps stdout as git wrote it: a tree path may start with whitespace, which a trim would eat. */
+export type Raw = (args: string[]) => Promise<string>;
 const NUL = (out: string) => out.split("\0").filter(Boolean);
 /** The paths that differ between two trees (`git diff-tree --name-only`): a change's size, not the tree's. */
-const changedPaths = async (raw: Raw, a: string, b: string) => [...new Set(NUL(await raw(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b])))];
+export const changedPaths = async (raw: Raw, a: string, b: string) => [...new Set(NUL(await raw(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b])))];
+/**
+ * Every object sha `<tree>` reaches (`git ls-tree -r --format=%(objectname)`): the blobs GitHub holds because it holds that tree.
+ * Shas alone, one per line — nothing of a blob's content is read, and the listing is 41 bytes a path, so a repository of any size
+ * that git can name here stays well inside the buffer. This is what makes reuse exact: a blob the merge brings from another path
+ * (a rename, the base's own copy) is in the set by its sha, whatever path it sat at.
+ */
+const treeShas = async (raw: Raw, tree: string) => new Set((await raw(["ls-tree", "-r", "--format=%(objectname)", tree])).split("\n").filter(Boolean));
 /**
  * The paths among `paths` that `<tree>` holds as a directory, at any depth (`git ls-tree -d`): `x` is a directory in the result
  * whether it holds `x/y` or only `x/y/z`. These are the paths a tree write must never name as a `sha:null` deletion.
  */
-const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
+export const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
   const dirs = new Set<string>();
   for (let i = 0; i < paths.length; i += TREE_CHUNK) {
     for (const rec of NUL(await raw(["ls-tree", "-d", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
@@ -204,7 +197,7 @@ const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
   return dirs;
 };
 /** What `<tree>` holds at exactly each of `paths`: its mode and sha as git's own tree has them (a tree entry is skipped). */
-const entriesAt = async (raw: Raw, tree: string, paths: string[]) => {
+export const entriesAt = async (raw: Raw, tree: string, paths: string[]) => {
   const files = new Map<string, TreeEntry>();
   for (let i = 0; i < paths.length; i += TREE_CHUNK) {
     for (const rec of NUL(await raw(["ls-tree", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
@@ -225,7 +218,7 @@ const entriesAt = async (raw: Raw, tree: string, paths: string[]) => {
  * resulting tree. Here `x` is probed in `want` and, found to be a directory at any depth, left out — adding `x/y` over the base's
  * file replaces it. Deletions are the changed paths `want` does not hold, at the mode git's own base tree reports for them.
  */
-const treeWrites = async (raw: Raw, base: string, want: string) => {
+export const treeWrites = async (raw: Raw, base: string, want: string) => {
   const paths = await changedPaths(raw, base, want);
   const present = await entriesAt(raw, want, paths);
   const dirs = await dirsAt(raw, want, paths.filter((p) => !present.has(p)));
@@ -310,6 +303,8 @@ export function createService(o: Options) {
     const full = [...SAFE_GIT_ARGS, ...(token ? CREDENTIAL_ARGS : []), "--git-dir", dir, ...args];
     return (await run("git", full, { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
   }
+  /** The same clone, read for tree data: git's own bytes, never trimmed (a tree path may start with whitespace). */
+  const rawGit = (dir: string, env: NodeJS.ProcessEnv = ENV): Raw => async (args) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout;
   const initBare = async (dir: string) => void (await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", dir], { env: ENV }));
   const access = o.access;
   /** The owner's token, for one git child's env only. */
@@ -1101,8 +1096,8 @@ export function createService(o: Options) {
     try {
       const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await access.identity()) };
       const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
-      // A tree path can begin with whitespace: tree reads keep git's own bytes (never trimmed) and split on NUL alone.
-      const raw = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout;
+      const raw = rawGit(dir, env);
+      const at = Raw => Raw;
       const blobAt = async (tree: string, p: string) => (await g(["ls-tree", "-z", tree, "--", p])).split("\0")[0]?.split(/[ \t]/) ?? [];
       // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
       const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", a.head, baseSha], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
@@ -1139,8 +1134,8 @@ export function createService(o: Options) {
       final = await g(["write-tree"]);
       made = await g(["commit-tree", final, "-p", a.head, "-p", baseSha, "-m", String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000)]);
       if (!fork) {
-        // Through the API as the code host's sign-in: the files that differ from the head; a blob the base or the head has is
-        // named by its sha, any other (git's clean merge of both sides, a regenerated file) is uploaded.
+        // Through the API as the code host's sign-in: the files that differ from the head; a blob the head's or the base's tree
+        // already reaches is named by its sha, any other (git's clean merge of both sides, a regenerated file) is uploaded.
         const post = async (path: string, body: unknown) => {
           const r = await who.rest("POST", `/repos/${into}/git/${path}`, body);
           if (r.status >= 300) throw Object.assign(new Error(`GitHub refused the ${path.replace(/s$/, "")} on ${into}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
@@ -1157,10 +1152,11 @@ export function createService(o: Options) {
         // refuses one with 422 Invalid tree info).
         if (!tree.length) return refuse("changed nothing: the merge and the kept files leave every path at the head's");
         try {
-          // Only a blob GitHub doesn't hold is uploaded: a blob at another path (a rename, the base's copy) is reused by its sha.
-          const upload = new Set(await missingBlobs(who.rest, into, tree.filter((e) => e.sha !== null && e.type === "blob").map((e) => e.sha!)));
+          // GitHub holds every blob its head's and its base's trees reach, so only a blob neither has is read and uploaded: one
+          // the merge brings from another path (a rename, the base's own copy) is reused by its sha, whatever path it sat at.
+          const held = new Set([...(await treeShas(raw, a.head)), ...(await treeShas(raw, baseSha))]);
           for (const e of tree) {
-            if (e.sha === null || !upload.has(e.sha)) continue;
+            if (e.sha === null || e.type === "commit" || held.has(e.sha)) continue;
             const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", e.sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
             await post("blobs", { content: content.toString("base64"), encoding: "base64" });
           }
@@ -1245,17 +1241,16 @@ export function createService(o: Options) {
         // what GitHub refuses (422 Invalid tree info).
         const baseTree = await git(dir, ["rev-parse", `${first}^{tree}`]);
         const wantSha = await git(dir, ["rev-parse", `${c}^{tree}`]);
-        // Tree reads keep git's own bytes (never trimmed): a tree path can begin with whitespace, and a trim would eat it.
-        const raw = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env: ENV, maxBuffer: 64 * 1024 * 1024 })).stdout;
         // The changed paths, then git's own entry at each (and each deletion's mode): proportional to the change, not the tree.
-        const { tree, dirs } = await treeWrites(raw, first!, c);
-        // Only a blob GitHub doesn't hold is read and uploaded: one a parent has at another path (a rename from the base's own
-        // copy) is reused by its sha, so a large binary moved by the merge is never read just to be sent again.
-        const upload = new Set(await missingBlobs(rest, repo, tree.filter((e) => e.sha !== null && e.type === "blob").map((e) => e.sha!)));
+        const { tree, dirs } = await treeWrites(rawGit(dir), first!, c);
+        // GitHub holds every blob its parents' trees reach, so only a blob none of them has is read and uploaded: one a parent has
+        // at another path (a rename from the base's own copy) is reused by its sha, never read just to be sent again.
+        const held = new Set<string>();
+        for (const p of [first!, ...others]) for (const sha of await treeShas(rawGit(dir), p!)) held.add(sha);
         const diff = `${String(first).slice(0, 12)}..${String(c).slice(0, 12)}`;
         let uploads = 0;
         for (const e of tree) {
-          if (e.sha === null || !upload.has(e.sha)) continue;
+          if (e.sha === null || e.type === "commit" || held.has(e.sha)) continue;
           if (++uploads > MAX_FILES) return { refused: `ship-scope: more than ${MAX_FILES} new files in one commit` };
           const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", e.sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
           const blob = await post("blobs", { content: content.toString("base64"), encoding: "base64" });

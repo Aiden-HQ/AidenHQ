@@ -826,7 +826,34 @@ test("ship's repair reuses a blob GitHub already holds at another path instead o
   const r = await run("k-00000000000000a6", "github.repair", { repo: REPO, number: 7, head, generation: 2, base: "main", plan: { globs: ["copy.bin"] } });
   assert.equal(r.ok, true, r.text);
   assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/git/blobs")).length, before, "the blob GitHub already held at the head is not uploaded again");
+  assert.equal(calls.filter((c) => c.method === "GET" && c.path.includes("/git/blobs/")).length, 0, "and no blob is downloaded just to test whether GitHub has it");
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib:copy.bin"), sha);
+});
+
+// The mirror of #1820, as a unit check of the shared construction: the base holds `tools/run` (a directory) and the result makes
+// `tools` a file again. Both entries are right here (the file added, `tools/run` deleted), and no entry may name a path the result
+// keeps as a directory.
+test("the tree construction handles the mirror too: a directory that becomes a file sends the file and deletes only its own paths", async () => {
+  const { treeWrites } = await import("../service/src/service.ts");
+  const dir = mkdtempSync(join(tmpdir(), "tree-writes-"));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@b", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@b" };
+  const g = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env }).trim();
+  const raw = async (args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env });
+  g("init", "--quiet", "-b", "main", ".");
+  mkdirSync(join(dir, "tools"));
+  writeFileSync(join(dir, "tools", "run"), "run\n");
+  g("add", "-A");
+  g("commit", "--quiet", "-m", "dir");
+  const before = g("rev-parse", "HEAD");
+  g("rm", "--quiet", "-r", "tools");
+  writeFileSync(join(dir, "tools"), "a file\n");
+  g("add", "-A");
+  g("commit", "--quiet", "-m", "file");
+  const after = g("rev-parse", "HEAD");
+  const { tree } = await treeWrites(raw, before, after);
+  assert.deepEqual(tree.map((e) => [e.path, e.sha === null ? "-" : "+", e.mode]), [["tools", "+", "100644"], ["tools/run", "-", "100644"]], `got ${JSON.stringify(tree)}`);
+  // And the base is the one the diff pairs from: nothing in it is named by a path the result holds as a directory.
+  assert.equal(tree.filter((e) => e.sha === null).length, 1, "only `tools/run`, the base's own file");
 });
 
 test("ship's repair's refusal text names the tree diff and the entry GitHub refused, never a bare 422", async (t) => {
