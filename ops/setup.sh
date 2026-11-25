@@ -437,9 +437,7 @@ PGID="$(id -g "$U" 2>/dev/null || echo 1000)"
 if [ "$PUID" != 1000 ]; then
   die "the service user $U has uid $PUID, but the Paperclip container runs as that uid and only works as 1000: set AIDENHQ_USER to a user whose uid is 1000, or change the uid of $U to 1000 (usermod -u 1000 $U)"
 fi
-vault_new=0
 if [ ! -f "$ENVF" ]; then
-  vault_new=1   # a new install: the vault root below is this install's to make
   if [ "$DRY" = 1 ]; then echo "  + write $ENVF (from .env.example)"
   else as_user sh -c 'umask 077; sed "s#/home/USER#$1#g" "$2/.env.example" > "$2/.env"' _ "$H" "$REPO"; fi
 fi
@@ -467,9 +465,6 @@ vault_val() { # FILE KEY: the value .env gives (last line, quotes, an unquoted '
 }
 vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"
 vault_dir="$(vault_val "$vault_env" VAULT_DIR)"; vault_folders="$(vault_val "$ENVF" VAULT_FOLDERS)"
-# The installer's own default (the .env.example path, in the owner's home), which is this host's to make even on a rerun:
-# an upgrade from the old installer has it in .env and never made it. Any other path is the owner's disk, possibly offline.
-vault_default="$(sed -n 's#^VAULT_DIR=##p' "$REPO/.env.example" 2>/dev/null | tail -1 | sed "s#/home/USER#$H#")"
 if [ -z "$vault_dir" ]; then
   # No vault path: folders left behind make compile refuse .env ("VAULT_DIR must be an absolute path"), so drop them.
   # Every line, since the last one wins in the apply and the first-match set_env would leave a later override.
@@ -489,13 +484,9 @@ elif [ -n "$vault_folders" ] || { set_env VAULT_FOLDERS Meetings; vault_folders=
     [[ "$vf" == *..* || "$vf" == .* || "$vf" == *:* ]] && die "invalid vault folder: $vf (VAULT_FOLDERS in $ENVF must be vault-relative)"
     vault_paths+=("$vault_dir/$vf")
   done
-  # The default root is made on a new install and on an upgrade from a version that never made it. A custom mount point is
-  # made only when it is there (it holds something): with that disk offline, mkdir would leave an empty directory the
-  # module's checks would pass against while the real notes stay elsewhere.
-  if [ "$vault_new" = 1 ] || [ "$vault_dir" = "$vault_default" ] || { [ -d "$vault_dir" ] && [ -n "$(ls -A "$vault_dir" 2>/dev/null)" ]; }; then
-    as_user mkdir -p "${vault_paths[@]}" || say "couldn't create ${vault_paths[*]} (a disk that isn't mounted?); the Meetings health check reports it"
-  else say "VAULT_DIR ($vault_dir) is missing or empty: not creating it (a disk that isn't mounted?)"
-  fi
+  # The root and every listed folder, as the owner: a vault on a disk that isn't mounted is the Meetings module's to
+  # report, never a reason the rest of setup fails.
+  as_user mkdir -p "${vault_paths[@]}" || say "couldn't create ${vault_paths[*]} (a disk that isn't mounted?); the Meetings health check reports it"
 fi
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
 set_env BOARD_LAN_HOSTS "${BOARD_HOST:-${PUBLIC_IP:+$PUBLIC_IP,}127.0.0.1:3121,localhost:3121}"
