@@ -2,7 +2,7 @@
 // log, so the host scan's scope is its argument list, not an inference from the script's text.
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -1444,3 +1444,45 @@ test("security-sbom: a pre-1.48 daemon scans a plain save whose archive holds on
   assert.ok(calls.some((c) => c.startsWith("save ") && !c.includes("--platform")), calls.join("\n"));
 });
 
+
+test("security-sbom: an app checkout that is a symlink to another tree is a line naming where it resolved, and is not scanned", { skip: NOT_LINUX }, async () => {
+  // Docker resolves symlinks in a bind source, so a link into the product tree scanned that tree while the rows still
+  // named the app: every finding read as the app's. The scan root must be the app's own checkout, and one that resolves
+  // elsewhere is a line naming both paths rather than a scan of whatever the link points at.
+  const { root, scriptPath } = isolatedCheckout();
+  const elsewhere = join(root, "shared/product-checkout");
+  const platform = join(root, "data/apps/.platform");
+  mkdirSync(elsewhere, { recursive: true });
+  writeFileSync(join(elsewhere, "package-lock.json"), "{}\n");
+  mkdirSync(join(platform, "roadmap-keeper"), { recursive: true });
+  symlinkSync(elsewhere, join(platform, "roadmap-keeper/src"));
+  const { status, out, targets, calls } = await run({}, { scriptPath });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "app:roadmap-keeper");
+  assert.ok(line, `no line for the linked app checkout:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(line[1], "-", "the linked checkout was not scanned");
+  assert.ok(line[2].includes(elsewhere), `the line names what the link resolved to: ${line[2]}`);
+  assert.ok(line[2].includes(join(platform, "roadmap-keeper/src")), `and the path it should have been: ${line[2]}`);
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name app:roadmap-keeper")),
+    `a symlinked checkout was handed to syft:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: an ordinary app checkout is scanned and its row carries the checkout's HEAD", { skip: NOT_LINUX }, async () => {
+  // An app's own checkout still scans, and its row names the tree those rows came from the way repo: targets do, so a
+  // batch says which app commit it read.
+  const { root, scriptPath } = isolatedCheckout();
+  const src = join(root, "data/apps/.platform/roadmap-keeper/src");
+  mkdirSync(src, { recursive: true });
+  writeFileSync(join(src, "package-lock.json"), "{}\n");
+  execFileSync("git", ["-C", src, "init", "-q", "-b", "main"]);
+  execFileSync("git", ["-C", src, "add", "-A"]);
+  execFileSync("git", ["-C", src, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "app tree"]);
+  const head = execFileSync("git", ["-C", src, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const { status, out, targets, calls } = await run({}, { scriptPath });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "app:roadmap-keeper");
+  assert.ok(line, `no row for the app checkout:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(line[1], "-", `the checkout reached syft: ${line[2]}`);
+  assert.equal(line[3], head, "the row names the checkout's HEAD");
+  assert.match(syft(calls, "app:roadmap-keeper").line, new RegExp(`-v ${src}:/src:ro`), "scanned from the app's own checkout");
+});
