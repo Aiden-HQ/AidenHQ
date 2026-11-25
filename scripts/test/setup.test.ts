@@ -166,6 +166,14 @@ test("a vault path may use a variable set earlier in .env", () => {
   assert.ok(out.includes("(as alice) mkdir -p /srv/notes/vault /srv/notes/vault/Meetings"), out);
 });
 
+// A .env with the key twice (the old installer's empty line after a real one) is repaired where the apply reads it — the
+// last line — so setup makes the folders and does not leave a later empty override for compile.
+test("a duplicated VAULT_FOLDERS line is seeded at the last one", () => {
+  const out = vaultPlan(["VAULT_DIR=/srv/v", "VAULT_FOLDERS=Meetings", "VAULT_FOLDERS="]);
+  assert.ok(out.includes("+ .env: VAULT_FOLDERS=Meetings"), out);
+  assert.ok(out.includes("(as alice) mkdir -p /srv/v /srv/v/Meetings"), out);
+});
+
 // $PWD is the checkout, as it is where the apply sources .env, so setup makes the directory compile mounts.
 test("$PWD in a vault path is the checkout the apply sources .env in", () => {
   const out = vaultPlan(["VAULT_DIR=$PWD/notes", 'VAULT_FOLDERS="Meetings"']);

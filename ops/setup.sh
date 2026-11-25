@@ -159,6 +159,10 @@ set_env() { # KEY VALUE: sets KEY in .env (replacing a commented or old line, el
   if [ "$DRY" = 1 ]; then echo "  + .env: $1=$( [[ "$1" =~ KEY|SECRET|PASSWORD|TOKEN ]] && echo '…' || echo "$2")"; return 0; fi
   as_user K="$1" V="$2" F="$ENVF" sh -c 'umask 077; awk -v k="$K" -v v="$V" '"'"'BEGIN{d=0} $0 ~ "^#? *" k "=" && !d {print k "=" v; d=1; next} {print} END{if(!d) print k "=" v}'"'"' "$F" > "$F.tmp" && mv -f "$F.tmp" "$F"'
 }
+set_env_effective() { # KEY VALUE: like set_env, but the line the apply reads wins (the last one), not the first match
+  if [ "$DRY" = 1 ]; then echo "  + .env: $1=$( [[ "$1" =~ KEY|SECRET|PASSWORD|TOKEN ]] && echo '…' || echo "$2")"; return 0; fi
+  as_user K="$1" V="$2" F="$ENVF" sh -c 'umask 077; awk -v k="$K" -v v="$V" '"'"'BEGIN{d=0} $0 ~ "^#? *" k "=" {last=NR} {l[NR]=$0} END{n=NR; for(i=1;i<=n;i++){if(i==last) print k "=" v; else print l[i]} if(!last) print k "=" v}'"'"' "$F" > "$F.tmp" && mv -f "$F.tmp" "$F"'
+}
 json() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a JSON string, without node (a dry run has none)
 read_secret() { [ -s "$SECRETS/$1" ] && cat "$SECRETS/$1" || true; }
 operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operator/<op>) with the operator's key: setup link, resets.
@@ -486,6 +490,7 @@ vault_expand() { # RAW: the value the shell gives for one KEY= line, without run
 }
 vault_read() { # FILE: every KEY=value in order (a later line may use an earlier $VAR), the way the apply and compile read it
   VAULT_M=()
+  [ -f "$1" ] || return 0                                                                    # a fresh preview has no .env yet
   local line key rest
   while IFS= read -r line || [ -n "$line" ]; do                                                # a last line with no newline counts
     key="${line%%=*}"; [ "$key" != "$line" ] || continue
@@ -512,7 +517,7 @@ if [ -z "$vault_dir" ]; then
     if [ "$DRY" = 1 ]; then echo "  + .env: VAULT_FOLDERS="
     else as_user K=VAULT_FOLDERS F="$ENVF" sh -c 'umask 077; awk -v k="$K" '"'"'$0 ~ "^ *" k "=" {print k "="; next} {print}'"'"' "$F" > "$F.tmp" && mv -f "$F.tmp" "$F"'; fi
   fi
-elif [ -n "$vault_folders" ] || { set_env VAULT_FOLDERS Meetings; vault_folders=Meetings; }; then
+elif [ -n "$vault_folders" ] || { set_env_effective VAULT_FOLDERS Meetings; vault_folders=Meetings; }; then
   # compile refuses these, so name them here rather than let the apply fail later on the same values.
   [[ "$vault_dir" == /* ]] || die "VAULT_DIR must be an absolute path in $ENVF (it is \"$vault_dir\")"
   vault_paths=("$vault_dir")
