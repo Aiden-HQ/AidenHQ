@@ -163,7 +163,8 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
     const late = pr.fork && !(Date.parse(pr.headSeen ?? "") <= Date.parse(trigger.at));
     return adopt(d, pr, was, { kind: trigger.kind === "comment" ? "comment" : "label", event: trigger.id, actor: trigger.actor, at: trigger.at, head: pr.head }, late);
   }
-  if (was && handback && !was.hold) {
+  // A hand-back is a member's decision and outranks a stall (which is resumable): it must be recorded even while the PR is stalled.
+  if (was && handback && (!was.hold || was.hold.kind === "stalled")) {
     const held: Kept = { ...was, hold: { kind: "handed_back", reason: `handed back by @${handback.actor}`, at: handback.at } };
     d.state.put(held);
     for (const t of tasksOf(was)) await closeTask(d, t, `${pr.url} was handed back: ship stopped working on it.`);
@@ -283,6 +284,9 @@ const closeTask = (d: HandoffDeps, task: string, body: string) =>
  * github's check before each adopted-PR write (GET /v1/generation, `at`: the head the write stands on): the current generation, the
  * hold (a pause reads as one, and so does a fork's head its hand-off doesn't cover) and the adoption's task, so a write for a
  * handed-back, stopped or paused adoption, or on a fork's uncovered head, is refused at the effect.
+ *
+ * A stalled hold is resumable on a new head, so it must not mask the fork's head binding: a fork's write stands only on the head its
+ * hand-off covers, and an uncovered head refuses however the adoption is held (a member hands it off again; a push may not).
  */
 export function generationOf(state: State, paused: boolean, repo: string, number: number, at?: string) {
   const a = state.get(repo, number) as Kept | undefined;
@@ -290,7 +294,9 @@ export function generationOf(state: State, paused: boolean, repo: string, number
   const task = a.task ?? a.holder;
   // A fork's write stands only on the head its hand-off covers: a head the author pushed since (before the loop held it) is refused.
   const unbound = a.fork && at !== a.trigger.head ? { kind: "stopped", reason: "the write isn't on the head handed off" } : null;
-  return { generation: a.generation, hold: paused ? { kind: "stopped", reason: "ship is paused" } : a.hold ?? unbound, ...(task ? { task } : {}) };
+  // An explicit hand-back or stop, and an uncovered fork head, outrank a stalled hold; a pause outranks them all.
+  const held = a.hold && a.hold.kind !== "stalled" ? a.hold : unbound ?? a.hold;
+  return { generation: a.generation, hold: paused ? { kind: "stopped", reason: "ship is paused" } : held, ...(task ? { task } : {}) };
 }
 
 /** A cancelled ship task ends its adoption (the loop reads the task's state): a hold, never a close of the PR or a touch of its ref. */
