@@ -363,7 +363,7 @@ untracked `config/runner.yaml` at start for its tuning: `work_dir` (default `~/a
 from `TIMEOUT_MINUTES`) and `gateway.url`. Which organizations agents may push and open PRs in is the instance's
 `github_orgs` (`instance.yaml`), enforced by the code host (`modules/github`).
 
-The release train (`release.batch_minutes`, default 15; 0 turns it off; `modules/github/service/src/train.ts`) writes
+The release train (the github module's `release_window_minutes` setting, default 60, 5-1440; `modules/github/service/src/train.ts`) writes
 pin bumps in code. A green merge to the product opens one task, "Pin bump: this instance's product", that lists the merges
 it carries; once the window from the first of them has passed, the train files one apply card moving `product:` to the
 product's green tip (the official modules are its own `modules/`). The card is the AI reviewer's (Tier 1, raised as usual for
