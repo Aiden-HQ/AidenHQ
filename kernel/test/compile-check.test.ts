@@ -250,7 +250,7 @@ process.exit(0);
     // The real compiler, run staged, from the target tree — the production path.
     run: async (o) => { const { execFile } = await import("node:child_process"); const out = await new Promise((ok) => execFile(process.execPath, ["scripts/compile.ts"], { cwd: o.productDir, env: o.env }, (e, so) => ok(e ? String(e) : String(so)))); said = JSON.parse(String(out).trim().split("\n").at(-1)); return { ok: true }; } });
   await check({ product: sha });
-  assert.deepEqual(said.secrets.sort(), ["cloudflared_credentials.json", "github_retired_app_id", "tailscale_apps_authkey"], "the vault facts, and no other vault file");
+  assert.deepEqual(said.secrets.sort(), ["cloudflared_credentials.json", "tailscale_apps_authkey"], "the vault facts, and no other vault file");
   assert.equal(said.credsPresent, true, "the credentials file the apply checks is present in the snapshot");
   assert.ok(said.credsLen > 0, "and non-empty, so the apply's check reproduces (the bytes are a stand-in, not the secret)");
   assert.ok(said.credsLen < 40, "the stand-in is not the real credential");

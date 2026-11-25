@@ -52,11 +52,6 @@ if (stage) { rmSync(cfgOut, { recursive: true, force: true }); mkdirSync(cfgOut,
 const instanceDir = env("AIDENHQ_INSTANCE_DIR");
 if (!instanceDir || !existsSync(join(instanceDir, "instance.yaml"))) die("set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)");
 const bundleFile = join(repo, "data", "bundle-state.json");
-// DELETE in the release after #1065: the retired GitHub App's id, which the github process looks for in the repos' rules
-// (migrate.ts). Apply removes the vault's github-app dir after the first good generation, so the id is kept beside it first.
-// A staged compile reads only; the switch's compile (before apply's retireUnits) keeps it.
-const secrets = env("AIDENHQ_SECRETS_DIR");
-if (secrets && !stage && !existsSync(join(secrets, "github_retired_app_id")) && existsSync(join(secrets, "github-app", "app_id"))) writeFileSync(join(secrets, "github_retired_app_id"), `${readFileSync(join(secrets, "github-app", "app_id"), "utf8").trim()}\n`, { mode: 0o600 });
 // The host's inputs (scripts/compiler/inputs.ts): the kernel compiles an agent's prospective change with the same ones.
 const inputs = loadInputs(repo, env);
 let out!: ReturnType<typeof compile>, computers!: ReturnType<typeof computersConfig> & { pull?: ReturnType<typeof computerPulls> };

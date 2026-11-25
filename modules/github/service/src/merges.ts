@@ -42,10 +42,8 @@ function listView(pr: any, main: { name: string; oid?: string; rollup?: any }) {
 }
 /** What a PR's record-level wait says while GitHub is signed out: the reason the card shows for a merge that cannot move yet. */
 const CONNECTED_WAIT = "GitHub is signed out: waiting for the owner to reconnect it";
-/** The same while the App migration holds merges (migrate.ts): reconnecting GitHub cannot lift it, so it never claims a sign-out. */
-export const MIGRATION_WAIT = "GitHub App migration in progress: merges are held until it finishes";
 /** The record-level reasons the queue itself sets and clears (never a PR's own wait or a failure's note). */
-const HOLD_WAITS = [CONNECTED_WAIT, MIGRATION_WAIT];
+const HOLD_WAITS = [CONNECTED_WAIT];
 /** GitHub's answer for branch rules on a plan that has none (a private repo without Pro): nothing is enforced there. */
 const noRulesPlan = (r: { status: number; body?: unknown }) => r.status === 403 && /upgrade to github pro|make this repository public/i.test(JSON.stringify(r.body ?? ""));
 const isHoldWait = (note?: string) => note !== undefined && HOLD_WAITS.includes(note);
@@ -62,13 +60,6 @@ export function createMerges(d: {
   gh: Gh;
   /** Whether GitHub is connected: while it isn't, every pending PR waits (work.waiting reason github) and nothing is called. */
   connected?: () => boolean;
-  /**
-   * Whether merges are held although GitHub is connected (the App migration, migrate.ts): the hold is a decision, never a
-   * message, so a blank reason can never lift it.
-   */
-  hold?: () => boolean;
-  /** What the hold says on the record (own reason, never the reconnect's: reconnecting cannot lift a migration hold). Blank: the default. */
-  holdReason?: () => string | null | undefined;
   fleetOrg: string; productRepo?: string;
   /** Ship's adoptions (service.ts ShipAdoptions): an adopted PR's merge is still its adoption's (not on hold, not paused) at the call. */
   ship?: ShipAdoptions;
@@ -633,10 +624,8 @@ export function createMerges(d: {
     if (busy) return;
     busy = true;
     try {
-      // Held (signed out, or the App migration): every pending PR waits (reason github; its other wait starts over) and GitHub
-      // isn't called. The two are told apart: only a sign-out can be lifted by reconnecting, so the migration has its own reason.
-      // The hold decides first and its text second (`hold()` true with a blank reason still holds: the reason only says why).
-      const held = d.hold?.() ? (d.holdReason?.() ?? "").trim() || MIGRATION_WAIT : (d.connected && !d.connected()) ? CONNECTED_WAIT : undefined;
+      // Signed out: every pending PR waits (reason github; its other wait starts over) and GitHub isn't called.
+      const held = d.connected && !d.connected() ? CONNECTED_WAIT : undefined;
       if (held) {
         for (const [id, q] of Object.entries(s.queues)) {
           if (q.state !== "running" || q.outcome) continue;

@@ -1,6 +1,8 @@
 // Ship's status read (the `ship_status` tool; the Fleet page's view calls it): paused, each listed repo's headline settings and the
 // adoptions on hold. Discovered checks, the generator and blockers are added by the loop's lane when discovery exists.
-import { effective, presetOf, PRESETS, type Scope } from "./settings.ts";
+import { effective, presetOf, PRESETS, removable, type Scope } from "./settings.ts";
+import { ended } from "./adopted.ts";
+import type { Kept } from "./handoff.ts";
 import type { State } from "./state.ts";
 
 type Dict = Record<string, unknown>;
@@ -15,10 +17,11 @@ export function status(raw: Dict, scope: Scope, state: State, repo?: string) {
     repos: [...new Set([...Object.keys((raw.repos as Dict) ?? {}), ...scope.fleet.filter((f) => !f.includes("*"))])].filter(same).map((r) => {
       const s = effective(raw, r, scope), entry = Object.entries((raw.repos as Dict) ?? {}).find(([k]) => k.toLowerCase() === r.toLowerCase())?.[1];
       // `over`: the fields this repo's entry sets itself, which a preset change doesn't move.
-      return { repo: r, preset: presetOf(raw, r), enabled: !!s?.enabled, handoff: s?.handoff, by_tier: s?.by_tier, unwatched: s?.unwatched, actions: s?.actions ?? {}, settings: s, own: own(entry), inherits: !(entry && typeof entry === "object" && "preset" in entry) && typeof entry !== "string", over: entry && typeof entry === "object" ? Object.keys(entry).filter((k) => k !== "preset") : [] };
+      return { repo: r, removable: removable(r, scope, !!entry), preset: presetOf(raw, r), enabled: !!s?.enabled, handoff: s?.handoff, by_tier: s?.by_tier, unwatched: s?.unwatched, actions: s?.actions ?? {}, settings: s, own: own(entry), inherits: !(entry && typeof entry === "object" && "preset" in entry) && typeof entry !== "string", over: entry && typeof entry === "object" ? Object.keys(entry).filter((k) => k !== "preset") : [] };
     }),
     // What new and fleet repos inherit (the defaults entry), for the page's Defaults drawer.
     defaults: { preset: presetOf(raw, "*/*"), own: own(raw.defaults), inherits: false, settings: effective(raw, "*/*", { fleet: ["*/*"], listed: [] }) },
-    held: state.all().filter((a) => a.hold && same(a.repo)).slice(0, 100),
+    // An adoption whose PR closed or merged is over: it waits on nobody, so it is not a hold.
+    held: state.all().filter((a) => a.hold && !ended(a as Kept) && same(a.repo)).slice(0, 100),
   };
 }
