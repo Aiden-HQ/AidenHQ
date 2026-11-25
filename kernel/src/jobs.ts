@@ -240,10 +240,12 @@ export function stripSentinels(text: string): string {
   // The padding a removed sentinel left beside the reply goes with it: the reply is stored as its own text.
   return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
 }
+/** A log line that says something went wrong (an engine's startup banner, such as "listening on …", is not one). */
+const ERRORISH = /error|fail|fatal|exception|panic|cannot|can't|unable|denied|refused|invalid|not set|not found|enoent|timed out/i;
 export function firstError(logPath: string): string {
   let head = "";
   try { head = readFrom(logPath, 0, 256 * 1024).toString("utf8"); } catch { return ""; }
-  const line = head.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("{"));
+  const line = head.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("{") && ERRORISH.test(l));
   return line ? clip(redact(line), 300) : "";
 }
 /** Codex's refusal to resume a session its home has no record of (one made before the box, or by a home since rebuilt). */

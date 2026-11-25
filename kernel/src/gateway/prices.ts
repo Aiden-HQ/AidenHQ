@@ -18,8 +18,8 @@ const MISS_MS = 60_000;
 type Pricing = Record<string, unknown> & { overrides?: Record<string, unknown>[] };
 type Entry = { id?: unknown; name?: unknown; created?: unknown; context_length?: unknown; pricing?: Pricing; top_provider?: { max_completion_tokens?: unknown } | null; architecture?: { input_modalities?: unknown; output_modalities?: unknown } | null; supported_parameters?: unknown };
 
-/** One text model of the list as the board's model picker shows it: USD per million tokens, `created` in unix seconds. */
-export type CatalogModel = { id: string; name: string; provider: string; created: number; context: number; in: number; out: number; tools: boolean; reasoning: boolean };
+/** One text model of the list as the board's model picker shows it: USD per million tokens, `created` in unix seconds, `context` and `output` (its own output ceiling, else the whole window) in tokens. */
+export type CatalogModel = { id: string; name: string; provider: string; created: number; context: number; output: number; in: number; out: number; tools: boolean; reasoning: boolean };
 
 /** One list entry → its catalog row, or undefined when it isn't a priced text-in, text-out model (an image model, a router's -1, a batch-only model). */
 export function catalogOf(e: Entry): CatalogModel | undefined {
@@ -30,7 +30,7 @@ export function catalogOf(e: Entry): CatalogModel | undefined {
   const inn = perM(e.pricing?.prompt), out = perM(e.pricing?.completion);
   if (inn === undefined || out === undefined) return undefined;
   const params = Array.isArray(e.supported_parameters) ? e.supported_parameters : [];
-  return { id: e.id, name: typeof e.name === "string" && e.name ? e.name : e.id, provider: e.id.replace(/^~/, "").split("/")[0]!, created: Number(e.created) || 0, context: Number(e.context_length) || 0, in: inn, out, tools: params.includes("tools"), reasoning: params.includes("reasoning") };
+  return { id: e.id, name: typeof e.name === "string" && e.name ? e.name : e.id, provider: e.id.replace(/^~/, "").split("/")[0]!, created: Number(e.created) || 0, context: Number(e.context_length) || 0, output: Number(e.top_provider?.max_completion_tokens) || Number(e.context_length) || 0, in: inn, out, tools: params.includes("tools"), reasoning: params.includes("reasoning") };
 }
 
 /** USD per token as listed → USD per million; undefined when it isn't a price (a router's -1, a missing field). */

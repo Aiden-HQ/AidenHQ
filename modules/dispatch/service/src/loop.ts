@@ -310,7 +310,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           }
         }
         const task0 = await kernel.task(v.task);
-        const o = outcome({ ...v, stopped });
+        // A session its machinery ended (SIGTERM: a stop or a box replaced) that isn't resumed (its task is parked, blocked or closed) has nothing to report: it did not fail.
+        const o = interrupted(v) ? undefined : outcome({ ...v, stopped });
         // A closed task takes no outcome at all: no notice and no reply. A reply posted on a finished task would reopen it (or be
         // refused, and paging him about a task he already closed is #1676). The kernel refuses it at the write anyway, and dispatch
         // swallows that refusal below. Only the batch summary is still said, and that wakes the parent, never the child.

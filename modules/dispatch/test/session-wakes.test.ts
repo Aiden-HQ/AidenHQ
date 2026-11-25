@@ -69,6 +69,16 @@ test("a session whose box keeps being replaced is resumed every time, never stop
   assert.deepEqual(k.scheduled.map((s) => s.id), ["retry.j0"]);
 });
 
+test("a session its machinery stopped (exit 143) on a task that isn't resumed posts no Failed notice", async () => {
+  const k = fake({ jobs: [{ id: "j0", task: "t1", agent: "ses", profile: "session", state: "failed", exit: 143, final: "The job failed: opencode server listening", at: 1, ended: 1, acked: false }] });
+  k.kernel.task = async () => ({ id: "t1", identifier: "WOR-1", status: "backlog", assigneeAgentId: "ses" });
+  const posts = [];
+  k.kernel.post = async (job, o) => void posts.push(o);
+  await k.dispatch.tick();
+  assert.deepEqual(posts, []);
+  assert.deepEqual(k.scheduled, []);
+});
+
 test("a session that keeps crashing on a signal other than its box's SIGTERM meets the retry limit", async () => {
   const ended = (i) => ({ id: `j${i}`, task: "t1", agent: "ses", profile: "session", state: "failed", exit: 139, final: "", at: 10 - i, ended: 10 - i, acked: i > 0 });
   const k = fake({ jobs: [0, 1, 2, 3, 4, 5, 6].map(ended) });

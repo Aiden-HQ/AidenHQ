@@ -17,6 +17,8 @@
 //                                 every granted agent and any other that spent today (the board's header and Costs tab)
 //   GET /v1/models/catalog        (Bearer gateway_board_key) the text models of OpenRouter's list the gateway already holds, for the
 //                                 board's model picker: {models: [{id, name, provider, created, context, in, out, tools, reasoning}]}
+//   GET /api/v1/models            (a job's or check's own credential) the same list for an engine to size its context window from:
+//                                 {object: "list", data: [{id, object: "model", context_length, max_completion_tokens}]}
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
 //   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at, review}: an opaque CI
@@ -1147,6 +1149,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const m = /^\/api\/v1\/(chat\/completions|responses)$/.exec(path);
         if (req.method === "POST" && m) return await model(req, res, "agent", m[1]!, true);
         return send(res, 404, { error: { code: 404, type: "not_found", message: "no such route" } });
+      }
+      if (req.method === "GET" && path === "/api/v1/models") {
+        // An engine reads each model's real window here (its config's context limit); any credential a model call takes may.
+        await identify(bearer(req), "agent");
+        return send(res, 200, { object: "list", data: (await prices.catalog()).map((m) => ({ id: m.id, object: "model", context_length: m.context, max_completion_tokens: m.output })) });
       }
       const m = ROUTE.exec(path);
       if (req.method === "POST" && m) return await model(req, res, m[1] ?? "agent", m[2]!);

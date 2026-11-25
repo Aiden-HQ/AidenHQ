@@ -6,7 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { engineIO } from "../sdk/engine-io.ts";
-import { opencodeConfig } from "./config.ts";
+import { modelLimits, opencodeConfig } from "./config.ts";
 import { sseEvents } from "./events.ts";
 import { serve } from "./server.ts";
 import { startTerminal } from "./terminal.ts";
@@ -37,7 +37,7 @@ async function run() {
   const plugins = (JSON.parse(readFileSync(join(pluginRoot, "plugins.json"), "utf8")).plugins as string[]).map((s) => join(pluginRoot, "node_modules", s.slice(0, s.lastIndexOf("@"))));
   writeFileSync(join(leaseDir, "pgid"), String(process.pid));
   mkdirSync(state, { recursive: true });
-  writeFileSync(join(state, "opencode.json"), JSON.stringify(opencodeConfig(spec, { plugins, stateDir: state })), { mode: 0o600 });
+  writeFileSync(join(state, "opencode.json"), JSON.stringify(opencodeConfig(spec, { plugins, stateDir: state, limits: await modelLimits(spec, need(spec.model.token_env)) })), { mode: 0o600 });
   // The context-pruning plugin would update itself from npm: off.
   writeFileSync(join(state, "dcp.jsonc"), JSON.stringify({ autoUpdate: false }));
   const ocEnv = { ...env, OPENCODE_CONFIG: join(state, "opencode.json"), OPENCODE_CONFIG_DIR: state, XDG_DATA_HOME: join(state, "data"), OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_AUTOUPDATE: "1",
