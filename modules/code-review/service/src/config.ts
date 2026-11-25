@@ -89,9 +89,10 @@ export const gated = (t: Pick<TierCfg, "on_open" | "on_push">) => [...t.on_open,
 export const openOnly = (t: Pick<TierCfg, "on_open" | "on_push">) => t.on_open.some((c) => c.mandatory) && !t.on_push.some((c) => c.mandatory);
 /** Some tier the repo's rules can select gates: its PRs get the commit status and their answers are read. */
 export const gatesAny = (e: Entry) => selectable(e.rules).some((t) => gated(e.tiers[t]));
-/** Every tier a head can get gates: the AI reviewer may leave its agents' pushes to code review. Those the rules name, and sensitive,
+/** Every tier a head can get gates: the AI reviewer may leave its agents' pushes to code review. Those the rules name (a rule for a
+ * bot's PR, such as the default skip of a dependency bump, can't name one for the fleet's own pushes: its App is a member), and sensitive,
  * which a PR over GitHub's 3,000-file list gets whatever the rules say. */
-export const gatesAll = (e: Entry) => [...selectable(e.rules), "sensitive" as Tier].every((t) => gated(e.tiers[t]));
+export const gatesAll = (e: Entry) => [...selectable(e.rules.filter((r) => r.when?.author !== "bot")), "sensitive" as Tier].every((t) => gated(e.tiers[t]));
 /** A head's review policy: everything about how it is reviewed (its tier's mandatory combos, the base branch and the ignore globs),
  * never a commit and never the tier's name: two tiers with the same mandatory reviewers share one, so crossing between them costs no
  * new review (owner, 2026-11-25). Runs and coverage count for a head only under its current policy. */

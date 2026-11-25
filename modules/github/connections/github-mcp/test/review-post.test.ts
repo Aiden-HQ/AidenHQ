@@ -40,20 +40,35 @@ describe("rendering model text", () => {
     expect(summary).toContain('<!-- aidenhq-review: {"important":1,"nit":0,"pre_existing":0} -->');
   });
 
-  it("a nit gets no thread: 1 important and 2 nits make one inline comment, and the summary lists the 2 nits", () => {
-    const r = review([finding("f_imp_1", "src/pay.ts", 2), finding("f_nit_1", "src/pay.ts", 3, { severity: "nit", title: "Name pay better" }), finding("f_nit_2", "src/util.ts", 8, { severity: "nit", title: "Dead branch" })]);
+  it("only an important finding is posted: 1 important, 2 nits and a pre-existing one make one inline comment, and the summary only counts the rest (they stay on the board)", () => {
+    const r = review([finding("f_imp_1", "src/pay.ts", 2), finding("f_nit_1", "src/pay.ts", 3, { severity: "nit", title: "Name pay better" }), finding("f_nit_2", "src/util.ts", 8, { severity: "nit", title: "Dead branch" }), finding("f_old_1", "src/pay.ts", 4, { severity: "pre_existing", title: "Old smell" })]);
     const { summary, comments, listed } = renderReview(r, "run1", { gated: true });
     expect(comments.map((c) => c.id)).toEqual(["f_imp_1"]);
     expect(listed).toEqual([]);
-    expect(summary).toContain("**Nits** (no thread)");
-    expect(summary).toContain("- `pay.ts:3` Name pay better");
-    expect(summary).toContain("- `util.ts:8` Dead branch");
+    expect(summary).toContain("3 smaller notes on the board's Reviews page, not posted here.");
+    expect(summary).not.toMatch(/Name pay better|Dead branch|Old smell|Nit/);
     expect(summary).toContain("**blocks the merge**"); // the important one gates; the nits don't
+    // Nothing important and a run that did not finish never reads as clean; the engine and cost are not in the comment.
+    const none = review([finding("f_nit_3", "src/pay.ts", 3, { severity: "nit" })]);
+    expect(renderReview(none, "r").summary).toContain("\u2705 No important findings");
+    none.coverage.incomplete = "the verifier didn't finish";
+    expect(renderReview(none, "r").summary).toMatch(/Incomplete review[\s\S]*Partial review/);
+    expect(renderReview(none, "r").summary).not.toMatch(/No findings|No important findings|codex|\$0/);
+  });
+
+  it("a docs-only PR's design notes are shown under their own heading, never counted as important or blocking", () => {
+    const r = review([finding("f_dn_1", "docs/plan.md", 2, { severity: "pre_existing", title: "ON CONFLICT misses the new index", why: "[design note] Failure scenario: the second event raises." })]);
+    const { summary, comments } = renderReview(r, "run1", { gated: true });
+    expect(comments).toEqual([]);
+    expect(summary).toContain("**Design notes (not blocking)**");
+    expect(summary).toContain("ON CONFLICT misses the new index");
+    expect(summary).toContain("No important findings");
+    expect(summary).not.toMatch(/smaller note|blocks the merge/);
   });
 
   it("scans at a glance: a short title, the counts, important findings in a table linked to their threads, the rest collapsed, each finding once", () => {
     expect([modelName("anthropic/claude-haiku-5.5"), modelName("~openai/gpt-6.2-sol"), modelName("~deepseek/deepseek-flash-latest")]).toEqual(["Haiku 5.5", "GPT 6.2 Sol", "DeepSeek Flash"]);
-    const r = review([finding("f_imp_1", "src/deep/pay.ts", 2, { title: "Amount | unchecked" }), finding("f_nit_1", "src/pay.ts", 3, { severity: "pre_existing" }), finding("f_none_1", "docs/x.md", 7, { severity: "pre_existing" })]);
+    const r = review([finding("f_imp_1", "src/deep/pay.ts", 2, { title: "Amount | unchecked" }), finding("f_nit_1", "src/pay.ts", 3, { severity: "pre_existing" }), finding("f_none_1", "docs/x.md", 7)]);
     const place = anchors(r.findings, new Map([["src/deep/pay.ts", new Set([1, 2])], ["src/pay.ts", new Set([9])]]));
     expect(place.get("f_nit_1")).toEqual({ line: 9 }); // the nearest diff line of its file
     expect(place.has("f_none_1")).toBe(false); // in no changed file: no thread
@@ -61,15 +76,19 @@ describe("rendering model text", () => {
     expect(summary).toContain("### Aiden review · DeepSeek Flash (medium)");
     expect(summary).toContain("**blocks the merge**");
     expect(summary).toContain("| \u{1F534} | [Amount \\| unchecked](https://github.com/t/1) | `pay.ts:2` |");
-    expect(summary).toMatch(/<details><summary>1 pre-existing<\/summary>[\s\S]*`pay.ts:3`/);
+    expect(summary).toContain("1 smaller note on the board's Reviews page");
     expect(summary.match(/Amount/g)).toHaveLength(1);
     expect(summary).toContain("Fix brief"); // the one without a thread carries its reasoning, once
-    expect(comments.find((c) => c.id === "f_nit_1")!.body).toContain("outside the diff");
-    expect(summary).toMatch(/<sub>`aaaaaaa` · whole PR · codex · \$0\.12<\/sub>/);
-    expect(summary).not.toContain("codex · ~deepseek"); // the reviewer is named once
-    // A clean review is one line (plus the markers, commands and footer line); a partial one says so.
+    expect(comments.find((c) => c.id === "f_nit_1")).toBeUndefined(); // not important: no thread
+    expect(summary).toMatch(/<sub>`aaaaaaa` · whole PR<\/sub>/);
+    expect(summary).not.toMatch(/\$0\.12|codex/); // the engine and cost are on the board
+    // The risk is in the header, and the Commands block on the PR's first review only.
+    expect(renderReview(r, "run1", { tier: "standard", tier_why: "61 lines in 4 files, by a member" }).summary).toContain("Risk: \u{1F535} **Standard** · 61 lines in 4 files, by a member");
+    expect(summary).not.toContain("<summary>Commands</summary>");
+    expect(renderReview(r, "run1", { first: true }).summary).toContain("<summary>Commands</summary>");
+    // A clean review is one line (plus the markers and footer line); a partial one says so.
     const clean = renderReview(review([]), "r").summary;
-    expect(clean).toContain("\u2705 No findings");
+    expect(clean).toContain("\u2705 No important findings");
     expect(clean).not.toMatch(/Incomplete|not a clean review|\|/);
     const partial = review([]);
     partial.coverage.incomplete = "the diff was cut at 300 files";
@@ -87,6 +106,7 @@ describe("rendering model text", () => {
     const card = renderReview(quoting, "r", { card: true }).summary;
     expect(card).toContain("Docs say `aiden review full` reruns");
     expect(card).not.toContain("<summary>Commands</summary>");
+    expect(renderReview(quoting, "r", { card: true, first: true }).summary).toContain("fixed Commands help");
   });
 
   it("states the verdict mirror in fixed words", () => {
@@ -170,7 +190,8 @@ describe("the refused-post notice", () => {
   it("says in fixed words that the review of that head was not posted, and to ask again", () => {
     const text = renderNotice({ ...notice, reason: "post_refused" });
     expect(text).toContain("<!-- aidenhq-review-ack -->");
-    expect(text).toContain(`<sub>${HEAD.slice(0, 7)} · run cr-1 · `);
+    expect(text).toContain(`<sub>${HEAD.slice(0, 7)} · `);
+    expect(text).not.toContain("run cr-1"); // the run's id is on the board, not in the comment
     expect(text).toContain("**Review finished but was not posted**");
     expect(text).toContain("`aiden review` runs it again");
     // The kernel's or a reviewer's text never reaches the notice: fixed words only.
@@ -223,7 +244,6 @@ describe("the refused-post notice", () => {
   it("keeps the failed-run notice as it was when the run itself failed", () => {
     const text = renderNotice({ ...notice, reason: undefined });
     expect(text).toContain("**Review failed** \u00B7 comment `aiden review` to try again");
-    expect(text).toContain("run cr-1");
   });
   it("lets a skip reason only on a skip and a refusal only on a failure", () => {
     expect(() => NoticeArgsSchema.parse({ ...notice, phase: "skipped", reason: "post_refused" })).toThrow(/refused-post reason/);
@@ -237,7 +257,7 @@ describe("posting", () => {
   it("posts as the owner, COMMENT only: a thread for every finding (its line, the nearest diff line, or its file), links in the summary; the acknowledgement is the notice's", async () => {
     const w = world();
     const p = poster(w);
-    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_off_line", "src/pay.ts", 90, { severity: "pre_existing" }), finding("f_binary_1", "logo.png", 1, { severity: "pre_existing" })]);
+    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_off_line", "src/pay.ts", 90), finding("f_binary_1", "logo.png", 1)]);
     const done = await p.execute("post", postArgs(r));
     expect(JSON.parse(done.text)).toMatchObject({ identity: "owner", login: "owner1", inline: 3, listed: 0 });
     expect(done.objects).toEqual(["github:acme/payments#12/comment/501", "github:acme/payments#12/comment/502", "github:acme/payments#12/comment/601"]);
@@ -546,6 +566,14 @@ describe("posting", () => {
     expect(w.calls.filter((c) => c.method !== "GET" && c.path.includes("/issues/"))).toHaveLength(1);
   });
 
+  it("an important finding where someone else has an open thread still gets its own thread: that is where it is answered and closed", async () => {
+    const w = world();
+    w.state.threads = [thread("T_human", null, "bob", 700)];
+    await poster(w).execute("post", postArgs(review([finding("f_imp_9", "src/pay.ts", 2)])));
+    const post = w.calls.find((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))!;
+    expect(post.body.comments).toEqual([expect.objectContaining({ path: "src/pay.ts", line: 2 })]);
+  });
+
   it("a clean review is one write: no summary update when no finding has a thread to link", async () => {
     const w = world();
     await poster(w).execute("post", postArgs(review([])));
@@ -554,11 +582,13 @@ describe("posting", () => {
 
   it("previews the text it posts (the fixed Commands help named) and binds the record to the head", () => {
     const p = poster(world());
-    const out = p.preview("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)])));
+    const out = p.preview("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)]), { first: true, tier: "standard", tier_why: "9 lines in 1 file, by a member" }));
     expect(out.facts.details).toContain("<!-- aidenhq-finding: f_on_line1 -->");
     // The fixed command words are named for the reviewer, not shown (`aiden review` lines read as instructions to it).
     expect(out.facts.details).toContain("fixed Commands help");
     expect(out.facts.details).not.toContain("review always");
+    expect(out.facts.details).toContain("Risk:");
+    expect(out.facts.details).not.toMatch(/Acknowledgement comment/); // a review posts no acknowledgement of its own
     // Only what the review is of: the head, never the base (a base that moved doesn't stale a review of a standing head).
     expect(out.targets).toEqual({ "acme/payments#12": { repo: "acme/payments", ref: "pull/12", commit: HEAD } });
   });

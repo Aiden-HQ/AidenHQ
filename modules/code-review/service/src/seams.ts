@@ -83,7 +83,9 @@ export type FeedEvent = { seq: number; resource: string; id: string; kind: strin
 /** The log after `after` (the last seq handled); no `after`: no events and `next` at the log's end (the watermark). `gap`: rows
  * after `after` were pruned (kept 3 days). */
 export type Feed = (after?: number) => Promise<{ events: FeedEvent[]; next: number; gap: boolean }>;
-export type Thread = { finding: string | null; comment: number; replies: { id: number; author: string; body: string }[] };
+export type Thread = { finding: string | null; comment: number; replies: { id: number; author: string; body: string }[];
+  /** Where the thread sits, who opened it and its first comment's text (data: another reviewer's or a person's). */
+  path?: string; line?: number | null; author?: string; body?: string; resolved?: boolean; outdated?: boolean };
 
 /** What one review run reviews: the check job's spec (lane E's recipe takes exactly these). */
 export type ReviewSpec = {
@@ -111,6 +113,8 @@ export type ReviewSpec = {
   focus: string | null; incremental_from: string | null; full: boolean;
   /** The PR's title and description (its author's words, fenced as data in the brief): what it states as intended. "" for a fork's. */
   intent: string;
+  /** What other reviewers and people already said on the PR's threads, one line each (data, at most 2000 characters). */
+  threads: string;
   /** The PR's still-open findings, rechecked at this head and given to the finders as already reported (the batch's first
    * mandatory run, else its first). `gating`: an important one a mandatory run found, rechecked whatever the change touched;
    * `claim`: one closed by an answer on its thread, rechecked only for a fix or reason that is unsafe. */
@@ -175,7 +179,9 @@ export interface Poster {
   /** One GitHub review for the run's head: a thread per finding, the summary with the severity line and commands;
    * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
    * review posted on this PR (its threads are the ones Aiden may resolve). */
-  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null; gated: boolean; own?: number[]; ack?: number }): Promise<Posted>;
+  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null; gated: boolean; own?: number[]; ack?: number;
+    /** The head's risk tier (the review's header says it) and whether this is the PR's first review (the only one with the Commands block). */
+    tier?: { tier: string; why: string }; first?: boolean }): Promise<Posted>;
   /** The commit status aidenhq/review on a gated repo's PR head: its merge verdict's reason, the open important findings and the
    * mandatory reviewers still queued or running (a Tier 0 write: fixed words). */
   status(s: Status): Promise<Posted>;

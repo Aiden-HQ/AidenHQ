@@ -42,6 +42,8 @@ export interface Thread {
   /** The first comment carries a finding marker and is by the owner or code review's App: Aiden's own thread. */
   ours: boolean;
   author: string;
+  /** The first comment's text, cut (data: a stranger's, or another reviewer's). */
+  body: string;
   /** The first comment's author is a bot (an App). */
   bot: boolean;
   /** Whether the identity that read the threads may resolve this one. */
@@ -67,15 +69,13 @@ function card(a: PostArgs): { details: string; comments: Placed[]; scale: number
   const r = a.review;
   let out = { details: "", comments: [] as Placed[], scale: 0 };
   for (const scale of SCALES) {
-    const { summary, comments } = renderReview(r, a.run, { gated: a.gated, card: true, scale });
-    const c = counts(r.findings);
+    const { summary, comments } = renderReview(r, a.run, { gated: a.gated, card: true, scale, tier: a.tier, tier_why: a.tier_why, first: a.first });
     const details = [
       // The fixed command words are named, not shown (`card`): `aiden review` lines read like instructions to the reviewer, which
       // then refused whole reviews as prompt injection (2 of 40 posts, 2026-11-21).
       `Review summary (event COMMENT, at commit ${r.head}):`, "", summary, "",
       ...comments.flatMap((m) => [`--- inline comment on ${m.path}:${m.line} ---`, "", m.body, ""]),
-      "(A comment whose line isn't on the diff goes on the nearest diff line of its file, or on the file, saying where it is.)", "",
-      `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}`,
+      "(A comment whose line isn't on the diff goes on the nearest diff line of its file, or on the file, saying where it is.)",
       ...(a.resolve.length ? ["", `Resolves Aiden's own threads for findings: ${a.resolve.join(", ")} (only those it posted, and only if no longer reported).`] : []),
     ].join("\n");
     out = { details, comments, scale };
@@ -157,7 +157,7 @@ export class ReviewPoster {
         const author = first.author?.login ?? "";
         out.push({
           id: n.id, comment, run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding,
-          ours: finding !== null && us.some((w) => isWho(w, first.author)), author, bot: first.author?.__typename === "Bot", can_resolve: n.viewerCanResolve, url: first.url,
+          ours: finding !== null && us.some((w) => isWho(w, first.author)), author, body: first.body.slice(0, 600), bot: first.author?.__typename === "Bot", can_resolve: n.viewerCanResolve, url: first.url,
           replies: rest.flatMap((c) => { const id = reviewCommentId(c); return id === null ? [] : [{ id, author: c.author?.login ?? "", body: c.body.slice(0, 2000) }]; }),
         });
       }
@@ -316,7 +316,7 @@ export class ReviewPoster {
       facts: {
         target: `${r.repo}#${r.pr} @ ${r.head.slice(0, 7)}`,
         sentence: `Post Aiden's review of ${r.repo}#${r.pr} (${comboText(r)}: ${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing).`,
-        changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (one thread per important finding, on its line, the nearest diff line or its file; nits only as lines of the summary) and the pull request's acknowledgement comment, as code review's GitHub identity (its App where installed, else the owner), signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
+        changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (one thread per important finding, on its line, the nearest diff line or its file; nits and pre-existing findings stay on the board, counted in the summary), as code review's GitHub identity (its App where installed, else the owner), signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
         details,
       },
       // The head alone: a review is of one commit, so its base moving (another merge landed) never makes it stale. Other
@@ -404,7 +404,7 @@ export class ReviewPoster {
     const shown = new Set(carded.map((c) => c.id));
     const anchored = anchors(r.findings, review ? ((await tryTo("reading the diff", () => this.diffLines(ref, r.base, r.head, pr.head.sha === r.head))) ?? new Map()) : await this.diffLines(ref, r.base, r.head, pr.head.sha === r.head));
     const place = new Map([...anchored].filter(([id]) => shown.has(id)));
-    const first = renderReview(r, a.run, { place, earlier, gated: a.gated, scale });
+    const first = renderReview(r, a.run, { place, earlier, gated: a.gated, scale, tier: a.tier, tier_why: a.tier_why, first: a.first });
     const onLines = first.comments.filter((c) => !c.file);
     if (!review) {
       // A create that failed may still have made the review (a timeout, a gateway that lost the reply): read the PR's reviews
@@ -470,7 +470,7 @@ export class ReviewPoster {
     const links = new Map(made.filter((m) => m.finding).map((m) => [m.finding!, m.url]));
     const placed = new Map([...place].filter(([id]) => !unthreaded.has(id)));
     // The review's own body already says all there is when no finding got a thread link: the PUT is only for a body that changes.
-    const linked = withFooter(renderReview(r, a.run, { place: placed, earlier, links, gated: a.gated, scale }).summary, AGENT);
+    const linked = withFooter(renderReview(r, a.run, { place: placed, earlier, links, gated: a.gated, scale, tier: a.tier, tier_why: a.tier_why, first: a.first }).summary, AGENT);
     if (linked !== review.body) await tryTo("summary links", () => w.gh.request("PUT", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}`, { body: { body: linked } }));
     // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only the threads it
     // recorded as its own posts (`own`, its database) for findings the review no longer reports are resolved, and only for the
