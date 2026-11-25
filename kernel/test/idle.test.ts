@@ -95,7 +95,7 @@ function world(t, { polls = true } = {}) {
   // Who the task's agent is (roles: ["fleet-admin"] is the chief of staff, ["fleet-settle"] the Steward) and whether the owner is talking to it on the task.
   const who = { roles: [], conversing: false };
   const escalate = createEscalate({ db, issue: async (id) => issues[id], state: (id) => row(id), asker: async () => ({ name: "Kai", key: "kai", roles: who.roles }), notice: (task, body) => asked.notices.push({ task, body }), owner: (n) => asked.owner.push(n), chief: async (b) => { asked.chief.push(b); }, settle: async (b) => { asked.steward.push(b); }, settleAgent: () => "steward-id", conversing: async () => who.conversing, now: () => clock });
-  const idle = createIdle({ db, facts, state, wakes, owner, keyOf: (id) => (id === AGENT ? "eng" : id), escalate, now: () => clock });
+  const idle = createIdle({ db, facts, state, wakes, owner, escalate, now: () => clock });
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
   const job = (id) => { add("job.queued", `job:${id}`, "t1"); add("job.started", `job:${id}`, "t1"); clock += MIN; add("job.ended", `job:${id}`, "t1", { state: "done" }); };
@@ -647,7 +647,7 @@ test("an armed wait parks the issue in backlog: outside the pinned sweep's eligi
   assert.equal(w.issues.t1.status, "backlog");
   assert.ok(!sweepWouldScan(w.issues.t1), "an armed wait's issue is never in the sweep's eligible set");
   assert.deepEqual(w.writes.map((x) => [x.task, x.body.status]), [["t1", "backlog"]]);
-  assert.match(w.writes[0].body.comment, /<!-- aidenhq:job=kernel kind=wait-park -->/);
+  assert.equal(w.writes[0].body.comment, undefined, "the park says nothing on the task (a comment there reads as the owner's words)");
   // The holder pauses while the wait is armed (the live repro).
   w.agents[AGENT] = { ...w.agents[AGENT], status: "paused", lifecycleHolds: ["manual"] };
   w.tick(MIN);

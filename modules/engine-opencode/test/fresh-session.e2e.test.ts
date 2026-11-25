@@ -29,7 +29,7 @@ test("a fresh session lists the expected models, MCP servers and plugins", { ski
   const [gw, mcp] = [await fakeGateway(28801), await fakeMcp(28802, "ahqj_e2e")];
   const spec = {
     contract: "engine@1", job: "j", agent: "a", task: "t", prompt: "hello", web: false, env: [], limits: { timeout_s: 0 }, state,
-    model: { base_url: "http://127.0.0.1:28801/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "~deepseek/deepseek-flash-latest", effort: "high", models: ["openrouter/moonshotai/kimi-k3.1-pro"] },
+    model: { base_url: "http://127.0.0.1:28801/api/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "~deepseek/deepseek-flash-latest", effort: "high", models: ["openrouter/moonshotai/kimi-k3.1-pro"] },
     mcp: ["github", "slack"].map((name) => ({ name, url: `http://127.0.0.1:28802/c/${name}/mcp`, token_env: "AIDENHQ_RUN_TOKEN", tools: ["ping"] })),
     sandbox: { kind: "box", writable: [], network: true },
   };

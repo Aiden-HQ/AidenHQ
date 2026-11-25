@@ -51,8 +51,6 @@ const INVOKABLE = new Set(["active", "idle", "running"]);
 /** The status an ended wait goes back to. Never `todo`: that move files a status wake, a second job beside the wait's. */
 const RESUMED = "in_progress";
 const CLOSED = new Set(["done", "cancelled"]);
-/** A park's comment is tagged: wakes.ts records no fact of it and dispatch never reads it as words. */
-const PARK_TAG = "<!-- aidenhq:job=kernel kind=wait-park -->";
 
 /** A task the kernel parked in backlog while its wait is armed (wait_parks): whose it is, and where the wait's end puts it. */
 type Park = { task: string; agent: string; from_status: string };
@@ -67,7 +65,7 @@ type ParkedIssue = { id: string; status?: string; assigneeAgentId?: string | nul
  */
 const reviewParkable = (i: ParkedIssue) => String(i.status) === "in_review" && i.executionState?.status === "pending" && i.executionState?.currentParticipant?.type === "agent" && Boolean(i.executionState?.currentParticipant?.agentId) && !i.monitorNextCheckAt;
 
-export function createIdle({ db, facts, state, wakes, owner, team = () => false, keyOf = (agent: string) => agent, escalate, now = Date.now, log = () => {} }: {
+export function createIdle({ db, facts, state, wakes, owner, team = () => false, escalate, now = Date.now, log = () => {} }: {
   /** kernel.db: a wait's fact, its wake and its park row are one transaction (the status PATCH is the one write outside). */
   db: DatabaseSync;
   facts?: Facts; state: Pick<TaskStateRead, "read">; wakes: Pick<Wakes, "open" | "polls" | "settleOn" | "settleEach" | "mirror">;
@@ -77,8 +75,6 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
   escalate?: Pick<Escalate, "ask" | "record" | "delegator">;
   /** Whether an agent id is a team record (its tasks go to a member; it never runs). */
   team?: (agent: string) => boolean;
-  /** An agent id's key, for the notes a park writes (the grants table's key; the id when it has none). */
-  keyOf?: (agent: string) => string;
   now?: () => number; log?: Log;
 }) {
   db.exec(PARK_DDL);
@@ -187,14 +183,14 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         if (!after || after.status === "blocked") return undefined;
       }
       // Re-parked while it still waits: `from` is where the wait's end must put it, not the `todo` the release left.
-      if (armed(task)) { await park(task, agent, keyOf(agent), false, from); return "resolved"; }
+      if (armed(task)) { await park(task, agent, from); return "resolved"; }
       // The wait can end while the release is in flight (it was armed when this pass read it, and the resolve is a round
       // trip). Restoring is only safe then if the holder is invokable *now*: a pause that landed meanwhile would put the
       // task back in `in_progress` for the sweep to block at its next tick — the loop this change exists to prevent. The
       // release left the issue in `todo`, a status the sweep scans, so it is parked instead, with its row, until the first
       // pass that finds the holder invokable restores it once (the row keeps its origin across the re-park).
       if (!(await invokable(agent, company))) {
-        if (!(await park(task, agent, keyOf(agent), false, from))) remember(task, agent, from);
+        if (!(await park(task, agent, from))) remember(task, agent, from);
         return "resolved";
       }
       // The resolve lands the issue in `todo`, the one scanned status the route accepts, and a task sitting there files a
@@ -205,7 +201,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       return "resolved";
     }
     if (status !== "backlog") {
-      if (armed(task) && (PARKABLE.has(status) || reviewParkable(i))) return (await park(task, agent, keyOf(agent), !p)) ? "parked" : undefined;
+      if (armed(task) && (PARKABLE.has(status) || reviewParkable(i))) return (await park(task, agent)) ? "parked" : undefined;
       if (p && !armed(task)) {
         // The resolve that releases a held task lands it in `todo`, and moving it on from there is the rest of that pass's
         // work. If that move's PATCH failed, the row is still here and the issue is still in a scanned status, so this pass
@@ -242,16 +238,15 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
    * A park that did not land is rolled back only on proof: the row is dropped when a read shows the issue is not parked,
    * kept when the outcome is unknown (a write can land and still answer with an error), which is always safe.
    */
-  async function park(task: string, agent: string, key: string, announce: boolean, origin?: string) {
+  async function park(task: string, agent: string, origin?: string) {
     const i = await issue(task);
     const from = String(i?.status ?? "");
     if (!i || !(PARKABLE.has(from) || reviewParkable(i))) return false;
-    // The note is tagged (PARK_TAG): wakes.ts records no task.change fact of it and dispatch never reads it as words.
-    const noted = !parkOf(task) && announce;
     // `origin`: where a re-park goes back to when that is not where the issue stands (a release that left `todo`).
     remember(task, agent, origin ?? from);
     try {
-      await patch(task, { status: "backlog", ...(noted ? { comment: `Parked while ${key} waits: Paperclip's recovery sweep must not read an armed wait as stranded work.\n\n${PARK_TAG}` } : {}) });
+      // Backlog is all Paperclip's recovery sweep needs to leave an armed wait alone; no comment, which would read as the owner's.
+      await patch(task, { status: "backlog" });
     } catch (e) {
       // The row stays unless the issue is *read* and found not parked: "unknown" (the read failed too) is not proof the write
       // missed, and dropping the row then would leave a parked task that no pass selects once its wait ends. Keeping it is
@@ -263,7 +258,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       log("task wait park failed", { task, err: (e as Error).message, landed: String(landed) });
       return landed === true;
     }
-    log("task wait parked", { task, from: i.status, agent: key });
+    log("task wait parked", { task, from: i.status, agent });
     return true;
   }
   /**

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { MODEL_BODY_MAX, drainServers, forwardModel } from "../lib.ts";
+import { MODEL_BODY_MAX, drainServers, forwardModel, forwardModelList } from "../lib.ts";
 
 const listen = (s: http.Server, port = 0) => new Promise<number>((ok) => s.listen(port, "127.0.0.1", () => ok((s.address() as AddressInfo).port)));
 /** A call: resolves on its first chunk, with the whole body to come. */
@@ -127,4 +127,21 @@ test("while the gateway restarts, the launcher holds at most its limit of model 
     launcher.close();
     next.close();
   }
+});
+
+test("a box's model-list read goes on to the model gateway with its job token; an unreachable gateway is a 502", async () => {
+  const seen: { url?: string; auth?: string }[] = [];
+  const gateway = http.createServer((req, res) => { seen.push({ url: req.url, auth: req.headers.authorization }); res.writeHead(200, { "content-type": "application/json" }).end('{"data":[]}'); });
+  const gp = await listen(gateway);
+  const launcher = http.createServer((req, res) => void forwardModelList(res, `http://127.0.0.1:${gp}/api/v1/models${new URL(req.url!, "http://l").search}`, "ahqj_t", { waitMs: 300, retryMs: 50 }));
+  const lp = await listen(launcher);
+  try {
+    const get = () => fetch(`http://127.0.0.1:${lp}/api/v1/models?ids=a%2Fb`);
+    const ok = await get();
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { data: [] });
+    assert.deepEqual(seen, [{ url: "/api/v1/models?ids=a%2Fb", auth: "Bearer ahqj_t" }]);
+    gateway.close();
+    assert.equal((await get()).status, 502);
+  } finally { launcher.close(); gateway.close(); }
 });

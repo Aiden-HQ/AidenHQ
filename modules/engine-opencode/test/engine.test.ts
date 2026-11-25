@@ -1,14 +1,18 @@
 // The engine over a stand-in opencode (test/bin/opencode): first turn, resume, the busy-session queue, the terminal, stop.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fakeGateway } from "./fakes.ts";
 
 const bin = join(import.meta.dirname, "bin");
 const engine = join(import.meta.dirname, "../bin/engine");
 let port = 24000 + (process.pid % 1000) * 4;
+const gwPort = 23000 + (process.pid % 1000);
+const gw = await fakeGateway(gwPort);
+after(() => gw.close());
 
 function setup(session?: string, known = session ?? "", pending?: string[], extra: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), "oc-engine-"));
@@ -16,7 +20,7 @@ function setup(session?: string, known = session ?? "", pending?: string[], extr
   for (const d of [job, state, work, join(plug, "node_modules")]) mkdirSync(d, { recursive: true });
   if (pending) writeFileSync(join(state, "pending.json"), JSON.stringify(pending));
   writeFileSync(join(plug, "plugins.json"), JSON.stringify({ plugins: ["opencode-pty@0.4.0"] }));
-  const spec = { contract: "engine@1", job: "j1", agent: "a", task: "t1", prompt: "first prompt", ...(session ? { session } : {}), model: { base_url: "http://gw/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "m1", effort: "" }, mcp: [], env: [], limits: { timeout_s: 0 }, web: true, state, sandbox: { kind: "box", writable: [], network: true } };
+  const spec = { contract: "engine@1", job: "j1", agent: "a", task: "t1", prompt: "first prompt", ...(session ? { session } : {}), model: { base_url: `http://127.0.0.1:${gwPort}/api/v1`, token_env: "AIDENHQ_RUN_TOKEN", id: "m1", effort: "" }, mcp: [], env: [], limits: { timeout_s: 0 }, web: true, state, sandbox: { kind: "box", writable: [], network: true } };
   writeFileSync(join(job, "job.json"), JSON.stringify(spec));
   const log = join(root, "fake.log");
   writeFileSync(log, "");

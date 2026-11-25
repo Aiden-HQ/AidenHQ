@@ -3,6 +3,9 @@ import { createServer, type Server } from "node:http";
 
 const listen = (s: Server, port: number) => new Promise<Server>((r) => s.listen(port, "127.0.0.1", () => r(s)));
 
+/** The gateway's model list (GET /api/v1/models): each model's real window, as the stand-in serves it. */
+export const MODELS = ["~deepseek/deepseek-flash-latest", "moonshotai/kimi-k3.1-pro", "m1"].map((id) => ({ id, object: "model", context_length: id.startsWith("~deepseek") ? 1_000_000 : 262_144, max_completion_tokens: 65_536 }));
+
 /** An OpenAI-compatible gateway that answers every chat with one line. `seen` holds each request's bearer. */
 export async function fakeGateway(port: number) {
   const seen: { auth?: string; model?: string; effort?: string }[] = [];
@@ -11,6 +14,10 @@ export async function fakeGateway(port: number) {
     req.on("data", (d) => (b += d));
     req.on("end", () => {
       const j = b ? JSON.parse(b) : {};
+      if (req.method === "GET" && /\/models(\?|$)/.test(req.url ?? "")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ object: "list", data: MODELS }));
+      }
       seen.push({ auth: req.headers.authorization, model: j.model, effort: j.reasoning_effort });
       if (!req.url?.endsWith("/chat/completions")) { res.writeHead(404); return res.end(); }
       res.writeHead(200, { "content-type": "text/event-stream" });

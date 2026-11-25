@@ -515,6 +515,25 @@ export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse
   });
 }
 
+/**
+ * A box's read of the model gateway's model list (GET /api/v1/models?ids=…: an engine sizes its context window from it), passed
+ * on with the job token. An unreachable gateway is a 502 the engine fails on, loudly.
+ */
+export async function forwardModelList(res: http.ServerResponse, url: string, token: string, { waitMs = 25_000, retryMs = 1000 }: { waitMs?: number; retryMs?: number } = {}) {
+  // A gateway that isn't listening (a kernel restart) is tried again every `retryMs`; a request it accepts gets the rest of the
+  // window (a cold catalog can take a while), all inside the engine's 30 s deadline.
+  for (const until = Date.now() + waitMs; ; await new Promise((r) => setTimeout(r, retryMs))) {
+    try {
+      const up = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(Math.max(1_000, until - Date.now())) });
+      const body = Buffer.from(await up.arrayBuffer());
+      return void res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" }).end(body);
+    } catch (e) {
+      if (Date.now() + retryMs < until) continue;
+      return void res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 502, type: "gateway_unreachable", message: `the model gateway is unreachable (${(e as Error).message})` } }));
+    }
+  }
+}
+
 /** How long a draining launcher keeps serving the calls it holds (the kernel's DRAIN_MS). */
 export const DRAIN_MS = 5 * 60_000;
 
