@@ -24,7 +24,7 @@
   .card.paused { border-color: var(--danger); }
   .card.paused > .head { background: color-mix(in srgb, var(--danger) 9%, transparent); }
   .pbanner { padding: 7px 14px; color: var(--danger); font-weight: 560; border-bottom: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line)); background: color-mix(in srgb, var(--danger) 6%, transparent); }
-  .row { grid-template-columns: minmax(210px, 1.2fr) 52px 156px 176px minmax(260px, 2.2fr) 70px; column-gap: 14px; }
+  .row { grid-template-columns: minmax(150px, 1.2fr) 48px 140px 160px minmax(180px, 2fr) 64px; column-gap: 14px; }
   .row .repo { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .row .repo .lnk { color: inherit; text-decoration: none; } .row .repo .lnk:hover { color: var(--accent); text-decoration: underline; }
   .row:not(.cols) { cursor: pointer; }
@@ -313,7 +313,7 @@
   // One headline control of a row: a segmented control over the server's values (the column header carries the help), with its name above it on a phone.
   function choice(r, key) {
     const c = controls[key], cur = shown(r)[key];
-    const seg = editor({ kind: "seg", label: `${c.label} for ${r.repo}`, f: `${r.repo}|${key}`, value: cur, values: c.values, titles: COLS[key][2], set: (x) => edit(r.repo, key, x) });
+    const seg = editor({ kind: "seg", label: `${c.label} for ${r.repo}`, f: `row|${r.repo}|${key}`, value: cur, values: c.values, titles: COLS[key][2], set: (x) => edit(r.repo, key, x) });
     return h("div", { className: "cell" }, h("span", { className: "lab" }, hd(key, cur)), seg);
   }
 
@@ -342,12 +342,14 @@
   function openDraft() { if (!draft) { draft = { name: "", from: "defaults", inherits: true, fields: {} }; } render(); setTimeout(() => $("draft").querySelector("input")?.focus(), 0); }
   function closeDraft() { draft = null; render(); }
   async function addRepo() {
+    // A chip box's typed-but-not-entered text counts: commit it before reading the fields.
+    $("draft").querySelectorAll(".chips input").forEach((i) => i.value.trim() && i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true })));
     const repo = draft.name.trim(), { reset: _r, ...change } = draft.fields;
     try { proposed(await tool("ship_configure", { repo, add: true, change })); pending = lastGood = { repos: {}, paused: undefined }; draft = null; render(); } catch (err) { say(err.message, true); }
   }
   function draftPanel() {
     const msg = h("p", { className: "msg", role: "status" }), add = h("button", { type: "button", className: "primary", textContent: "Add repo" });
-    const check = () => { const bad = nameError(draft.name.trim()); msg.textContent = bad || (draft.name.trim() ? "Lists it for Ship, the Maintainer and code review, then applies the settings below." : "owner/name of the GitHub repo."); msg.className = bad ? "msg bad" : "msg"; add.disabled = !NAME.test(draft.name.trim()) || !!bad; };
+    const check = () => { const bad = nameError(draft.name.trim()); msg.textContent = bad || (draft.name.trim() ? `Lists it for Ship, the Maintainer and code review, then applies the settings below.${Object.keys(pending.repos).length || pending.paused !== undefined ? " It replaces the edits already proposed in the bar above." : ""}` : "owner/name of the GitHub repo."); msg.className = bad ? "msg bad" : "msg"; add.disabled = !NAME.test(draft.name.trim()) || !!bad; };
     const name = h("input", { type: "text", id: "newrepo", value: draft.name, placeholder: "owner/name", ariaLabel: "Repo to add", autocomplete: "off", spellcheck: false });
     name.addEventListener("input", () => { draft.name = name.value; check(); });
     name.addEventListener("keydown", (e) => { if (e.key === "Enter" && !add.disabled) addRepo(); else if (e.key === "Escape") closeDraft(); });

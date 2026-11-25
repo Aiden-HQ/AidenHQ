@@ -113,14 +113,14 @@ const editor = (k) => {
   if (k.kind === "seg") return h("div", { className: "seg", role: "radiogroup", ariaLabel: k.label }, ...k.values.map((v, i) => { const b = h("button", { type: "button", role: "radio", textContent: v, title: k.titles?.[v] }); b.setAttribute("aria-checked", String(v === k.value)); b.tabIndex = v === k.value ? 0 : -1; b.dataset.v = v; b.dataset.f = `${k.f}:${v}`; b.addEventListener("click", () => { if (v !== k.value) k.set(v); });
     b.addEventListener("keydown", (e) => { const d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]; if (d) { e.preventDefault(); const n = (i + d + k.values.length) % k.values.length; e.currentTarget.parentNode.children[n].focus(); k.set(k.values[n]); } }); return b; }));
   if (k.kind === "chips") {
-    // One entry per chip; Enter (or leaving the box) adds what is typed, a multi-line or comma-separated paste adds one chip per entry (a comma inside {braces} stays). k.dups allows a repeated entry (an ordered list).
+    // One entry per chip; Enter (or leaving the box) adds what is typed, a multi-line paste adds one chip per line, and in a list that is not ordered (no k.dups) a comma-separated one too (a comma inside {braces} stays). k.dups allows a repeated entry (an ordered list).
     let items = k.value ?? [];
     const inp = h("input", { type: "text", ariaLabel: k.label, placeholder: k.placeholder ?? "Add one, press Enter", autocomplete: "off", spellcheck: false });
     inp.dataset.f = k.f;
     const put = (list) => { items = list; k.set(list); };
     const add = (vs) => { inp.value = ""; const more = vs.map((x) => x.trim()).filter((x, i, all) => x && (k.dups || (!items.includes(x) && all.indexOf(x) === i))); if (more.length) put([...items, ...more]); };
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add([inp.value]); } else if (e.key === "Backspace" && !inp.value && items.length) put(items.slice(0, -1)); });
-    inp.addEventListener("paste", (e) => { const t = e.clipboardData?.getData("text") ?? ""; if (/[\n,]/.test(t)) { e.preventDefault(); add(t.split(/\n|,(?![^{]*\})/)); } });
+    inp.addEventListener("paste", (e) => { const t = e.clipboardData?.getData("text") ?? ""; if (k.dups ? t.includes("\n") : /[\n,]/.test(t)) { e.preventDefault(); add(k.dups ? t.split("\n") : t.split(/\n|,(?![^{]*\})/)); } });
     // What is typed is proposed with the list as you type (no redraw, so the caret stays): Save always carries it, with or without Enter.
     let typing; inp.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { if (!inp.isConnected) return; const v = inp.value.trim(); k.set(v && (k.dups || !items.includes(v)) ? [...items, v] : items, true); }, 200); });
     return h("div", { className: "chips" }, ...items.map((x, i) => { const b = h("button", { type: "button", className: "x", ariaLabel: `Remove ${x}`, textContent: "\u00d7" }); b.addEventListener("click", () => put(items.filter((_, j) => j !== i))); return h("span", { className: "chip", title: x }, h("span", { textContent: x }), b); }), inp);
