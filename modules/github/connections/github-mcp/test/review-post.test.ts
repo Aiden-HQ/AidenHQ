@@ -187,6 +187,8 @@ describe("the refused-post notice", () => {
     expect(renderNotice({ ...base, phase: "done", ...m, important: 0, nit: 2 })).toContain("**No important findings** \u00B7 2 nits");
     const done = renderNotice({ ...base, phase: "done", ...m, important: 2, review: "https://github.com/acme/payments/pull/12#pullrequestreview-9" });
     expect(done).toContain("**2 important findings** to fix \u00B7 [see the review](https://github.com/acme/payments/pull/12#pullrequestreview-9)");
+    expect(renderNotice({ ...base, phase: "done", ...m, important: 0, partial: true })).toContain("**Partial review** \u00B7 not everything was covered");
+    expect(renderNotice({ ...base, phase: "done", ...m, important: 1, partial: true })).toContain("to fix \u00B7 partial coverage");
     expect(renderNotice({ ...base, phase: "skipped", reason: "draft" })).toContain("**Review skipped** \u00B7 this is a draft pull request");
     expect(renderNotice({ ...base, phase: "failed", run: "cr-1" })).toContain("**Review failed**");
     expect(renderNotice({ ...base, phase: "answered", answer: "always" })).toContain("**Every push to this pull request will be reviewed**");
@@ -201,6 +203,7 @@ describe("the refused-post notice", () => {
     for (const phase of ["queued", "running", "done", "skipped", "failed"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase }))).toBe(true);
     for (const important of [1, 2]) expect(ACK_HEAD.test(renderNotice({ ...base, phase: "done", important }))).toBe(true);
     for (const answer of ["help", "always", "focus", "focus_cleared", "no_review"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase: "answered", answer }))).toBe(true);
+    expect(ACK_HEAD.test("<!-- aidenhq-review-ack -->\n**Review notes**\nmine")).toBe(false);
     expect(ACK_HEAD.test("<!-- aidenhq-review-ack -->\n**Release notes**\nmine")).toBe(false);
     expect(NoticeArgsSchema.safeParse({ ...base, phase: "classified", tier: "skip", tier_why: "a `@x`\nmention" }).success).toBe(false);
   });

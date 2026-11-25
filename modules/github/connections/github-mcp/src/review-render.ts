@@ -109,6 +109,8 @@ export const NoticeArgsSchema = z.object({
   nit: z.number().int().min(0).max(9999).optional(),
   pre_existing: z.number().int().min(0).max(9999).optional(),
   cost_usd: z.number().min(0).max(100_000).optional(),
+  /** The run covered only part of the head: a done notice says so instead of reading as clean. */
+  partial: z.boolean().optional(),
   run: RUN.optional(),
   /** The acknowledgement comment the service recorded (edited in place; absent: a new one). */
   ack: z.number().int().min(1).optional(),
@@ -177,7 +179,7 @@ export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
 /** The words a notice's bold status line starts with, in every phase: fixed, so only a comment `renderNotice` wrote matches. */
-const STATUS_STARTS = ["Review ", "No review needed", "No important findings", "\\d+ important findings?\\*\\*", "Commands", ...Object.values(ANSWERS).filter((a) => a !== ANSWERS.help).map((a) => (a[0]!.toUpperCase() + a.slice(1)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))];
+const STATUS_STARTS = ["Review (?:queued|running|skipped|failed|finished)", "No review needed", "No important findings", "\\d+ important findings?\\*\\*", "Commands", ...Object.values(ANSWERS).filter((a) => a !== ANSWERS.help).map((a) => (a[0]!.toUpperCase() + a.slice(1)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))];
 /** A notice's generated header, exactly as `renderNotice` writes it at the start of a comment: the marker, then a bold status (one of
  * the fixed starts above) on the next line. A comment that merely quotes a notice carries the marker further down, so it never
  * matches, and an ordinary comment that happens to open with the marker and some bold text doesn't either. */
@@ -383,7 +385,7 @@ export function renderNotice(n: NoticeArgs): string {
     case "classified": status = n.tier === "skip" ? "**No review needed** for this risk" : "**Review not started yet**"; break;
     case "queued": status = `**Review queued**${who ? ` · ${who}` : ""}`; break;
     case "running": status = `**Review running**${who ? ` · ${who}` : ""}`; break;
-    case "done": status = `${important ? `**${plural(important, "important finding")}** to fix` : "**No important findings**"}${minor ? ` · ${minor}` : ""}${link}`; break;
+    case "done": status = `${important ? `**${plural(important, "important finding")}** to fix${n.partial ? " \u00B7 partial coverage" : ""}` : (n.partial ? "**Partial review** \u00B7 not everything was covered or shown, so this is not a clean pass" : "**No important findings**")}${minor ? ` · ${minor}` : ""}${link}`; break;
     case "skipped": status = `**Review skipped** · ${NOTICE_REASONS[(n.reason ?? "unchanged") as NoticeReason]}`; break;
     case "answered": status = n.answer === "help" || !n.answer ? `**Commands** (a comment that starts with one): ${COMMANDS}` : `**${ANSWERS[n.answer][0]!.toUpperCase()}${ANSWERS[n.answer].slice(1)}**`; help = !(n.answer === "help" || !n.answer); break;
     case "failed": status = n.reason && n.reason in REFUSED_REASONS

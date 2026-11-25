@@ -146,7 +146,7 @@ export type Ack = {
   answer?: "help" | "always" | "focus" | "focus_cleared" | "no_review";
   run?: string; combo?: ComboRef; why?: string;
   /** The run's findings and cost (a done run's notice, a status). */
-  counts?: { important: number; nit: number; pre_existing: number; cost_usd: number };
+  counts?: { important: number; nit: number; pre_existing: number; cost_usd: number; /** the run covered only part of the head (its review says so) */ partial?: true };
   /** The posted review's link (a done notice after its post settles). */
   review?: string;
 };
