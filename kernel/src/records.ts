@@ -46,6 +46,9 @@ export type Rec = {
   owner_reason?: string | null;
   /** The task's identifier as people read it (ACME-12), when the requester knows it. */
   identifier?: string | null;
+  /** Its task's identifier has been looked up and the control plane answered (with one or with none): while false, a record with no
+   * identifier is one the kernel's retries may still fill in, not a record whose task has none. */
+  identifier_checked?: boolean;
   /** It replaced an open request on the same task, kind and target: a typed reply can't approve it, only a tap. */
   replaced?: boolean;
   /** Requests on the same task and kind with the same target replace each other while open (the requester's key). */
@@ -70,7 +73,7 @@ export type RecRow = Omit<Rec, "args" | "card" | "context">;
 /** A record as the lists read it: whole but for `context` (the reviewer's input, large while a record is open); `diff` is the one part of it a card shows. Read one record whole with `get`. */
 export type RecDetail = Omit<Rec, "context"> & { diff: string | null };
 /** Every column but `args`, `card` and `context`, and the retired panel, review_first and chain. */
-const LIGHT = "id, kind, module, targets, executor, policy, digest, tier, merit, requester, task, state, review, decided_by, via, outcome, created_at, updated_at, rule, review_code, decided_at, owner_reason, identifier, replaced, target, content, cap, wait, waits, paths";
+const LIGHT = "id, kind, module, targets, executor, policy, digest, tier, merit, requester, task, state, review, decided_by, via, outcome, created_at, updated_at, rule, review_code, decided_at, owner_reason, identifier, identifier_checked, replaced, target, content, cap, wait, waits, paths";
 const DETAIL = `${LIGHT}, args, card, json_extract(context, '$.diff') AS diff`;
 const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context", "paths"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
@@ -111,7 +114,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"], ["waits", "INTEGER"], ["paths", "TEXT"], ["expired", "INTEGER"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"], ["waits", "INTEGER"], ["paths", "TEXT"], ["expired", "INTEGER"], ["identifier_checked", "INTEGER"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   // The lists read one state newest first, `since` and `stats` read by filing and decision time (stats' counts are answered from these two indexes alone). A state alone is the prefix of the first.
   db.exec(`DROP INDEX IF EXISTS records_state;
     CREATE INDEX IF NOT EXISTS records_state_created ON records (state, created_at DESC);
@@ -128,7 +131,7 @@ export function openRecords(file: string, now = () => new Date()) {
     for (const c of JSON_COLS) if (c in r) r[c] = r[c] == null ? null : JSON.parse(r[c]);
     // panel, review_first and chain are columns of the retired panel and review-first flow, no longer read (owner, 2026-11-22).
     const { panel: _p, review_first: _f, chain: _c, ...rest } = r;
-    return { ...rest, replaced: r.replaced === 1 };
+    return { ...rest, replaced: r.replaced === 1, identifier_checked: r.identifier_checked === 1 };
   };
   const rows = (rs: unknown[]) => rs.map((r) => row(r)!);
   const cols = (light: boolean) => (light ? LIGHT : DETAIL);
@@ -239,9 +242,9 @@ export function openRecords(file: string, now = () => new Date()) {
           cancelled(o, "replaced");
         }
         const replaced = old.length;
-        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap, context, paths) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, identifier_checked, replaced, target, content, chain, cap, context, paths) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
-            null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null, r.paths?.length ? JSON.stringify(r.paths) : null);
+            null, r.rule ?? null, r.identifier ?? null, r.identifier_checked ? 1 : null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null, r.paths?.length ? JSON.stringify(r.paths) : null);
         const requester = r.requester.key || r.requester.module || "";
         fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, requester, state: r.state, ...prOf(r.args) }));
         db.exec("COMMIT");
@@ -348,12 +351,21 @@ export function openRecords(file: string, now = () => new Date()) {
         () => fact(id, "record.held", "held", "kernel", () => ({ why })));
     },
     /**
-     * An open record's identifier, once its task's is known (writes.ts, the module's same request filed again): it is the
-     * same request on the same task, so the record the caller gets back is the one this call would have filed. Only fills a
-     * missing one, only while the record is open: never a change to what it was approved to do (its digest is its own).
+     * An open record's identifier, once its task's is known (writes.ts: the module's same request filed again, or a record from
+     * before this version being filled in before it runs): it is the same request on the same task, so the record the caller
+     * gets back is the one this call would have filed. Only fills a missing one, only while the record is open (a claimed one
+     * too: a merge queue running across an upgrade is never handed execute again, and reads the record for its identity): never
+     * a change to what it was approved to do (its digest is its own).
      */
     setIdentifier(id: string, identifier: string): boolean {
-      return db.prepare("UPDATE records SET identifier = ? WHERE id = ? AND identifier IS NULL AND state IN ('review','owner','approved')").run(identifier, id).changes === 1;
+      return db.prepare("UPDATE records SET identifier = ?, identifier_checked = 1 WHERE id = ? AND identifier IS NULL AND state IN ('review','owner','approved','claimed')").run(identifier, id).changes === 1;
+    },
+    /**
+     * The control plane answered with no identifier for its task (gone, or none): the lookup is settled, never retried, and a
+     * reader (the code host's merge queue, GET /v1/work?record=) knows the absence is the task's rather than a read still owed.
+     */
+    markIdentified(id: string): boolean {
+      return db.prepare("UPDATE records SET identifier_checked = 1 WHERE id = ? AND identifier IS NULL AND identifier_checked IS NULL").run(id).changes === 1;
     },
     /** approved → claimed, once, within its 7 days. */
     claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}, true), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),

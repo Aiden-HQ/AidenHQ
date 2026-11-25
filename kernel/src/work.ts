@@ -145,7 +145,11 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
     record(id: string) {
       const r = records.get(id);
       if (!r) return null;
-      return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, ok: r.outcome?.ok ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at };
+      // `identifier_pending`: no identifier yet, and none has been read while the record is live (a claimed record an upgrade is
+      // about to fill in): a reader must wait for it rather than take the absence as the task's. Settled (`false`) means the
+      // control plane answered, or the record ended and no lookup the kernel will still perform can change it.
+      const live = ["review", "owner", "approved", "claimed"].includes(r.state);
+      return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, identifier_pending: live && !r.identifier && !r.identifier_checked, ok: r.outcome?.ok ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at };
     },
     job(id: string) {
       const r = rows("SELECT * FROM jobs WHERE id = ?", id)[0];

@@ -151,7 +151,7 @@ test("a module-filed write on a task records that task's identifier, and GET /v1
   const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
   assert.equal(filed.status, 200, JSON.stringify(filed.json));
   const rec = k.records.get(filed.json.id);
-  assert.deepEqual([rec.task, rec.identifier, rec.requester.kind], ["TASK-9", "WOR-8637", "module"]);
+  assert.deepEqual([rec.task, rec.identifier, rec.identifier_checked, rec.requester.kind], ["TASK-9", "WOR-8637", true, "module"]);
   const read = await k.v1("GET", `/v1/work?record=${filed.json.id}`);
   assert.equal(read.status, 200, JSON.stringify(read.json));
   assert.deepEqual([read.json.task, read.json.identifier], ["TASK-9", "WOR-8637"]);
@@ -172,6 +172,12 @@ test("a module-filed write on a task the control plane can't resolve leaves its 
   const gone = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "b" }, task: "TASK-404" }, "other-key");
   assert.equal(gone.status, 200, JSON.stringify(gone.json));
   assert.equal(k.records.get(gone.json.id).identifier ?? null, null);
+  // The lookup answered (with none), so it is settled at filing: a reader is never promised a read that already happened, and a
+  // later approval does not repeat a lookup the control plane could by then rate-limit.
+  for (const id of [empty.json.id, gone.json.id]) {
+    const read = await k.v1("GET", `/v1/work?record=${id}`);
+    assert.deepEqual([k.records.get(id).identifier_checked, read.json.identifier_pending], [true, false]);
+  }
 });
 
 test("a task that answers 200 with no issue body is no answer: the write is refused retryably, never filed", async (t) => {
@@ -213,6 +219,97 @@ test("a module-filed write whose task the control plane can't read now is refuse
   const dropped = await (await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => { if (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") && String(req.headers["x-dropped"] ?? "") !== "once") req.socket.destroy(); return undefined; } })).k;
   assert.equal((await dropped.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key")).status, 503);
   assert.equal(dropped.records.list(["review", "owner", "claimed", "done"]).length, 0);
+});
+
+test("an approved record's identifier is read before the claim, so a rate-limited read waits instead of running with the bare id", async (t) => {
+  // A record filed by the version before this one (approved with no identifier of its own): its task's identifier is read
+  // before it is claimed. Paperclip's rate limit is no answer, so it stays approved, unclaimed and unrun, and runs once it answers.
+  let limited = false;
+  const { k, fx, review } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE },
+    onControl: (req) => (limited && /^\/api\/issues\//.test(req.url ?? "") ? { status: 429, body: { error: "rate limited" } } : undefined) });
+  const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(filed.status, 200, JSON.stringify(filed.json));
+  // A record the previous version filed: neither column was there, so both are cleared (filing now records the answered lookup).
+  k.records.db.prepare("UPDATE records SET identifier = NULL, identifier_checked = NULL WHERE id = ?").run(filed.json.id);
+  limited = true;
+  await review(filed.json.id, { decision: "approve", reason: "fine", model: "~acme/model-a" });
+  for (let i = 0; i < 20 && fx.executes.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual([k.records.get(filed.json.id).state, fx.executes.length], ["approved", 0], "the rate-limited read leaves it approved, unclaimed");
+  limited = false;
+  await k.writes.run(filed.json.id);
+  await until(() => k.records.get(filed.json.id).state === "done");
+  assert.equal(fx.executes[0].identifier, "WOR-8637", "the executor got the identifier, never only the task id");
+  // The same, with the read still rate-limited when the reviewer approves: it is not claimed, and a later run gets the identifier.
+  const busy = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "s" }, task: "TASK-9" }, "other-key");
+  k.records.db.prepare("UPDATE records SET identifier = NULL, identifier_checked = NULL WHERE id = ?").run(busy.json.id);
+  limited = true;
+  await review(busy.json.id, { decision: "approve", reason: "fine", model: "~acme/model-a" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual([k.records.get(busy.json.id).state, fx.executes.filter((e) => e.id === busy.json.id).length], ["approved", 0], "the claim waits for the identifier");
+  limited = false;
+  await k.writes.run(busy.json.id);
+  await until(() => k.records.get(busy.json.id).state === "done");
+  assert.equal(fx.executes.find((e) => e.id === busy.json.id).identifier, "WOR-8637");
+});
+
+test("a claimed record an upgrade left without an identifier is filled in by reconcile, before its queue settles", async (t) => {
+  // Its executor still reports the merge queue running: the record is left claimed, never handed execute again, and the queue
+  // reads its identity from the record. Reconcile fills it in there; a task it can't resolve still keeps none (fails closed).
+  const ex = await serve((req, res) => {
+    if (req.url?.endsWith("/status")) return void res.writeHead(200, { "content-type": "application/json" }).end('{"state":"running"}');
+    res.writeHead(404).end();
+  });
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
+  const executor = { module: "twin", url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key", rev: "r1" };
+  const k = await kernel(t, { issues: { ...HEARTBEAT, ...TRIAGE }, secrets: { twin_service_key: "twin-key" }, writes: { "twin.merge": { module: "twin", floor: 1, tools: [], executor } } });
+  const card = { sentence: "Merge.", changes: "", reads: "", cost: "", details: "" };
+  const file = (task) => k.records.file({ kind: "twin.merge", module: "twin", args: { prs: [], task }, targets: {}, executor, policy: "p", tier: 1, card,
+    requester: { agent: "", key: "", name: "ship", roles: [], kind: "module", module: "ship" }, task, state: "claimed" });
+  const rec = file("TASK-9");
+  assert.equal(k.records.get(rec.id).identifier, null);
+  assert.deepEqual(await k.writes.reconcile(), []);
+  assert.deepEqual([k.records.get(rec.id).state, k.records.get(rec.id).identifier], ["claimed", "WOR-8637"]);
+  // A task the control plane has no row for is the answer "none": settled, so a queue does not hold forever for one.
+  const unknown = file("TASK-404");
+  assert.equal(k.records.get(unknown.id).identifier_checked, false);
+  await k.writes.reconcile();
+  assert.deepEqual([k.records.get(unknown.id).identifier, k.records.get(unknown.id).identifier_checked], [null, true]);
+});
+
+test("a claimed record whose task lookup is refused settles it, so its queue ends instead of waiting forever", async (t) => {
+  // A merge claimed before this version, with no identifier, whose task the control plane refuses (403): the read is no longer
+  // treated as a transient failure of an unavailable kernel, so reconcile settles the lookup as none. The queue then takes the
+  // absence as the answer and refuses the merge it cannot verify, rather than holding the record claimed for an identifier this
+  // kernel will never record (reconcile only looks at claims from before it started; nothing else would ever read it again).
+  const ex = await serve((req, res) => {
+    if (req.url?.endsWith("/status")) return void res.writeHead(200, { "content-type": "application/json" }).end('{"state":"running"}');
+    res.writeHead(404).end();
+  });
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
+  const executor = { module: "twin", url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key", rev: "r1" };
+  const k = await kernel(t, {
+    issues: { ...HEARTBEAT, ...TRIAGE }, secrets: { twin_service_key: "twin-key" }, writes: { "twin.merge": { module: "twin", floor: 1, tools: [], executor } },
+    onControl: (req) => (/^\/api\/issues\/TASK-403$/.test(req.url ?? "") ? { status: 403, body: { error: "forbidden" } } : undefined),
+  });
+  const card = { sentence: "Merge.", changes: "", reads: "", cost: "", details: "" };
+  const file = (task) => k.records.file({ kind: "twin.merge", module: "twin", args: { prs: [], task }, targets: {}, executor, policy: "p", tier: 1, card,
+    requester: { agent: "", key: "", name: "ship", roles: [], kind: "module", module: "ship" }, task, state: "claimed" });
+  const refused = file("TASK-403");
+  assert.deepEqual([k.records.get(refused.id).identifier, k.records.get(refused.id).identifier_checked], [null, false]);
+  await k.writes.reconcile();
+  // Still claimed (its executor reports the queue running), and the lookup is settled: no reader is promised an answer.
+  assert.deepEqual([k.records.get(refused.id).state, k.records.get(refused.id).identifier, k.records.get(refused.id).identifier_checked], ["claimed", null, true]);
+  const read = await k.v1("GET", `/v1/work?record=${refused.id}`);
+  assert.equal(read.json.identifier_pending, false);
+  // An unavailable control plane is not a refusal: the record keeps none and stays owed, for the next reconcile.
+  const down = await kernel(t, {
+    issues: { ...HEARTBEAT, ...TRIAGE }, secrets: { twin_service_key: "twin-key" }, writes: { "twin.merge": { module: "twin", floor: 1, tools: [], executor } },
+    onControl: (req) => (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") ? { status: 503, body: { error: "unavailable" } } : undefined),
+  });
+  const owed = down.records.file({ kind: "twin.merge", module: "twin", args: { prs: [], task: "TASK-9" }, targets: {}, executor, policy: "p", tier: 1, card,
+    requester: { agent: "", key: "", name: "ship", roles: [], kind: "module", module: "ship" }, task: "TASK-9", state: "claimed" });
+  await down.writes.reconcile();
+  assert.deepEqual([down.records.get(owed.id).identifier, down.records.get(owed.id).identifier_checked], [null, false], "a 503 is retried, never settled");
 });
 
 test("a job's plan-time refusal keeps its rule's stable code beside its words, and a write that goes through clears both", async (t) => {
