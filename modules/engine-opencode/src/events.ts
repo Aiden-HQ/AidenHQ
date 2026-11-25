@@ -11,6 +11,8 @@ export function sseEvents(spec: JobSpec, emit: (e: EngineEvent) => void, session
   let last: { id: string; text: string } | undefined;
   let commented = false;
   return {
+    /** A turn the engine starts: nothing of an earlier one (a turn typed in the terminal) carries into it. */
+    beginTurn() { last = undefined, commented = false; },
     /** The turn ended: its last words go on the task as the agent's reply, unless the turn was silent or posted them itself. */
     endTurn() {
       const reply = last, said = commented;
@@ -23,9 +25,10 @@ export function sseEvents(spec: JobSpec, emit: (e: EngineEvent) => void, session
       if (ev.type === "session.error" && props.error?.name !== "MessageAbortedError") onError(String(props.error?.data?.message ?? props.error?.name ?? "unknown error").slice(0, 300));
       if (ev.type === "message.part.updated") {
         const part = props.part;
+        // The agent told this task itself: a task_comment that went through, on no other task.
+        if (part?.type === "tool" && part.state?.status === "completed" && /task_comment$/.test(String(part.tool)) && (!part.state.input?.issue || part.state.input.issue === spec.task)) commented = true;
         if (part?.type === "tool" && part.state?.status === "running" && !started.has(part.id)) {
           started.add(part.id);
-          if (/task_comment$/.test(String(part.tool))) commented = true;
           if (p.step(withArg(String(part.tool), part.state.input))) emit(p.snapshot());
         }
         if (part?.type === "text" && part.time?.end) {

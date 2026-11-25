@@ -236,7 +236,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
   /**
    * A session's finished turns (its job never ends, so never posts a final): each turn's last words are its reply on the task,
    * posted once through the same kernel post as any outcome. NO_REPLY is a turn with nothing to say. A refused post (4xx) is
-   * logged and not tried again; a transient one is tried at the next tick.
+   * logged and not tried again; a transient one is thrown, so the job is followed again (and an ended one not acknowledged).
    */
   async function turnReplies(v: JobView) {
     for (const r of v.progress?.replies ?? []) {
@@ -245,7 +245,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         const o = outcome({ final: r.text });
         if (o) await kernel.post(v.id, { ...o, kind: "reply", turn: r.id });
       } catch (e) {
-        if (!permanent(e)) return log("turn reply not posted yet", { job: v.id, task: v.task, err: (e as Error).message.slice(0, 200) });
+        if (!permanent(e)) throw e;   // the next tick (a live session) or the ended job's backoff tries it again, and the job is not acknowledged meanwhile
         log("turn reply refused", { job: v.id, task: v.task, err: (e as Error).message.slice(0, 200) });
       }
       q("INSERT OR IGNORE INTO turns (job, turn) VALUES (?, ?)").run(v.id, r.id);

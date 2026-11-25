@@ -7,6 +7,7 @@
 // or its `delegate_to`. Every comment carries the job's tag (wakes.ts SELF_TAG), so the wake inbox never wakes on it either.
 // Once: through `once` (once.ts), keyed by the job's tag: a call whose answer was lost (a crash after Paperclip's 201, a 502, a
 // timeout) stays pending, and the retry asks the plugin to look for the tagged write first, so it never posts twice.
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Finish } from "./checks.ts";
 import { factWriter, iso } from "./factlog.ts";
@@ -120,7 +121,8 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
       }
     }
     await plugin.company(job.agent);
-    const key = tag(req.turn ? `${job.id}.${req.turn}` : job.id, req.kind);
+    // The tag's job field is at most 64 of [A-Za-z0-9_-] (the plugin's post.js): a turn is a short hash of its id after the job's.
+    const key = tag(req.turn ? `${job.id}-${createHash("sha1").update(req.turn).digest("hex").slice(0, 16)}` : job.id, req.kind);
     const { value, again } = await once(key, async (retry): Promise<Outcome> => {
       let status = req.status;
       let gate: Finish | undefined;

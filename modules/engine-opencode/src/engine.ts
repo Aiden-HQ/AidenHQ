@@ -90,6 +90,7 @@ async function run() {
       if (!next) { await sleep(200); continue; }
       while (await busy()) await sleep(300);
       if (stopping) return;   // a stop keeps the queued comment in pending.json for the next job
+      sse.beginTurn();
       await server.call("POST", `/session/${session}/prompt_async`, { parts: [{ type: "text", text: next.text }] });
       queue.shift();
       save();
