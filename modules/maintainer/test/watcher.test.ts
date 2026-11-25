@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { maintainerPump, maintainerTriageWake, maintainerWake } from "../service/src/watcher.ts";
+import { parseRepos } from "../service/src/aidenhq-sdk/maintained-repos.ts";
 
 const kv = () => {
   const m = new Map();
@@ -15,18 +16,18 @@ const logs = () => {
 };
 const issue = (number, trusted = true) => ({ number, trusted, labeled_at: "2026-01-01T00:00:00Z", actor: trusted ? "maintainer" : "stranger" });
 const R = "acme/product";
-const repo = (o = {}) => ({ repo: R, owner: "acme", name: "product", label: "agent-fix", trusted: ["admin", "maintain"], issues: true, features: false, dependabot: false, contributor_prs: false, stale_days: 7, ...o });
+const repo = (o = {}) => parseRepos(JSON.stringify([{ repo: R, ...o }]))[0];
 const ev = (seq, kind, data = {}, o = {}) => ({ seq, resource: R, id: `${kind}:${seq}`, kind, data: { number: 1, ...data }, ...o });
 /** The kernel's log and github-mcp's reads, faked: `log` is every event so far; a look reads those after its cursor. */
 function world(o = {}) {
-  const w = { log: [], gap: false, boots: 0, reads: [], bootstrap: { repos: [{ repo: R, issues: [], builds: [], featured: [] }] }, ones: {}, fired: [], triaged: [], store: kv(), logs: logs(), repos: [repo()], ...o };
+  const w = { log: [], gap: false, boots: 0, reads: [], bootstrap: { repos: [{ repo: R, issues: [], builds: [], featured: [] }] }, ones: {}, fired: [], triaged: [], store: kv(), logs: logs(), repos: [repo({ triage: "new", triage_cap_per_author_day: 1 })], ...o };
   const deps = (extra = {}) => ({
     feed: async (after) => (after === undefined ? { events: [], next: w.log.at(-1)?.seq ?? 0, gap: false } : { events: w.log.filter((e) => e.seq > after), next: w.log.at(-1)?.seq ?? after, gap: w.gap }),
     bootstrap: async () => (w.boots++, w.bootstrap),
     one: async (r, n, label) => (w.reads.push([r, n, label]), w.ones[`${n}:${label}`] ?? null),
     fire: async (_r, i, kind) => (w.fired.push([i.number, kind ?? "fix"]), true),
     triage: async (_r, n) => (w.triaged.push(n), true),
-    limits: { perAuthor: 1 }, repos: () => w.repos, store: w.store, log: w.logs, ...extra,
+    repos: () => w.repos, store: w.store, log: w.logs, ...extra,
   });
   const look = (extra) => maintainerPump(deps(extra));
   const state = () => JSON.parse(w.store.meta("maintainer_issues"));
@@ -94,7 +95,7 @@ test("a feed gap, a resync and a changed repo setting each bootstrap again, and 
 });
 
 test("a failed first bootstrap keeps the first watermark, so what was opened meanwhile is still handled; a removed repo is forgotten", async () => {
-  const w = world({ log: [ev(5, "issues.opened")], repos: [repo()] });
+  const w = world({ log: [ev(5, "issues.opened")], repos: [repo({ triage: "new" })] });
   const opened = (seq, number) => ev(seq, "issues.opened", { number, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] });
   assert.equal(await w.look({ bootstrap: async () => { throw new Error("github 502"); } }), 0);
   assert.equal(w.state().feed.after, 5, "the watermark is saved before the bootstrap");
@@ -107,7 +108,7 @@ test("a failed first bootstrap keeps the first watermark, so what was opened mea
 });
 
 test("a reopened issue is read afresh, an unlabelled feature-request leaves the valid reports, and an issue opened and closed in one read is not triaged", async () => {
-  const w = world({ repos: [repo({ features: true })], ones: { "7:agent-fix": issue(7), "7:feature-request": issue(7) } });
+  const w = world({ repos: [repo({ preset: "full" })], ones: { "7:agent-fix": issue(7), "7:feature-request": issue(7) } });
   await w.look();
   w.log.push(ev(1, "issues.reopened", { number: 7 }));
   assert.equal(await w.look(), 1);
@@ -128,7 +129,7 @@ test("a reopened issue is read afresh, an unlabelled feature-request leaves the 
 });
 
 test("agent-build and feature-request need features on; a trusted feature request joins the valid reports", async () => {
-  const w = world({ repos: [repo({ features: true })], ones: { "5:agent-build": issue(5), "6:feature-request": issue(6) } });
+  const w = world({ repos: [repo({ preset: "full" })], ones: { "5:agent-build": issue(5), "6:feature-request": issue(6) } });
   await w.look();
   w.log.push(ev(1, "issues.labeled", { number: 5, label: "agent-build" }), ev(2, "issues.labeled", { number: 6, label: "feature-request" }));
   assert.equal(await w.look(), 1);
@@ -178,11 +179,11 @@ test("triage runs are capped a day per author, the rest held until a slot frees 
   w.log.push(ev(6, "issues.labeled", { number: 1, label: "agent-fix" }));
   await w.look();
   assert.deepEqual(w.triaged, [1, 3, 2]);
-  const off = world();
-  await off.look({ triage: undefined });
+  const off = world({ repos: [repo()] });
+  await off.look();
   off.log.push(opened(1, 1, "ada"));
-  await off.look({ triage: undefined });
-  assert.deepEqual(off.triaged, [], "external triage off: no triage task");
+  await off.look();
+  assert.deepEqual(off.triaged, [], "triage off for the repo: no triage task");
 });
 
 test("a filed fix issue emits issue.triaged at its label time, on the filed task", async () => {
@@ -209,6 +210,19 @@ test("one repo's incomplete bootstrap files what it read and is read again, and 
   assert.equal(await w.look(), 1, "the other repo's label is handled while the first repo is still pending");
   assert.ok(w.state().feed.digest[R], "the next look's bootstrap finished it");
   assert.equal(w.state().feed.after, 2);
+});
+
+test("new-issue triage follows the repo's triage setting alone, and with `new` a held issue waits for a slot instead of expiring", async () => {
+  const w = world({ repos: [repo({ issues: false, triage: "new", triage_cap_per_author_day: 1 })] });
+  await w.look();
+  const old = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  w.log.push(ev(1, "issues.opened", { number: 1, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] }), ev(2, "issues.opened", { number: 2, author_kind: "outside", created_at: old }, { author: "ada", labels: [] }));
+  await w.look();
+  assert.deepEqual(w.triaged, [1]);
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [2], "held past a day, since `new` has no daily pass to take it");
+  w.repos = [repo({ issues: false, triage: "new+backlog", triage_cap_per_author_day: 1 })];
+  await w.look();
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held, [], "with the backlog on, the daily run has an issue held over a day");
 });
 
 test("a long silence bootstraps again, an old mixed-case state is kept, features off clears the valid reports, and a held author's newer issue queues behind", async () => {
