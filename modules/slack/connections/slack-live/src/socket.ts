@@ -2,7 +2,7 @@
 import socketMode from "@slack/socket-mode";
 import type { Logger } from "pino";
 import { toSourceEvent, type SourceEvent } from "./map.js";
-import { isCodeShaped } from "./pair.js";
+import { carriesCode } from "./pair.js";
 import type { Store } from "./store.js";
 
 const { SocketModeClient } = socketMode;
@@ -62,8 +62,9 @@ export async function startSocket({ appToken, store, chat, pair, bind, tee, forw
       // Owner's messages in the command channel are chat with the CoS, not triage events.
       const ev = (msg.body as { event?: Record<string, string> } | null)?.event;
       // A pairing code that did not pair (a DM the bot can't see) is still a live credential: never stored or forwarded as
-      // chat. Only a DM: the same shape in a channel is ordinary text, and the board only ever shows the code in the DM.
-      if (msg.type === "events_api" && ev?.channel_type === "im" && isCodeShaped(ev?.text)) {
+      // chat. An edit carries its new text under `message` (carriesCode checks both) and may arrive with no channel_type, so
+      // unknown counts as possibly a DM; only a public or group channel keeps the same shape as ordinary text.
+      if (msg.type === "events_api" && ev?.channel_type !== "channel" && ev?.channel_type !== "group" && carriesCode(ev)) {
         await msg.ack().catch(() => undefined);
         return;
       }

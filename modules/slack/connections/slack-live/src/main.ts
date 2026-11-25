@@ -91,14 +91,17 @@ const health = async () => {
   const pairedAt = pairing.pairedAt();
   const socket = appToken ? socketState : "off";
   const channels = { slack: bot };
-  const missing = [
+  // Nothing configured at all (no bot, no sign-in): up and idle, as it always answered, and no "add the bot" wording,
+  // because nothing asked for it yet.
+  const idle = !bot && !ownerNow;
+  const missing = idle ? [] : [
     ...(bot ? [] : ["Bot not set up: Slack triage and 📌 tasks need it. Add it on the Slack setup page (Slack with Aiden's bot)."]),
     ...(socket === "connected" ? [] : [socket === "off" ? "Socket not running: no app-level token (SLACK_APP_TOKEN)." : "Socket not connected: reconnecting to Slack."]),
     ...(paired ? [] : ["Not paired: DM the bot the code on the Slack setup page."]),
   ];
-  // Nothing configured at all (no bot, no sign-in): up and idle, as it always answered.
-  const ok = bot || !ownerNow;
   const detail = missing.length ? missing.join(" ") : undefined;
+  // A signed-in Slack with no bot is a real misconfiguration (the board should show it); a token with a blip is not.
+  const ok = bot || !ownerNow;
   return JSON.stringify({ ok, ...(detail ? { detail } : {}), channels, socket, paired, ...(paired && pairedAt ? { paired_at: pairedAt } : {}) });
 };
 

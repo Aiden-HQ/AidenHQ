@@ -30,11 +30,16 @@ describe("src_slack", () => {
     // A deleted thread parent comes as an edit to subtype "tombstone": still a tombstone, never a text revision.
     expect(eventWrite({ event: { type: "message", subtype: "message_changed", channel: "C1", message: { ts: "5.5", subtype: "tombstone", text: "This message was deleted." } } })?.row).toMatchObject({ ts: "5.5", deleted: true, text: null });
     expect(eventWrite({ event: { type: "reaction_added", channel: "C1" } })).toBeNull();
-  // A pairing code read by the gap sync is a live credential: its row keeps its metadata and loses its text.
-  expect(eventWrite({ event: { type: "message", channel: "D1", channel_type: "im", ts: "6.6", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: null, user_id: "U1", ts: "6.6" });
-  // In a channel the same shape is ordinary text and is kept.
-  expect(eventWrite({ event: { type: "message", channel: "C1", channel_type: "channel", ts: "7.7", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: "A".repeat(22) });
     expect(eventWrite({ event: { type: "message", channel: "C1", ts: "4.4", text: "x".repeat(5000) } })?.row).toMatchObject({ text_truncated: true });
+    // A pairing code read by the gap sync is a live credential: its row keeps its metadata and loses its text.
+    expect(eventWrite({ event: { type: "message", channel: "D1", channel_type: "im", ts: "6.6", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: null, user_id: "U1", ts: "6.6" });
+    // In a public channel the same shape is ordinary text and is kept.
+    expect(eventWrite({ event: { type: "message", channel: "C1", channel_type: "channel", ts: "7.7", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: "A".repeat(22) });
+    // An edit carries its new text under `message`, and Slack may omit channel_type on it: blanked all the same.
+    expect(eventWrite({ event: { type: "message", subtype: "message_changed", channel: "D1", message: { ts: "8.8", user: "U1", text: "B".repeat(22) } } })?.row).toMatchObject({ ts: "8.8", text: null });
+    expect(eventWrite({ event: { type: "message", subtype: "message_changed", channel: "D1", channel_type: "im", message: { ts: "8.9", user: "U1", text: "B".repeat(22) } } })?.row).toMatchObject({ ts: "8.9", text: null });
+    // An edit in a public channel keeps its ordinary text.
+    expect(eventWrite({ event: { type: "message", subtype: "message_changed", channel: "C1", channel_type: "channel", message: { ts: "9.0", user: "U1", text: "B".repeat(22) } } })?.row).toMatchObject({ ts: "9.0", text: "B".repeat(22) });
   });
 
   it("gap sync: a channel's first pass is a baseline, later passes are new rows from its cursor", async () => {
@@ -56,6 +61,26 @@ describe("src_slack", () => {
     history.C1!.push({ ts: "150.0", text: "new", user: "U1" });
     await gapSync(store, api, now + 60_000);
     expect(writes.filter((w) => w.table === MESSAGE.name)).toEqual([{ table: "message", row: expect.objectContaining({ ts: "150.0", text: "new" }), baseline: false }]);
+  });
+
+  it("gap sync never replays a pairing code to the event router", async () => {
+    const { store } = fakeStore();
+    const history: any[] = [];
+    const api: Api = async (method, p) => {
+      if (method === "users.conversations") return { ok: true, channels: [{ id: "D1", is_im: true, user: "U1" }] };
+      if (method === "conversations.history") return { ok: true, messages: history.filter((m) => Number(m.ts) > Number(p.oldest)) };
+      return { ok: true, members: [], messages: [] };
+    };
+    const sent: any[] = [];
+    const forward = async (e: unknown) => void sent.push(e);
+    await gapSync(store, api, 200_000, undefined, undefined, forward); // the baseline
+    // After the baseline: a plain DM, a code DM, then ordinary text.
+    history.push({ ts: "150.0", text: "hello there", user: "U1" });
+    history.push({ ts: "151.0", text: "C".repeat(22), user: "U1" });
+    history.push({ ts: "152.0", text: "ordinary", user: "U1" });
+    const before = sent.length;
+    await gapSync(store, api, 260_000, undefined, undefined, forward);
+    expect(sent.slice(before).map((e) => e.text)).toEqual(["hello there", "ordinary"]);
   });
 
   it("gap sync: a newly inserted message is replayed to the event router; the baseline is not", async () => {

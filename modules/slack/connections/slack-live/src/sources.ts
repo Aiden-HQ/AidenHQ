@@ -4,7 +4,7 @@
 // conversations.history per channel the owner is in, plus conversations.replies for recently active threads; once a week it
 // re-reads the last week in full and tombstones what Slack no longer returns (Events have no replay). No LLM.
 import { toSourceEvent, type SourceEvent } from "./map.js";
-import { isCodeShaped } from "./pair.js";
+import { carriesCode } from "./pair.js";
 import type { Logger } from "pino";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 import { permalink } from "./map.js";
@@ -86,11 +86,15 @@ const tombstone = (channel: string, ts: string, type?: string): Row => ({ channe
  * A Slack message object as its write: a message row, or a tombstone for a deleted thread parent (Slack keeps it as
  * subtype "tombstone", "This message was deleted.", while the thread has replies).
  */
-export function messageWrite(channel: string, m: Record<string, any>, type: string | undefined): { table: Table; row: Row } {
+/** May this conversation be a DM? A public channel is not; `im`, and an unknown type (Slack didn't say), may be. */
+const mayBeDm = (type: string | undefined): boolean => type !== "public";
+
+export function messageWrite(channel: string, m: Record<string, any>, type: string | undefined, mayBeDirect = mayBeDm(type)): { table: Table; row: Row } {
   if (m.subtype === "tombstone") return { table: TOMBSTONE, row: tombstone(channel, m.ts, type) };
   // A pairing code is a live credential: a history read (the gap sync) can see it through the owner's own sign-in, and it must
-  // never land in src_slack, which agents read. Its metadata is kept, its text blanked.
-  if (type === "im" && isCodeShaped(m.text)) return { table: MESSAGE, row: { ...messageRow(channel, { ...m, text: "" }, type), text: null } };
+  // never land in src_slack, which agents read. Its metadata is kept, its text blanked. An edit's code sits under `message.text`,
+  // and an edit can arrive with no outer channel_type, so an unknown type counts as possibly a DM and the text is blanked anyway.
+  if (mayBeDirect && carriesCode(m)) return { table: MESSAGE, row: { ...messageRow(channel, { ...m, text: "" }, type), text: null } };
   return { table: MESSAGE, row: messageRow(channel, m, type) };
 }
 
@@ -100,13 +104,16 @@ export function eventWrite(body: unknown): { table: Table; row: Row } | null {
   const channel = str(ev?.channel);
   if (!ev || ev.type !== "message" || !channel) return null;
   const type = channelType(ev.channel_type);
+  // Slack may omit channel_type on an edit; unknown counts as possibly a DM, so a code is still blanked.
+  const mayBeDirect = str(ev.channel_type) !== "channel" && str(ev.channel_type) !== "group";
   if (ev.subtype === "message_deleted") {
     const ts = str(ev.deleted_ts);
     return ts ? { table: TOMBSTONE, row: tombstone(channel, ts, type) } : null;
   }
+  // An edit's new text lives under `message`; the DM-ness is the outer event's (the nested message has no channel_type).
   const m = ev.subtype === "message_changed" ? rec(ev.message) : ev;
   if (!m || !str(m.ts)) return null;
-  return messageWrite(channel, m, type);
+  return messageWrite(channel, m, type, mayBeDirect);
 }
 
 /**
@@ -257,6 +264,9 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
   // the event id is the message's, so the router drops one that also arrived live. Best effort: a failure is logged, never fails the pass.
   const replay = async (id: string, type: string | undefined, m: Record<string, any>, r: string, baseline: boolean, fresh: boolean) => {
     if (!forward || baseline || !fresh || r !== "new" || m.subtype === "tombstone") return;
+    // A pairing code is a live credential: the warehouse row is blanked, and the router must not see its raw text either. An
+    // unknown type may be a DM, so it is skipped too.
+    if (type !== "public" && type !== "private" && type !== "mpim" && carriesCode(m)) return;
     const e = toSourceEvent({ event: { ...m, type: "message", channel: id, channel_type: type }, authorizations: [{ is_bot: false }] });
     if (e) await forward(e).catch((err: unknown) => log?.warn({ err: String(err) }, "gap replay failed"));
   };

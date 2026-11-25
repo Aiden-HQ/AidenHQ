@@ -51,6 +51,11 @@ it("a code-shaped message that pairs nobody is not teed or forwarded", async () 
   expect(forward).not.toHaveBeenCalled();
   expect(ack).toHaveBeenCalledOnce();
 
+  // An edit carries its new text under `message`, and Slack may omit channel_type: still dropped as a live credential.
+  await handle({ type: "events_api", body: { event_id: "Ev11", event: { type: "message", subtype: "message_changed", channel: "D2", message: { ts: "4.4", user: "U1", text: "C".repeat(22) } } }, ack });
+  expect(tee).not.toHaveBeenCalled();
+  expect(forward).not.toHaveBeenCalled();
+
   // The same shape in a channel is ordinary text: ingested as usual.
   await handle({ type: "events_api", body: { event_id: "Ev10", event: { type: "message", channel_type: "channel", user: "U1", channel: "C1", ts: "3.3", text: "B".repeat(22) } }, ack });
   expect(tee).toHaveBeenCalledOnce();

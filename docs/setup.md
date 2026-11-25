@@ -337,7 +337,7 @@ docker compose exec slack-live node -e 'const t=require("fs").readFileSync("/run
 
 `channels.slack: true` in `/healthz` means only that a bot token exists; it does not say the socket is connected or
 that an owner is paired. Read those from the separate `socket` (`connected` | `disconnected` | `off`) and `paired`
-fields, with `detail` naming what is missing. Each DM the bot receives logs one `slack event in` line carrying the
+fields, with `detail` naming what is missing. Every live Slack event logs one `slack event in` line carrying the
 event `type` and `channel_type` (never its text, a user id or the code), so a delivered-but-unhandled DM is visible.
 
 ### Others (optional)

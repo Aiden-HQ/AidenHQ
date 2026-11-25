@@ -147,6 +147,42 @@ it("a redelivered wrong code charges the limit once", async () => {
   expect(pairing.owner()).toEqual({ user: "U1", channel: "D1" });
 });
 
+it("a rejected or missing bot token never falls back to pairing: the claim would be a lie", async () => {
+  for (const [error, token] of [["token_revoked", "xoxb-test"], ["missing_scope", "xoxb-test"], ["", ""]] as const) {
+    const { pairing, said } = setup();
+    const revoked = (async () => Response.json({ ok: false, error })) as typeof fetch;
+    const r = await handlePairingDm(
+      pairing,
+      { event_id: `EvBad-${error}`, authorizations: [{ is_bot: true }], event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text: pairing.mint() } },
+      async (c, t) => void said.push([c, t]),
+      () => undefined,
+      { botToken: token, fetch: revoked },
+    );
+    expect(r).toBe(true); // answered, so the code is not passed on to ingestion
+    expect(pairing.paired()).toBe(false);
+    expect(said).toEqual([["D1", "This bot can't be used yet (its token is missing or was rejected). Fix it on the AidenHQ board's Slack setup page."]]);
+  }
+});
+
+it("missing_scope names a real setup fault when Slack names the scope, and is a colleague DM otherwise", async () => {
+  const { pairing, said } = setup();
+  const answer = (body: Record<string, unknown>) => (async () => Response.json(body)) as typeof fetch;
+  const attempt = (channel: string, f: typeof fetch) =>
+    handlePairingDm(
+      pairing,
+      { event_id: `EvScope-${channel}`, authorizations: [{ is_bot: true }], event: { type: "message", channel_type: "im", user: "U1", channel, text: pairing.mint() } },
+      async (c, t) => void said.push([c, t]),
+      () => undefined,
+      { botToken: "xoxb-test", fetch: f },
+    );
+  // The bot's own token lacks im:read: said plainly, never paired.
+  expect(await attempt("D1", answer({ ok: false, error: "missing_scope", needed: "im:read" }))).toBe(true);
+  expect(said.at(-1)?.[1]).toMatch(/bot can't be used yet/);
+  // A scope this token was never meant to have for someone else's DM: not ours, no reply.
+  expect(await attempt("D2", answer({ ok: false, error: "missing_scope", needed: "im:history" }))).toBe(false);
+  expect(pairing.paired()).toBe(false);
+});
+
 it("acknowledges as soon as the decision is durable, before the reply goes out", async () => {
   const { pairing } = setup();
   const order: string[] = [];
