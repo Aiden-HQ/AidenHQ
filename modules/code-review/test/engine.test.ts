@@ -164,6 +164,19 @@ test("the first look at a repo reviews only its newest open PR, then each PR ope
   assert.deepEqual(w.engine.runs({ repo: REPO }).filter((r) => r.number === 6).map((r) => [r.status, r.why]), [["skipped", "closed"]]);
 });
 
+test("backlog is the set of PRs open at the first look, not every lower number: one closed then reopened is an ordinary PR and is reviewed", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
+  // #3 is closed when the repo is first watched, and #5 is its newest open PR: #3 is not backlog, so reopening it reviews it.
+  w.pr(3, sha("3"), { open: false, merged: false }); w.pr(5, sha("5"));
+  await w.tick();
+  assert.deepEqual(w.started.map((s) => s.number), [5]);
+  w.later(1000); w.pr(3, sha("3b")); await w.tick(); w.later(DEBOUNCE); await w.tick();
+  assert.deepEqual(w.started.map((s) => s.number), [5, 3], "a PR that was closed at the first look is reviewed when it reopens");
+  // The reasoning holds for a PR whose number is below the newest but opened after: never backlog either.
+  w.later(1000); w.pr(4, sha("4")); await w.tick(); w.later(DEBOUNCE); await w.tick();
+  assert.deepEqual(w.started.map((s) => s.number), [5, 3, 4]);
+});
+
 test("a force-push past the last reviewed head reviews in full", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
   await w.tick();
@@ -1751,6 +1764,20 @@ test("a PR open before its repo was gated gets its mandatory review; a fork's au
   f.threads.set(3, [{ finding: "f1", comment: 41, replies: [{ id: 60, author: "outsider", body: "disputed: not a bug" }] }]);
   await f.tick();
   assert.deepEqual(codes(f.engine.verdict(REPO, 3, sha("3"))), ["findings"]);
+});
+
+test("a backlog PR's commit status says how to start its review, not that one is starting", async () => {
+  const w = gatedWorld();
+  w.pr(3, sha("3")); w.pr(5, sha("5"));
+  await w.tick(); // first look: #5 is reviewed, #3 is backlog
+  await w.tick({ github: false });
+  const s = w.statuses.find((x) => x.head === sha("3"));
+  assert.deepEqual([s?.reason], ["backlog"], "the status is its own code, not a review that will never start");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 3, sha("3"))), ["backlog"]);
+  // Once asked for, it is reviewed like any PR.
+  w.later(1000); w.say(3, "alice", "aiden review"); await w.tick();
+  assert.deepEqual(w.started.map((x) => x.number), [5, 3]);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 3, sha("3"))), ["running"], "asked for, it is a review that will run, not backlog");
 });
 
 test("the commit status mirrors the verdict per head, written only when it changes and only once decided: nothing while the review runs, failure with findings open, success once clean", async () => {

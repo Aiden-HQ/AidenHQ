@@ -13,8 +13,8 @@
 // open_at_merge or open_at_close (still open when the PR closed).
 //
 // The first look at a repo (it was just added to the watched repos) reviews only the newest open PR (the highest number: the last one
-// opened) and every PR opened after it, with their pushes. The older open PRs are backlog (cutoffs): they get no automatic review, no tier
-// comment, until `aiden review` or a request asks for one; after that they are followed like any PR.
+// opened) and every PR opened after it, with their pushes. The other PRs open at that look are backlog (cutoffs, their exact numbers): they
+// get no automatic review, no tier comment, until `aiden review` or a request asks for one; after that they are followed like any PR.
 // A push debounces (DEBOUNCE): another push in the window replaces the queued batch, so a burst of pushes is one review each.
 // On a gated repo each open PR's head carries the commit status aidenhq/review, mirroring verdict() (mirror): GitHub's view of the
 // verdict; the merge queue still asks verdict() itself.
@@ -197,8 +197,9 @@ CREATE TABLE IF NOT EXISTS dispositions (finding TEXT NOT NULL, repo TEXT NOT NU
   reason TEXT NOT NULL, evidence TEXT, by TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS dispositions_pr ON dispositions (repo, number, finding);
 CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);
--- The newest open PR's number at a repo's first look: an older PR with no review is backlog and gets none unless asked for.
-CREATE TABLE IF NOT EXISTS cutoffs (repo TEXT PRIMARY KEY, number INTEGER NOT NULL);
+-- The PRs a repo had open at its first look, other than that look's newest (the one it reviews): each is backlog and gets no automatic
+-- review until asked for. The exact set, never a number, so a PR closed at that look and reopened later is an ordinary PR and is reviewed.
+CREATE TABLE IF NOT EXISTS cutoffs (repo TEXT NOT NULL, number INTEGER NOT NULL, PRIMARY KEY (repo, number));
 CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));
 CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, repo TEXT NOT NULL, sha TEXT NOT NULL, options TEXT NOT NULL, combo TEXT NOT NULL,
   status TEXT NOT NULL, verdict TEXT, report TEXT, report_url TEXT, report_version INTEGER, report_why TEXT, created INTEGER NOT NULL, ended TEXT,
@@ -256,6 +257,11 @@ export function createEngine(d: EngineDeps) {
     && !(db.prepare("PRAGMA table_info(askers)").all() as { name: string }[]).some((c) => c.name === "setkey")) db.exec("DROP TABLE IF EXISTS askers");
   // An area_seen table of the first shape (no model and effort in its key) holds only a cache: rebuilt.
   if ((db.prepare("PRAGMA table_info(area_seen)").all() as { name: string }[]).length && !(db.prepare("PRAGMA table_info(area_seen)").all() as { name: string }[]).some((c) => c.name === "combo")) db.exec("DROP TABLE area_seen");
+  // A cutoffs table of the first shape (one number per repo) held only that repo's newest PR: derived state too, so it and the cursor
+  // that stops a repo being read whole go, and the next look records the backlog as the set it is.
+  if ((db.prepare("PRAGMA table_info(cutoffs)").all() as { name: string; pk: number }[]).filter((c) => c.pk > 0).length === 1) {
+    db.exec("DROP TABLE cutoffs; DELETE FROM cursors");
+  }
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
@@ -1822,7 +1828,12 @@ export function createEngine(d: EngineDeps) {
   async function bootstrap(cfg: Entry) {
     const cursor = one<{ comments: string }>("SELECT comments FROM cursors WHERE repo = ?", cfg.repo);
     const open = await d.source.open(cfg.repo);
-    if (!cursor) run("INSERT OR IGNORE INTO cutoffs (repo, number) VALUES (?, ?)", cfg.repo, Math.max(0, ...open.map((p) => p.number)));
+    // The first look: every PR open now but its newest is backlog, recorded as they are. A PR number above one of them that is open
+    // later is a PR opened after the look, and is reviewed; one of these closed and reopened stays backlog until it is asked for.
+    if (!cursor) {
+      const newest = Math.max(0, ...open.map((p) => p.number));
+      for (const p of open) if (p.number !== newest) run("INSERT OR IGNORE INTO cutoffs (repo, number) VALUES (?, ?)", cfg.repo, p.number);
+    }
     const seenNow = new Set(open.map((p) => p.number));
     for (const p of open) await observe(cfg, p);
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
@@ -1886,8 +1897,9 @@ export function createEngine(d: EngineDeps) {
     for (const { cfg, n } of threads.values()) claimsDue.add(`${cfg.repo}#${n}`);
     after = page.next;
   }
-  /** An open PR older than the newest one at its repo's first look that nothing has reviewed or been asked to review: left alone. */
-  const backlog = (p: { repo: string; number: number }) => prRow(p.repo, p.number)?.mode !== "always" && p.number < (one<{ number: number }>("SELECT number FROM cutoffs WHERE repo = ?", p.repo)?.number ?? 0) && !anyRun(p);
+  /** An open PR that was already open at its repo's first look (but not that look's newest, which it reviews) and that nothing has
+   * reviewed or been asked to review: left alone. The recorded set decides, never the number, so one opened later is reviewed. */
+  const backlog = (p: { repo: string; number: number }) => prRow(p.repo, p.number)?.mode !== "always" && !!one("SELECT 1 FROM cutoffs WHERE repo = ? AND number = ?", p.repo, p.number) && !anyRun(p);
   const anyRun = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ?", p.repo, p.number);
   /** A new head is a push (on_push, from the baseline) once any review of the PR (but a one-off) completed, whatever became of
    * its post; until then (a push before it finished) the newest head gets the opening review. A skipped or superseded run never
@@ -2091,11 +2103,12 @@ export function createEngine(d: EngineDeps) {
     }
     for (const cfg of d.config().repos) {
       if (!gatesAny(cfg)) continue;
-      // A status is per commit: PRs sharing a head get one, the least ready of their verdicts (failure, then pending, then a pass
-      // without a failed review's warning, then pass).
+      // A status is per commit: PRs sharing a head get one, the least ready of their verdicts (a failure, then a backlog needing an
+      // ask, then a review in progress, then a pass with a failed review's warning, then pass).
       const prs = all<{ number: number; head: string; status_key: string | null }>("SELECT number, head, status_key FROM prs WHERE repo = ? AND open = 1 AND draft = 0", cfg.repo);
       const heads = new Map<string, Mirror>();
-      const rank = (m: Mirror) => (m.reason === "pass" ? 3 : m.reason === "failed" ? 2 : PENDING.has(m.reason) ? 1 : 0);
+      // Least ready wins: a failure, then backlog (it needs an ask), then a review in progress, then a pass with a failed review, then a pass.
+      const rank = (m: Mirror) => (m.reason === "pass" ? 4 : m.reason === "failed" ? 3 : PENDING.has(m.reason) ? 2 : m.reason === "backlog" ? 1 : 0);
       for (const p of prs) { const m = mirrored(cfg.repo, p.number, p.head), had = heads.get(p.head); if (!had || rank(m) < rank(had)) heads.set(p.head, m); }
       for (const p of prs) {
         const id = `${cfg.repo}@${p.head}`;
@@ -2288,7 +2301,9 @@ export function createEngine(d: EngineDeps) {
     // A review whose first post is still being decided: its findings gate once they have threads, so the merge waits for it. A
     // post refused once (filed again in the background) holds nothing: its findings are pending, never blocking.
     const posting = latest.filter((r) => r.status === "done" && r.posted === "pending" && !r.post_tries);
-    if (!latest.length) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: backlog({ repo, number: n }) ? "this pull request was already open when the repo was first watched: comment `aiden review` on it" : "it starts by itself within a minute or two" });
+    // Backlog is waited on by nobody: its own code, so the commit status says how to start it rather than "Review starting" forever.
+    if (!latest.length && backlog({ repo, number: n })) reasons.push({ code: "backlog", text: `the review of ${head.slice(0, 7)} hasn't started: this pull request was already open when the repo was first watched`, unblock: "comment `aiden review` on it to start one" });
+    else if (!latest.length) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
     else if (latest.some((r) => (r.status === "queued" || r.status === "running" || r.status === "failed") && SPEND_LIMIT.test(r.why ?? ""))) reasons.push({ code: "spend_limit", text: `install spend limit reached: the mandatory review of ${head.slice(0, 7)} can't run (${String(latest.find((r) => SPEND_LIMIT.test(r.why ?? ""))!.why).slice(0, 200)})`, unblock: "the owner raises spend_day_usd or spend_month_usd in Settings, or the limit resets; a failed review then runs again on `aiden review`" });
     else if (busy.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
