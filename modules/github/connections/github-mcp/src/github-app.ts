@@ -51,9 +51,9 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
   /** After GitHub rate-limited the App's own requests (Retry-After, or its limit used up): none goes before this (epoch ms). */
   let blockedUntil = 0;
 
-  async function api(method: string, path: string, auth: string): Promise<{ status: number; body: any }> {
+  async function api(method: string, path: string, auth: string, body?: unknown): Promise<{ status: number; body: any }> {
     if (blockedUntil > now()) throw new AppError(`the GitHub App is rate limited until ${new Date(blockedUntil).toISOString()}`);
-    const r = await fetchImpl(`${API}${path}`, { method, headers: { authorization: `Bearer ${auth}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq" }, signal: AbortSignal.timeout(20_000) });
+    const r = await fetchImpl(`${API}${path}`, { method, headers: { authorization: `Bearer ${auth}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
     const retry = Number(r.headers.get("retry-after"));
     if (r.status === 429 || (r.status === 403 && ((Number.isFinite(retry) && retry > 0) || r.headers.get("x-ratelimit-remaining") === "0"))) {
       blockedUntil = Number.isFinite(retry) && retry > 0 ? now() + retry * 1000 : Number(r.headers.get("x-ratelimit-reset")) * 1000 || now() + 60_000;
@@ -91,6 +91,16 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
       if (r.status !== 201 || typeof r.body?.token !== "string") throw refused("couldn't get an installation token", r);
       tokens.set(installation, { token: r.body.token, expires: Date.parse(r.body.expires_at) || now() + 3_600_000 });
       return r.body.token;
+    }),
+    /**
+     * A fresh installation token narrowed to `repositories` (names in the installation's account) and `permissions`, never cached:
+     * what a session box's git credential helper gets (ops.ts app_token). GitHub caps its life at one hour.
+     */
+    mint: (installation: number, narrow: { repositories: string[]; permissions: Record<string, string> }): Promise<{ token: string; expires_at: string }> => track(async () => {
+      const r = await api("POST", `/app/installations/${installation}/access_tokens`, jwt(), narrow);
+      if (r.status === 403 || r.status === 422) throw refused("the installation refused a token with contents and pull requests write: accept the App's new Contents permission on GitHub (the App's settings, Permissions, then this installation's review request) and make sure the App has access to the repository", r);
+      if (r.status !== 201 || typeof r.body?.token !== "string") throw refused("couldn't get a narrowed installation token", r);
+      return { token: r.body.token, expires_at: String(r.body.expires_at ?? "") };
     }),
     /** The App's slug (its bot is `<slug>[bot]`), or undefined while it isn't set up (or its saved files are broken). */
     slug: (): string | undefined => quiet()?.slug,

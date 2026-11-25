@@ -145,12 +145,18 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       return await fn(upstream ?? (await connect()));
     } catch (err) {
       if (!auth.signedIn() || !isAuthFailure(err)) throw err;
+      // The vendor's REST side still answers this token: its MCP endpoint's 401 is that endpoint's own error, not a sign-in to refresh or reconnect.
+      // A new session with the current token (the cached one's headers are fixed at connect time); no refresh grant is used.
+      if (auth.refused && !(await auth.refused())) {
+        await reset(false);
+        return await fn(upstream ?? (await connect()));
+      }
       log.warn(`${o.name} rejected the token; refreshing and retrying once`);
       try {
         await reset(true);
         return await fn(upstream ?? (await connect()));
       } catch (again) {
-        if (isAuthFailure(again)) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        if (isAuthFailure(again) && (await auth.refused?.() ?? true)) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
         throw again;
       }
     }
@@ -248,7 +254,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       await withUpstream((u) => u.client.listTools());
       return { ok: true };
     } catch (err) {
-      const signIn = err instanceof AuthError || isAuthFailure(err) || auth.status().state === "expired";
+      const signIn = auth.status().state === "expired" || ((err instanceof AuthError || isAuthFailure(err)) && (await auth.refused?.() ?? true));
       return signIn ? { ok: false, message: `${o.name} no longer accepts the sign-in.`, fix: "Reconnect" } : { ok: false, message: `${o.name} didn't answer: ${String((err as Error).message).slice(0, 200)}` };
     }
   }

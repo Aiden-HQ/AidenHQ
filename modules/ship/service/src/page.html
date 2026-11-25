@@ -18,7 +18,6 @@
   .pause.on { color: var(--color-text-danger, red); }
   .hold { display: grid; grid-template-columns: minmax(150px, 1fr) 96px 2.4fr 84px; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line); align-items: baseline; }
   .hold:first-of-type { border-top: 0; }
-  .adv { padding: 0 14px 8px; } .adv summary { cursor: pointer; font-size: 12px; } .adv textarea { width: 100%; min-height: 64px; font: 12px ui-monospace, monospace; box-sizing: border-box; }
   .q { display: inline-block; width: 15px; height: 15px; line-height: 15px; text-align: center; border: 1px solid var(--line); border-radius: 50%; font-size: 10px; cursor: help; margin-left: 6px; }
   @media (max-width: 860px) {
     .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; }
@@ -182,16 +181,6 @@
     return h("div", {}, h("span", { className: "lab" }, hd(key, shown(r)[key])), sel);
   }
 
-  // Advanced, per repo: the repo's own commands and workflows ship runs before its own step (the `actions` setting).
-  const ACTIONS_HELP = "Your repo's own tools, run before ship's: per stage (conflict, behind, before_merge) a list of steps, each { \"comment\": \"/rebase\" } (ship posts your slash command) or { \"workflow\": \"pr-rebase.yml\", \"inputs\": {} } (ship dispatches it on the PR's branch; before_merge takes workflows only). Ship waits for the new head or the run, and falls back to its own repair if a step fails. Runs only on adopted PRs, only for the stage needed.";
-  function advanced(r) {
-    const area = h("textarea", { ariaLabel: `Actions for ${r.repo}`, spellcheck: false, value: JSON.stringify(r.actions ?? {}, null, 1) });
-    const set = h("button", { type: "button", textContent: "Propose" });
-    set.addEventListener("click", () => { let v; try { v = JSON.parse(area.value || "{}"); } catch { return say("Actions: that isn't JSON.", true); } propose({ actions: v }, r.repo); });
-    return h("details", { className: "adv" }, h("summary", { textContent: `Advanced: repo actions for ${r.repo}` }, h("span", { className: "q", title: ACTIONS_HELP, textContent: "?" })),
-      h("div", { className: "soft", textContent: ACTIONS_HELP }), area, set);
-  }
-
   const redraw = () => keepFocus(draw);
   function render() { soon(redraw); }
   function draw() {
@@ -215,7 +204,7 @@
       const row = h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
         h("div", { className: "repo" }, r.repo, (() => { const b = linkBtn("Settings", () => { open.has(r.repo) ? open.delete(r.repo) : open.add(r.repo); render(); }); b.className = "link toggle"; b.setAttribute("aria-expanded", String(open.has(r.repo))); b.setAttribute("aria-controls", `drawer-${r.repo}`); return b; })()), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: ON[0] }), sw),
         choice(raw, "preset"), choice(raw, "handoff"), choice(raw, "approve"), choice(raw, "merge"), rm);
-      return open.has(raw.repo) ? [row, drawer(raw.repo), advanced(raw)] : [row];
+      return open.has(raw.repo) ? [row, drawer(raw.repo)] : [row];
     }).flat();
     $("defcard").hidden = !status.defaults;
     $("defhead").replaceChildren(help("Defaults", "The settings a new repo and the fleet's own repos start from until a repo's own entry changes them. The same fields as a repo's Settings.", { note: "A repo's own value wins over the default." }));

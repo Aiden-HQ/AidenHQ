@@ -46,7 +46,7 @@ export type LoopOptions = {
   /** A PR's CI recoveries (ci-recover.ts), with the repo's slice of the loop's state. */
   recover: (repo: string, pr: Json, state: Json, save: () => void) => Promise<Recovery>;
   /** The one engine (adopted.ts): every open PR but Dependabot's, with the task that opened it (if one did), and the PRs that left. */
-  adopted: { begin(): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; recover?: () => Promise<Recovery> }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
+  adopted: { begin(): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery> }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
 };
 
 /** The pass runs every minute while a watched PR is open; with none open it waits twice as long each pass, up to 30 minutes. */
@@ -174,7 +174,11 @@ export function startLoop(o: LoopOptions) {
       try {
         // A newer open PR the same task published supersedes this one.
         const newer = task ? open.find((p) => p.number > pr.number && p.baseRefName === pr.baseRefName && opened[p.url.toLowerCase()]?.task === task && opened[p.url.toLowerCase()]?.branch === p.headRefName)?.url : undefined;
-        await o.adopted.open(repo, main, pr, new Set(open.map((p) => p.number)), { ...(task ? { opener: task } : {}), ...(newer ? { newer } : {}), recover: () => o.recover(repo, pr, state, save) });
+        // A stack: its base is another open PR's head branch (in this repo).
+        // The parent into the default branch first (the same branch may also feed a backport into another base).
+        const parents = open.filter((p) => p.number !== pr.number && p.isCrossRepository === false && p.headRefName === pr.baseRefName);
+        const under = parents.find((p) => p.baseRefName === main.name) ?? parents[0];
+        await o.adopted.open(repo, main, pr, new Set(open.map((p) => p.number)), { ...(task ? { opener: task } : {}), ...(newer ? { newer } : {}), ...(under ? { stackedOn: { number: under.number, base: String(under.baseRefName) } } : {}), recover: () => o.recover(repo, pr, state, save) });
       } catch (e) { log("PR pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }); }
     }
     await o.adopted.gone(repo, main.name, new Set(open.map((p) => p.number))).catch((e) => log("landed check failed", { repo, err: String((e as Error).message).slice(0, 300) }));

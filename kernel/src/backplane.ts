@@ -32,7 +32,8 @@
 //                              (idle.ts): a work.waiting fact and a wake at `until`
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
 //                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row); with
-//                              to: "asker", on the task's open parent instead when it has one
+//                              to: "asker", on the task's open parent instead when it has one; with quiet: true, a note that wakes
+//                              nobody and is not anyone's words
 //   GET  /v1/wakes/pending?task=  (a module with role kernel.jobs) whether a wake for the task still waits to start a job
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
@@ -78,6 +79,7 @@
 //                              {sha256} out), and the file a keep recipe left after its run (raw bytes; 404 when none)
 //   POST /v1/checkout          (a kernel job's own token) {repo, sha?}: a code host snapshot (tar.gz) for a job holding the
 //                              repo-checkout role, an agents-org repo only: GitHub's, or local/… from codehost-local (jobtools.ts checkout)
+//   POST /v1/jobtools/git-token {repo}   a session job's own token: the code host's App token for that repo, at most an hour (jobtools.ts gitToken)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
 //                              task's next turn (jobtools.ts); review {kind, args}: what the AI reviewer would say of that write,
 //                              filed by nothing (writes.preview, review-loop precheck), at most PRECHECKS reviewer calls a job
@@ -270,7 +272,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/health/probe", auth: "health-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:batch\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:batch\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:cmd\b/g, "([a-z][a-z0-9_-]*)").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved", "claimed"], live: ["review", "owner", "approved", "claimed"], recent: ALL, finished: ["done", "failed", "unknown"] };
@@ -342,7 +344,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -401,6 +403,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   jobTools?: JobTools;
   /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
   precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
+  /** A session job's git token for a repo (codehost.ts appToken): the App's, narrowed to that repo. */
+  appToken?: (repo: string) => Promise<{ token: string; expires_at: string }>;
   /** A repo's bundle for a job's `aidenhq clone`, under its dispatcher's clone grant (codehost.ts bundle): the code host's answer. */
   repoBundle?: (module: string, repo: string, head?: string) => Promise<Answer>;
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
@@ -628,6 +632,16 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
               throw j.name === "JobToolError" ? fail(j.status!, j.code!, j.message) : e;
             } };
             return send(res, 200, await precheck(w, { kind: String(b.kind ?? ""), args: b.args }, slot));
+          }
+          if (m[0] === "git-token") {
+            if (!appToken) throw fail(503, "unavailable", "git tokens are off");
+            let c: { repo: string };
+            try { c = jobTools.gitToken(bearer(req), b); } catch (e) {
+              const j = e as { name?: string; status?: number; code?: string; message: string };
+              if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
+              throw e;
+            }
+            return send(res, 200, await appToken(c.repo).catch((e: { status?: number; message: string }) => { throw fail(e.status ?? 502, "no-token", e.message); }));
           }
           if (m[0] === "clone") {
             // The repo as a git bundle; the box clones it, or fetches it into the clone it has, itself.
@@ -943,8 +957,11 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             // carries that key, so a producer's retry (its answer was lost) never wakes the task's agent twice.
             const id = typeof b.id === "string" && /^[\w.-]{1,80}$/.test(b.id) ? b.id : undefined;
             if (b.id !== undefined && !id) throw fail(400, "bad_request", "id is [A-Za-z0-9_.-]{1,80}");
+            // `quiet`: a note on the task, never a notice: it wakes nobody and is not anyone's words (the grading loop's failed-pass
+            // note, which its agent has nothing to act on). It carries the grader's own marker so the evidence read skips it.
+            const quiet = b.quiet === true;
             // `to: "asker"`: whoever asked for the task hears it, its open parent (asker.tell's open-parent path), else the task itself.
-            const said = async (on: string) => wakeNotice(owner, on, text, id === undefined ? undefined : `${id}@${on}`).catch((e: Error) => { throw fail(502, "upstream", e.message); });
+            const said = async (on: string) => wakeNotice(owner, on, text, id === undefined ? undefined : `${id}@${on}`, quiet).catch((e: Error) => { throw fail(502, "upstream", e.message); });
             if (b.to === "asker") {
               // A read that failed says nothing about the parent: retried (502), never read as "no parent" and posted on the task.
               const parent = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).then((i) => {
