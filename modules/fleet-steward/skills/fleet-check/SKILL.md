@@ -66,7 +66,10 @@ An incident is yours until it is resolved live:
 
 1. Restore service first when users or the fleet are blocked: `restart_service` for a hung module service, `rollback` for a
    bad apply (the host returns to its last good generation; the next apply of main moves it forward again, so the repair
-   lands before it), `stop_run` and `pause_routine`/`pause_agent` for looping or wasteful work.
+   lands before it), `stop_run` and `pause_routine`/`pause_agent` for looping or wasteful work. A `refused` generation
+   switched nothing: the generation that ran before it is still the one running. Roll back only for a problem that running
+   generation has itself, and repair what the refused one's `reason` names (often an instance setting the new product's
+   compile refuses) so the next apply moves forward.
 2. File the repair at its source (a task for the Engineer, an app's owner, the Maintainer) with the evidence and a done
    condition, and follow it: its PR merged, the pin bump or the updater's deploy live (`fleet_generation_status` shows a
    `good` generation carrying it), and the original symptom checked again on the live system.

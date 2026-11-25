@@ -46,6 +46,14 @@ const FAKES = {
 import { checkDataVersion } from "../scripts/compiler/data-version.ts";
 const stage = process.argv.includes("--stage") || process.env.AIDENHQ_COMPILE_STAGE === "1";
 const inst = fs.readFileSync(process.env.AIDENHQ_INSTANCE_DIR + "/instance.yaml", "utf8");
+if (/multiline: true/.test(inst)) {
+  // A YAML parse error, as the real compiler's YAML library prints it: the message, the offending source, then a pointer.
+  console.error("compile: Nested mappings are not allowed in compact mappings at line 1, column 4:");
+  console.error("");
+  console.error("a: 1");
+  console.error("   ^");
+  process.exit(1);
+}
 if (/broken: true/.test(inst)) { console.error("compile: broken"); process.exit(1); }
 const v = fs.readFileSync("VERSION", "utf8");
 const out = stage ? "config.next" : "config";
@@ -286,6 +294,21 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   const board = YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")).services.board.volumes.find((v) => String(v).endsWith(":/generations:ro"));
   assert.ok(board, "the board mounts the generations mirror");
   assert.match(board, /\/board:\/generations:ro$/, `the mirror's directory, not the file: ${board}`);
+});
+
+// A refused generation's reason is what fleet_generation_status shows the Steward (the log stays on the host), so it must
+// carry the compile's error, not only the last line of a multiline diagnostic: a YAML parse error ends with a bare pointer.
+test("a refused compile's reason keeps the error message of a multiline diagnostic, on one bounded line", async () => {
+  const w = world();
+  w.commitInstance(w.p1, "multiline: true\n");
+  const r = await w.run();
+  assert.notEqual(r.status, 0, r.out);
+  const g = w.gens().at(-1);
+  assert.equal(g.health, "refused");
+  assert.match(g.reason, /^the staged compile failed: compile: Nested mappings are not allowed in compact mappings at line 1, column 4/, g.reason);
+  assert.match(g.reason, /a: 1 \| +\^/, "the source pointer follows the message");
+  assert.ok(!g.reason.includes("\n"), "one line");
+  assert.ok(g.reason.length <= 340, `bounded: ${g.reason.length}`);
 });
 
 // The security module's SBOM timer runs the checkout this apply applied, not the one setup recorded: every apply writes the
