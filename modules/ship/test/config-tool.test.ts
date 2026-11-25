@@ -35,6 +35,7 @@ test("ship_status reads headline settings and holds for the Fleet page", async (
   const s = state();
   s.put(adoption(1));
   s.put(adoption(2, { kind: "stalled", reason: "ci rounds" }));
+  s.put({ ...adoption(3, { kind: "handed_back", reason: "its PR was closed" }), counters: { lastRound: "closed" } });
   const tool = configTools({ raw: () => ({ repos: { "a/b": "full" } }), scope: () => scope, state: s, maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_status")!;
   const r = (await tool.run({}, { agent: "x", roles: [] })) as any;
   const { settings, own, inherits, ...row } = r.repos[0];
@@ -53,6 +54,10 @@ test("ship_configure for the owner returns the settings change and files nothing
   assert.deepEqual(filed, []);
   await assert.rejects(tool.run({ repo: "x/y", add: true }, { agent: "x", roles: ["ship-admin"], assertion: "jwt" }), /owner's/);
   await assert.rejects(tool.run({ repo: "x/y", change: "cautious" }, owner), /isn't covered yet/);
+  // No change adds an entry that inherits the defaults; a change adds the entry with its own settings, in the one proposal.
+  const ship = (r: any) => r._aidenhq.settings_change.find((c: any) => c.key === "ship").value.repos;
+  assert.deepEqual(ship(added)["x/y"], {});
+  assert.deepEqual(ship(await tool.run({ repo: "x/y", add: true, change: { preset: "full", caps: { usd: 3 } } }, owner))["x/y"], { preset: "full", caps: { usd: 3 } });
   // Add repo on a repo that already has an entry never resets it.
   await assert.rejects(tool.run({ repo: "a/b", add: true }, owner), /already on ship/);
 });

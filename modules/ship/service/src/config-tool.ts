@@ -70,10 +70,11 @@ const same = (a: unknown, b: string) => String(typeof a === "string" ? a : (a as
 /**
  * Adds a repo to ship: one settings change that lists it for the Maintainer (maintainer_repos, no duty on, unless already listed) and
  * code review (code_review, its defaults) and gives it its ship entry, so what is missing lands together or none does. Only the owner's Fleet page calls it.
+ * No `change` is an empty entry: it inherits the defaults and follows their later changes.
  */
 export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string, change: unknown) {
   if (!REPO.test(repo)) throw new Error(`${repo.slice(0, 100)} isn't owner/name`);
-  const { value, summary } = applyShipChange(d.raw, { repo, change: change ?? "cautious", scope: { ...d.scope, listed: [...d.scope.listed, repo] } });
+  const { value, summary } = applyShipChange(d.raw, { repo, change: change ?? {}, scope: { ...d.scope, listed: [...d.scope.listed, repo] } });
   // A repo the Maintainer already lists (or the fleet covers) keeps its entry and duties: only what is missing is added.
   const listed = covers(repo, d.scope), watched = ((d.codeReview.repos as unknown[]) ?? []);
   const changes: Dict[] = [
