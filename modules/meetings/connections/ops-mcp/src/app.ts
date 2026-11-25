@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.js";
 import { type Db, openDb } from "./db/db.js";
@@ -113,15 +113,22 @@ export async function healthChecks(app: App): Promise<{ ok: boolean; state?: "mi
   const canonicalVault = new Vault(app.cfg.vault);
   // The note publishing would write now, built by the same function: its year/month folder is the one that has to take
   // writes, and an old read-only archive must not fail health.
-  const canonicalPath = canonicalNotePath(meetingsRoot, {
-    calendar_event_id: "health-check",
-    title: "Health check",
-    start_at: new Date().toISOString(),
-    end_at: new Date().toISOString(),
-    timezone: app.cfg.timezone,
-    attendees: [],
-  });
   const canonicalProblem = (() => {
+    let canonicalPath: string;
+    try {
+      // Building the path formats the configured timezone: a mistyped one throws here, and health must name it rather than 500.
+      const now = new Date().toISOString();
+      canonicalPath = canonicalNotePath(meetingsRoot, {
+        calendar_event_id: "health-check",
+        title: "Health check",
+        start_at: now,
+        end_at: now,
+        timezone: app.cfg.timezone,
+        attendees: [],
+      });
+    } catch (err) {
+      return `canonical notes under ${meetingsRoot} have no path: ${err instanceof Error ? err.message : String(err)}`;
+    }
     try {
       canonicalVault.exists(canonicalPath);
     } catch (err) {
@@ -130,8 +137,22 @@ export async function healthChecks(app: App): Promise<{ ok: boolean; state?: "mi
     try {
       // createNote makes the missing year/month folders, so the nearest existing ancestor is what has to take writes.
       let dir = dirname(resolveVaultPath(app.cfg.vault.root, canonicalPath, app.cfg.vault.write_roots).abs);
-      while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
-      if (!statSync(dir).isDirectory()) return `canonical notes under ${meetingsRoot} cannot be written: ${dir} is not a directory`;
+      for (;;) {
+        let st: ReturnType<typeof lstatSync> | undefined;
+        try {
+          st = lstatSync(dir);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        }
+        if (st) {
+          // A symlink here resolves to a directory, or is dangling and cannot be written through.
+          const target = st.isSymbolicLink() ? statSync(dir) : st;
+          if (!target.isDirectory()) return `canonical notes under ${meetingsRoot} cannot be written: ${dir} is not a directory`;
+          break;
+        }
+        if (dirname(dir) === dir) throw new Error(`no existing folder above ${dir}`);
+        dir = dirname(dir);
+      }
       accessSync(dir, constants.W_OK | constants.X_OK);
       return undefined;
     } catch (err) {

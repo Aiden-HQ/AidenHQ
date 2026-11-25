@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -109,11 +109,38 @@ describe("healthChecks vault", () => {
     // The folder publishing would use now, from the same function that builds the path.
     const now = new Date().toISOString();
     const note = canonicalNotePath("Meetings", { calendar_event_id: "t", title: "T", start_at: now, end_at: now, timezone: env.cfg.timezone, attendees: [] });
-    const month = join(root, dirname(dirname(note)));
+    const month = join(root, dirname(note));
     mkdirSync(month, { recursive: true });
     chmodSync(month, 0o555);
     const h = await healthChecks(env.app);
-    if (process.getuid?.() === 0) return;
+    // A root uid bypasses the mode, so this case can only be asserted by a normal user.
+    if (process.getuid?.() === 0) {
+      expect(h.ok).toBe(true);
+      return;
+    }
+    expect(h.ok).toBe(false);
+    expect(h.detail).toContain("cannot be written");
+  });
+
+  it("names an invalid timezone instead of throwing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Meetings"));
+    const env = makeEnv({ cfg: { timezone: "Mars/Olympus", ...vaultAt(root, ["Meetings"]) } });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(false);
+    expect(h.detail).toContain("have no path");
+    expect(h.detail).toContain("Mars/Olympus");
+  });
+
+  it("fails when the current month's folder is a dangling symlink", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    const env = makeEnv({ cfg: vaultAt(root, ["Meetings"]) });
+    const now = new Date().toISOString();
+    const note = canonicalNotePath("Meetings", { calendar_event_id: "t", title: "T", start_at: now, end_at: now, timezone: env.cfg.timezone, attendees: [] });
+    const month = join(root, dirname(dirname(note)));
+    mkdirSync(dirname(month), { recursive: true });
+    symlinkSync(join(root, "gone"), month);
+    const h = await healthChecks(env.app);
     expect(h.ok).toBe(false);
     expect(h.detail).toContain("cannot be written");
   });
