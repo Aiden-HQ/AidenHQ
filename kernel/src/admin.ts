@@ -268,7 +268,12 @@ export function createAdmin(d: Deps) {
       if (!hit) throw new Refusal(404, "not found");
       const id = hit.re.exec(url.pathname)![1] ?? "";
       if (OAUTH_CLIENT.has(hit.path) || hit.path === "/.well-known/oauth-authorization-server") return await d.accounts.oauth(req, res, hit.path, url.search);
-      if (req.method === "POST" && !d.origins().includes(String(req.headers.origin ?? ""))) throw new Refusal(403, "this form didn't come from this page's own address");
+      if (req.method === "POST" && !d.origins().includes(String(req.headers.origin ?? ""))) {
+        const accepted = d.origins();
+        const header = req.headers.origin;
+        const came = header === undefined || header === "" ? "no Origin" : `the Origin ${header.length > 200 ? `${header.slice(0, 200)} (cut)` : header}`;
+        throw new Refusal(403, `this form came from ${came}, which this listener doesn't accept; it accepts ${accepted.join(", ") || "no origins"}`);
+      }
       const next = url.searchParams.get("next") ?? "";
       switch (`${hit.method} ${hit.path}`) {
         case "GET /oauth2/authorize": {

@@ -127,6 +127,29 @@ test("the kernel's approval addresses go to the board's approvals; nothing is de
   assert.equal((await browser(url, "evil.example:3120")("GET", "/approvals")).status, 421);
 });
 
+test("a form from an origin the listener doesn't accept names both sides; a missing Origin says so; a long one is cut", async (t) => {
+  const dir = kernelData();
+  const { url } = await adminOn(t, dir);
+  const b = browser(url);
+  const accepted = [`http://${HOST}`, `https://${FRONT}`];
+  const foreign = "http://localhost:3121"; // the board's port, not the admin listener's
+  const r = await b("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw }, foreign);
+  assert.equal(r.status, 403, r.html);
+  assert.match(r.html, new RegExp(foreign.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  for (const o of accepted) assert.ok(r.html.includes(o), o);
+
+  const none = await b("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw }, "");
+  assert.equal(none.status, 403, none.html);
+  assert.match(none.html, /no Origin/);
+  for (const o of accepted) assert.ok(none.html.includes(o), o);
+
+  const long = `http://${"a".repeat(5000)}.example`;
+  const cut = await b("POST", "/auth/sign-in", { email: OWNER.email, password: OWNER.pw }, long);
+  assert.equal(cut.status, 403, cut.html);
+  assert.match(cut.html, /\(cut\)/);
+  assert.ok(!cut.html.includes(long), "the whole oversized Origin is not echoed");
+});
+
 // Last: its burst spends Better Auth's per-address limit for the shared loopback peer (module-wide memory) for a minute.
 test("every kernel page refuses a frame (A7); unidentified guessing hits its ceiling while the owner over the tailnet signs in; a forged tailnet identity counts for nothing", async (t) => {
   const dir = kernelData();
