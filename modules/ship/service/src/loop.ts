@@ -52,9 +52,7 @@ export const RECHECK_MS = 60_000;
 /** PRs per list page: starts at PAGE_MAX; a timeout halves it (down to PAGE_MIN) and a page answered under FAST_PAGE_MS doubles it back,
  * no sooner than GROW_AFTER_MS after the last shrink (so a size known to time out isn't probed every pass). */
 const PAGE_MAX = 50, PAGE_MIN = 5, FAST_PAGE_MS = 3_000, GROW_AFTER_MS = 10 * 60_000;
-// A timeout is a 502/504, or a timeout error with no PR list at all. A 200 that carries the list alongside a timeout error (one
-// slow PR's nested field) is a partial page: read as it is, its missing PRs skipped this pass, since a smaller page can't help.
-const timedOut = (g: Json) => g.status === 502 || g.status === 504 || (!g.body?.data?.repository?.pullRequests && /time ?out|timed out/i.test(String(g.body?.errors?.[0]?.message ?? "")));
+const timedOut = (g: Json) => g.status === 502 || g.status === 504 || /time ?out|timed out/i.test(String(g.body?.errors?.[0]?.message ?? ""));
 /** How long a CI re-run that came due still keeps its repo read again: a slow pass may reach it after its due time. */
 const RETRY_GRACE_MS = 5 * 60_000;
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
@@ -103,14 +101,14 @@ export function startLoop(o: LoopOptions) {
       }
       if (shrunk) writeJson(stateFile, all);
       const page = g.body?.data?.repository;
-      if (g.status >= 300 || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
+      if (g.status >= 300 || timedOut(g) || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
       if (!shrunk && first < PAGE_MAX && Date.now() - t < FAST_PAGE_MS && Date.now() - (state.shrunkAt ?? 0) > GROW_AFTER_MS) {
         state.pageSize = Math.min(PAGE_MAX, first * 2);
         log("page size changed", { repo, from: first, to: state.pageSize, why: `page answered in ${Date.now() - t} ms` });
         writeJson(stateFile, all);
       }
       r ??= page;
-      open.push(...(page.pullRequests.nodes ?? []).filter(Boolean));
+      open.push(...(page.pullRequests.nodes ?? []));
       after = page.pullRequests.pageInfo?.hasNextPage ? page.pullRequests.pageInfo.endCursor : null;
       if (!after) break;
     }
