@@ -36,7 +36,7 @@ import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
 import type { Feed } from "./feed.ts";
-import { LOCAL_ORG, namespaced, plan as planRules, type Ship } from "./plan.ts";
+import { LOCAL_ORG, holdAdmits, namespaced, plan as planRules, type Ship, type ShipHold } from "./plan.ts";
 import { fileContext, numstat } from "./review-files.ts";
 /** One changed file as git counts it (review-files.ts numstat; a binary file has no line counts). */
 type Changed = { path: string; add?: number; del?: number };
@@ -121,14 +121,20 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
     return { login: `${slug}[bot]`, rest, token: () => app.token(installation) };
   };
 }
-/** A hold ship reports on an adoption: `stalled` (a repair or a check stopped it), `handed_back` or `stopped` (a pause reads as
- * `stopped`), with the reason it gives.
- */
-export type ShipHold = { kind: string; reason?: string };
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
  * now, and the hold it sits on when it is. A `stalled` hold leaves the adoption in place: the push that resumes it may land, and
  * nothing else. */
 export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean }> };
+/**
+ * The hold off ship's answer, when it carries one: a `stalled` one still admits the push that resumes it, so it is the plan's to
+ * judge with its kind. A hold it can't read (not an object, or no kind) is still a hold: it reads as `unknown`, which no write
+ * admits, so a malformed field can never leave a write open that ship meant to refuse.
+ */
+const holdOf = (v: unknown): { hold: ShipHold } | undefined => {
+  if (v === null || v === undefined) return undefined;
+  const { kind, reason } = (typeof v === "object" ? v : {}) as { kind?: unknown; reason?: unknown };
+  return { hold: { kind: typeof kind === "string" && kind ? kind : "unknown", ...(typeof reason === "string" ? { reason: reason.slice(0, 300) } : {}) } };
+};
 /** Ship's final tier check before a write (risk tiers §7): what is about to happen and the PR as GitHub has it right now (head, base branch, author association). */
 export type ShipCheck = { do: "approve" | "merge"; head: string; base: string; association: string; /** The policy an approval was filed under. */ policy?: string };
 /** Ship's adoptions read from its service with this module's own token (`url`: compiled only when the ship module is on). */
@@ -141,11 +147,7 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
       const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown };
       const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 ? (j.generation as number) : null;
-      // The hold rides along with its kind: a stalled one still admits the push that resumes it, so it is the plan's to judge.
-      const hold = j.hold && typeof j.hold === "object" && typeof (j.hold as { kind?: unknown }).kind === "string"
-        ? { kind: (j.hold as { kind: string }).kind, ...(typeof (j.hold as { reason?: unknown }).reason === "string" ? { reason: String((j.hold as { reason: string }).reason).slice(0, 300) } : {}) }
-        : undefined;
-      return { generation, ...(hold ? { hold } : {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
+      return { generation, ...(holdOf(j.hold) ?? {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
     },
   };
 }
@@ -877,16 +879,16 @@ export function createService(o: Options) {
     const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
     return r.status < 300 ? { ok: true, text: `${url} now targets \`${a.to}\`.` } : { ok: false, text: `GitHub refused the retarget of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
-  /**
-   * Why this write may not go on, or undefined. `push`: this is the push onto the PR's branch, the one write a `stalled` hold admits
+  /** Why this write may not go on, or undefined. `push`: this is the push onto the PR's branch, the one write a `stalled` hold admits
    * (ship clears such a hold on a new head, so the push is what resumes the adoption). Approve, enqueue, a repair and a retarget keep
-   * `push` false: any hold refuses them, and a hand-back, a stop or a pause refuses the push too.
+   * `push` false: any hold refuses them, and a hand-back, a stop or a pause refuses the push too. Whether a hold admits the write is
+   * the plan's own rule (`holdAdmits`), with the adoption's task as ship reports it, so the two never disagree.
    */
   async function adoptionEnded(repo: string, n: number, generation: number, head: string, check?: ShipCheck, push = false): Promise<string | undefined> {
     const at = o.ship ? await o.ship.generation(repo, n, head, check).catch(() => undefined) : undefined;
     if (at?.generation === generation && at.refused) return `${at.retry ? "ship-tier-pending" : "ship-tier"}: https://github.com/${repo}/pull/${n}: ${at.refused}: nothing was done.`;
     if (at?.generation !== generation) return `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
-    if (at.hold && !(push && at.hold.kind === "stalled")) return `ship-generation: https://github.com/${repo}/pull/${n} is on hold by ship (${at.hold.kind}${at.hold.kind === "stalled" ? ": only the push that resumes it may land" : ""})${at.hold.reason ? `: ${at.hold.reason}` : ""}: nothing was done.`;
+    if (at.hold && !holdAdmits(at.hold, { push, task: push ? at.task : undefined })) return `ship-generation: https://github.com/${repo}/pull/${n} is on hold by ship (${at.hold.kind}${at.hold.kind === "stalled" ? ": only the push that resumes it may land" : ""})${at.hold.reason ? `: ${at.hold.reason}` : ""}: nothing was done.`;
     return undefined;
   }
 
@@ -1056,6 +1058,10 @@ export function createService(o: Options) {
             }
             tree.push({ path, mode: mode!, type: mode === "160000" ? "commit" : "blob", sha: sha! });
           }
+          // An empty entry list is a head the merge leaves as it is (a base already merged, or a conflict the kept set resolves
+          // to the head's own side): there is nothing to record, so it is a clean "nothing was changed", never an empty tree
+          // (GitHub refuses one with 422 Invalid tree info).
+          if (!tree.length) return refuse("changed nothing: the merge and the kept files leave every path at the head's");
           const t = await post("trees", { base_tree: await g(["rev-parse", `${a.head}^{tree}`]), tree });
           if (t.sha !== final) return refuse(`built a tree on GitHub (${String(t.sha).slice(0, 12)}) that isn't the merge's (${final.slice(0, 12)})`);
           made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000), tree: final, parents: [a.head, baseSha] })).sha);
@@ -1120,9 +1126,15 @@ export function createService(o: Options) {
       return r.body;
     };
     let parent = from;
+    // The replay builds each commit on the one before it, so each commit's first parent must be that one (the head for the
+    // first): a merge made the other way round (the PR branch merged into a base checkout) has the base tip as its first parent,
+    // and replaying it would drop the head's content and leave the PR behind its base. Its parents can't be kept here.
+    let expected = from;
     try {
       for (const c of list) {
         const [, first, ...others] = (await git(dir, ["rev-list", "--parents", "-n", "1", c])).split(" ");
+        if (first !== expected) return { refused: `ship-scope: \`${c.slice(0, 12)}\` builds on \`${String(first).slice(0, 12)}\`, not the head's own chain \`${expected.slice(0, 12)}\`: not replayed` };
+        expected = c;
         // Entries changed against the first parent; a path another parent has unchanged is already on GitHub (a base merge's files).
         const diff = (p: string) => git(dir, ["diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", p!, c]).then((out) => {
           const f = out.split("\0"), m = new Map<string, { mode: string; sha: string }>();
@@ -1146,8 +1158,12 @@ export function createService(o: Options) {
           tree.push({ path, mode: e.mode, type, sha: e.sha });
         }
         const want = await git(dir, ["rev-parse", `${c}^{tree}`]);
-        const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
-        if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        // An empty changed set is a commit whose tree is its first parent's (an "ours" merge): the commit carries that tree as it
+        // is, with no tree written (GitHub refuses an empty tree array).
+        if (tree.length) {
+          const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
+          if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        }
         const message = await git(dir, ["log", "-1", "--format=%B", c]);
         const made = await post("commits", { message, tree: want, parents: [parent, ...others] });
         parent = String(made.sha);
