@@ -14,7 +14,7 @@ const pr = (n: number, head: string, title = `PR ${n}`) => ({ number: n, title, 
 
 function rig() {
   let t = Date.parse("2026-11-24T12:00:00Z");
-  const world: { prs: any[]; closed: Record<number, any>; runs: Record<string, any[]>; comments: any[] } = { prs: [pr(1, A)], closed: {}, runs: {}, comments: [] };
+  const world: { prs: any[]; closed: Record<number, any>; runs: Record<string, any[]>; comments: any[]; issues: any[] } = { prs: [pr(1, A)], closed: {}, runs: {}, comments: [], issues: [] };
   const calls: string[] = [];
   const body = (path: string): any => {
     const p = path.split("?")[0]!;
@@ -23,6 +23,7 @@ function rig() {
     const closed = /\/pulls\/(\d+)$/.exec(p);
     if (closed) return world.closed[Number(closed[1])];
     if (p === `/repos/${R}/issues/comments`) return world.comments.filter((c) => c.updated_at >= new URLSearchParams(path.split("?")[1]).get("since")!);
+    if (p === `/repos/${R}/issues`) return /page=1\b/.test(path) ? world.issues : [];
     if (p === `/repos/${R}`) return { default_branch: "main" };
     if (p === `/repos/${R}/branches/main`) return { commit: { sha: T } };
     const runs = /\/commits\/(\w+)\/check-runs$/.exec(p);
@@ -44,7 +45,7 @@ function rig() {
   const dir = mkdtempSync(join(tmpdir(), "feed-"));
   const seen: any[] = [];
   let connected = true;
-  const feed = createFeed({ gh: gh as any, cacheDir: dir, kernel, managed: async () => { if (!connected) throw new Error("GitHub isn't connected"); return [R]; }, kindOf: async () => "owner", hooks: [(e) => void seen.push(e)], now: () => t });
+  const feed = createFeed({ gh: gh as any, cacheDir: dir, kernel, managed: async () => { if (!connected) throw new Error("GitHub isn't connected"); return [R]; }, kindOf: async () => "owner", member: async (_w: string, a: string) => a === "OWNER" || a === "MEMBER", hooks: [(e) => void seen.push(e)], now: () => t });
   return { feed, world, calls, sent, seen, dir, connect: (c: boolean) => void (connected = c), tick: (ms: number) => void (t += ms), kernel: (up: boolean) => void (kernelUp = up), at: () => new Date(t).toISOString() };
 }
 
@@ -121,4 +122,17 @@ test("a PR missing from the open list but still open is no close; signed out, th
   await r.feed.pass(R);
   await r.feed.send();
   assert.deepEqual(r.sent, []);
+});
+
+test("an opened issue carries member from GitHub identity: an OWNER or MEMBER is one, an outsider with the AidenHQ footer is not", async () => {
+  const r = rig();
+  await r.feed.pass(R);
+  r.tick(30_000);
+  const issue = (n: number, association: string, body = "text") => ({ number: n, id: 500 + n, title: `Issue ${n}`, body, user: { login: `u${n}` }, author_association: association, created_at: r.at(), updated_at: r.at(), html_url: `https://github.com/${R}/issues/${n}`, labels: [] });
+  r.world.issues = [issue(5, "OWNER"), issue(6, "MEMBER"), issue(7, "NONE", "report\n\nAidenHQ footer")];
+  r.sent.length = 0;
+  await r.feed.pass(R);
+  await r.feed.send();
+  const opened = r.sent.filter((e) => e.kind === "issues.opened");
+  assert.deepEqual(opened.map((e) => e.data.member), [true, true, false]);
 });

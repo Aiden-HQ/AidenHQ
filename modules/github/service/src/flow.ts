@@ -100,6 +100,14 @@ export function createFlow(d: FlowDeps) {
     }
     return writers.get(k)!;
   }
+  /** Whether GitHub itself says `who` belongs to the repo: the owner's login, an OWNER, MEMBER or COLLABORATOR association, or write on `repo`. */
+  async function isMember(who?: string | null, association?: string | null, repo?: string): Promise<boolean> {
+    // A failed lookup is retried at the next author.
+    if (!selfName) selfName = login(await d.self?.().catch(() => undefined));
+    if (login(who) && login(who) === selfName) return true;
+    if (["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase())) return true;
+    return Boolean(repo && who && d.gh && (await canWrite(repo, String(who))));
+  }
   /**
    * Who an author is: AidenHQ's (agent) when the object is in our records or carries our marks (`seen`: its number, its text and
    * its head commit's message, where known), else the owner (their login, an OWNER, MEMBER or COLLABORATOR association, or write
@@ -108,18 +116,14 @@ export function createFlow(d: FlowDeps) {
   async function kindOf(who?: string | null, association?: string | null, repo?: string, seen: { number?: number; body?: string; message?: string } = {}): Promise<Kind> {
     if (repo && seen.number && (await d.ours?.(`github:${repo.toLowerCase()}#${seen.number}`).catch(() => false))) return "agent";
     if (hasFooter(String(seen.body ?? "")) || hasTrailer(String(seen.message ?? ""))) return "agent";
-    // A failed lookup is retried at the next author.
-    if (!selfName) selfName = login(await d.self?.().catch(() => undefined));
-    if (login(who) && login(who) === selfName) return "owner";
-    if (["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase())) return "owner";
-    return repo && who && d.gh && (await canWrite(repo, String(who))) ? "owner" : "outside";
+    return (await isMember(who, association, repo)) ? "owner" : "outside";
   }
   /** `author` and `author_kind` for a fact's data; `association` is GitHub's author_association (REST) or authorAssociation (GraphQL). */
   const authored = async (who?: string | null, association?: string | null, repo?: string, seen?: { number?: number; body?: string; message?: string }) => ({ author: who ? String(who) : "ghost", author_kind: await kindOf(who, association, repo, seen) });
 
   const f = {
     emit, flush: emitter.flush, stop: emitter.stop, taskOf,
-    kindOf, authored,
+    kindOf, isMember, authored,
     opened: (repo: string, n: number, head: string, branch: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill", extra: Json = {}) =>
       emit({ type: "pr.opened", subject: prSubject(repo, n), version: PR_OPENED_VERSION, at, task, data: { repo: repo.toLowerCase(), number: n, head, branch, ...extra }, ...(source ? { source } : {}) }),
     /** A head change after the PR opened: version is the new head, so a repeat from another path records once. */

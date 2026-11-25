@@ -63,6 +63,8 @@ export type FeedOptions = {
   managed: () => Promise<string[]>;
   /** Who an author is (flow.ts kindOf). */
   kindOf: (who: string, association: string, repo: string, seen?: { number?: number; body?: string }) => Promise<Kind>;
+  /** Whether GitHub says the author belongs to the repo (flow.ts isMember): identity only, never the text's marks. */
+  member: (who: string, association: string, repo: string) => Promise<boolean>;
   hooks?: Hook[];
   /** A head's CI is seen started (its earliest check start), once per head: Flow's fact, while the checks still run. */
   started?: (repo: string, prs: number[], head: string, at: string) => void;
@@ -215,7 +217,8 @@ export function createFeed(o: FeedOptions) {
       if (i.pull_request || !fresh(rs, `issue:${i.id}`, i.created_at)) return;
       const author = String(i.user?.login ?? "ghost"), labels = (i.labels ?? []).map((l: Json) => short(l.name)).slice(0, 10);
       const author_kind = await o.kindOf(author, String(i.author_association ?? ""), repo, { number: i.number, body: i.body });
-      emit({ id: `${repo}#${i.number}:opened`, kind: "issues.opened", author, bot: bot(author), url: String(i.html_url ?? ""), ...clip(`${i.title ?? ""}\n\n${i.body ?? ""}`), ...(labels.length ? { labels } : {}), data: { number: i.number, author_kind, created_at: String(i.created_at), labels } });
+      const member = await o.member(author, String(i.author_association ?? ""), repo);
+      emit({ id: `${repo}#${i.number}:opened`, kind: "issues.opened", author, bot: bot(author), url: String(i.html_url ?? ""), ...clip(`${i.title ?? ""}\n\n${i.body ?? ""}`), ...(labels.length ? { labels } : {}), data: { number: i.number, author_kind, member, created_at: String(i.created_at), labels } });
     });
 
     // 3. Issue events (newest first, no `since`): back to the newest one read before.

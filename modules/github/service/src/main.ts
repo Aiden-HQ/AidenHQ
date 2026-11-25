@@ -83,6 +83,7 @@ const feed = createFeed({
     return [...new Set([...(await handle.managedRepos()), ...maintained.map((r) => r.repo.toLowerCase())])];
   },
   kindOf: (who, association, repo, seen) => handle.flow.kindOf(who, association, repo, seen),
+  member: (who, association, repo) => handle.flow.isMember(who, association, repo),
   started: (repo, prs, head, at) => { for (const n of prs) handle.flow.checksStarted(repo, n, head, at); },
   hooks: [
     handle.flow.observe({ runs: (repo, sha) => feed.runs(repo, sha) }),

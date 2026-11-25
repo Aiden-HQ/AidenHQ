@@ -168,8 +168,8 @@ test("a labelled issue files one task for the maintainer role, keyed by its sour
 test("triage runs are capped a day per author, the rest held until a slot frees or left to the daily run", async () => {
   const w = world();
   await w.look();
-  const opened = (seq, number, author, o = {}) => ev(seq, "issues.opened", { number, author_kind: "outside", created_at: new Date().toISOString(), ...o }, { author, labels: [] });
-  w.log.push(opened(1, 1, "spam"), opened(2, 2, "Spam"), opened(3, 3, "ada"), opened(4, 4, "bob", { author_kind: "agent" }), { ...opened(5, 5, "eve"), labels: ["agent-fix"] });
+  const opened = (seq, number, author, o = {}) => ev(seq, "issues.opened", { number, author_kind: "outside", member: false, created_at: new Date().toISOString(), ...o }, { author, labels: [] });
+  w.log.push(opened(1, 1, "spam"), opened(2, 2, "Spam"), opened(3, 3, "ada"), opened(4, 4, "bob", { author_kind: "agent", member: true }), { ...opened(5, 5, "eve"), labels: ["agent-fix"] });
   await w.look();
   assert.deepEqual(w.triaged, [1, 3, 4], "the fleet's own issue is triaged like any other");
   assert.deepEqual(w.logs.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [2]);
@@ -179,9 +179,12 @@ test("triage runs are capped a day per author, the rest held until a slot frees 
   w.log.push(ev(6, "issues.labeled", { number: 1, label: "agent-fix" }));
   await w.look();
   assert.deepEqual(w.triaged, [1, 3, 4, 2]);
-  w.log.push(...[10, 11, 12, 13, 14, 15, 16].map((n) => opened(n, n, "member", { author_kind: "owner" })));
+  w.log.push(...[10, 11, 12, 13, 14, 15, 16].map((n) => opened(n, n, "member", { author_kind: "owner", member: true })));
   await w.look();
-  assert.deepEqual(w.triaged.slice(4), [10, 11, 12, 13, 14, 15, 16], "an owner-kind author past the cap is never held");
+  assert.deepEqual(w.triaged.slice(4), [10, 11, 12, 13, 14, 15, 16], "a member past the cap is never held");
+  w.log.push(opened(20, 20, "forger", { author_kind: "agent" }), opened(21, 21, "forger", { author_kind: "agent" }));
+  await w.look();
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [21], "a footer makes author_kind agent, not a member: the cap still holds");
   const off = world({ repos: [repo()] });
   await off.look();
   off.log.push(opened(1, 1, "ada"));
