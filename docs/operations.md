@@ -49,8 +49,8 @@ or removing anything when the config lists no services; recreates only the servi
 mounted secret content moved, and when there are any, dumps the warehouse first, when this host runs one (a fresh file
 created exclusively under `umask 077` in a `0700` directory, so a taken name is skipped rather than truncated and the dump
 is `0600`; an older dump is never rewritten, only has its mode tightened, and only the newest two are kept, the rest
-removed); a step that recreates nothing dumps nothing, and so does one on the product already running (a settings-only
-apply recreates containers on the same code, so no migration can run; the nightly dump is the copy). It removes compose's leftovers for
+removed); a step that recreates nothing dumps nothing, and so does one where no recreated service's image moved (a
+settings-only apply recreates containers on the same code, so no migration can run; the nightly dump is the copy). It removes compose's leftovers for
 services this config dropped, never a CI job's runner; and retries once for the daemon's two races (a removal already in
 progress, a container name still in use). A recreate that was killed leaves its half-made replacement behind (compose
 creates it as `<12hex>_<project>-<service>-1` and renames it only once the old one is gone); each pass removes those,

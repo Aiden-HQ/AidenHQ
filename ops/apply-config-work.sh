@@ -699,7 +699,8 @@ validate() {
   # The health baseline (about 5 s of probes, read-only) runs beside the checks and builds below; both must be done before the switch.
   scripts/healthcheck.sh > "$baseline" 2>&1 & local hc=$! rc=0
   validateChecks || rc=$?
-  wait "$hc" || true
+  if [ "$rc" != 0 ]; then kill "$hc" 2>/dev/null || true; fi   # a refused apply never waits on probes
+  wait "$hc" 2>/dev/null || true
   [ "$rc" != 0 ] || echo "health baseline: $(grep -c '^  ok    ' "$baseline" || true) ok, $(grep -c '^  FAIL  ' "$baseline" || true) failing (not counted)"
   return "$rc"
 }
@@ -993,10 +994,7 @@ switchOver() {
   # A rollback to a product from before the script has none to run.
   pgtuned=0; if [ -x ops/paperclip-pg-tune.sh ]; then ops/paperclip-pg-tune.sh || pgtuned=$?; fi
   [ "$pgtuned" = 0 ] || [ "$pgtuned" = 10 ] || exit "$pgtuned"
-  # The warehouse dump (320 MB, ~30 s on the live host) guards a recreate against new product code (a migration); a recreate
-  # on the product already running (a settings-only apply) runs the same code, so it dumps nothing.
-  dumpwh=1; [ "$before" != "$product" ] || dumpwh=0
-  AIDENHQ_DUMP_WAREHOUSE="$dumpwh" ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
+  ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
   if [ "$pgtuned" = 10 ]; then docker compose restart paperclip; fi
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune

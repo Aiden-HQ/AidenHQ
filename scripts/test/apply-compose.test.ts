@@ -205,17 +205,20 @@ test("a dump is created exclusively and 0600 in a 0700 directory, and the dump b
   assert.equal(statSync(join(dumps, "warehouse.dump")).mode & 0o777, 0o600, "the older dump is tightened to 0600");
 });
 
-test("a recreate on the product already running (AIDENHQ_DUMP_WAREHOUSE=0) dumps nothing", { skip: NOT_LINUX }, async () => {
-  const f = fixture({ containers, services, hashes: { board: "h-new" } });
+test("a recreate whose image did not move (config only) dumps nothing", { skip: NOT_LINUX }, async () => {
+  const f = fixture({ containers, services: ["board"], hashes: { board: "h-new" } });
   mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
   writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
   writeFileSync(join(f.dir, "running-app-warehouse-postgres-1"), "true\n");
   writeFileSync(join(f.dir, "psid-board"), "board1\n");
   writeFileSync(join(f.dir, "hashof-board1"), "h-old\n");
   writeFileSync(join(f.dir, "recreate-board"), "");
-  const r = await apply(f, { env: { AIDENHQ_DUMP_WAREHOUSE: "0" } });
+  writeFileSync(join(f.dir, "image-board"), "aidenhq/board:local\n");
+  writeFileSync(join(f.dir, "imageid-aidenhq_board_local"), "sha256:board\n");
+  writeFileSync(join(f.dir, "imageof-board1"), "sha256:board\n");
+  const r = await apply(f);
   assert.equal(r.status, 0, r.out);
   assert.equal(recreates(r).length, 1, r.calls);
   assert.equal(calls(r, "docker run").length, 0, `no dump ran: ${r.calls}`);
-  assert.match(r.out, /product unchanged: the warehouse is not dumped/);
+  assert.match(r.out, /no image moved: the warehouse is not dumped/);
 });
