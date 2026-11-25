@@ -20,6 +20,8 @@ export type OpsContext = {
   /** A branch of the repo on GitHub fetched into the cache: its directory, local ref and sha (service.ts fetchRemote). */
   fetchRemote: (s: { org: string; name: string; slug: string }, name: string) => Promise<{ dir: string; ref: string; sha: string }>;
   cacheDir: string;
+  /** Whether the change feed reads this repo (service.ts feedWatched): the repo's fork and archived flags as GitHub reports them. */
+  feedWatched: (slug: string, repo: { isFork?: boolean; isArchived?: boolean }) => boolean;
   /** Makes a scratch bare repo (init --bare) at `dir`. */
   initBare: (dir: string) => Promise<void>;
   /** Whether the kernel's records name this GitHub object (a ref like `github:o/r#1/comment/2`) as made by AidenHQ. */
@@ -46,6 +48,7 @@ const slugOf = (repo: unknown) => {
 // is judged from it. It is not `baseRef.target` (the base branch's current tip, which moves) and not the git merge base.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
+    isFork isArchived
     pullRequest(number: $number) {
       number title body url state isDraft createdAt headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
@@ -137,7 +140,13 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     if (!node[what]) throw noAnswer();
     return data;
   };
-  if (b.kind === "pr") return { status: 200, json: await graph(PR_QUERY, "pullRequest") };
+  if (b.kind === "pr") {
+    const data = await graph(PR_QUERY, "pullRequest");
+    // Whether the change feed watches the repo, so a consumer that waits on its events (sessions) knows they will come. A repository
+    // GitHub answered null stays null (grading tells a PR that is gone from one it could not read).
+    const repository = data.repository && typeof data.repository === "object" ? { ...data.repository, feedWatched: ctx.feedWatched(s.slug, data.repository) } : data.repository;
+    return { status: 200, json: { ...data, repository } };
+  }
   if (b.kind === "issue") return { status: 200, json: await graph(ISSUE_QUERY, "issue") };
   if (b.kind === "diff") return { status: 200, text: String((await ok(ctx, "GET", `/repos/${s.slug}/pulls/${b.number}`, undefined, { accept: "application/vnd.github.diff" })).body ?? "") };
   if (b.kind === "job") {

@@ -1,0 +1,6 @@
+name: sessbad
+description: a crew agent holding the session role
+roles:
+  declares: [ { id: session, description: held only by a profile-session agent } ]
+agents:
+  s: { roles: [session] }

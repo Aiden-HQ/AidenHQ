@@ -1,0 +1,9 @@
+name: sessok
+description: a profile-session agent holding the session role, on an engine that takes live input
+roles:
+  declares: [ { id: session, description: held only by a profile-session agent } ]
+providers:
+  engine:
+    - { kind: live, bin: bin/engine, live_input: true, box: true, state: task }
+agents:
+  s: { profile: session, roles: [session], engine: live }

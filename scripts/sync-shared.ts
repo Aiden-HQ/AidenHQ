@@ -65,10 +65,10 @@ export function sharedCopies(root = repo) {
     "modules/code-review/service/src",
     // The grading service checks the tasks module's assertion when it files a rubric, and the owner's router on notify; the
     // grading service, the reviewer and dispatch fence their prompts' data blocks (dataBlock).
-    ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src", "modules/ship/service/src", "modules/maintainer/service/src"] : ["modules/grading/service/src", "modules/ai-reviewer/service/src", "modules/dispatch/service/src", "modules/warehouse/search/src"]),
+    ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src", "modules/ship/service/src", "modules/maintainer/service/src", "modules/sessions/service/src"] : ["modules/grading/service/src", "modules/ai-reviewer/service/src", "modules/dispatch/service/src", "modules/warehouse/search/src"]),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The module MCP endpoint (tools and a Fleet page view): ship's, the Maintainer's and code review's.
-  "modules/ship/service/src/mcp.ts": ["modules/maintainer/service/src/mcp.ts", "modules/code-review/service/src/mcp.ts"],
+  "modules/ship/service/src/mcp.ts": ["modules/maintainer/service/src/mcp.ts", "modules/code-review/service/src/mcp.ts", "modules/sessions/service/src/mcp.ts"],
   // The Fleet pages' shared kit (the common styles and bridge script), inlined into each module's page.html when it is served (mcp.ts pageHtml).
   ...Object.fromEntries(["page-kit.css", "page-kit.js"].map((f) => [`services/shared/${f}`, [`modules/ship/service/src/${f}`, `modules/maintainer/service/src/${f}`, `modules/code-review/service/src/${f}`]])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
@@ -87,7 +87,7 @@ export function sharedCopies(root = repo) {
   // The eval's pass rule: the kernel's check job and the reviewer's own eval script apply this one copy.
   "kernel/sdk/src/pass-rule.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts"],
   // The one kernel client (design: one Paperclip/kernel client): every module that calls the kernel with its own token.
-  "kernel/sdk/src/kernel-client.ts": ["modules/dispatch/service/src/aidenhq-sdk/kernel-client.ts", "modules/github/service/src/aidenhq-sdk/kernel-client.ts", "modules/grading/service/src/aidenhq-sdk/kernel-client.ts", "modules/maintainer/service/src/aidenhq-sdk/kernel-client.ts", "modules/code-review/service/src/aidenhq-sdk/kernel-client.ts", "modules/ship/service/src/aidenhq-sdk/kernel-client.ts", "modules/fleet-steward/service/src/aidenhq-sdk/kernel-client.ts", "modules/chat-lane/connections/lane/src/aidenhq-sdk/kernel-client.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/kernel-client.ts", "modules/owner-channel/connections/notify/src/aidenhq-sdk/kernel-client.ts"],
+  "kernel/sdk/src/kernel-client.ts": ["modules/dispatch/service/src/aidenhq-sdk/kernel-client.ts", "modules/github/service/src/aidenhq-sdk/kernel-client.ts", "modules/grading/service/src/aidenhq-sdk/kernel-client.ts", "modules/maintainer/service/src/aidenhq-sdk/kernel-client.ts", "modules/code-review/service/src/aidenhq-sdk/kernel-client.ts", "modules/ship/service/src/aidenhq-sdk/kernel-client.ts", "modules/sessions/service/src/aidenhq-sdk/kernel-client.ts", "modules/fleet-steward/service/src/aidenhq-sdk/kernel-client.ts", "modules/chat-lane/connections/lane/src/aidenhq-sdk/kernel-client.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/kernel-client.ts", "modules/owner-channel/connections/notify/src/aidenhq-sdk/kernel-client.ts"],
   // Risk tiers: code review classifies PRs (its service) and leaves out the same generated files and lockfiles (its recipe, which
   // the engineer image's self-review runs too); the CI template classifies an app repo's PR itself.
   "kernel/sdk/src/tiers.ts": ["modules/code-review/service/src/aidenhq-sdk/tiers.ts", "modules/code-review/recipe/tiers.ts", "services/computer/images/engineer/code-review/tiers.ts", "modules/ci/template/.github/tiers.ts"],

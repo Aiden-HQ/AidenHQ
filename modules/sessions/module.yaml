@@ -1,0 +1,100 @@
+name: sessions
+description: "Sessions: long-lived work that waits on events or time. The Session agent holds one task as a real coding session in the always-on computer, idles at no cost, and wakes when a watched pull request changes or a timer is due; the event watches it arms are this module's service."
+license: MIT
+# Design: docs/superpowers/specs/2026-11-25-sessions-design.md. The Session agent (profile session, engine opencode) is an ordinary
+# kernel agent: a session is a task it holds, run as one long-lived job (kernel/src/admission.ts), woken by the kernel's wake
+# notices. This module's service holds the event watches (service/src/): `watch_arm` records one on the caller's own task, the
+# service reads the kernel's event log with a committed cursor and files a wake notice on the task when a watch's event arrives,
+# and checks the live state when a watch is armed and when the service starts.
+requires:
+  - engine # opencode (engine-opencode) runs the session in its computer
+  - codehost # a merge, and the live read a watch checks on arm and on restart
+  - dispatch # the one job dispatcher (kernel.jobs): the Session's jobs start through it
+  - chief-of-staff # the Session agent reports to it
+  - tasks # paperclip_tasks: the session waits, reports and finishes on its task
+isolation: code-exec
+roles:
+  # kernel.wake: a wake notice on the watching task (service/src/reader.ts). kernel.cp-read: a task's status, so a closed task's
+  # watches are cancelled.
+  requests: [ kernel.wake, kernel.cp-read ]
+  declares:
+    - { id: session, description: "A long-lived session: its writes run at once (Tier 0), the code's refusals and the owner's veto kept. Held only by a profile-session agent." }
+agents:
+  session:
+    department: engineering
+    skills: [ tasks.delegate-work, engineering.write-code, engineering.publish, sessions.watch-and-act ]
+    roles: [ session ]
+    engine: opencode
+    reasoning_effort: high
+    model: openrouter/~deepseek/deepseek-flash-latest
+    # Offered in the board's model picker, the same list as the Engineer's (modules/engineering/module.yaml).
+    models:
+      - openrouter/~deepseek/deepseek-flash-latest
+      - openrouter/moonshotai/kimi-k3.1-pro
+      - openrouter/z-ai/glm-5.3-flash
+      - openrouter/z-ai/glm-5.3
+      - openrouter/deepseek/deepseek-v4.1-flash
+      - openrouter/deepseek/deepseek-v4-pro
+      - openrouter/moonshotai/kimi-k3
+      - openrouter/qwen/qwen3-coder-next
+    # One standing computer holds every session (a lease each); max_parallel bounds how many are live.
+    profile: session
+    image: session
+    max_parallel: 8
+    # Broad access (owner decision 7): every connection the default bundle ships, each optional, reads and writes (the kernel
+    # still files each write as a record, and the session role runs it at once).
+    connections:
+      apps?: write
+      code_review?: write
+      fleet_steward?: write
+      glean?: write
+      github?: write
+      github_official?: write
+      google_workspace?: write
+      jira?: write
+      ops_mcp?: write
+      owner_channel?: write
+      primer?: write
+      ship?: write
+      slack?: write
+      slack_live?: write
+      # The chief of staff's task set, with task_wait: a session waits on a time or a task, and reports on its own task.
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_team, task_delegate, task_amend_rubric, task_wait, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, app_request_from_owner ]
+      sessions: [ watch_arm, watch_list, watch_cancel ]
+# The events a watch reads, from the kernel's log (github.resync: a repo's first feed pass, after which its armed watches are
+# checked live). `github?`: while no enabled module's connection declares events (GitHub is not in the install), the
+# subscription is dropped and the install compiles without it. "*": every repo the code host manages; watch_arm refuses any other.
+subscribes:
+  github?:
+    kinds: [ pull_request.closed, github.resync ]
+    resources: "*"
+# The live read a watch checks on arm and on restart (POST /v1/codehost/read): the repos the code host manages.
+codehost:
+  read: { repos: [ "@agents/*", "@product", "@instance", "@maintained" ] }
+connections:
+  sessions:
+    setup: "Built in: nothing to connect."
+    url: http://sessions:8102/mcp
+    auth: sessions_service_key
+    returns: untrusted
+    tools:
+      read: [ watch_list ]
+      write: [ watch_arm, watch_cancel ]
+services:
+  data: true
+  run:
+    sessions:
+      build: ./service
+      tmp: 16m
+      port: 8102
+      egress: true # the kernel's listener is a host address
+      data: ["sessions:/data"]
+      env:
+        SESSIONS_DB: /data/sessions.db
+        SESSIONS_TOKEN_FILE: ${secrets.sessions_token}
+        SESSIONS_SERVICE_KEY_FILE: ${secrets.sessions_service_key}
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+generated_secrets:
+  - sessions_token
+  - sessions_service_key
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

@@ -235,6 +235,8 @@ function agentBody(key: string, a: Obj) {
     metadata: {
       setupKey: `aidenhq:${key}`, module: a.module, tier: a.tier, isolation: a.isolation, profile: a.profile, engine: a.engine, ...(a.model ? { model: a.model } : {}),
       ...(engineer ? { runnerEngine: true, ...(a.image ? { box: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a)!.trim() } : {}) } : {}),
+      // A session offers its models in the board's picker; it is not an Engineer (no runnerEngine).
+      ...(a.profile === "session" && models.length ? { models } : {}),
       ...display(key, a),
     },
   };

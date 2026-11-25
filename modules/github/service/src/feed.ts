@@ -184,7 +184,7 @@ export function createFeed(o: FeedOptions) {
     const open = await snapshot(rs.pages, `/repos/${repo}/pulls?state=open`, prOf(repo), undefined, used);
     const was = rs.prs, now_: Record<string, Pr> = {};
     const emitClosed = (p: Pr, g: Json) => {
-      emit({ author: p.author, bot: bot(p.author), url: p.url, ...clip(p.title), id: `${repo}#${p.n}:closed:${String(g.closed_at ?? iso)}`, kind: "pull_request.closed", data: { ...record({ ...p, head: String(g.head?.sha ?? p.head) }), merged: Boolean(g.merged_at), merge_sha: g.merge_commit_sha ? String(g.merge_commit_sha) : null } }, { pr: g });
+      emit({ author: p.author, bot: bot(p.author), url: p.url, ...clip(p.title), id: `${repo}#${p.n}:closed:${String(g.closed_at ?? iso)}`, kind: "pull_request.closed", data: { ...record({ ...p, head: String(g.head?.sha ?? p.head) }), merged: Boolean(g.merged_at), merge_sha: g.merge_commit_sha ? String(g.merge_commit_sha) : null, closed_at: String(g.closed_at ?? iso) } }, { pr: g });
       rs.closed = [...rs.closed, p.n].slice(-200);
     };
     for (const p of open) {

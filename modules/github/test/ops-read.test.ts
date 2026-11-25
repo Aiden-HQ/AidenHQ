@@ -9,7 +9,7 @@ const ctx = (): OpsContext => ({
     identity: async () => ({ login: "o", name: "O", email: "o@example.com" }),
     rest: async () => ({ status: 404, body: {}, headers: new Headers() }),
   } as unknown as OpsContext["access"],
-  cacheDir: "/tmp", cache: async () => "/tmp", git: async () => "", fetchRemote: async () => ({ dir: "/tmp", ref: "", sha: "" }), initBare: async () => {}, ours: async () => false,
+  cacheDir: "/tmp", feedWatched: () => true, cache: async () => "/tmp", git: async () => "", fetchRemote: async () => ({ dir: "/tmp", ref: "", sha: "" }), initBare: async () => {}, ours: async () => false,
 });
 /** The context answering every REST call with `rest`. */
 const withRest = (c: OpsContext, rest: OpsContext["access"]["rest"]): OpsContext => ({ ...c, access: { ...c.access, rest } as unknown as OpsContext["access"] });
