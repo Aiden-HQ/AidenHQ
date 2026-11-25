@@ -91,11 +91,13 @@ const NAMES: Record<string, string> = { google_workspace: "Google", ops_mcp: "Me
 export const displayName = (name: string) => NAMES[name] ?? name.replace(/[_-]+/g, " ").replace(/^./, (c) => c.toUpperCase());
 
 // `slack` is the owner's own user sign-in (the setup flow's "Read Slack as you"), not Aiden's bot channel (`slack_live`).
-// A bare "Not connected yet" made a working bot's DMs read as Slack itself being broken, so its reason names both.
+// A bare "Not connected yet" made a working bot's DMs read as Slack itself being broken. The tile clamps its reason to two
+// lines (ui.css .ui-tile-desc), so the bot distinction comes first and the generic lead is left to the status label.
 const NOT_CONNECTED: Record<string, string> = {
-  slack: "This tile is your own Slack sign-in: agents read Slack as you through it. Aiden's bot is a separate connection, and its DMs to you work without it.",
+  slack: "Aiden's bot is a separate connection and its DMs work without this sign-in, which lets agents read Slack as you.",
 };
-const notConnectedReason = (name: string, reason: string) => [reason, NOT_CONNECTED[name]].filter(Boolean).join(" ");
+const notConnectedReason = (name: string, reason: string) =>
+  NOT_CONNECTED[name] ? [NOT_CONNECTED[name], reason === "Not connected yet." ? null : reason].filter(Boolean).join(" ") : reason;
 
 const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
 
