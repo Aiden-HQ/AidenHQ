@@ -563,7 +563,7 @@ test("ship's decision from its list read: no PR or check read, the branch rules 
 // approval card whose box bundle was planned before a later push landed carries the older commit and must be refused as
 // ship-head-moved, never force the branch back over the newer one (issue #1775: PR #1746 was rewound to a pre-fix commit).
 test("a publish whose bundle carries H cannot rewind a branch at F, a child of H: it is refused as ship-head-moved and F stays", async (t) => {
-  const { ws, origin, H, F, run, calls } = await setup(t);
+  const { ws, origin, H, F, run, call, calls } = await setup(t);
   // The task's workspace box is at F (the fix, pushed), holding the bundle of H (the plan's older read).
   sh(ws, "checkout", "--quiet", "lease");
   assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch stands at F before the stale write");
@@ -591,8 +591,8 @@ test("a publish whose bundle carries H cannot rewind a branch at F, a child of H
   assert.equal(ff.ok, true, ff.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "an unchanged head pushes nothing new and stays where it is");
 
-  // A rewrite of this task's own branch (a commit on H, diverging from F) is still allowed: the lease is on the head just read, and
-  // the new commit isn't one the branch already holds, so nothing is rewound.
+  // A rewrite of this task's own branch (a commit on H, diverging from F) is still allowed: its plan read the branch at F and it is
+  // still at F, and the new commit isn't one the branch already holds, so nothing is rewound.
   sh(ws, "checkout", "--quiet", "-b", "rewrite", H);
   writeFileSync(join(ws, "r.txt"), "r\n");
   sh(ws, "add", "r.txt");
@@ -600,7 +600,29 @@ test("a publish whose bundle carries H cannot rewind a branch at F, a child of H
   const R = sh(ws, "rev-parse", "HEAD");
   sh(ws, "update-ref", `refs/aidenhq/publish/${R}`, R);
   sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${R}.bundle`), `refs/aidenhq/publish/${R}`);
-  const rewrite = await run("k-00000000000000f4", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] });
+  const rewriteArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: rewriteArgs, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  const rewrite = await run("k-00000000000000f4", "github.push", rewriteArgs);
   assert.equal(rewrite.ok, true, rewrite.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), R, "the task's own rewrite lands");
+
+  // The card path: a write planned while the branch is at H does not rewrite it after the branch moves to F (a different child of
+  // H). The bundle's commit isn't an ancestor of F, so only the head the plan bound refuses it -- the ancestry check would not.
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const staleArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: staleArgs, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  sh(origin, "update-ref", "refs/heads/lease", F);
+  assert.throws(() => sh(ws, "merge-base", "--is-ancestor", R, F), "R and F diverge: the ancestry check alone would not refuse this");
+  const stale = await run("k-00000000000000f5", "github.push", staleArgs);
+  assert.equal(stale.ok, false, stale.text);
+  assert.match(stale.text, /^ship-head-moved/, stale.text);
+  assert.match(stale.text, new RegExp(`moved to \`${F.slice(0, 12)}\` since the write read \`${H.slice(0, 12)}\``), stale.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch the card planned against moved; it is never rewritten");
+
+  // A push straight to an agents-org repo's default branch (plan.ts raises it as `default-branch` rather than refusing it) moves
+  // forward with no force and no lease. A lease here would name an empty expected head against an existing `main` and refuse it
+  // ("stale info"), which is the regression a default-branch lease introduces.
+  const toMain = await run("k-00000000000000f6", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "main", sha: H }] });
+  assert.equal(toMain.ok, true, toMain.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/main"), H, "the default branch moved forward, unleased");
 });
