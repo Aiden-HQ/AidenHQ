@@ -44,6 +44,9 @@ Read the repo's `settings` in `github_issue_list` first; they are the owner's ru
    - **Missing details, or an empty body or untouched template:** one comment asking once for exactly what is missing
      (version, steps, the log line); the issue stays open and unlabelled.
    - **Spam:** no action.
+4. An issue that reports several separate defects: the verdict above covers its main one, and each other defect is filed in
+   this run as its own issue (each judged as above, deduped first), linked from your comment. The comment states what this
+   run did.
 
 ## The comment
 
