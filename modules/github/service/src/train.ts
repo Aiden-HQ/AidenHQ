@@ -60,7 +60,9 @@ type State = {
    * A target the preflight refused, with the instance text it refused: the refusal is a fact about that instance, so the same tip
    * is checked again once the instance's own text changes (the owner fixes the setting), not only on a newer product merge.
    */
-  refused?: { to: string; text: string };
+  refused?: { to: string; text: string; base?: string; instance?: string; at?: string };
+  /** A task filed for a bump that ended before its card: closed with the reason, retried next poll if the close was refused. */
+  orphan?: { to: string; task: string; error: string };
 };
 const MOVING = ["review", "owner", "approved", "claimed"];
 /** A land refused because main moved on, or the eval still running: that bump is over, and its commits are filed again. */
@@ -160,8 +162,11 @@ export function createReleaseTrain(o: TrainOptions) {
     // `adopt`: the bump's task was filed before, by this process (its own file) or one this process replaced (the kernel's
     // idempotent re-file answers `deduplicated`). Either way its card, if any, is on that task.
     let adopt = Boolean(s.filing?.to === to);
-    if (!s.filing || s.filing.to !== to) {
-      edit(text); // refused before a task is filed for it
+    // A filing with no `base` and no commit was written before the preflight existed (a bump held by a process running the previous
+    // code), or its base was dropped because main moved. It is checked now, never committed on a verdict it never had. A filing whose
+    // commit already exists has its card filed: a compile verdict can no longer unfile it, so it is only followed.
+    if (!s.filing || s.filing.to !== to || (!s.filing.base && !s.filing.sha)) {
+      if (!s.filing || s.filing.to !== to) edit(text); // refused before a task is filed for it
       // The target must compile the instance it would pin, before anything is committed or filed: the apply's own staged
       // compile against the target product (#1730). A target that doesn't is never tried again (the next merge files the next
       // attempt, at a target that may compile); a check that couldn't run throws and is retried on the next poll with no state
@@ -170,21 +175,33 @@ export function createReleaseTrain(o: TrainOptions) {
       if (!compiled.ok) {
         log(`release bump not filed: the target product ${to.slice(0, 12)} doesn't compile the instance`, { to, err: compiled.error });
         s.lastTried = to;
-        s.refused = { to, text };
+        s.refused = { to, text, base: compiled.base, instance: (await o.github.tip(o.instanceRepo))?.tip, at: now().toISOString() };
         delete s.open;
+        // The task filed for this bump (an earlier process's, or one this process restored) is settled here: it has no card, and the
+        // tip will not be tried again, so leaving it open would strand it. Not lasting-refused through step(): that path assumes the
+        // task came from this attempt's own filing write.
+        const filed = s.filing && s.filing.to === to && !s.filing.sha ? s.filing.task : undefined;
+        delete s.filing;
+        if (filed) s.orphan = { to, task: filed, error: compiled.error };
+        save(s);
+        if (s.orphan) await settleOrphan(s);
         return;
       }
       delete s.refused;
-      const carries = await o.github.commits(o.productRepo, pinned, to);
-      const source = `release:instance:${to}`;
-      // Idempotent per source: a restart adopts the task an earlier process filed for this commit instead of opening a second.
-      const task = await o.kernel("POST", "/v1/tasks", {
-        title: "Pin bump: this instance's product", role: "platform-engineer", source, quiet: true,
-        description: trainDescription({ what: `Moves this instance's product pin (\`product:\` in ${o.instanceRepo}'s instance.yaml) to the newest green commit of ${o.productRepo}'s main, as one apply.`, carries, windowMinutes: o.windowMinutes, marker: source }),
-      });
-      // `base`: the instance revision this verdict was made on; the commit is refused if main is no longer there.
-      s.filing = { to, base: compiled.base, task: task.id, identifier: task.identifier };
-      adopt ||= Boolean(task.deduplicated);
+      if (!s.filing || s.filing.to !== to) {
+        const carries = await o.github.commits(o.productRepo, pinned, to);
+        const source = `release:instance:${to}`;
+        // Idempotent per source: a restart adopts the task an earlier process filed for this commit instead of opening a second.
+        const task = await o.kernel("POST", "/v1/tasks", {
+          title: "Pin bump: this instance's product", role: "platform-engineer", source, quiet: true,
+          description: trainDescription({ what: `Moves this instance's product pin (\`product:\` in ${o.instanceRepo}'s instance.yaml) to the newest green commit of ${o.productRepo}'s main, as one apply.`, carries, windowMinutes: o.windowMinutes, marker: source }),
+        });
+        s.filing = { to, base: compiled.base, task: task.id, identifier: task.identifier };
+        adopt ||= Boolean(task.deduplicated);
+      } else {
+        // The task was filed before (or a 409 dropped its base): this is the same bump, now checked on the current main.
+        s.filing = { ...s.filing, base: compiled.base };
+      }
       save(s);
     }
     const f = s.filing;
@@ -192,11 +209,13 @@ export function createReleaseTrain(o: TrainOptions) {
       try {
         f.sha = await o.commit(o.instanceRepo, "instance.yaml", edit, `chore: product ${to.slice(0, 8)} (${f.identifier})\n\nWritten by the code host's release train; no agent wrote it.`, f.base);
       } catch (e) {
-        // The instance moved since the preflight compiled it: that verdict is for another revision, so this attempt is dropped
-        // and the next poll compiles the new main. The task is the same (its source is the target), so it is reused, not reopened.
+        // The instance moved since the preflight compiled it: that verdict is for another revision. Its base is dropped (never the
+        // filing), so the next poll checks the new main and commits on it — and the task already filed for this target is reused,
+        // not left open with no card.
         if ((e as { status?: number }).status !== 409) throw e;
         log("release bump held: the instance moved since the compile check", { to, base: f.base });
-        delete s.filing;
+        delete f.base;
+        save(s);
         return;
       }
       save(s);
@@ -224,6 +243,20 @@ export function createReleaseTrain(o: TrainOptions) {
     log("release bump filed", { task: f.identifier, to, record: r.id, tier: r.tier });
   }
 
+  /**
+   * A task filed for a bump that ended before it had a card: closed "Not filed" with the reason. The kernel's refusal to close
+   * leaves it on record, so the next poll says it again rather than stranding it; the sweep leaves cardless tasks alone on purpose.
+   */
+  async function settleOrphan(s: State) {
+    const o = s.orphan;
+    if (!o) return;
+    if (await close(o.task, "cancelled", `**Not filed:** the target product ${o.to.slice(0, 12)} doesn't compile the instance: ${o.error}`.slice(0, 1000))) {
+      log("release bump task settled", { to: o.to });
+      delete s.orphan;
+      save(s);
+    }
+  }
+
   async function step() {
     const s = load();
     try {
@@ -232,6 +265,7 @@ export function createReleaseTrain(o: TrainOptions) {
       if (s.flight) await follow(s);
       // A bump whose task this process never had in hand is still settled: before the train decides whether it has work at all.
       await sweep(flown);
+      await settleOrphan(s);
       const instance = await (instanceText ?? refresh());
       // An instance that installs releases (a `release:` key) is the kernel's updater's: the train stays idle.
       if (pinOwner(instance ?? "") !== "train") return;
@@ -239,10 +273,12 @@ export function createReleaseTrain(o: TrainOptions) {
       const head = await o.github.tip(o.productRepo);
       if (!head) return;
       const { tip, green } = head;
-      // A refusal is about the instance that was compiled: once its text changes (the setting the target refuses is fixed), the same
-      // tip is checked again rather than waiting for another product merge.
-      if (s.refused && s.refused.to === tip && s.refused.text !== (instance ?? "")) {
-        log("release bump rechecked: the instance changed since the target refused it", { to: tip });
+      // A refusal is about the instance revision that was compiled, so it is rechecked when that revision is no longer main: any
+      // change to instance.yaml, apps.yaml, a local module or an agent's files moves the commit. instance.yaml's own text catches a
+      // settings fix even before the push is seen; a tip refused for longer is checked again every half hour as a backstop.
+      const movedInstance = s.refused?.instance ? (await o.github.tip(o.instanceRepo))?.tip : undefined;
+      if (s.refused && s.refused.to === tip && (s.refused.text !== (instance ?? "") || (movedInstance !== undefined && movedInstance !== s.refused.instance) || Date.parse(now().toISOString()) - Date.parse(s.refused.at ?? "") >= 30 * 60_000)) {
+        log("release bump rechecked: the instance changed since the target refused it", { to: tip, was: s.refused.instance, now: movedInstance });
         delete s.lastTried;
         delete s.refused;
       }

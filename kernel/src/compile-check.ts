@@ -15,6 +15,8 @@ import { join } from "node:path";
 import YAML from "yaml";
 
 const SHA = /^[0-9a-f]{40}$/;
+/** A failure that says a source couldn't be fetched (not the target refusing the instance): the compiler's own network errors. */
+const NETWORK = /(could not resolve host|unable to access '|failed to connect|connection (timed out|refused)|operation timed out|could not read from remote repository|the remote end hung up|network is unreachable|\b(ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET)\b|SSL|TLS)/i;
 /** The apply's compiler (ops/apply-config-work.sh validate), run from the product tree it applies. */
 export const COMPILER = "scripts/compile.ts";
 
@@ -51,9 +53,16 @@ export type CompileDeps = {
  * The env the apply's staged compile runs with (ops/apply-config-work.sh: `AIDENHQ_COMPILE_STAGE=1 node scripts/compile.ts`):
  * the staged mode, the instance tree to compile, and this host's config, data and vault. The compiler's outputs go to
  * `<productDir>/config.next` and `<productDir>/compose.modules.next.yaml`, inside the extracted target tree, never the host's.
+ *
+ * Only what the compile reads is carried over: the host's `.env` (seeded in `productDir`) and these path settings. Anything else
+ * in the kernel's environment — its own keys, tokens and unrelated secrets — is dropped, so the target's compiler (which may be a
+ * commit nobody has applied yet) can't read them. `base` is a test seam for the process env; production passes nothing.
  */
+const KEEP = new Set(["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "NODE_PATH", "NODE_OPTIONS", "NODE_VERSION", "USER", "SHELL", "TERM",
+  "AIDENHQ_DIR", "AIDENHQ_STATE_DIR", "AIDENHQ_INSTANCE_REPO", "TRANSCRIPTS_DIR", "VAULT_DIR", "VAULT_FOLDERS", "KNOWLEDGE_BASES",
+  "AIDENHQ_PUBLIC_IP", "AIDENHQ_ADMIN_URL", "BOARD_LAN_URL", "AIDENHQ_EXPOSURE", "AIDENHQ_GITHUB_AGENTS_ORG"]);
 export const stagedEnv = (productDir: string, instanceDir: string, i: Inputs, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({
-  ...base, AIDENHQ_COMPILE_STAGE: "1", AIDENHQ_INSTANCE_DIR: instanceDir,
+  ...Object.fromEntries(Object.entries(base).filter(([k]) => KEEP.has(k))), AIDENHQ_COMPILE_STAGE: "1", AIDENHQ_INSTANCE_DIR: instanceDir,
   AIDENHQ_CONFIG_DIR: i.configDir, AIDENHQ_DATA_DIR: i.dataDir, AIDENHQ_SECRETS_DIR: i.secretsDir,
 });
 
@@ -106,17 +115,15 @@ async function stageProduct(repo: string, sha: string, to: string, until: number
   await extract(repo, sha, to, until);
 }
 
-/** A commit's tree (from this checkout) into `to`. */
+/**
+ * `sha`'s tree into `to`, as a real git checkout at that commit — not a bare extraction. The compiler reads the product's own
+ * history (`scripts/compiler/inputs.ts` takes `git rev-parse HEAD` as its `revision`, `officialAt` runs `git cat-file`/`git show`
+ * against it), so a tree with no `.git` would compile different inputs than the apply's checkout. A shared clone keeps the
+ * objects where they are (the host checkout stays read-only) and `checkout --detach` puts HEAD exactly on the target.
+ */
 async function extract(repo: string, sha: string, to: string, until: number) {
-  mkdirSync(to, { recursive: true });
-  await new Promise<void>((ok, no) => {
-    const tar = spawn("tar", ["-x", "-C", to], { stdio: ["pipe", "ignore", "pipe"] });
-    let err = "";
-    tar.stderr.on("data", (d) => (err += String(d)));
-    tar.on("error", no);
-    tar.on("close", (code) => (code === 0 ? ok() : no(new Error(`tar: ${err.trim().slice(0, 300)}`))));
-    void git(repo, ["archive", "--format=tar", sha], until).then((tree) => tar.stdin.end(tree), (e) => { tar.stdin.destroy(); no(e); });
-  });
+  await git(repo, ["clone", "-q", "--no-checkout", "--shared", "--", repo, to], until);
+  await git(to, ["checkout", "-q", "--detach", sha], until);
 }
 
 /** The host's inputs the apply's compile reads from the checkout it runs in: its .env and the bundle it last compiled. */
@@ -177,6 +184,9 @@ async function stagedCompile(o: RunInput, install: (o: RunInput) => Promise<void
   // A compiler that never finished (a timeout, a killed child) is operational: the caller retries, never records a refusal the
   // compiler didn't make. Only a real non-zero exit is the target refusing the instance.
   if (!compiled.ran) throw new Error(`the staged compile didn't finish: ${compiled.error ?? "killed"}${compiled.stderr.trim() ? `: ${firstDiagnostic(compiled.stderr)}` : ""}`);
+  // The compiler fetches third-party modules and releases while it runs. A fetch that failed for the network's sake is
+  // operational: the apply would be retried, and the same target can pass once the network does, so the tip is not dropped.
+  if (NETWORK.test(compiled.stderr)) throw new Error(`the staged compile couldn't reach a source it needs: ${firstDiagnostic(compiled.stderr)}`);
   return { ok: false, error: firstDiagnostic(compiled.stderr) || "the staged compile failed with no error text" };
 }
 

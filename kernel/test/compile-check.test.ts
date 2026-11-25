@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,6 +95,14 @@ test("the staged env is the apply's own (AIDENHQ_COMPILE_STAGE=1) and the first 
   assert.equal(env.AIDENHQ_CONFIG_DIR, "/c");
   assert.equal(firstDiagnostic("at foo (x.ts:1)\nError: boom\nmore"), "Error: boom");
   assert.equal(firstDiagnostic("noise\ncompile: the setting is gone\nstack"), "compile: the setting is gone");
+  // The kernel's own keys and unrelated secrets never reach the target's compiler; the compile's inputs do.
+  const guarded = stagedEnv("/p", "/i", { configDir: "/c", dataDir: "/d", secretsDir: "/s" }, { PATH: "/bin", AIDENHQ_KERNEL_KEY: "kernel-secret", OPERATOR_KEY: "op-secret", GITHUB_TOKEN: "tok", AIDENHQ_INSTANCE_REPO: "acme/i" });
+  assert.equal(guarded.PATH, "/bin");
+  assert.equal(guarded.AIDENHQ_INSTANCE_REPO, "acme/i");
+  assert.equal(guarded.AIDENHQ_KERNEL_KEY, undefined);
+  assert.equal(guarded.OPERATOR_KEY, undefined);
+  assert.equal(guarded.GITHUB_TOKEN, undefined);
+  assert.equal(guarded.AIDENHQ_COMPILE_STAGE, "1");
 });
 
 test("a compiler that never finished (a timeout) is an operational error, not a refusal", async () => {
@@ -138,4 +146,55 @@ test("an instance with product_fork is compiled from the fork, not the pin it de
   assert.equal(r.ok, false, "the fork's refusal is the verdict, not the pin's acceptance");
   assert.match((r as { error: string }).error, /^compile: settings\.code_review/);
   void two;
+});
+
+test("the compiler runs in a git checkout at the target, so its revision input is the target sha", async () => {
+  // scripts/compiler/inputs.ts takes `git rev-parse HEAD` as the compile's revision. A bare extraction has no .git and compiles
+  // with no revision while the apply's checkout has one: the snapshot must be a real checkout at the target.
+  const { dir, one } = productRepo();
+  const inst = mkdtempSync(join(tmpdir(), "compile-check-inst-"));
+  const bare = join(inst, "instance.git");
+  const src = join(inst, "src");
+  mkdirSync(src);
+  writeFileSync(join(src, "instance.yaml"), YAML.stringify({ product: one, modules: [] }));
+  git(src, "init", "-q");
+  git(src, "add", "-A");
+  git(src, "commit", "-qm", "init");
+  git(inst, "clone", "-q", "--bare", src, bare);
+  let seen: { head?: string; gitDir?: boolean } = {};
+  const project = join(inst, "config");
+  mkdirSync(project, { recursive: true });
+  const check = createCompileCheck({ repo: dir, main: async () => ({ base: git(bare, "rev-parse", "main") }), tree: checkoutTree(bare), inputs: { configDir: project, dataDir: join(inst, "data"), secretsDir: join(inst, "secrets") },
+    // The runner sees the tree the compiler would run in: it must be a git checkout whose HEAD is the target.
+    run: async (o) => { seen = { head: execFileSync("git", ["-C", o.productDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), gitDir: existsSync(join(o.productDir, ".git")) }; return { ok: true }; } });
+  await check({ product: one });
+  assert.equal(seen.gitDir, true, "the target tree is a git checkout, not an extraction");
+  assert.equal(seen.head, one, "and HEAD is the target sha");
+});
+
+test("a compile that failed reaching a source is operational, not the target refusing the instance", async () => {
+  // The compiler fetches third-party modules and releases while it runs; a network failure there says nothing about the target.
+  const { dir, one } = productRepo();
+  writeFileSync(join(dir, "scripts", "compile.ts"), `#!/usr/bin/env node
+console.error("fatal: unable to access 'https://github.com/acme/x/': Could not resolve host: github.com");
+process.exit(128);
+`);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "network");
+  const sha = git(dir, "rev-parse", "HEAD");
+  const inst = mkdtempSync(join(tmpdir(), "compile-check-inst-"));
+  const bare = join(inst, "instance.git");
+  const src = join(inst, "src");
+  mkdirSync(src);
+  writeFileSync(join(src, "instance.yaml"), YAML.stringify({ product: one, modules: [] }));
+  git(src, "init", "-q");
+  git(src, "add", "-A");
+  git(src, "commit", "-qm", "init");
+  git(inst, "clone", "-q", "--bare", src, bare);
+  const project = join(inst, "config");
+  mkdirSync(project, { recursive: true });
+  const realModules = join(product, "scripts", "node_modules");
+  const check = createCompileCheck({ repo: dir, main: async () => ({ base: git(bare, "rev-parse", "main") }), tree: checkoutTree(bare), inputs: { configDir: project, dataDir: join(inst, "data"), secretsDir: join(inst, "secrets") },
+    install: async (o) => { execFileSync("ln", ["-s", realModules, join(o.productDir, "scripts", "node_modules")]); } });
+  await assert.rejects(() => check({ product: sha }), /couldn't reach a source it needs/);
 });
