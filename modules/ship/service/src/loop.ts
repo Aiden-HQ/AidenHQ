@@ -52,7 +52,8 @@ export const RECHECK_MS = 60_000;
 /** PRs per list page: starts at PAGE_MAX; a timeout halves it (down to PAGE_MIN) and a page answered under FAST_PAGE_MS doubles it back,
  * no sooner than GROW_AFTER_MS after the last shrink (so a size known to time out isn't probed every pass). */
 const PAGE_MAX = 50, PAGE_MIN = 5, FAST_PAGE_MS = 3_000, GROW_AFTER_MS = 10 * 60_000;
-const timedOut = (g: Json) => g.status === 502 || g.status === 504 || /time ?out|timed out/i.test(String(g.body?.errors?.[0]?.message ?? ""));
+// A heavy page also comes back as a 200 with no PR list (GitHub gave up on it): that shrinks the page like a 502/504.
+const timedOut = (g: Json) => g.status === 502 || g.status === 504 || (g.status < 300 && !g.body?.data?.repository?.pullRequests) || /time ?out|timed out/i.test(String(g.body?.errors?.[0]?.message ?? ""));
 /** How long a CI re-run that came due still keeps its repo read again: a slow pass may reach it after its due time. */
 const RETRY_GRACE_MS = 5 * 60_000;
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;

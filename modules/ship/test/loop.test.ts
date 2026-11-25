@@ -1316,7 +1316,8 @@ test("a list page that times out is retried at half the size, the size is kept, 
   const gh = async (method, path, body) => {
     if (path !== "/graphql") return { status: 404, body: {} };
     sizes.push(body.variables.first);
-    if (!full && body.variables.first > 10) return { status: 504, body: {} }; // GitHub is quick again once pages are full
+    // A heavy page fails as a 504 or as a 200 with no PR list; GitHub is quick again once pages are full.
+    if (!full && body.variables.first > 10) return body.variables.first === 25 ? { status: 200, body: {} } : { status: 504, body: {} };
     // A full page (more to come) is what may grow the size; the empty last page after it isn't.
     const more = full && !body.variables.after;
     return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { pageInfo: { hasNextPage: more, endCursor: more ? "c1" : null }, nodes: [] } } } } };
