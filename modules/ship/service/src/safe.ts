@@ -82,11 +82,12 @@ export const canApprove = (j: Judged | undefined) => j?.ok === true && j.risk.ap
 
 /** The App's approval ship filed (the adoption's `approve`): at which head, under which policy, and whether a person's is awaited. */
 export type Approved = { head: string; why?: string; policy?: string };
-/** An App approval of this head that was issued under another policy than the head's current one, or where the tier's `approve`
- * is no longer `on`, whatever head it was made at (GitHub may keep an approval across pushes; a person's stays whatever the tier says;
- * an approval ship never made is none). It is dismissed
- * before a merge or an enqueue, never counted (risk tiers §7). */
-export const staleApproval = (ap: Approved | undefined, _head: string, r: Risk) => !!ap && !ap.why && (r.approve !== "on" || ap.policy !== r.policy);
+/** An App approval that no longer stands for this head: issued on another commit (the head moved since: GitHub may keep it as
+ * approving, but it never saw this change), under another policy than the head's current one, or where the tier's `approve` is no
+ * longer `on` (risk tiers §7). A person's stays whatever the tier says; an approval ship never made is none. It is dismissed, never
+ * counted, and the approve round judges the head again: where code review's pass carries to it (the PR's own change is the same),
+ * the App approves the new head without a fresh review. */
+export const staleApproval = (ap: Approved | undefined, head: string, r: Risk) => !!ap && !ap.why && (ap.head !== head || r.approve !== "on" || ap.policy !== r.policy);
 
 /**
  * The final check before the App approves, or ship merges or queues (github asks right before the write): the verdict read now, with
@@ -98,7 +99,7 @@ export function effectRefusal(s: ShipSettings, v: Verdict, what: "approve" | "me
   const r = riskOf(s, v);
   const no = (why: string, retry = false) => ({ why, retry });
   if (r.state === "pending") return no(`${r.why}: try again once it is`, true);
-  if (what === "merge" && staleApproval(app, head, r)) return no("an App approval under another policy stands on this head: ship dismisses it first");
+  if (what === "merge" && staleApproval(app, head, r)) return no("an App approval made on another commit or under another policy stands on this PR: ship dismisses it first");
   if (what === "merge") return r.merge === "ready" ? undefined : no(r.state === "unwatched" ? "the repo's unwatched merge setting is off" : `tier \`${r.tier}\`: merge is off`);
   if (r.state === "unwatched") return no("code review doesn't watch this repo: nothing to approve on");
   if (r.approve !== "on") return no(`tier \`${r.tier}\`: approval is ${r.approve}`);

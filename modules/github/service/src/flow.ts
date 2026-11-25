@@ -146,8 +146,6 @@ export function createFlow(d: FlowDeps) {
       emit({ type: "issue.opened", subject: issueSubject(repo, i.number), version: OPENED_VERSION, at: i.created_at, task: null, data: { repo: repo.toLowerCase(), number: i.number, labels: i.labels, state: i.state, author: i.author, author_kind: i.author_kind }, ...(source ? { source } : {}) }),
     issueLabeled: (repo: string, n: number, eventId: string | number, label: string, by: string, at: string, source?: "backfill") =>
       emit({ type: "issue.labeled", subject: issueSubject(repo, n), version: `${OPENED_VERSION}:${eventId}`, at, task: null, data: { label, by }, ...(source ? { source } : {}) }),
-    /** A merge that went without code review's verdict: code review was unreachable too long (review-gate.ts DOWN_MS). */
-    reviewBypassed: (repo: string, n: number, head: string, why: string) => emit({ type: "pr.review_bypassed", subject: prSubject(repo, n), version: head, at: now().toISOString(), task: taskOf(repo, n), data: { head, why: why.slice(0, 300) } }),
     waiting: (repo: string, n: number, reason: string, since: string) => emit({ type: "work.waiting", subject: prSubject(repo, n), version: since, at: since, task: taskOf(repo, n), data: { reason } }),
     resumed: (repo: string, n: number, reason: string, since: string, at = now().toISOString()) => emit({ type: "work.resumed", subject: prSubject(repo, n), version: since, at, task: taskOf(repo, n), data: { reason } }),
   };

@@ -194,7 +194,6 @@ facts:
   pr.checks_completed: { subject: pr }
   pr.merged: { subject: pr }
   pr.reverted: { subject: pr }
-  pr.review_bypassed: { subject: pr } # merged without code review's verdict: code review unreachable over 10 minutes
   work.waiting: { subject: pr, reasons: [ checks, design_review, code_review, retry, conflict, github ] }
   work.resumed: { subject: pr, reasons: [ checks, design_review, code_review, retry, conflict, github ] }
   code.added: { subject: pr }

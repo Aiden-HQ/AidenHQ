@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { intake, generationOf, type PrView } from "../service/src/handoff.ts";
-import { round as roundWith } from "../service/src/rounds.ts";
+import { AUTHOR_PUSHED, intake, generationOf, type PrView } from "../service/src/handoff.ts";
+import { retryReport, round as roundWith } from "../service/src/rounds.ts";
 import { RISK } from "./risk.ts";
 // Every round here sees a classified head whose tier approves and merges (risk.ts).
 const round = ((d: any, pr: any, v: any, f: any = {}) => roundWith(d, pr, v, { risk: RISK, ...f })) as typeof roundWith;
@@ -32,7 +32,11 @@ function world(raw: Record<string, unknown> = { repos: { "a/b": "cautious" } }) 
     },
   };
   const scope = { fleet: [], listed: ["a/b"] };
+  // A fork's heads ship's own writes made (`<from>><head>`), and the heads whose own change is the same as at `from`.
+  const made = new Set<string>(), same = new Set<string>();
   const deps = {
+    madeFrom: async (_: unknown, pr: PrView, from: string) => (made.has(`${from}>${pr.head}`) ? "ours" as const : undefined),
+    sameChange: async (pr: PrView, from: string) => same.has(`${from}>${pr.head}`),
     state, kernel, log: () => {},
     settings: (repo: string) => effective(raw, repo, scope),
     paused: () => false,
@@ -51,7 +55,7 @@ function world(raw: Record<string, unknown> = { repos: { "a/b": "cautious" } }) 
   const of = (what: string) => calls.filter((c) => c.what === what);
   // The jobs the Engineer got: the first files the adoption's task, the rest wake it.
   const jobs = () => calls.filter((c) => (c.what === "POST /v1/tasks" && !String((c.body as any).source).endsWith(":records")) || c.what === "POST /v1/wakes").map((c) => String((c.body as any).description ?? (c.body as any).text));
-  return { state, calls, records, deps, pr, ev, of, jobs };
+  return { state, calls, records, deps, pr, ev, of, jobs, made, same };
 }
 
 test("a member's ship label adopts once (one report; no task until a round needs one); the App's never; a reader's never", async () => {
@@ -194,6 +198,36 @@ test("a conflict runs ship's repair job first and wakes the Engineer only for wh
   assert.match(String((g.state.get("a/b", 7) as any).hold.reason), /maintainer edits/);
   assert.equal(g.of("POST /v1/writes").length, 0);
   assert.equal(g.jobs().length, 0, "no Engineer: the fork's review summary lands on its quiet records task");
+});
+
+test("a fork's new commit from its author stops ship until a member hands it off again; ship's own push and a base merge don't", async () => {
+  const w = world();
+  const fork = { fork: true, canModify: true, author: "outsider" };
+  const on = w.ev("c1", "comment", "writer", "2026-11-24T01:00:00Z", { body: "/ship" });
+  assert.equal((await intake(w.deps, w.pr({ ...fork, events: [on] })))?.trigger.head, H1);
+  // Ship's own repair made H2 from H1, and H3 only merged the base in (same own change): both stay covered.
+  w.made.add(`${H1}>${H2}`);
+  w.same.add(`${H2}>${H3}`);
+  assert.equal((await intake(w.deps, w.pr({ ...fork, head: H2, events: [on] })))?.hold, null);
+  assert.equal((await intake(w.deps, w.pr({ ...fork, head: H3, events: [on] })))?.trigger.head, H3);
+  // The author pushes H4: held, nothing runs, every write is refused at its effect, and the report says why.
+  const H4 = "4".repeat(40);
+  const pushed = w.pr({ ...fork, head: H4, events: [on] });
+  const held = (await intake(w.deps, pushed))!;
+  assert.deepEqual([held.hold?.kind, held.hold?.reason], ["stopped", AUTHOR_PUSHED]);
+  assert.equal(await round(w.deps, pushed, { do: "merge", why: "ready" }), "stopped");
+  assert.equal(generationOf(w.state, false, "a/b", 7).hold?.kind, "stopped");
+  await retryReport(w.deps, held, pushed);
+  assert.match(String(w.of("comment").at(-1)!.body), /New commits from the author: a member needs to hand this off again/);
+  assert.equal((await intake(w.deps, pushed))?.hold?.reason, AUTHOR_PUSHED, "still held next pass: the old hand-off doesn't count");
+  assert.equal(w.of("POST /v1/writes").length, 0);
+  // A member's /ship on the new head hands it off again: a new generation bound to H4.
+  const again = await intake(w.deps, w.pr({ ...fork, head: H4, events: [on, w.ev("c2", "comment", "admin1", "2026-11-24T02:00:00Z", { body: "/ship" })] }));
+  assert.deepEqual([again?.generation, again?.hold, again?.trigger.head], [2, null, H4]);
+  // A PR in the base repo is never bound to its hand-off's head.
+  const m = world();
+  await intake(m.deps, m.pr({ events: [on] }));
+  assert.equal((await intake(m.deps, m.pr({ head: H2, events: [on] })))?.hold, null);
 });
 
 test("a clean, green hand-off with no Engineer task merges directly, its record on a quiet records task", async () => {

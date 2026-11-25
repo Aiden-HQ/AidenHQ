@@ -340,7 +340,7 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   const H = "a".repeat(40);
   const check = (name, conclusion) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion });
   const data = (pr) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: { state: "OPEN", headRefOid: H, baseRefName: "main", mergeStateStatus: "CLEAN", reviewDecision: null, isDraft: false, isInMergeQueue: false,
-    commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [check("build", "SUCCESS")] } } } }] }, baseRef: { compare: { behindBy: 0 } }, reviews: { nodes: [] }, ...pr } } });
+    commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [check("build", "SUCCESS")] } } } }] }, baseRef: { compare: { behindBy: 0 } }, latestOpinionatedReviews: { nodes: [] }, ...pr } } });
   const ok = [{ name: "build", ok: true, pending: false }];
   const go = (pr, ctx = {}) => decide(data(pr), H, { queue: false, approve: false, required: ["build"], checks: ok, ...ctx });
   assert.equal(go({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", reviewRequests: { nodes: [{ asCodeOwner: true, requestedReviewer: { combinedSlug: "acme/api" } }] } }).why, "waiting on code owner @acme/api");
@@ -353,7 +353,15 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.equal(go({}, { verdict: { wait: "code review: running" } }).do, "wait");
   assert.equal(go({}, { verdict: { wait: "code review: findings", findings: "code review: findings", findingsKey: "k" } }).do, "fix_review");
   assert.equal(go({}, { verdict: { pass: true } }).do, "merge", "code review's pass is the review");
-  assert.equal(go({}, { verdict: { bypass: "down" } }).do, "merge");
+  assert.equal(go({}, { verdict: { wait: "code review can't be reached: the merge waits until it answers" } }).do, "wait", "code review unreachable is a wait, never a merge");
+  // Where GitHub's rules ask for a review, the approval must be on this head, by someone who can push (or an App): an earlier
+  // commit's approval GitHub still counts (stale approvals not dismissed), or a drive-by one on the head, is none.
+  const approval = (commit, writer = true, bot = false) => ({ latestOpinionatedReviews: { nodes: [{ state: "APPROVED", authorCanPushToRepository: writer, author: { __typename: bot ? "Bot" : "User" }, commit: { oid: commit } }] } });
+  assert.deepEqual(go({ reviewDecision: "APPROVED", ...approval("b".repeat(40)) }), { do: "wait", why: "its approval is on an earlier commit: someone with write access approves this head" });
+  assert.equal(go({ reviewDecision: "APPROVED", ...approval("b".repeat(40)) }, { approve: true }).do, "approve", "ship's App approves the head again where it may");
+  assert.equal(go({ reviewDecision: "APPROVED", ...approval(H, false) }).do, "wait", "a reader's approval on the head doesn't count");
+  assert.equal(go({ reviewDecision: "APPROVED", ...approval(H) }).do, "merge");
+  assert.equal(go({ reviewDecision: "APPROVED", ...approval(H, false, true) }).do, "merge", "the reviewer App's approval on the head");
   assert.equal(go({ state: "MERGED" }).do, "done");
   assert.equal(go({ isInMergeQueue: true }).do, "wait");
   // A non-default base is unsupported: a wait said each pass, never a stored stall.

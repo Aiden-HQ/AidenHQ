@@ -542,9 +542,7 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
     const j = journey ? journeys().find((j) => j.name === journey) : journeys().find((j) => c.built.get(j.name)?.length);
     const idleNow = (b: Built) => b.tasks.map((t) => idleFor(t).at(-1)).find((i) => i && i.end === null)?.reason ?? null;
     const insight = j ? insights(j, c.built.get(j.name)!, { t0, t1, now: t1, previous: !truncated && t1 - t0 <= 90 * DAY, dora: c.dora, idleNow }) : null;
-    // Merges that went without code review's verdict (code review unreachable too long): each one listed, never only counted.
-    const review_bypassed = rows.filter((f) => f.type === "pr.review_bypassed" && inWin(f)).map((f) => ({ pr: f.subject.replace(/^pr:/, ""), head: str(f.data.head) ?? null, why: str(f.data.why) ?? null, at: f.at }));
-    return { since: iso(t0), to: iso(t1), by, scope: scope ?? "all", truncated, stages: stageRows, dora, churn, fleet, review_bypassed, journey: j?.name ?? null, insights: insight };
+    return { since: iso(t0), to: iso(t1), by, scope: scope ?? "all", truncated, stages: stageRows, dora, churn, fleet, journey: j?.name ?? null, insights: insight };
   }
   const cache = new Map<string, { at: number; value: ReturnType<typeof summarize> }>();
 

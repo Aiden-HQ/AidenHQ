@@ -11,7 +11,7 @@ import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
 import { handBack, intake, recordTask, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
 import { retryReport, round, tell, type Decision, type RoundDeps } from "./rounds.ts";
-import { canApprove, judge, riskOf, type ChangedFile, type Judged, type Risk, type Verdict } from "./safe.ts";
+import { canApprove, carries, judge, riskOf, type ChangedFile, type Judged, type Risk, type Verdict } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
 
@@ -47,7 +47,7 @@ export function viewOf(repo: string, defaultBranch: string, pr: Json): PrView {
   return {
     repo, number: pr.number, url: pr.url, head: pr.headRefOid, base: pr.baseRefName, defaultBranch,
     author: String(pr.author?.login ?? ""), authorBot: pr.author?.__typename !== "User",
-    fork: pr.isCrossRepository === true, canModify: pr.maintainerCanModify === true, draft: pr.isDraft === true, state: "open",
+    fork: pr.isCrossRepository === true, canModify: pr.maintainerCanModify === true, ...(pr.headRepository?.nameWithOwner ? { headRepo: String(pr.headRepository.nameWithOwner) } : {}), draft: pr.isDraft === true, state: "open",
     labels: (pr.labels?.nodes ?? []).map((l: Json) => String(l.name)), assignees: (pr.assignees?.nodes ?? []).map((a: Json) => String(a.login)),
     events: (pr.timelineItems?.nodes ?? []).map(eventOf).filter((e: TriggerEvent | undefined): e is TriggerEvent => !!e).sort((a: TriggerEvent, b: TriggerEvent) => a.at.localeCompare(b.at)),
   };
@@ -90,6 +90,29 @@ export function adoptedPass(o: AdoptedOptions) {
       return roles.get(k)!;
     },
     unassign: async (repo, n, logins) => void (await must("DELETE", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
+    // The kernel records the commit each write made (/v1/objects); the write must be on this adoption's tasks, of this generation,
+    // and start from `from`: a push the Engineer made on top of the author's new commit is not one ship made from the hand-off.
+    async madeFrom(a, pr, from) {
+      if (!pr.headRepo) return undefined;
+      const tasks = [a.task, a.holder].filter((t): t is string => Boolean(t));
+      if (!tasks.length) return undefined;
+      const records = (await Promise.all(tasks.map((t) => o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(t)}`)))).flatMap((w: Json) => (w?.records ?? []) as Json[])
+        .filter((r: Json) => ["codehost.push", "github.repair"].includes(r.kind) && r.args?.generation === a.generation && (r.args?.expected ?? r.args?.head) === from);
+      if (records.some((r: Json) => r.state === "claimed")) return "writing";
+      const made = await o.kernel.call("GET", `/v1/objects?ref=${encodeURIComponent(`github:${pr.headRepo.toLowerCase()}@${pr.head}`)}`);
+      return made?.ours && records.some((r: Json) => r.state === "done" && String(r.id) === String(made.record)) ? "ours" : undefined;
+    },
+    // Strict: every path counts (generated ones too), and a head that can't be compared (the author rewrote it away) is a change.
+    async sameChange(pr, from) {
+      const read = async (h: string) => {
+        const r = await o.gh("GET", `/repos/${pr.repo}/compare/${pr.base}...${h}`);
+        if (r.status === 404 || r.status === 422) return undefined;
+        if (r.status >= 300) throw new Error(`GitHub GET compare: ${r.status}`);
+        return (r.body?.files ?? []) as ChangedFile[];
+      };
+      const [was, now] = await Promise.all([read(from), read(pr.head)]);
+      return !!was && !!now && carries(was, now, []);
+    },
   };
   const rounds: RoundDeps = {
     state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, comment: o.effects.comment, askFresh: o.effects.askFresh, log: o.log, gh: o.gh,

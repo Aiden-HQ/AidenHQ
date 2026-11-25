@@ -481,7 +481,7 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (issued under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
+      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
       return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha), { base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? "") }) } : {}),
@@ -1160,8 +1160,8 @@ export function createService(o: Options) {
     const app = await o.reviewer?.(s.slug);
     if (!app) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App isn't installed on this repo).` };
     if (same(String(pr.user?.login ?? ""), app.login)) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App opened it).` };
-    // An App approval issued under another review policy is dismissed (ship files it before a merge it must not count for): every
-    // approval of this PR the App made, whatever its head.
+    // An App approval made on another commit or under another review policy is dismissed (ship files it before anything it must
+    // not count for): every approval of this PR the App made, whatever its head.
     if (a.dismiss === true) {
       // Every page: GitHub lists a PR's reviews oldest first, so a recent approval may be on a later one.
       const mine: any[] = [];
@@ -1173,7 +1173,7 @@ export function createService(o: Options) {
         if (got.length < 100 || page >= 20) break;
       }
       for (const r of mine) {
-        const d = await app.rest("PUT", `/repos/${s.slug}/pulls/${n}/reviews/${r.id}/dismissals`, { message: "Ship: this approval was issued under another review policy; it is dismissed and the PR is approved again under the current one, or by a person." });
+        const d = await app.rest("PUT", `/repos/${s.slug}/pulls/${n}/reviews/${r.id}/dismissals`, { message: "Ship: this approval was made on another commit or under another review policy; it is dismissed, and the current head is judged again: approved by the App under the current policy, or by a person." });
         if (d.status >= 300) return { ok: false, text: `GitHub refused to dismiss the App's approval of ${url}: ${d.status} ${String(d.body?.message ?? "").slice(0, 200)}` };
       }
       return { ok: true, text: `Dismissed ${mine.length} App approval(s) of ${url}.` };
@@ -1199,16 +1199,13 @@ export function createService(o: Options) {
       if (r.status >= 300 || r.body?.errors?.length || !pr) throw fail(502, `GitHub couldn't read ${url}'s queue entry: ${r.body?.errors?.[0]?.message ?? r.status}`);
       return pr;
     };
-    // A bypass of code review (unreachable too long) is recorded once the queue has the PR, as a direct merge's is.
-    let bypass: string | undefined;
     const settled = (pr: any) => {
       if (pr.baseRefName !== a.base) return undefined;
       const done = pr.state === "MERGED" && pr.headRefOid === a.head ? `${url} is merged at \`${String(a.head).slice(0, 12)}\`.`
         : pr.isInMergeQueue && pr.mergeQueueEntry?.headCommit?.oid === a.head ? `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` : undefined;
-      if (done && bypass) flow.reviewBypassed(s.slug, n, a.head, bypass);
       return done ? { ok: true, text: done } : undefined;
     };
-    // Code review's gate holds a queued merge as it holds a direct one (merges.ts): only its pass (or its audited bypass) queues.
+    // Code review's gate holds a queued merge as it holds a direct one (merges.ts): only its pass queues.
     // Asked first, so the PR read below is the last one before the mutation.
     const live = await read();
     const review = await o.reviewGate(s.slug, n, a.head, { base: String(live.baseRefName ?? ""), association: String(live.authorAssociation ?? "") });
@@ -1219,7 +1216,6 @@ export function createService(o: Options) {
     if (now) return now;
     if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
     if (pr.baseRefName !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed: it now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
-    if (review && "bypass" in review) bypass = review.bypass;
     const ended = await adoptionEnded(s.slug, n, a.generation, { do: "merge", head: a.head, base: String(pr.baseRefName ?? ""), association: String(pr.authorAssociation ?? "") });
     if (ended) return { ok: false, text: ended };
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
@@ -1227,7 +1223,6 @@ export function createService(o: Options) {
     try { r = await gh("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head: a.head } }); } catch (e) { log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
     // Success is GitHub's queue entry, not a bare 200: an answer without one is read back like a lost answer.
     if (r && r.status < 300 && !r.body?.errors?.length && r.body?.data?.enqueuePullRequest?.mergeQueueEntry) {
-      if (bypass) flow.reviewBypassed(s.slug, n, a.head, bypass);
       return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
     }
     // GitHub's own refusal (a GraphQL error, a 4xx): the PR wasn't queued.
