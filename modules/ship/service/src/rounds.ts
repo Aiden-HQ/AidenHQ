@@ -361,6 +361,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "enqueue": {
         const q = qn;
+        if (q?.act === "nothing" && q.owner) ownerWait = true;
         if (!q || q.act === "nothing") return "nothing";
         const dismissing = await dismissStale();
         if (dismissing) return dismissing;
@@ -392,6 +393,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (a!.approve?.head === pr.head) {
           if (a!.approve.why) return "nothing";
           const r = await d.kernel.call("GET", `/v1/writes/${a!.approve.record}`);
+          if (r.state === "owner") ownerWait = true;
           if (OPEN.includes(String(r.state)) || r.state === "done") return "nothing";
           const text = String(r.outcome?.text ?? r.reason ?? "");
           if (/^ship-head-moved/.test(text)) return "nothing";
