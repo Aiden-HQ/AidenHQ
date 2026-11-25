@@ -407,13 +407,16 @@ export function createAccess(o: {
     calls.n.set(k, (calls.n.get(k) ?? 0) + 1);
   };
 
-  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string, caller?: string): Promise<{ status: number; body: any; headers: Headers }> {
+  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string, caller?: string, since?: number): Promise<{ status: number; body: any; headers: Headers }> {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
     // A read's `deadline` bounds only its rate-limit wait (admit): the attempt that follows has its own timeout, and a read
     // creates nothing, so nothing lands after a caller was told it failed.
     const read = !createsContent(method, path, body);
     await admit(p, resource, background, deadline, read, caller === "feed");
+    // The sign-in this request belongs to: a 401 is retried only within it (see `replaced` below). A retry keeps the count its
+    // first attempt captured, so a sign-in that lands between the two is not mistaken for the same one.
+    const signedInAt = as ? undefined : (since ?? o.auth.signInCount?.());
     const t = as ? await as.token(retried) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();
@@ -442,25 +445,48 @@ export function createAccess(o: {
     // The owner's 401 is a refusal only when GitHub refuses the token itself: a stray 401 (another resource, a blip) is an answer.
     let stray = false;
     if (!as && res.status === 401) {
-      // Another call (or a reconnect) replaced the token this one was sent with: its 401 is the old token's, so send again with the new one.
+      // Another call (or a refresh) replaced the token this one was sent with: its 401 is the old token's, so send again with the
+      // new one. Only within the same sign-in: a different account's sign-in is a new identity, and resending would return its
+      // private data to the caller who asked under the old one, so the request fails instead.
       const replaced = async () => {
+        if (signedInAt !== undefined && o.auth.signInCount?.() !== signedInAt) return false;
         const now = String((await o.auth.headers().catch(() => ({}) as Record<string, string>)).authorization ?? "").replace(/^Bearer\s+/i, "");
-        return !retried && now !== "" && now !== t;
+        return now !== "" && now !== t;
       };
-      const again = () => attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
-      if (await replaced()) return again();
+      const again = () => attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller, signedInAt);
+      // Replaced while the probe was out: its verdict is on the old token, so the saved one is left alone.
+      const replacedNow = async () => {
+        if (!(await replaced())) return false;
+        if (!retried) return true;
+        stray = true;
+        o.log?.("github 401 on a token another call replaced; sign-in kept", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
+        return false;
+      };
+      if (await replacedNow()) return again();
       const refusedNow = o.auth.refused ? await o.auth.refused() : true;
-      if (await replaced()) return again(); // replaced while the probe was out: its verdict is on the old token
+      if (await replacedNow()) return again();
       if (!refusedNow) {
         stray = true;
         o.log?.("github 401 on a token GitHub still accepts; sign-in kept", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
       } else if (!retried) {
-        // A token that ran out: refresh once and send again. A refusal marks the sign-in expired inside the refresh; any other
-        // failure (the token endpoint's 5xx) is passed on as it is, so the next call tries again and nothing is marked.
-        try { await o.auth.refresh(); } catch (err) {
-          if (o.auth.status().state !== "expired") throw err;
+        // A different account signed in while this request ran: its answer belongs to the owner who asked, so it is not refreshed
+        // or resent under the new account. The 401 is the old sign-in's, and nothing about the saved one is decided here.
+        if (signedInAt !== undefined && o.auth.signInCount?.() !== signedInAt) {
+          stray = true;
+          o.log?.("github 401 on a token a different sign-in replaced; not retried", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
+        } else {
+          // A token that ran out: refresh once and send again. A refusal marks the sign-in expired inside the refresh; any other
+          // failure (the token endpoint's 5xx) is passed on as it is, so the next call tries again and nothing is marked.
+          try { await o.auth.refresh(); } catch (err) {
+            if (o.auth.status().state !== "expired") throw err;
+          }
+          // A different account signed in while the refresh ran: the retry would go out under it, and its answer (private data
+          // included) would reach the caller who asked under the old one, so the 401 stays the answer instead.
+          if (signedInAt !== undefined && o.auth.signInCount?.() !== signedInAt) {
+            stray = true;
+            o.log?.("github 401 on a sign-in a refresh replaced; not retried", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
+          } else return again();
         }
-        return again();
       }
     }
     const need = classify(p, path, res, parsed, Boolean(as) || stray);

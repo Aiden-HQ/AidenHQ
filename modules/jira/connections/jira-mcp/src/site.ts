@@ -42,9 +42,10 @@ export function siteHooks(siteUrl: string, log: Logger): Hooks {
   return {
     async connected(client: Client) {
       const sites = await client.callTool({ name: "getAccessibleAtlassianResources", arguments: {} });
-      cloudId = siteCloudId(sites as never, siteUrl);
-      checked = true;
-      if (!cloudId) log.warn({ sites: JSON.stringify(sites).slice(0, 500) }, `no site matching ${siteUrl} among the account's Atlassian sites`);
+      const found = siteCloudId(sites as never, siteUrl);
+      if (!found) log.warn({ sites: JSON.stringify(sites).slice(0, 500) }, `no site matching ${siteUrl} among the account's Atlassian sites`);
+      // Published only when this connect becomes the session: a connect a sign-in superseded must not clear the winner's cloudId.
+      return () => { cloudId = found; checked = true; };
     },
     tools: (tools) =>
       tools.map((t) => {

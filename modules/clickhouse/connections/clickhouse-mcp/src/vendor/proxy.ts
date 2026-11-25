@@ -33,8 +33,12 @@ import { AuthError, SignInError, type Auth } from "./oauth.js";
 
 /** A connection's own logic, where it has any. */
 export interface Hooks {
-  /** After each connect (Jira: find the configured site); a throw fails the connect. */
-  connected?(client: Client, tools: Tool[]): Promise<void>;
+  /**
+   * After each connect (Jira: find the configured site); a throw fails the connect. It returns a commit function when its work
+   * publishes state other calls read (Jira's cloudId): the proxy runs it only if this connect becomes the session, so a connect a
+   * sign-in or reset superseded never writes its state over the winner's. Work that publishes nothing may return nothing.
+   */
+  connected?(client: Client, tools: Tool[]): Promise<void | (() => void)>;
   /** The tools as agents see them (a pinned argument dropped from the schema, a lead line in a description). */
   tools?(tools: Tool[]): Tool[];
   /**
@@ -77,6 +81,11 @@ export interface ProxyOptions {
   callTimeoutMs?: number;
   /** Remembers the tool list here (tools.json), for stand-ins while not connected. */
   stateDir?: string;
+  /**
+   * How long a call waits on a connect another call (or a reset) started before it opens a session of its own; default 20 s, the
+   * board's budget for one handshake. Without the bound, one stalled handshake would hold up every call after it.
+   */
+  resetWaitMs?: number;
   hooks?: Hooks;
   /** More routes on the same port (a write kind's executor); true when it answered. */
   routes?(req: IncomingMessage, res: ServerResponse): Promise<boolean>;
@@ -105,58 +114,247 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
   const servesRead = (t: Tool) => reads.has(t.name) && isRead(t);
   const denied = (name: string) => Boolean(hooks.deny?.test(name));
   const cacheFile = o.stateDir ? join(o.stateDir, "tools.json") : undefined;
-  let upstream: { client: Client; tools: Tool[]; at: number } | undefined;
+  // One session is shared by every concurrent call, so a session replaced after an auth failure is retired, not closed: a call
+  // already running on it (another agent's tool call) would fail with a connection-closed error. It closes when its last call ends.
+  type Upstream = { client: Client; tools: Tool[]; at: number; active: number; retired: boolean };
+  let upstream: Upstream | undefined;
+  // A reset (a new sign-in, the periodic reconnect) invalidates every connect already in flight: such a connect is stale and must
+  // not become the cached session, or calls would run under the account the owner just replaced.
+  let generation = 0;
+  // Concurrent calls in one generation share that generation's connect; a new generation starts its own at once, so a stalled
+  // connect can never hold up the calls after it. Which one becomes the session is decided at commit (see `commit`).
+  let pending: { gen: number; p: Promise<Upstream> } | undefined;
+  let resetting: { refresh: boolean; p: Promise<void> } | undefined;
+  // A new sign-in (a different account or grant), not a refresh of the same one. A call that started under the previous sign-in is
+  // never replayed on the new one: its arguments and its results belong to the owner who sent it, not the account that replaced it.
+  let signIn = 0;
 
   const notConnected = () => (!o.upstream ? `${o.name} isn't connected yet: the owner presses Connect on the board (Settings, Connections).` : auth.status().state === "expired" ? `${o.name}'s sign-in stopped working: the owner reconnects it on the board.` : `${o.name} isn't connected: the owner signs in from the board.`);
 
-  async function connect(): Promise<NonNullable<typeof upstream>> {
+  /** The connect started before a reset, whose session belongs to the account or token that reset replaced. */
+  class StaleConnect extends Error {}
+
+  /** A different sign-in replaced this call's while it waited: it is not sent (or replayed) under the new account. */
+  class StaleSignIn extends Error {}
+
+  /** The token endpoint failed (a 5xx, a timeout): the vendor never refused the grant, so nothing is marked expired. */
+  class RefreshFailed extends Error {
+    constructor(readonly reason: unknown) { super(String(reason)); }
+  }
+
+  async function open(gen: number): Promise<Upstream> {
     if (!o.upstream) throw new AuthError(notConnected());
     const client = new Client({ name: `aidenhq-${o.name.toLowerCase()}-proxy`, version: "0.2.0" });
-    await client.connect(new StreamableHTTPClientTransport(o.upstream, { requestInit: { headers: await auth.headers() } }));
-    const tools: Tool[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await client.listTools(cursor ? { cursor } : undefined);
-      tools.push(...page.tools);
-      cursor = page.nextCursor;
-    } while (cursor);
-    await hooks.connected?.(client, tools);
-    upstream = { client, tools, at: Date.now() };
+    try {
+      await client.connect(new StreamableHTTPClientTransport(o.upstream, { requestInit: { headers: await auth.headers() } }));
+      const tools: Tool[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await client.listTools(cursor ? { cursor } : undefined);
+        tools.push(...page.tools);
+        cursor = page.nextCursor;
+      } while (cursor);
+      // A connect a reset superseded never runs the hook: it would do work (and reach the vendor) for an account already replaced.
+      if (gen !== generation) throw new StaleConnect();
+      const commitHook = await hooks.connected?.(client, tools);
+      // It may have been superseded while the hook ran: its state must not land over the winner's, and its session is not the one.
+      if (gen !== generation) throw new StaleConnect();
+      commitHook?.();
+      // The session this one replaces (a racing reconnect's) is retired, never left open.
+      if (upstream) retire(upstream);
+      upstream = { client, tools, at: Date.now(), active: 0, retired: false };
+    } catch (err) {
+      // Whatever stopped this connect (a refused handshake, a failing tools list, a hook, or a reset), its client never becomes
+      // the cached session: close it here, or its event stream stays open with nothing able to reach it.
+      void client.close().catch(() => undefined);
+      // A connect a newer sign-in or reset superseded says nothing about the account saved now: its failure is stale, so the
+      // caller takes the current session instead of refreshing (or marking expired) against the grant that replaced it.
+      if (gen !== generation) throw new StaleConnect();
+      throw err;
+    }
     auth.mark("ok");
-    const names = tools.map((t) => t.name).filter((n) => !denied(n));
+    const names = upstream.tools.map((t) => t.name).filter((n) => !denied(n));
     // The kernel lists only what the module tags; a name here it doesn't tag reaches nobody until a module change does.
-    log.info({ upstream_tools: tools.length, tools: names }, `connected to ${o.name}`);
+    log.info({ upstream_tools: upstream.tools.length, tools: names }, `connected to ${o.name}`);
     if (cacheFile) try { writeFileSync(cacheFile, JSON.stringify(names)); } catch { /* read-only state: no stand-ins */ }
     return upstream;
   }
 
-  async function reset(refresh: boolean): Promise<void> {
-    const old = upstream;
-    upstream = undefined;
-    await old?.client.close().catch(() => undefined);
-    if (refresh) await auth.refresh();
-    await connect();
+  function connect(): Promise<Upstream> {
+    // A connect already running for this generation is the one to wait on: starting a second would have the two replace each
+    // other, and every caller waiting on them would lose its session in turn. A new generation opens its own at once (nothing
+    // queues): a stalled connect on a replaced sign-in must not hold up the calls after it, and `commit` decides the winner.
+    if (pending && pending.gen === generation) return pending.p;
+    const gen = generation;
+    const entry = { gen, p: open(gen) };
+    pending = entry;
+    const done = () => { if (pending === entry) pending = undefined; };
+    void entry.p.then(done, done);
+    return entry.p;
   }
 
-  async function withUpstream<T>(fn: (u: NonNullable<typeof upstream>) => Promise<T>): Promise<T> {
+  /** A replaced session closes once its in-flight calls end; until then they keep answering on it. */
+  function retire(old: Upstream): void {
+    old.retired = true;
+    if (old.active === 0) void old.client.close().catch(() => undefined);
+  }
+
+  /**
+   * Replaces the session. Concurrent callers share one reset rather than each invalidating the other's connect, but only when the
+   * pending one already does everything they need: a refresh never joins a session-only reset (it would swallow the grant), and a
+   * new sign-in (`force`) never joins at all, since a connect started before it belongs to the account it replaced.
+   */
+  function reset(refresh: boolean, force = false): Promise<void> {
+    if (!force && resetting && (resetting.refresh || !refresh)) return resetting.p;
+    const entry: { refresh: boolean; p: Promise<void> } = { refresh, p: Promise.resolve() };
+    if (force) signIn += 1;
+    entry.p = (async () => {
+      const old = upstream;
+      generation += 1;
+      upstream = undefined;
+      if (old) retire(old);
+      // A token endpoint failure is the vendor's, not a refusal of the grant: pass it on as it is, with nothing marked expired.
+      if (refresh) await auth.refresh().catch((err) => { throw new RefreshFailed(err); });
+      // A refresh is the one reset with work between its start and its connect, so a reset that replaced it meanwhile owns the
+      // session now: connecting here would replace the newer sign-in's session with one opened from this one's grant.
+      if (refresh && resetting !== entry) return;
+      // A newer reset took over while this one ran: it owns the session now, so there is nothing left to connect here.
+      await connect().catch((err) => {
+        // A sign-in that still could not connect is a real failure for the board; a stale one is the newer reset's business.
+        if (!(err instanceof StaleConnect)) throw err;
+      });
+    })().finally(() => { if (resetting === entry) resetting = undefined; });
+    resetting = entry;
+    return entry.p;
+  }
+
+  /**
+   * Waits on a reset another call started, but never past `resetWaitMs`: a handshake that stalls there (a cold start, a periodic
+   * reconnect) must not hold up every call after it. A reset left waiting that long is abandoned, and this call opens a session of
+   * its own at once; the stalled connect is superseded, so it can never become the session.
+   */
+  async function settled(): Promise<void> {
+    const entry = resetting;
+    if (!entry) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stalled = await Promise.race([
+      entry.p.then(() => false, () => false),
+      new Promise<boolean>((r) => { timer = setTimeout(() => r(true), o.resetWaitMs ?? 20_000); timer.unref?.(); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!stalled) return;
+    // Only the caller that finds this reset still current invalidates it: a later caller waiting on the same stalled entry must not
+    // bump the generation again, or it would invalidate the session the first one opened.
+    if (resetting !== entry) return;
+    log.warn(`${o.name}: a ${entry.refresh ? "token refresh" : "reconnect"} stalled; opening a session of its own`);
+    resetting = undefined;
+    generation += 1;
+  }
+
+  /** The current session, or a fresh one; a connect a reset invalidated is retried on the session that reset opened. */
+  async function acquire(): Promise<Upstream> {
+    // A reset in flight is replacing the token (a refresh) or the account (a sign-in): a handshake started now would go out with
+    // the old one and come back 401 after the refresh succeeded, so wait for it and use the session it opened. A connect a reset
+    // superseded while it ran is the same case, so it waits for that reset too rather than opening another handshake at once.
+    await settled();
+    if (upstream) return upstream;
+    try {
+      return await connect();
+    } catch (err) {
+      if (!(err instanceof StaleConnect)) throw err;
+      // A reset started while this connect ran, so the connect is stale. That reset may still be replacing the token (a refresh), so
+      // wait for it again before deciding: opening a handshake here could send the token the refresh is replacing.
+      await settled();
+      return upstream ?? (await connect());
+    }
+  }
+
+  /** Runs one call on a session, counted so a retired session isn't closed under it. */
+  async function on<T>(u: Upstream, fn: (u: Upstream) => Promise<T>): Promise<T> {
+    u.active += 1;
+    try {
+      return await fn(u);
+    } finally {
+      u.active -= 1;
+      if (u.retired && u.active === 0) void u.client.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * One dispatch on the current session, bound to the sign-in the call started under: the check runs after every wait (a reset, a
+   * refresh, a connect), immediately before the tool call, so a sign-in that lands meanwhile fails the call instead of sending it —
+   * and its results — through the account that replaced the owner who asked.
+   */
+  async function dispatch<T>(under: number, fn: (u: Upstream) => Promise<T>): Promise<T> {
+    const u = await acquire();
+    if (signIn !== under) throw new StaleSignIn();
+    return await on(u, fn);
+  }
+
+  /** One attempt on the current session; a 401 from a session another call already replaced is retried on the current one. */
+  async function run<T>(fn: (u: Upstream) => Promise<T>): Promise<T> {
+    const under = signIn;
+    const u = await acquire();
+    if (signIn !== under) throw new StaleSignIn();
+    try {
+      return await on(u, fn);
+    } catch (err) {
+      if (!auth.signedIn() || !isAuthFailure(err) || u === upstream) throw err;
+      // A different account signed in while this call ran: its arguments and results belong to the owner who sent it, so it fails
+      // here rather than being replayed (and answered, private data included) under the account that replaced the sign-in.
+      if (signIn !== under) throw err;
+      // The session that failed is no longer the current one (another call replaced it, or the token was refreshed): its 401
+      // belongs to the token it was opened with, so retry on the current session and decide nothing about this one.
+      return await dispatch(under, fn);
+    }
+  }
+
+  async function withUpstream<T>(fn: (u: Upstream) => Promise<T>): Promise<T> {
+    const under = signIn;
     // Reconnect every 30 minutes or after an auth failure (inside the try: a token revoked early fails connect() too).
     try {
-      if (!upstream || Date.now() - upstream.at > 30 * 60_000) await reset(false);
-      return await fn(upstream ?? (await connect()));
+      // A periodic reconnect: only a session that exists can be too old. Without one, `acquire` opens it (bounded by `settled`), so
+      // a call never joins a reset another call started and waits on it for as long as that connect hangs.
+      if (upstream && Date.now() - upstream.at > 30 * 60_000) {
+        await reset(false);
+        // The reconnect may have waited on a refresh or a sign-in: dispatch bound to the sign-in this call started under, as every
+        // other retry path does, so one that landed meanwhile never receives it.
+        return await dispatch(under, fn);
+      }
+      return await run(fn);
     } catch (err) {
       if (!auth.signedIn() || !isAuthFailure(err)) throw err;
+      // A different account signed in while this call ran: never refresh or replay it under the new sign-in (see `run`).
+      if (signIn !== under) throw err;
       // The vendor's REST side still answers this token: its MCP endpoint's 401 is that endpoint's own error, not a sign-in to refresh or reconnect.
       // A new session with the current token (the cached one's headers are fixed at connect time); no refresh grant is used.
       if (auth.refused && !(await auth.refused())) {
         await reset(false);
-        return await fn(upstream ?? (await connect()));
+        return await dispatch(under, fn);
       }
       log.warn(`${o.name} rejected the token; refreshing and retrying once`);
       try {
         await reset(true);
-        return await fn(upstream ?? (await connect()));
+      } catch (err) {
+        // The token endpoint failed (a 5xx, a timeout): the vendor never refused the grant, so this is a transient error, never an
+        // expiry. Only a handshake that still 401s with the fresh token is a refused sign-in.
+        if (err instanceof RefreshFailed) throw err.reason;
+        // A sign-in that replaced this one meanwhile owns the decision, so only the current sign-in is marked — and only after the
+        // refusal probe, which may itself have taken long enough for a new sign-in to land.
+        const refused = isAuthFailure(err) && (await auth.refused?.() ?? true);
+        if (refused && signIn === under) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        throw err;
+      }
+      const r = await acquire();
+      if (signIn !== under) throw new StaleSignIn();
+      try {
+        return await on(r, fn);
       } catch (again) {
-        if (isAuthFailure(again) && (await auth.refused?.() ?? true)) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        // A late 401 from a session another call replaced while this retry ran decides nothing about the sign-in saved now: both are
+        // rechecked after the refusal probe, which may itself have taken long enough for a new session or sign-in to land.
+        if (r === upstream && isAuthFailure(again) && (await auth.refused?.() ?? true) && r === upstream && signIn === under) {
+          auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        }
         throw again;
       }
     }
@@ -174,12 +372,18 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     return names.map((name) => ({ name, description: notConnected(), inputSchema: { type: "object" as const } }));
   }
 
-  async function call(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
+  async function call(name: string, args: Record<string, unknown>, readOnly = false): Promise<CallToolResult> {
     if (denied(name)) throw new Error(`${name} is not available through AidenHQ`);
     return withUpstream(async (u) => {
       const tool = u.tools.find((t) => t.name === name);
       // Only what the upstream lists: its schema is what the hooks pin arguments against.
       if (!tool) throw new Error(`${o.name} doesn't offer ${name}`);
+      // Checked on the session that dispatches this attempt: a retry after a reconnect must not reach a tool the new session
+      // no longer marks read-only.
+      if (readOnly && !servesRead(tool)) {
+        log.warn({ tool: name }, "refused a write on the read endpoint");
+        return refusal(`Tool ${name} is not a read: the read endpoint serves reads only.`);
+      }
       const sent = hooks.args ? hooks.args(name, args, tool) : args;
       const result = (await u.client.callTool({ name, arguments: sent }, undefined, o.callTimeoutMs ? { timeout: o.callTimeoutMs } : undefined)) as CallToolResult;
       return hooks.result ? hooks.result(result, name) : result;
@@ -207,15 +411,8 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       const need = () => needsOwner({ cause: auth.status().state === "expired" ? "expired" : "not_connected", detail: notConnected() });
       if (!o.upstream || !auth.signedIn()) return need();
       try {
-        if (readOnly) {
-          const tool = (await withUpstream(async (u) => u.tools)).find((t) => t.name === name);
-          if (!tool || !servesRead(tool)) {
-            log.warn({ tool: name }, "refused a write on the read endpoint");
-            return refusal(`Tool ${name} is not a read: the read endpoint serves reads only.`);
-          }
-        }
         // Upstream answered through the owner's sign-in: a success says so, and clears a down state in the kernel (needs.ts).
-        const result = await call(name, req.params.arguments ?? {});
+        const result = await call(name, req.params.arguments ?? {}, readOnly);
         return result.isError ? result : signedIn(result);
       } catch (err) {
         log.warn({ tool: name, err: String(err).slice(0, 300) }, `${o.name} tool failed`);
@@ -252,10 +449,15 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     if (!o.upstream || !auth.signedIn()) return { ok: false, message: notConnected(), fix: "Connect" };
     try {
       await withUpstream((u) => u.client.listTools());
-      return { ok: true };
+      // Signed in and answering, and still unusable: Jira's account can't reach the configured site. The hook names it.
+      const problem = hooks.health?.();
+      return problem ? { ok: false, message: `${o.name} is signed in but can't be used: ${problem}`, fix: "Reconnect" } : { ok: true };
     } catch (err) {
-      const signIn = auth.status().state === "expired" || ((err instanceof AuthError || isAuthFailure(err)) && (await auth.refused?.() ?? true));
-      return signIn ? { ok: false, message: `${o.name} no longer accepts the sign-in.`, fix: "Reconnect" } : { ok: false, message: `${o.name} didn't answer: ${String((err as Error).message).slice(0, 200)}` };
+      // A sign-in the vendor refused is marked expired by the refresh path; a 401 it still refuses is the same answer. An AuthError
+      // from the token endpoint (a 5xx, a timeout) leaves the grant untouched, so it is the vendor's outage, not the owner's sign-in.
+      const expired = auth.status().state === "expired";
+      const refused = !expired && !(err instanceof AuthError) && isAuthFailure(err) && (await auth.refused?.() ?? true);
+      return expired || refused ? { ok: false, message: `${o.name} no longer accepts the sign-in.`, fix: "Reconnect" } : { ok: false, message: `${o.name} didn't answer: ${String((err as Error).message).slice(0, 200)}` };
     }
   }
 
@@ -280,7 +482,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
         if (path === "/auth/device/cancel") return (d.cancel(), sendJson(res, 200, { ok: true }));
         const started = await d.start(() => {
           log.info({ scope: auth.status().scope }, `signed in to ${o.name}`);
-          void reset(false).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "connecting after sign-in failed"));
+          void reset(false, true).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "connecting after sign-in failed"));
         });
         return sendJson(res, 200, started);
       }
@@ -293,7 +495,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       if (path === "/auth/finish") {
         const { state, code } = z.object({ state: z.string().max(200), code: z.string().max(4096) }).parse(await readJson(req));
         await flow.finish(state, code);
-        await reset(false).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "connecting after sign-in failed"));
+        await reset(false, true).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "connecting after sign-in failed"));
         log.info({ scope: auth.status().scope }, `signed in to ${o.name}`);
         return sendJson(res, 200, { ok: true });
       }
@@ -312,7 +514,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
         const s = auth.status();
         // Without a sign-in (a local server) the only question is whether it answers; a failed ping drops the client.
         if (s.state === "none" && o.upstream) {
-          const down = await withUpstream((u) => u.client.ping({ timeout: 3000 })).then(() => undefined, (err: Error) => { upstream = undefined; return `${o.name} didn't answer: ${String(err.message).slice(0, 150)}`; });
+          const down = await withUpstream((u) => u.client.ping({ timeout: 3000 })).then(() => undefined, (err: Error) => { const old = upstream; upstream = undefined; if (old) retire(old); return `${o.name} didn't answer: ${String(err.message).slice(0, 150)}`; });
           return sendJson(res, down ? 503 : 200, { ok: !down, state: s.state, ...(down ? { detail: down } : {}) });
         }
         const why = !o.upstream ? `${o.name} isn't set up` : s.state === "missing" ? `${o.name} not connected (Connect on the board)` : s.state === "expired" ? `${o.name} sign-in expired: ${s.detail ?? ""} (Reconnect on the board)` : hooks.health?.();

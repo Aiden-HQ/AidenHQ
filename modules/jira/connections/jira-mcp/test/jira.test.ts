@@ -16,7 +16,7 @@ describe("the site pin", () => {
     const h = siteHooks(site, pino({ level: "silent" }));
     const issue = tool("getJiraIssue", { cloudId: { type: "string" }, issueIdOrKey: { type: "string" } });
     const me = tool("atlassianUserInfo", {});
-    await h.connected!({ callTool: async () => sites(site) } as never, []);
+    (await h.connected!({ callTool: async () => sites(site) } as never, []))?.();
     expect(h.tools!([issue, me])[0]!.inputSchema).toEqual({ type: "object", properties: { issueIdOrKey: { type: "string" } }, required: ["issueIdOrKey"] });
     expect(h.args!("getJiraIssue", { issueIdOrKey: "A-1", cloudId: "other" }, issue)).toEqual({ issueIdOrKey: "A-1", cloudId: "fdd7" });
     expect(h.args!("atlassianUserInfo", {}, me)).toEqual({});
@@ -27,7 +27,7 @@ describe("the site pin", () => {
 
   it("refuses site calls when the account can't reach the configured site, and says so in the health", async () => {
     const h = siteHooks(site, pino({ level: "silent" }));
-    await h.connected!({ callTool: async () => sites("https://initech.atlassian.net") } as never, []);
+    (await h.connected!({ callTool: async () => sites("https://initech.atlassian.net") } as never, []))?.();
     expect(() => h.args!("getJiraIssue", {}, tool("getJiraIssue", { cloudId: {} }))).toThrow(/can't reach https:\/\/acme/);
     expect(h.health!()).toMatch(/can't reach/);
   });
