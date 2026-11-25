@@ -16,7 +16,7 @@ The `maintainer` agent holds the roles `maintainer` and `product-issues` and use
 and set state on issues, list PRs and read repo files. A watcher service reads the github change feed's issue events from the kernel's log and files a task for each newly
 labelled issue within about a minute of its label.
 
-Every setting is per repo, a field of its `maintainer_repos` entry (`preset`, `triage`, `triage_cap_per_author_day`, `triage_labels`, `close`, `needs_info_close_days`, `stale_issues`, `resolved_check`, beside `fix_label`, `trusted`, `fixes`, `features`, `dependabot`, `contributor_prs`, `stale_days`); the agent reads each repo's through `github_issue_list`. The cap bounds invalid new-issue triage runs a day per author (a fix-labelled or feature-request issue doesn't count).
+Every setting is per repo, a field of its `maintainer_repos` entry (`preset`, `triage`, `triage_cap_per_author_day`, `triage_labels`, `close`, `needs_info_close_days`, `stale_issues`, `resolved_check`, beside `fix_label`, `trusted`, `fixes`, `features`, `dependabot`, `contributor_prs`, `stale_days`); the agent reads each repo's through `github_issue_list`. The cap bounds invalid new-issue triage runs a day per outside author; members and collaborators have no limit (a fix-labelled or feature-request issue doesn't count).
 
 ## New installs
 

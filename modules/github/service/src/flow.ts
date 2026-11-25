@@ -89,16 +89,24 @@ export function createFlow(d: FlowDeps) {
   // The owner's backfill sends its facts straight to the kernel in batches (it stops and says so on a failure); every other fact queues.
   const emit = (x: FactIn) => { const y = { ...x, at: utc(x.at) }; return y.source === "backfill" ? backfillSend(y) : emitter.emit(y); };
   let selfName: string | undefined;
-  const writers = new Map<string, boolean>();
-  /** Whether `who` has write on `repo` (one read per repo and author; a failed read is asked again next time). */
+  const writers = new Map<string, { write: boolean; at: number }>();
+  /** Whether `who` has write on `repo` (one read per repo and author an hour, so a revoked grant lapses; a failed read is asked again next time). */
   async function canWrite(repo: string, who: string): Promise<boolean> {
     const k = `${repo.toLowerCase()} ${who.toLowerCase()}`;
-    if (!writers.has(k)) {
+    if (!writers.has(k) || Date.now() - writers.get(k)!.at > 60 * 60_000) {
       const r = await d.gh!("GET", `/repos/${repo}/collaborators/${encodeURIComponent(who)}/permission`).catch(() => undefined);
       if (!r || r.status >= 300) return false;
-      writers.set(k, WRITERS.has(String(r.body?.permission)));
+      writers.set(k, { write: WRITERS.has(String(r.body?.permission)), at: Date.now() });
     }
-    return writers.get(k)!;
+    return writers.get(k)!.write;
+  }
+  /** Whether GitHub itself says `who` belongs to the repo: the owner's login, an OWNER, MEMBER or COLLABORATOR association, or write on `repo`. */
+  async function isMember(who?: string | null, association?: string | null, repo?: string): Promise<boolean> {
+    // A failed lookup is retried at the next author.
+    if (!selfName) selfName = login(await d.self?.().catch(() => undefined));
+    if (login(who) && login(who) === selfName) return true;
+    if (["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase())) return true;
+    return Boolean(repo && who && d.gh && (await canWrite(repo, String(who))));
   }
   /**
    * Who an author is: AidenHQ's (agent) when the object is in our records or carries our marks (`seen`: its number, its text and
@@ -108,18 +116,14 @@ export function createFlow(d: FlowDeps) {
   async function kindOf(who?: string | null, association?: string | null, repo?: string, seen: { number?: number; body?: string; message?: string } = {}): Promise<Kind> {
     if (repo && seen.number && (await d.ours?.(`github:${repo.toLowerCase()}#${seen.number}`).catch(() => false))) return "agent";
     if (hasFooter(String(seen.body ?? "")) || hasTrailer(String(seen.message ?? ""))) return "agent";
-    // A failed lookup is retried at the next author.
-    if (!selfName) selfName = login(await d.self?.().catch(() => undefined));
-    if (login(who) && login(who) === selfName) return "owner";
-    if (["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase())) return "owner";
-    return repo && who && d.gh && (await canWrite(repo, String(who))) ? "owner" : "outside";
+    return (await isMember(who, association, repo)) ? "owner" : "outside";
   }
   /** `author` and `author_kind` for a fact's data; `association` is GitHub's author_association (REST) or authorAssociation (GraphQL). */
   const authored = async (who?: string | null, association?: string | null, repo?: string, seen?: { number?: number; body?: string; message?: string }) => ({ author: who ? String(who) : "ghost", author_kind: await kindOf(who, association, repo, seen) });
 
   const f = {
     emit, flush: emitter.flush, stop: emitter.stop, taskOf,
-    kindOf, authored,
+    kindOf, isMember, authored,
     opened: (repo: string, n: number, head: string, branch: string, at = now().toISOString(), task = taskOf(repo, n), source?: "backfill", extra: Json = {}) =>
       emit({ type: "pr.opened", subject: prSubject(repo, n), version: PR_OPENED_VERSION, at, task, data: { repo: repo.toLowerCase(), number: n, head, branch, ...extra }, ...(source ? { source } : {}) }),
     /** A head change after the PR opened: version is the new head, so a repeat from another path records once. */

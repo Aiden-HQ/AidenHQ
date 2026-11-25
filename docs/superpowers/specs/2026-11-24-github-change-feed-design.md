@@ -242,7 +242,7 @@ Everything a consumer keys on is in `data`.
 | `pull_request.edited` | open PRs: the title changed | `<repo>#<n>:title:<gen>.<k>` | `head` | the title |
 | `pull_request.closed` | open PRs: the number left; one `GET /pulls/:n` | `<repo>#<n>:closed:<closed_at>` | `head`, `merged`, `merge_sha` | the title |
 | `pull_request.reopened` | open PRs: a closed number is back | `<repo>#<n>:reopened:<gen>.<k>` | `head` | the title |
-| `issues.opened` | new issues (non-PR) | `<repo>#<n>:opened` | `author_kind`, `created_at`, `labels` | title, blank line, body |
+| `issues.opened` | new issues (non-PR) | `<repo>#<n>:opened` | `author_kind`, `member`, `created_at`, `labels` | title, blank line, body |
 | `issues.labeled` / `.unlabeled`, `pull_request.labeled` / `.unlabeled` | issue events | `ev:<event id>` | `label`, `actor` | none |
 | `issues.closed` / `.reopened` | issue events (non-PR) | `ev:<event id>` | `actor`, `state_reason` | none |
 | `issue_comment.created` | conversation comments | `comment:<id>` | `pr` (bool), `author_kind`, `created_at` | the comment |
@@ -260,6 +260,7 @@ Everything a consumer keys on is in `data`.
   state; the table lists only each kind's own fields.
 - **`author_kind`.** It uses the rule `flow.ts` `kindOf` already applies (`agent`, `owner`, `outside`), computed once here so
   consumers stop re-deriving it.
+- **`member`** (`issues.opened`). GitHub's own word that the author belongs to the repo: the owner's login, an OWNER, MEMBER or COLLABORATOR association, or write access (`flow.ts` `isMember`, which `kindOf` also uses after its records and footer step). Identity only: a footer in the text makes `author_kind` `agent`, never a member. A consumer that gates spend on the author reads this, not `author_kind`.
 - **`author`.** The login.
 - **`bot`.** True for a `[bot]` login.
 - **`url`.** The object's `html_url`.
@@ -427,7 +428,7 @@ These run in the same process as the reader, so they take its events in-process,
   `maintainer-issue:<repo>#<n>`, so the kernel keeps one task per issue. If the read answers `error` (GitHub failed), the
   handler throws and the batch is redelivered; only a definite answer of untrusted commits the event with no task.
 - **`feature-request` on `issues.labeled`.** The same trust read, then the issue joins the `featured` set.
-- **`issues.opened`** whose `author_kind` isn't `agent` and that carries none of the three labels. It goes through
+- **`issues.opened`** that carries none of the three labels (the fleet's own issues included). A `member` author has no limit; any other goes through
   `triageRepo`'s per-author limit, then the triage task is filed (`maintainer-triage:<repo>#<n>`).
 - **Held triage issues.** They are re-checked when a slot frees: a filing, or the oldest `recent` entry turning a day old.
   That is a deadline, not a sweep.
