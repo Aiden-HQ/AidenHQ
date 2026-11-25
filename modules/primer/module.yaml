@@ -113,7 +113,7 @@ services:
         PRIMER_DB_PASSWORD_FILE: ${secrets.primer_db_password}
     primer-db:
       when: { primer_mode: self-host }
-      image: postgres:17.12@sha256:dbb9623d5121b5d2c2c9e2fba56e40193cbb3510d4af7f035b1ab1823aff3205
+      image: postgres:17.12@sha256:87c8b42f423b45d5247e6aa8fdb2e7762fec164c68a50fe3eb07e7bfcaf4dbcf
       read_only: false # the image's entrypoint writes its run dir; as the owner's uid (nss_wrapper), no capabilities
       tmp: 64m
       data: ["db:/var/lib/postgresql/data"]
