@@ -1107,9 +1107,15 @@ export function createService(o: Options) {
       return r.body;
     };
     let parent = from;
+    // The replay builds each commit on the one before it, so each commit's first parent must be that one (the head for the
+    // first): a merge made the other way round (the PR branch merged into a base checkout) has the base tip as its first parent,
+    // and replaying it would drop the head's content and leave the PR behind its base. Its parents can't be kept here.
+    let expected = from;
     try {
       for (const c of list) {
         const [, first, ...others] = (await git(dir, ["rev-list", "--parents", "-n", "1", c])).split(" ");
+        if (first !== expected) return { refused: `ship-scope: \`${c.slice(0, 12)}\` builds on \`${String(first).slice(0, 12)}\`, not the head's own chain \`${expected.slice(0, 12)}\`: not replayed` };
+        expected = c;
         // Entries changed against the first parent; a path another parent has unchanged is already on GitHub (a base merge's files).
         const diff = (p: string) => git(dir, ["diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", p!, c]).then((out) => {
           const f = out.split("\0"), m = new Map<string, { mode: string; sha: string }>();

@@ -266,6 +266,31 @@ test("a push carrying a commit whose tree is its first parent's lands with the c
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^"), c1);
 });
 
+test("a push whose box commit is a merge made on the base is refused, never replayed onto the PR head", async (t) => {
+  const { ws, origin, c1, run, calls } = await setup(t);
+  // The fixer merged the PR branch into a checkout of the updated base: the merge's first parent is the base tip, not the PR
+  // head. Replaying it would build the base's commits on the PR head and land a tree that drops the head's own files.
+  const mainMove = join(dirname(ws), "main-move");
+  sh(dirname(ws), "clone", "--quiet", "-b", "main", origin, mainMove);
+  writeFileSync(join(mainMove, "m.txt"), "m\n");
+  sh(mainMove, "add", "m.txt");
+  sh(mainMove, "commit", "--quiet", "-m", "main moves");
+  sh(mainMove, "push", "--quiet", origin, "main");
+  const reversed = join(dirname(ws), "reversed");
+  sh(dirname(ws), "clone", "--quiet", "-b", "main", origin, reversed);
+  sh(reversed, "merge", "--quiet", "-s", "ours", "--no-edit", "origin/contrib");
+  const reversedSha = sh(reversed, "rev-parse", "HEAD");
+  assert.notEqual(sh(reversed, "rev-parse", `${reversedSha}^1`), c1, "the merge's first parent is the base, not the PR head");
+  sh(reversed, "update-ref", `refs/aidenhq/publish/${reversedSha}`, reversedSha);
+  sh(reversed, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${reversedSha}.bundle`), `refs/aidenhq/publish/${reversedSha}`);
+  const before = sh(origin, "rev-parse", "refs/heads/contrib");
+  const r = await run("k-00000000000000ab", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: reversedSha }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
+  assert.equal(r.ok, false, r.text);
+  assert.match(r.text, /^ship-scope: .*not replayed/);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), before, "the branch is untouched");
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`).length, 0, "nothing is committed");
+});
+
 test("a push onto an adopted PR's branch that GitHub's own rules refuse keeps GitHub's reason, not ship-head-moved", async (t) => {
   const { ws, origin, c1, fix, pr, run, refuseRef } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
