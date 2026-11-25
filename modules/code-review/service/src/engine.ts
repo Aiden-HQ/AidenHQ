@@ -257,11 +257,6 @@ export function createEngine(d: EngineDeps) {
     && !(db.prepare("PRAGMA table_info(askers)").all() as { name: string }[]).some((c) => c.name === "setkey")) db.exec("DROP TABLE IF EXISTS askers");
   // An area_seen table of the first shape (no model and effort in its key) holds only a cache: rebuilt.
   if ((db.prepare("PRAGMA table_info(area_seen)").all() as { name: string }[]).length && !(db.prepare("PRAGMA table_info(area_seen)").all() as { name: string }[]).some((c) => c.name === "combo")) db.exec("DROP TABLE area_seen");
-  // A cutoffs table of the first shape (one number per repo) held only that repo's newest PR: derived state too, so it and the cursor
-  // that stops a repo being read whole go, and the next look records the backlog as the set it is.
-  if ((db.prepare("PRAGMA table_info(cutoffs)").all() as { name: string; pk: number }[]).filter((c) => c.pk > 0).length === 1) {
-    db.exec("DROP TABLE cutoffs; DELETE FROM cursors");
-  }
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
@@ -1833,6 +1828,8 @@ export function createEngine(d: EngineDeps) {
     if (!cursor) {
       const newest = Math.max(0, ...open.map((p) => p.number));
       for (const p of open) if (p.number !== newest) run("INSERT OR IGNORE INTO cutoffs (repo, number) VALUES (?, ?)", cfg.repo, p.number);
+      // The cursor goes in with the snapshot: a retry after a failed read is no first look, so the set stays the one first seen.
+      run("INSERT OR IGNORE INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
     }
     const seenNow = new Set(open.map((p) => p.number));
     for (const p of open) await observe(cfg, p);
@@ -1842,8 +1839,7 @@ export function createEngine(d: EngineDeps) {
       // merge or at a close. A read that fails throws: the repo is read whole again, never closed on a guess.
       await prEvent(cfg, gone.number).catch((e) => { if (!permanent(e)) throw e; closePr(cfg.repo, gone.number, undefined); });
     }
-    if (!cursor) run("INSERT INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
-    else {
+    if (cursor) {
       const got = await d.source.comments(cfg.repo, cursor.comments);
       // One that fails stops here: the cursor stays, and the repo is read again from it (what was handled is skipped by id).
       for (const c of got.comments) await comment(cfg, c);
