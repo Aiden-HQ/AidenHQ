@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -258,6 +258,35 @@ process.exit(0);
   assert.deepEqual(said.config, ["runner.yaml"], "only the config file the compile reads");
   assert.notEqual(said.vault, vault, "the vault path is the snapshot's, not the host's");
   assert.equal(said.hostEnvCopied, false, "no host .env file in the tree the target compiler runs in");
+});
+
+/**
+ * The staged instance carries the pin the bump writes, not the one the instance has today: a fork's base is
+ * `instance.product` (scripts/compiler/sources.ts forkBase), so compiling the old pin would validate the fork against a base the
+ * real apply never uses.
+ */
+test("the instance is compiled with the pin the bump writes, not the one it has today", async () => {
+  const { dir, one, two } = productRepo();
+  const inst = mkdtempSync(join(tmpdir(), "compile-check-inst-"));
+  const bare = join(inst, "instance.git");
+  const src = join(inst, "src");
+  mkdirSync(src);
+  writeFileSync(join(src, "instance.yaml"), YAML.stringify({ product: one, modules: [] }));
+  git(src, "init", "-q"); git(src, "add", "-A"); git(src, "commit", "-qm", "init");
+  git(inst, "clone", "-q", "--bare", src, bare);
+  const project = join(inst, "config");
+  mkdirSync(project, { recursive: true });
+  let seen;
+  const check = createCompileCheck({ repo: dir, main: async () => ({ base: git(bare, "rev-parse", "main") }), tree: checkoutTree(bare), inputs: { configDir: project, dataDir: join(inst, "data"), secretsDir: join(inst, "secrets") },
+    run: async (o) => { seen = YAML.parse(readFileSync(join(o.instanceDir, "instance.yaml"), "utf8")).product; return { ok: true }; } });
+  await check({ product: two, pin: two });
+  assert.equal(seen, two, "the compiled tree pins the target, ready for the apply the bump files");
+  // The default `pin` is the target itself: "does the instance compile against this product" is asked with the pin moved to it.
+  await check({ product: two });
+  assert.equal(seen, two);
+  // And a distinct `pin` is honoured (a fork case: the pin stays while another tree is asked about).
+  await check({ product: two, pin: one });
+  assert.equal(seen, one);
 });
 
 test("a refusal that merely names TLS or SSL is the target's verdict, not a network failure", async () => {

@@ -1658,7 +1658,9 @@ export function createService(o: Options) {
     async compile(to) {
       // The kernel bounds the whole check (two dep installs then the compile, `CHECK_DEADLINE_MS`); this client waits past that
       // bound so a slow host's completed verdict is never discarded and the deps reinstalled on the next poll.
-      const r = await kernel("POST", "/v1/compile/check", { product: to }, 600_000);
+      // `pin: to` — the instance tree that is compiled carries the pin the bump writes, so a module fork is validated against
+      // the base the real apply will use, not the old one.
+      const r = await kernel("POST", "/v1/compile/check", { product: to, pin: to }, 600_000);
       if (typeof r?.ok !== "boolean" || typeof r?.base !== "string") throw new Error("the kernel's compile check answered no verdict");
       // `base` is the instance commit compiled: the bump is committed on it, so a verdict is never applied to another revision.
       return r.ok ? { ok: true, base: r.base } : { ok: false, base: r.base, error: String(r.error ?? "the staged compile failed").slice(0, 300) };

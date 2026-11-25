@@ -169,6 +169,23 @@ export function createReleaseTrain(o: TrainOptions) {
     // it is committed and filed as before.
     if (!s.filing || s.filing.to !== to || !s.filing.base) {
       if (!s.filing || s.filing.to !== to) edit(text); // refused before a task is filed for it
+      // A restored filing may already have its card: the previous process filed the apply and stopped before saving `s.flight`.
+      // Its card can still land the bump, so it is adopted (followed) instead of the task being closed "Not filed" under a card
+      // that applies anyway. A card this target never got is not one to adopt: it is only a card on this filing's own task.
+      if (s.filing && s.filing.to === to) {
+        const had = await cardOn(s.filing.task);
+        // Exactly the rule the ordinary adopt path uses: a card whose end said the same commits are filed again is this bump's
+        // end, not one to adopt; anything else (moving, or settled done/rejected/failed) is followed, which settles the task.
+        if (had && !(had.state === "failed" && REFILE.test(had.text))) {
+          s.flight = { to, record: had.id, task: s.filing.task, identifier: s.filing.identifier };
+          delete s.filing;
+          delete s.open;
+          log("release bump adopted before its preflight", { task: s.flight.identifier, to, record: had.id, state: had.state });
+          save(s);
+          await follow(s);
+          return;
+        }
+      }
       // The target must compile the instance it would pin, before anything is committed or filed: the apply's own staged
       // compile against the target product (#1730). A target that doesn't is never tried again (the next merge files the next
       // attempt, at a target that may compile); a check that couldn't run throws and is retried on the next poll with no state

@@ -7,9 +7,9 @@
 //   POST /c/<connection>/mcp   (run or module token) the tool proxy (proxy.ts)
 //   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts; a status change to done passes the finish gate
 //   POST /v1/checks/:task      (a check's module) release its label on a task, or resolve a hold it placed (checks.ts)
-//   POST /v1/compile/check     (a module with role kernel.apply) {product, instance?}: does the instance at that commit (its main
-//                              by default) compile against that product commit? The apply's own staged compile, read-only
-//                              (compile-check.ts): {ok} or {ok: false, error: the compiler's first message}
+//   POST /v1/compile/check     (a module with role kernel.apply) {product, instance?, pin?}: does the instance at that commit (its
+//                              main by default), pinned to `pin` (product, by default), compile against `product`? The apply's own
+//                              staged compile, read-only (compile-check.ts): {ok} or {ok: false, error: the compiler's first message}
 //   POST /v1/writes            (run, module, or job token naming the kind) request a write (writes.ts); GET /v1/writes/:id its
 //                              record (own only; the board: any)
 //   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
@@ -427,7 +427,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
   settingsChange?: ((task: unknown, changes: unknown, session?: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string, o?: { tool?: string; why?: unknown }) => Promise<unknown> };
   /** The release train's compile preflight (compile-check.ts): a product commit compiled against the instance's main. */
-  compileCheck?: (b: { product?: unknown; instance?: unknown }) => Promise<{ ok: boolean; error?: string }>;
+  compileCheck?: (b: { product?: unknown; instance?: unknown; pin?: unknown }) => Promise<{ ok: boolean; error?: string }>;
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
   /** Agents' memory documents (memory.ts). */
@@ -764,7 +764,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (!compileCheck) throw fail(503, "unavailable", "the compile preflight is off");
           const b = await json(req);
           const sha = (v: unknown) => typeof v === "string" && /^[0-9a-f]{40}$/.test(v);
-          if (!sha(b?.product) || (b?.instance !== undefined && !sha(b.instance))) throw fail(400, "bad_request", "send {product: <40-character commit>, instance?: <40-character commit>}");
+          if (!sha(b?.product) || (b?.instance !== undefined && !sha(b.instance)) || (b.pin !== undefined && !sha(b.pin))) throw fail(400, "bad_request", "send {product: <40-character commit>, instance?: <40-character commit>, pin?: <40-character commit>}");
           // A compile that couldn't run (git, network, a target this checkout doesn't have) is 503: the train retries, and never
           // reads it as the target refusing the instance.
           try { return send(res, 200, await compileCheck(b)); } catch (e) { return send(res, 503, { error: { code: 503, type: "unavailable", message: `the compile check couldn't run: ${String((e as Error).message).slice(0, 500)}` } }); }

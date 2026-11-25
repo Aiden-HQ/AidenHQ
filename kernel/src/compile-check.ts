@@ -49,6 +49,11 @@ export type CompileDeps = {
    * test so the check runs offline; production never overrides it.
    */
   install?: (o: RunInput) => Promise<void>;
+  /**
+   * npm's package cache (default: the host's own, under its HOME). Never the vault or the host home itself: it is read for the
+   * tarballs the last real apply downloaded, so an offline host can still check a target the apply could install.
+   */
+  cache?: string;
   /** The staged compile in the extracted product tree (default: install, then the target's own compiler). */
   run?: (o: RunInput) => Promise<Verdict>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -59,7 +64,8 @@ const BASE_ENV = new Set(["PATH", "LANG", "LC_ALL", "TMPDIR", "USER", "SHELL", "
 
 /** The host `.env` names the staged compile reads (scripts/compiler/inputs.ts hostEnv, scripts/compile.ts's env() calls). */
 const ENV_KEYS = new Set(["AIDENHQ_DIR", "AIDENHQ_STATE_DIR", "AIDENHQ_INSTANCE_REPO", "TRANSCRIPTS_DIR", "AIDENHQ_SOURCES_DIR",
-  "AIDENHQ_PUBLIC_IP", "AIDENHQ_ADMIN_URL", "BOARD_LAN_URL", "AIDENHQ_EXPOSURE", "AIDENHQ_GITHUB_AGENTS_ORG"]);
+  "AIDENHQ_PUBLIC_IP", "AIDENHQ_ADMIN_URL", "BOARD_LAN_URL", "AIDENHQ_EXPOSURE", "AIDENHQ_GITHUB_AGENTS_ORG",
+  "VAULT_DIR", "VAULT_FOLDERS", "KNOWLEDGE_BASES"]);
 
 /**
  * The host's `.env`, filtered to ENV_KEYS. A host `.env` holds tokens and channel secrets beside the paths the compile reads
@@ -80,7 +86,7 @@ export function dotenvOf(repo: string, base: NodeJS.ProcessEnv = process.env): R
 }
 
 /** Where a target compiler's inputs are cut down to (snapshotInputs): the snapshot dirs, and the host's vault *settings*. */
-export type Snapshot = Inputs & { vaultDir: string; transcriptsDir: string; vaultFolders: string; knowledgeBases: string };
+export type Snapshot = Inputs & { vaultDir: string; transcriptsDir: string; vaultFolders: string; knowledgeBases: string; vaultSet?: boolean };
 
 /**
  * The compile's host inputs, cut down to exactly what it reads. A target is a commit nobody has applied yet, so its compiler is
@@ -93,7 +99,7 @@ export type Snapshot = Inputs & { vaultDir: string; transcriptsDir: string; vaul
  *   - vault and transcripts: empty folders, which only build compose mount strings (their contents are never read).
  * A read that fails is operational (the caller retries), never a verdict on the target.
  */
-function snapshotInputs(i: Inputs, to: string, host: NodeJS.ProcessEnv = process.env): Snapshot {
+function snapshotInputs(i: Inputs, to: string, host: NodeJS.ProcessEnv = process.env, env: Record<string, string> = {}): Snapshot {
   const secretsDir = join(to, "secrets"), dataDir = join(to, "data"), configDir = join(to, "config");
   const vaultDir = join(to, "vault"), transcriptsDir = join(to, "transcripts");
   for (const d of [secretsDir, dataDir, configDir, vaultDir, transcriptsDir]) mkdirSync(d, { recursive: true });
@@ -119,8 +125,14 @@ function snapshotInputs(i: Inputs, to: string, host: NodeJS.ProcessEnv = process
   // VAULT_FOLDERS and KNOWLEDGE_BASES are not paths the compile opens: they are *settings* hostMounts() validates and turns
   // into compose mount strings. Handing them over verbatim keeps those refusals ("invalid vault folder", "invalid
   // KNOWLEDGE_BASES entry") and the staged compose identical, while the folders they name stay outside the snapshot tree.
+  // From the host's `.env` first, its process env second: a systemd-run kernel does not export `.env` into its environment, and
+  // these two must be the apply's, or its `hostMounts()` refusals never fire here.
+  const setting = (k: string) => env[k] ?? host[k] ?? "";
   return { configDir, dataDir, secretsDir, vaultDir, transcriptsDir,
-    vaultFolders: String(host.VAULT_FOLDERS ?? ""), knowledgeBases: String(host.KNOWLEDGE_BASES ?? "") };
+    vaultFolders: String(setting("VAULT_FOLDERS")), knowledgeBases: String(setting("KNOWLEDGE_BASES")),
+    // VAULT_DIR is validated whenever VAULT_FOLDERS is set (`must be an absolute path without ':'`), and its value becomes a
+    // compose mount source; handing the snapshot dir keeps the staged compose ours while the validation still runs.
+    vaultSet: String(setting("VAULT_DIR")) !== "" };
 }
 
 /**
@@ -136,7 +148,10 @@ export const stagedEnv = (productDir: string, instanceDir: string, i: Snapshot, 
   ...Object.fromEntries(Object.entries(base).filter(([k]) => BASE_ENV.has(k))), ...dotenv,
   ...(home ? { HOME: home } : {}), AIDENHQ_COMPILE_STAGE: "1", AIDENHQ_INSTANCE_DIR: instanceDir,
   AIDENHQ_CONFIG_DIR: i.configDir, AIDENHQ_DATA_DIR: i.dataDir, AIDENHQ_SECRETS_DIR: i.secretsDir,
-  VAULT_DIR: i.vaultDir, VAULT_FOLDERS: i.vaultFolders, KNOWLEDGE_BASES: i.knowledgeBases, TRANSCRIPTS_DIR: i.transcriptsDir,
+  // VAULT_DIR is the snapshot dir only when the host has one: empty, it reproduces hostMounts' "VAULT_DIR must be an absolute
+  // path without ':'" refusal exactly as the apply would make it, and non-empty it is a path inside this check's temp tree.
+  VAULT_DIR: i.vaultSet === false ? "" : i.vaultDir,
+  VAULT_FOLDERS: i.vaultFolders, KNOWLEDGE_BASES: i.knowledgeBases, TRANSCRIPTS_DIR: i.transcriptsDir,
 });
 /**
  * The env a target tree's `npm ci` runs with. It runs the target's own lifecycle scripts before anything is checked, so it gets
@@ -145,8 +160,11 @@ export const stagedEnv = (productDir: string, instanceDir: string, i: Snapshot, 
  * uses (an empty cache would turn a cached offline install into a network failure, which the check must not read as a verdict).
  */
 const INSTALL_ENV = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"];
-export const installEnv = (base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(base).filter(([k]) => INSTALL_ENV.includes(k)));
+/** `npm_config_cache`: where npm keeps the tarballs it has already downloaded. */
+export const installEnv = (base: NodeJS.ProcessEnv = process.env, cache?: string): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(Object.entries(base).filter(([k]) => INSTALL_ENV.includes(k))),
+  ...(cache ? { npm_config_cache: cache } : {}),
+});
 
 /** The apply's first message line from a failed compile: from `compile: …` (or a thrown error's line) on, the first line. */
 export function firstDiagnostic(stderr: unknown): string {
@@ -241,7 +259,7 @@ export function run(cmd: string, args: string[], cwd: string, env: NodeJS.Proces
  * linked, when the target's lockfile is byte-identical; otherwise `npm ci` installs the target's own. A failed install is
  * operational (an offline host), so the caller retries: never a refusal of the target.
  */
-async function installCompiler(o: RunInput) {
+async function installCompiler(o: RunInput, cache?: string) {
   for (const d of ["scripts", "kernel"]) {
     const lock = join(o.productDir, d, "package-lock.json");
     const running = join(o.repo, d, "package-lock.json");
@@ -251,14 +269,16 @@ async function installCompiler(o: RunInput) {
       continue;
     }
     // Installs run the target's own lifecycle scripts: they get installEnv() — no path to the host's checkout, config, data or
-    // vault — unlike the compiler below, which the apply's own staged compile reads those with.
-    const installed = await run("npm", ["ci", "--prefix", d, "--silent"], o.productDir, installEnv(o.env), left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
+    // vault — unlike the compiler below, which the apply's own staged compile reads those with. `npm_config_cache` is the package
+    // *cache* only (a directory of tarballs keyed by integrity hash, never the host home or the vault), so the apply's warm cache
+    // serves here too: an offline host reuses what the last real apply already downloaded instead of failing the check.
+    const installed = await run("npm", ["ci", "--prefix", d, "--silent"], o.productDir, installEnv(o.env, cache), left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
     if (!installed.ok) throw new Error(`the target product's ${d} deps didn't install: ${firstDiagnostic(installed.stderr) || "npm ci failed"}`);
   }
 }
 
 /** The default `run`: the target tree's compiler deps, then its own compiler, staged — as the apply does both. */
-async function stagedCompile(o: RunInput, install: (o: RunInput) => Promise<void>): Promise<Verdict> {
+async function stagedCompile(o: RunInput, install: (o: RunInput) => Promise<void>, cache?: string): Promise<Verdict> {
   // The deps install first, before the host's .env is in the tree: a target's lifecycle scripts shouldn't find it. The compiler
   // needs it exactly as the apply's checkout has it, so it is seeded after.
   await install(o);
@@ -304,9 +324,14 @@ export const CHECK_DEADLINE_MS = 540_000;
 /** The compile preflight: `POST /v1/compile/check {product, instance?}` -> `{ok, base}`, or `{ok: false, error, base}`. */
 export function createCompileCheck(d: CompileDeps) {
   const log = d.log ?? (() => {});
-  return async function compileCheck(body: { product?: unknown; instance?: unknown }): Promise<CompileCheck> {
+  return async function compileCheck(body: { product?: unknown; instance?: unknown; pin?: unknown }): Promise<CompileCheck> {
     const product = String(body?.product ?? "");
     if (!SHA.test(product)) throw new Error(`product ${JSON.stringify(product.slice(0, 60))} isn't a 40-character commit`);
+    // The pin the bump would write. It is what the *real* apply compiles, so the staged instance must carry it: a module fork is
+    // validated against `instance.product` (scripts/compiler/sources.ts forkBase), and compiling the old pin would validate a
+    // fork against a base the apply never uses — passing a bump the apply then refuses. Defaults to `product`.
+    const pin = body?.pin === undefined ? product : String(body.pin);
+    if (!SHA.test(pin)) throw new Error(`pin ${JSON.stringify(String(body?.pin).slice(0, 60))} isn't a 40-character commit`);
     if (body?.instance !== undefined && !SHA.test(String(body.instance))) throw new Error(`instance ${JSON.stringify(String(body.instance).slice(0, 60))} isn't a 40-character commit`);
     // The instance as the bump would build on it: its main, read here, returned so the caller commits on this same revision.
     const base = body?.instance === undefined ? (await d.main()).base : String(body.instance);
@@ -319,20 +344,34 @@ export function createCompileCheck(d: CompileDeps) {
       // The product first, so a target this checkout doesn't have costs no instance read.
       await stageProduct(d.repo, product, productDir, until);
       await d.tree(base, instanceDir);
+      // The one edit the bump makes, applied to the tree that is compiled: `product:` becomes the pin. Nothing else in the
+      // instance changes, so the verdict is about exactly the revision and pin the apply would run. Always rewritten — the
+      // instance's own pin is the old one even when `pin` is `product`.
+      {
+        const file = join(instanceDir, "instance.yaml");
+        const text = readFileSync(file, "utf8");
+        const lines = text.split("\n");
+        const hits = lines.flatMap((l, n) => (/^product:[ \t]*["']?[0-9a-f]{40}["']?/.test(l) ? [n] : []));
+        if (hits.length !== 1) throw new Error(`the instance's instance.yaml has ${hits.length} \`product:\` lines, not one, so it can't be pinned to ${pin.slice(0, 12)}`);
+        lines[hits[0]!] = lines[hits[0]!]!.replace(/[0-9a-f]{40}/, pin);
+        writeFileSync(file, lines.join("\n"));
+      }
       // The tree the apply actually runs: the instance's fork when it descends from the target, in its own folder. Compiling the
       // pin while the apply runs the fork would check different inputs.
-      const kernelSha = await kernelTree(d.repo, product, instanceDir, until);
-      if (kernelSha !== product) {
+      // `pin`, not `product`: the apply resolves the fork against the pin the instance.yaml carries (apply-config-work.sh
+      // kernelRun "$inst/instance.yaml" "$product"), and the tree compiled here carries `pin`.
+      const kernelSha = await kernelTree(d.repo, pin, instanceDir, until);
+      if (kernelSha !== pin) {
         productDir = join(dir, "kernel-fork");
         await extract(d.repo, kernelSha, productDir, until);
       }
       // The compile gets a private copy of the host facts it reads, never the host's own vault, data or config dirs: a target is
       // an unapplied commit, so whatever path it is handed it can open.
-      const snap = snapshotInputs(d.inputs, join(dir, "inputs"));
+      const snap = snapshotInputs(d.inputs, join(dir, "inputs"), process.env, dotenvOf(d.repo));
       const env = stagedEnv(productDir, instanceDir, snap, dotenvOf(d.repo), join(dir, "home"));
       mkdirSync(join(dir, "home"), { recursive: true });
       const o = { productDir, instanceDir, repo: d.repo, env, until };
-      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? installCompiler);
+      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.cache)), d.cache);
       log("compile check", { product, instance: base, ok: r.ok, ms: Date.now() - t0 });
       return { ...r, base };
     } finally {

@@ -322,6 +322,27 @@ test("a filing restored without a preflight is checked before it commits, on its
  * is only this service's train ref, never pushed, so filing its card would file an unchecked bump — the #1730 break. It is
  * checked now; a refusal files no card and settles the task it restored.
  */
+/**
+ * A restored filing whose card the previous process already filed is adopted, never closed "Not filed": the card can still land
+ * the bump, and closing its task would leave an applied bump with a cancelled task behind it.
+ */
+test("a restored filing whose card already exists is followed, not preflighted and cancelled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  const task = `t-release:instance:${NEW}`;
+  // The previous process filed the card and died before saving its flight.
+  f.k.records[`k-${task}`] = { id: `k-${task}`, kind: "kernel.apply", task, state: "review" };
+  writeState(dir, { open: { since: "2026-11-18T10:00:00Z" }, filing: { to: NEW, task, identifier: "ACME-7" } });
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: false, error: "compile: nope", base: BASE }) }).step();
+  assert.deepEqual(asked, [], "the existing card is found before any compile runs");
+  assert.deepEqual(f.k.closed.map((c) => c.task), [], "and its task is never cancelled under it");
+  assert.equal(f.k.writes.length, 0, "nor is a second card filed");
+});
+
 test("a restored filing with a saved commit but no preflight is checked, and a refusal files nothing", async () => {
   const dir = mkdtempSync(join(tmpdir(), "train-"));
   const f = fakes();
