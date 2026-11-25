@@ -150,6 +150,8 @@ export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict;
  * repo, and an approval on the head only where GitHub asks for one. A PR on a non-default base waits for ship, said each pass and
  * never stored: on the PR whose branch it stands on (a stack, which ship retargets once that PR merges), else as unsupported. The design review is advisory: it never holds a merge.
  */
+/** The wait decide gives a PR with nothing reported on its head: a repo with no checks stays here (merges.ts ends it after a grace). */
+export const NO_CHECKS = "no checks on its head yet";
 export function decide(data: Json, head: string, ship?: ShipContext): { do: Action; why?: string } {
   const pr = data?.repository?.pullRequest;
   if (!pr) return { do: "fail", why: "not found on GitHub" };
@@ -181,7 +183,7 @@ export function decide(data: Json, head: string, ship?: ShipContext): { do: Acti
     const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
     if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail", why: "more than 100 checks on its head, so not all of them can be read" };
     const named = namedChecks(rollup);
-    if (!named.length) return { do: "wait", why: "no checks on its head yet" };
+    if (!named.length) return { do: "wait", why: NO_CHECKS };
     // Check names are set by whoever can push to the repo: counted, never quoted.
     const red = named.filter((c) => !c.ok && !c.pending);
     if (red.length) return { do: "fail", why: `${red.length} check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)` };

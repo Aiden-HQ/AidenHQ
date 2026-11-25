@@ -17,7 +17,7 @@ import { DESIGN_REVIEW_CHECK, contextStatus, namedChecks, skippedImageScan } fro
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { PR_QUERY, decide, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
+import { NO_CHECKS, PR_QUERY, decide, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
 
@@ -40,12 +40,16 @@ function listView(pr: any, main: { name: string; oid?: string; rollup?: any }) {
   return { repository: { defaultBranchRef: { name: main.name }, pullRequest: { ...pr, state: "OPEN", reviews: pr.reviews ?? { nodes: [] },
     baseRef: { compare: { behindBy: pr.mergeStateStatus === "BEHIND" ? 1 : 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } } } } };
 }
+/** How long a PR with no checks on its head waits for one to register before the merge goes ahead. */
+const NO_CHECKS_GRACE_MS = 2 * 60_000;
 /** What a PR's record-level wait says while GitHub is signed out: the reason the card shows for a merge that cannot move yet. */
 const CONNECTED_WAIT = "GitHub is signed out: waiting for the owner to reconnect it";
 /** The same while the App migration holds merges (migrate.ts): reconnecting GitHub cannot lift it, so it never claims a sign-out. */
 export const MIGRATION_WAIT = "GitHub App migration in progress: merges are held until it finishes";
 /** The record-level reasons the queue itself sets and clears (never a PR's own wait or a failure's note). */
 const HOLD_WAITS = [CONNECTED_WAIT, MIGRATION_WAIT];
+/** GitHub's answer for branch rules on a plan that has none (a private repo without Pro): nothing is enforced there. */
+const noRulesPlan = (r: { status: number; body?: unknown }) => r.status === 403 && /upgrade to github pro|make this repository public/i.test(JSON.stringify(r.body ?? ""));
 const isHoldWait = (note?: string) => note !== undefined && HOLD_WAITS.includes(note);
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
 /** The fixed start of a merge outcome's first line: the PRs merged at their bound head, this queue's or already (finish). */
@@ -216,11 +220,17 @@ export function createMerges(d: {
     const hit = rulesCache.get(k);
     if (hit && Date.now() - hit.at < RULES_MS) return hit.v;
     const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);
+    // A private repo on a plan without branch rules answers 403 "Upgrade to GitHub Pro": GitHub enforces none there, so none is required.
+    if (noRulesPlan(rules)) {
+      const v = { required: [] as string[], queue: false };
+      rulesCache.set(k, { at: Date.now(), v });
+      return v;
+    }
     if (rules.status >= 300) throw new Error(`GitHub GET rules: ${rules.status}`);
     const queue = mergePath(rules.body) === "queue";
     const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
     if (classic.status >= 300 && ![403, 404].includes(classic.status)) throw new Error(`GitHub GET required_status_checks: ${classic.status}`);
-    const v = { required: classic.status === 403 ? undefined : requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body), queue };
+    const v = { required: classic.status === 403 && !noRulesPlan(classic) ? undefined : requiredChecks(rules.body, classic.status === 404 || classic.status === 403 ? undefined : classic.body), queue };
     rulesCache.set(k, { at: Date.now(), v });
     return v;
   }
@@ -333,7 +343,14 @@ export function createMerges(d: {
       if (open && !rules && !required.length) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
       // Code review's verdict is read below, once decide says merge (its wait is the record's reason there).
       const ship = open ? { queue: false, approve: false, required, checks } : undefined;
-      const v = decide(data, p.head, ship);
+      let v = decide(data, p.head, ship);
+      // A repo with no checks never reports one: when the branch requires none and GitHub itself calls the PR CLEAN, nothing is
+      // coming, so the merge goes after a short grace (a workflow may take a moment to register on a fresh head).
+      if (!q.ship && v.do === "wait" && v.why === NO_CHECKS && data.repository.pullRequest?.mergeStateStatus === "CLEAN"
+        && p.wait?.key === NO_CHECKS && now().getTime() - Date.parse(p.wait.since) >= NO_CHECKS_GRACE_MS) {
+        const none = await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? ""));
+        if (none && !none.length) v = { do: "merge" };
+      }
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
       const pull = data.repository.pullRequest;
       // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. Every unanswered
