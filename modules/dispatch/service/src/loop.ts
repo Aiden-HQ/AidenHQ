@@ -245,7 +245,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           if (!cur || CLOSED.has(String(cur.status))) { await kernel.stop(v.id); log(`task ${cur ? "closed" : "deleted"} while running: run stopped`, { job: v.id, task: v.task }); continue; }
           // A task moved to another agent while its run goes on (re-routed): the new assignee has its own wake, and this run's
           // reply would be refused, so it is stopped rather than left to run out its time.
-          if (cur.assigneeAgentId && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log("task moved while running: run stopped", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
+          if ((cur.assigneeAgentId || v.profile === "session") && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log("task moved while running: run stopped", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
           // A session waits for days with no steps by design: never judged on progress.
           if (v.profile === "session") continue;
           // A run that stops making progress is stopped here (progress.ts); the kernel keeps only the hard deadline.

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { computeTier } from "../src/tier.ts";
+import { instanceRefusal } from "../src/writes.ts";
 
 test("an apply is the reviewer's unless refused, the owner's save or autonomy off", () => {
   const apply = { floor: 1 as const, priorVeto: false, autonomy: "full" as const };
@@ -21,4 +22,13 @@ test("a session's writes run at once; a refusal, the owner's veto and autonomy o
   assert.equal(state({ refusal: "x" }), "rejected");
   assert.equal(state({ priorVeto: true }), "owner");
   assert.equal(state({ autonomy: "off" }), "owner");
+});
+
+test("a session's code host write that names the instance repo is refused, however the repo is written", () => {
+  const inst = "acme/instance";
+  assert.equal(instanceRefusal(inst, { repo: "Acme/Instance.git" })?.code, "instance_repo");
+  assert.equal(instanceRefusal(inst, { owner: "acme", repo: "instance" })?.code, "instance_repo");
+  assert.equal(instanceRefusal(inst, { prs: [{ repo: "acme/product" }, { repo: "acme/instance" }] })?.code, "instance_repo");
+  assert.equal(instanceRefusal(inst, { repo: "acme/product" }), undefined);
+  assert.equal(instanceRefusal(undefined, { repo: "acme/instance" }), undefined);
 });

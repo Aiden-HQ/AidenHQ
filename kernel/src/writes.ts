@@ -19,12 +19,24 @@ import { UPDATER, canonical, isUpdater, digestOf, type Card, type Rec, type Reco
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
 import { openRefusals, markRefusal } from "./refusals.ts";
-import { CODEHOSTS, routeKind } from "./codehost.ts";
+import { CODEHOST, CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { gateMode } from "./gates.ts";
 import { identifierRefused } from "./task-identifier.ts";
 import { codeRefusal, ownerVeto } from "./review-loop.ts";
 import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type Tier, type Verdict } from "./tier.ts";
+
+/** A session's code host write (a kind's args, or a GitHub tool's arguments) that names the instance repo: refused in code, as the session git token's route refuses it (only Apply writes there). */
+export function instanceRefusal(instance: string | undefined, args: unknown): Verdict | undefined {
+  const key = repoKey(instance);
+  if (!key) return undefined;
+  // The repo as a field, as owner + repo, or written anywhere in a value (a URL, `owner/name#12`): the same key everywhere.
+  const a = (args ?? {}) as { owner?: unknown; repo?: unknown };
+  const split = typeof a.owner === "string" && typeof a.repo === "string" ? repoKey(`${a.owner}/${a.repo}`) : undefined;
+  const written = new RegExp(`(?<![\\w.-])${key.replace(/[.]/g, "\\.")}(?:\\.git)?(?![\\w.-])`, "i").test(JSON.stringify(args ?? {}));
+  if (split !== key && !written) return undefined;
+  return { decision: "reject", code: "instance_repo", reason: `${instance} is the instance repo: only an apply writes there, never a session`, model: "kernel/code" };
+}
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** The target fields a head-bound kind can bind to: what it acts on, per target, instead of its whole plan. */
@@ -302,7 +314,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // The reason and rule shown: the strictest raise, the plan's on a tie.
     const top = filedRaises(kind, plan).reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);
     // Code's refusals read the whole planned diff (never the card cut for storage), whatever the tier.
-    const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext });
+    const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext }) ?? (session && CODEHOSTS.includes(k.module) ? instanceRefusal(repos().instance, plan.args) : undefined);
     const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) || (session && Boolean(ownerVeto(records, { kind, args: plan.args, task, digest: digestOf(base) }))) : false, autonomy: autonomyOf(requester), ownerSave, session });
     if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
@@ -660,10 +672,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const shown = JSON.stringify(args ?? {});
       const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}`;
       // Code's refusals hold on every call, Tier 0 included.
-      const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null });
-      // The owner's no on a destructive tool (an unreviewed one too) holds for that tool on the task, never for the task's other writes.
-      const destructive = c.tools.destructive.includes(tool);
-      const t = computeTier({ floor, refusal: refused?.code, priorVeto: destructive && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy(), session: sessionOf(who) });
+      const session = sessionOf(who);
+      const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null }) ?? (session && c.module === CODEHOST ? instanceRefusal(repos().instance, args) : undefined);
+      // The owner's no on a destructive tool (an unreviewed one too), or on any tool a session calls (its writes all run at Tier 0
+      // but this no), holds for that tool on the task, never for the task's other writes.
+      const vetoable = c.tools.destructive.includes(tool) || session;
+      const t = computeTier({ floor, refusal: refused?.code, priorVeto: vetoable && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy(), session });
       if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
       if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);

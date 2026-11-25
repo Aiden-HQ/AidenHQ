@@ -44,14 +44,21 @@ test("a due wait on a live session becomes a wake notice", async () => {
 test("a session job is never stopped for no progress; a crew job is", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-25T10:00:00Z") });
   // The job's own profile, frozen at admission, decides: never the agent's current one.
-  const job = (id, agent, profile) => ({ id, task: "t1", agent, profile, state: "running", at: 1, acked: false, progress: { steps: [] } });
+  const job = (id, agent, profile) => ({ id, task: `t-${agent}`, agent, profile, state: "running", at: 1, acked: false, progress: { steps: [] } });
   const k = fake({ jobs: [job("j-ses", "ses", "session"), job("j-crew", "crew", "crew")], directory: { ses: { profile: "crew" } } });
-  // The task read names no assignee, so neither run reads as moved to another agent.
-  k.kernel.task = async () => ({ id: "t1", identifier: "WOR-1", status: "in_progress", assigneeAgentId: undefined });
+  // Each task is still its agent's, so neither run reads as moved or handed back.
+  k.kernel.task = async (id) => ({ id, identifier: "WOR-1", status: "in_progress", assigneeAgentId: id.slice(2) });
   await k.dispatch.tick();
   t.mock.timers.tick(40 * 60_000);
   await k.dispatch.tick();
   assert.deepEqual(k.stopped, ["j-crew"]);
+});
+
+test("a live session whose task is handed back to the owner (no agent assignee) is stopped", async () => {
+  const k = fake({ jobs: [{ id: "j-ses", task: "t1", agent: "ses", profile: "session", state: "running", at: 1, acked: false, progress: {} }] });
+  k.kernel.task = async () => ({ id: "t1", identifier: "WOR-1", status: "in_progress", assigneeAgentId: undefined });
+  await k.dispatch.tick();
+  assert.deepEqual(k.stopped, ["j-ses"]);
 });
 
 test("a session whose box keeps being replaced is resumed every time, never stopped at the retry limit", async () => {
