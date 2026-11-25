@@ -197,7 +197,9 @@ export function adoptedPass(o: AdoptedOptions) {
       // A task's PR whose task couldn't be read waits a pass: never taken in as a member's meanwhile (the loop reads it again).
       if (ctx.opener && !work) throw new Error(`its task ${ctx.opener} couldn't be read`);
       let a = await intake(handoff, view, taskId, ctx.bump) as Kept | undefined;
-      if (!a) { await ctx.recover?.(); return; }
+      // A stopped PR gets no CI re-run either: recovery runs only for one nobody stopped.
+      const recover = (x: Kept | undefined) => isStopped(repo, view, x) ? Promise.resolve(undefined) : ctx.recover?.();
+      if (!a) { await recover(a); return; }
       if (a.owner?.kind === "task") {
         // Closed by ship (a stop): nothing more until a successor publishes to it.
         if (a.hold?.kind === "stopped") return;
@@ -212,7 +214,7 @@ export function adoptedPass(o: AdoptedOptions) {
         const w = await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(a.task)}`).catch(() => undefined);
         if (w?.status === "cancelled") { handBack(o.state, repo, pr.number, "its task was cancelled"); return; }
       }
-      const recovery = await ctx.recover?.();
+      const recovery = await recover(a);
       a = o.state.get(repo, pr.number) as Kept;
       // A parent recorded before stays the parent while the branch now only feeds another base (a backport): once it merged into
       // the default branch, the child follows it there.
