@@ -94,6 +94,8 @@ describe("rendering model text", () => {
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "findings", important: 1, running: [] }).state).toBe("failure");
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "pass", important: 0, running: [] }).state).toBe("success");
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "failed", important: 0, running: [] })).toMatchObject({ state: "success", description: expect.stringMatching(/^Not reviewed: the review failed/) });
+    // A backlog PR waits on nobody: its status says how to start a review, never "Review starting".
+    expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "backlog", important: 0, running: [] })).toEqual({ state: "pending", description: 'Not reviewed: comment "aiden review" to start one' });
   });
 
   it("redacts a long multi-line secret whole at every text scale, in the card and the post: never a cut that slips past", async () => {
