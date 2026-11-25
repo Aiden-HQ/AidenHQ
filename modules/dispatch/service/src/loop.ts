@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS delivered (comment TEXT PRIMARY KEY, task TEXT NOT NU
 CREATE TABLE IF NOT EXISTS greeted (task TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS summarized (parent TEXT PRIMARY KEY, batch INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS stopped (job TEXT PRIMARY KEY, why TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS turns (job TEXT NOT NULL, turn TEXT NOT NULL, PRIMARY KEY (job, turn));
 CREATE TABLE IF NOT EXISTS escalated (task TEXT PRIMARY KEY, episode TEXT NOT NULL, card TEXT NOT NULL DEFAULT '');
 DROP TABLE IF EXISTS jobs; DROP TABLE IF EXISTS starting; DROP TABLE IF EXISTS ended; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS platform_blocked;`;
 // A job's end states (kernel jobs.ts); any other state is still live.
@@ -232,6 +233,25 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     if (key) q("INSERT INTO summarized (parent, batch) VALUES (?, ?) ON CONFLICT DO UPDATE SET batch = excluded.batch").run(task.parentId, key);
   }
 
+  /**
+   * A session's finished turns (its job never ends, so never posts a final): each turn's last words are its reply on the task,
+   * posted once through the same kernel post as any outcome. NO_REPLY is a turn with nothing to say. A refused post (4xx) is
+   * logged and not tried again; a transient one is thrown, so the job is followed again (and an ended one not acknowledged).
+   */
+  async function turnReplies(v: JobView) {
+    for (const r of v.progress?.replies ?? []) {
+      if (q("SELECT 1 FROM turns WHERE job = ? AND turn = ?").get(v.id, r.id)) continue;
+      try {
+        const o = outcome({ final: r.text });
+        if (o) await kernel.post(v.id, { ...o, kind: "reply", turn: r.id });
+      } catch (e) {
+        if (!permanent(e)) throw e;   // the next tick (a live session) or the ended job's backoff tries it again, and the job is not acknowledged meanwhile
+        log("turn reply refused", { job: v.id, task: v.task, err: (e as Error).message.slice(0, 200) });
+      }
+      q("INSERT OR IGNORE INTO turns (job, turn) VALUES (?, ?)").run(v.id, r.id);
+    }
+  }
+
   /** Each ended job's outcome, once: its reply (none for NO_REPLY), or how it stopped; a run whose task was closed is stopped. */
   async function follow() {
     for (const v of await kernel.open()) {
@@ -246,8 +266,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           // A task moved to another agent while its run goes on (re-routed): the new assignee has its own wake, and this run's
           // reply would be refused, so it is stopped rather than left to run out its time.
           if ((cur.assigneeAgentId || v.profile === "session") && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log(cur.assigneeAgentId ? "task moved while running: run stopped" : "session stopped: its task was handed back (no agent assignee)", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
-          // A session waits for days with no steps by design: never judged on progress.
-          if (v.profile === "session") continue;
+          // A session waits for days with no steps by design: never judged on progress; its finished turns are its replies.
+          if (v.profile === "session") { await turnReplies(v); continue; }
           // A run that stops making progress is stopped here (progress.ts); the kernel keeps only the hard deadline.
           const judge = judges.get(v.id) ?? judges.set(v.id, progressTracker()).get(v.id)!;
           judge.add(v.progress?.steps);
@@ -256,9 +276,10 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           continue;
         }
         judges.delete(v.id);
+        if (v.profile === "session") await turnReplies(v);
         const stopped = (q("SELECT why FROM stopped WHERE job = ?").get(v.id) as { why: string } | undefined)?.why;
         // A run stopped because its task moved has nothing to say or report: the task's new agent answers it.
-        if (stopped === MOVED) { await kernel.ack(v.id); q("DELETE FROM stopped WHERE job = ?").run(v.id); log("job ended: its task had moved", { job: v.id, task: v.task }); continue; }
+        if (stopped === MOVED) { await kernel.ack(v.id); q("DELETE FROM stopped WHERE job = ?").run(v.id); q("DELETE FROM turns WHERE job = ?").run(v.id); log("job ended: its task had moved", { job: v.id, task: v.task }); continue; }
         // A job that didn't get to finish is tried again by a scheduled wake (the wake it was admitted on is spent), a few times.
         // A recorded stop reason (the progress judge) is exactly the run that needs its retry, never a reason to skip it: past
         // MAX_RAN_TRIES it falls through to the `**Stopped:**` notice.
@@ -282,7 +303,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
               });
             if (armed) {
               await kernel.ack(v.id);
-              q("DELETE FROM stopped WHERE job = ?").run(v.id);
+              q("DELETE FROM stopped WHERE job = ?").run(v.id); q("DELETE FROM turns WHERE job = ?").run(v.id);
               log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });
               continue;
             }
@@ -299,7 +320,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         if (closed) await batch(task, v);
         else await report(task, v, o?.kind === "notice" ? o.body : undefined, o?.body);
         await kernel.ack(v.id);
-        q("DELETE FROM stopped WHERE job = ?").run(v.id);
+        q("DELETE FROM stopped WHERE job = ?").run(v.id); q("DELETE FROM turns WHERE job = ?").run(v.id);
         backoff.delete(v.id);
         log("job ended", { job: v.id, task: v.task, state: v.state, posted: o?.kind ?? null });
       } catch (e) {

@@ -7,6 +7,7 @@
 // or its `delegate_to`. Every comment carries the job's tag (wakes.ts SELF_TAG), so the wake inbox never wakes on it either.
 // Once: through `once` (once.ts), keyed by the job's tag: a call whose answer was lost (a crash after Paperclip's 201, a 502, a
 // timeout) stays pending, and the retry asks the plugin to look for the tagged write first, so it never posts twice.
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Finish } from "./checks.ts";
 import { factWriter, iso } from "./factlog.ts";
@@ -29,7 +30,7 @@ export class OutcomeError extends Error {
   constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
 }
 export interface Outcome { comment: string | null; status: string | null; again?: boolean; finish?: Finish }
-export interface PostRequest { kind: string; body: string; status?: string; blockedBy?: string[]; child?: { title: string; description?: string; assigneeAgentId?: string }; scope?: "listed" }
+export interface PostRequest { kind: string; body: string; status?: string; blockedBy?: string[]; /** A session's finished turn (its text's id): one reply per turn, where a job otherwise has one per kind. */ turn?: string; child?: { title: string; description?: string; assigneeAgentId?: string }; scope?: "listed" }
 
 /**
  * One signed call to the plugin's `post` action as `agent`, with the agent's own Paperclip key (secrets paperclip-agents/<id>,
@@ -100,7 +101,7 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
   const once = createOnce(db);
   const fact = factWriter(facts, log);
 
-  /** Post `req` on `job.task` as `job.agent`, once per (job, kind). */
+  /** Post `req` on `job.task` as `job.agent`, once per (job, kind), or per turn of a session. */
   async function post(job: { id: string; agent: string; task: string }, req: PostRequest): Promise<Outcome> {
     if (!UUID.test(job.agent)) throw new OutcomeError(400, "bad-agent", "an agent is its Paperclip id");
     if (typeof req.body !== "string" || !req.body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
@@ -120,14 +121,16 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
       }
     }
     await plugin.company(job.agent);
-    const { value, again } = await once(tag(job.id, req.kind), async (retry): Promise<Outcome> => {
+    // The tag's job field is at most 64 of [A-Za-z0-9_-] (the plugin's post.js): a turn is a short hash of its id after the job's.
+    const key = tag(req.turn ? `${job.id}-${createHash("sha1").update(req.turn).digest("hex").slice(0, 16)}` : job.id, req.kind);
+    const { value, again } = await once(key, async (retry): Promise<Outcome> => {
       let status = req.status;
       let gate: Finish | undefined;
       if (status === "done") {
         gate = await finish(job.task, job.agent);
         if (!gate.pass) status = undefined;
       }
-      const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(req.scope ? { scope: req.scope } : {}), ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
+      const params = { issueId: job.task, tag: key, body: req.body, ...(req.scope ? { scope: req.scope } : {}), ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
       const r = await plugin.post(job.agent, params);
       // A 5xx (502: the plugin is down, or it threw) leaves the key pending: whether it wrote is unknown, and the retry looks.
       if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}`);
@@ -145,7 +148,7 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
     // A reply also goes to the channel the owner wrote from: its own once, after the post. A read that fails now fails this call
     // (a 502), so the dispatcher's retry, which gets the post back as it was, relays it then; a 4xx is final.
     if (req.kind === "reply" && relay) {
-      await once(`${tag(job.id, req.kind)}:relay`, async () => {
+      await once(`${key}:relay`, async () => {
         try {
           await relay(job, req.body);
         } catch (e) {

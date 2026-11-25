@@ -31,7 +31,8 @@ export type EngineEvent =      // <job dir>/events.jsonl, appended by the engine
   | { t: "progress"; text: string; plan?: { step: string; done: boolean; doing?: boolean }[]; steps?: { at: string; text: string }[] }
   | { t: "usage"; input: number; output: number; cached?: number; model: string }
   | { t: "session"; id: string }
-  | { t: "final"; text: string };
+  | { t: "final"; text: string }
+  | { t: "reply"; id: string; text: string };   // a long-lived session's finished turn: its last words, posted on the task (id: that text's own, once per turn)
 // <job dir>/inbox.jsonl, appended by the runner: { t: "comment"; from: string; text: string }   (only if live_input)
 export interface InboxLine { t: "comment"; from: string; text: string }
 // exit code: 0 = turn done; non-zero = failed (the runner reports, the requesting module decides retries)

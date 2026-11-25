@@ -70,6 +70,16 @@ test("a write whose answer was lost (502 after the plugin wrote) is found on ret
   assert.deepEqual(pc.issues[TASK].blockedBy, [BLOCKER]);
 });
 
+test("a session's turns are one comment each, once, through the real post action; a retried turn posts nothing new", async (t) => {
+  const pc = await paperclip(t);
+  const o = kernelOf(pc.url);
+  const turn1 = await o.post(JOB, { kind: "reply", turn: "prt_aaa", body: "First answer." });
+  await o.post(JOB, { kind: "reply", turn: "prt_bbb", body: "Second answer." });
+  const retried = await o.post(JOB, { kind: "reply", turn: "prt_aaa", body: "First answer." });
+  assert.deepEqual(pc.comments.map((c) => c.body.split("\n")[0]), ["First answer.", "Second answer."]);
+  assert.equal(retried.comment, turn1.comment);
+});
+
 test("the action writes only as the calling agent, on its own task, and only the writes it allows", async () => {
   const h = host();
   const agent = { actor: { type: "agent", agentId: AGENT, runId: null, companyId: "c-1" }, companyId: "c-1" };
