@@ -155,9 +155,9 @@ async function resolveGone(store: SourceStore, target: string, tool: string, kee
   return n;
 }
 
-/** Retired image targets and the live target that replaced them. ops/security-sbom.sh lists only the targets it scanned,
- * so a replacement cannot be inferred from the batch: the mapping ships here. An absent target not in this map (or whose
- * replacement was not scanned cleanly in the same pass) keeps the absent/unverified path. */
+/** Retired image targets and the live target that replaced them. The cross-repository renames (Slack, codehost, MCP) ship
+ * as a mapping: nothing in a batch shows which repository took over another. A renamed tag in the same repository needs
+ * no entry (an absent image target retires against the one clean target of its repository in the same pass). */
 export const RETIRED_TARGETS: Readonly<Record<string, string>> = {
   "image:aidenhq/channel-slack-slack:local": "image:aidenhq/slack-live:local",
   "image:aidenhq/codehost-github-codehost-github:local": "image:aidenhq/github-github:local",
@@ -197,16 +197,36 @@ export interface PassDeps {
 /** A target that can't be scanned this pass, for a reason a retry won't fix: recorded, skipped, never fails the pass. */
 export class Skip extends Error {}
 
+/** The reason a retired image with no replacement carries: its findings are settled because nothing runs or names it. */
+export const NO_REPLACEMENT_REASON = "retired: no container runs this image and no configured image names it";
+
+/**
+ * The repository an `image:` target names: the reference with its platform suffix (`@linux/arm64/v8`, which the batch
+ * adds for a non-native variant), digest and tag removed. Null for a bare image id, which names no repository and so can
+ * never be another target's replacement.
+ */
+export function imageRepository(target: string): string | null {
+  const m = /^image:(.+)$/.exec(target);
+  if (!m) return null;
+  let ref = m[1]!;
+  ref = ref.replace(/@.*$/, ""); // the batch's platform suffix, then a digest
+  if (!ref.includes("/") || /^sha256:[0-9a-f]+$/.test(ref)) return null;
+  const colon = ref.lastIndexOf(":");
+  if (colon > ref.lastIndexOf("/")) ref = ref.slice(0, colon);
+  return ref || null;
+}
+
 /**
  * A retired target's present findings, settled against its replacement's rows from the same pass: the replacement's
- * own rows stay present; the retired target's rows become present = false, with the reason saying covered or gone.
+ * own rows stay present; the retired target's rows become present = false, with the reason saying covered or gone. With
+ * no replacement (null), every row is settled with NO_REPLACEMENT_REASON, claiming no other target for it.
  *
  * The settlements and the retired ingest_run row are one transaction, the row written after them: a target never reads
  * as retired (a success marker) with its findings still present, and its findings are never settled without the marker
  * that makes the retirement durable. A failure rolls both back and the next pass retries. The change log gets the
  * present -> false entry the shared upsert would have written.
  */
-async function retireTarget(store: SourceStore, target: string, replacement: string, rows: Row[], now: Date): Promise<number> {
+async function retireTarget(store: SourceStore, target: string, replacement: string | null, rows: Row[], now: Date): Promise<number> {
   const carried = new Set(rows.map((r) => `${r.package}|${r.version}|${r.vuln_id}`));
   const c = await store.pool.connect();
   try {
@@ -214,9 +234,11 @@ async function retireTarget(store: SourceStore, target: string, replacement: str
     const cur = await c.query(`SELECT package, version, vuln_id, url FROM src_security.finding WHERE target = $1 AND tool = 'grype' AND present`, [target]);
     const found = cur.rows as { package: string; version: string; vuln_id: string; url: string | null }[];
     for (const r of found) {
-      const reason = carried.has(`${r.package}|${r.version}|${r.vuln_id}`)
-        ? `covered by replacement ${replacement}: it was scanned in this pass and reports the same package, version and vulnerability`
-        : `gone: replacement ${replacement} was scanned in this pass and does not report it`;
+      const reason = replacement == null
+        ? NO_REPLACEMENT_REASON
+        : carried.has(`${r.package}|${r.version}|${r.vuln_id}`)
+          ? `covered by replacement ${replacement}: it was scanned in this pass and reports the same package, version and vulnerability`
+          : `gone: replacement ${replacement} was scanned in this pass and does not report it`;
       await c.query(
         `UPDATE src_security.finding SET present = false, resolved_at = $4, resolved_reason = $5, baseline = false, ingested_at = now(), seq = nextval('src_meta.seq')
          WHERE target = $1 AND package = $2 AND version = $3 AND vuln_id = $6`,
@@ -276,19 +298,32 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
       if (!(err instanceof Skip)) throw err;
     }
   }
-  // A present target this batch did not enumerate was not scanned clean: its findings stay present and unverified,
-  // and the absence is recorded as an ingest_run row so readers can see it. The one exception is a target with a
-  // shipped mapping whose replacement was scanned cleanly in this same pass: it is retired, its ingest_run row carries
-  // status "retired" and error null (not a failing target), and its findings are settled against that replacement.
+  // A present target this batch did not enumerate was not scanned clean. The set of targets the batch covers is complete
+  // for `image:` (every running image plus every image config/computers.json names) but not for `host`, `repo:*` and
+  // `app:*`, so the two are settled differently:
+  //   image:  its image is no longer running and no configured image names it, so the target is retired rather than
+  //           reported as a failing one. It retires against the one `image:` target of its own repository that was scanned
+  //           cleanly in this pass (a tag renamed in place); with none, or with more than one to choose from, it claims no
+  //           replacement. Either way status is "retired", error is null, and its findings settle present = false.
+  //   other:  the batch does not enumerate these completely, so absence is not proof of retirement: the findings stay
+  //           present and unverified, and the absence is an ingest_run error row so readers can see it.
+  // A replacement from the shipped map (a cross-repository rename) is used when it was scanned cleanly in this pass.
   if (fresh) {
     const listed = new Set(batch.targets.map((t) => t.target));
     const r = await store.pool.query(`SELECT DISTINCT target FROM src_security.finding WHERE tool = 'grype' AND present`);
     for (const { target } of r.rows as { target: string }[]) {
       if (listed.has(target)) continue;
-      const replacement = RETIRED_TARGETS[target];
-      const rows = replacement ? clean.get(replacement) : undefined;
+      const mapped = RETIRED_TARGETS[target];
+      let replacement: string | null = mapped && clean.has(mapped) ? mapped : null;
+      if (!replacement && target.startsWith("image:")) {
+        const repo = imageRepository(target);
+        const same = repo ? [...clean.keys()].filter((t) => t.startsWith("image:") && imageRepository(t) === repo) : [];
+        if (same.length === 1) replacement = same[0]!;
+      }
       // A failed retirement rolls back as a whole and is recorded as absent, so it stays visible and the next pass retries.
-      const retired = replacement && rows ? await retireTarget(store, target, replacement, rows, new Date(now())).catch(() => undefined) : undefined;
+      const retired = target.startsWith("image:") || replacement
+        ? await retireTarget(store, target, replacement, replacement ? clean.get(replacement)! : [], new Date(now())).catch(() => undefined)
+        : undefined;
       if (retired == null) await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
       else written += retired;
     }

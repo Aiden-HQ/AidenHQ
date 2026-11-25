@@ -27,6 +27,10 @@ const script = join(here, "../../ops/security-sbom.sh");
 async function run(env = {}, {
   containers = [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
   tags = { "aidenhq/board:local": "sha256:1111" },
+  // config/computers.json's `images`: undefined names the reference the fixture's first container was created with (so
+  // the file is there, as on the host, and a running image is also a configured one), null leaves the file out, and an
+  // object is written as given.
+  computers = undefined,
   manifests = {},
   sizes = {},
   heldIds = [],
@@ -350,6 +354,13 @@ exit 0
   writeFileSync(sizeJunkFile, Object.entries(sizeJunk).map(([ref, out]) => `${ref}\t${out}`).join("\n") + "\n");
   writeFileSync(join(dir, "labelled"), ""); // containers this fake daemon reports as this scanner's own
   const scriptPath_ = scriptPath ?? isolatedCheckout(dir).scriptPath;
+  // The writer reads the fleet's configured computer images (config/computers.json), which is what keeps an image that
+  // runs in no container in the inventory.
+  const checkout = dirname(dirname(scriptPath_));
+  mkdirSync(join(checkout, "config"), { recursive: true });
+  const computersFile = join(checkout, "config/computers.json");
+  if (computers === null) rmSync(computersFile, { force: true });
+  else writeFileSync(computersFile, JSON.stringify(computers ?? { images: containers.length ? { image: containers[0]!.config } : {} }));
   writeFileSync(join(dir, "drift"), Object.entries(drift).map(([ref, d]) => `${ref}\t${d.after}\t${d.then}`).join("\n") + "\n");
   mkdirSync(join(dir, "drift-count"), { recursive: true });
   const calls = join(dir, "calls");
@@ -642,6 +653,65 @@ test("security-sbom: the apply lock is held through the saves and free during ev
   assert.deepEqual(saves, saves.map(() => "save held"), `every save is under the apply lock:\n${locks.join("\n")}`);
   assert.ok(runs.length > 0, locks.join("\n"));
   assert.deepEqual(runs, runs.map(() => "run free"), `no scan holds the apply lock:\n${locks.join("\n")}`);
+});
+
+test("security-sbom: a configured computer image no container runs is inventoried, and a running one is a single target", { skip: NOT_LINUX }, async () => {
+  // A job box is ephemeral, so the fleet's current computer images often run in no container at snapshot time. Only
+  // config/computers.json says they are in scope: without it the pass would carry their findings unverified for ever.
+  const { status, out, targets, calls } = await run({}, {
+    computers: { images: { browser: "aidenhq/computer-browser:h1", engineer: "aidenhq/computer-engineer:h2" } },
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111", "aidenhq/computer-browser:h1": "sha256:bbbb", "aidenhq/computer-engineer:h2": "sha256:eeee" },
+    manifests: { "aidenhq/board:local": "sha256:1111", "aidenhq/computer-browser:h1": "sha256:bbbb", "aidenhq/computer-engineer:h2": "sha256:eeee" },
+    sizes: { "sha256:bbbb": 1024, "sha256:eeee": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const browser = targets.find((t) => t[0] === "image:aidenhq/computer-browser:h1");
+  const engineer = targets.find((t) => t[0] === "image:aidenhq/computer-engineer:h2");
+  assert.ok(browser, `the configured image no container runs is a target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.ok(engineer, `the second configured image is a target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(browser[1], "-", `it reached syft: ${browser[2]}`);
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" sha256:bbbb")), `nothing exported the configured image:\n${calls.join("\n")}`);
+  assert.match(syft(calls, "image:aidenhq/computer-browser:h1").line, /docker-archive:\/image\.tar/, "it is scanned from its saved archive, not from a tag that may move");
+  // The running container's image is not configured, so its own target stays as before.
+  assert.ok(targets.some((t) => t[0] === "image:aidenhq/board:local"), targets.map((t) => t.join("\t")).join("\n"));
+
+  // A configured tag naming an image a running container runs is that container's target: the image is inventoried once,
+  // under the name its container produces, so its findings keep reconciling by that name.
+  const both = await run({}, {
+    computers: { images: { browser: "aidenhq/computer-browser:h1" } },
+    containers: [{ id: "c1", image: "sha256:bbbb", config: "aidenhq/computer-browser:h1", label: "sha256:bbbb" }],
+    tags: { "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    sizes: { "sha256:bbbb": 1024 },
+  });
+  assert.equal(both.status, 0, both.out);
+  const images = both.targets.filter((t) => t[0].startsWith("image:"));
+  assert.deepEqual(images.map((t) => t[0]), ["image:aidenhq/computer-browser:h1"], `one target per image, not one per container plus one per tag:\n${images.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(both.calls.filter((c) => c.startsWith("save ")).length, 1, both.calls.join("\n"));
+});
+
+test("security-sbom: without config/computers.json the previous batch stays, so an incomplete inventory never reads as a pass", { skip: NOT_LINUX }, async () => {
+  // The file names the fleet's computer images. Missing, the pass cannot know the image an idle engineer box would run,
+  // so publishing what it saw would carry those findings as unverified with nothing telling them apart from a real pass.
+  const sentinel = "host\t-\told pass\t\n";
+  const seed = (data: string) => {
+    const dir = join(data, "modules/security/sbom/current");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "targets.tsv"), sentinel);
+  };
+  const missing = await run({}, { computers: null, seed });
+  assert.equal(missing.status, 0, missing.out);
+  assert.match(missing.out, /config\/computers\.json is missing or unreadable/);
+  assert.equal(missing.batchRaw, sentinel, "the previous batch is left exactly as it was");
+  assert.ok(!missing.calls.some((c) => c.startsWith("run ") || c.startsWith("save ")), `nothing was scanned or saved:\n${missing.calls.join("\n")}`);
+
+  // A file that names no image is the same incomplete inventory.
+  const empty = await run({}, { computers: { images: {} }, seed });
+  assert.equal(empty.status, 0, empty.out);
+  assert.match(empty.out, /names no image/);
+  assert.equal(empty.batchRaw, sentinel, "the previous batch is left exactly as it was");
+  assert.ok(!empty.calls.some((c) => c.startsWith("run ") || c.startsWith("save ")), `nothing was scanned or saved:\n${empty.calls.join("\n")}`);
 });
 
 test("security-sbom: a container whose own id is exportable is scanned from that id, not dropped", { skip: NOT_LINUX }, async () => {
@@ -1197,13 +1267,15 @@ test("security-sbom: a compose label that disagrees with the container's digest 
   // amd64 variant still matches the compose label. The descriptor is the authority, so the tag must not be used as this
   // container's target with a different manifest under it.
   const arm = { digest: "sha256:aaaa", platform: { os: "linux", architecture: "arm64", variant: "v8" } };
+  // The configured fleet tag is some other image, so this fixture is only about the container's own target.
   const { status, out, targets } = await run({}, {
+    computers: { images: { browser: "aidenhq/computer-browser:h1" } },
     containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local", label: "sha256:amd64", descriptor: arm }],
-    tags: { "aidenhq/board:local": "sha256:amd64" },
-    manifests: { "aidenhq/board:local": "sha256:amd64" },
+    tags: { "aidenhq/board:local": "sha256:amd64", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "aidenhq/board:local": "sha256:amd64", "aidenhq/computer-browser:h1": "sha256:bbbb" },
     platformManifests: { "aidenhq/board:local": { "linux/amd64": "sha256:amd64" } },
-    held: ["sha256:index"],
-    sizes: { "sha256:index": 1024 },
+    held: ["sha256:index", "sha256:bbbb"],
+    sizes: { "sha256:index": 1024, "sha256:bbbb": 1024 },
   });
   assert.equal(status, 0, out);
   // The tag names a different manifest than the one this container runs, so the target stays the container's own id and
@@ -1219,25 +1291,28 @@ test("security-sbom: a variant's key does not move when another variant appears"
   // leave the first pass's findings unverified the moment a second variant started.
   const arm = { digest: "sha256:a1a1", platform: { os: "linux", architecture: "arm64", variant: "v8" } };
   const amd64 = { digest: "sha256:b2b2", platform: { os: "linux", architecture: "amd64" } };
+  // The configured fleet tag is some other image, so the keys below are only the container variants'.
   const fixture = (extra) => ({
+    computers: { images: { browser: "aidenhq/computer-browser:h1" } },
     containers: [extra, { id: "c9", image: "sha256:index", config: "board:local", descriptor: arm }].filter(Boolean),
-    tags: { "board:local": "sha256:b2b2" },
-    manifests: { "board:local": "sha256:b2b2" },
+    tags: { "board:local": "sha256:b2b2", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "board:local": "sha256:b2b2", "aidenhq/computer-browser:h1": "sha256:bbbb" },
     platformManifests: {
       "board:local": { "linux/amd64": "sha256:b2b2", "linux/arm64/v8": "sha256:a1a1" },
       "sha256:index": { "linux/amd64": "sha256:b2b2", "linux/arm64/v8": "sha256:a1a1" },
     },
     platformSizes: { "sha256:index": { "linux/amd64": 1024, "linux/arm64/v8": 1024 } },
-    held: ["sha256:index"],
+    held: ["sha256:index", "sha256:bbbb"],
+    sizes: { "sha256:bbbb": 1024 },
   });
   const alone = await run({}, fixture(null));
   assert.equal(alone.status, 0, alone.out);
-  const aloneKeys = alone.targets.filter((t) => t[0].startsWith("image:")).map((t) => t[0]);
+  const aloneKeys = alone.targets.filter((t) => t[0].startsWith("image:board:local")).map((t) => t[0]);
   assert.deepEqual(aloneKeys, ["image:board:local@linux/arm64/v8"], aloneKeys.join("\n"));
 
   const beside = await run({}, fixture({ id: "c1", image: "sha256:index", config: "board:local", descriptor: amd64 }));
   assert.equal(beside.status, 0, beside.out);
-  const besideKeys = beside.targets.filter((t) => t[0].startsWith("image:")).map((t) => t[0]).sort();
+  const besideKeys = beside.targets.filter((t) => t[0].startsWith("image:board:local")).map((t) => t[0]).sort();
   assert.deepEqual(besideKeys, ["image:board:local", "image:board:local@linux/arm64/v8"], besideKeys.join("\n"));
 });
 
