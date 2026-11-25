@@ -32,36 +32,48 @@ const MCP_BLOCK_ENV = "AIDENHQ_MCP_B64";
 const toml = (v: unknown): string => (Array.isArray(v) ? `[${v.map(toml).join(", ")}]` : JSON.stringify(String(v)));
 
 /**
- * Whether a declared MCP server reaches the box's Codex config: it has granted tools (a non-empty list), a connection entry,
- * and a name Codex accepts. `mcpBlock` and the kernel's launch check share this one rule, so a server is either emitted or
- * refused by name, never silently dropped.
+ * Whether a granted connection is one of the job's servers: it has granted tools (a non-empty list), a connection entry, and
+ * a name Codex accepts. `jobServers` builds the job's one list with this rule, so a server is either listed or refused by name
+ * (`unemittedServers`), never silently dropped.
  */
 export function emitsServer(name: string, tools: Record<string, unknown> | undefined, connections: Record<string, unknown>) {
   // Own entries only: a declared name like `toString` must not read Object.prototype and pass as present. A connection entry
-  // that is null/undefined is no entry, as `mcpBlock` treats it, so the check and the renderer agree on every server.
+  // that is null/undefined is no entry.
   if (!tools || !Object.hasOwn(tools, name) || !Object.hasOwn(connections, name) || !connections[name]) return false;
   const list = tools[name];
   const hasTools = Array.isArray(list) ? list.length > 0 : list !== undefined && list !== null;
   return hasTools && /^[a-z0-9_]+$/.test(name);
 }
 
-/** The declared servers this job's frozen tools and connections don't emit, in declaration order. */
-export function unemittedServers(declared: string[], tools: Record<string, unknown> | undefined, connections: Record<string, unknown>): string[] {
-  return declared.filter((name) => !emitsServer(name, tools, connections));
+/** One connection a job reaches: the gateway's proxy route, the run token as X-Agent-Key, its granted tools and tool timeout. */
+export interface JobServer { name: string; url: string; token_env: "AIDENHQ_RUN_TOKEN"; tools: string[]; tool_timeout_s: number }
+
+/**
+ * A job's connections, resolved once from its frozen tools (`emitsServer`, in grant order): what a native-MCP engine's config
+ * renders (`mcpBlock`, engine@1 `mcp`), what a code-mode engine's tool files are generated from (kernel/src/codemode.ts), and
+ * what the declared-server preflight reads (`unemittedServers`).
+ */
+export function jobServers(tools: Record<string, string[]> | undefined, connections: Record<string, { tool_timeout_sec?: unknown } | null | undefined>, gatewayUrl: string): JobServer[] {
+  return Object.entries(tools ?? {}).filter(([name]) => emitsServer(name, tools, connections)).map(([name, list]) => ({
+    name, url: `${gatewayUrl}/c/${name}/mcp`, token_env: "AIDENHQ_RUN_TOKEN", tools: [...list], tool_timeout_s: Number(connections[name]?.tool_timeout_sec) || 300,
+  }));
+}
+
+/** The declared servers the job's list doesn't hold, in declaration order. */
+export function unemittedServers(declared: string[], servers: Pick<JobServer, "name">[]): string[] {
+  return declared.filter((name) => !servers.some((s) => s.name === name));
 }
 
 /**
- * The agent's granted connections as Codex config, for the box only: each through the launcher's gateway with the job token
- * as X-Agent-Key (the launcher passes it on to the kernel's proxy). Wrapped in markers so applying it twice replaces it.
+ * The job's servers as Codex config, for the box only: each through the launcher's gateway with the job token as X-Agent-Key
+ * (the launcher passes it on to the kernel's proxy). Wrapped in markers so applying it twice replaces it.
  */
-export function mcpBlock(tools: Record<string, unknown> | undefined, connections: Record<string, { tool_timeout_sec?: unknown }>, gatewayUrl: string) {
+export function mcpBlock(servers: JobServer[]) {
   const lines = ["# >>> aidenhq-computer (written by the launcher)"];
-  for (const [name, list] of Object.entries(tools ?? {})) {
-    const c = connections[name];
-    if (!c || !emitsServer(name, tools, connections)) continue;
-    lines.push(`[mcp_servers.${name}]`);
-    lines.push(`url = ${toml(`${gatewayUrl}/c/${name}/mcp`)}`, `env_http_headers = { "X-Agent-Key" = ${toml(RUN_TOKEN_ENV)} }`);
-    lines.push(`enabled_tools = ${toml(list)}`, "startup_timeout_sec = 20", `tool_timeout_sec = ${Number(c.tool_timeout_sec) || 300}`, 'default_tools_approval_mode = "approve"', "");
+  for (const s of servers) {
+    lines.push(`[mcp_servers.${s.name}]`);
+    lines.push(`url = ${toml(s.url)}`, `env_http_headers = { "X-Agent-Key" = ${toml(s.token_env)} }`);
+    lines.push(`enabled_tools = ${toml(s.tools)}`, "startup_timeout_sec = 20", `tool_timeout_sec = ${s.tool_timeout_s}`, 'default_tools_approval_mode = "approve"', "");
   }
   lines.push("# <<< aidenhq-computer", "");
   return lines.join("\n");

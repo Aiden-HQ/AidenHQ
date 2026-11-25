@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createAdmission } from "../src/admission.ts";
-import { createBoxes, jobMcp, launcherClient } from "../src/boxes.ts";
+import { createBoxes, launcherClient } from "../src/boxes.ts";
+import { jobServers } from "../../services/computer/lib.ts";
 import { buildJob } from "../src/sandbox.ts";
 import { createOnce } from "../src/once.ts";
 import { createIdentity } from "../src/identity.ts";
@@ -280,7 +281,7 @@ test("buildJob writes the job's connections, its models, and a standing box's ow
   const h = await host(t);
   const jobDir = join(h.dir, "boxes", "job-x");
   mkdirSync(jobDir);
-  const servers = jobMcp({ github: ["github_issue_read"] }, { github: { tool_timeout_sec: 60 } }, "http://gw");
+  const servers = jobServers({ github: ["github_issue_read"] }, { github: { tool_timeout_sec: 60 } }, "http://gw");
   const box = { container: "c1", envFile: "/e", outDir: join(h.dir, "boxes"), boxOut: "/aidenhq-out/l1", workdir: "/sessions/PEN-1", stateIn: "/engine-state/agent-9_session-1", servers };
   const { argv, spec } = buildJob({ cfg: h.cfg, engine: { kind: "wait", model: "acme/m1" }, worktree: "/w", jobDir, box, boxWrap: "", models: ["acme/m1", "acme/m2"] });
   assert.deepEqual(spec.mcp, [{ name: "github", url: "http://gw/c/github/mcp", token_env: "AIDENHQ_RUN_TOKEN", tools: ["github_issue_read"], tool_timeout_s: 60 }]);

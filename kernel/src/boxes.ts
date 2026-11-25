@@ -10,14 +10,14 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { emitsServer, mcpBlock, unemittedServers } from "../../services/computer/lib.ts";
+import { jobServers, mcpBlock, unemittedServers } from "../../services/computer/lib.ts";
 import type { Admitted } from "./admission.ts";
 import { mintToken } from "./gateway/token.ts";
 import type { Whoami } from "./identity.ts";
 import { JobError, insideNoLinks, type Jobs } from "./jobs.ts";
 import type { Once } from "./once.ts";
 import { outFiles } from "./outfiles.ts";
-import { engineState, type Box, type McpServer, type SandboxConfig } from "./sandbox.ts";
+import { engineState, type Box, type SandboxConfig } from "./sandbox.ts";
 import { trashAway } from "./trash.ts";
 
 const RENEW_MS = 5 * 60_000; // the launcher's lease is 15 minutes
@@ -25,13 +25,6 @@ const RENEW_MS = 5 * 60_000; // the launcher's lease is 15 minutes
 export const SESSION_TOKEN_TTL_MS = 365 * 24 * 3600_000;
 /** Where a job's workspace lives under the work dir: a session's in the standing box's sessions folder, any other job's in tasks. */
 const workRoot = (cfg: Pick<SandboxConfig, "workDir">, profile: string) => join(cfg.workDir, profile === "session" ? "sessions" : "tasks");
-
-/** A job's frozen connections as engine@1 `mcp`: the servers the launcher's Codex block emits (one rule, emitsServer), in the same order. */
-export function jobMcp(tools: Record<string, string[]> | undefined, connections: Record<string, { tool_timeout_sec?: unknown }>, gatewayUrl: string): McpServer[] {
-  return Object.entries(tools ?? {}).filter(([name]) => emitsServer(name, tools, connections)).map(([name, list]) => ({
-    name, url: `${gatewayUrl}/c/${name}/mcp`, token_env: "AIDENHQ_RUN_TOKEN", tools: [...list], tool_timeout_s: Number(connections[name]?.tool_timeout_sec) || 300,
-  }));
-}
 
 type Call = (route: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
@@ -128,13 +121,13 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const token = mintToken(secret("gateway_job_secret"), { kind: "job", job: job.id, agentId: job.agent, issueId: job.task, ttlMs: session ? SESSION_TOKEN_TTL_MS : (cfg.timeout_minutes + 60) * 60_000 }, now());
     // The box's connections: exactly what this job's token resolves to (its frozen authority), never the grants table.
     const tools = (await whoami(token)).tools;
-    const conns = connections();
-    // A declared server the frozen authority or the connections don't emit would start the run silently without it: refuse
+    // The job's connections, resolved once: the one list every engine's config, and the preflight, read.
+    const servers = jobServers(tools, connections(), cfg.boxGatewayUrl);
+    // A declared server the frozen authority or the connections don't list would start the run silently without it: refuse
     // instead, before the launcher is called. A check job's authority deliberately has no tools, so it is exempt.
-    const missing = a.profile === "check" ? [] : unemittedServers([...new Set(declaredServers?.(job.agent) ?? [])], tools, conns);
+    const missing = a.profile === "check" ? [] : unemittedServers([...new Set(declaredServers?.(job.agent) ?? [])], servers);
     if (missing.length) throw new JobError(500, "mcp-server-missing", `declares MCP server(s) ${missing.join(", ")} but this job's frozen authority has no tools for them; refusing to start a run without them`);
-    const mcp = mcpBlock(tools, conns, cfg.boxGatewayUrl);
-    const servers = jobMcp(tools, conns, cfg.boxGatewayUrl);
+    const mcp = mcpBlock(servers);
     // The task's last job lets its box go first (the launcher keeps one per task and parks it between jobs); while it is still
     // leased, the job waits a tick.
     // A release already in flight (the last job's end) is waited for too, so its cleanup runs before this job touches the workspace.
