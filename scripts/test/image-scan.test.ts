@@ -65,6 +65,10 @@ test("image-changes selects a module.yaml-only service image re-pin, and never a
   put("modules/primer/module.yaml", multiline);
   git("commit", "-qam", "re-pin, multi-line");
   assert.equal(select(), `dockerfiles=\nservices=postgres:17.12${d("c")}`);
+  // A comment line between `image:` and its value is skipped by YAML too: the ref below it is still the service's image.
+  put("modules/primer/module.yaml", `name: primer\nservices:\n  run:\n    primer-db:\n      image:\n        # the db\n        postgres:17.12${d("e")}\n`);
+  git("commit", "-qam", "re-pin, comment line");
+  assert.equal(select(), `dockerfiles=\nservices=postgres:17.12${d("e")}`);
   // A bare `build:` with a real value is this repository's own image: it selects nothing.
   put("modules/primer/module.yaml", `name: primer\nservices:\n  run:\n    primer-db:\n      build: ./server\n      image: postgres:17.12${d("d")}\n`);
   git("commit", "-qam", "built");

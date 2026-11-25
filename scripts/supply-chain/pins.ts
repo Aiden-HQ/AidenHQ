@@ -829,8 +829,11 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   if (/;;\s*$/.test(cmd)) state.arm = undefined;
 }
 
-/** A service's `image:` and `build:` as the manifest declares them; `nested` is the line of a value that is not a scalar. */
-interface ServiceDecl { image?: { ref: string; line: number }; build: boolean; nested?: number }
+/**
+ * A service's `image:` and `build:` as the manifest declares them; `imageLine` is where the `image` key was written (so a
+ * value the walk can't read is reported, never dropped), and `nested` is the line of a value that is not a scalar.
+ */
+interface ServiceDecl { image?: { ref: string; line: number }; imageLine?: number; build: boolean; nested?: number }
 
 /**
  * modules/<name>/module.yaml's `services.run`, each service's `image:` and `build:` as the compiler reads them, in the order
@@ -871,12 +874,15 @@ export function moduleServices(text: string): { services: Map<string, ServiceDec
         const body: string[] = [];
         let j = i + 1;
         for (; j < lines.length; j++) {
-          const l = lines[j]!;
-          if (l.trim() === "" || l.search(/\S/) <= indent) break;
-          if (!block && /^(?:[-[{|>]|(?:[A-Za-z0-9_.-]+|"[^"]*"|'[^']*'):(?:\s|$))/.test(l.trim())) { nested = j + 1; break; }
+          const l = lines[j]!, t = l.trim();
+          // A blank or comment-only line is not the end of the value: YAML skips a comment there, a plain scalar continues
+          // after a blank line, and a block scalar keeps the blank line. The value is the first line after them.
+          if (t === "" || t.startsWith("#")) { if (block || body.length) body.push(l); continue; }
+          if (l.search(/\S/) <= indent) break;
+          if (!block && /^(?:[-[{|>]|(?:[A-Za-z0-9_.-]+|"[^"]*"|'[^']*'):(?:\s|$))/.test(t)) { nested = j + 1; break; }
           body.push(l);
         }
-        if (block || body.length) value = body.join(" ").trim();
+        if (block || body.some((l) => l.trim() !== "")) value = body.join(" ").trim();
         i = j - 1; // the value's lines are not keys of their own
       }
     }
@@ -890,9 +896,11 @@ export function moduleServices(text: string): { services: Map<string, ServiceDec
       if (key === "build") svc.build = value !== undefined && !/^(?:~|null)?$/i.test(value.trim());
       if (key === "image") {
         if (nested) { svc.nested = nested; continue; }
-        // A plain scalar's ref: quotes dropped. A ref never holds whitespace, so its first token is the whole of it.
+        // A plain scalar's ref: quotes dropped. A ref never holds whitespace, so its first token is the whole of it. A ref
+        // the walk cannot read as one (a `$`-interpolated one, an anchor) is still kept: modulePins reports it rather than
+        // letting an image the check cannot read go unmentioned.
         const ref = value === undefined ? undefined : /^["']?([^\s"'#]+)/.exec(value)?.[1];
-        if (ref && !ref.includes("$") && !svc.image) svc.image = { ref, line: lineNo };
+        if (!svc.image) { svc.imageLine = lineNo; if (ref) svc.image = { ref, line: lineNo }; }
       }
     }
   }
@@ -909,9 +917,13 @@ function modulePins(path: string, text: string): { pins: Pin[]; problems: string
   const pins: Pin[] = [], problems: string[] = [];
   const at = (n: number) => `${path}:${n}`;
   if (flow) problems.push(`${at(flow)}: services is written as a flow map; only the block form's service images can be checked`);
-  for (const { image, build, nested } of services.values()) {
+  for (const { image, imageLine, build, nested } of services.values()) {
     if (nested) { problems.push(`${at(nested)}: image is a nested value, not a plain reference`); continue; }
-    if (build || !image) continue;
+    if (build || (!image && imageLine === undefined)) continue;
+    // An `image:` the walk read nothing from is reported: the schema wants a plain string, and a value this check cannot
+    // read must never pass for a service that names no image.
+    if (!image) { problems.push(`${at(imageLine!)}: image has no value; only a plain reference can be checked`); continue; }
+    if (image.ref.includes("$")) { problems.push(`${at(image.line)}: image ${image.ref} is not a plain reference (name:tag@sha256:…)`); continue; }
     DIGEST.test(image.ref) ? pins.push(imagePin(image.ref, at(image.line))) : problems.push(`${at(image.line)}: image ${image.ref} has no digest (name:tag@sha256:…)`);
   }
   return { pins, problems };

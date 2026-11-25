@@ -101,6 +101,8 @@ test("pins: a module.yaml service image is a pin, and an agent-level image line 
     `image: |\n        postgres:17.12${d("c")}`,
     `image:\n        postgres:17.12${d("c")}`,
     `image: # pinned\n        postgres:17.12${d("c")}`,
+    `image:\n        # pinned\n        postgres:17.12${d("c")}`,
+    `image:\n\n        postgres:17.12${d("c")}`,
     `image: postgres:17.12${d("c")} # pinned`,
     `build:\n      image: postgres:17.12${d("c")}`,
     `build: # use the published image\n      image: postgres:17.12${d("c")}`,
@@ -113,6 +115,11 @@ test("pins: a module.yaml service image is a pin, and an agent-level image line 
   }
   // A value that is a nested map under `image` (which the schema forbids) is reported, never silently skipped.
   assert.match(scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      image:\n        name: x\n`).problems[0]!, /nested value/);
+  // An `image:` whose value the walk cannot read as a plain reference is a problem, never a silent skip: an interpolated
+  // ref (the compiler would expand it), a key with no value at all, and a comment-only block scalar.
+  assert.match(scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      image: \${REG}/postgres:17${d("a")}\n`).problems[0]!, /not a plain reference/);
+  assert.match(scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      image:\n        # nothing\n`).problems[0]!, /image has no value/);
+  assert.match(scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      image: |\n        # nothing\n`).problems[0]!, /image has no value/);
   // A real `build:` value (`.`) still means the image is this repository's own: no pin, no problem.
   assert.deepEqual(scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      build: .\n      image: postgres:17${d("a")}\n`).pins, []);
   // Only modules/<name>/module.yaml: a template's manifest is not a service the instance runs.
