@@ -8,6 +8,8 @@ test("every verdict reason code the engine can emit is a commit-status reason gi
   const render = readFileSync(new URL("../../github/connections/github-mcp/src/review-render.ts", import.meta.url), "utf8");
   const accepted = new Set([...render.match(/STATUS_STATE = \{([^}]*)\}/)![1]!.matchAll(/(\w+):/g)].map((m) => m[1]));
   const emitted = new Set([...engine.matchAll(/\bcode: "(\w+)"/g)].map((m) => m[1]!).concat("queued", "failed", "pass"));
+  const kernel = new Set(JSON.parse(readFileSync(new URL("../schemas/status.json", import.meta.url), "utf8")).properties.reason.enum);
+  assert.deepEqual([...kernel].sort(), [...accepted].sort(), "the kernel's status schema and github-mcp's STATUS_STATE list the same reasons");
   assert.ok(emitted.size > 8);
   for (const c of emitted) assert.ok(accepted.has(c), `${c} is not a STATUS_STATE key`);
 });
