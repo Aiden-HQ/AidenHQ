@@ -4,9 +4,12 @@
 
 AidenHQ is an open-source AI chief of staff and agent team that runs on your own server. Aiden, the chief of staff,
 reads your Slack, the email you hand it and your meeting notes, turns what needs you into action items and follows up
-until they're done, once you connect Slack and Google and turn its schedules on. For anything else, describe an agent in a sentence and Aiden builds it; agents also build internal
-apps and keep them running. You talk to Aiden on Telegram, Slack or the web, and every write an agent makes (a push, a
-deploy, a message, a config change) passes an approval gate enforced in code.
+until they're done. That intake and follow-up is the `open-loops` module, which you add to `modules:` in
+`instance.yaml`: it needs Slack and Google connected, and triaging new Slack messages needs **Slack with Aiden's bot**
+(the bot and its live events), not only the read-only Slack sign-in agents use to read Slack
+([docs/setup.md](docs/setup.md#slack)). For anything else, describe an agent in a sentence and Aiden builds it; agents
+also build internal apps and keep them running. You talk to Aiden on Telegram, Slack or the web, and every write an
+agent makes (a push, a deploy, a message, a config change) passes an approval gate enforced in code.
 
 Install it on a fresh Ubuntu or Debian server or a Mac: see [aidenhq.ai/install](https://aidenhq.ai/install/) and
 [SETUP.md](SETUP.md). Releases and the installer live in
