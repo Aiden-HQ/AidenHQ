@@ -597,41 +597,20 @@ const http = createServer(async (req, res) => {
     res.writeHead(ok ? 200 : 503, { "content-type": "application/json" }).end(JSON.stringify({ ok, ...(ok ? {} : { state: "missing", detail: "GitHub isn't connected (Connect GitHub on the board)" }) }));
     return;
   }
-  // The Maintainer's watcher: each maintained repo's open labelled issues updated since its cursor (`cursors`, JSON
-  // { "owner/name": iso }), with their trust verdict, and with `triage_cursors` its new unlabelled issues. Read-only, no
-  // model call.
-  if (url.pathname === "/internal/maintainer/issues") {
+  // The Maintainer's watcher (the maintainer module's service, authenticated as that module): `/internal/maintainer/issues` is its
+  // bootstrap, each maintained repo's open labelled issues with their trust verdict; `/internal/maintainer/issue?repo=&number=&label=`
+  // is one issue's trust read after a change-feed event named its label. Read-only, no model call.
+  if (url.pathname === "/internal/maintainer/issues" || url.pathname === "/internal/maintainer/issue") {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "maintainer"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
     try {
-      let cursors: Record<string, string> = {};
-      try {
-        cursors = JSON.parse(url.searchParams.get("cursors") || "{}");
-      } catch {
-        throw new GitHubRefused("cursors must be a JSON object of repo to ISO timestamp");
+      let out: unknown;
+      if (url.pathname === "/internal/maintainer/issues") out = await maintainer.bootstrap(url.searchParams.get("repos")?.split(",").filter(Boolean));
+      else {
+        const number = Number(url.searchParams.get("number"));
+        if (!Number.isInteger(number) || number < 1) throw new GitHubRefused("number must be an issue number");
+        out = await maintainer.oneIssue(url.searchParams.get("repo") ?? undefined, number, url.searchParams.get("label") || undefined);
       }
-      if (!cursors || typeof cursors !== "object" || Array.isArray(cursors) || Object.values(cursors).some((v) => typeof v !== "string"))
-        throw new GitHubRefused("cursors must be a JSON object of repo to ISO timestamp");
-      // The triage cursors, sent only by a watcher that triages each new issue: { "owner/name": iso }, a repo absent on its
-      // first look.
-      let triage: Record<string, string> | undefined;
-      if (url.searchParams.has("triage_cursors")) {
-        try {
-          triage = JSON.parse(url.searchParams.get("triage_cursors") || "{}");
-        } catch {}
-        if (!triage || typeof triage !== "object" || Array.isArray(triage) || Object.values(triage).some((v) => typeof v !== "string"))
-          throw new GitHubRefused("triage_cursors must be a JSON object of repo to ISO timestamp");
-      }
-      // The build cursors, sent by a watcher that builds feature requests: { "owner/name": iso } (a repo with `features` on).
-      let builds: Record<string, string> | undefined;
-      if (url.searchParams.has("build_cursors")) {
-        try {
-          builds = JSON.parse(url.searchParams.get("build_cursors") || "{}");
-        } catch {}
-        if (!builds || typeof builds !== "object" || Array.isArray(builds) || Object.values(builds).some((v) => typeof v !== "string"))
-          throw new GitHubRefused("build_cursors must be a JSON object of repo to ISO timestamp");
-      }
-      const out = await maintainer.issuesSince(cursors, triage, builds);
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out));
     } catch (err) {
       const refused = err instanceof GitHubRefused;
