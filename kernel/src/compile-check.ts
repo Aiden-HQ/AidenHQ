@@ -70,6 +70,15 @@ export const stagedEnv = (productDir: string, instanceDir: string, i: Inputs, ba
   ...Object.fromEntries(Object.entries(base).filter(([k]) => KEEP.has(k))), AIDENHQ_COMPILE_STAGE: "1", AIDENHQ_INSTANCE_DIR: instanceDir,
   AIDENHQ_CONFIG_DIR: i.configDir, AIDENHQ_DATA_DIR: i.dataDir, AIDENHQ_SECRETS_DIR: i.secretsDir,
 });
+/**
+ * The env a target tree's `npm ci` runs with. It runs the target's own lifecycle scripts before anything is checked, so it gets
+ * the least there is: a PATH, a HOME (npm's cache), a locale and a temp dir — no host checkout, state, transcripts, vault or
+ * config path, and none of the kernel's keys. `HOME` stays the host's so npm's cache is the warm one the apply's own install
+ * uses (an empty cache would turn a cached offline install into a network failure, which the check must not read as a verdict).
+ */
+const INSTALL_ENV = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"];
+export const installEnv = (base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(base).filter(([k]) => INSTALL_ENV.includes(k)));
 
 /** The apply's first message line from a failed compile: from `compile: …` (or a thrown error's line) on, the first line. */
 export function firstDiagnostic(stderr: unknown): string {
@@ -171,9 +180,9 @@ async function installCompiler(o: RunInput) {
       symlinkSync(modules, join(o.productDir, d, "node_modules"), "dir");
       continue;
     }
-    // Installs run the target's own lifecycle scripts: they get no path to the host's config, data or vault, unlike the
-    // compiler below, which the apply's own staged compile reads those with.
-    const installed = await run("npm", ["ci", "--prefix", d, "--silent"], o.productDir, { ...o.env, AIDENHQ_CONFIG_DIR: "", AIDENHQ_DATA_DIR: "", AIDENHQ_SECRETS_DIR: "" }, left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
+    // Installs run the target's own lifecycle scripts: they get installEnv() — no path to the host's checkout, config, data or
+    // vault — unlike the compiler below, which the apply's own staged compile reads those with.
+    const installed = await run("npm", ["ci", "--prefix", d, "--silent"], o.productDir, installEnv(o.env), left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
     if (!installed.ok) throw new Error(`the target product's ${d} deps didn't install: ${firstDiagnostic(installed.stderr) || "npm ci failed"}`);
   }
 }

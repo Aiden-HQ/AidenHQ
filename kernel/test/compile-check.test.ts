@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { checkoutTree } from "../src/settings-change.ts";
-import { createCompileCheck, firstDiagnostic, run, stagedEnv } from "../src/compile-check.ts";
+import { createCompileCheck, firstDiagnostic, installEnv, run, stagedEnv } from "../src/compile-check.ts";
 
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
@@ -103,6 +103,15 @@ test("the staged env is the apply's own (AIDENHQ_COMPILE_STAGE=1) and the first 
   assert.equal(guarded.OPERATOR_KEY, undefined);
   assert.equal(guarded.GITHUB_TOKEN, undefined);
   assert.equal(guarded.AIDENHQ_COMPILE_STAGE, "1");
+});
+
+test("a target's npm install runs with no host path at all, unlike the compiler that follows it", () => {
+  // The install runs the target's own lifecycle scripts before anything is checked: it gets a PATH, HOME, locale and temp only.
+  const env = installEnv({ PATH: "/bin", HOME: "/home/u", LANG: "C", AIDENHQ_DIR: "/host/aidenhq", AIDENHQ_STATE_DIR: "/host/state",
+    AIDENHQ_INSTANCE_REPO: "acme/i", TRANSCRIPTS_DIR: "/host/tr", VAULT_DIR: "/host/vault", AIDENHQ_SECRETS_DIR: "/host/secrets",
+    AIDENHQ_CONFIG_DIR: "/host/config", AIDENHQ_DATA_DIR: "/host/data", AIDENHQ_KERNEL_KEY: "k", OPERATOR_KEY: "o", GITHUB_TOKEN: "t" });
+  assert.deepEqual(Object.keys(env).sort(), ["HOME", "LANG", "PATH"]);
+  assert.equal(env.HOME, "/home/u", "npm's cache is the warm one the apply's own install uses");
 });
 
 test("a compiler that never finished (a timeout) is an operational error, not a refusal", async () => {
