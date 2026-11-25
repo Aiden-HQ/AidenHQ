@@ -18,10 +18,11 @@ const FIXED = {
   person_merge: "Ready to merge. Merge is off for this PR, so a person merges it.",
   checks: "A required check never reported on the latest commit. A person reruns it or fixes the workflow.",
   requeue: "Ship won't queue this PR again. A person queues it again, or pushes a fix.",
+  owner_card: "Ship's merge is waiting for the owner's approval on the board.",
   merged: "Merged.",
 };
 /** The kinds a person has to act on. */
-const ACT = new Set<Kind>(["review", "approval", "checks", "requeue", "person_merge", "owner", "hold"]);
+const ACT = new Set<Kind>(["review", "approval", "checks", "requeue", "owner_card", "person_merge", "owner", "hold"]);
 
 export type Kind = keyof typeof FIXED | "owner" | "hold";
 /** What a round says about the PR: its kind, and the sentence for the kinds that carry one (owner, hold, a special merge). */

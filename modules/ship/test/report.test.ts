@@ -94,3 +94,23 @@ test("review findings that change at the same head don't edit the comment again,
   assert.match(w.sent[1]!.body, /Waiting for review findings to be fixed or answered\./);
   assert.doesNotMatch(w.sent.map((s) => s.body).join("\n"), INTERNAL);
 });
+
+test("a merge waiting on the owner's card is said; a stale report is retried at a new head; a task's PR keeps its comment true", async () => {
+  const w = world("all");
+  w.deps.kernel = { call: async (_m: string, path: string) => (path === "/v1/writes" ? { id: "r1" } : path.startsWith("/v1/writes/") ? { state: "owner" } : {}) };
+  await round(w.deps, w.pr(), { do: "merge", why: "ready" });
+  await round(w.deps, w.pr(), { do: "merge", why: "ready" });
+  assert.match(w.sent.at(-1)!.body, /waiting for the owner's approval on the board/);
+  // A report that failed at one head is retried at the next, not dropped.
+  const s = world("all");
+  s.failOnce();
+  await round(s.deps, s.pr(), { do: "stall", why: "blocked by a branch rule ship doesn't handle" });
+  await retryReport(s.deps, s.state.get("a/b", 7) as any, s.pr({ head: "2".repeat(40) }));
+  assert.equal(s.sent.length, 1);
+  // A task's PR posts for a person's action, and the comment it has is edited when that is over.
+  const t = world("all");
+  t.state.put({ ...t.state.get("a/b", 7)!, owner: { kind: "task", task: "task-1" } } as any);
+  await round(t.deps, t.pr(), { do: "wait", why: "waiting on code owner @acme/core" });
+  await round(t.deps, t.pr({ state: "merged" }), { do: "done" });
+  assert.match(t.sent.at(-1)!.body, /Merged\./);
+});

@@ -228,7 +228,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   if (!followed && (c.lastRound === key || (fix && (c.acted ?? []).includes(act)))) return "nothing";
   // Each new action spends a round; past `rounds` the PR holds.
   const spend = () => (over(c.rounds, caps.rounds) ? hold(`${c.rounds} rounds (rounds)`, HOLD.cap) : (c.rounds++, undefined));
-  let queueWait: string | undefined, updatedOnly = false;
+  let queueWait: string | undefined, updatedOnly = false, ownerWait = false;
   const step = async (): Promise<"acted" | "nothing"> => {
     if (["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty)) {
       const held = spend();
@@ -334,7 +334,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (dismissing) return dismissing;
         if (a!.merge?.head === pr.head) {
           const r = await d.kernel.call("GET", `/v1/writes/${a!.merge.record}`);
-          if (OPEN.includes(String(r.state))) return "nothing";
+          if (OPEN.includes(String(r.state))) { if (r.state === "owner") ownerWait = true; return "nothing"; }
           // A veto (the AI reviewer's or the owner's) is final for this head: never asked again.
           if (r.state === "rejected") return hold(`the merge at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})`, HOLD.failed);
           // The PR moved meanwhile: the next head is the next round's.
@@ -430,23 +430,21 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // A merge already asked for at this head: nothing new to say until its record ends.
   // A queue wait is reported once per head (its own marker), as the enqueue's own key is followed by its record.
   // A branch update alone is not the fix: its own marker, so a head still red next pass is asked to be fixed.
-  const marker = queueWait ? `${key}:wait` : updatedOnly ? `${key}:updated` : key;
+  const marker = ownerWait ? `${key}:owner` : queueWait ? `${key}:wait` : updatedOnly ? `${key}:updated` : key;
   if (did === "nothing" && c.lastRound === marker) return did;
   c.lastRound = marker;
   // What a person is asked for, if anything; the rest is Ship's own work and says so only once a comment exists.
   const person = risk?.state !== "pending" && merge === "off";
-  await save(queueWait ? { kind: "requeue" } : v.do === "merge" || v.do === "enqueue" ? { kind: person ? "person_merge" : "active" } : v.do === "approve" ? { kind: a!.approve?.why ? "approval" : "active" } : v.do === "wait" ? waitFacts(v.why) : v.do === "fix_review" ? { kind: "findings" } : { kind: "active" });
+  await save(ownerWait ? { kind: "owner_card" } : queueWait ? { kind: "requeue" } : v.do === "merge" || v.do === "enqueue" ? { kind: person ? "person_merge" : "active" } : v.do === "approve" ? { kind: a!.approve?.why ? "approval" : "active" } : v.do === "wait" ? waitFacts(v.why) : v.do === "fix_review" ? { kind: "findings" } : { kind: "active" });
   return did;
 }
 
-/** A report that failed last pass is posted again (at the head it was for; a new head's round writes its own). */
+/** A report that failed last pass is posted again; the round that follows says whatever the new head needs. */
 export async function retryReport(d: RoundDeps, a: Kept, pr: PrView): Promise<Kept> {
   const stale = a.reportStale;
   if (!stale) return a;
-  if (stale.head === pr.head) return report(d, a, pr, stale.facts);
-  const { reportStale: _, ...kept } = a;
-  d.state.put(kept);
-  return kept;
+  // At any head: the comment (or its edit) may have landed, and a later round that has nothing new to say would never reconcile it.
+  return report(d, a, pr, stale.facts);
 }
 
 /**
@@ -477,7 +475,7 @@ const wakeKey = (identity: string) => `ship.${createHash("sha256").update(identi
 async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts): Promise<Kept> {
   const s = say(f);
   // A task's PR is its task's to hear about (a wake); a comment only for what a person must do.
-  if (a.owner?.kind === "task" && !s.act) return a;
+  if (a.owner?.kind === "task" && !a.report && !s.act) return a;
   const explicit = a.trigger.kind === "label" || a.trigger.kind === "comment";
   // Nothing to say yet: no comment exists, and no person must act or was handed the PR on purpose (a merged one is never news).
   const text = a.report || s.act ? s.text : explicit && f.kind !== "merged" ? ACK : undefined;
