@@ -225,7 +225,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // Review findings are keyed by their digest: a new set at the same head is asked again.
   const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do;
   const key = v.do === "wait" ? `${pr.head}:wait:${v.why ?? ""}:${facts.approval ?? ""}` : `${pr.head}:${act}`;
-  const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true);
+  // A wait with an App approval to dismiss (or a dismissal in flight) is followed too: its record is read each pass.
+  const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true) || (v.do === "wait" && !!risk && staleApproval(a.approve, pr.head, risk));
   // A fix already asked for at this head is not asked again after a `wait` in between (a CI re-run with no push).
   const fix = ["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty);
   if (!followed && (c.lastRound === key || (fix && (c.acted ?? []).includes(act)))) return "nothing";

@@ -11,7 +11,7 @@ import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
 import { handBack, intake, recordTask, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
 import { retryReport, round, tell, type Decision, type RoundDeps } from "./rounds.ts";
-import { canApprove, carries, judge, riskOf, type ChangedFile, type Judged, type Risk, type Verdict } from "./safe.ts";
+import { canApprove, judge, sameChange, riskOf, type ChangedFile, type Judged, type Risk, type Verdict } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
 
@@ -43,8 +43,9 @@ function eventOf(n: Json): TriggerEvent | undefined {
 }
 
 /** The loop's GraphQL node for an open PR as the hand-off reads it. */
-export function viewOf(repo: string, defaultBranch: string, pr: Json): PrView {
+export function viewOf(repo: string, defaultBranch: string, pr: Json, extra: { baseOid?: string; headSeen?: string } = {}): PrView {
   return {
+    ...(extra.baseOid && pr.baseRefName === defaultBranch ? { baseOid: extra.baseOid } : {}), ...(extra.headSeen ? { headSeen: extra.headSeen } : {}),
     repo, number: pr.number, url: pr.url, head: pr.headRefOid, base: pr.baseRefName, defaultBranch,
     author: String(pr.author?.login ?? ""), authorBot: pr.author?.__typename !== "User",
     fork: pr.isCrossRepository === true, canModify: pr.maintainerCanModify === true, ...(pr.headRepository?.nameWithOwner ? { headRepo: String(pr.headRepository.nameWithOwner) } : {}), draft: pr.isDraft === true, state: "open",
@@ -79,6 +80,7 @@ export function adoptedPass(o: AdoptedOptions) {
     return r.body;
   };
   const roles = new Map<string, string | null>(); // `<repo>:<login>` -> role, for one pass
+  const seen = new Map<string, { head: string; at: string }>(); // `<repo>#<n>` -> its head, and when this process first saw it
   const handoff: HandoffDeps = {
     state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, askReview: o.effects.askReview, log: o.log,
     async permission(repo, login) {
@@ -104,14 +106,16 @@ export function adoptedPass(o: AdoptedOptions) {
     },
     // Strict: every path counts (generated ones too), and a head that can't be compared (the author rewrote it away) is a change.
     async sameChange(pr, from) {
+      // The base as a commit (the proxy compares commits only): the default branch's tip this pass read.
+      if (!pr.baseOid) return false;
       const read = async (h: string) => {
-        const r = await o.gh("GET", `/repos/${pr.repo}/compare/${pr.base}...${h}`);
+        const r = await o.gh("GET", `/repos/${pr.repo}/compare/${pr.baseOid}...${h}`);
         if (r.status === 404 || r.status === 422) return undefined;
         if (r.status >= 300) throw new Error(`GitHub GET compare: ${r.status}`);
         return (r.body?.files ?? []) as ChangedFile[];
       };
       const [was, now] = await Promise.all([read(from), read(pr.head)]);
-      return !!was && !!now && carries(was, now, []);
+      return !!was && !!now && sameChange(was, now);
     },
   };
   const rounds: RoundDeps = {
@@ -213,7 +217,10 @@ export function adoptedPass(o: AdoptedOptions) {
      * lifecycle has kept it (a PR about to be closed or left for a successor spends no CI).
      */
     async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number]), ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery>; bump?: boolean } = {}) {
-      const view = viewOf(repo, main.name, pr);
+      // When this process first saw the PR's head: a fork's hand-off counts only for a head already there when it was made.
+      const k = `${repo.toLowerCase()}#${pr.number}`;
+      if (seen.get(k)?.head !== pr.headRefOid) seen.set(k, { head: String(pr.headRefOid), at: new Date().toISOString() });
+      const view = viewOf(repo, main.name, pr, { baseOid: main.oid, headSeen: seen.get(k)!.at });
       // The task as the kernel keeps it, read once a pass: its id names the adoption's task, its state the PR's lifecycle.
       const work = ctx.opener ? await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(ctx.opener)}`).catch((e: Error) => (o.log("task read failed", { pr: view.url, err: String(e.message).slice(0, 200) }), undefined)) : undefined;
       const taskId = ctx.opener && work ? String(work.jobs?.find((j: Json) => typeof j.task === "string" && j.task)?.task ?? ctx.opener) : undefined;

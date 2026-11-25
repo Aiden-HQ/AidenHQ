@@ -49,7 +49,7 @@ function world(raw: Record<string, unknown> = { repos: { "a/b": "cautious" } }) 
   };
   const pr = (o: Partial<PrView> = {}): PrView => ({
     repo: "a/b", number: 7, url: "https://github.com/a/b/pull/7", head: H1, base: "main", defaultBranch: "main", author: "contrib", authorBot: false,
-    fork: false, canModify: false, draft: false, state: "open", labels: [], assignees: [], events: [], ...o,
+    fork: false, canModify: false, draft: false, state: "open", labels: [], assignees: [], events: [], headSeen: "2026-11-24T00:00:00Z", ...o,
   });
   const ev = (id: string, kind: "labeled" | "unlabeled" | "comment", actor: string, at: string, o: Record<string, unknown> = {}) => ({ id, kind, actor, bot: actor.endsWith("[bot]"), at, ...(kind !== "comment" ? { label: "ship" } : {}), ...o });
   const of = (what: string) => calls.filter((c) => c.what === what);
@@ -224,6 +224,10 @@ test("a fork's new commit from its author stops ship until a member hands it off
   // A member's /ship on the new head hands it off again: a new generation bound to H4.
   const again = await intake(w.deps, w.pr({ ...fork, head: H4, events: [on, w.ev("c2", "comment", "admin1", "2026-11-24T02:00:00Z", { body: "/ship" })] }));
   assert.deepEqual([again?.generation, again?.hold, again?.trigger.head], [2, null, H4]);
+  // A hand-off made before ship first saw the fork's current head (it may have moved after the click) starts held.
+  const late = world();
+  const first = await intake(late.deps, late.pr({ ...fork, events: [on], headSeen: "2026-11-24T01:05:00Z" }));
+  assert.deepEqual([first?.generation, first?.hold?.reason, late.of("ask").length], [1, AUTHOR_PUSHED, 0]);
   // A PR in the base repo is never bound to its hand-off's head.
   const m = world();
   await intake(m.deps, m.pr({ events: [on] }));

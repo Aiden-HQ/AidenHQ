@@ -24,6 +24,8 @@ export interface PrView {
   author: string; authorBot: boolean;
   /** The head lives in another repository (`headRepo`, owner/name), and whether its author lets maintainers push there. */
   fork: boolean; canModify: boolean; headRepo?: string;
+  /** The base branch's tip as this pass read it (only for the default branch), and when ship first saw this head (this process). */
+  baseOid?: string; headSeen?: string;
   draft: boolean; state: "open" | "closed" | "merged";
   labels: string[]; assignees: string[];
   /** Label and comment events, oldest first. */
@@ -147,7 +149,10 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
   if (trigger) {
     // `handoff: none` is the fleet's own PRs only; otherwise a member's trigger adopts any PR, a fork included.
     if (s.handoff === "none") return was;
-    return adopt(d, pr, was, { kind: trigger.kind === "comment" ? "comment" : "label", event: trigger.id, actor: trigger.actor, at: trigger.at, head: pr.head });
+    // A fork is handed off at the head the member saw: one ship first saw after the label or comment (or can't tell, having
+    // started since) may be newer, so the adoption starts held and a member hands it off again.
+    const late = pr.fork && !(Date.parse(pr.headSeen ?? "") <= Date.parse(trigger.at));
+    return adopt(d, pr, was, { kind: trigger.kind === "comment" ? "comment" : "label", event: trigger.id, actor: trigger.actor, at: trigger.at, head: pr.head }, late);
   }
   if (was && handback && !was.hold) {
     const held: Kept = { ...was, hold: { kind: "handed_back", reason: `handed back by @${handback.actor}`, at: handback.at } };
@@ -185,13 +190,19 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
   return undefined;
 }
 
-async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger: Kept["trigger"]): Promise<Kept> {
+async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger: Kept["trigger"], late = false): Promise<Kept> {
   const generation = (was?.generation ?? 0) + 1;
   // Each generation has its own task: the one before it ends.
   for (const t of was ? tasksOf(was) : []) await closeTask(d, t, `${pr.url} was handed over again (generation ${generation}).`);
   // A fresh trigger resumes a hold and clears the assignment ship added.
   if (was?.assigned?.length) await d.unassign(pr.repo, pr.number, was.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
   const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(was?.report ? { report: was.report } : {}), ...(was?.approve && !was.approve.why ? { approve: was.approve } : {}), did: [] };
+  if (late) {
+    const held: Kept = { ...a, hold: { kind: "stopped", reason: AUTHOR_PUSHED, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { state: "on hold", stopLabel: d.settings(pr.repo)?.stop_label } } };
+    d.state.put(held);
+    d.log("fork handed off before its head moved: held", { pr: pr.url, generation, actor: trigger.actor });
+    return held;
+  }
   // A fork's review starts with its adoption (code review holds forks until a member asks), its summary on the records task.
   if (pr.fork) a.holder = await recordTask(d.kernel, pr, a);
   d.state.put(a);

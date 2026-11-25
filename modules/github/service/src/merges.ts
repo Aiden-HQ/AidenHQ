@@ -72,6 +72,8 @@ export function createMerges(d: {
   fleetOrg: string; productRepo?: string;
   /** Ship's adoptions (service.ts ShipAdoptions): an adopted PR's merge is still its adoption's (not on hold, not paused) at the call. */
   ship?: ShipAdoptions;
+  /** The reviewer App on a repo (service.ts Options.reviewer): its approval of a head counts in ship's decision. */
+  reviewer?: (repo: string) => Promise<{ login: string } | undefined>;
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
   /** Code review's verdict for a PR head (undefined: may merge; wait: why not yet). */
@@ -735,7 +737,9 @@ export function createMerges(d: {
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
-      const ctx = { queue, verdict: g, required, checks, ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
+      // The reviewer App's login as GraphQL names its Bot (no `[bot]`); unreadable, no bot's approval counts.
+      const app = (await d.reviewer?.(repo).catch(() => undefined))?.login.replace(/\[bot\]$/, "");
+      const ctx = { queue, verdict: g, required, checks, ...(app ? { app } : {}), ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       const v = decide(data, head, { ...ctx, approve: false });
       const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];

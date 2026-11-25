@@ -38,16 +38,22 @@ export function riskOf(s: ShipSettings, v: Verdict): Risk {
 /** The PR's own change without its generated paths: each file's status, names and patch, hunk positions included (code review's
  * patch-id rule: the same edit at another place is another change). null when a file has no patch (binary, too large) or the
  * list is cut. */
-function fingerprint(files: ChangedFile[], generated: string[]): string | null {
+function fingerprint(files: ChangedFile[], generated: string[] | "every path"): string | null {
   if (files.length >= COMPARE_CAP) return null;
   // A rename out of a source path stays (only a move between generated paths is dropped).
-  const own = files.filter((f) => !isGenerated(f, generated) || (f.previous_filename !== undefined && !isGenerated({ ...f, filename: f.previous_filename }, generated)));
+  const own = generated === "every path" ? files : files.filter((f) => !isGenerated(f, generated) || (f.previous_filename !== undefined && !isGenerated({ ...f, filename: f.previous_filename }, generated)));
   if (own.some((f) => typeof f.patch !== "string")) return null;
   return own.map((f) => `${f.status}\0${f.previous_filename ?? ""}\0${f.filename}\0${f.patch}`).sort().join("\0\0");
 }
 
 /** Whether code review's pass on an earlier head carries to this one: the PR's own change is the same at both (a base merge, or
  * only generated paths regenerated). Anything unreadable is a change. */
+/** Whether two heads make exactly the same change, every path counted (lockfiles and generated paths too). Unreadable is a change. */
+export function sameChange(a: ChangedFile[], b: ChangedFile[]): boolean {
+  const x = fingerprint(a, "every path");
+  return x !== null && x === fingerprint(b, "every path");
+}
+
 export function carries(reviewed: ChangedFile[], head: ChangedFile[], generated: string[]): boolean {
   const a = fingerprint(reviewed, generated);
   return a !== null && a === fingerprint(head, generated);
@@ -84,10 +90,10 @@ export const canApprove = (j: Judged | undefined) => j?.ok === true && j.risk.ap
 export type Approved = { head: string; why?: string; policy?: string };
 /** An App approval that no longer stands for this head: issued on another commit (the head moved since: GitHub may keep it as
  * approving, but it never saw this change), under another policy than the head's current one, or where the tier's `approve` is no
- * longer `on` (risk tiers §7). A person's stays whatever the tier says; an approval ship never made is none. It is dismissed, never
+ * longer `on` (risk tiers §7; a tier not known yet, code review unreachable, changes nothing). A person's stays whatever the tier says; an approval ship never made is none. It is dismissed, never
  * counted, and the approve round judges the head again: where code review's pass carries to it (the PR's own change is the same),
  * the App approves the new head without a fresh review. */
-export const staleApproval = (ap: Approved | undefined, head: string, r: Risk) => !!ap && !ap.why && (ap.head !== head || r.approve !== "on" || ap.policy !== r.policy);
+export const staleApproval = (ap: Approved | undefined, head: string, r: Risk) => !!ap && !ap.why && (ap.head !== head || (r.state !== "pending" && (r.approve !== "on" || ap.policy !== r.policy)));
 
 /**
  * The final check before the App approves, or ship merges or queues (github asks right before the write): the verdict read now, with

@@ -1381,7 +1381,7 @@ export function createService(o: Options) {
     git: (dir, args) => git(dir, args),
   });
   const merges = createMerges({
-    ship: o.ship,
+    ship: o.ship, reviewer: o.reviewer,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
     taskStatus: async (task) => String(((await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`)) as { status?: unknown })?.status ?? "") || null,
     // A task's id from its identifier: the kernel's work read resolves it by its jobs, which carry the id.
