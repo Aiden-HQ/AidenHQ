@@ -23,6 +23,9 @@ test("builds the config from the job", () => {
   // each model's own window, compacting at 80% of it with nothing further reserved
   assert.deepEqual(c.provider.aidenhq.models["~deepseek/deepseek-flash-latest"]!.limit, { context: 1_000_000, input: 800_000, output: 65_536 });
   assert.deepEqual(c.provider.aidenhq.models["moonshotai/kimi-k3.1-pro"]!.limit, { context: 262_144, input: 209_715, output: 65_536 });
+  // a small window leaves room for the output opencode asks for (32k) below the threshold
+  const small = opencodeConfig(spec, { plugins: [], stateDir: "/s", limits: { ...limits, "moonshotai/kimi-k3.1-pro": { context: 65_536, output: 65_536 } } });
+  assert.equal(small.provider.aidenhq.models["moonshotai/kimi-k3.1-pro"]!.limit.input, 33_536);
   assert.deepEqual(c.compaction, { auto: true, reserved: 0 });
   assert.equal(c.provider.aidenhq.options.baseURL, "http://gw:8200/api/v1");
   assert.equal(c.mcp.github!.headers["X-Agent-Key"], "{env:AIDENHQ_RUN_TOKEN}");

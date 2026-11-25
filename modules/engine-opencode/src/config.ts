@@ -25,6 +25,8 @@ export interface Limits { context: number; output: number }
 
 /** Where compaction starts, as a share of a model's window (opencode compacts when a session's tokens pass `limit.input` less `compaction.reserved`). */
 const COMPACT_AT = 0.8;
+/** The most output opencode asks of a model in one call (its own cap), kept free of the window below the threshold. */
+const OUTPUT_ASK = 32_000;
 
 /**
  * Every model the job offers, sized from the gateway's own list (GET <base_url>/models with the run token, through the launcher): opencode compacts
@@ -50,7 +52,7 @@ export function opencodeConfig(spec: JobSpec, { plugins, stateDir, limits }: { p
   const models: OpencodeConfig["provider"]["aidenhq"]["models"] = {};
   for (const id of [def, ...(spec.model.models ?? []).map(modelId)]) {
     const l = limits[id] ?? (() => { throw new Error(`no context window for model ${id}`); })();
-    models[id] ??= { name: id, tool_call: true, reasoning: true, limit: { context: l.context, input: Math.floor(l.context * COMPACT_AT), output: l.output }, ...(id === def && spec.model.effort ? { options: { reasoningEffort: spec.model.effort } } : {}) };
+    models[id] ??= { name: id, tool_call: true, reasoning: true, limit: { context: l.context, input: Math.min(Math.floor(l.context * COMPACT_AT), l.context - Math.min(l.output, OUTPUT_ASK)), output: l.output }, ...(id === def && spec.model.effort ? { options: { reasoningEffort: spec.model.effort } } : {}) };
   }
   return {
     $schema: "https://opencode.ai/config.json",

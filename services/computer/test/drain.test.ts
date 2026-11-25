@@ -133,7 +133,7 @@ test("a box's model-list read goes on to the model gateway with its job token; a
   const seen: { url?: string; auth?: string }[] = [];
   const gateway = http.createServer((req, res) => { seen.push({ url: req.url, auth: req.headers.authorization }); res.writeHead(200, { "content-type": "application/json" }).end('{"data":[]}'); });
   const gp = await listen(gateway);
-  const launcher = http.createServer((req, res) => void forwardModelList(res, `http://127.0.0.1:${gp}/api/v1/models${new URL(req.url!, "http://l").search}`, "ahqj_t"));
+  const launcher = http.createServer((req, res) => void forwardModelList(res, `http://127.0.0.1:${gp}/api/v1/models${new URL(req.url!, "http://l").search}`, "ahqj_t", { waitMs: 300, retryMs: 50 }));
   const lp = await listen(launcher);
   try {
     const get = () => fetch(`http://127.0.0.1:${lp}/api/v1/models?ids=a%2Fb`);

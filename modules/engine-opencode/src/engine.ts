@@ -37,7 +37,6 @@ async function run() {
   const plugins = (JSON.parse(readFileSync(join(pluginRoot, "plugins.json"), "utf8")).plugins as string[]).map((s) => join(pluginRoot, "node_modules", s.slice(0, s.lastIndexOf("@"))));
   writeFileSync(join(leaseDir, "pgid"), String(process.pid));
   mkdirSync(state, { recursive: true });
-  writeFileSync(join(state, "opencode.json"), JSON.stringify(opencodeConfig(spec, { plugins, stateDir: state, limits: await modelLimits(spec, need(spec.model.token_env)) })), { mode: 0o600 });
   // The context-pruning plugin would update itself from npm: off.
   writeFileSync(join(state, "dcp.jsonc"), JSON.stringify({ autoUpdate: false }));
   const ocEnv = { ...env, OPENCODE_CONFIG: join(state, "opencode.json"), OPENCODE_CONFIG_DIR: state, XDG_DATA_HOME: join(state, "data"), OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_AUTOUPDATE: "1",
@@ -55,6 +54,12 @@ async function run() {
   const fail = (e: unknown) => { if (stopping) return; console.error(`engine failed: ${(e as Error)?.message ?? e}`); keepUnread(); process.exit(1); };
   // Comments a previous job kept come first, and are loaded before anything can fail() and rewrite pending.json.
   try { for (const text of JSON.parse(readFileSync(pendingFile, "utf8")) as string[]) queue.push({ text, comment: true }); } catch {}
+  // The models' windows come from the gateway before anything starts: a failed or stopped lookup keeps the inbox's comments too.
+  const onTerm = () => { keepUnread(); process.exit(143); };
+  process.once("SIGTERM", onTerm);
+  const limits = await modelLimits(spec, need(spec.model.token_env)).catch((e) => { fail(e); throw e; });
+  process.off("SIGTERM", onTerm);
+  writeFileSync(join(state, "opencode.json"), JSON.stringify(opencodeConfig(spec, { plugins, stateDir: state, limits })), { mode: 0o600 });
   // A server that never comes up fails through fail(), so comments already in the inbox are kept for the next job.
   const server = await serve({ bin: env.AIDENHQ_OPENCODE_BIN, port, password, env: serverEnv }).catch((e) => { fail(e); throw e; });
 

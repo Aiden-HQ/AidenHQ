@@ -319,7 +319,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         if (o && !closed && !interrupted(v)) await kernel.post(v.id, o);
         const task = task0;
         if (closed) await batch(task, v);
-        else await report(task, v, o?.kind === "notice" ? o.body : undefined, o?.body);
+        else { const said = interrupted(v) ? undefined : o; await report(task, v, said?.kind === "notice" ? said.body : undefined, said?.body); }   // a machinery stop is never a blocked task's reason
         await kernel.ack(v.id);
         q("DELETE FROM stopped WHERE job = ?").run(v.id); q("DELETE FROM turns WHERE job = ?").run(v.id);
         backoff.delete(v.id);
