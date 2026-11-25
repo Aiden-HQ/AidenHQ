@@ -1,4 +1,4 @@
-// The one engine's pass for every PR the loop reads but Dependabot's (loop.ts calls it for each): the hand-off's intake and, once
+// The one engine's pass for every PR the loop reads but a Dependabot PR that is failing or the Engineer's (loop.ts calls it for each): the hand-off's intake and, once
 // adopted, its round (handoff.ts, rounds.ts). A task's PR (the code host opened it for that task) is adopted at first sight and
 // follows its task: closed with its branch when the task is cancelled, superseded by a newer PR of the same task, or done with no
 // merge of it in flight. This file turns the loop's GitHub reads into their PrView and facts (github's decision from the list
@@ -173,14 +173,14 @@ export function adoptedPass(o: AdoptedOptions) {
      * `ctx.newer`: a newer open PR of that same task; `ctx.recover`: its CI recoveries (ci-recover.ts), run once its task's
      * lifecycle has kept it (a PR about to be closed or left for a successor spends no CI).
      */
-    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number]), ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery> } = {}) {
+    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number]), ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery>; bump?: boolean } = {}) {
       const view = viewOf(repo, main.name, pr);
       // The task as the kernel keeps it, read once a pass: its id names the adoption's task, its state the PR's lifecycle.
       const work = ctx.opener ? await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(ctx.opener)}`).catch((e: Error) => (o.log("task read failed", { pr: view.url, err: String(e.message).slice(0, 200) }), undefined)) : undefined;
       const taskId = ctx.opener && work ? String(work.jobs?.find((j: Json) => typeof j.task === "string" && j.task)?.task ?? ctx.opener) : undefined;
       // A task's PR whose task couldn't be read waits a pass: never taken in as a member's meanwhile.
       if (ctx.opener && !work) return;
-      let a = await intake(handoff, view, taskId) as Kept | undefined;
+      let a = await intake(handoff, view, taskId, ctx.bump) as Kept | undefined;
       if (!a) { await ctx.recover?.(); return; }
       if (a.owner?.kind === "task") {
         // Closed by ship (a stop): nothing more until a successor publishes to it.

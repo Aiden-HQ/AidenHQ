@@ -1,7 +1,7 @@
 // Ship's watch loop: the open PRs of the product repo and of every repo ship works, and of every maintained repo with Dependabot on
 // (those get only the Dependabot task), read once a minute with one GraphQL list read per repo (github's OPEN_PRS_QUERY).
 // - A Dependabot PR whose checks have finished becomes one task for the platform-engineer role (kernel POST /v1/tasks), closed
-//   again once the PR is merged or closed.
+//   again once the PR is merged or closed. A green one under `failing` goes through the round like any PR (handoff: all adopts it).
 // - Flow facts: what this watch sees of every open PR (opened, pushed, merged, closed, CI started and finished).
 // - Every other PR goes to one engine (adopted.ts: intake, then rounds.ts round()), the fleet's own (one the code host opened for
 //   a task: github's pr-tasks.json, read through `openers`) and everyone else's alike, after its CI recoveries (ci-recover.ts).
@@ -47,7 +47,7 @@ export type LoopOptions = {
   /** A PR's CI recoveries (ci-recover.ts), with the repo's slice of the loop's state. */
   recover: (repo: string, pr: Json, state: Json, save: () => void) => Promise<Recovery>;
   /** The one engine (adopted.ts): every open PR but Dependabot's, with the task that opened it (if one did), and the PRs that left. */
-  adopted: { begin(): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery> }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
+  adopted: { begin(): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery>; bump?: boolean }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
 };
 
 /** The pass runs every minute while a watched PR is open; with none open it waits twice as long each pass, up to 30 minutes. */
@@ -173,7 +173,9 @@ export function startLoop(o: LoopOptions) {
         o.flow.checksCompleted(repo, pr.number, pr.headRefOid, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20), ends.length ? new Date(Math.max(...ends)).toISOString() : undefined, task ?? null);
         save();
       }
-      if (isDependabot(pr)) continue;
+      // A Dependabot PR is the Engineer's once its checks fail (or always, under `all`); a green one under `failing` goes through the round like any PR.
+      const bump = isDependabot(pr) && which === "failing" && !dependabotDue(pr, which) && !namedChecks(rollupOf(pr)).some((c) => c.pending);
+      if (isDependabot(pr) && !bump) continue;
       // One PR's failure (a recovery read, a round) never stops the repo's others.
       try {
         // A newer open PR the same task published supersedes this one.
@@ -182,7 +184,7 @@ export function startLoop(o: LoopOptions) {
         // The parent into the default branch first (the same branch may also feed a backport into another base).
         const parents = open.filter((p) => p.number !== pr.number && p.isCrossRepository === false && p.headRefName === pr.baseRefName);
         const under = parents.find((p) => p.baseRefName === main.name) ?? parents[0];
-        await o.adopted.open(repo, main, pr, new Set(open.map((p) => p.number)), { ...(task ? { opener: task } : {}), ...(newer ? { newer } : {}), ...(under ? { stackedOn: { number: under.number, base: String(under.baseRefName) } } : {}), recover: () => o.recover(repo, pr, state, save) });
+        await o.adopted.open(repo, main, pr, new Set(open.map((p) => p.number)), { ...(task ? { opener: task } : {}), ...(newer ? { newer } : {}), ...(under ? { stackedOn: { number: under.number, base: String(under.baseRefName) } } : {}), recover: () => o.recover(repo, pr, state, save), ...(bump ? { bump } : {}) });
       } catch (e) { log("PR pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }); }
     }
     await o.adopted.gone(repo, main.name, new Set(open.map((p) => p.number))).catch((e) => log("landed check failed", { repo, err: String((e as Error).message).slice(0, 300) }));

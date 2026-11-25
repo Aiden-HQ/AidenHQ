@@ -111,7 +111,7 @@ async function newest(d: HandoffDeps, pr: PrView, after?: { at: string; event: s
  * puts it on hold when a member hands it back, adopts a task's PR at first sight (`task`: the kernel id of the task the code host
  * opened it for) and, under `handoff: all`, a writer's PR once. Returns the adoption as it stands (undefined: not adopted).
  */
-export async function intake(d: HandoffDeps, pr: PrView, task?: string): Promise<Kept | undefined> {
+export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: boolean): Promise<Kept | undefined> {
   const s = d.settings(pr.repo);
   let was = d.state.get(pr.repo, pr.number) as Kept | undefined;
   if (!s?.enabled || d.paused() || pr.state !== "open") return was;
@@ -148,7 +148,8 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string): Promise
   // Never adopted: under `handoff: all`, a non-draft PR by a writer (never a fork: that waits for a member), unless a member has
   // already handed it back (the hand-back is the newest trusted event).
   if (handback) return undefined;
-  if (s.handoff === "all" && !pr.fork && !pr.draft && !pr.authorBot && WRITERS.has((await d.permission(pr.repo, pr.author)) ?? "")) return adopt(d, pr, undefined, { kind: "all", event: `all:${pr.head}`, actor: pr.author, at: new Date().toISOString(), head: pr.head });
+  // `bump`: a green Dependabot PR (loop.ts) takes the same way in under `handoff: all`, with no author permission to read.
+  if (s.handoff === "all" && !pr.fork && !pr.draft && (bump || (!pr.authorBot && WRITERS.has((await d.permission(pr.repo, pr.author)) ?? "")))) return adopt(d, pr, undefined, { kind: "all", event: `all:${pr.head}`, actor: pr.author, at: new Date().toISOString(), head: pr.head });
   return undefined;
 }
 

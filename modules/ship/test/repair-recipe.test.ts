@@ -56,3 +56,23 @@ test("ship-repair: generated conflicts regenerated into the files on top of the 
   // A tool the box doesn't have is said first, plainly (ship holds and suggests the repo's own workflow).
   assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "webrpc-gen-not-here -schema x.ridl" }] }).result as any).failed), /^toolchain missing: webrpc-gen-not-here\n/);
 });
+
+test("ship-repair: a conflicted go.sum keeps both sides' lines and no command runs (go.mod stays as merged)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ship-gosum-"));
+  const origin = join(root, "origin");
+  const git = (...a: string[]) => execFileSync("git", ["-C", origin, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", "-b", "main", origin]);
+  writeFileSync(join(origin, "go.sum"), "a v1 h1:a\n");
+  git("add", "-A"); git("commit", "-qm", "init");
+  const mb = git("rev-parse", "HEAD");
+  git("checkout", "-qb", "feature"); writeFileSync(join(origin, "go.sum"), "a v1 h1:a\nb v1 h1:b\n"); git("commit", "-qam", "b");
+  const head = git("rev-parse", "HEAD");
+  git("checkout", "-q", "main"); writeFileSync(join(origin, "go.sum"), "a v1 h1:a\nc v1 h1:c\n"); git("commit", "-qam", "c");
+  const base = git("rev-parse", "HEAD");
+  const snap = (sha: string, dir: string) => { mkdirSync(dir, { recursive: true }); execFileSync("sh", ["-c", `git -C "${origin}" archive ${sha} | tar -x -C "${dir}"`]); return dir; };
+  const out = mkdtempSync(join(root, "out-"));
+  snap(base, join(out, "base")); snap(mb, join(out, "merge_base"));
+  const r = repair(snap(head, mkdtempSync(join(root, "ws-"))), out, { base, merge_base: mb, base_ref: "main", plan: "{}" });
+  assert.deepEqual(r.result, { changed: 1 });
+  assert.equal(Buffer.from(r.keep!.entries[0]!.content!, "base64").toString(), "a v1 h1:a\nb v1 h1:b\nc v1 h1:c\n");
+});

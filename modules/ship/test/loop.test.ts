@@ -542,7 +542,7 @@ test("a cancelled task's PR with a successor task naming it is neither closed no
 
 
 // Several repos in one watch, against a fake GitHub that serves each repo's open PRs (in pages of 50) and a fake kernel.
-async function multi(t, repos, open) {
+async function multi(t, repos, open, extra = {}) {
   const tasks = [], closes = [], gh = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -562,7 +562,7 @@ async function multi(t, repos, open) {
     return { status: 404, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos, kernelUrl: kernel.url, key: "k", cacheDir, gh: api });
+  const watch = startPrWatch({ repos, kernelUrl: kernel.url, key: "k", cacheDir, gh: api, ...extra });
   t.after(() => watch.stop());
   return { watch, tasks, closes, gh, cacheDir };
 }
@@ -596,6 +596,16 @@ test("under failing only a bump with a red check gets a task; under off none doe
   const off = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "off" }], { "acme/app": [dep("acme/app", 1)] });
   await off.watch.tick();
   assert.deepEqual(off.tasks, []);
+});
+
+test("under failing a green Dependabot PR is adopted by the round (handoff: all) and gets no task; a red one gets the task", async (t) => {
+  const red = dep("acme/app", 2, { commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] } });
+  const m = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "failing" }], { "acme/app": [dep("acme/app", 1), red] }, { settings: () => PRESETS.full });
+  await m.watch.tick();
+  assert.deepEqual(m.tasks.map((x) => x.source).filter((x) => x.startsWith("dependabot:")), ["dependabot:acme/app/2"]);
+  const a = openState(join(m.cacheDir, "state.json"));
+  assert.equal(a.get("acme/app", 1)?.trigger.kind, "all");
+  assert.equal(a.get("acme/app", 2), undefined);
 });
 
 test("a Dependabot PR with no checks is filed", async (t) => {
