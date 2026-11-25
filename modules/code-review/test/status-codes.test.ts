@@ -22,5 +22,10 @@ test("only the gateway's cap_reached is the install's spend limit; any other 402
   const held = stopped(r('503 {"error":"spend_held","message":"the rest of the spend limit is held by calls in flight"}'));
   assert.match(held, /held the call/);
   assert.doesNotMatch(held, /spend limit|spend cap|cap_reached/i);
+  // The raw 503 text a caller appends to the cause ("the rest of the spend limit is held") is no limit either.
+  const engine = readFileSync(new URL("../service/src/engine.ts", import.meta.url), "utf8");
+  const limit = new RegExp(engine.match(/const SPEND_LIMIT = \/(.*)\/i;/)![1]!, "i");
+  assert.ok(!limit.test("the rest of the spend limit is held by calls in flight"));
+  assert.ok(limit.test("the install's spend limit was reached"));
   assert.doesNotMatch(stopped(r("HTTP 402 Payment Required")), /spend limit|spend cap|cap_reached/i);
 });
