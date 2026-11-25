@@ -42,7 +42,7 @@
   .mx .mh { font-size: 11.5px; color: var(--soft); }
   .mx .tn { display: flex; align-items: center; gap: 7px; font-weight: 560; font-size: 12.5px; white-space: nowrap; }
   .mx .tn::before { content: ""; width: 3px; height: 18px; border-radius: 2px; background: var(--c); }
-  .mx .cell { position: relative; display: flex; min-width: 0; }
+  .mx .cell { position: relative; display: flex; min-width: 0; justify-self: start; }
   .mx .cell .rs { position: absolute; top: -7px; right: -5px; width: 14px; height: 14px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--color-text-inverse, #fff); font-size: 10px; line-height: 1; }
   .mx .cell.chg .seg { border-color: var(--accent); }
   @media (max-width: 420px) { .mx { grid-template-columns: 1fr 1fr; } .mx > :first-child { display: none; } .mx .tn { grid-column: 1 / -1; } }
@@ -217,9 +217,11 @@
       const values = path === "enabled" ? ["on", "off"] : path === "preset" ? controls.preset.values : head ? controls[path].values : /^(by_tier|unwatched)\./.test(path) ? Object.keys(path.endsWith(".approve") ? APPROVE_OPTS : MERGE_OPTS) : path === "rebase" ? ["conflict", "behind"] : ["conflicts", "ci", "review"];
       const cur = path === "preset" ? presetFor(key) : show(path, v);
       return editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : cur, values, titles: options, placeholder: kind === "num" ? "no limit" : stage ? "comment: text, or workflow: file.yml" : kind === "chips" ? "glob, then Enter" : undefined, dups: !!stage, ...extra,
-        set: (x, live) => edit(key, path, stage ? x.map(readAction) : path === "enabled" ? x === "on" : x, live) });
+        set: (x, live) => edit(key, path, stage ? x.map((t) => (v ?? []).find((a) => showAction(a) === t) ?? readAction(t)) : path === "enabled" ? x === "on" : x, live) });
     };
-    const rs = (path) => { const { d } = state(path), b = h("button", { type: "button", className: "rs", textContent: "Reset", title: `Back to the ${resetTo(path)}: ${fmt(path, show(path, d))}` }); b.addEventListener("click", () => reset(key, path)); return b; };
+    const rs = (path) => { const { d } = state(path), b = h("button", { type: "button", className: "rs", textContent: "Reset", title: `Back to the ${resetTo(path)}: ${fmt(path, show(path, d))}` });
+      // A preset change is only pending: drop it. The server has no reset for a preset.
+      b.addEventListener("click", () => { if (path !== "preset") return reset(key, path); const p = structuredClone(pending.repos[key] ?? {}); delete p.preset; propose(p, key, true); }); return b; };
     const sf = (path, wide) => {
       const { label, text, kind } = info(path), { changed } = state(path), loose = pending.repos[key] && looser(path, get(base, path), get(s, path));
       return h("div", { className: `sf${changed ? " chg" : ""}${wide || kind === "chips" || kind === "checks" ? " wide" : ""}`, title: LOOSE.has(path) ? `${text} Loosening this is the owner's call: an agent's change is refused, your Save applies it.` : text },
@@ -246,7 +248,7 @@
     const advPaths = ["stop_label", "generated.globs", "generated.command", "protected", ...("actions" in base ? Object.keys(STAGES).map((x) => `actions.${x}`) : [])];
     const changedN = advPaths.filter((p) => state(p).changed).length;
     const adv = section("adv", "Advanced", advPaths, [h("div", { className: "grid" }, sf("stop_label"), sf("generated.command")), ...advPaths.slice(1).filter((p) => p !== "generated.command").map((p) => sf(p, true))], { fold: true, summary: changedN ? `${changedN} changed` : "Defaults", note: "Extra steps Ship takes at a stage (actions): comment: text, or workflow: file.yml key=value." });
-    return h("div", { className: "sd", id: `drawer-${key}` }, h("div", { className: "sdc" }, merging), h("div", { className: "sdc" }, repair), h("div", { className: "sdc" }, limits, adv));
+    return h("div", { className: "sd", id: `drawer-${key}` }, h("div", { className: "sdc" }, merging), h("div", { className: "sdc" }, repair, limits), h("div", { className: "sdc" }, adv));
   }
   const LOOSE = new Set(["generated.globs"]);
   const open = new Set();
