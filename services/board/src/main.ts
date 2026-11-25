@@ -1,4 +1,5 @@
 import pino from "pino";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createKernelAuth } from "./kernel-auth.js";
 import { createApp } from "./app.js";
@@ -22,6 +23,7 @@ import { Store, localDate } from "./store.js";
 import { kernelStates } from "./task-state.js";
 import { startWatch } from "./watch.js";
 import { liveActivity } from "./live-activity.js";
+import { kernelSessions } from "./sessions.js";
 
 const cfg = loadConfig();
 const log = pino({ level: cfg.logLevel, redact: { paths: ["authorization", "*.authorization", "key", "*.key"], censor: "[redacted]" }, base: { svc: "board" } });
@@ -83,7 +85,10 @@ const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway
 // Read on every use: an apply that adds, changes or removes a module's page rewrites the points file without restarting the board.
 const pointsFile = process.env.BOARD_POINTS_FILE ?? "/config/points/board.json";
 const views = createViewHost({ kernel: cfg.gateway && { url: kernelUrl, token: cfg.gateway.token }, pages: () => pagePoints(pointsFile) });
-const common = { grading, views, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
+// Sessions (sessions.ts): the kernel's session rows; the launcher's session key opens only a lease's terminal and phone UI.
+const sessionKey = process.env.COMPUTER_SESSION_KEY_FILE ?? "/run/secrets/computer_session_key";
+const terminals = { kernel: kernelSessions({ url: kernelUrl, token: cfg.gateway.token }), launcher: process.env.AIDENHQ_LAUNCHER_URL && existsSync(sessionKey) ? { url: process.env.AIDENHQ_LAUNCHER_URL.replace(/\/+$/, ""), key: readFileSync(sessionKey, "utf8").trim() } : undefined };
+const common = { terminals, grading, views, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));

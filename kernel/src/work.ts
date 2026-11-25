@@ -32,7 +32,7 @@ const JOB_COLS = "id, agent, task, engine, state, at, ended, session, saw";
 const FINAL_HEAD = "substr(final, 1, 400) AS final";
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
-export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = async () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
+export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = async () => [], sessionAgents = () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; /** The agents whose grants have profile `session` (grants table): their tasks are the board's Sessions. */ sessionAgents?: () => string[]; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null, saw: r.saw ? JSON.parse(r.saw) : [] });
   /** A rejection the AI reviewer judged malicious (tier.ts MALICE), not code's refusal. */
@@ -121,6 +121,39 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       // so a spike names its cause (the Fleet Steward's spend check reads them with the totals above).
       const top = (col: string) => rows(`SELECT day, name, cost_usd, calls FROM (SELECT day, ${col} AS name, SUM(cost_usd) AS cost_usd, COUNT(*) AS calls, ROW_NUMBER() OVER (PARTITION BY day ORDER BY SUM(cost_usd) DESC) AS n FROM calls WHERE at >= ? AND at < ? AND ${settled} AND ${col} IS NOT NULL GROUP BY day, ${col}) WHERE n <= 5 ORDER BY day, cost_usd DESC`, from, to);
       return { records: recs, usage, spend_components: top("component"), spend_subjects: top("task_subject") };
+    },
+    /**
+     * The board's Sessions (GET /v1/work?sessions=1, or ?session=<task>): a session task's newest job, read-only. `lease` is the
+     * launcher's lease while a job runs (the board never shows it); `state` is starting (admitted), running (the gateway billed a
+     * call in the last two minutes), waiting (alive, idle: no tokens), stopped (done or cancelled) or error (failed, lost, timeout).
+     * `enabled` is false when no agent has the session profile (the module isn't installed).
+     */
+    sessions(task?: string) {
+      const ids = sessionAgents();
+      if (!ids.length) return { enabled: false, sessions: [] };
+      const got = rows(`SELECT task, state, at, ended, box, progress, final FROM jobs WHERE agent IN (${ids.map(() => "?").join(",")})${task ? " AND task = ?" : ""} ORDER BY at`, ...ids, ...(task ? [task] : []));
+      const byTask = new Map<string, Record<string, any>[]>();
+      for (const r of got) byTask.set(r.task, [...(byTask.get(r.task) ?? []), r]);
+      const now = Date.now();
+      // One aggregate for every listed task (calls_issue), not one per row.
+      const billing = new Map(byTask.size ? rows(`SELECT issue_id, MAX(at) AS last, SUM(cost_usd) AS cost FROM calls WHERE issue_id IN (${[...byTask.keys()].map(() => "?").join(",")}) GROUP BY issue_id`, ...byTask.keys()).map((r) => [r.issue_id as string, r]) : []);
+      const sessions = [...byTask].map(([id, jobs]) => {
+        const last = jobs.at(-1)!;
+        const progress = JSON.parse(last.progress || "{}") as { said?: string; steps?: { at: string; text: string }[] };
+        const step = progress.steps?.at(-1);
+        const billed = billing.get(id);
+        const live = last.state === "running";
+        const state = last.state === "admitted" ? "starting" : live ? (billed?.last && now - Date.parse(billed.last) < 120_000 ? "running" : "waiting") : last.state === "done" || last.state === "cancelled" ? "stopped" : "error";
+        const box = last.box ? (JSON.parse(last.box) as { lease?: string }) : {};
+        return {
+          task: id, state, lease: live ? (box.lease ?? null) : null,
+          error: state === "error" ? String(last.final || last.state).split("\n")[0]!.slice(0, 300) : null,
+          started_at: iso(jobs[0]!.at)!, ended_at: live || last.state === "admitted" ? null : iso(last.ended),
+          last_activity: step ? { at: step.at, text: step.text } : progress.said ? { at: iso(last.at)!, text: progress.said } : null,
+          cost_usd: Number(billed?.cost ?? 0),
+        };
+      });
+      return { enabled: true, sessions: sessions.sort((a, b) => b.started_at.localeCompare(a.started_at)) };
     },
     generations: () => fleetGenerations(generationsFile),
     pauses: async () => ({ pauses: await pauses() }),

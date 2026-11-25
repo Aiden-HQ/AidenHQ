@@ -595,7 +595,7 @@ const fleetOps = createFleetOps({
   },
   recreate: (services) => composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") })(services),
 });
-const work = createWork({ db: records.db, records, pauses: () => fleetOps.pauses(), generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });
+const work = createWork({ db: records.db, records, sessionAgents: () => Object.entries(grantsTable().agents ?? {}).filter(([, g]) => String((g as { profile?: unknown }).profile) === "session").map(([id]) => id), pauses: () => fleetOps.pauses(), generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });
 // Flow: what the kernel kept before the fact log, once per install (kernel_once marks it done; every record and job since
 // writes its own facts), and the host's deploys as they settle (generations.ts).
 records.db.exec("CREATE TABLE IF NOT EXISTS kernel_once (name TEXT PRIMARY KEY, at TEXT NOT NULL)");

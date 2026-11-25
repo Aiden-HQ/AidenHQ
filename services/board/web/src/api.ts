@@ -1,5 +1,5 @@
 import type { AuthorKind, FlowSummary, IdleItem, JourneyInfo, JourneyList, JourneySort, Waterfall } from "../../src/flow";
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, PageRow, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, SharePreview, FiledChange, SettingsData, Update } from "./types";
+import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, PageRow, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, SharePreview, FiledChange, SettingsData, Update, SessionRow } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
@@ -269,6 +269,10 @@ export const api = {
   board: () => call<Board>("GET", "/api/board"),
   /** Task search (docs/design/task-search.md): the hit ids, the closed hits as Done cards, and whether meaning search answered. */
   search: (q: string, page?: { after: string; keyword: boolean }) => call<{ ids: string[]; done: WorkCard[]; next: string | null; semantic: boolean }>("GET", `/api/search?q=${encodeURIComponent(q)}${page ? `&after=${encodeURIComponent(page.after)}${page.keyword ? "&keyword=1" : ""}` : ""}`),
+  /** Sessions (src/sessions.ts): `enabled` false when the sessions module is off. */
+  sessions: () => call<{ enabled: boolean; agent: string | null; sessions: SessionRow[] }>("GET", "/api/sessions"),
+  /** Signed, short-lived path to a session's terminal (only its creator gets them). */
+  sessionOpen: (task: string) => call<{ term: string }>("POST", `/api/sessions/${encodeURIComponent(task)}/open`, {}),
   views: () => call<{ views: SavedView[] }>("GET", "/api/views"),
   addView: (name: string, spec: ViewSpec) => call<SavedView>("POST", "/api/views", { name, spec }),
   /** A 409 (changed or deleted elsewhere) throws ViewConflict with the row as it is now. */

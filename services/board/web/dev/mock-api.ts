@@ -5,6 +5,8 @@
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
 // ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
 // Slack setup page's state (nothing yet, sign-in only, an organisation's sign-in, sign-in and bot, a bot app that predates the manifest).
+// ?sessions=full|fresh|off|error sets the Sessions page (live and ended ones, a fresh install's empty list, the module off, the kernel down);
+// ?term=up|down|flaky sets whether a session's terminal and web view answer; ?slowSessions=<ms> delays only the Sessions list.
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { FRAME_CSP } from "../../src/module-views.ts";
@@ -26,7 +28,7 @@ const MODEL_CATALOG = ([
   ["z-ai/glm-5.3", "Z.ai: GLM 5.3", 25, 202752, 0.4, 1.5, 1, 1], ["z-ai/glm-5.2", "Z.ai: GLM 5.2", 80, 202752, 0.4, 1.5, 1, 1], ["moonshotai/kimi-k3.1-pro", "MoonshotAI: Kimi K3.1 Pro", 30, 262144, 0.6, 2.5, 1, 1], ["moonshotai/kimi-k3", "MoonshotAI: Kimi K3", 120, 262144, 0.6, 2.5, 1, 1],
   ["meta-llama/llama-4.5-70b-instruct", "Meta: Llama 4.5 70B Instruct", 100, 131072, 0.15, 0.4, 1, 0], ["meta-llama/llama-4.5-8b-instruct", "Meta: Llama 4.5 8B Instruct", 100, 131072, 0.03, 0.06, 0, 0], ["qwen/qwen3.6-coder", "Qwen: Qwen3.6 Coder", 50, 262144, 0.2, 0.9, 1, 0], ["mistralai/mistral-large-3", "Mistral: Mistral Large 3", 110, 131072, 2, 6, 1, 0], ["x-ai/grok-5", "xAI: Grok 5", 45, 256000, 3, 15, 1, 1], ["minimax/minimax-m3", "MiniMax: M3", 35, 1000000, 0.3, 1.2, 1, 1],
 ] as [string, string, number, number, number, number, number, number][]).map(([id, name, d, context, i, o, tools, reasoning]) => ({ id, name, provider: id.replace(/^~/, "").split("/")[0], created: Math.floor(now / 1000) - d * 86400, context, in: i, out: o, tools: !!tools, reasoning: !!reasoning }));
-const mock = { welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none" };
+const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none" };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
@@ -68,6 +70,7 @@ const roster = [
   { id: "a5", key: "ui-designer", name: "UI Designer", title: "Designs app screens", system: false, department: ENG, avatar: "ui-designer", model: "deepseek-flash", reportsTo: "a3", state: "queued", running: 0, queued: 2, workingSince: null, schedules: [], lastRunAt: ago(240), lastRunStatus: "succeeded" },
   { id: "a6", key: "email-triage", name: "Email Triage", title: "Sorts the inbox", system: false, department: DESK, avatar: "email-triage", model: "deepseek-flash", reportsTo: "a1", state: "paused", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Inbox pass", paused: true, nextRunAt: null }], lastRunAt: ago(1440), lastRunStatus: "succeeded" },
   { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "working", running: 1, queued: 0, workingSince: null, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
+  { id: "a9", key: "session", name: "Session", title: "Long-lived coding sessions", system: false, department: ENG, avatar: "engineer", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [], lastRunAt: ago(20), lastRunStatus: "succeeded", maxParallel: 8 },
   { id: "a8", key: "researcher", name: "Researcher", title: "Research and drafts", system: true, department: OPS, avatar: "aiden", model: "deepseek-flash", reportsTo: null, state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Process task replies", paused: true, nextRunAt: null }], lastRunAt: ago(60), lastRunStatus: "succeeded" },
 ];
 
@@ -171,6 +174,26 @@ const board = () => ({
   spend: { day: { spent: 3.42, cap: 50 }, month: { spent: 61.2, cap: 1000 } }, google: null, signIns: [],
 });
 
+// Sessions (the sessions module): live and ended ones. Only the account that started a session may open its terminal (`mine`).
+const SESSIONS = () => [
+  { task: "id-931", identifier: "WOR-931", title: "Merge the widgets stack", state: "running", error: null, started_at: ago(94), ended_at: null, last_activity: { at: ago(0.2), text: "Running the integration tests on acme/widgets#413" }, cost_usd: 1.84, creator: { name: "Alex", kind: "person" }, mine: true },
+  { task: "id-932", identifier: "WOR-932", title: "Watch #412, then merge #413", state: "waiting", error: null, started_at: ago(60 * 7), ended_at: null, last_activity: { at: ago(55), text: "Armed a watch on acme/widgets#412" }, cost_usd: 0.37, creator: { name: "Aiden", kind: "agent" }, mine: true },
+  { task: "id-933", identifier: "WOR-933", title: "Overnight dependency sweep", state: "waiting", error: null, started_at: ago(60 * 30), ended_at: null, last_activity: { at: ago(60 * 9), text: "Opened 3 pull requests with the safe upgrades" }, cost_usd: 2.61, creator: { name: "Alex", kind: "person" }, mine: true },
+  { task: "id-934", identifier: "WOR-934", title: "Investigate the flaky export test", state: "starting", error: null, started_at: ago(0.3), ended_at: null, last_activity: null, cost_usd: 0, creator: { name: "Alex", kind: "person" }, mine: true },
+  { task: "id-937", identifier: "WOR-937", title: "Draft the migration plan for the ledger", state: "running", error: null, started_at: ago(210), ended_at: null, last_activity: { at: ago(2), text: "Reading the ledger schema" }, cost_usd: 4.12, creator: { name: "Jordan", kind: "person" }, mine: false },
+  { task: "id-936", identifier: "WOR-936", title: "Rebuild the search index", state: "error", error: "The computer restarted and the session could not resume: its job was lost.", started_at: ago(60 * 26), ended_at: ago(60 * 20), last_activity: { at: ago(60 * 20), text: "Re-indexing 40% done" }, cost_usd: 0.88, creator: { name: "Alex", kind: "person" }, mine: true },
+  { task: "id-935", identifier: "WOR-935", title: "Port the CSV export to the new table", state: "stopped", error: null, started_at: ago(60 * 52), ended_at: ago(60 * 49), last_activity: { at: ago(60 * 49), text: "Merged acme/invoices#58 and finished" }, cost_usd: 3.05, creator: { name: "Alex", kind: "person" }, mine: true },
+];
+const sessionChat = (ref: string) => {
+  const s = SESSIONS().find((x) => x.identifier === ref);
+  if (!s) return undefined;
+  return { id: s.task, identifier: ref, title: s.title, open: s.state !== "stopped", agent: { key: "session", name: "Session" }, state: null, working: null, files: [], approvals: [], handedOut: [], parent: null, runs: [], asks: [], messages: [
+    { kind: "owner", id: "s1", text: s.state === "waiting" ? "Watch acme/widgets#412. When it merges, merge #413 and tell me here." : "Get the widgets stack merged: #412 first, then #413, then #414. Run the tests between each.", at: ago(100), ...(s.creator.kind === "agent" ? { by: "Aiden" } : {}) },
+    { kind: "reply", id: "s2", agent: "Session", text: s.state === "waiting" ? "Armed a watch on #412. I'm going to sleep and will use no tokens until it fires." : "Rebased the stack on main. **#412** is green; starting the merge.\n\n- #412 merged\n- #413 waiting on CI", at: ago(90) },
+    { kind: "notice", id: "s3", text: s.state === "waiting" ? "Woke at 09:00 to check CI on #413: still queued." : "A wake notice: CI finished on #413.", at: ago(40) },
+    ...(s.state === "running" ? [{ kind: "owner", id: "s4", text: "Skip #414 for now.", at: ago(12) }, { kind: "reply", id: "s5", agent: "Session", text: "Skipping #414. Running the integration tests on #413.", at: ago(10) }] : []),
+  ] };
+};
 const chatRows = () => mock.empty ? [] : [
   { identifier: "WOR-820", title: "Can you find a time with Sam next week?", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-820", STATES.running), updatedAt: ago(1), preview: { text: "Looking at both calendars now.", at: ago(1), from: "agent" }, unread: true },
   { identifier: "WOR-818", title: "Build a small app that tracks invoices", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-818", CARD), updatedAt: ago(9), preview: { text: "The app is ready; the deploy waits on your approval.", at: ago(9), from: "agent" }, unread: true },
@@ -496,6 +519,8 @@ function route(method: string, url: URL): [number, unknown] {
   if (one && method === "GET") { const a = approvals().find((x) => x.id === one); return a ? [200, { approval: a }] : [404, { error: "no such card" }]; }
   const p = url.pathname;
   if (method === "POST" && /^\/api\/issues\/[^/]+\/answer$/.test(p)) return p.split("/")[3] === "WOR-821" ? [409, { error: "Already answered, or the question changed." }] : [200, { identifier: p.split("/")[3], message: "m-1" }];
+  const opened = method === "POST" ? /^\/api\/sessions\/(id-93\d)\/open$/.exec(p) : null;
+  if (opened) { const tok = `${"mock".repeat(6)}.${"sig".repeat(15)}`; return [200, { term: `/sessions/${opened[1]}/${tok}/term/` }]; }
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   if (p.startsWith("/api/models/")) return [200, { default: "openrouter/~deepseek/deepseek-flash-latest", models: ["openrouter/~deepseek/deepseek-flash-latest", "openrouter/~openai/gpt-luna-latest", "openrouter/z-ai/glm-5.3"], efforts: ["low", "medium", "high"] }];
   const m = (re: RegExp) => re.exec(p);
@@ -503,6 +528,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/model-catalog": return [200, { models: MODEL_CATALOG }];
     case "/api/session": return [200, { mode: "lan", account: { id: "u1", email: mock.email, name: "Alex", role: "admin", owner: true }, signInConnect: true, adminUrl: "http://127.0.0.1:3120" }];
     case "/api/board": return [200, board()];
+    case "/api/sessions": return mock.sessions === "error" ? [502, { error: "the kernel didn't answer: connect ECONNREFUSED" }] : [200, { enabled: mock.sessions !== "off", agent: "session", sessions: mock.sessions === "fresh" || mock.sessions === "off" ? [] : SESSIONS() }];
     case "/api/search": return search(url.searchParams.get("q") ?? "", url.searchParams.get("after"));
     case "/api/welcome": return [200, welcome()];
     case "/api/organisations": return [200, mock.slack === "org" ? { organisations: [{ id: "acme", name: "Acme", domains: ["acme.example"], connections: ["slack"] }], suggested: "acme", chosen: "acme", applied: { slack: "acme" } } : mock.org ? { organisations: [{ id: "example", name: "Example Inc", domains: ["example.com"], connections: ["google", "github"] }], suggested: mock.email.endsWith("@example.com") ? "example" : null, chosen: null, applied: {} } : { organisations: [], suggested: null, chosen: null, applied: {} }];
@@ -538,6 +564,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/costs/features": return [200, { features: [], unattributed: { usd: 0, calls: 0 } }];
   }
   let x: RegExpExecArray | null;
+  if ((x = m(/^\/api\/chats\/(WOR-93\d)$/))) { const c = sessionChat(x[1]!); return c ? [200, c] : [404, { error: "no such chat" }]; }
   if ((x = m(/^\/api\/chats\/([^/]+)$/))) return [200, chatDetail(decodeURIComponent(x[1]!))];
   if ((x = m(/^\/api\/issues\/([^/]+)\/feature-cost$/))) return [200, { cost: null }];
   if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, lineage(decodeURIComponent(x[1]!))];
@@ -575,9 +602,31 @@ function route(method: string, url: URL): [number, unknown] {
   return [404, { error: `mock: no fixture for ${p}` }];
 }
 
+/** ttyd's page and opencode's web UI, drawn by hand: only what the frame shows, so the layout can be judged. */
+function fakeScreen(kind: "term" | "web", title: string) {
+  if (kind === "term")
+    return `<!doctype html><meta charset=utf-8><body style="margin:0;background:#0b0d12;color:#d6dbe6;font:13px/1.55 ui-monospace,Menlo,monospace;padding:14px 16px;overflow:hidden"><pre style="margin:0;white-space:pre-wrap"><span style="color:#8b93a7">opencode 1.19.6  ·  deepseek-flash  ·  ~/sessions/WOR-931</span>
+
+<span style="color:#4ade80">&gt;</span> ${title}
+
+<span style="color:#8b93a7">  $ gh pr view 412 --json state,statusCheckRollup</span>
+  {"state":"MERGED","statusCheckRollup":[{"conclusion":"SUCCESS"}]}
+<span style="color:#8b93a7">  $ git fetch origin &amp;&amp; git rebase origin/main</span>
+  Successfully rebased and updated refs/heads/stack-413.
+<span style="color:#8b93a7">  $ npm test -- --run</span>
+  <span style="color:#4ade80">✓</span> 214 tests passed (38.2s)
+
+  #412 merged. Merging #413 now.
+  <span style="color:#fbbf24">●</span> Waiting for CI on #413
+<span style="color:#4ade80">█</span></pre>`;
+  return `<!doctype html><meta charset=utf-8><body style="margin:0;background:#111318;color:#e6e8ee;font:14px/1.5 system-ui,sans-serif"><div style="padding:14px 16px;border-bottom:1px solid #262a33;font-weight:600">${title}</div><div style="padding:16px;display:grid;gap:12px"><div style="background:#1a1d24;border-radius:8px;padding:10px 12px">Get the widgets stack merged: #412 first, then #413.</div><div>Rebased the stack on main. <b>#412</b> is green; starting the merge.</div><div style="color:#8b93a7">ran <code>gh pr merge 412</code></div></div><div style="position:fixed;left:12px;right:12px;bottom:12px;background:#1a1d24;border:1px solid #2c303a;border-radius:10px;padding:12px;color:#8b93a7">Ask anything…</div>`;
+}
+
 createServer((req, res) => {
   const url = new URL(req.url!, "http://x");
   if (url.pathname === "/__mock") {
+    if (url.searchParams.has("slowSessions")) mock.slowSessions = Number(url.searchParams.get("slowSessions"));
+    for (const k of ["sessions", "term"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) ?? mock[k];
     for (const k of ["welcome", "empty", "org"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) === "1";
     if (url.searchParams.has("email")) mock.email = url.searchParams.get("email") ?? mock.email;
     if (url.searchParams.has("slow")) mock.slow = Number(url.searchParams.get("slow"));
@@ -596,10 +645,16 @@ createServer((req, res) => {
     return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(read("page.html").replace("/*kit:css*/", () => read("page-kit.css")).replace("/*kit:js*/", () => read("page-kit.js")));
   }
   if (url.pathname === "/api/pages/notes/frame") return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(readFileSync(new URL("./example-view.html", import.meta.url)));
+  // A session's terminal and web view: stand-ins for ttyd and opencode's web UI behind the board's proxy (src/sessions.ts).
+  const frame = /^\/sessions\/(id-93\d)\/[\w.-]+\/(term)\//.exec(url.pathname);
+  if (frame) {
+    if (mock.term === "down" || (mock.term === "flaky" && Math.floor(Date.now() / 12_000) % 2)) return res.writeHead(502, { "content-type": "text/plain" }).end("down");
+    return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(fakeScreen(frame[2] as "term" | "web", SESSIONS().find((x) => x.task === frame[1])!.title));
+  }
   let text = "";
   req.on("data", (c) => (text += c));
   req.on("end", () => {
     const [status, body] = pageRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? viewRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? route(req.method!, url);
-    setTimeout(() => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)), mock.slow);
+    setTimeout(() => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)), url.pathname === "/api/sessions" ? mock.slowSessions || mock.slow : mock.slow);
   });
 }).listen(port, "127.0.0.1", () => console.log(`board mock API on :${port}`));

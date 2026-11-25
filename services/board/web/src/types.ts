@@ -838,3 +838,20 @@ export interface GrantConnection {
   module: string;
   tools: { name: string; class: "read" | "write" | "destructive"; granted: boolean; default: boolean }[];
 }
+
+/** A session (src/sessions.ts SessionRow): a long-lived harness on the always-on computer, held by one task. */
+export type SessionState = "starting" | "running" | "waiting" | "stopped" | "error";
+export interface SessionRow {
+  task: string;
+  identifier: string;
+  title: string;
+  state: SessionState;
+  error: string | null;
+  started_at: string;
+  ended_at: string | null;
+  last_activity: { at: string; text: string } | null;
+  cost_usd: number;
+  creator: { name: string; kind: "person" | "agent" };
+  /** Whether this account may open its terminal and phone UI (only its creator). */
+  mine: boolean;
+}

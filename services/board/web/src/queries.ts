@@ -29,6 +29,8 @@ export const QUERIES = {
   // Who may open each app (emails): memory only.
   appAccess: q("app-admins", accountsApi.appAdmins, false),
   modules: q("modules", api.modules),
+  // Session titles stay off the device, like chats.
+  sessions: q("sessions", api.sessions, false),
   pages: q("pages", api.pages),
   // What the owner decides on is never read back from the device: memory only, refetched on every visit.
   approvals: q("approvals", api.approvals, false),
@@ -61,6 +63,7 @@ const VIEW_QUERIES: Record<string, Query<unknown>[]> = {
   agents: [QUERIES.roster, QUERIES.agents],
   apps: [QUERIES.apps],
   modules: [QUERIES.modules],
+  sessions: [QUERIES.sessions],
   approvals: [QUERIES.approvals, QUERIES.needsYou],
 };
 
@@ -71,6 +74,7 @@ export const VIEW_CHUNKS = {
   flow: () => import("./Flow"),
   agents: () => import("./Agents"),
   modules: () => import("./Modules"),
+  sessions: () => import("./Sessions"),
   agentPage: () => import("./AgentPage"),
   modulePage: () => import("./ModulePage"),
   moduleView: () => import("./ModuleView"),

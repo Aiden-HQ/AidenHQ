@@ -9,7 +9,7 @@ import type { Assignee, ChatRow, ModuleRow, PageRow, SpendNow } from "./types";
 import { Icon, type IconName } from "./ui/icons";
 import { Ticker } from "./ui/Ticker";
 
-export type NavView = "chat" | "approvals" | "board" | "agents" | "apps" | "modules" | "costs" | "flow" | "settings";
+export type NavView = "chat" | "approvals" | "board" | "sessions" | "agents" | "apps" | "modules" | "costs" | "flow" | "settings";
 type Item = { view: NavView; name: string; icon: IconName };
 type Panel = { name: string; label: string; url: string };
 
@@ -17,6 +17,7 @@ const ITEMS: Item[] = [
   { view: "chat", name: "Chat", icon: "chat" },
   { view: "approvals", name: "Approvals", icon: "approvals" },
   { view: "board", name: "Tasks", icon: "tasks" },
+  { view: "sessions", name: "Sessions", icon: "terminal" },
   { view: "agents", name: "Agents", icon: "agents" },
   { view: "apps", name: "Apps", icon: "apps" },
   { view: "modules", name: "Modules", icon: "modules" },
@@ -31,6 +32,7 @@ const SECTIONS: { name: string; views: NavView[] }[] = [
   { name: "Chat", views: ["chat"] },
   { name: "Approvals", views: ["approvals"] },
   { name: "Tasks", views: ["board"] },
+  { name: "Sessions", views: ["sessions"] },
   { name: FLEET, views: ["agents", "apps", "modules"] },
   { name: "Insight", views: ["costs", "flow"] },
 ];
@@ -50,7 +52,9 @@ interface Common {
   onNav: (v: NavView) => void;
 }
 
-export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAlert, notify, brief, onPalette }: Common & {
+export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAlert, notify, brief, onPalette, sessions }: Common & {
+  /** Live sessions (the sessions module is on): the section shows, with the count of running ones; undefined: the module is off. */
+  sessions?: { live: number };
   spend: SpendNow | null | undefined;
   settingsAlert: boolean;
   notify?: () => void;
@@ -66,7 +70,7 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
         <span>AidenHQ</span>
       </a>
       <nav className="tn-items" aria-label="Sections">
-        {SECTIONS.map((sec) => {
+        {SECTIONS.filter((sec) => sec.name !== "Sessions" || sessions).map((sec) => {
           const on = sectionOf(view) === sec;
           const first = sec.views[0]!;
           return (
@@ -81,6 +85,7 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
             >
               {sec.name}
               {first === "approvals" && approvals > 0 && <span className="tn-badge" key={approvals}>{approvals}</span>}
+              {first === "sessions" && !!sessions?.live && <span className="tn-live" title={`${sessions.live} session${sessions.live === 1 ? "" : "s"} working now`}><i />{sessions.live}</span>}
               {sec.name === FLEET && agentsActive > 0 && (
                 <span className="tn-live" title={`${agentsActive} agent job${agentsActive === 1 ? "" : "s"} running now`}>
                   <i />
@@ -173,9 +178,9 @@ export function SubNav({ view, onNav, panels, pages, page, go }: { view: string;
 
 /** The phone's sections: four at hand, the rest behind More. */
 const PHONE: NavView[] = ["chat", "approvals", "agents", "board"];
-export function BottomBar({ view, approvals, agentsActive, onNav, panels, notify, pages, go }: Common & { panels: Panel[]; notify?: () => void; pages: PageRow[]; go: (hash: string) => void }) {
+export function BottomBar({ view, approvals, agentsActive, onNav, panels, notify, pages, go, sessions }: Common & { panels: Panel[]; notify?: () => void; pages: PageRow[]; go: (hash: string) => void; sessions?: boolean }) {
   const [more, setMore] = useState(false);
-  const rest = ITEMS.filter((i) => !PHONE.includes(i.view));
+  const rest = ITEMS.filter((i) => !PHONE.includes(i.view) && (i.view !== "sessions" || sessions));
   const inMore = !PHONE.includes(view as NavView);
   return (
     <>
@@ -253,7 +258,7 @@ function score(s: string, q: string): number {
   return gaps > q.length * 3 ? -1 : 500 - gaps;
 }
 
-export function Palette({ open, onClose, go, crew, apps, onNewTask, tasks = [] }: { open: boolean; onClose: () => void; go: (hash: string) => void; crew: Assignee[]; apps: { name: string }[]; onNewTask: () => void; /** Tasks' own entries (Agent work, saved boards, Save board), from cached data. */ tasks?: PaletteEntry[] }) {
+export function Palette({ open, onClose, go, crew, apps, onNewTask, tasks = [], sessions }: { sessions?: boolean; open: boolean; onClose: () => void; go: (hash: string) => void; crew: Assignee[]; apps: { name: string }[]; onNewTask: () => void; /** Tasks' own entries (Agent work, saved boards, Save board), from cached data. */ tasks?: PaletteEntry[] }) {
   const [q, setQ] = useState("");
   const [at, setAt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
@@ -275,7 +280,7 @@ export function Palette({ open, onClose, go, crew, apps, onNewTask, tasks = [] }
       { id: "new-chat", kind: "Action", label: "New chat with Aiden", icon: "chat", run: nav("#/c/") },
       { id: "new-task", kind: "Action", label: "New task", icon: "plus", run: () => (onClose(), onNewTask()) },
       ...tasks.map((t) => ({ ...t, run: () => (onClose(), t.run()) })),
-      ...ITEMS.map((i) => ({ id: `v-${i.view}`, kind: "Go to", label: i.name, icon: i.icon, run: nav(hrefOf(i.view)) })),
+      ...ITEMS.filter((i) => i.view !== "sessions" || sessions).map((i) => ({ id: `v-${i.view}`, kind: "Go to", label: i.name, icon: i.icon, run: nav(hrefOf(i.view)) })),
       ...pages.map((p) => ({ id: `pg-${p.id}`, kind: "Go to", label: p.title, icon: p.icon, run: nav(pageHref(p)) })),
       { id: "v-settings", kind: "Go to", label: "Settings", icon: "settings", run: nav("#/settings") },
       ...CATEGORIES.map((c) => ({ id: `s-${c.key}`, kind: "Settings", label: c.name, icon: "settings" as const, run: nav(`#/settings/${c.key}`) })),
@@ -285,7 +290,7 @@ export function Palette({ open, onClose, go, crew, apps, onNewTask, tasks = [] }
       ...modules.map((m) => ({ id: `m-${m.name}`, kind: "Module", label: m.name, hint: m.description, icon: "modules" as const, run: nav(`#/modules/${m.name}`) })),
       { id: "help", kind: "Go to", label: "Keyboard shortcuts", icon: "help", run: nav("#/help") },
     ];
-  }, [open, crew, apps, go, onClose, onNewTask, tasks]);
+  }, [open, crew, apps, go, onClose, onNewTask, tasks, sessions]);
 
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase();

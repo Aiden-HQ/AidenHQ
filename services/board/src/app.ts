@@ -52,6 +52,7 @@ import { createMcp, WRITE_TOOLS } from "./mcp.js";
 import { FRAME_CSP, FRAME_TYPE, ViewError, mayPropose, type ViewHost } from "./module-views.js";
 import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
+import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, lastWord, pickAgent, type Message, type Question } from "./chats.js";
 import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
@@ -99,6 +100,8 @@ export interface AppOptions {
   lane?: LaneOptions;
   /** Where a Codex agent's session log is (see live-activity.ts): without it, a working agent shows no steps. */
   sessions?: SessionSources;
+  /** Sessions (sessions.ts): the kernel's session rows, and the computer launcher with the board's session key (computer_session_key) for a session's terminal and phone UI. Without it, the Sessions page says the module is off. */
+  terminals?: { kernel: SessionsKernel; launcher?: { url: string; key: string } };
   /** Google sign-in state and re-consent; no banner and no reconnect without it. */
   google?: GoogleAuth;
   /** The modules' sign-ins through their MCP proxies (board.signins, config.ts): a banner and a Connect each. */
@@ -277,6 +280,21 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if (!opts.accounts) return new Map();
     return new Map((await opts.accounts.names()).filter((a) => !a.owner).map((a) => [a.id, a.name || a.email]));
   }
+  const terminals = opts.terminals && createTerminals({
+    launcher: opts.terminals.launcher,
+    kernel: opts.terminals.kernel,
+    authoredBy: (task) => store.authoredBy(task),
+    // Only a task Paperclip doesn't have ends the chain; a failed read is the caller's 502, never "no parent".
+    parentOf: async (task) => (await boardPc.issue(task).catch((e: unknown) => { if (e instanceof PaperclipError && e.status === 404) return null; throw e; }))?.parentId ?? null,
+    issue: async (task) => {
+      const i = await boardPc.issueSummary(task).catch((e: unknown) => { if (e instanceof PaperclipError && e.status === 404) return null; throw e; });
+      if (!i) return null;
+      const agent = i.createdByAgentId ? (await boardPc.agents()).find((a) => a.id === i.createdByAgentId)?.name ?? null : null;
+      return { identifier: i.identifier, title: i.title, agent };
+    },
+    nameOf: async (id) => (await opts.accounts?.names().catch(() => []))?.find((a) => a.id === id)?.name || undefined,
+    hosts: opts.allowedHosts,
+  });
   /** The account behind the request, named to the kernel when it stops a job (the board's own timers: "operator"). */
   const stopper = () => perRequest.getStore()?.session?.accountId ?? "operator";
   /** The signed-in admin's name when that admin is not the owner (what the lane labels "by <name>"). */
@@ -2135,6 +2153,23 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       },
     },
     // Read-only view of the apps platform (apps-mcp's status), for the Apps tab.
+    // Sessions (sessions.ts): the module's session tasks. `enabled: false` hides the page (no sessions module, or no kernel read).
+    { method: "GET", path: /^\/api\/sessions$/, handle: async () => {
+        const account = perRequest.getStore()?.session?.accountId;
+        if (!terminals || !account) return { enabled: false, agent: null, sessions: [] };
+        const sessions = await terminals.rows(account).catch((e: Error) => { throw new HttpError(502, `the kernel or Paperclip didn't answer: ${e.message}`); });
+        // The Session agent's Paperclip id, from the compiled grants (the agent with profile `session`): Start assigns work to it.
+        const agent = opts.lane ? sessionAgent(() => JSON.parse(readFileSync(opts.lane!.grantsFile, "utf8"))) : null;
+        return { enabled: sessions !== null, agent, sessions: sessions ?? [] };
+      },
+    },
+    // The creator's way into a session: signed, short-lived paths to its terminal and web view (sessions.ts).
+    { method: "POST", path: /^\/api\/sessions\/([\w-]{1,64})\/open$/, handle: async (m) => {
+        const account = perRequest.getStore()?.session?.accountId;
+        if (!terminals || !account) throw new HttpError(404, "sessions are off");
+        return terminals.open(account, m[1]!);
+      },
+    },
     { method: "GET", path: /^\/api\/apps$/, handle: async () =>
         // `node.login_url`: the apps' Tailscale node waiting for its one-time sign-in. A bearer secret, so only here behind the owner's sign-in, never in a notice.
         appsApi("/internal/status").then(
@@ -2797,7 +2832,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         await handleInternal(req, res, url, internal);
       } catch (err) {
         const status = statusOf(err);
-        if (status >= 500 || status === 401) log[status === 401 ? "warn" : "error"]({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "internal request failed");
+        if (status >= 500 || status === 401) log[status === 401 ? "warn" : "error"]({ err: String((err as Error).message ?? err).slice(0, 500), path: loggedPath(url.pathname) }, "internal request failed");
         if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error" }), "application/json");
       }
       return;
@@ -2808,14 +2843,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         await handleMcp(req, res, url);
       } catch (err) {
         const status = statusOf(err);
-        if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "request failed");
+        if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: loggedPath(url.pathname) }, "request failed");
         if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error" }), "application/json");
       }
       return;
     }
-    const rejected = checkRequest(req, opts.allowedHosts);
+    // A session's page and its requests carry a signed path, not the board's cookie or header (sessions.ts checks the Host itself).
+    const rejected = terminals && isSessionPath(url.pathname) ? undefined : checkRequest(req, opts.allowedHosts);
     if (rejected) {
-      log.warn({ method: req.method, path: url.pathname, reason: rejected }, "request rejected");
+      log.warn({ method: req.method, path: loggedPath(url.pathname), reason: rejected }, "request rejected");
       return send(res, 403, JSON.stringify({ error: rejected }), "application/json");
     }
     // Local mode (the kernel's sign-in is on localhost): a page opened at 127.0.0.1 moves to localhost first. Sign-in
@@ -2826,7 +2862,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       return;
     }
     try {
-      if (url.pathname.startsWith("/api/")) await handleApi(req, res, url);
+      if (terminals && isSessionPath(url.pathname)) await terminals.http(req, res, url);
+      else if (url.pathname.startsWith("/api/")) await handleApi(req, res, url);
       // The kernel's handoff (kernel-auth.ts): the board's own session, on its own origin.
       else if (url.pathname === "/auth/start" && req.method === "GET" && opts.accounts) opts.accounts.start(req, res);
       else if (url.pathname === "/auth/handoff" && req.method === "GET" && opts.accounts) await opts.accounts.finish(req, res, url);
@@ -2838,9 +2875,21 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       else throw new HttpError(405, "method not allowed");
     } catch (err) {
       const status = statusOf(err);
-      if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "request failed");
+      if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: loggedPath(url.pathname) }, "request failed");
       if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error", ...(err instanceof HttpError && err.errors ? { errors: err.errors } : {}), ...(err instanceof ViewConflict ? { current: err.current } : {}) }), "application/json");
     }
+  });
+  // A session's terminal and phone UI speak WebSocket: the same sign-in, origin and creator checks as its HTTP (sessions.ts).
+  server.on("upgrade", (req, socket, head) => {
+    const refuse = (status: number, why: string) => void socket.end(`HTTP/1.1 ${status} ${why}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`);
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://board");
+    } catch {
+      return refuse(400, "Bad Request");
+    }
+    if (!terminals || mode === "internal" || !isSessionPath(url.pathname)) return refuse(404, "Not Found");
+    void terminals.upgrade(req, socket, head, url).catch((err) => refuse(err instanceof SessionError ? err.status : 502, "Refused"));
   });
   return Object.assign(server, { sweep });
 }
@@ -2848,7 +2897,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 /** ops/setup.sh's welcome chat (the operator's key): written as the owner, and never an approver. */
 const OPERATOR: BoardSession = { accountId: "operator", role: "admin" };
 
-const statusOf = (err: unknown) => (err instanceof HttpError || err instanceof AccountError ? err.status : err instanceof BadRequest ? 400 : err instanceof PaperclipError ? (err.status === 404 ? 404 : 502) : 500);
+const statusOf = (err: unknown) => (err instanceof HttpError || err instanceof SessionError || err instanceof AccountError ? err.status : err instanceof BadRequest ? 400 : err instanceof PaperclipError ? (err.status === 404 ? 404 : 502) : 500);
 
 /** A percent-decoded path part; a malformed escape is the caller's 400, not a thrown URIError. */
 function dec(part: string): string {

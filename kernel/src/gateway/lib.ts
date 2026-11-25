@@ -198,6 +198,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
   // spend_day and spend_task below, so no index serves a day or a task.
   db.exec(`
     CREATE INDEX IF NOT EXISTS calls_run ON calls (run_key);
+    CREATE INDEX IF NOT EXISTS calls_issue ON calls (issue_id) WHERE issue_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS calls_at ON calls (at);
     DROP INDEX IF EXISTS calls_changed; CREATE INDEX IF NOT EXISTS calls_pull ON calls (COALESCE(changed, at), key);
     CREATE INDEX IF NOT EXISTS calls_job ON calls (run_id) WHERE run_id IS NOT NULL;

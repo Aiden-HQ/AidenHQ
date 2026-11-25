@@ -30,6 +30,7 @@ test("the routes need a module holding kernel.work-read", async (t) => {
   const get = (path, token) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
   assert.equal((await get("/v1/work?task=t1", "none")).status, 401);
   assert.equal((await get("/v1/work?task=t1", "other")).status, 403);
+  assert.equal((await get("/v1/work?sessions=1", "reader")).status, 403, "the sessions' leases are the board's");
   assert.deepEqual((await (await get("/v1/work?task=t1", "reader")).json()).jobs.map((j) => j.id), ["j-2", "j-1"]);
   const post = (token, task = "t1") => fetch(`http://127.0.0.1:${server.address().port}/v1/work/grader-token`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ task }) });
   assert.equal((await post("reader")).status, 403, "without the role");
@@ -266,4 +267,20 @@ test("a card held for the owner after its approval counts from when it was held,
   await new Promise((r) => setTimeout(r, 5));
   assert.ok(records.hold(held.id, { by: "autonomy", value: "off" }, "autonomy is off"));
   assert.deepEqual(work.ownerCards(undefined, 10).cards.map((c) => c.id), [held.id, later.id]);
+});
+
+test("sessions: a session agent's task is a session, with its lease, state and spend; none without the profile", () => {
+  const { records } = setup();
+  assert.deepEqual(createWork({ db: records.db, records }).sessions(), { enabled: false, sessions: [] });
+  const work = createWork({ db: records.db, records, sessionAgents: () => ["a1"] });
+  const box = JSON.stringify({ lease: "l-0a0b0c0d" });
+  records.db.prepare("UPDATE jobs SET box = ? WHERE id = 'j-2'").run(box);
+  records.db.exec("CREATE TABLE calls (at TEXT, issue_id TEXT, cost_usd REAL)");
+  records.db.prepare("INSERT INTO calls (at, issue_id, cost_usd) VALUES (?, 't1', 0.5), (?, 't1', 0.25)").run(new Date(Date.now() - 3_600_000).toISOString(), new Date(Date.now() - 3_600_000).toISOString());
+  const s = work.sessions();
+  assert.equal(s.enabled, true);
+  assert.deepEqual(s.sessions.map((x) => [x.task, x.state, x.lease, x.cost_usd]), [["t1", "waiting", "l-0a0b0c0d", 0.75]], "t2 belongs to another agent; no call in 2 minutes: waiting");
+  records.db.prepare("UPDATE jobs SET state = 'failed', final = 'boom\nmore', ended = 3000000 WHERE id = 'j-2'").run();
+  assert.deepEqual(work.sessions("t1").sessions.map((x) => [x.state, x.lease, x.error]), [["error", null, "boom"]]);
+  assert.equal(work.sessions("t9").sessions.length, 0);
 });
