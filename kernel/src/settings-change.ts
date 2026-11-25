@@ -100,7 +100,7 @@ const only = (ch: Dict, keys: string[]) => Object.keys(ch).every((k) => keys.inc
 /** Handbook texts: Markdown, no NUL or other control characters but tab and newlines. */
 const text = (t: unknown, max: number) => (typeof t === "string" && t.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(t)) || refuse(`text must be at most ${max} characters, without control characters`);
 const HANDBOOK_MAX = 120_000;
-/** A structured setting's value: at most 8 levels (code_review: repos, a repo, by_tier, a tier, on_open, a reviewer, its fields) and 2000 values, keys of letters, digits, _ . - / or *, plain strings (no $). */
+/** A structured setting's value: at most 8 levels (code_review: the object, repos, a repo, by_tier, a tier, on_open, a reviewer, its fields) and 2000 values, keys of letters, digits, _ . - / or *, plain strings (no $). */
 function boundedValue(key: string, v: unknown): void {
   let n = 0;
   const walk = (x: unknown, depth: number): void => {
