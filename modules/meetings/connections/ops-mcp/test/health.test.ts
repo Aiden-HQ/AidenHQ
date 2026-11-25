@@ -1,12 +1,13 @@
-import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { healthChecks } from "../src/app.js";
+import { canonicalNotePath } from "../src/render/notes.js";
 import { makeEnv } from "./helpers.js";
 
-const vaultAt = (root: string, writeRoots: string[]) => ({
-  vault: { root, read_roots: writeRoots, write_roots: writeRoots },
+const vaultAt = (root: string, writeRoots: string[], meetingsRoot?: string) => ({
+  vault: { root, read_roots: writeRoots, write_roots: writeRoots, ...(meetingsRoot ? { meetings_root: meetingsRoot } : {}) },
 });
 
 describe("healthChecks vault", () => {
@@ -53,6 +54,126 @@ describe("healthChecks vault", () => {
     expect(h.ok).toBe(false);
     expect(h.checks.vault_available?.ok).toBe(false);
     expect(h.checks.vault_writable?.ok).toBe(false);
+  });
+
+  it("is a named failure, not missing, when the vault root cannot be read", async () => {
+    // A mounted root this process may not list (another user's directory, or a broken mount): the owner did configure a
+    // vault, so telling them to set VAULT_DIR and VAULT_FOLDERS is wrong advice. Not ENOENT: compose creates the host
+    // source of a bind mount it is given.
+    const parent = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    const root = join(parent, "vault");
+    mkdirSync(root);
+    chmodSync(root, 0o000);
+    const env = makeEnv({ cfg: vaultAt(root, ["Meetings"]) });
+    const h = await healthChecks(env.app);
+    if (process.getuid?.() === 0) return; // root bypasses the mode, so this proves nothing there
+    expect(h.ok).toBe(false);
+    expect(h.state).toBeUndefined();
+    expect(h.detail).toContain("vault_available:");
+    expect(h.detail).toContain("EACCES");
+  });
+
+  it("fails when canonical notes would land outside the write roots", async () => {
+    // write_roots names Notes but meetings_root still says Meetings: the write root takes writes, yet every new
+    // canonical note is rejected as outside the allowed folders.
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Notes"));
+    const env = makeEnv({ cfg: vaultAt(root, ["Notes"]) });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(false);
+    expect(h.checks.vault_writable?.ok).toBe(false);
+    expect(h.detail).toContain("canonical notes under Meetings cannot be read");
+  });
+
+  it("accepts a meetings_root nested inside a write root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Notes", "Meetings"), { recursive: true });
+    const env = makeEnv({ cfg: vaultAt(root, ["Notes"], "Notes/Meetings") });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(true);
+    expect(h.detail).toBeUndefined();
+  });
+
+  it("accepts a write root with a trailing slash", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Meetings"));
+    const env = makeEnv({ cfg: vaultAt(root, ["Meetings/"]) });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(true);
+  });
+
+  it("fails when the folder for the month being published is read-only", async () => {
+    // The probe must be the folder publishing writes now: a writable meetings_root with a read-only current month fails.
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    const env = makeEnv({ cfg: vaultAt(root, ["Meetings"]) });
+    // The folder publishing would use now, from the same function that builds the path.
+    const now = new Date().toISOString();
+    const note = canonicalNotePath("Meetings", { calendar_event_id: "t", title: "T", start_at: now, end_at: now, timezone: env.cfg.timezone, attendees: [] });
+    const month = join(root, dirname(note));
+    mkdirSync(month, { recursive: true });
+    chmodSync(month, 0o555);
+    const h = await healthChecks(env.app);
+    // A root uid bypasses the mode, so this case can only be asserted by a normal user.
+    if (process.getuid?.() === 0) {
+      expect(h.ok).toBe(true);
+      return;
+    }
+    expect(h.ok).toBe(false);
+    expect(h.detail).toContain("cannot be written");
+  });
+
+  it("names an invalid timezone instead of throwing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Meetings"));
+    const env = makeEnv({ cfg: { timezone: "Mars/Olympus", ...vaultAt(root, ["Meetings"]) } });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(false);
+    expect(h.detail).toContain("have no path");
+    expect(h.detail).toContain("Mars/Olympus");
+  });
+
+  it("fails when the current month's folder is a dangling symlink", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    const env = makeEnv({ cfg: vaultAt(root, ["Meetings"]) });
+    const now = new Date().toISOString();
+    const note = canonicalNotePath("Meetings", { calendar_event_id: "t", title: "T", start_at: now, end_at: now, timezone: env.cfg.timezone, attendees: [] });
+    const month = join(root, dirname(dirname(note)));
+    mkdirSync(dirname(month), { recursive: true });
+    symlinkSync(join(root, "gone"), month);
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(false);
+    expect(h.detail).toContain("cannot be written");
+  });
+
+  it("does not fail on an old read-only archive month", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    const archive = join(root, "Meetings", "2000", "01");
+    mkdirSync(archive, { recursive: true });
+    chmodSync(archive, 0o555);
+    const env = makeEnv({ cfg: vaultAt(root, ["Meetings"]) });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(true);
+  });
+
+  it("fails when the nested meetings folder is read-only", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Notes", "Meetings"), { recursive: true });
+    chmodSync(join(root, "Notes", "Meetings"), 0o555);
+    const env = makeEnv({ cfg: vaultAt(root, ["Notes"], "Notes/Meetings") });
+    const h = await healthChecks(env.app);
+    if (process.getuid?.() === 0) return;
+    expect(h.ok).toBe(false);
+    expect(h.detail).toContain("cannot be written");
+  });
+
+  it("fails when canonical notes are not readable, which publishing checks first", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
+    mkdirSync(join(root, "Meetings"));
+    mkdirSync(join(root, "Projects"));
+    const env = makeEnv({ cfg: { vault: { root, read_roots: ["Projects"], write_roots: ["Meetings"] } } });
+    const h = await healthChecks(env.app);
+    expect(h.ok).toBe(false);
+    expect(h.detail).toContain("cannot be read");
   });
 
   it("is ok when the configured write roots take writes", async () => {
