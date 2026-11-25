@@ -69,7 +69,7 @@ async function run() {
   } else session = (await server.call("POST", "/session", { title: basename(process.cwd()) })).id;
   io.emit({ t: "session", id: session });
 
-  server.child.on("exit", (code) => { if (stopping) return; console.error(`opencode serve exited (${code})`); process.exit(code || 1); });
+  server.child.on("exit", (code) => fail(`opencode serve exited (${code})`));
   // A turn the model gateway refuses (no credit, a bad key) comes back only as a session.error event after prompt_async's 204: loud, not a silent job.
   const sse = sseEvents(spec, io.emit, () => session, (why) => fail(`opencode turn failed: ${why}`));
   await server.events((ev) => sse.take(ev)).catch((e) => { fail(e); throw e; });
