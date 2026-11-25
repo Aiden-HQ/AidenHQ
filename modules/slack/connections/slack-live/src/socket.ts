@@ -18,14 +18,33 @@ interface Deps {
   tee?: (body: unknown) => void; // src_slack (sources.ts): every event that is not a pairing DM; never throws or blocks
   /** The kernel's event router (POST /v1/events): throws only when the kernel didn't take it (transport, 429, 5xx). */
   forward?: (e: SourceEvent) => Promise<void>;
+  /** The socket's real connection state, for /healthz: connected, or disconnected (and not yet reconnected). */
+  onState?: (s: "connected" | "disconnected") => void;
   log: Logger;
+}
+
+/** What an inbound event is, for the ingress line: its shape only, never the text, the users, a code or a token. */
+export function ingressLine(msgType: string, body: unknown): Record<string, string> | undefined {
+  if (msgType !== "events_api") return undefined;
+  const b = body as { event?: Record<string, string>; event_id?: string } | null;
+  const ev = b?.event;
+  if (!ev) return undefined;
+  const line: Record<string, string> = {};
+  if (ev.type) line.type = ev.type;
+  if (ev.channel_type) line.channel_type = ev.channel_type;
+  if (ev.subtype) line.subtype = ev.subtype;
+  if (b?.event_id) line.event_id = b.event_id;
+  return line;
 }
 
 // Persist BEFORE ack: if the insert throws we do not ack, so Slack redelivers; a duplicate
 // event_id is a no-op. Events during a disconnect are lost (accepted; the scout scan covers it).
-export async function startSocket({ appToken, store, chat, pair, bind, tee, forward, log }: Deps): Promise<void> {
+export async function startSocket({ appToken, store, chat, pair, bind, tee, forward, onState, log }: Deps): Promise<void> {
   const client = new SocketModeClient({ appToken });
   client.on("slack_event", async (msg: { type: string; body: unknown; ack: () => Promise<void> }) => {
+    // Before any filter: "a DM arrived" is observable, whatever the pairing, chat and routing rules then do with it.
+    const ingress = ingressLine(msg.type, msg.body);
+    if (ingress) log.info(ingress, "slack event in");
     if (msg.type === "slash_commands" && bind) {
       // Acked at once (Slack allows 3 s); the answer is private to the sender, through the command's response_url.
       await msg.ack().catch(() => undefined);
@@ -66,8 +85,8 @@ export async function startSocket({ appToken, store, chat, pair, bind, tee, forw
     }
     await msg.ack().catch((err: unknown) => log.warn({ err: String(err) }, "socket ack failed"));
   });
-  client.on("connected", () => log.info("socket mode connected"));
-  client.on("disconnected", () => log.warn("socket mode disconnected"));
+  client.on("connected", () => { onState?.("connected"); log.info("socket mode connected"); });
+  client.on("disconnected", () => { onState?.("disconnected"); log.warn("socket mode disconnected"); });
   // Initial start only: 30 s doubling to 5 min. After that the client reconnects itself.
   for (let backoff = 30_000; ; backoff = Math.min(backoff * 2, 300_000)) {
     try {

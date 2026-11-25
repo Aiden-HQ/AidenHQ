@@ -62,8 +62,42 @@ export function createPairing(db: Database.Database, now: () => number = Date.no
 }
 export type Pairing = ReturnType<typeof createPairing>;
 
+type Body = { event?: Record<string, string>; authorizations?: { is_bot?: boolean }[] } | null;
+
+/** Does the event name a bot install at all? Slack truncates `authorizations` to one arbitrary entry, so it is a hint, not the gate. */
+const namesBot = (b: Body): boolean => Boolean(b?.authorizations?.some((a) => a?.is_bot === true));
+
 /**
- * A DM to the bot that is a pairing code. Only a bot-delivered DM counts: the owner's user-token events also carry their DMs with
+ * Is this DM one with this bot, rather than the owner's DM with another person? The bot token answers it: the bot sees its own
+ * DMs (`conversations.info` -> `is_im`), while a DM between two people answers `channel_not_found`/`missing_scope`. A lookup that
+ * itself failed (network, 5xx, rate limit) falls back to the event's `authorizations` naming a bot.
+ */
+async function isBotDm(b: Body, channel: string, botToken: string, doFetch: typeof fetch): Promise<boolean> {
+  if (!botToken) return namesBot(b);
+  let res: Response;
+  try {
+    res = await doFetch(`https://slack.com/api/conversations.info?channel=${encodeURIComponent(channel)}`, { headers: { authorization: `Bearer ${botToken}` }, signal: AbortSignal.timeout(10_000) });
+  } catch {
+    return namesBot(b);
+  }
+  if (res.status >= 500 || res.status === 429) return namesBot(b);
+  const j = (await res.json().catch(() => undefined)) as { ok?: boolean; channel?: { is_im?: boolean }; error?: string } | undefined;
+  if (!j) return namesBot(b);
+  if (j.ok) return j.channel?.is_im === true;
+  // The bot token could not see the channel: a DM between other people, never a pairing DM.
+  if (j.error === "channel_not_found" || j.error === "missing_scope" || j.error === "not_in_channel") return false;
+  return namesBot(b);
+}
+
+export interface PairingDeps {
+  /** The bot token: the DM channel is looked up with it, so a code pasted into a two-person DM pairs nobody. */
+  botToken?: string;
+  /** The HTTP client (tests replace it). */
+  fetch?: typeof fetch;
+}
+
+/**
+ * A DM to the bot that is a pairing code. Only a DM with this bot counts: the owner's user-token events also carry their DMs with
  * other people, and a code pasted there pairs nobody. Returns true when the event was a code attempt (right or wrong), so it
  * goes no further (not to triage, not to src_slack).
  */
@@ -72,13 +106,15 @@ export async function handlePairingDm(
   body: unknown,
   say: (channel: string, text: string) => Promise<unknown>,
   onPaired: (owner: Owner) => void,
+  deps: PairingDeps = {},
 ): Promise<boolean> {
-  const b = body as { event?: Record<string, string>; authorizations?: { is_bot?: boolean }[] } | null;
+  const b = body as Body;
   const ev = b?.event;
   if (!ev || ev.type !== "message" || ev.channel_type !== "im" || ev.subtype || ev.bot_id || !ev.user || !ev.channel) return false;
-  if (b?.authorizations?.[0]?.is_bot !== true) return false;
   const code = ev.text?.trim() ?? "";
   if (!CODE.test(code)) return false;
+  // The code is checked before the lookup, so ordinary chat in the DM costs no Slack API call.
+  if (!(await isBotDm(b, ev.channel, deps.botToken ?? "", deps.fetch ?? fetch))) return false;
   const r = pairing.redeem(code, ev.user, ev.channel);
   if (!r.ok) {
     await say(ev.channel, "That code didn't work. Make a new one on the AidenHQ board.");
