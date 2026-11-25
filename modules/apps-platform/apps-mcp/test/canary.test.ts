@@ -563,6 +563,65 @@ describe("app_page_canary", () => {
       expect(field).toMatchObject({ name: "What should change?", ref: "e10" });
     });
 
+    it("takes a fresh snapshot after going back, so the next click uses a ref the browser still knows", async () => {
+      const { canaryTree, canaryFindField } = api();
+      // Refs are reassigned on every snapshot. The tree restored from before the navigation carries e2, but after going back
+      // the browser names the same button e9; a click on the stale ref would fail. The walk must re-snapshot and use e9.
+      const landing = `
+- link "Feedback history" [ref=e1]
+- button "Provide feedback" [ref=e2]`;
+      const history = `
+- heading "Feedback history" [level=1, ref=e3]`;
+      const landingAgain = `
+- link "Feedback history" [ref=e1]
+- button "Provide feedback" [ref=e9]`;
+      let shown = landing, seen = 0;
+      const clicked: string[] = [];
+      const field = await canaryFindField(async () => ({ tree: canaryTree(shown) }), async (entry) => {
+        clicked.push(entry.ref);
+        if (entry.name === "Feedback history") { shown = history; return true; }
+        // Only the ref the browser currently reports works; the pre-navigation e2 is dead.
+        if (entry.ref !== "e9") throw new Error("clicked a stale ref");
+        shown = landingAgain + DIALOG;
+        return false;
+      }, async () => {
+        seen++;
+        shown = landingAgain;
+      });
+      expect(seen).toBe(1);
+      expect(clicked).toEqual(["e1", "e9"]);
+      expect(field).toMatchObject({ name: "What should change?", ref: "e10" });
+    });
+
+    it("keeps tried controls per page, so a sibling page's identical layout is tried on its own", async () => {
+      const { canaryTree, canaryFindField } = api();
+      // "Feedback center" and "Feedback history" render the same layout: a feedback link and a "Provide feedback" button at
+      // the same outline position. The button on one page does nothing; the one on the other opens the form. Bookkeeping
+      // shared across the two pages at the same depth would skip the working button.
+      const landing = `
+- link "Feedback center" [ref=e1]
+- link "Feedback history" [ref=e2]`;
+      const layout = `
+- link "Back to feedback" [ref=e3]
+- button "Provide feedback" [ref=e4]`;
+      let shown = landing, here = "";
+      const clicks: string[] = [], backs: string[] = [];
+      const field = await canaryFindField(async () => ({ tree: canaryTree(shown) }), async (entry) => {
+        clicks.push(here + "/" + entry.name);
+        if (entry.name === "Feedback center") { here = "center"; shown = layout; return true; }
+        if (entry.name === "Feedback history") { here = "history"; shown = layout; return true; }
+        if (here === "history") { shown = landing + DIALOG; return false; }
+        return false; // the center page's button opens nothing
+      }, async () => {
+        backs.push(here);
+        shown = landing;
+        here = "";
+      });
+      // The center's button is tried and fails, then history's own identical button is tried and opens the form.
+      expect(clicks.filter((c) => c.endsWith("Provide feedback"))).toEqual(["center/Provide feedback", "history/Provide feedback"]);
+      expect(field).toMatchObject({ name: "What should change?", ref: "e10" });
+    });
+
     it("reads a feedback heading in the dialog's header block, but not one in a later section with its own content", () => {
       const { canaryTree, canaryField } = api();
       // Real Chrome renders an unnamed dialog's <header> as a banner holding the title and its description (verified against a

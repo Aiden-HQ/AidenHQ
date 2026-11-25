@@ -167,30 +167,34 @@ const canaryEntries = (nodes) => [
 // on a page that navigates again (a "Feedback center" then a "Feedback history"), so the walk keeps the pages it came
 // through and climbs back to the page a control came from before trying that page's next one.
 const canaryFindField = async (snap, click, back) => {
-  const key = (depth, n) => [depth, n.role, n.name, n.i].join(":");
-  let nodes = (await snap()).tree, field = canaryField(nodes), depth = 0;
+  const key = (n) => [n.role, n.name, n.i].join(":");
+  // Each page the walk visits has its own bookkeeping: which of its controls have been tried. Sibling pages (a "Feedback
+  // center" and a "Feedback history" with the same layout) must not share it, or a control that failed on one hides the
+  // working one on the other.
+  let nodes = (await snap()).tree, field = canaryField(nodes);
+  let page = { tried: new Set() };
   const trail = [];
-  const tried = new Set();
   for (let i = 0; i < 12 && !field; i++) {
-    let entry = canaryEntries(nodes).find((n) => !tried.has(key(depth, n)));
+    let entry = canaryEntries(nodes).find((n) => !page.tried.has(key(n)));
     if (!entry) {
-      // Nothing untried on this page: go back one page and continue with a control it offered.
+      // Nothing untried on this page: go back one page and continue with a control it offered. The restored page is read
+      // again, because a ref belongs to the snapshot that produced it: the one taken before the navigation is stale, and a
+      // click on it would fail or land on a different control.
       if (!back || !trail.length) break;
       await back();
-      nodes = trail.pop();
-      depth--;
+      nodes = (await snap()).tree;
+      page = trail.pop();
       field = canaryField(nodes);
       i--;
       continue;
     }
-    tried.add(key(depth, entry));
-    const from = nodes;
-    const k = JSON.stringify(canaryEntries(nodes).map((n) => key(depth, n)));
+    page.tried.add(key(entry));
+    const k = JSON.stringify(canaryEntries(nodes).map(key));
     const said = await click(entry);
     nodes = (await snap()).tree;
     // A click navigated when it says so, or when the page it returns has a different set of controls than the one it left.
-    const moved = said === true || (said == null && JSON.stringify(canaryEntries(nodes).map((n) => key(depth, n))) !== k);
-    if (moved) { trail.push(from); depth++; }
+    const moved = said === true || (said == null && JSON.stringify(canaryEntries(nodes).map(key)) !== k);
+    if (moved) { trail.push(page); page = { tried: new Set() }; }
     field = canaryField(nodes);
     // A dialog that opened did not navigate, so its own controls are tried next on the same page.
   }
