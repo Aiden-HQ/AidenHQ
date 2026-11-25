@@ -94,6 +94,13 @@ test("pins: a module.yaml service image is a pin, and an agent-level image line 
   // A tag alone is a problem, with the Dockerfile path's message; a flow-style services map is refused rather than read past.
   assert.deepEqual(scanFile("modules/x/module.yaml", "services:\n  run:\n    db:\n      image: postgres:17\n").problems, ["modules/x/module.yaml:4: image postgres:17 has no digest (name:tag@sha256:…)"]);
   assert.match(scanFile("modules/x/module.yaml", `services: { run: { db: { image: postgres:17${d("a")} } } }\n`).problems[0]!, /flow map/);
+  // The compiler's YAML: a `>-`/`|` block scalar is the ref, and a bare `build:` is null, so the service names an image.
+  for (const form of [`image: >-\n        postgres:17.12${d("c")}`, `image: |\n        postgres:17.12${d("c")}`, `build:\n      image: postgres:17.12${d("c")}`]) {
+    const p = scanFile("modules/x/module.yaml", `services:\n  run:\n    db:\n      ${form}\n`);
+    assert.deepEqual(p.problems, [], form);
+    assert.equal(p.pins.length, 1, form);
+    assert.equal(p.pins[0]!.digest, `sha256:${"c".repeat(64)}`, form);
+  }
   // Only modules/<name>/module.yaml: a template's manifest is not a service the instance runs.
   assert.equal(wanted("modules/primer/module.yaml"), true);
   assert.equal(wanted("modules/agent-builder/templates/digest-writer/module.yaml"), false);

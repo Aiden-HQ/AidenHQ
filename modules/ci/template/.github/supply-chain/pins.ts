@@ -842,32 +842,48 @@ function modulePins(path: string, text: string): { pins: Pin[]; problems: string
   // Each service's declaration, in the order the file first names it.
   const services = new Map<string, { image?: { ref: string; line: number }; build: boolean }>();
   const stack: { indent: number; key: string }[] = [];
+  const lines = text.split("\n").map((l) => l.replace(/\r$/, ""));
   let flow = 0; // the first `services`, `services.run` or service written as a flow map: its images can't be read below
-  text.split("\n").forEach((raw, i) => {
-    const line = raw.replace(/\r$/, "");
-    if (/^\s*(#.*)?$/.test(line)) return;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^\s*(#.*)?$/.test(line)) continue;
     // A key line only: a list item, a directive or anything else is not part of a service declaration's keys. A key may be
     // quoted (`"primer-db":`, as YAML allows and the compiler reads): the quotes are dropped, never the key.
     const m = /^(\s*)(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_.-]+)):(?:\s+(.*))?$/.exec(line);
-    if (!m) return;
-    const indent = m[1]!.length, key = m[2] ?? m[3] ?? m[4]!, value = m[5];
+    if (!m) continue;
+    const indent = m[1]!.length, key = m[2] ?? m[3] ?? m[4]!, raw = m[5], lineNo = i + 1;
     while (stack.length && stack.at(-1)!.indent >= indent) stack.pop();
     stack.push({ indent, key });
     const keys = stack.map((s) => s.key);
     // `services: {…}`, `run: {…}` and a service `db: {image: …}` are flow maps: their images are past this walk.
-    const flowMap = /^[{[\[]/.test(value ?? "") && keys[0] === "services" && (keys.length === 1 || (keys.length === 2 && keys[1] === "run") || (keys.length === 3 && keys[1] === "run"));
+    const flowMap = /^[{[\[]/.test(raw ?? "") && keys[0] === "services" && (keys.length === 1 || (keys.length === 2 && keys[1] === "run") || (keys.length === 3 && keys[1] === "run"));
     if (flowMap && !flow) flow = i + 1;
+    // A block scalar (`>-`, `|`, `|2`, …): its value is the indented lines below, folded to one string (a ref is one token,
+    // so the folding style and chomping never matter). The compiler reads it as the ref, so this must too.
+    let value = raw;
+    if (raw !== undefined && /^[>|][+-]?\d*$/.test(raw.trim())) {
+      const body: string[] = [];
+      let j = i + 1;
+      for (; j < lines.length; j++) {
+        const l = lines[j]!;
+        if (l.trim() !== "" && l.search(/\S/) <= indent) break;
+        body.push(l);
+      }
+      value = body.join(" ").trim();
+      i = j - 1; // the body's lines are this value, not keys
+    }
     if (keys.length === 3 && keys[0] === "services" && keys[1] === "run") {
       if (!services.has(key)) services.set(key, { build: false });
     } else if (keys.length === 4 && keys[0] === "services" && keys[1] === "run") {
       const svc = services.get(keys[2]!);
-      if (!svc) return;
-      if (key === "build") svc.build = true;
-      // The value is a plain scalar: no quotes, no comment; a ref never holds whitespace.
+      if (!svc) continue;
+      // The compiler's `build != null`: `build:` with nothing after it is YAML null, so the service names an image after all.
+      if (key === "build") svc.build = value !== undefined && !/^(?:~|null)?$/i.test(value.trim());
+      // A plain scalar's ref: quotes and a trailing comment dropped. A ref never holds whitespace.
       const ref = value === undefined ? undefined : /^["']?([^\s"'#]+)/.exec(value)?.[1];
-      if (key === "image" && ref && !ref.includes("$") && !svc.image) svc.image = { ref, line: i + 1 };
+      if (key === "image" && ref && !ref.includes("$") && !svc.image) svc.image = { ref, line: lineNo };
     }
-  });
+  }
   if (flow) problems.push(`${at(flow)}: services is written as a flow map; only the block form's service images can be checked`);
   for (const { image, build } of services.values()) {
     if (build || !image) continue;

@@ -498,23 +498,36 @@ jobs:
             const git = (...a) => execFileSync("git", a, { encoding: "utf8" });
             const show = (ref, file) => { try { return git("show", `${ref}:${file}`); } catch { return ""; } };
             // services.run.<service> from its keys by indentation: each service and its `image:` and `build:`, nothing deeper.
+            // A quoted key is the same key to the compiler, and a `>-`/`|` block scalar is the same value: read both as YAML
+            // does, or a valid pin is silently skipped here and by the scanner.
             const images = (text) => {
-              const out = new Map(), stack = [];
-              for (const raw of text.split("\n")) {
-                const line = raw.replace(/\r$/, "");
+              const out = new Map(), stack = [], lines = text.split("\n").map((l) => l.replace(/\r$/, ""));
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
                 if (/^\s*(#.*)?$/.test(line)) continue;
-                // A key may be quoted (`"primer-db":`), as YAML allows and the compiler reads: the quotes are dropped.
                 const m = /^(\s*)(?:\x22([^\x22]*)\x22|\x27([^\x27]*)\x27|([A-Za-z0-9_.-]+)):(?:\s+(.*))?$/.exec(line);
                 if (!m) continue;
-                const indent = m[1].length, key = m[2] ?? m[3] ?? m[4], value = m[5];
+                const indent = m[1].length, key = m[2] ?? m[3] ?? m[4];
+                let value = m[5];
                 while (stack.length && stack.at(-1).indent >= indent) stack.pop();
                 stack.push({ indent, key });
                 const keys = stack.map((s) => s.key);
+                if (value !== undefined && /^[>|][+-]?\d*$/.test(value.trim())) {
+                  const body = [];
+                  let j = i + 1;
+                  for (; j < lines.length; j++) {
+                    if (lines[j].trim() !== "" && lines[j].search(/\S/) <= indent) break;
+                    body.push(lines[j]);
+                  }
+                  value = body.join(" ").trim();
+                  i = j - 1;
+                }
                 if (keys.length === 3 && keys[0] === "services" && keys[1] === "run") out.set(key, { build: false, image: undefined });
                 else if (keys.length === 4 && keys[0] === "services" && keys[1] === "run") {
                   const svc = out.get(keys[2]);
                   if (!svc) continue;
-                  if (key === "build") svc.build = true;
+                  // As the compiler reads `build != null`: a bare `build:` is YAML null, so the service names an image after all.
+                  if (key === "build") svc.build = value !== undefined && !/^(?:~|null)?$/i.test(value.trim());
                   const ref = value === undefined ? undefined : /^[\x22\x27]?([^\s\x22\x27#]+)/.exec(value)?.[1];
                   if (key === "image" && ref && !ref.includes("$")) svc.image = ref;
                 }
