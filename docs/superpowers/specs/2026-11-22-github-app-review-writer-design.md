@@ -22,7 +22,8 @@ When the limit is hit, GitHub answers "submitted too quickly" and every writer s
 1. **Optional, generic, per repo.** Without the App everything works as before. Any owner creates their own App from the
    kernel's admin page `/setup/github-app`, through GitHub's manifest flow. The App is `public: true`, so it can be installed on
    any org, on all of its repos or only some. For each PR, code review posts as the App when it is installed on the PR's base
-   repository, and as the owner otherwise. Agents' PRs, pushes, merges and comments, and every read, stay on the owner's sign-in.
+   repository, and as the owner otherwise. Agents' PRs, pushes, merges and comments stay on the owner's sign-in. Reads moved to
+   the App on 2026-11-25 (decision 8).
 2. **One review writer.** `ReviewPoster.writer(repo)` in github-mcp (`modules/github/connections/github-mcp/src/review-post.ts`)
    handles every review write: the post, inline and file comments, the summary, resolves, the status, notices and acks.
    - It returns a `GitHub` client bound to the App's installation (`gh.as(identity)`, still behind `guard`) or the owner's.
@@ -61,13 +62,35 @@ When the limit is hit, GitHub answers "submitted too quickly" and every writer s
      store, `dismissed:<sign-in>:<key>`). The row stays, always `ok`. Nothing nags, blocks or degrades without the App.
    - The code review repo tiles say "Posts as the App" or "Posts as you".
 7. **Measure.** Each content-creating write logs `github write` with its identity (owner or app), its path shape and
-   `writes_this_hour` for that identity.
+   `writes_this_hour` for that identity. Every call is also counted per hour by caller (`feed`, `ship`, `code-review`,
+   `maintainer`, `tool:<tool name>`, `ops:<op>`, `merges`, `sync`, `churn`, …), identity, resource (core, graphql, search) and
+   status, logged as `github calls this hour` with the owner's REST limit left.
+8. **The identity rule for reads (2026-11-25).** The fleet's reads were most of the owner's REST limit (audit of 2026-11-25), so
+   every repo read goes as the App where it can, in github-mcp's one client (`client.ts` `readerFor`), whoever asks: the change
+   feed, ship, code review, the Maintainer, merges, ops and the agents' read tools.
+   - A `GET /repos/{o}/{r}/…` with no identity named goes as the App's installation on that repo when the App is installed there
+     and its installation holds the permission the path needs (the installation's accepted `permissions`, from the cached
+     lookup; the path table maps `actions/` to actions, `check-runs` to checks, a commit's `status(es)` to statuses, `pulls` to
+     pull_requests, `issues`, `labels` and `milestones` to issues, `contents`, `git`, `commits`, `compare`, `branches` and the
+     like to contents, the repo itself and `collaborators` to metadata). Any other path, every org or user listing and search
+     stay the owner's: an installation's list of an org would be only its repos.
+   - Ship's one GraphQL read (its open PRs) names its repo and goes as the App when the installation holds pull_requests,
+     checks, statuses, issues and contents.
+   - **Writes never move.** Every write stays on the owner's sign-in, except code review's own App writes above.
+   - **The one fallback.** An App read refused for a permission its installation hasn't accepted (403 "Resource not
+     accessible by integration", or any GraphQL `errors`) is read again as the owner, and that repo and permission stay the
+     owner's for an hour, logged once (`github reads as the owner`). A broken App (its key, a suspension) fails the read, as it
+     fails code review's writes: the card shows it.
+   - The App's manifest asks for `checks`, `actions` and `issues` read for this. An install made before must accept them on
+     GitHub; until it does, its reads stay the owner's (the installation's permissions don't hold them).
+   - Every GET also goes through one ETag cache in the client (per identity, accept header and path, bounded by bytes): a
+     304 answers from the kept body and costs nothing. The change feed keeps its own ETags and gets its 304s as they are.
 
 ## Non-goals
 
 - Check runs (the status stays a commit status).
 - Changing the identity of agents' writes. Agents stay on the owner's sign-in.
-- Any App use for reads.
+- Any App use for the owner's own acts: merges, pushes, PRs and comments stay the owner's.
 
 ## GitHub gotchas
 
@@ -80,9 +103,12 @@ When the limit is hit, GitHub answers "submitted too quickly" and every writer s
 - **Thread resolution.** It is unverified whether an installation token with `pull_requests: write` can resolve a thread the
   owner started. It is gated on `viewerCanResolve`, read as the App, and skipped with a reason when false. Check it live on a
   throwaway PR after the first install.
-- **Permissions.** The manifest asks for `pull_requests: write`, `statuses: write` and `metadata: read`. PR conversation
-  comments (the ack) take `pull_requests: write`. Changing permissions later needs every installation to accept them, so the
-  set is minimal.
+- **Permissions.** The manifest asks for `pull_requests: write`, `statuses: write`, `contents: write`, `checks: read`,
+  `actions: read`, `issues: read` and `metadata: read`. PR conversation comments (the ack) take `pull_requests: write`.
+  Changing permissions later needs every installation to accept them. A list read without its permission can answer 200 with
+  a filtered list (an issue list holding only PRs), which is why reads route on the installation's permissions, not on a 403.
+- **Team review requests.** Ship's GraphQL read lists requested reviewers, teams included; a team's slug needs the org's
+  members permission, which the App doesn't hold. If the App's answer carries an error for it, the read goes back to the owner.
 - **Secondary limits.** GitHub documents a separate primary budget per installation. It does not promise separate secondary
   limits, so the App's queue keeps its own backoff and `Retry-After`.
 
@@ -92,3 +118,4 @@ When the limit is hit, GitHub answers "submitted too quickly" and every writer s
 - Once code review posts in an org, the GitHub card shows "Code review in <org>: posts as you", with the dismissible
   suggestion.
 - The App is per instance: another owner creates their own from the same page, under their own account or one of their orgs.
+- Without an App every read stays the owner's, through the same ETag cache.

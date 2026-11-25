@@ -32,7 +32,8 @@ export type FeedContext = { pr?: Json };
 export type Hook = (e: FeedEvent, ctx: FeedContext) => void | Promise<void>;
 
 type Pr = { n: number; head: string; base: string; base_ref: string; head_ref: string; draft: boolean; fork: boolean; title: string; body: string; author: string; association: string; labels: string[]; created_at: string; url: string; author_kind?: Kind };
-type Run = { id: number; name: string; suite: number; status: string; conclusion: string | null; started: string | null; completed: string | null };
+/** `node`, `details` and `app` are what ship's recovery reads (checkRuns); a page kept from before they were recorded lacks them. */
+type Run = { id: number; name: string; suite: number; status: string; conclusion: string | null; started: string | null; completed: string | null; node?: string; details?: string; app?: string };
 type Status = { id: number; context: string; state: string; at: string };
 type Review = { id: number; n: number; state: string; commit: string; at: string; author: string; url: string };
 type Page = { etag: string; items: Json[]; full: boolean };
@@ -49,6 +50,8 @@ type State = { gen: string; k: Record<string, number>; outbox: (FeedEvent & { at
 type Window = { passes: number; ok: number; sent: number; loss?: string; err?: string };
 
 export const QUICK_MS = 15_000, QUIET_MAX_MS = 60_000, SETTLED_MS = 5 * 60_000, YOUNG_MS = 10 * 60_000, PAGES_MAX = 10;
+/** How recent a pass (or a head's read) must be for its snapshot to stand in for a read of GitHub (openPrs, checkRuns). */
+const SNAPSHOT_MS = 2 * QUIET_MAX_MS;
 const KEEP_SENT_MS = 2 * 86_400_000, HEALTH_MS = 5 * 60_000, STALL_MS = 10 * 60_000, BACKGROUND_MS = 15 * 60_000, WATCH_MS = 60_000;
 const TEXT_MAX = 2000;
 const clip = (t: string) => (t.length > TEXT_MAX ? { text: t.slice(0, TEXT_MAX), truncated: true } : { text: t });
@@ -297,7 +300,7 @@ export function createFeed(o: FeedOptions) {
       if (known && h.settled && t - h.read < SETTLED_MS) continue;
       const prs = Object.values(rs.prs).filter((p) => p.head === sha).map((p) => p.n);
       const branch = sha === rs.tip && rs.branch ? { branch: short(rs.branch) } : {};
-      const runs = await snapshot(h.pages, `/repos/${repo}/commits/${sha}/check-runs?filter=all`, (r): Run => ({ id: r.id, name: short(r.name), suite: Number(r.check_suite?.id ?? 0), status: String(r.status), conclusion: r.conclusion ?? null, started: r.started_at ?? null, completed: r.completed_at ?? null }), (b) => b?.check_runs);
+      const runs = await snapshot(h.pages, `/repos/${repo}/commits/${sha}/check-runs?filter=all`, (r): Run => ({ id: r.id, name: short(r.name), suite: Number(r.check_suite?.id ?? 0), status: String(r.status), conclusion: r.conclusion ?? null, started: r.started_at ?? null, completed: r.completed_at ?? null, node: String(r.node_id ?? ""), details: String(r.details_url ?? "").slice(0, 500), app: short(r.app?.slug) }), (b) => b?.check_runs);
       const begun = runs.map((r) => Date.parse(r.started ?? "")).filter(Number.isFinite);
       if (!h.started && begun.length) { h.started = true; starts.push({ prs, sha, at: new Date(Math.min(...begun)).toISOString().replace(/\.\d{3}Z$/, "Z") }); }
       for (const r of runs) {
@@ -479,6 +482,27 @@ export function createFeed(o: FeedOptions) {
     runs(repo: string, sha: string): Run[] {
       const h = state.repos[repo.toLowerCase()]?.heads[sha];
       return h ? latestRuns(h) : [];
+    },
+    /**
+     * A repo's open PRs as the last pass read them, for code review's open list instead of reading GitHub again; undefined unless a
+     * pass completed within SNAPSHOT_MS (a paused or failing feed is no evidence). Every event the feed sent came from this
+     * snapshot or an older one, so a consumer of its events never sees it behind them.
+     */
+    openPrs(repo: string): Pr[] | undefined {
+      const rs = state.repos[repo.toLowerCase()];
+      return rs && now() - (rs.okAt ?? 0) <= SNAPSHOT_MS ? Object.values(rs.prs) : undefined;
+    },
+    /**
+     * A head's latest check runs (newest per suite and name, as REST's `filter=latest` lists them) in REST's shape, for ship's
+     * recovery instead of reading GitHub again; undefined unless the head was read within SNAPSHOT_MS and every run carries what
+     * the recovery reads (a page kept from before `node`, `details` and `app` were recorded doesn't, until it changes).
+     */
+    checkRuns(repo: string, sha: string): Json[] | undefined {
+      const h = state.repos[repo.toLowerCase()]?.heads[sha];
+      if (!h || now() - h.read > SNAPSHOT_MS) return undefined;
+      const runs = latestRuns(h);
+      if (runs.some((r) => !r.node || r.details === undefined || r.app === undefined)) return undefined;
+      return runs.map((r) => ({ id: r.id, node_id: r.node, name: r.name, head_sha: sha, status: r.status, conclusion: r.conclusion, started_at: r.started, completed_at: r.completed, details_url: r.details || null, app: { slug: r.app }, check_suite: { id: r.suite } }));
     },
   };
 }

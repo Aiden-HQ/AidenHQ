@@ -1,8 +1,10 @@
 // What the ship module's watch loop (modules/ship/service/src/loop.ts) reads and does on GitHub, through this service with
 // ship's own module token (the kernel vouches for it, GET /v1/whoami): the owner's sign-in stays here. Every route is ship's alone:
-//   POST /internal/ship/gh       {method, path, body?, deadline?} -> {status, body} | {thrown: {message, cause}}: one GitHub call as
-//                                the owner, background, from a fixed list (the loop's reads, check re-runs, update-branch, closing
-//                                an abandoned PR and deleting its branch, its comment), on a repo the fleet merges in. No merge.
+//   POST /internal/ship/gh       {method, path, body?, deadline?} -> {status, body} | {thrown: {message, cause}}: one GitHub call,
+//                                background, from a fixed list (the loop's reads, check re-runs, update-branch, closing an abandoned
+//                                PR and deleting its branch, its comment), on a repo the fleet merges in. No merge. Its writes go as
+//                                the owner; its reads as the App where the App can read the repo (client.ts readerFor), and a head's
+//                                check-run list (filter=latest) from the change feed's snapshot while it is fresh (feed.ts checkRuns).
 //                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's.
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
 //   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
@@ -14,7 +16,7 @@ import { withBranch } from "./branch-lock.ts";
 import { readPrTasks } from "./pr-tasks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
-type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number }) => Promise<{ status: number; body: any }>;
+type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number; repo?: string }) => Promise<{ status: number; body: any }>;
 type Json = any;
 const REPO = "([\\w.-]+/[\\w.-]+)";
 /** The GitHub calls the loop makes, and nothing else: [method, path, body check]. The repo is the path's first group. */
@@ -65,6 +67,8 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
 
 export function shipRoutes(o: {
   gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }) => Promise<unknown>; gate: ReviewGate; cacheDir: string;
+  /** A head's latest check runs in REST's shape from the change feed's snapshot, or undefined when it has no fresh read of them. */
+  checkRuns?: (repo: string, sha: string) => Json[] | undefined;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
   allowed: (repo: string) => boolean;
   /** Whether a bearer is the ship module's own token (undefined: the kernel couldn't say now). */
@@ -121,7 +125,11 @@ export function shipRoutes(o: {
         // A close or a branch delete runs under this service's per-branch lock (branch-lock.ts), the one the publish holds around its
         // push and its ownership write. A cleanup in the gap between them would otherwise close or delete what a successor just pushed.
         const branch = String(path).match(/\/git\/refs\/heads\/(.+)$/)?.[1] ?? (method === "PATCH" && b.body?.state === "closed" ? await prBranch(repo, Number(String(path).split("/").at(-1))) : undefined);
-        const run = () => o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) });
+        // The check-run list the recovery reads (filter=latest, a full head sha): the feed read the same list, so its snapshot answers.
+        const listed = method === "GET" ? /^\/repos\/[\w.-]+\/[\w.-]+\/commits\/([0-9a-f]{40})\/check-runs\?filter=latest&per_page=100&page=(\d+)$/.exec(String(path)) : null;
+        const snap = listed ? o.checkRuns?.(repo, listed[1]!) : undefined;
+        if (snap) return send(res, 200, { status: 200, body: { total_count: snap.length, check_runs: snap.slice((Number(listed![2]) - 1) * 100, Number(listed![2]) * 100) } }), true;
+        const run = () => o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}), ...(read ? { repo } : {}) });
         if (branch && (method === "DELETE" || (method === "PATCH" && b.body?.state === "closed"))) {
           /** Ownership as pr-tasks.json has it once the lock is ours: a successor that published and was recorded while this cleanup
            *  waited is the PR's task now, and its PR is not the earlier task's to close (the head is unchanged, so no tip read can say so). */

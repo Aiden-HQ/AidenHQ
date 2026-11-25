@@ -10,7 +10,7 @@ import { Projects, issueLink, parseProductRepo, productTarget, upstreamReport } 
 import { originIds, ownerTerms, publicText } from "./scrub.js";
 import { SourceStore } from "./source-store.js";
 import { syncPass } from "./sources.js";
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
@@ -21,12 +21,12 @@ import { Maintainer } from "./maintainer.js";
 import { graduate } from "./graduate.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
 import { isModule, needQueue, reportOrgOk } from "./module-caller.js";
-import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
+import { CodeReviewReader, codeReviewRoute, type OpenPrs } from "./code-review-read.js";
 import { createAccess, GitHubNeed, needResult, withWriteBudget, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
 import { signedIn } from "./vendor/needs.js";
 import { ReviewPoster } from "./review-post.js";
-import { gitHubApp } from "./github-app.js";
+import { gitHubApp, type GitHubApp } from "./github-app.js";
 import { reviewAs } from "./review-as.js";
 import { reviewErrorAnswer, type ReviewErrorAnswer } from "./review-need.js";
 
@@ -64,7 +64,11 @@ const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim();
 const auth = signIn({ clientId, mcpUrl, stateDir, ci: process.env.GITHUB_CI === "1" });
 const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const codehostKey = () => { const f = process.env.CODEHOST_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
-const access = createAccess({ auth, clientId, log: (msg, f) => log.info(f, msg), onOrgOk: (org) => { needs.forget(org); reportOrgOk(kernelUrl, codehostKey(), "github", org, log); } });
+// The owner's optional GitHub App (github-app.ts; its id and key in this process's vault dir, written by the kernel's
+// /setup/github-app): code review's writes go as it where it is installed (review-post.ts), and every repo read goes as it where its
+// installation holds the read's permission (client.ts readerFor), so the fleet's reads don't spend the owner's rate limit.
+const reviewApp = gitHubApp({ dir: join(stateDir, "github-app") });
+const access = createAccess({ auth, clientId, app: reviewApp, log: (msg, f) => log.info(f, msg), onOrgOk: (org) => { needs.forget(org); reportOrgOk(kernelUrl, codehostKey(), "github", org, log); } });
 /** Whether a GitHub object (`github:<repo>#<n>[/comment/<id>]`) is in AidenHQ's records; a failed read is "no". */
 const ours = async (ref: string): Promise<boolean> => {
   const r = await fetch(`${kernelUrl}/v1/objects?ref=${encodeURIComponent(ref)}`, { headers: { authorization: `Bearer ${codehostKey()}` }, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
@@ -86,9 +90,7 @@ const maintainer = new Maintainer(access, maintainedRepos, OWNER_TERMS, ours);
 const REPOS = describeRepos(maintainer.list());
 const github = new GitHub(access);
 // Code review's posting (review-post.ts): the code-review module's executor reaches it through /internal/review below.
-// Its writes go as the owner's optional GitHub App where it is installed (github-app.ts; its id and key in this process's vault
-// dir, written by the kernel's /setup/github-app), else as the owner; review-as.ts keeps which, per repo, for the GitHub card.
-const reviewApp = gitHubApp({ dir: join(stateDir, "github-app") });
+// Its writes go as the App where it is installed, else as the owner; review-as.ts keeps which, per repo, for the GitHub card.
 const reviewIdentity = reviewAs({ file: join(stateDir, "review-as.json"), app: reviewApp });
 // A failure only the owner can fix (GitHubNeed) goes to the kernel: the reply waits up to a second for it, so a restart in that
 // window can't drop it, and one the kernel didn't take is kept and retried at the start of the next request. Never throws.
@@ -168,7 +170,8 @@ function buildServer(caller?: Caller): McpServer {
       try {
         // A write's GitHub objects go to the kernel with its outcome (structuredContent._aidenhq.objects), not to the agent.
         // One invocation, one write budget: every write the tool makes shares the deadline its first write fixes.
-        const out = (await withWriteBudget(() => Promise.resolve(fn(a)))) as { objects?: unknown } | undefined;
+        // Counted under the tool's name in the hourly count of GitHub calls.
+        const out = (await access.withCaller(`tool:${name}`, () => withWriteBudget(() => Promise.resolve(fn(a))))) as { objects?: unknown } | undefined;
         const objects = out && typeof out === "object" && Array.isArray(out.objects) ? (out.objects as string[]) : undefined;
         const shown = objects ? Object.fromEntries(Object.entries(out!).filter(([k]) => k !== "objects")) : out;
         const result = { content: [{ type: "text" as const, text: JSON.stringify(shown, null, 2) }], ...(objects ? { structuredContent: { _aidenhq: { objects } } } : {}) };
@@ -588,7 +591,10 @@ function authorized(req: IncomingMessage): boolean {
 // The Maintainer module's watcher opens only the internal issue read (never /mcp) with its own module token, which the
 // kernel vouches for (module-caller.ts, at kernelUrl).
 
-const http = createServer(async (req, res) => {
+/** Who a route's GitHub calls are for, in the hourly count (a tool call is counted under its tool's name instead). */
+const routeCaller = (path = "") => /^\/internal\/(?:review|code-review)\//.test(path) ? "code-review" : path.startsWith("/internal/maintainer/") ? "maintainer" : path.startsWith("/internal/ship/") ? "ship" : "github-mcp";
+const http = createServer((req, res) => void access.withCaller(routeCaller(req.url), () => serve(req, res)));
+async function serve(req: IncomingMessage, res: ServerResponse) {
   let url: URL;
   try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
   if (url.pathname === "/healthz") {
@@ -702,7 +708,7 @@ const http = createServer(async (req, res) => {
     log.error({ err: (err as Error).message }, "request failed");
     if (!res.headersSent) res.writeHead(500).end();
   }
-});
+}
 
 /** A need met outside a tool call, reported through the queue that keeps and retries what the kernel couldn't take. */
 export type ReportNeed = (need: { cause: "scope"; scope: string }, detail: string) => Promise<void>;
@@ -711,9 +717,9 @@ export type ReportNeed = (need: { cause: "scope"; scope: string }, detail: strin
  * Starts both connections (8086 AidenHQ's tools, 8087 GitHub's own MCP and the sign-in) and hands back the owner's access and the
  * need queue: the GitHub process's code host (modules/github/service/src/main.ts) runs on the same sign-in.
  */
-export async function startGithubMcp(): Promise<{ access: GitHubAccess; reportNeed: ReportNeed; sync?: () => Promise<void>; sources?: SourceStore }> {
+export async function startGithubMcp(): Promise<{ access: GitHubAccess; app: GitHubApp; reportNeed: ReportNeed; sync?: () => Promise<void>; sources?: SourceStore; useFeed: (f: OpenPrs) => void }> {
   http.listen(port, "0.0.0.0", () => log.info({ port }, "github-mcp listening"));
   official.listen(8087, "0.0.0.0", () => log.info({ port: 8087 }, "GitHub's MCP server and the sign-in listening"));
   for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { official.close(); http.close(); });
-  return { access, reportNeed: (need, detail) => needs.tell(new GitHubNeed(need, detail)), ...(sync ? { sync } : {}), ...(sources ? { sources } : {}) };
+  return { access, app: reviewApp, useFeed: (f) => crReader.useFeed(f), reportNeed: (need, detail) => needs.tell(new GitHubNeed(need, detail)), ...(sync ? { sync } : {}), ...(sources ? { sources } : {}) };
 }

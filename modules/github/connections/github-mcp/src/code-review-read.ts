@@ -1,6 +1,7 @@
 // Code review's watcher reads (the code-review module's PrSource seam, modules/code-review/service/src/seams.ts): open PRs, one PR,
 // a PR's files for its risk tier (snapshot), the PR conversation comments since a time, and a login's permission. Read-only, through the same GitHub client as every other read
-// (the owner's sign-in).
+// (the App's installation where it can read the repo, else the owner's sign-in; client.ts readerFor), except the open list, which
+// the change feed's snapshot answers while it is fresh (`useFeed`).
 import { createHash } from "node:crypto";
 import { GitHubRefused, type GitHub } from "./github.js";
 
@@ -63,7 +64,15 @@ function shape(repo: string, p: GhPr, self?: string): PullRequest {
   };
 }
 
+/** The change feed's open PRs of a repo (service/src/feed.ts openPrs, its own record of each), or undefined when its snapshot of
+ * the repo isn't fresh. */
+export type OpenPrs = (repo: string) => { n: number; head: string; base: string; base_ref: string; draft: boolean; fork: boolean; title: string; body: string; author: string; association: string; url: string }[] | undefined;
+
 export class CodeReviewReader {
+  private feed?: OpenPrs;
+  /** The change feed, once it runs (the code host's process starts it after this connection): the open list comes from it. */
+  useFeed(f: OpenPrs): void { this.feed = f; }
+
   /** `identity`: who a review on owner/repo would post as (review-post.ts identity, auto), or null when nobody may. */
   /** `self`: this instance's own App's bot login (`<slug>[bot]`), whose PRs are a member's. */
   constructor(private readonly github: GitHub, private readonly identity: (owner: string, repo: string) => Promise<"app" | "owner" | null> = async () => null, private readonly self: () => string | undefined = () => undefined) {}
@@ -74,7 +83,20 @@ export class CodeReviewReader {
     return { identity: await this.identity(owner!, name!), org: owner! };
   }
 
+  /**
+   * The open PRs: the change feed's snapshot while it is fresh (the feed lists them the same way, every page, and every event code
+   * review acts on came from it), else GitHub's list. One PR (`get`) is always read from GitHub: callers ask it whether a head moved
+   * or a PR closed just now, which a snapshot a minute old can't answer (it is a free 304 through the ETag cache when nothing changed).
+   */
   async open(repo: string): Promise<PullRequest[]> {
+    const snap = this.feed?.(repo.toLowerCase());
+    if (snap) {
+      const self = this.self()?.toLowerCase();
+      return snap.map((p) => ({
+        repo: repo.toLowerCase(), number: p.n, head: p.head, base: p.base, base_ref: p.base_ref, draft: p.draft, fork: p.fork, author: p.author, open: true, merged: false, url: p.url,
+        title: p.title.slice(0, 200), body: p.body.slice(0, 2000), association: p.association || "NONE", own: !!self && p.author.toLowerCase() === self,
+      }));
+    }
     const out: PullRequest[] = [];
     for (let page = 1; page <= MAX_PAGES; page++) {
       const rows = await this.github.request<GhPr[]>("GET", `/repos/${repo}/pulls`, { query: { state: "open", per_page: 100, page } });

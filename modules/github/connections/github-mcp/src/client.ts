@@ -87,10 +87,10 @@ export type Identity = {
   /** Each write as it was answered: a refusal (its words) or a success (undefined), so its owner sees when it stops working. */
   wrote?(refusal?: string): void;
 };
-  /** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
 type CallOpts = {
   background?: boolean; accept?: string; as?: Identity;
-  /** A conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
+  /** A conditional read with the caller's own ETag (the change feed keeps its own): a 304 is answered as the 304. Every other GET
+   * goes through the shared ETag cache instead (`cached`), which answers an unchanged read from the body it kept. */
   etag?: string;
   /** Who is calling, for the hourly count of calls by caller and status (the change feed, the sync, …). The change feed ("feed")
    * skips the background reserve down to a small floor: its 304s are free and its 200s are the changes every consumer needs. */
@@ -101,6 +101,15 @@ type CallOpts = {
    * starts at the deadline still gets its own attempt timeout. A write that cannot see its attempt through inside it fails
    * (a write must never land after its caller was told it failed). */
   deadline?: number;
+  /** The repo a GraphQL read is about (its variables'): only such a read may go as the App (`readerFor`). */
+  repo?: string;
+};
+
+/** The owner's optional GitHub App (github-app.ts), for reads: where it is installed on a repo and holds the permission a read
+ * needs, the read goes as its installation (its own rate limit), never the owner's. Writes never go through this. */
+export type AppReader = {
+  installed(repo: string): Promise<{ id: number; permissions: Record<string, string> } | null>;
+  token(installation: number, fresh?: boolean): Promise<string>;
 };
 
 export interface GitHubAccess {
@@ -116,6 +125,8 @@ export interface GitHubAccess {
   status(): GitHubStatus;
   /** Calls `fn` after each content-creating write this process sends (any identity): the change feed reads that repo again soon. */
   onWrite(fn: (method: string, path: string) => void): void;
+  /** Runs `fn` with every GitHub call it makes counted under `caller` in the hourly count (a call's own `caller` wins). */
+  withCaller<T>(caller: string, fn: () => T): T;
 }
 
 /** Scopes that include others (GitHub's OAuth scope tree). */
@@ -130,6 +141,30 @@ const covers = (have: string[], want: string) => have.some((h) => h === want || 
 const split = (h: string | null) => (h ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 /** The repo a path names when the path is the repository itself (`/repos/o/r`); its sub-resources' 404s are answers. */
 const repoOf = (path: string) => /^\/repos\/([^/?#]+)\/([^/?#]+)(?:[?#].*)?$/.exec(path);
+/** A repo-scoped path: the repo and the rest of the path (no query). */
+const inRepo = (path: string) => /^\/repos\/([\w.-]+)\/([\w.-]+)(\/[^?#]*)?(?:[?#].*)?$/.exec(path);
+/**
+ * The installation permission a repo read needs, by the path after `/repos/o/r` (GitHub's per-endpoint permission tables); none: a
+ * path not listed here, which the owner reads. An installation without the permission would not see the read at all, or (an issue
+ * list without `issues`) would see a filtered list, so a read goes as the App only where the installation holds it.
+ */
+const PERMISSIONS: [RegExp, string][] = [
+  [/^$/, "metadata"],
+  [/^\/collaborators\//, "metadata"],
+  [/^\/actions\//, "actions"],
+  [/^(?:\/commits\/[^/]+)?\/check-(?:runs|suites)\b/, "checks"],
+  [/^\/commits\/[^/]+\/(?:status|statuses)$/, "statuses"],
+  [/^\/pulls\b/, "pull_requests"],
+  [/^\/(?:issues|labels|milestones)\b/, "issues"],
+  [/^\/(?:contents|git|commits|compare|branches|readme|tags|releases)\b/, "contents"],
+];
+const permissionOf = (rest: string) => PERMISSIONS.find(([re]) => re.test(rest))?.[1];
+/** What ship's one GraphQL read (its open PRs with their checks and timeline) reads: every one of these, or the owner reads it. */
+const GRAPHQL_PERMISSIONS = ["pull_requests", "checks", "statuses", "issues", "contents"];
+/** An App read refused for a permission its installation hasn't accepted: the owner reads that repo and permission this long. */
+const DENIED_MS = 60 * 60_000;
+/** The shared ETag cache's bounds: its whole size, and the largest answer it keeps. */
+const CACHE_BYTES = 32 * 1024 * 1024, CACHE_ENTRY_BYTES = 1024 * 1024;
 const ownerOf = (path: string) => /^\/(?:repos|orgs)\/([^/?#]+)/.exec(path)?.[1];
 
 type Rate = { remaining: number; limit: number; reset: number };
@@ -170,6 +205,8 @@ const WRITE_BUDGET_MS = 240_000;
 const SECONDARY = /secondary rate limit|abuse detection|submitted too quickly/i;
 /** One tool invocation's writes share one budget: the store holds the deadline, fixed at the invocation's entry. */
 const invocation = new AsyncLocalStorage<{ deadline: number }>();
+/** Who the calls in this async context are for (the hourly count's caller): a tool, a route, a loop. */
+const callers = new AsyncLocalStorage<string>();
 
 /** Runs `fn` as one tool invocation (main.ts's tool wrapper): every write it makes shares one 240 s budget, fixed when the
  * invocation starts, so a preflight read and a second write both spend that same budget and no write is sent after it. */
@@ -207,6 +244,8 @@ export function createAccess(o: {
   log?: (msg: string, f: Record<string, unknown>) => void;
   /** The owner's GraphQL org query answered with no errors: the org's sso/restricted need is the owner's fix made. */
   onOrgOk?: (org: string) => void;
+  /** The owner's optional GitHub App: repo reads go as its installation where it can make them (`readerFor`). */
+  app?: AppReader;
 }): GitHubAccess {
   const fetchImpl = o.fetchImpl ?? fetch;
   const now = o.now ?? Date.now;
@@ -333,9 +372,9 @@ export function createAccess(o: {
     fail({ cause: "write_busy" });
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number, caller?: string) {
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number, caller?: string, repo?: string) {
     const p = paceOf(as);
-    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, readDeadline, as, false, etag, caller);
+    if (!createsContent(method, path, body)) return read(method, path, body, resource, background, accept, as, etag, readDeadline, caller, repo);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
@@ -343,6 +382,82 @@ export function createAccess(o: {
     // (a recovery write that must not hold the scan), which bounds that wait the same way a tool's budget does.
     const deadline = readDeadline ?? (background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS);
     return queued(p, deadline, () => paced(p, deadline, () => attempt(p, method, path, body, resource, background, accept, deadline, as, false, undefined, caller)));
+  }
+
+  /** Repo reads the App can't make (its installation refused the permission), until when: `<repo> <permission>`. */
+  const denied = new Map<string, number>();
+  /**
+   * Who reads a repo when the caller named nobody: the App's installation where the App is installed on the repo and its
+   * installation holds the permission the read needs (PERMISSIONS; a GraphQL read names its repo and needs GRAPHQL_PERMISSIONS),
+   * else the owner (undefined). A broken App (its key, a suspension) throws here, as it does for code review's writes: the GitHub
+   * card already shows it, and a read never quietly moves between identities because the App broke.
+   */
+  async function readerFor(method: string, path: string, repo?: string): Promise<{ key: string; repo: string; permission: string; as: Identity } | undefined> {
+    if (!o.app) return undefined;
+    let r: string, permission: string, needs: string[];
+    if (method === "GET") {
+      const m = inRepo(path);
+      const perm = m && permissionOf(m[3] ?? "");
+      if (!m || !perm || [m[1], m[2]].some((x) => /^\.+$/.test(x!))) return undefined;
+      r = `${m[1]}/${m[2]}`.toLowerCase(); permission = perm; needs = [perm];
+    } else if (method === "POST" && path === "/graphql" && repo && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
+      r = repo.toLowerCase(); permission = "graphql"; needs = GRAPHQL_PERMISSIONS;
+    } else return undefined;
+    const key = `${r} ${permission}`;
+    if ((denied.get(key) ?? 0) > now()) return undefined;
+    const inst = await o.app.installed(r);
+    if (!inst || !needs.every((n) => inst.permissions[n] === "read" || inst.permissions[n] === "write")) return undefined;
+    const app = o.app;
+    return { key, repo: r, permission, as: { key: `app:${inst.id}`, token: (fresh) => app.token(inst.id, fresh) } };
+  }
+
+  /**
+   * A read, as the App where it can (readerFor), else as the caller's identity (the owner, or `as`). An App read GitHub refuses for
+   * a permission the installation hasn't accepted yet (403 "Resource not accessible by integration", or any GraphQL `errors`: a
+   * partial answer is never used) is read again as the owner, and that repo and permission stay the owner's for DENIED_MS, logged
+   * once: the one fallback, because the App is optional and its new permissions wait for each install's approval.
+   */
+  async function read(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, deadline?: number, caller?: string, repo?: string) {
+    const go = (who?: Identity) => cached(method, path, body, resource, background, accept, who, etag, deadline, caller);
+    const app = as ? undefined : await readerFor(method, path, repo);
+    if (!app) return go(as);
+    const r = await go(app.as);
+    const refused = path === "/graphql" ? Array.isArray(r.body?.errors) && r.body.errors.length > 0 : r.status === 403 && /not accessible by integration/i.test(String(r.body?.message ?? ""));
+    if (!refused) return r;
+    denied.set(app.key, now() + DENIED_MS);
+    o.log?.("github reads as the owner: the App's installation refused the permission", { repo: app.repo, permission: app.permission, until: new Date(now() + DENIED_MS).toISOString(), said: String(r.body?.message ?? r.body?.errors?.[0]?.message ?? "").slice(0, 200) });
+    return go(undefined);
+  }
+
+  /** The shared ETag cache, least recently used first: per identity (the owner's per sign-in), accept header and path. */
+  const etags = new Map<string, { etag: string; status: number; text: string }>();
+  let etagBytes = 0;
+  const forget = (k: string) => { const e = etags.get(k); if (e) { etagBytes -= e.text.length; etags.delete(k); } };
+  /**
+   * A GET through the shared ETag cache: sent with the ETag of the answer kept for it, and a 304 (free of the rate limit) answers
+   * with that kept body (parsed afresh, so no caller shares an object). A call with its own `etag` (the change feed's) bypasses it.
+   */
+  async function cached(method: string, path: string, body: unknown, resource: string, background: boolean, accept: string | undefined, as: Identity | undefined, etag: string | undefined, deadline: number | undefined, caller: string | undefined) {
+    const p = paceOf(as);
+    if (method !== "GET" || etag !== undefined) return attempt(p, method, path, body, resource, background, accept, deadline, as, false, etag, caller);
+    const key = `${as?.key ?? `owner#${o.auth.signInCount?.() ?? 0}`} ${accept ?? ""} ${path}`;
+    const hit = etags.get(key);
+    const r = await attempt(p, method, path, body, resource, background, accept, deadline, as, false, hit?.etag, caller);
+    if (r.status === 304 && hit) {
+      etags.delete(key); etags.set(key, hit); // most recently used
+      return { status: hit.status, body: JSON.parse(hit.text), headers: r.headers };
+    }
+    forget(key);
+    const tag = r.headers.get("etag");
+    if (r.status === 200 && tag) {
+      const text = JSON.stringify(r.body ?? null);
+      if (text.length <= CACHE_ENTRY_BYTES) {
+        etags.set(key, { etag: tag, status: r.status, text });
+        etagBytes += text.length;
+        for (const k of etags.keys()) { if (etagBytes <= CACHE_BYTES) break; forget(k); }
+      }
+    }
+    return r;
   }
 
   /** Runs a write behind its identity's queue: one at a time, a gap apart, and the whole queue waits out a refusal. A write that is
@@ -396,14 +511,16 @@ export function createAccess(o: {
   }
 
   const writeListeners: ((method: string, path: string) => void)[] = [];
-  /** Calls answered this hour, by caller and status ("feed 304"), logged as the hour turns: what each reader really costs. */
+  /** Calls answered this hour, by caller, identity, resource (GraphQL and search have their own limits) and status ("feed owner
+   * 304"; a 304 is free), logged as the hour turns with the owner's REST limit left: what each reader really costs. */
   let calls = { at: now(), n: new Map<string, number>() };
-  const count = (caller: string | undefined, status: number) => {
+  const count = (caller: string | undefined, as: Identity | undefined, resource: string, status: number) => {
     if (now() - calls.at >= 3_600_000) {
-      if (calls.n.size) o.log?.("github calls this hour", { since: new Date(calls.at).toISOString(), calls: Object.fromEntries([...calls.n].sort((a, b) => b[1] - a[1])) });
+      const core = owner.rates.get("core");
+      if (calls.n.size) o.log?.("github calls this hour", { since: new Date(calls.at).toISOString(), calls: Object.fromEntries([...calls.n].sort((a, b) => b[1] - a[1])), ...(core ? { owner_core_left: core.remaining, owner_core_limit: core.limit } : {}) });
       calls = { at: now(), n: new Map() };
     }
-    const k = `${caller ?? "other"} ${status}`;
+    const k = `${caller ?? callers.getStore() ?? "other"} ${as ? "app" : "owner"}${resource === "core" ? "" : ` ${resource}`} ${status}`;
     calls.n.set(k, (calls.n.get(k) ?? 0) + 1);
   };
 
@@ -436,7 +553,7 @@ export function createAccess(o: {
       o.log?.("github write", { identity: as ? "app" : "owner", key: as?.key ?? "owner", method, path: path.replace(/[0-9a-f]{40}/g, ":sha").replace(/\/[0-9]+/g, "/:n").split("?")[0], status: res.status, writes_this_hour: p.hour.writes });
     }
     observe(p, res, sentFor);
-    count(caller, res.status);
+    count(caller, as, resource, res.status);
     const text = await res.text();
     let parsed: any = text;
     try { parsed = text ? JSON.parse(text) : {}; } catch { /* a non-JSON answer (a diff, a log) stays text */ }
@@ -518,9 +635,10 @@ export function createAccess(o: {
   return {
     connected,
     onWrite: (fn) => void writeListeners.push(fn),
+    withCaller: (caller, fn) => callers.run(caller, fn),
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline, opts.caller),
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : path.startsWith("/search/") ? "search" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline, opts.caller, opts.repo),
     graphql: async (query, variables, opts = {}) => {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
       const body = res.body;

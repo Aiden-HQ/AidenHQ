@@ -99,3 +99,22 @@ test("a close or branch delete whose PR a successor took over while the lock was
   assert.deepEqual(sent, { state: "closed" }, "expectTask is the route's check, never GitHub's");
   assert.equal((await (await post({ method: "DELETE", path: "/repos/acme/app/git/refs/heads/b6", body: { expectTask: "ACME-1" } })).json()).status, 409, "a delete decided for the earlier task is skipped");
 });
+
+test("a head's check-run list comes from the change feed's fresh snapshot; without one it is read from GitHub", async (t) => {
+  const called = [];
+  const head = "c".repeat(40), other = "d".repeat(40);
+  const runs = [{ id: 1, node_id: "CR_1", name: "test", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 9 } }];
+  const routes = shipRoutes({
+    gh: async (method, path) => (called.push(`${method} ${path}`), { status: 200, body: { total_count: 0, check_runs: [] } }),
+    gate: async () => undefined, cacheDir: mkdtempSync(join(tmpdir(), "ship-routes-")),
+    checkRuns: (_repo, sha) => (sha === head ? runs : undefined),
+    allowed: (repo) => repo === "acme/app", isShip: async () => true,
+  });
+  const s = createServer((req, res) => void routes(req, res).then((done) => done || res.writeHead(404).end()));
+  await new Promise((ok) => s.listen(0, "127.0.0.1", ok));
+  t.after(() => s.close());
+  const gh = async (path) => (await fetch(`http://127.0.0.1:${s.address().port}/internal/ship/gh`, { method: "POST", headers: { authorization: "Bearer ship" }, body: JSON.stringify({ method: "GET", path }) })).json();
+  assert.deepEqual(await gh(`/repos/acme/app/commits/${head}/check-runs?filter=latest&per_page=100&page=1`), { status: 200, body: { total_count: 1, check_runs: runs } });
+  await gh(`/repos/acme/app/commits/${other}/check-runs?filter=latest&per_page=100&page=1`);
+  assert.deepEqual(called, [`GET /repos/acme/app/commits/${other}/check-runs?filter=latest&per_page=100&page=1`]);
+});
