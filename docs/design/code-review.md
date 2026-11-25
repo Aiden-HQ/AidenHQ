@@ -234,10 +234,9 @@ changed; the acknowledgement is left to the newer head), while a run whose PR mo
 - **A comment is for what no review says.** A review posts no acknowledgement of its own (the `aidenhq/review` commit status
   already shows queued and running). The acknowledgement comment exists for a PR no review will speak on (tier skip), a skipped,
   failed or refused review, and the answers to `aiden review` commands; an existing one is kept current.
-- **What makes a finding important** is the brief's one definition (`recipe/brief.ts`, the verifier's and the recheck's prompts
-  point at it): a concrete failure scenario, reachable in normal use, checked against the head, and not already covered by the PR's
+- **What makes a finding important** is the brief's one definition (`recipe/brief.ts`; the verifier's prompt points at it): a concrete failure scenario, reachable in normal use, checked against the head, and not already covered by the PR's
   description, comments in the code, the guidance files or a thread already on the PR (the check is given those threads as one
-  line each). A prose-only change (docs, plans, specs) never has an important finding: code makes it a nit.
+  line each). A prose-only change (docs, plans, specs) gets at most a non-blocking design note (the brief says so; nits stay on the board).
 - **Left out of the review**: lockfiles, generated and built files, files the repo's `ignore` globs name, and files its root
   `.gitattributes` (at the merge base) marks `linguist-generated` (declared by the repo: no coverage gap).
 - The severity line `<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`.

@@ -61,7 +61,8 @@ starting "${SCENARIO.trim()}"): an important finding without one is reported as 
 failure in code you read is important whether or not this change wrote it. "nit" is anything else worth a mention (never
 formatting or what a linter catches); nits stay on the board, so keep them few. Style, naming, a missing test or an alternative
 design is never important. A plan or design document (a change that is only prose: docs, plans, specs) gets at most one
-non-blocking design note, a nit; it is never important, and a contradiction inside it is a nit.`;
+non-blocking design note, a nit; it is never important, and a contradiction inside it is a nit. (The words of a guidance file
+or a skill are behaviour, not prose: judge them as code.)`;
 
 // The review core both callers share: what a finding is, how an engine's answer is cleaned and scrubbed, and the severity code decides.
 export type Severity = "important" | "nit" | "pre_existing";

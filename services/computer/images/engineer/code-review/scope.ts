@@ -20,7 +20,7 @@ export interface Changed { path: string; added: number; removed: number; binary:
 /**
  * What a repo's own `.gitattributes` says of `linguist-generated` (its root file, as the merge base has it: the PR's own copy is its
  * author's to write), in file order: a path's effective value is the last rule that matches it, as git reads it (a later
- * `-linguist-generated` exempts a file an earlier pattern marked). A line is `pattern attr…`; a pattern with no slash matches at any
+ * `-linguist-generated` or `!linguist-generated` exempts a file an earlier pattern marked). A line is `pattern attr…`; a pattern with no slash matches at any
  * depth, a leading slash anchors it, a trailing slash is a folder.
  */
 export function generatedRules(text: string): { glob: string; on: boolean }[] {
@@ -28,7 +28,7 @@ export function generatedRules(text: string): { glob: string; on: boolean }[] {
   for (const line of text.split("\n")) {
     const [pattern, ...attrs] = line.trim().split(/\s+/);
     if (!pattern || pattern.startsWith("#") || pattern.startsWith('"')) continue;
-    const last = attrs.filter((a) => /^-?linguist-generated(=|$)/.test(a)).pop();
+    const last = attrs.filter((a) => /^[-!]?linguist-generated(=|$)/.test(a)).pop();
     if (!last) continue;
     const p = pattern.replace(/^\//, "");
     out.push({ glob: pattern.endsWith("/") ? `${p}**` : pattern.startsWith("/") || p.includes("/") ? p : `**/${p}`, on: last === "linguist-generated" || last === "linguist-generated=true" });

@@ -1241,7 +1241,7 @@ export function createEngine(d: EngineDeps) {
     let posted: Posted;
     try {
       const own = all<{ comment: number }>("SELECT comment FROM comments WHERE repo = ? AND number = ? ORDER BY comment DESC LIMIT 1000", r.repo, r.number).map((c) => c.comment);
-      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!repoCfg(r.repo) && !!r.mandatory, own, first: !previous && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND id != ? AND posted IN ('posted', 'pending', 'retry')", r.repo, r.number, r.id), ...(riskOf(r) ? { tier: riskOf(r) } : {}) });
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!repoCfg(r.repo) && !!r.mandatory, own, first: !previous, ...(riskOf(r) ? { tier: riskOf(r) } : {}) });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
     }
@@ -2160,7 +2160,7 @@ export function createEngine(d: EngineDeps) {
   /** A resolution word (and its separator) a reason starts with, repeated. */
   /** An answer's word as it is stored and shown: lower case, no apostrophe, `won't fix`. */
   const wordOf = (w: string) => w.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
-  const LEADING_WORD = /^(?:\s*(?:fixed|disputed|by design|won['’]?t fix)\s*[:\-–—]\s*)+/i;
+  const LEADING_WORD = /^(?:\s*(?:fixed|disputed|by design|won['’]?t fix)(?::|\s+[-–—])\s*)+/i;
   /** The answer in a reply: its word and its reason, which must say something (letters, not only punctuation or a signature). */
   const answerOf = (body: string) => {
     if (body.includes("<!-- aidenhq-")) return undefined; // our own posts (a mirrored answer, a review) never answer a finding
