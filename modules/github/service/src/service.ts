@@ -167,14 +167,14 @@ export type TreeEntry = { path: string; mode: string; sha: string };
 /** An entry of `POST /git/trees`: a blob or gitlink by sha, or a deletion (`sha: null`). */
 type TreeWrite = { path: string; mode: string; type: string; sha: string | null };
 /** What a `POST /git/trees` call was asking for, kept for its refusal's evidence. */
-type TreeTry = { diff: string; tree: TreeWrite[]; dirs: Set<string> };
+type TreeTry = { diff: string; tree: TreeWrite[] };
 /** How many paths one `ls-tree` lookup names: the output stays proportional to the change, never the repository's size. */
 const TREE_CHUNK = 200;
 /** A git run that keeps stdout as git wrote it: a tree path may start with whitespace, which a trim would eat. */
 export type Raw = (args: string[]) => Promise<string>;
 const NUL = (out: string) => out.split("\0").filter(Boolean);
 /** The paths that differ between two trees (`git diff-tree --name-only`): a change's size, not the tree's. */
-export const changedPaths = async (raw: Raw, a: string, b: string) => [...new Set(NUL(await raw(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b])))];
+const changedPaths = async (raw: Raw, a: string, b: string) => [...new Set(NUL(await raw(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b])))];
 
 /**
  * The paths among `paths` that `<tree>` holds as a directory, at any depth (`git ls-tree -d`): `x` is a directory in the result
@@ -183,7 +183,7 @@ export const changedPaths = async (raw: Raw, a: string, b: string) => [...new Se
  * parsing, so without it a file named `:(draft).md` is read as pathspec magic (`fatal: Invalid pathspec magic 'draft'`) and
  * `*.md`/`a[1].txt` are read as patterns that match other paths.
  */
-export const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
+const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
   const dirs = new Set<string>();
   for (let i = 0; i < paths.length; i += TREE_CHUNK) {
     for (const rec of NUL(await raw(["--literal-pathspecs", "ls-tree", "-d", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
@@ -194,7 +194,7 @@ export const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
   return dirs;
 };
 /** What `<tree>` holds at exactly each of `paths`: its mode and sha as git's own tree has them (a tree entry is skipped). */
-export const entriesAt = async (raw: Raw, tree: string, paths: string[]) => {
+const entriesAt = async (raw: Raw, tree: string, paths: string[]) => {
   const files = new Map<string, TreeEntry>();
   for (let i = 0; i < paths.length; i += TREE_CHUNK) {
     for (const rec of NUL(await raw(["--literal-pathspecs", "ls-tree", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
@@ -238,18 +238,15 @@ export const treeWrites = async (raw: Raw, base: string, want: string) => {
 /**
  * GitHub's refusal of a `POST /git/trees`, saying what it refused: the entry first (its path and sha, so ship's hold, which keeps
  * the first 300 characters of the first line, still names it), then the diff and GitHub's own words. The entry is the one GitHub
- * points at (`errors[].index`) when it says; else a `sha:null` entry for a path the result holds as a directory — the only kind
- * this construction must never send, and the one GitHub refuses (`422 Invalid tree info`).
+ * points at (`errors[].index`) when it says which; otherwise the first sent, said as such.
  */
-const treeRefusal = (where: string, status: number, body: { message?: unknown; errors?: unknown } | undefined, { diff, tree, dirs }: TreeTry) => {
-  const impossible = tree.filter((e) => e.sha === null && dirs.has(e.path));
+const treeRefusal = (where: string, status: number, body: { message?: unknown; errors?: unknown } | undefined, { diff, tree }: TreeTry) => {
   const errors = Array.isArray(body?.errors) ? (body!.errors as { index?: unknown; message?: unknown }[]) : [];
   const named = errors.find((e) => typeof e.index === "number" && tree[e.index as number]);
-  const entry = named ? tree[named.index as number] : impossible[0];
+  const entry = named ? tree[named.index as number] : undefined;
   const why = errors.map((e) => String(e.message ?? "")).filter(Boolean).join("; ").slice(0, 200);
   return `GitHub refused tree entry ${JSON.stringify(entry ?? tree[0] ?? null)}${entry ? "" : " (the first sent: GitHub named none)"}`
     + ` — ${where} ${diff}: ${status} ${String(body?.message ?? "").slice(0, 200)}${why ? ` (${why})` : ""}`
-    + `${impossible.length > 1 ? `; ${impossible.length} entries name a path the result holds as a directory` : ""}`
     + `; carried ${tree.length} change(s): ${tree.slice(0, 20).map((e) => `${e.sha === null ? "-" : "+"}${e.path}@${e.mode}`).join(", ")}${tree.length > 20 ? ", …" : ""}`;
 };
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
@@ -1169,7 +1166,7 @@ export function createService(o: Options) {
         // in the merge (`x` -> `x/y`) is one added path, and sending the diff's `D x` as a `sha:null` deletion next to `x/y` is
         // what GitHub refuses (422 Invalid tree info: `x` is a directory in the resulting tree).
         const baseTree = await g(["rev-parse", `${a.head}^{tree}`]);
-        const { tree, dirs } = await treeWrites(raw, a.head, final);
+        const { tree } = await treeWrites(raw, a.head, final);
         const diff = `${String(a.head).slice(0, 12)}..${final.slice(0, 12)}`;
         // An empty entry list is a head the merge leaves as it is (a base already merged, or a conflict the kept set resolves to
         // the head's own side): there is nothing to record, so it is a clean "nothing was changed", never an empty tree (GitHub
@@ -1186,7 +1183,7 @@ export function createService(o: Options) {
             await post("blobs", { content: content.toString("base64"), encoding: "base64" });
           }
           const r = await who.rest("POST", `/repos/${into}/git/trees`, { base_tree: baseTree, tree });
-          if (r.status >= 300) throw Object.assign(new Error(treeRefusal(into, r.status, r.body, { diff, tree, dirs })), { refused: true });
+          if (r.status >= 300) throw Object.assign(new Error(treeRefusal(into, r.status, r.body, { diff, tree })), { refused: true });
           const t = r.body;
           if (t.sha !== final) return refuse(`built a tree on GitHub (${String(t.sha).slice(0, 12)}) that isn't the merge's (${final.slice(0, 12)})`);
           made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000), tree: final, parents: [a.head, baseSha] })).sha);
@@ -1267,7 +1264,7 @@ export function createService(o: Options) {
         const baseTree = await git(dir, ["rev-parse", `${first}^{tree}`]);
         const wantSha = await git(dir, ["rev-parse", `${c}^{tree}`]);
         // The changed paths, then git's own entry at each (and each deletion's mode): proportional to the change, not the tree.
-        const { tree, dirs } = await treeWrites(rawGit(dir), first!, c);
+        const { tree } = await treeWrites(rawGit(dir), first!, c);
         // GitHub holds every blob its parents' trees reach, so only a blob none of them has is read and uploaded: one a parent has
         // at another path (a rename from the base's own copy) is reused by its sha, never read just to be sent again. Each parent
         // is scanned only for the blobs still in question, and not at all when the commit adds none.
@@ -1286,7 +1283,7 @@ export function createService(o: Options) {
         // An empty changed set is a commit whose tree is its first parent's (an "ours" merge): the commit carries that tree as it
         // is, with no tree written (GitHub refuses an empty tree array).
         if (tree.length) {
-          const t = await post("trees", { base_tree: baseTree, tree }, { diff, tree, dirs });
+          const t = await post("trees", { base_tree: baseTree, tree }, { diff, tree });
           if (t.sha !== wantSha) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${wantSha.slice(0, 12)})` };
         }
         const message = await git(dir, ["log", "-1", "--format=%B", c]);
