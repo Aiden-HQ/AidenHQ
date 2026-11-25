@@ -175,13 +175,7 @@ export type Raw = (args: string[]) => Promise<string>;
 const NUL = (out: string) => out.split("\0").filter(Boolean);
 /** The paths that differ between two trees (`git diff-tree --name-only`): a change's size, not the tree's. */
 export const changedPaths = async (raw: Raw, a: string, b: string) => [...new Set(NUL(await raw(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b])))];
-/**
- * Every object sha `<tree>` reaches (`git ls-tree -r --format=%(objectname)`): the blobs GitHub holds because it holds that tree.
- * Shas alone, one per line — nothing of a blob's content is read, and the listing is 41 bytes a path, so a repository of any size
- * that git can name here stays well inside the buffer. This is what makes reuse exact: a blob the merge brings from another path
- * (a rename, the base's own copy) is in the set by its sha, whatever path it sat at.
- */
-const treeShas = async (raw: Raw, tree: string) => new Set((await raw(["ls-tree", "-r", "--format=%(objectname)", tree])).split("\n").filter(Boolean));
+
 /**
  * The paths among `paths` that `<tree>` holds as a directory, at any depth (`git ls-tree -d`): `x` is a directory in the result
  * whether it holds `x/y` or only `x/y/z`. These are the paths a tree write must never name as a `sha:null` deletion.
@@ -312,6 +306,30 @@ export function createService(o: Options) {
    * `:(draft).md`, `*.md` or `a[1].txt` resolves to that file (`--` ends option parsing, not pathspec parsing).
    */
   const rawGit = (dir: string, env: NodeJS.ProcessEnv = ENV): Raw => async (args) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout;
+  /**
+   * Which of `wanted` shas `<tree>` reaches: `git ls-tree -r` is read as a stream, one path a line, and only a sha in `wanted` is
+   * kept. Those are the blobs GitHub holds because it holds that tree, so each is reused by its sha whatever path it sat at, and
+   * one the merge brings from another path (a rename, the base's own copy) is never read here just to be uploaded again.
+   * Memory is the candidates' own size — the entries of this write, bounded by the change — never the repository's, so a repo
+   * of any size stays inside the runner's buffer. Called only when there is a candidate to look for.
+   */
+  const heldIn = async (dir: string, tree: string, wanted: Set<string>, env: NodeJS.ProcessEnv = ENV) => {
+    const found = new Set<string>();
+    if (!wanted.size) return found;
+    const p = spawn("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, "ls-tree", "-r", "--format=%(objectname)", tree], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let buf = "", err = "";
+    p.stderr.on("data", (d) => { if (err.length < 4000) err += String(d); });
+    p.stdout.on("data", (d) => {
+      buf += String(d);
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) if (wanted.has(line)) found.add(line);
+    });
+    const code = await new Promise<number | null>((ok) => p.on("close", (c) => ok(c)));
+    if (wanted.has(buf)) found.add(buf);
+    if (code !== 0) throw new Error(`git ls-tree ${tree.slice(0, 12)}: ${err.trim().slice(0, 300)}`);
+    return found;
+  };
   const initBare = async (dir: string) => void (await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", dir], { env: ENV }));
   const access = o.access;
   /** The owner's token, for one git child's env only. */
@@ -1160,7 +1178,8 @@ export function createService(o: Options) {
         try {
           // GitHub holds every blob its head's and its base's trees reach, so only a blob neither has is read and uploaded: one
           // the merge brings from another path (a rename, the base's own copy) is reused by its sha, whatever path it sat at.
-          const held = new Set([...(await treeShas(raw, a.head)), ...(await treeShas(raw, baseSha))]);
+          const candidates = new Set(tree.filter((e) => e.sha !== null && e.type !== "commit").map((e) => e.sha!));
+          const held = new Set([...(await heldIn(dir, a.head, candidates, env)), ...(await heldIn(dir, baseSha, candidates, env))]);
           for (const e of tree) {
             if (e.sha === null || e.type === "commit" || held.has(e.sha)) continue;
             const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", e.sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
@@ -1250,9 +1269,11 @@ export function createService(o: Options) {
         // The changed paths, then git's own entry at each (and each deletion's mode): proportional to the change, not the tree.
         const { tree, dirs } = await treeWrites(rawGit(dir), first!, c);
         // GitHub holds every blob its parents' trees reach, so only a blob none of them has is read and uploaded: one a parent has
-        // at another path (a rename from the base's own copy) is reused by its sha, never read just to be sent again.
+        // at another path (a rename from the base's own copy) is reused by its sha, never read just to be sent again. Each parent
+        // is scanned only for the blobs still in question, and not at all when the commit adds none.
         const held = new Set<string>();
-        for (const p of [first!, ...others]) for (const sha of await treeShas(rawGit(dir), p!)) held.add(sha);
+        const candidates = new Set(tree.filter((e) => e.sha !== null && e.type !== "commit").map((e) => e.sha!));
+        for (const p of [first!, ...others]) for (const sha of await heldIn(dir, p!, candidates)) held.add(sha);
         const diff = `${String(first).slice(0, 12)}..${String(c).slice(0, 12)}`;
         let uploads = 0;
         for (const e of tree) {
