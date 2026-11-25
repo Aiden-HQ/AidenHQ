@@ -1486,3 +1486,20 @@ test("security-sbom: an ordinary app checkout is scanned and its row carries the
   assert.equal(line[3], head, "the row names the checkout's HEAD");
   assert.match(syft(calls, "app:roadmap-keeper").line, new RegExp(`-v ${src}:/src:ro`), "scanned from the app's own checkout");
 });
+
+test("security-sbom: an app checkout with no git of its own still scans and records an empty commit", { skip: NOT_LINUX }, async () => {
+  // apps-mcp writes a deployed app's files into src from its bare repo under data/apps-mcp/git, so the checkout is not a
+  // git repo of its own (and git run in it would answer with the product checkout it sits inside). It scans; the commit
+  // column is empty rather than the product's HEAD, which would name a tree the rows did not come from.
+  const { root, scriptPath } = isolatedCheckout();
+  const src = join(root, "data/apps/.platform/roadmap-keeper/src");
+  mkdirSync(src, { recursive: true });
+  writeFileSync(join(src, "package-lock.json"), "{}\\n");
+  const { status, out, targets, calls } = await run({}, { scriptPath });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "app:roadmap-keeper");
+  assert.ok(line, `no row for the app checkout:\\n${targets.map((t) => t.join("\\t")).join("\\n")}`);
+  assert.notEqual(line[1], "-", `the checkout reached syft: ${line[2]}`);
+  assert.equal(line[3], "", "no tree is named for a checkout that is not its own repo");
+  assert.match(syft(calls, "app:roadmap-keeper").line, new RegExp(`-v ${src}:/src:ro`));
+});

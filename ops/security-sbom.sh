@@ -890,7 +890,9 @@ if [ -n "$inst" ]; then scan repo:instance "$(git -C "$inst" rev-parse HEAD 2>/d
 apps="$PWD/data/apps/.platform"
 apps_real="$(realpath -e "$apps" 2>/dev/null || printf '%s' "$apps")"
 for src in "$apps"/*/src; do
-  [ -d "$src" ] || continue
+  # A checkout that is gone is nothing to report; a link whose target is gone is a checkout this pass cannot scan, and
+  # realpath below is what says so.
+  [ -e "$src" ] || [ -L "$src" ] || continue
   app="$(basename "$(dirname "$src")")"
   # Docker resolves symlinks in a bind source, so a checkout that is (or holds) a link into another tree would scan that
   # tree while its rows still name this app, and the findings would read as the app's. The scan root has to be the app's
