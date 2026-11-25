@@ -64,7 +64,7 @@ const BASE_ENV = new Set(["PATH", "LANG", "LC_ALL", "TMPDIR", "USER", "SHELL", "
 
 /** The host `.env` names the staged compile reads (scripts/compiler/inputs.ts hostEnv, scripts/compile.ts's env() calls). */
 const ENV_KEYS = new Set(["AIDENHQ_INSTANCE_REPO", "TRANSCRIPTS_DIR",
-  "AIDENHQ_PUBLIC_IP", "AIDENHQ_ADMIN_URL", "BOARD_LAN_URL", "AIDENHQ_EXPOSURE", "AIDENHQ_GITHUB_AGENTS_ORG",
+  "AIDENHQ_PUBLIC_IP", "AIDENHQ_ADMIN_URL", "BOARD_LAN_URL", "AIDENHQ_EXPOSURE",
   "VAULT_DIR", "VAULT_FOLDERS", "KNOWLEDGE_BASES"]);
 
 /**
@@ -106,9 +106,6 @@ function snapshotInputs(i: Inputs, to: string, host: NodeJS.ProcessEnv = process
   const secretsDir = join(to, "secrets"), dataDir = join(to, "data"), configDir = join(to, "config");
   const vaultDir = join(to, "vault"), transcriptsDir = join(to, "transcripts");
   for (const d of [secretsDir, dataDir, configDir, vaultDir, transcriptsDir]) mkdirSync(d, { recursive: true });
-  // The retired app id is the one secret *value* the compile reads (settings.github_migrate_from_app). Only that one.
-  const retired = [join(i.secretsDir, "github_retired_app_id"), join(i.secretsDir, "github-app", "app_id")].find((f) => existsSync(f));
-  if (retired) copyFileSync(retired, join(secretsDir, "github_retired_app_id"));
   // Presence-only reads: a non-empty file stands for "the host has this", an absent one for "it does not". No real bytes.
   for (const n of ["tailscale_apps_authkey", "cloudflared_credentials.json"]) {
     const f = join(i.secretsDir, n);

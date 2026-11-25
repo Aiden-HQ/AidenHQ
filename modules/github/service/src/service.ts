@@ -30,7 +30,7 @@ import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/ex
 import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 import { approvedAt } from "./merge-gate.ts";
-import { MIGRATION_WAIT, createMerges } from "./merges.ts";
+import { createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
@@ -69,10 +69,6 @@ export type Options = {
   access: GitHubAccess; remoteUrl?: (slug: string) => string;
   /** github-mcp's retrying need queue (main.ts): a need met outside a tool call is kept and retried, never a one-shot POST. */
   reportNeed?: (need: { cause: "scope"; scope: string }, detail: string) => Promise<void>;
-  /** True while the merge queue must hold (the App migration, migrate.ts): approved merges wait like a disconnect. */
-  holdMerges?: () => boolean;
-  /** Why merges are held while GitHub is connected (the App migration): the record's own reason, never the reconnect's. */
-  mergeHoldReason?: () => string | null | undefined;
   /** The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
    * here with the owner's token and never answering it; unset: those ops answer 404. */
   ops?: (req: IncomingMessage, res: ServerResponse, ctx: OpsContext) => Promise<void>;
@@ -1432,7 +1428,7 @@ export function createService(o: Options) {
       return (records as { kind?: string; args?: { only?: { repo?: string; sha?: string }[] } }[]).some((x) => (x.kind === "github.pr" || x.kind === "github.push")
         && (x.args?.only ?? []).some((b) => String(b.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && b.sha === pr.head));
     },
-    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(), hold: () => o.holdMerges?.() === true, holdReason: () => o.mergeHoldReason?.(),
+    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, waiting, log, now: o.now, everyMs: o.mergeEveryMs,
     reviewGate: o.reviewGate,

@@ -662,14 +662,14 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H "Authorization: 
 ! awk '/^roles:/{on=1} on && /requests:/' modules/engineering/module.yaml | grep 'kernel\.jobs' >/dev/null \
   && pass "engineering: requests no kernel.jobs" || fail "engineering: still requests kernel.jobs (modules/engineering/module.yaml)"
 # The owner's GitHub sign-in: the token file is 0600, and among containers only the github service mounts its directory
-# (the host's git credential helper reads the file directly). The retired fleet App's vault-root key dir is gone; code review's
+# (the host's git credential helper reads the file directly). Code review's
 # optional App keeps its key in that same directory (modules/github/github-app/), read by the github service alone.
 gh_tok="$sd/modules/github/token.json"
 { [ ! -e "$gh_tok" ] || [ "$(stat -c %a "$gh_tok" 2>/dev/null || stat -f %Lp "$gh_tok")" = 600 ]; } \
   && pass "github: the token file is mode 0600 (or GitHub is not connected)" || fail "github: $gh_tok is not mode 0600"
 tok_holders="$(docker ps -q | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep -E "$sd/modules/github( |/)" | awk '$1!="github-github"{print $2}' | tr '\n' ' ')"
-[ -z "$tok_holders" ] && [ ! -e "$sd/github-app" ] && ! grep -qE 'github-app|github_app|codehost/token' compose.yaml \
-  && pass "github: only the github service mounts the token directory; no App key, no token route" || fail "github: the token directory is mounted beyond the github service, or an App key remains: ${tok_holders:-$sd/github-app or compose.yaml}"
+[ -z "$tok_holders" ] && ! grep -qE 'github-app|github_app|codehost/token' compose.yaml \
+  && pass "github: only the github service mounts the token directory; no App key, no token route" || fail "github: the token directory is mounted beyond the github service, or an App key remains: ${tok_holders:-compose.yaml}"
 pc="$(docker ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=paperclip" --format '{{.Names}}' | head -1)"
 if [ -n "$pc" ]; then
   # The server's own environment (what its entrypoint exported, which `docker exec env` doesn't show) and its secrets.

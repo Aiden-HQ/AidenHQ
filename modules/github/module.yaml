@@ -279,8 +279,6 @@ services:
         # `1` while the ci module is on (the sign-in then asks for admin:org), and the official MCP's read tools (everything else is denied).
         GITHUB_CI: "${settings.github_ci}"
         GITHUB_OFFICIAL_READ: "${settings.github_official_read}"
-        # DELETE in the release after #1065: the retired App's id while the vault still records it (migrate.ts); empty: no migration.
-        GITHUB_MIGRATE_FROM_APP: "${settings.github_migrate_from_app}"
         # Product bugs (github_product_issue) go only to this repo.
         GITHUB_PRODUCT_REPO: "${settings.product_repo}"
         # The owner-data scrub refuses this instance's own names and hosts (compiled from its settings) in anything filed
