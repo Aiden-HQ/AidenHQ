@@ -97,7 +97,9 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
     // The open PR on the published task branch (`github.pr` on it): its head follows a PATCH, so a rewind would show here.
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls?state=open&head=acme-agents%3A`)) {
-      const branch = decodeURIComponent(path.slice(path.indexOf("acme-agents%3A") + "acme-agents%3A".length));
+      // The whole query, `&base=main` and all: the branch is its `head` value, never the rest of the path.
+      const q = new URLSearchParams(path.slice(path.indexOf("?") + 1));
+      const branch = decodeURIComponent(String(q.get("head") ?? "")).replace(/^acme-agents:/, "");
       return { status: 200, body: branch === "lease" ? [{ number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } }] : [] };
     }
     if (method === "PATCH" && path === `/repos/${REPO}/pulls/8`) return { status: 200, body: { number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } } };
@@ -161,9 +163,16 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     const r = await fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: "Bearer ch-key", "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: r.status, json: await r.json() };
   };
-  const run = async (id, kind, args) => {
+  const run = async (id, kind, args, filed) => {
     const n = outcomes.length;
-    assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id, kind, args, digest: "d", idempotency_key: id, tier: 0 })).json, { accepted: true });
+    // The kernel executes a record with the args its plan stored, never the caller's: the plan's own args carry the head it read
+    // (and a revalidation gets the record's stored args back unchanged). A publish files its card first, so the test does too; a
+    // test that already filed one passes that plan (the card a later push does not widen).
+    const plan = filed ?? (kind === "github.push" || kind === "github.pr"
+      ? await call("/aidenhq/v1/executor/plan", { kind, args, requester: { kind: "job", roles: [] }, task: "t1" })
+      : undefined);
+    const exec = plan?.status === 200 ? plan.json.args : args;
+    assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id, kind, args: exec, digest: "d", idempotency_key: id, tier: 0 })).json, { accepted: true });
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
@@ -610,14 +619,74 @@ test("a publish whose bundle carries H cannot rewind a branch at F, a child of H
   // H). The bundle's commit isn't an ancestor of F, so only the head the plan bound refuses it -- the ancestry check would not.
   sh(origin, "update-ref", "refs/heads/lease", H);
   const staleArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
-  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: staleArgs, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  const staleCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: staleArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(staleCard.status, 200, JSON.stringify(staleCard.json));
+  // The card is bound to the head it read, in its own stored args: the branch was at H when it was filed.
+  assert.deepEqual(staleCard.json.args.heads, { [`${REPO} lease`]: H });
   sh(origin, "update-ref", "refs/heads/lease", F);
   assert.throws(() => sh(ws, "merge-base", "--is-ancestor", R, F), "R and F diverge: the ancestry check alone would not refuse this");
-  const stale = await run("k-00000000000000f5", "github.push", staleArgs);
+  const stale = await run("k-00000000000000f5", "github.push", staleArgs, staleCard);
   assert.equal(stale.ok, false, stale.text);
   assert.match(stale.text, /^ship-head-moved/, stale.text);
   assert.match(stale.text, new RegExp(`moved to \`${F.slice(0, 12)}\` since the write read \`${H.slice(0, 12)}\``), stale.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch the card planned against moved; it is never rewritten");
+
+  // A card filed at H cannot be widened by planning the same request again after the branch moved to F: the second plan is its
+  // own record (its own args, its own head), and the first card still refuses. This is the finding's case: a mutable cache keyed
+  // by the request alone would hand the old card F.
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const widenArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  const filed = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: widenArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(filed.status, 200);
+  assert.equal(filed.json.args.heads[`${REPO} lease`], H);
+  sh(origin, "update-ref", "refs/heads/lease", F);
+  const again = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: widenArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(again.status, 200);
+  assert.equal(again.json.args.heads[`${REPO} lease`], F, "the new plan reads F, as its own record");
+  const oldCard = await run("k-00000000000000f7", "github.push", widenArgs, filed);
+  assert.match(oldCard.text, /^ship-head-moved/, oldCard.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the earlier card keeps H and never rewrites the branch from F");
+
+  // A revalidation is handed the record's stored args back unchanged: the head it bound is the one it still checks.
+  const revalidated = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: filed.json.args, requester: { kind: "job", roles: [] }, task: "t1", revalidate: true });
+  assert.equal(revalidated.status, 200);
+  assert.deepEqual(revalidated.json.args.heads, { [`${REPO} lease`]: H });
+
+  // A card whose own push already landed before GitHub dropped the connection is resumed, not refused: the branch already holds
+  // the commit, so there is nothing to push and the PR is finished (a held write retried by id is the same record).
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const resumeArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  const resumeCard = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { ...resumeArgs, text: { title: "fix: resume" } }, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(resumeCard.status, 200);
+  sh(origin, "update-ref", "refs/heads/lease", R);
+  const beforeResume = calls.length;
+  const resumed = await run("k-00000000000000f8", "github.pr", { ...resumeArgs, text: { title: "fix: resume" } }, resumeCard);
+  assert.equal(resumed.ok, true, resumed.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), R, "the branch still holds the commit its write pushed");
+  const resumeCalls = calls.slice(beforeResume);
+  assert.deepEqual(resumeCalls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/pulls`), [], "the branch already had its PR: none is opened");
+  assert.equal(resumeCalls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/8`).length, 1, "the existing PR #8 is the one finished");
+
+  // A branch planned absent and created before the push is refused: this write would take a create over a branch it never read.
+  const absentArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "late", sha: H }] };
+  const absentCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: absentArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(absentCard.status, 200);
+  assert.deepEqual(absentCard.json.args.heads, { [`${REPO} late`]: null }, "planned absent");
+  sh(origin, "update-ref", "refs/heads/late", F);
+  const late = await run("k-00000000000000f9", "github.push", absentArgs, absentCard);
+  assert.match(late.text, /^ship-head-moved: .*appeared at/, late.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/late"), F, "the branch someone else created is left where it is");
+
+  // A branch deleted since the plan is "missing", not a crash: the write lands as an ordinary first publish.
+  const goneArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "gone", sha: F }] };
+  sh(origin, "update-ref", "refs/heads/gone", F);
+  const goneCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: goneArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(goneCard.status, 200);
+  assert.equal(goneCard.json.args.heads[`${REPO} gone`], F);
+  sh(origin, "update-ref", "-d", "refs/heads/gone");
+  const gone = await run("k-00000000000000fa", "github.push", goneArgs, goneCard);
+  assert.equal(gone.ok, true, gone.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/gone"), F, "a branch deleted since is created again, no crash");
 
   // A push straight to an agents-org repo's default branch (plan.ts raises it as `default-branch` rather than refusing it) moves
   // forward with no force and no lease. A lease here would name an empty expected head against an existing `main` and refuse it

@@ -277,6 +277,20 @@ export function createService(o: Options) {
     }
     return await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]);
   }
+  /**
+   * Whether `sha` is an ancestor of `ref` in the cache (its commits are there: publishHead and the bundle fetch both put them
+   * here). `git merge-base --is-ancestor` exits 1 for "no", and any other failure (a missing object, a broken repo) is thrown
+   * rather than read as "no": a check that can't run must not wave a rewind through.
+   */
+  async function isAncestor(dir: string, sha: string, ref: string): Promise<boolean> {
+    try {
+      await git(dir, ["merge-base", "--is-ancestor", sha, ref]);
+      return true;
+    } catch (e) {
+      if ((e as { code?: unknown }).code === 1) return false;
+      throw e;
+    }
+  }
 
   /**
    * Who may publish to `branch`, from the open PRs on it and their recorded owner tasks (pr-tasks.json) alone:
@@ -614,16 +628,20 @@ export function createService(o: Options) {
     async plan(req: PlanRequest) {
       if (req.kind.endsWith(".setup")) return setupWrite.plan(api, req.args, (text) => (ownRepo(String(req.args?.repo), o.fleetOrg, o.productRepo) ? undefined : leakIn(text)));
       const { state, facts, reads, changed, bases, heads, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; heads?: Record<string, string | null>; own?: Set<string>; task?: string };
-      const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
+      // The head each published branch had when this plan read it rides in the record's own args: the kernel stores the plan's
+      // args (never the caller's) and its digest covers them, so a card can only ever rewrite the branch from the head it was
+      // filed at -- and a later plan of the same request, at a head that has moved, is its own record instead of widening this
+      // one. A revalidation gets the record's stored args back, `heads` included, unchanged. The caller's args are stripped
+      // first: a requester can't name a head.
+      const { heads: _asked, ...asked } = (req.args ?? {}) as { heads?: unknown };
+      const bound = req.revalidate ? (req.args ?? {}) : !heads || !Object.keys(heads).length ? asked : { ...asked, heads };
+      const planned = planRules({ kind: req.kind, args: bound }, state, facts);
       // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
       // does): a write held while GitHub is disconnected is re-checked as them, and its PR is signed with their name.
       // The base each branch was reviewed against is kept with the asker (the plan read it here): a write held while GitHub is
       // away compares it on reconnect, so a PR retargeted meanwhile is stale rather than pushing a diff read against another base.
       const reviewedBases = req.revalidate ? undefined : Object.fromEntries(Object.entries((planned.targets ?? {}) as Record<string, { base_branch?: string | null }>).filter(([, t]) => t && "base_branch" in t).map(([k, t]) => [k, t.base_branch ?? null]));
-      // The head each branch had when the plan read it is kept with the asker: a card filed then cannot rewrite a branch that moved
-      // after it (the executor compares this with the head it reads under the lock).
-      const plannedHeads = req.revalidate || !heads || !Object.keys(heads).length ? undefined : heads;
-      if (req.requester) noteAsker(req.kind, req.args, { requester: req.requester, task: req.task, ...(reviewedBases && Object.keys(reviewedBases).length ? { bases: reviewedBases } : {}), ...(plannedHeads ? { heads: plannedHeads } : {}) });
+      if (req.requester) noteAsker(req.kind, asked, { requester: req.requester, task: req.task, ...(reviewedBases && Object.keys(reviewedBases).length ? { bases: reviewedBases } : {}) });
       // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
       const sources = req.revalidate ? undefined : await readCardSourceExceptions(bases ?? [], (repo: string, base: string) => bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
       // The task's other PRs already merged into these bases; a read that fails leaves them out, never the plan.
@@ -670,7 +688,7 @@ export function createService(o: Options) {
     const open = (Array.isArray(got) ? got : []).filter((p: { html_url?: string; base?: { ref?: string } }) =>
       (!byOwner || String(p.base?.ref ?? "") === targetBase) && (!byOwner || prTasks()[String(p.html_url ?? "").toLowerCase()]?.task));
     // The PR's text is signed by the agent that asked for it (spec §4).
-    const asker = readAskers()[askerKey(rec.kind, rec.args)];
+    const asker = askerOf(rec.kind, rec.args);
     // A republish that names no text, or only blank text, keeps the PR as it is: a PATCH replaces the whole description,
     // so a blank body must never be sent (it would leave the footer alone). A real body still replaces it, once footered.
     const named = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
@@ -732,7 +750,7 @@ export function createService(o: Options) {
           // adopted it (a reopened opener must not force-push over the successor), a cancelled or done task's PR is the successor's to
           // finish, and a PR another live task owns is refused. Elsewhere -- an agents-org branch, a platform engineer -- the publish
           // is the one it had.
-          const asker = readAskers()[askerKey(rec.kind, rec.args)];
+          const asker = askerOf(rec.kind, a);
           const platform = isPlatform(asker?.requester);
           const gatedOwnership = !platform && namespaced(s.slug, { agentsOrg: o.fleetOrg, productRepo: o.productRepo });
           // Under the branch lock the watch's close and delete take before touching a branch (branch-lock.ts, via ship-routes.ts):
@@ -755,26 +773,38 @@ export function createService(o: Options) {
             // be rewritten, but only from the head its write was planned at, and never rewound.
             const isDef = b.branch === def;
             const head = isDef ? undefined : await publishHead(dir, s.slug, b.branch);
-            // What this write was planned against: the head the plan read. It is null when the branch was absent then, so a branch
-            // created in the gap is refused too. A held write from before heads were recorded has no entry at all and falls back to
-            // the head read here, so its lease and ancestry check still guard it.
-            const planned = asker?.heads?.[`${s.slug} ${b.branch}`];
-            const expected = planned !== undefined ? planned : (head ?? null);
-            const refused = (seen: string, to?: string) => fail(409, `ship-head-moved: ${s.slug} \`${b.branch}\` ${to ? `moved to \`${to.slice(0, 12)}\` since the write read \`${seen === "absent" ? "it absent" : seen.slice(0, 12)}\`` : `appeared at \`${String(to ?? "").slice(0, 12)}\` since the write read it absent`}: nothing was pushed to it; read it again.`);
-            // The branch moved after the plan: its head is not the one this write was reviewed against, so a diff nobody re-read would
-            // land on a rewritten branch. A bundle whose commit the branch already holds is the same defect from the other side (the
-            // older bundle winning over a newer push, #1775); both are refused.
-            if (!isDef && expected !== (head ?? null)) throw refused(expected ?? "absent", head ?? undefined);
-            if (head && head !== b.sha && (await git(dir, ["merge-base", "--is-ancestor", b.sha, head]).then(() => true, () => false))) throw refused(b.sha, head);
+            // What this write was planned against: the head the plan read, bound into the record's own args (null: the branch was
+            // absent then), so a card can never be widened by a later plan of the same request. A record filed before heads were
+            // bound carries none, and falls back to the head read here, so its lease and ancestry check still guard it.
+            const planned = (a as { heads?: Record<string, string | null> }).heads?.[`${s.slug} ${b.branch}`];
+            /** The refusal: the head this write was planned at, and the one it found (undefined: the branch is gone). */
+            const refused = (seen: string | null, now: string | undefined, why?: string) => fail(409, `ship-head-moved: ${s.slug} \`${b.branch}\` ${
+              why ?? (seen === null ? `appeared at \`${String(now).slice(0, 12)}\` since the write read it absent`
+              : now === undefined ? `was deleted since the write read \`${seen.slice(0, 12)}\``
+              : `moved to \`${now.slice(0, 12)}\` since the write read \`${seen.slice(0, 12)}\``)}: nothing was pushed to it; read it again.`);
+            // The branch exists now at a head other than the one this write was planned at, and doesn't already hold the commit it
+            // pushes: its head is not the one the diff was read against, so nothing may land on it. Two cases are not that. A branch
+            // that already holds the commit is this same write's own push (a retry after the ref moved but before the PR was opened):
+            // there is nothing to push and the PR is finished. A branch that is gone (deleted since) has no head to rewind: it is
+            // the ordinary missing-branch publish, leased empty so a branch created in the gap still refuses.
+            if (!isDef && head !== undefined && head !== b.sha && planned !== undefined && head !== planned) throw refused(planned, head);
+            // A bundle whose commit the branch already holds is the defect from the other side (#1775: the older bundle winning over
+            // a newer push), so a commit that is an ancestor of the head is refused even when the lease would match.
+            if (head && head !== b.sha && (await isAncestor(dir, b.sha, head))) throw refused(b.sha, head);
             // The lease, on the head just read: an absent branch is leased empty, so a branch created in the gap refuses this create
             // rather than taking its push as a fast-forward. A lease never widens what may move -- git forces a refspec it can -- so
-            // the checks above are what keep a stale bundle from winding the branch back.
-            await push(dir, isDef
+            // the checks above are what keep a stale bundle from winding the branch back. A branch that already holds the commit
+            // needs no push at all.
+            if (head !== b.sha) await push(dir, isDef
               ? ["push", "--quiet", "--no-verify", remote(s.slug), `${b.sha}:refs/heads/${b.branch}`]
               : ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${head ?? ""}`, remote(s.slug), `${b.sha}:refs/heads/${b.branch}`])
               .catch(async (e: Error) => {
                 if (isDef || !/stale info|fetch first|non-fast-forward/i.test(String(e?.message ?? e))) throw e;
-                throw refused(head ?? b.sha, await publishHead(dir, s.slug, b.branch).catch(() => undefined));
+                // Read it again to say where it went; a read that fails still refuses, in the lease's own words rather than a
+                // claim the branch was deleted.
+                const now = await publishHead(dir, s.slug, b.branch).catch(() => "unread" as const);
+                if (now === "unread") throw refused(head ?? null, undefined, `moved while this was pushing (the lease on \`${(head ?? b.sha).slice(0, 12)}\` refused it)`);
+                throw refused(head ?? null, now);
               });
             notePushed(s.slug, b.sha);
             objects.push(`${ref(s.slug)}@${b.sha}`);
@@ -1220,17 +1250,21 @@ export function createService(o: Options) {
   // ---- held writes: approved while GitHub was disconnected ----
   /** The requester of a planned write, and the base each target was reviewed against (`plan.ts`'s `base_branch`): a held write
    *  re-checks it, so a PR retargeted while GitHub was away is stale rather than pushing a diff read against another base. */
-  type Asker = { requester: PlanRequest["requester"]; task: string; bases?: Record<string, string | null>; /** Each published branch's head when the write was planned (null: absent), so a card filed before a later push cannot rewrite over it. */ heads?: Record<string, string | null> };
+  type Asker = { requester: PlanRequest["requester"]; task: string; bases?: Record<string, string | null> };
   type Held = { id: string; kind: string; args: any; state: "held" | "running" | "done" | "failed"; text?: string; objects?: string[]; at: string; asker?: Asker; /** A publish's base per target when it was held (`github.pr`/`github.push`): the base the diff was reviewed against. */ bases?: Record<string, string | null> };
   // The requester of each planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and
   // args, for the held re-check. The last 500 only.
   const askersFile = join(o.cacheDir, "askers.json");
   const readAskers = (): Record<string, Asker> => { try { return JSON.parse(readFileSync(askersFile, "utf8")); } catch { return {}; } };
+  /** A request without the head its plan bound (`heads`, carried in the record's own args): who asked is the same request either way. */
+  const askedOf = (args: unknown) => { const { heads: _heads, ...rest } = (args ?? {}) as Record<string, unknown>; return rest; };
+  const askerOf = (kind: string, args: unknown): Asker | undefined => { const all = readAskers(); return all[askerKey(kind, askedOf(args))]; };
   function noteAsker(kind: string, args: unknown, who: Asker) {
     const all = readAskers();
-    // Merged, never replaced: a revalidation at execution carries no bases or heads of its own, and must not drop the ones the
-    // filing recorded (the executor reads them back to refuse a card the branch moved past).
-    all[askerKey(kind, args)] = { ...all[askerKey(kind, args)], ...who };
+    // Keyed without the bound head, so the record's own args (a revalidation's) and the request as asked read the same entry. Merged,
+    // never replaced: a revalidation at execution carries no bases of its own, and must not drop the ones the filing recorded.
+    const key = askerKey(kind, askedOf(args));
+    all[key] = { ...all[key], ...who };
     writeFileSync(`${askersFile}.tmp`, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-500))));
     renameSync(`${askersFile}.tmp`, askersFile);
   }
@@ -1242,7 +1276,7 @@ export function createService(o: Options) {
   function hold(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     const h = readHeld();
     if (!h[rec.id]) {
-      const asker = readAskers()[askerKey(rec.kind, rec.args)];
+      const asker = askerOf(rec.kind, rec.args);
       h[rec.id] = { id: rec.id, kind: rec.kind, args: rec.args, state: "held", at: new Date().toISOString(), ...(asker ? { asker, ...(asker.bases ? { bases: asker.bases } : {}) } : {}) };
       writeHeld(h);
       log("write held until GitHub is connected", { record: rec.id, kind: rec.kind });
