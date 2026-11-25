@@ -1,0 +1,46 @@
+// Settings > Connections: a `slack` tile is the owner's own Slack sign-in, never Slack as a whole. A working bot channel
+// (`slack_live`) must not read as broken because this separate sign-in is absent, so its name and reason say both.
+import { describe, expect, it } from "vitest";
+import { connectionStatus, displayName, type ConnectionRow, type SignIn } from "../web/src/connections.js";
+
+const row = (name: string, signIn: SignIn | null): ConnectionRow => ({
+  name,
+  module: "slack",
+  kind: "connection",
+  transport: "http example.test",
+  tools: { read: 1, write: 1 },
+  grants: [],
+  setup: null,
+  probe: null,
+  signIn,
+});
+
+const can = { signIn: true };
+const since = "2026-01-01T00:00:00.000Z";
+
+describe("the Slack sign-in tile", () => {
+  it("is named as the owner's own sign-in, distinct from Aiden's bot", () => {
+    expect(displayName("slack")).toBe("Slack: read as you");
+    expect(displayName("slack_live")).toBe("Slack: Aiden's bot");
+  });
+
+  it("says what its absent sign-in gates, and that the bot works without it, when it has no fields", () => {
+    const v = connectionStatus(row("slack", { state: "missing", configured: true, since }), can);
+    expect(v.status).toBe("not_connected");
+    expect(v.reason).toMatch(/read Slack as you/i);
+    expect(v.reason).toMatch(/separate connection/i);
+    expect(v.reason).toMatch(/work without/i);
+    expect(v.action).toEqual({ label: "Connect", href: "/slack/connect" });
+  });
+
+  it("says the same when it isn't configured yet and has no fields", () => {
+    const v = connectionStatus(row("slack", { state: "missing", configured: false, since }), can);
+    expect(v.status).toBe("not_configured");
+    expect(v.reason).toMatch(/read Slack as you/i);
+    expect(v.reason).toMatch(/separate connection/i);
+  });
+
+  it("leaves another connection's not-connected reason as it was", () => {
+    expect(connectionStatus(row("glean", { state: "missing", configured: true, since }), can).reason).toBe("Not connected yet.");
+  });
+});
