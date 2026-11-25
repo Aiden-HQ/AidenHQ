@@ -179,7 +179,7 @@ export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
 /** The words a notice's bold status line starts with, in every phase: fixed, so only a comment `renderNotice` wrote matches. */
-const STATUS_STARTS = ["Review (?:queued|running|skipped|failed|finished)", "No review needed", "No important findings", "\\d+ important findings?\\*\\*", "Commands", ...Object.values(ANSWERS).filter((a) => a !== ANSWERS.help).map((a) => (a[0]!.toUpperCase() + a.slice(1)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))];
+const STATUS_STARTS = ["Review (?:queued|running|not started yet|skipped|failed|finished)", "Partial review", "No review needed", "No important findings", "\\d+ important findings?\\*\\*", "Commands", ...Object.values(ANSWERS).filter((a) => a !== ANSWERS.help).map((a) => (a[0]!.toUpperCase() + a.slice(1)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))];
 /** A notice's generated header, exactly as `renderNotice` writes it at the start of a comment: the marker, then a bold status (one of
  * the fixed starts above) on the next line. A comment that merely quotes a notice carries the marker further down, so it never
  * matches, and an ordinary comment that happens to open with the marker and some bold text doesn't either. */

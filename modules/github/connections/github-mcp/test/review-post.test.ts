@@ -200,8 +200,14 @@ describe("the refused-post notice", () => {
     expect(evil).not.toContain("](https://evil");
     expect(evil).toContain("a\\_b\\_c");
     expect(renderNotice({ ...base, phase: "classified", tier: "skip", tier_why: "into http://x.test www.x.test" })).not.toMatch(/https?:\/\/|www\.x/);
-    for (const phase of ["queued", "running", "done", "skipped", "failed"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase }))).toBe(true);
+    // Every phase the notice writes (and a classified head, which is a phase too) is recognised, so a lost ack id is recovered.
+    for (const phase of ["classified", "queued", "running", "done", "skipped", "failed"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase }))).toBe(true);
+    expect(ACK_HEAD.test(renderNotice({ ...base, phase: "classified", ...tier }))).toBe(true);
+    expect(ACK_HEAD.test(renderNotice({ ...base, phase: "classified", tier: "skip" }))).toBe(true);
     for (const important of [1, 2]) expect(ACK_HEAD.test(renderNotice({ ...base, phase: "done", important }))).toBe(true);
+    // A partial review's own headlines (with and without findings) are recognised too.
+    expect(ACK_HEAD.test(renderNotice({ ...base, phase: "done", important: 0, partial: true }))).toBe(true);
+    expect(ACK_HEAD.test(renderNotice({ ...base, phase: "done", important: 2, partial: true }))).toBe(true);
     for (const answer of ["help", "always", "focus", "focus_cleared", "no_review"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase: "answered", answer }))).toBe(true);
     expect(ACK_HEAD.test("<!-- aidenhq-review-ack -->\n**Review notes**\nmine")).toBe(false);
     expect(ACK_HEAD.test("<!-- aidenhq-review-ack -->\n**Release notes**\nmine")).toBe(false);
