@@ -316,10 +316,16 @@ export function createEngine(d: EngineDeps) {
   const current = (repo: string, n: number, head: string) => { const t = tierState(repo, n, head); return t.state === "classified" ? t : undefined; };
   const runRow = (id: string) => one<RunRow>("SELECT * FROM runs WHERE id = ?", id);
   const subject = (repo: string, n: number) => `pr:${repo}#${n}`;
+  /** The notice of a PR's last run, as its status shows it: its phase, reviewer, findings and cost. */
+  const lastRunAck = (repo: string, n: number): Ack | undefined => {
+    const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? ORDER BY created DESC LIMIT 1", repo, n);
+    return last && { repo: last.repo, number: last.number, head: last.head, state: last.status, run: last.id, combo: comboOf(last), why: last.why ?? undefined,
+      counts: { important: last.important, nit: last.nit, pre_existing: last.pre_existing, cost_usd: round(last.cost_usd) } };
+  };
   /** The head's classification on its notice: every phase of the one comment carries the tier line (none while the head is pending). */
   const withTier = (a: Ack): Ack => {
     const p = prRow(a.repo, a.number);
-    return p?.tier ? { ...a, tier: { tier: p.tier, why: p.why ?? "" } } : a;
+    return p?.tier && p.head === a.head ? { ...a, tier: { tier: p.tier, why: p.why ?? "" } } : a;
   };
   /** The acknowledgement comment each PR has (recorded from an outcome, never found by its marker), and notices still settling. */
   const ackOf = (repo: string, n: number) => one<{ ack: number | null }>("SELECT ack FROM prs WHERE repo = ? AND number = ?", repo, n)?.ack ?? undefined;
@@ -379,15 +385,17 @@ export function createEngine(d: EngineDeps) {
   const acking_ = (repo: string, n: number) => [...acking.values()].some((t) => t.repo === repo && t.number === n);
   // The notice is the only path that makes the acknowledgement: one at a time per PR until its comment's id is known (two in
   // flight would each make one); a notice meanwhile waits, the latest replacing an earlier one, and goes once it is known.
-  const ack = (a: Ack): Promise<boolean | void> => {
-    if (!ackOf(a.repo, a.number) && acking_(a.repo, a.number)) return void ackNext.set(`${a.repo}#${a.number}`, a), Promise.resolve();
+  /** Resolves true once the notice is posted (a pending write or a failed one: false, so the caller tries again). */
+  const ack = (a: Ack): Promise<boolean> => {
+    if (!ackOf(a.repo, a.number) && acking_(a.repo, a.number)) return void ackNext.set(`${a.repo}#${a.number}`, a), Promise.resolve(false);
     // The PR's slot is taken now, before the call returns: a second notice meanwhile waits behind it.
     const slot = `slot:${randomBytes(6).toString("hex")}`;
     acking.set(slot, { repo: a.repo, number: a.number });
-    return d.poster.ack({ ...withTier(a), ack: ackOf(a.repo, a.number) }).then((o) => (acking.delete(slot), acked(a.repo, a.number, o, o?.write)), (e) => {
+    return d.poster.ack({ ...withTier(a), ack: ackOf(a.repo, a.number) }).then((o) => (acking.delete(slot), acked(a.repo, a.number, o, o?.write) && o?.state !== "pending"), (e) => {
       acking.delete(slot);
       log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) });
       acked(a.repo, a.number, undefined);
+      return false;
     });
   };
 
@@ -1669,10 +1677,8 @@ export function createEngine(d: EngineDeps) {
         return void a("answered", { answer: cmd.text ? "focus" : "focus_cleared" });
       case "status": {
         // The acknowledgement shows where the PR's last run is: its phase, reviewer, findings and cost.
-        const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? ORDER BY created DESC LIMIT 1", p.repo, p.number);
-        if (!last) return void a("answered", { answer: "no_review" });
-        return void ack({ repo: last.repo, number: last.number, head: last.head, state: last.status, run: last.id, combo: comboOf(last), why: last.why ?? undefined,
-          counts: { important: last.important, nit: last.nit, pre_existing: last.pre_existing, cost_usd: round(last.cost_usd) } });
+        const last = lastRunAck(p.repo, p.number);
+        return void (last ? ack(last) : a("answered", { answer: "no_review" }));
       }
       default:
         return void a("answered", { answer: "help" });
@@ -1709,7 +1715,9 @@ export function createEngine(d: EngineDeps) {
     const row = prRow(p.repo, p.number);
     const key = `${p.head}:${row?.tier}`;
     if (!row?.tier || row.head !== p.head || row.noted === key || acking_(p.repo, p.number)) return;
-    if (await ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
+    // A head a run already reported on says that run's phase again, now with the tier line: the notice never loses the review's outcome.
+    const last = lastRunAck(p.repo, p.number);
+    if (await ack(last?.head === p.head ? last : { repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
   }
 
   /** One watched repo: its PRs' heads (each classified first) and its new comments. The first look reviews what is open like a new PR. */
