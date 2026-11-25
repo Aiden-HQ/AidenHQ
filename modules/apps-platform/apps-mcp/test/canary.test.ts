@@ -129,9 +129,12 @@ describe("app_page_canary", () => {
     expect(script).toContain("const field = await canaryFindField(snap");
     // The submit is chosen from the form that owns the filled field (the DOM form property, so a footer button linked by
     // form="…" counts), never from the page at large, and the send rule runs in Node (the tests exercise it directly).
-    expect(script).toContain("const a = document.activeElement, f = a && a.form;");
-    expect(script).toContain("filter((b) => b.form === f)");
-    expect(script).toContain("const submit = canarySubmit(controls);");
+    expect(script).toContain("const a = document.activeElement, f = a && a.form, scope = f ||");
+    expect(script).toContain("const inScope = (b) => f ? b.form === f : !!scope && scope.contains(b) && !b.form;");
+    expect(script).toContain("const isSubmit = (b) =>");
+    expect(script).toContain("const submit = canarySubmit(scopeOf && scopeOf.list, scopeOf && scopeOf.form);");
+    // A dialog that is not a <form> scopes the submit to the field's own dialog, and only there may a type=button button send.
+    expect(script).toContain("a.closest('[role=dialog],[role=alertdialog]')");
     expect(script).toContain("data-aidenhq-canary-submit");
     expect(script).toContain("no submit control in the feedback form");
     // Evidence starts at the click: a POST a fill triggered is never read as the submission's intake.
@@ -163,12 +166,12 @@ describe("app_page_canary", () => {
   // The discovery rules run here on the very snapshot outline the canary reads, so the dialog shape that broke the live run is
   // covered without Chrome: the same source string is what the renderer executes.
   describe("feedback form discovery", () => {
-    const api = () => new Function(CANARY_DISCOVERY + "; return { canaryTree, canaryField, canaryEntry, canaryFindField, canarySubmit };")() as {
+    const api = () => new Function(CANARY_DISCOVERY + "; return { canaryTree, canaryField, canaryEntries, canaryFindField, canarySubmit };")() as {
       canaryTree: (text: string, refs?: Record<string, { role: string; name: string }>) => { role: string; name: string; ref: string }[];
       canaryField: (nodes: unknown[]) => { role: string; name: string; ref: string } | null;
-      canaryEntry: (nodes: unknown[]) => { role: string; name: string; ref: string } | null;
+      canaryEntries: (nodes: unknown[]) => { role: string; name: string; ref: string }[];
       canaryFindField: (snap: () => Promise<{ tree: unknown[] }>, click: (entry: { role: string; name: string; ref: string }) => Promise<void>) => Promise<{ role: string; name: string; ref: string } | null>;
-      canarySubmit: (controls: { tag: string; type: string; text: string }[]) => { index: number; word: string } | null;
+      canarySubmit: (controls: unknown[], inForm: boolean) => { tag: string; type: string; word: string } | null;
     };
     // The page as roadmap-keeper's /?intake=feedback renders it (WOR-11418): a banner button, the page's own display-name box,
     // and the feedback dialog the button opens.
@@ -200,15 +203,15 @@ describe("app_page_canary", () => {
       expect(canarySubmit([
         { tag: "BUTTON", type: "submit", text: "Cancel" },
         { tag: "BUTTON", type: "submit", text: "Send feedback" },
-      ])).toMatchObject({ word: "Send feedback" });
+      ], true)).toMatchObject({ word: "Send feedback" });
     });
 
     it("follows the page's own 'Provide feedback' button to open the dialog before choosing a field", async () => {
-      const { canaryTree, canaryField, canaryEntry, canaryFindField } = api();
+      const { canaryTree, canaryField, canaryEntries, canaryFindField } = api();
       const landing = canaryTree(LANDING);
       // Nothing on the landing page is a feedback field, and the walk's entry is the button, not the display-name box.
       expect(canaryField(landing)).toBeNull();
-      expect(canaryEntry(landing)).toMatchObject({ role: "button", name: "Provide feedback", ref: "e8" });
+      expect(canaryEntries(landing)[0]).toMatchObject({ role: "button", name: "Provide feedback", ref: "e8" });
       const clicks: string[] = [];
       let shown = LANDING;
       const field = await canaryFindField(async () => ({ tree: canaryTree(shown) }), async (entry) => {
@@ -220,7 +223,7 @@ describe("app_page_canary", () => {
     });
 
     it("never fills a lone non-feedback textbox, even when the page has a separate feedback control", async () => {
-      const { canaryTree, canaryField, canaryEntry, canaryFindField } = api();
+      const { canaryTree, canaryField, canaryEntries, canaryFindField } = api();
       // A profile page: one display-name box, and a "Provide feedback" control that opens nothing (its dialog never renders).
       const profile = canaryTree(`
 - main
@@ -236,7 +239,7 @@ describe("app_page_canary", () => {
       expect(clicks).toEqual(["Provide feedback"]);
       expect(canaryField(profile)?.name).not.toBe("Display name");
       // The page-level refusal itself: nothing was filled or submitted.
-      expect(canaryEntry(profile)).toMatchObject({ role: "button", name: "Provide feedback" });
+      expect(canaryEntries(profile)[0]).toMatchObject({ role: "button", name: "Provide feedback" });
     });
 
     it("reports 'no feedback field on the page' and submits nothing when no feedback form opens", async () => {
@@ -263,28 +266,28 @@ describe("app_page_canary", () => {
     });
 
     it("does not take a send-named control for the entry point, nor a feedback-named button that destroys data", () => {
-      const { canaryTree, canaryEntry } = api();
+      const { canaryTree, canaryEntries } = api();
       // Only the submit is on the page: clicking it would send nothing, so there is no entry to follow.
-      expect(canaryEntry(canaryTree(`
+      expect(canaryEntries(canaryTree(`
 - form
   - textbox "What should change?" [ref=e1]
-  - button "Send feedback" [ref=e2]`))).toBeNull();
+  - button "Send feedback" [ref=e2]`))).toEqual([]);
       // A feedback listing's "Delete feedback" is feedback-named, and clicking it would destroy a record: never an entry.
       const listing = canaryTree(`
 - listitem
   - text "Looks good"
   - button "Delete feedback" [ref=e1]
   - button "Provide feedback" [ref=e2]`);
-      expect(canaryEntry(listing)).toMatchObject({ role: "button", name: "Provide feedback", ref: "e2" });
+      expect(canaryEntries(listing)[0]).toMatchObject({ role: "button", name: "Provide feedback", ref: "e2" });
     });
 
     it("still follows an ordinary 'Submit feedback' link that navigates to the intake page", () => {
-      const { canaryTree, canaryEntry, canaryField } = api();
+      const { canaryTree, canaryEntries, canaryField } = api();
       // A link navigates, so a landing page's "Submit feedback" is a way in, not a send of the form it is not on.
       const landing = canaryTree(`
 - heading "Docs" [level=1, ref=e1]
 - link "Submit feedback" [ref=e2]`);
-      expect(canaryEntry(landing)).toMatchObject({ role: "link", name: "Submit feedback", ref: "e2" });
+      expect(canaryEntries(landing)[0]).toMatchObject({ role: "link", name: "Submit feedback", ref: "e2" });
       expect(canaryField(landing)).toBeNull();
     });
 
@@ -308,6 +311,76 @@ describe("app_page_canary", () => {
   - textbox "Your message" [ref=e1]
   - button "Send" [ref=e2]`, { e1: { role: "textbox", name: "Your message", description: "Tell us what you think" } as never, e2: { role: "button", name: "Send" } });
       expect(canaryField(nodes)).toMatchObject({ name: "Your message", ref: "e1" });
+    });
+
+    it("never fills a feedback-named search box, even inside a feedback dialog", () => {
+      const { canaryTree, canaryField } = api();
+      // A header search box worded "Search feedback" must not be taken for the form, whether or not a dialog is open.
+      expect(canaryField(canaryTree(`
+- banner
+  - search
+    - textbox "Search feedback" [ref=e1]`))).toBeNull();
+      expect(canaryField(canaryTree(`
+- dialog "Provide feedback"
+  - textbox "Search feedback" [ref=e1]
+  - textbox "What should change?" [ref=e2]
+  - button "Send feedback" [ref=e3]`))).toMatchObject({ name: "What should change?", ref: "e2" });
+    });
+
+    it("does not let a page-level feedback heading qualify an unrelated form", () => {
+      const { canaryTree, canaryField } = api();
+      // The heading is outside the account form, so its display-name box is not a feedback field; only the nearer heading counts.
+      expect(canaryField(canaryTree(`
+- heading "Feedback" [level=1, ref=e1]
+- form
+  - textbox "Display name" [ref=e2]
+  - button "Save" [ref=e3]`))).toBeNull();
+      // A nearer "Account" heading inside the form leaves it unnamed, not a feedback form.
+      expect(canaryField(canaryTree(`
+- heading "Feedback" [level=1, ref=e1]
+- form
+  - heading "Account" [level=2, ref=e2]
+  - textbox "Display name" [ref=e3]
+  - button "Save" [ref=e4]`))).toBeNull();
+    });
+
+    it("accepts the app's own send button in a dialog that is not a <form>, but not in one that is", () => {
+      const { canarySubmit } = api();
+      // Formless dialog: the scope is the dialog, and its "Send feedback" (a type=button) is how that app sends.
+      expect(canarySubmit([
+        { tag: "BUTTON", type: "button", text: "Cancel" },
+        { tag: "BUTTON", type: "button", text: "Send feedback" },
+      ], false)).toMatchObject({ word: "Send feedback" });
+      // Inside a real <form>, a type=button is never the send, even if it is worded "Send feedback".
+      expect(canarySubmit([
+        { tag: "BUTTON", type: "button", text: "Send feedback" },
+        { tag: "BUTTON", type: "submit", text: "Save" },
+      ], true)).toBeNull();
+    });
+
+    it("refuses two fields that both name themselves feedback", () => {
+      const { canaryTree, canaryField } = api();
+      expect(canaryField(canaryTree(`
+- dialog "Provide feedback"
+  - textbox "Your feedback" [ref=e1]
+  - textbox "Feedback about the page" [ref=e2]
+  - button "Send feedback" [ref=e3]`))).toBeNull();
+    });
+
+    it("tries the page's other feedback control when a link leads nowhere useful", async () => {
+      const { canaryTree, canaryEntries, canaryFindField } = api();
+      // A "Feedback" history link that does not open the form must not hide the "Provide feedback" button that does.
+      let shown = `
+- link "Feedback history" [ref=e1]
+- button "Provide feedback" [ref=e2]`;
+      expect(canaryEntries(canaryTree(shown)).map((e) => e.name)).toEqual(["Feedback history", "Provide feedback"]);
+      const clicks: string[] = [];
+      const field = await canaryFindField(async () => ({ tree: canaryTree(shown) }), async (entry) => {
+        clicks.push(entry.name);
+        if (entry.name === "Provide feedback") shown = shown + DIALOG;
+      });
+      expect(clicks).toEqual(["Feedback history", "Provide feedback"]);
+      expect(field).toMatchObject({ name: "What should change?", ref: "e10" });
     });
 
     it("refuses two anonymous boxes in a feedback dialog rather than guessing which to fill", () => {
