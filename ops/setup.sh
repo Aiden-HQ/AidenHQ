@@ -452,16 +452,17 @@ set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry comm
 # Meetings' vault: a host that lists folders keeps them (an empty list would leave the module no /vault mount), and only
 # a host with a vault path gets the default. The module runs as the owner (uid 1000), so its folders are made as the owner.
 # A dry run has no .env yet (only the write above is printed): the path comes from the .env.example a new install copies.
-vault_val() { # FILE KEY: the value .env gives (last line, quotes, an unquoted ' #' comment, $HOME/~ as the apply expands it)
-  local v home_lit='${HOME}'
-  v="$(sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -1 || true)"
-  if [[ "$v" == \"* ]]; then v="${v#\"}"; v="${v%%\"*}"                                        # quoted: up to the closing quote, so a ' #' stays
-  elif [[ "$v" == \'* ]]; then v="${v#\'}"; v="${v%%\'*}"                                      # the same form, single-quoted
-  else v="${v%%[[:space:]]#*}"; fi                                                             # unquoted: the shell ends it at ' #'
-  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+vault_val() { # FILE KEY: the value `set -a; . FILE` gives for KEY (quotes, a ' #' comment, $HOME, ~), as the apply reads it
+  local v raw
+  # A real run sources the file as the owner, exactly as the apply does, so the two cannot disagree. A dry run makes no
+  # step as the user, so there the shell reads the KEY line itself: the same rules, without a parser of setup's own.
+  if [ "$DRY" = 1 ]; then
+    raw="$(sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -1 || true)"
+    v="$(HOME="$H" bash -c 'eval "v=$1" 2>/dev/null || v=; printf %s "${v-}"' _ "$raw" 2>/dev/null || true)"
+  else
+    v="$(as_user VF="$1" VK="$2" sh -c 'set -a; . "$VF" >/dev/null 2>&1; set +a; eval "printf %s \"\${$VK-}\""' 2>/dev/null || true)"
+  fi
   [ "$1" = "$ENVF" ] || v="${v//\/home\/USER/$H}"                                              # the example's placeholder
-  v="${v//"$home_lit"/$H}"; v="${v//\$HOME/$H}"                                                # the apply sources .env, so it expands
-  if [[ "$v" == '~' || "$v" == '~/'* ]]; then v="$H${v:1}"; fi
   printf '%s' "$v"
 }
 vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"

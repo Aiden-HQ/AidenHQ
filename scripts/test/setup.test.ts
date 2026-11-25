@@ -128,11 +128,19 @@ test("a rerun reads .env as the apply does, and keeps a configured list", () => 
   assert.ok(!out.includes("+ .env: VAULT_FOLDERS="), `rewrote a configured list\n${out}`);
 });
 
-// A quoted value keeps a trailing ' #' that merely comments it (the apply does the same), so the comment is not the path:
-// reading the quotes as the outer characters would leave a literal one and setup would refuse the valid absolute path.
-test("a quoted vault path with a trailing comment is read without the quote or the comment", () => {
-  const out = vaultPlan(['VAULT_DIR="$HOME/notes/vault" # meeting notes', 'VAULT_FOLDERS="Meetings"']);
-  assert.ok(out.includes("(as alice) mkdir -p /home/alice/notes/vault /home/alice/notes/vault/Meetings"), out);
+// The vault settings are read as `set -a; . .env` reads them, not by a parser of setup's own that can disagree: the shell
+// decides where quotes end, whether a ' #' is a comment, and what $HOME and ~ expand to. Each form below is one the shell
+// accepts, and each must give the directory the apply mounts.
+test("vault settings are read as the apply's shell reads them", () => {
+  const cases: Array<[string, string]> = [
+    ['VAULT_DIR="$HOME/notes/vault" # meeting notes', "/home/alice/notes/vault"],   // quoted, with a comment after it
+    ["VAULT_DIR=$HOME/notes/vault", "/home/alice/notes/vault"],                     // unquoted, expands
+    ["VAULT_DIR=~/notes/vault # note", "/home/alice/notes/vault"],                  // bare ~ is the shell's tilde
+  ];
+  for (const [line, dir] of cases) {
+    const out = vaultPlan([line, 'VAULT_FOLDERS="Meetings"']);
+    assert.ok(out.includes(`(as alice) mkdir -p ${dir} ${dir}/Meetings`), `${line}\n${out}`);
+  }
 });
 
 // An upgrade from the old installer: it wrote the default path and emptied the folders, but never made the directory.
@@ -149,7 +157,7 @@ test("a vault path compile refuses stops setup with that message", () => {
 });
 // A folder compile refuses is named the same way.
 test("a vault folder compile refuses stops setup with that message", () => {
-  assert.throws(() => vaultPlan(["VAULT_DIR=/srv/v", "VAULT_FOLDERS=Meetings, a:b"]), /invalid vault folder: a:b/);
+  assert.throws(() => vaultPlan(["VAULT_DIR=/srv/v", 'VAULT_FOLDERS="Meetings, a:b"']), /invalid vault folder: a:b/);
 });
 // A configured custom path is the owner's to have made: setup creates it and every listed folder, as the owner, so a
 // fresh operator with no notes folder still ends up with one the module (uid 1000) can write.
