@@ -39,8 +39,16 @@ export async function run(cmd: string, args: string[], o: { cwd: string; env: Re
   // An aborted run never counts as finished, whatever its exit.
   return { code: aborted ? null : code, stdout, stderr, timedOut, aborted };
 }
+/**
+ * The gateway's own 402 refusal as an engine prints it: the status then the type (`402 cap_reached`, `402 {"error":"cap_reached"}`),
+ * its JSON type, or its message with the amounts. A bare `cap_reached` is not one: an engine's stderr echoes what the reviewer
+ * read, and the code it reads (the gateway's own source, a test) names it.
+ */
+const SPEND_REFUSAL = /\b402:?\s+(?:\{[^}\n]*)?\bcap_reached\b|"type"\s*:\s*"cap_reached"|spend cap reached: the install's (?:daily|monthly) limit, \$\d|task spend cap reached: this task's \$\d/i;
+/** The provider's own rate limit, as the gateway relays it. */
+const RATE_LIMITED = /\brate_limit_exceeded\b|\brate limit(?:ed)?\b/i;
 export const stopped = (r: { code: number | null; stderr: string; timedOut: boolean; aborted?: string }, said = "") =>
-  r.aborted ?? (r.timedOut ? "timed out" : /cap_reached/i.test(said + r.stderr) ? "the install's spend limit was reached" : /spend_held/i.test(said + r.stderr) ? "the gateway held the call for room (503)" : /\b402\b/.test(said + r.stderr) ? "the model provider refused the call (402)" : `the engine stopped (exit ${r.code})`);
+  r.aborted ?? (r.timedOut ? "timed out" : SPEND_REFUSAL.test(said + r.stderr) ? "the install's spend limit was reached" : RATE_LIMITED.test(said + r.stderr) ? "the model provider rate limited the call" : /spend_held/i.test(said + r.stderr) ? "the gateway held the call for room (503)" : /\b402\b/.test(said + r.stderr) ? "the model provider refused the call (402)" : `the engine stopped (exit ${r.code})`);
 
 /** A small regular file, never through a link; undefined otherwise. */
 export function readSmall(file: string, max = 20_000) {

@@ -172,9 +172,13 @@ export function createMcp(d: McpDeps) {
 
     /** An agent by its roster key (as `fleet` lists it), its id or its name: the board's routes take the id, the by-key ones the key. */
     const agentRef = async (ref: string): Promise<{ id: string; key: string }> => {
-      const roster = ((await call("GET", "/api/agents/roster")).roster ?? []) as any[];
       const lower = ref.toLowerCase();
-      const r = roster.find((x) => x.key === ref || x.id === ref) ?? roster.find((x) => String(x.name).toLowerCase() === lower);
+      const find = async (path: string) => {
+        const roster = ((await call("GET", path)).roster ?? []) as any[];
+        return roster.find((x) => x.key === ref || x.id === ref) ?? roster.find((x) => String(x.name).toLowerCase() === lower);
+      };
+      // A miss reads the list again once: the roster is cached for 5 minutes and an apply creates agents after it restarts the board.
+      const r = (await find("/api/agents/roster")) ?? (await find("/api/agents/roster?fresh=1"));
       if (!r) throw new Error(`unknown agent "${ref}": use a key from fleet`);
       return { id: r.id, key: r.key ?? r.id };
     };

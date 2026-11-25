@@ -71,7 +71,7 @@ export function milestonesOf(w: Waterfall | null): Milestone[] {
     switch (f.type) {
       case "task.created": if (f.subject === `task:${w!.task}`) m("created", "Created"); break;
       case "job.started": m("run_started", "Run started", { runId: f.subject.slice(4) }); break;
-      case "job.ended": m("run_ended", d.state === "done" ? "Run finished" : `Run ${d.state === "cancelled" ? "stopped" : String(d.state ?? "failed")}${d.why ? `: ${clip(d.why, 160)}` : ""}`, { runId: f.subject.slice(4) }); break;
+      case "job.ended": m("run_ended", d.state === "done" ? "Run finished" : d.exit === 143 ? "Run stopped" : `Run ${d.state === "cancelled" ? "stopped" : String(d.state ?? "failed")}${d.why ? `: ${clip(d.why, 160)}` : ""}`, { runId: f.subject.slice(4) }); break;
       case "work.waiting": if (d.reason === "owner_wait") m("asked_you", `Asked you${d.question || d.note ? `: ${clip(typeof d.question === "string" ? d.question : d.note, 160)}` : ""}`); break;
       case "record.decided": if (d.decision === "approved") m("approved", `Card approved${d.decider === "reviewer" ? " by the AI reviewer" : d.decider === "owner" ? " by you" : ""}`, { href: record }); break;
       case "record.landed": m("applied", `Card applied${d.kind ? `: ${clip(d.kind, 60)}` : ""}`, { href: record }); break;

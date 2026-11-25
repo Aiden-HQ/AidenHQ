@@ -229,7 +229,8 @@ export function why(events: CodexEvent[], stderr: unknown) {
   const line = (re: RegExp) => said.match(new RegExp(`[^\\n]*(?:${re.source})[^\\n]*`, "i"))?.[0]?.slice(0, 200);
   // Our own spend cap (the gateway's cap_reached) is permanent and is never a provider quota: it gets its own cause, read
   // before any 402, so a cap refusal can't be mistaken for one the provider would lift.
-  const cap = /\bcap_reached\b|spend cap reached/i;
+  // Only the refusal itself counts (as proc.ts's SPEND_REFUSAL): a bare `cap_reached` in the tail is code or a test the reviewer read.
+  const cap = /\b402:?\s+(?:\{[^}\n]*)?\bcap_reached\b|"type"\s*:\s*"cap_reached"|spend cap reached: the install's (?:daily|monthly) limit, \$\d|task spend cap reached: this task's \$\d/i;
   if (cap.test(said)) return ["permanent", `our spend cap was reached, not a provider quota: ${line(cap) ?? "cap_reached"}`];
   // A provider's quota refusal is transient: HTTP 402 whose same line or body names a quota (usage_limit, quota, credits).
   // A retry minutes later succeeds. Every other 402 (a bare "402 Payment Required", a 402 line number in stderr) stays a

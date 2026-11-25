@@ -10,7 +10,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createJobs, stripSentinels, writeLastMessage } from "../src/jobs.ts";
+import { createJobs, firstError, stripSentinels, writeLastMessage } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.ts";
 import { quietRun } from "../src/quiet.ts";
@@ -350,4 +350,10 @@ test("only-closing routine job is quiet; a write or a created task is not; quiet
   const src = readFileSync(join(import.meta.dirname, "../src/jobs.ts"), "utf8");
   assert.equal(src.match(/quietRun\(/g)?.length, 1);
   assert.doesNotMatch(src, /ADD COLUMN quiet|quiet INTEGER/);
+});
+
+test("a warning line is never the failure reason", () => {
+  const log = join(mkdtempSync(join(tmpdir(), "first-error-")), "job.log");
+  writeFileSync(log, "[2026/11/25 09:30:04:8559] W: WS authentication failed with token:\nError: model not found\n");
+  assert.equal(firstError(log), "Error: model not found");
 });

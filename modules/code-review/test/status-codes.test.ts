@@ -29,3 +29,11 @@ test("only the gateway's cap_reached is the install's spend limit; any other 402
   assert.ok(limit.test("the install's spend limit was reached"));
   assert.doesNotMatch(stopped(r("HTTP 402 Payment Required")), /spend limit|spend cap|cap_reached/i);
 });
+
+test("a cap_reached the reviewer merely read, or a provider rate limit, is not the install's spend limit", async () => {
+  const { stopped } = await import("../recipe/proc.ts");
+  const r = (stderr: string) => ({ code: 1, stderr, timedOut: false });
+  assert.doesNotMatch(stopped(r('throw fail(402, "cap_reached", `${what} ...`)\nupstream stream error rate_limit_exceeded')), /spend limit/);
+  assert.match(stopped(r("upstream stream error: rate_limit_exceeded")), /rate limited/);
+  assert.match(stopped(r("unexpected status 402: spend cap reached: the install's daily limit, $50.00 of $50.00")), /spend limit/);
+});

@@ -12,6 +12,10 @@ export const NOTICE_MARKER = "<!-- aidenhq-notice -->";
 
 /** Whether a comment carries one of our markers. */
 export const hasMarker = (body: string, marker: string) => body.includes(marker);
+/** A kernel wake notice (wakes.ts wakeNotice, a session's wait or timer): posted with the owner's key, never the owner's words. */
+export const WAKE_MARKER = "<!-- aidenhq-wake";
+/** A comment the board or the kernel wrote on the system's behalf: shown as a system note, never as the owner's words. */
+export const isSystemNote = (body: string) => hasMarker(body, NOTICE_MARKER) || hasMarker(body, WAKE_MARKER);
 export const BRIEF_LABEL = "daily-brief";
 /** The label on the owner's settings-change tasks (settings-change.ts): the Settings pages show them, the board's columns don't. */
 export const SETTINGS_LABEL = "settings-change";
@@ -264,7 +268,7 @@ export function commentView(c: Comment, me: string, agents: Agent[]): CommentVie
   const author: CommentView["author"] =
     c.authorType === "agent"
       ? { kind: "agent", name: agents.find((a) => a.id === c.authorAgentId)?.name ?? "Agent" }
-      : hasMarker(c.body, NOTICE_MARKER)
+      : isSystemNote(c.body)
         ? { kind: "board", name: "Board" }
         : relayed(c.body) || (c.authorUserId && c.authorUserId !== me)
           ? { kind: "user", name: "Someone else" }

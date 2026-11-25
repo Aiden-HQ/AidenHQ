@@ -1606,8 +1606,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "GET", path: /^\/api\/agents$/, handle: () => served("agents", async () => activity(await context(), true)) },
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
     // brings that, with each agent's last run, after).
-    { method: "GET", path: /^\/api\/agents\/roster$/, handle: async () => {
-        const [agents, routines, act] = await Promise.all([pc.agents(), pc.routines().catch(() => []), kernelActivity()]);
+    { method: "GET", path: /^\/api\/agents\/roster$/, handle: async (_m, _b, url) => {
+        const [agents, routines, act] = await Promise.all([pc.agents(url.searchParams.has("fresh")), pc.routines().catch(() => []), kernelActivity()]);
         return { roster: roster(agents, routines, new Map(), act) };
       },
     },
