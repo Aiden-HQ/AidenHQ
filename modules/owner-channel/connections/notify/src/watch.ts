@@ -24,7 +24,7 @@ const FAILED = ["failed", "timeout", "lost"];
 const CREDITS = /\b402\b|insufficient credits|payment required|out of credits|quota/i;
 // The model key's own refusal only, in OpenRouter's words: a tool's 401 or "authentication failed" in a job's last line (a
 // session's websocket, a GitHub call) is not it.
-const AUTH = /invalid api key|incorrect api key|no auth credentials found|user not found/i;
+const AUTH = /invalid api key|incorrect api key|no auth credentials found/i;
 const causeOf = (error: unknown): string => (CREDITS.test(String(error ?? "")) ? "out of OpenRouter credits (402)" : AUTH.test(String(error ?? "")) ? "API key rejected (401)" : "");
 const t = (s: unknown): number => Date.parse(String(s ?? "")) || 0;
 
