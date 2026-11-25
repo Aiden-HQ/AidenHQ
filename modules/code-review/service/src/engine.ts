@@ -248,7 +248,7 @@ export function createEngine(d: EngineDeps) {
   // Columns added after data_version 1, kept on the data there is.
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
     ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"], ["runs", "area", "TEXT"], ["batches", "plan", "TEXT"], ["batches", "blobs", "TEXT"], ["batches", "full", "INTEGER NOT NULL DEFAULT 0"], ["runs", "carried", "TEXT"],
-    ["prs", "tier", "TEXT"], ["prs", "rule", "INTEGER"], ["prs", "why", "TEXT"], ["prs", "facts", "TEXT"], ["prs", "cls", "TEXT"], ["prs", "policy", "TEXT"], ["prs", "policy_since", "TEXT"], ["prs", "policy_at", "INTEGER"], ["runs", "tier", "TEXT"], ["prs", "handled", "TEXT"]] as const)
+    ["prs", "tier", "TEXT"], ["prs", "rule", "INTEGER"], ["prs", "why", "TEXT"], ["prs", "facts", "TEXT"], ["prs", "cls", "TEXT"], ["prs", "policy", "TEXT"], ["prs", "policy_since", "TEXT"], ["prs", "policy_at", "INTEGER"], ["runs", "tier", "TEXT"], ["prs", "handled", "TEXT"], ["prs", "noted", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
   if (version === 1) {
@@ -289,6 +289,8 @@ export function createEngine(d: EngineDeps) {
   type PrRow = { repo: string; number: number; head: string; base: string; last_reviewed_head: string | null; mode: string; focus: string | null; author: string; draft: number; fork: number; open: number; merged: number; last_reviewed_base: string | null; title: string | null;
     /** Its head's risk tier, the rule that named it, why, the facts (JSON), and the inputs it was computed from (JSON Inputs). */
     tier: Tier | null; rule: number | null; why: string | null; facts: string | null; cls: string | null;
+    /** The head and tier the PR's comment last said (`head:tier`). */
+    noted: string | null;
     /** The current run of heads under one policy: the policy, its first head and when it started. */
     policy: string | null; policy_since: string | null; policy_at: number | null;
     /** The head the triggers last ran for (a push seen while its tier was pending is still a push once classified). */
@@ -317,7 +319,7 @@ export function createEngine(d: EngineDeps) {
   /** The head's classification on its notice: every phase of the one comment carries the tier line (none while the head is pending). */
   const withTier = (a: Ack): Ack => {
     const p = prRow(a.repo, a.number);
-    return p?.tier && p.head === a.head ? { ...a, tier: { tier: p.tier, why: p.why ?? "" } } : a;
+    return p?.tier ? { ...a, tier: { tier: p.tier, why: p.why ?? "" } } : a;
   };
   /** The acknowledgement comment each PR has (recorded from an outcome, never found by its marker), and notices still settling. */
   const ackOf = (repo: string, n: number) => one<{ ack: number | null }>("SELECT ack FROM prs WHERE repo = ? AND number = ?", repo, n)?.ack ?? undefined;
@@ -377,7 +379,7 @@ export function createEngine(d: EngineDeps) {
   const acking_ = (repo: string, n: number) => [...acking.values()].some((t) => t.repo === repo && t.number === n);
   // The notice is the only path that makes the acknowledgement: one at a time per PR until its comment's id is known (two in
   // flight would each make one); a notice meanwhile waits, the latest replacing an earlier one, and goes once it is known.
-  const ack = (a: Ack): Promise<void> => {
+  const ack = (a: Ack): Promise<boolean | void> => {
     if (!ackOf(a.repo, a.number) && acking_(a.repo, a.number)) return void ackNext.set(`${a.repo}#${a.number}`, a), Promise.resolve();
     // The PR's slot is taken now, before the call returns: a second notice meanwhile waits behind it.
     const slot = `slot:${randomBytes(6).toString("hex")}`;
@@ -1696,8 +1698,18 @@ export function createEngine(d: EngineDeps) {
     run("UPDATE prs SET tier = ?, rule = ?, why = ?, facts = ?, cls = ? WHERE repo = ? AND number = ?", c.tier, c.rule, c.why.slice(0, 500),
       JSON.stringify({ ...facts, paths: facts.paths.slice(0, 50), paths_total: facts.paths.length }), JSON.stringify(i), p.repo, p.number);
     mirrorDue = true;
-    // The comment says the tier on every PR, edited in place; a reclassification of the same head to the same tier (a settings change) leaves it be.
-    if (!(row?.cls && (JSON.parse(row.cls) as Inputs).head === p.head && row.tier === c.tier && row.why === c.why.slice(0, 500))) void ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" });
+  }
+
+  /**
+   * The comment says the tier on every PR, edited in place. Reconciled each poll: a head or tier the comment hasn't said (stored in
+   * `noted` once its write is taken) is said now, so a failed write, a restart or an upgrade all end with it said. Only when the PR's
+   * slot is free (never over a waiting notice); a rule edit that changes only the why leaves the comment be.
+   */
+  async function noteTier(p: PullRequest) {
+    const row = prRow(p.repo, p.number);
+    const key = `${p.head}:${row?.tier}`;
+    if (!row?.tier || row.head !== p.head || row.noted === key || acking_(p.repo, p.number)) return;
+    if (await ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
   }
 
   /** One watched repo: its PRs' heads (each classified first) and its new comments. The first look reviews what is open like a new PR. */
@@ -1709,6 +1721,7 @@ export function createEngine(d: EngineDeps) {
       const was = prRow(p.repo, p.number);
       upsertPr(p);
       await classifyPr(cfg, p);
+      await noteTier(p);
       // Pending (no current tier): nothing is queued, never on a guessed tier.
       const t = current(p.repo, p.number, p.head);
       if (!t) continue;

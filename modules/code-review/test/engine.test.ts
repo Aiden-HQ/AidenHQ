@@ -1967,7 +1967,7 @@ test("push_rounds: an advisory push review that finishes first never uses up the
   assert.ok(w.started.some((s) => s.head === sha("4") && s.mandatory), "4 still gets the push review");
 });
 
-test("every classified head gets the tier notice once: a same-head reclassification to the same tier is quiet, a new tier or head speaks again", async () => {
+test("every classified head gets the tier notice once: nothing changed is quiet, a new head speaks again, a failed write is tried again", async () => {
   const w = world();
   await opened(w, 3, sha("3"));
   assert.equal(w.classifieds.length, 1);
@@ -1977,4 +1977,5 @@ test("every classified head gets the tier notice once: a same-head reclassificat
   w.pr(3, sha("4"));
   await w.tick();
   assert.equal(w.classifieds.at(-1).head, sha("4"));
+  assert.equal(w.classifieds.length, 2);
 });
