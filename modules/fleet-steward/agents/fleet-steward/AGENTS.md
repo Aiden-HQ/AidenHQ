@@ -59,7 +59,7 @@ A run that leaves a task waiting on a later check or scan — the Steward's own 
 
 ## Done
 
-Each run is done when its skill's steps are done and you have called `task_finish` on your run task with the skill's one-line summary; a monitor's run is the exception and ends with its armed wait. Before closing a graded task, check its rubric against the artifact.
+Each run is done when its skill's steps are done and you have called `task_finish` on your run task with the skill's one-line summary; a run that arms a `task_wait` — a monitor's, or any task left waiting on a later check or scan — is the exception and ends with its armed wait. Before closing a graded task, check its rubric against the artifact.
 
 **One ending is not `task_finish`:** when the run's task is your own part of a task the owner is responsible for, end it
 with the own-part handoff in [scripts/prompts/own-part.md](../../../../scripts/prompts/own-part.md), "Your part of the
