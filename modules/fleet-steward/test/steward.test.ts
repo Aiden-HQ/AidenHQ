@@ -126,16 +126,17 @@ test("an owner message on a chat task unanswered for 15 minutes is a critical in
   const own = (m, body = "hello") => ({ authorType: "user", body, createdAt: minsAgo(m) });
   const w = world({
     chatLabel: true,
-    tasks: { c1: chat("c1"), c2: chat("c2"), c3: chat("c3"), c4: chat("c4") },
+    tasks: { c1: chat("c1"), c2: chat("c2"), c3: chat("c3"), c4: chat("c4"), c5: chat("c5") },
     comments: {
       c1: [own(20)], // unanswered
       c2: [{ authorType: "agent", body: "on it", createdAt: minsAgo(18) }, own(20)], // answered (newest first)
       c3: [own(5)], // too recent
       c4: [own(30, "x\n<!-- aidenhq-wake -->"), own(40, "hi")].slice(0, 1), // only a relayed notice: no owner words
+      c5: [own(30, "parked\n\n<!-- aidenhq:job=kernel kind=wait-park -->"), own(40, "hi")], // the kernel's park note is no reply
     },
   });
   const found = await detect(w).front();
-  assert.deepEqual(found.map((i) => [i.key, i.critical]), [["c1", true]]);
+  assert.deepEqual(found.map((i) => [i.key, i.critical]), [["c1", true], ["c5", true]]);
 });
 
 test("an alert's label text is fenced in its incident, its closing marker neutralised; a critical one files a Steward check in a fixed line", async () => {
@@ -289,9 +290,11 @@ test("gate activity counts only the holder's or a fleet-audit agent's comment, n
   // The Steward's own comment is the work moving too.
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-audit", body: "routing it", createdAt: minsAgo(2) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(2));
-  // The holder's own comment keeps its kernel op/job tag: it is still the work moving.
+  // The holder's own comment keeps its kernel op/job tag: it is still the work moving, even quoting a kernel tag mid-body.
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-eng", body: "Rebasing.\n\n<!-- aidenhq:job=abc kind=cp -->", createdAt: minsAgo(3) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(3));
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-eng", body: "The note `<!-- aidenhq:job=kernel kind=wait-park -->` parked it.\n\n<!-- aidenhq:job=abc kind=cp -->", createdAt: minsAgo(4) }];
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(4), "a quoted tag is no marker");
   // Another agent's comment alone is no activity at all.
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-reviewer", body: "looks odd", createdAt: minsAgo(1) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), undefined);

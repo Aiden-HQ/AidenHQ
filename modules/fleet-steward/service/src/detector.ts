@@ -277,11 +277,18 @@ interface JobRow { id: string; agent: string; task?: string; routine?: string | 
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
-// A comment the fleet's own machinery wrote, never someone's words: its body carries an internal HTML comment, `<!-- aidenhq-…`
-// (the kernel's wake, approval and notice markers) or the kernel's own job tag `<!-- aidenhq:job=kernel …` (the wait-park,
-// routed, unblocked and grade notes). An agent's own comment carries `<!-- aidenhq:op=…` or `<!-- aidenhq:job=<id> kind=cp` —
-// its real words, posted through the plugin — so a colon alone is no marker.
-const internalNote = (c: CommentRow) => /<!--\s*aidenhq(?:-|:job=kernel\b)/.test(String(c.body));
+/** The kernel's own job tag, which ends the note it wrote: `\n\n<!-- aidenhq:job=kernel kind=… -->`. An agent's own comment ends with its own `<!-- aidenhq:op=…` or `<!-- aidenhq:job=<id> kind=cp -->`, and quoting this tag mid-body keeps its own tag last. */
+const KERNEL_TAG = /<!--\s*aidenhq:job=kernel\b[^>]*-->\s*$/;
+/** A comment the kernel writes while its wait is armed, parking the task in backlog. */
+const PARK_TAG = /<!--\s*aidenhq:job=kernel kind=wait-park\s*-->\s*$/;
+/**
+ * A comment the fleet's own machinery wrote, never someone's words: the kernel's `<!-- aidenhq-…` markers (a wake, an approval,
+ * a notice) or its own `aidenhq:job=kernel` note (the wait-park, routed, unblocked and grade notes).
+ */
+const internalNote = (c: CommentRow) => {
+  const body = String(c.body);
+  return /<!--\s*aidenhq-/.test(body) || KERNEL_TAG.test(body);
+};
 interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
@@ -897,8 +904,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
         for (const i of chats) {
           const comments = (((await d.kernel.read(`/api/issues/${i.id}/comments?order=desc&limit=20`).catch(() => [])) as CommentRow[]) ?? []).filter((x) => !x.deletedAt);
           const last = comments.find(ownerWords); // newest first
-          // Any later comment, an agent's or a relayed notice, is an answer (a deferral note counts).
-          if (last && age(last.createdAt, t) > SILENT_MS && age(last.createdAt, t) < SILENT_LOOKBACK_MS && !comments.some((x) => x.createdAt > last.createdAt && !ownerWords(x))) out.push({ key: i.id, critical: true, reason: `an owner message on chat ${i.identifier ?? i.id} has had no reply for ${mins(age(last.createdAt, t))}` });
+          // Any later comment, an agent's or a relayed notice, is an answer (a deferral note counts); the kernel's park note is not.
+          if (last && age(last.createdAt, t) > SILENT_MS && age(last.createdAt, t) < SILENT_LOOKBACK_MS && !comments.some((x) => x.createdAt > last.createdAt && !ownerWords(x) && !PARK_TAG.test(String(x.body)))) out.push({ key: i.id, critical: true, reason: `an owner message on chat ${i.identifier ?? i.id} has had no reply for ${mins(age(last.createdAt, t))}` });
         }
       }
       return out;
