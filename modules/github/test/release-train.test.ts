@@ -1,7 +1,8 @@
 // The release train's loop (service/src/train.ts) against a fake kernel and GitHub: a green product tip past the batch window
 // files one kernel.apply for its bump on the Platform Engineer's task; a restart between filing and saving adopts the same
 // card, which the kernel answers with the same record; a bump that ends is closed and its tip never tried again; a bump that
-// ends failed or unknown — even one whose written-down state was lost — closes its task with a "Not landed" note.
+// ends failed or unknown — even one whose written-down state was lost — closes its task cancelled with a "Not landed" note,
+// while only one whose card ended done closes done; a lasting refusal to file the apply closes "Not filed", also cancelled.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -116,3 +117,57 @@ function idle(f) {
   f.github.tip = async () => ({ tip: OLD, green: true });
   return f;
 }
+
+/**
+ * A bump whose card has already ended, settled where it is found: with `follow` the train filed it and holds it in flight
+ * (`follow()` closes it); without, the sweep finds it from the kernel's listing and this process never had it (`sweep()` closes it).
+ */
+async function endedCard(state, text, { follow = false } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  const task = `t-release:instance:${NEW}`;
+  let rec;
+  if (follow) {
+    await train(dir, f, clock).step();
+    clock.t = new Date("2026-11-18T10:20:00Z");
+    await train(dir, f, clock).step();
+    assert.equal(Object.keys(f.k.records).length, 1, "the bump is filed");
+    rec = Object.values(f.k.records)[0];
+  } else {
+    idle(f); // the tip is the live pin: nothing is filed here, only the stranded task is settled
+    const id = `k-${task}`;
+    rec = f.k.records[id] = { id, kind: "kernel.apply", task, state: "review" };
+    f.k.stranded.push({ id: task, identifier: "ACME-7", source: `release:instance:${NEW}`, createdAt: clock.t.toISOString(), status: "in_review" });
+  }
+  rec.state = state;
+  rec.outcome = { ok: state === "done", text };
+  await train(dir, f, clock).step();
+  return f.k.closed;
+}
+
+const FAILED = "generation 12: refused, the staged compile failed; nothing was switched or restarted";
+
+test("a card that ended failed closes its task cancelled with the Not landed body, followed or swept", async () => {
+  const closed = [{ task: `t-release:instance:${NEW}`, status: "cancelled", body: `**Not landed:** it was approved but failed: ${FAILED}. The next merge to the product files the next bump.` }];
+  assert.deepEqual(await endedCard("failed", FAILED, { follow: true }), closed, "follow()");
+  assert.deepEqual(await endedCard("failed", FAILED), closed, "sweep()");
+});
+
+test("a card that ended done still closes its task done with the Applied body, followed or swept", async () => {
+  const closed = [{ task: `t-release:instance:${NEW}`, status: "done", body: "Applied: this instance runs the bump." }];
+  assert.deepEqual(await endedCard("done", "generation 12: the bump is live", { follow: true }), closed, "follow()");
+  assert.deepEqual(await endedCard("done", "generation 12: the bump is live"), closed, "sweep()");
+});
+
+test("a lasting refusal to file the apply closes the bump's task cancelled with the Not filed body", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const refused = { ...f, kernel: async (m, p, b) => { if (p === "/v1/writes") throw new Error("/v1/writes answered 422: the rules refuse this apply"); return f.kernel(m, p, b); } };
+  await train(dir, refused, clock).step();
+  assert.equal(f.k.writes.length, 0, "no card is filed");
+  assert.deepEqual(f.k.closed, [{ task: `t-release:instance:${NEW}`, status: "cancelled", body: "**Not filed:** /v1/writes answered 422: the rules refuse this apply" }]);
+});

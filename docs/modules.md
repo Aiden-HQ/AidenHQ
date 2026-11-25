@@ -154,8 +154,12 @@ This is the only way a module can enumerate tasks by source; there is no route f
 Grant: `kernel.tasks`.
 
 ```json
-{ "status": "done", "body": "**Not landed:** it was approved but failed: <reason>." }
+{ "status": "cancelled", "body": "**Not landed:** it was approved but failed: <reason>." }
 ```
+
+`status` is `done` only when the write did what the task exists for, and `cancelled` for every other ending. The
+release train's bump closes `done` only when its apply card ended `done`, and `cancelled` when its card ended failed,
+unknown, rejected, cancelled or stale — or when filing the apply was refused for good.
 
 The rule, for every module: the task's description carries this module's `<!-- aidenhq-module:<module> -->` marker
 and **no other** module's marker, and the task has no `createdByAgentId`. Every other task is refused with 403,
