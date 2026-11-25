@@ -234,10 +234,15 @@ owner_link() {
 # Unattended: the kernel's first-run page (/setup), its single-use link the last line of the output, exactly once, for the
 # installer to read: AIDENHQ_SETUP_URL=<url>. The vault's recovery key moves from root's home into the vault for that page,
 # which shows it once.
+# Whether a URL is one of this host's loopback addresses (`localhost`, 127.0.0.1, [::1]).
+is_loopback_url() { case "$1" in http://localhost:*|http://localhost/|http://127.0.0.1:*|http://127.0.0.1/|'http://[::1]:'*|'http://[::1]/') return 0 ;; *) return 1 ;; esac; }
 # The setup link is a loopback address when the install has none of its own: say so, and how to give it one. The
-# AIDENHQ_SETUP_URL line itself stays a bare URL (an installer parses it), so this is the line just before it.
-loopback_link_note() {
-  [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ] || return 0
+# AIDENHQ_SETUP_URL line itself stays a bare URL (an installer parses it), so this is the line just before it. A live
+# run passes the URL the kernel returned (it, not the flags, says where the link opens); a dry run has no URL, so the
+# planned mode decides.
+loopback_link_note() { # [URL]
+  if [ -n "${1:-}" ]; then is_loopback_url "$1" || return 0
+  else [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ] || return 0; fi
   echo "This address is loopback-only: open it on this host or through the SSH tunnel printed above. For a public address, run: sudo ops/setup.sh --unattended --exposure public (or --exposure tailscale)."
 }
 
@@ -253,24 +258,19 @@ setup_link() {
       shred -u /root/aidenhq-vault-recovery.txt
     fi
     echo "Open this page to finish: your account and authenticator, the model key, channels (one use; until an admin exists, a rerun prints a new one):"
-    loopback_link_note
+    # A --link rerun prints no tunnel block above, so the tunnel the caveat names is printed here when the link is loopback.
+    if [ "$LINK_ONLY" = 1 ] && is_loopback_url "$url"; then
+      echo "From your own computer, open a tunnel first and leave it open:"
+      echo "  ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 $U@$(hostname -f 2>/dev/null || hostname)"
+    fi
+    loopback_link_note "$url"
     echo "AIDENHQ_SETUP_URL=$url"
   elif [ "$code" = 409 ]; then echo "(an admin exists, so first-run setup is over: sign in at $ADMIN_URL; a lost owner: sudo ops/setup.sh --reset $OWNER_EMAIL)"
   else die "the kernel gave no first-run link (HTTP ${code:-none}; is it up? systemctl --user status aidenhq-kernel)"; fi
 }
 
 if [ "$LINK_ONLY" = 1 ]; then
-  # A rerun prints only the link: when the board is on loopback, print the tunnel the caveat names here too.
-  if [ "$UNATTENDED" = 1 ]; then
-    ADMIN_URL="${AIDENHQ_ADMIN_URL:-http://localhost:3120}"
-    board_lan="$(sed -n 's/^BOARD_LAN_URL=//p' "$ENVF" 2>/dev/null | tail -1)"
-    case "$board_lan" in ""|http://localhost:*|http://127.0.0.1:*) board_lan="" ;; esac
-    if [ -z "$board_lan" ]; then
-      echo "From your own computer, open a tunnel first and leave it open:"
-      echo "  ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 $U@$(hostname -f 2>/dev/null || hostname)"
-    fi
-    setup_link; exit 0
-  fi
+  if [ "$UNATTENDED" = 1 ]; then ADMIN_URL="${AIDENHQ_ADMIN_URL:-http://localhost:3120}"; setup_link; exit 0; fi
   echo "Link for $OWNER_NAME (open it on their laptop, on the tailnet; one use):"
   owner_link
   exit 0
