@@ -1155,8 +1155,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         // An engine reads each model's real window here (its config's context limit); any credential a model call takes may.
         await identify(bearer(req), "agent");
         const ids = (new URL(req.url ?? "", "http://gateway").searchParams.get("ids") ?? "").split(",").filter(Boolean);
-        if (ids.length) await prices.lookup(ids);
-        return send(res, 200, { object: "list", data: (await prices.catalog()).map((m) => ({ id: m.id, object: "model", context_length: m.context, max_completion_tokens: m.output })) });
+        // One bounded read of the list, and one throttled look-up again only for an id it lacks (never the cold start's retries: the engine's deadline is 30 s).
+        let rows = await prices.catalog();
+        if (rows.length && ids.some((id) => !rows.some((m) => m.id === id))) { await prices.lookup(ids); rows = await prices.catalog(); }
+        return send(res, 200, { object: "list", data: rows.map((m) => ({ id: m.id, object: "model", context_length: m.context, max_completion_tokens: m.output })) });
       }
       const m = ROUTE.exec(path);
       if (req.method === "POST" && m) return await model(req, res, m[1] ?? "agent", m[2]!);

@@ -520,7 +520,8 @@ export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse
 export async function forwardModelList(res: http.ServerResponse, url: string, token: string) {
   try {
     const up = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
-    res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" }).end(Buffer.from(await up.arrayBuffer()));
+    const body = Buffer.from(await up.arrayBuffer());
+    res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" }).end(body);
   } catch (e) {
     res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 502, type: "gateway_unreachable", message: `the model gateway is unreachable (${(e as Error).message})` } }));
   }
