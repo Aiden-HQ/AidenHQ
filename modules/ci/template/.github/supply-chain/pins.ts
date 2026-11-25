@@ -6,6 +6,8 @@
 // Pinned (checked over the whole tree at head):
 //   Dockerfiles   `# syntax=`, FROM and COPY --from images by digest (build stages, `scratch` and FROM ${ARG} aside);
 //   compose       every `image:` by digest, unless its service has a `build:`;
+//   modules       modules/<name>/module.yaml: every `services.run.<service>.image` by digest (a `build:` service is this
+//                 repository's own image, and the agent-level `image:` lines name a computer image: neither is a pin);
 //   workflows     every `uses:` by a 40-character commit SHA with its tag in a comment (`# v1.2.3`), local ./ aside;
 //   commands      (Dockerfile RUN, *.sh, workflow lines) `npm i -g` and `npx -y` at an exact version, `pip install`
 //                 at `==`, no `curl | sh`, and after a script adds an apt repository (sources.list.d) every apt install
@@ -62,6 +64,7 @@ const WORKFLOW = /(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/;
 const SHELL = /\.sh$/;
 const CODE = /\.(m?js|ts)$/;
 const HOST_PINS = /(^|\/)ops\/vm\/pins\.json$/;
+const MODULE = /^modules\/[^/]+\/module\.yaml$/;
 const SKIP = /(^|\/)(node_modules|test\/fixtures)\//;
 const DIGEST = /@sha256:[0-9a-f]{64}$/;
 const DEFAULT_RELEASE = "noble"; // a host file that names no release: Ubuntu 24.04 (hosts are amd64)
@@ -123,7 +126,7 @@ function baseDistro(ref: string): { distro: string; release: string; suiteAlias?
   return undefined;
 }
 
-export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));
+export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path) || MODULE.test(path));
 
 // The delimiter of the first here-document a line opens, with quoted text as data: `echo 'a << b'` opens none, and
 // `<<'EOF'` names EOF. `<<<` is a here-string, not a here-document, and so is `<<` with no word after it (a redirection of
@@ -827,6 +830,106 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
 }
 
 /**
+ * A service's `image:` and `build:` as the manifest declares them; `imageLine` is where the `image` key was written (so a
+ * value the walk can't read is reported, never dropped), and `nested` is the line of a value that is not a scalar.
+ */
+interface ServiceDecl { image?: { ref: string; line: number }; imageLine?: number; build: boolean; nested?: number }
+
+/**
+ * modules/<name>/module.yaml's `services.run`, each service's `image:` and `build:` as the compiler reads them, in the order
+ * the file first names the service. A small indentation-aware walk of the one key path, not a YAML parser (this file takes
+ * no dependencies), and the one place both supply-chain checks read it: a quoted key is the same key, a `>-`/`|` block
+ * scalar or a plain scalar continued on the next, more-indented line is the value, a trailing comment is dropped, and a
+ * `build:` with nothing after it (or only a comment) is YAML null. A flow-style `services`/`run`/service map is reported
+ * (`flow`, its line): it would hide an image from the check.
+ */
+export function moduleServices(text: string): { services: Map<string, ServiceDecl>; flow?: number } {
+  const services = new Map<string, ServiceDecl>();
+  const stack: { indent: number; key: string }[] = [];
+  const lines = text.split("\n").map((l) => l.replace(/\r$/, ""));
+  let flow: number | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    // A key line only: a list item, a directive or anything else is not part of a service declaration's keys. A key may be
+    // quoted (`"primer-db":`, as YAML allows and the compiler reads): the quotes are dropped, never the key.
+    const m = /^(\s*)(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_.-]+)):(?:\s+(.*))?$/.exec(line);
+    if (!m) continue;
+    const indent = m[1]!.length, key = m[2] ?? m[3] ?? m[4]!, raw = m[5], lineNo = i + 1;
+    while (stack.length && stack.at(-1)!.indent >= indent) stack.pop();
+    stack.push({ indent, key });
+    const keys = stack.map((s) => s.key);
+    const under = keys.length === 4 && keys[0] === "services" && keys[1] === "run";
+    // `services: {…}`, `run: {…}` and a service `db: {image: …}` are flow maps: their images are past this walk.
+    if (/^[{[\[]/.test(raw ?? "") && keys[0] === "services" && (keys.length === 1 || (keys.length === 2 && keys[1] === "run") || (keys.length === 3 && keys[1] === "run"))) flow ??= lineNo;
+    // A plain scalar's text: a trailing comment dropped (a `#` at the start or after whitespace), as YAML reads it.
+    let value = raw === undefined ? undefined : (raw.trim().startsWith("#") ? "" : raw.replace(/\s#.*$/, "").trim());
+    let nested = 0;
+    // A leaf key's value may be a block scalar (`>-`, `|`, `|2`) or a plain scalar continued on the next, more-indented
+    // line (`image:\n  postgres:17@sha256:…`): those lines, folded to one string, are the value. A line that is itself a
+    // key, a list item or a flow map under `image` is a nested value, which the schema forbids: it is reported, never read.
+    if (under && (key === "image" || key === "build")) {
+      const block = raw !== undefined && /^[>|][+-]?\d*$/.test(raw.trim());
+      if (block || value === undefined || value === "") {
+        const body: string[] = [];
+        let j = i + 1;
+        for (; j < lines.length; j++) {
+          const l = lines[j]!, t = l.trim();
+          // A blank or comment-only line is not the end of the value: YAML skips a comment there, a plain scalar continues
+          // after a blank line, and a block scalar keeps the blank line. The value is the first line after them.
+          if (t === "" || t.startsWith("#")) { if (block || body.length) body.push(l); continue; }
+          if (l.search(/\S/) <= indent) break;
+          if (!block && /^(?:[-[{|>]|(?:[A-Za-z0-9_.-]+|"[^"]*"|'[^']*'):(?:\s|$))/.test(t)) { nested = j + 1; break; }
+          body.push(l);
+        }
+        if (block || body.some((l) => l.trim() !== "")) value = body.join(" ").trim();
+        i = j - 1; // the value's lines are not keys of their own
+      }
+    }
+    if (keys.length === 3 && keys[0] === "services" && keys[1] === "run") {
+      if (!services.has(key)) services.set(key, { build: false });
+    } else if (under) {
+      const svc = services.get(keys[2]!);
+      if (!svc) continue;
+      // The compiler's `build != null`: `build:` with nothing after it (or only a comment) is YAML null, so the service
+      // names an image after all.
+      if (key === "build") svc.build = value !== undefined && !/^(?:~|null)?$/i.test(value.trim());
+      if (key === "image") {
+        if (nested) { svc.nested = nested; continue; }
+        // A plain scalar's ref: quotes dropped. A ref never holds whitespace, so its first token is the whole of it. A ref
+        // the walk cannot read as one (a `$`-interpolated one, an anchor) is still kept: modulePins reports it rather than
+        // letting an image the check cannot read go unmentioned.
+        const ref = value === undefined ? undefined : /^["']?([^\s"'#]+)/.exec(value)?.[1];
+        if (!svc.image) { svc.imageLine = lineNo; if (ref) svc.image = { ref, line: lineNo }; }
+      }
+    }
+  }
+  return { services, flow };
+}
+
+/**
+ * modules/<name>/module.yaml: each service's `image:` under `services.run` is a registry pin, by digest like a compose
+ * service's (a `build:` service is this repository's own image, and the agent-level `image:` lines name a computer image:
+ * neither is one).
+ */
+function modulePins(path: string, text: string): { pins: Pin[]; problems: string[] } {
+  const { services, flow } = moduleServices(text);
+  const pins: Pin[] = [], problems: string[] = [];
+  const at = (n: number) => `${path}:${n}`;
+  if (flow) problems.push(`${at(flow)}: services is written as a flow map; only the block form's service images can be checked`);
+  for (const { image, imageLine, build, nested } of services.values()) {
+    if (nested) { problems.push(`${at(nested)}: image is a nested value, not a plain reference`); continue; }
+    if (build || (!image && imageLine === undefined)) continue;
+    // An `image:` the walk read nothing from is reported: the schema wants a plain string, and a value this check cannot
+    // read must never pass for a service that names no image.
+    if (!image) { problems.push(`${at(imageLine!)}: image has no value; only a plain reference can be checked`); continue; }
+    if (image.ref.includes("$")) { problems.push(`${at(image.line)}: image ${image.ref} is not a plain reference (name:tag@sha256:…)`); continue; }
+    DIGEST.test(image.ref) ? pins.push(imagePin(image.ref, at(image.line))) : problems.push(`${at(image.line)}: image ${image.ref} has no digest (name:tag@sha256:…)`);
+  }
+  return { pins, problems };
+}
+
+/**
  * ops/vm/pins.json: one apt pin per package and release, with the file's repositories as that release reads them. A file
  * with no releases dates its top-level `apt` for DEFAULT_RELEASE (as scanFile does for a host script naming none); an `apt`
  * block no release can read (not an object of pins, or under a release that isn't an object) is a problem, never skipped.
@@ -1005,6 +1108,7 @@ function applyCopy(state: State, targets: { name: string; entries: string[]; unk
 /** One file's pins and its unpinned problems. */
 export function scanFile(path: string, text: string): { pins: Pin[]; problems: string[] } {
   if (HOST_PINS.test(path)) return hostPins(path, text);
+  if (MODULE.test(path)) return modulePins(path, text);
   const pins: Pin[] = [], problems: string[] = [];
   let state: State = emptyState();
   const at = (n: number) => `${path}:${n}`;
