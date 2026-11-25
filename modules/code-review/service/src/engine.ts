@@ -1862,7 +1862,8 @@ export function createEngine(d: EngineDeps) {
       if (e.kind === "github.resync") boot.add(cfg.repo);
       else if (e.kind === "pull_request_review_comment.created") threads.set(`${cfg.repo}#${n}`, { cfg, n });
       else if (e.kind.startsWith("pull_request.")) prs.set(`${cfg.repo}#${n}`, { cfg, n });
-      else if (e.kind === "issue_comment.created" && e.data?.pr === true)
+      // A clipped comment (over 2,000 characters) is never a command: a command is one short line, and the rest can't be checked.
+      else if (e.kind === "issue_comment.created" && e.data?.pr === true && !e.truncated)
         comments.push({ cfg, c: { id: e.id.replace(/^comment:/, ""), number: n, author: e.author ?? "", body: e.text ?? "", created_at: String(e.data?.created_at ?? iso()) } });
     }
     const failed = (repo: string, what: string, e: unknown) => {

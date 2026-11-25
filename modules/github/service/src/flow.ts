@@ -331,7 +331,17 @@ export function createFlow(d: FlowDeps) {
    * The change feed's events as Flow's facts (feed.ts hooks): issues opened and labelled, PRs opened, pushed, closed or merged,
    * and a PR head's CI completed (its start comes from the feed's `started` callback; its check runs, newest per suite and name, as the feed holds them).
    */
-  const observe = (feed: { runs(repo: string, sha: string): { completed: string | null }[]; rollup(repo: string, sha: string): unknown }): Hook => async (e, ctx) => {
+  const observe = (feed: { runs(repo: string, sha: string): { completed: string | null }[]; rollup(repo: string, sha: string): unknown }): Hook => {
+  /** The head's named checks, check runs and commit statuses alike (the design and code reviews left out): once none is pending, CI
+   * completed for each PR on it, at the later of the last run's completion and the last status's time. */
+  const ciDone = (repo: string, head: string, prs: number[]) => {
+    const named = namedChecks(feed.rollup(repo, head));
+    if (!named.length || named.some((c) => c.pending)) return;
+    const statuses = ((feed.rollup(repo, head) as { contexts: { nodes: { __typename: string; context?: string; createdAt?: string }[] } }).contexts.nodes).filter((n) => n.__typename === "StatusContext" && named.some((c) => c.name === n.context));
+    const ends = [...feed.runs(repo, head).map((r) => r.completed ?? ""), ...statuses.map((s) => s.createdAt ?? "")].map((v) => Date.parse(v)).filter(Number.isFinite);
+    for (const pr of prs) f.checksCompleted(repo, pr, head, named.filter((c) => !c.ok).map((c) => String(c.name)).slice(0, 20), ends.length ? utc(Math.max(...ends)) : now().toISOString());
+  };
+  return async (e, ctx) => {
     const repo = e.resource, x = e.data ?? {}, n = Number(x.number), head = String(x.head ?? "");
     const t = now().toISOString();
     if (e.kind === "issues.opened") f.issueOpened(repo, { number: n, created_at: String(x.created_at ?? t), labels: (x.labels as string[]) ?? [], state: "open", author: e.author ?? "ghost", author_kind: x.author_kind as Kind });
@@ -345,16 +355,10 @@ export function createFlow(d: FlowDeps) {
       const pr = ctx.pr ?? {};
       if (pr.merged_at) f.merged(repo, n, head, String(pr.merge_commit_sha ?? ""), pr.merged_at, String(pr.title ?? ""), String(pr.body ?? ""));
       else f.closed(repo, n, head, pr.closed_at ?? t);
-    } else if (e.kind === "check_run.completed" || e.kind === "status") {
-      // The head's named checks, check runs and commit statuses alike (the design and code reviews left out): complete once none is pending.
-      const named = namedChecks(feed.rollup(repo, head));
-      // Ended at the last check run's completion or the last status's time, whichever is later.
-      const statuses = ((feed.rollup(repo, head) as { contexts: { nodes: { __typename: string; context?: string; createdAt?: string }[] } }).contexts.nodes).filter((n) => n.__typename === "StatusContext" && named.some((c) => c.name === n.context));
-      const ends = [...feed.runs(repo, head).map((r) => r.completed ?? ""), ...statuses.map((s) => s.createdAt ?? "")].map((v) => Date.parse(v)).filter(Number.isFinite);
-      for (const pr of (x.prs as number[]) ?? []) {
-        if (named.length && !named.some((c) => c.pending)) f.checksCompleted(repo, pr, head, named.filter((c) => !c.ok).map((c) => String(c.name)).slice(0, 20), ends.length ? utc(Math.max(...ends)) : t);
-      }
-    }
+    } else if (e.kind === "check_run.completed" || e.kind === "status") ciDone(repo, head, (x.prs as number[]) ?? []);
+    // A PR opened on a head whose CI already finished (a second PR from a green branch): no check event follows.
+    if (e.kind === "pull_request.opened") ciDone(repo, head, [n]);
+  };
   };
   return Object.assign(f, { churnPass, churnRepo, backfill, observe });
 }

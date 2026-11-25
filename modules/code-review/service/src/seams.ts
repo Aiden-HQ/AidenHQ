@@ -79,7 +79,7 @@ export interface PrSource {
 }
 /** One event of the kernel's log of the github change feed (kernel/src/events.ts LoggedEvent): what the watcher reads of it.
  * `text` and `author` are a stranger's. */
-export type FeedEvent = { seq: number; resource: string; id: string; kind: string; author?: string; text?: string; data?: Record<string, unknown> };
+export type FeedEvent = { seq: number; resource: string; id: string; kind: string; author?: string; text?: string; truncated?: boolean; data?: Record<string, unknown> };
 /** The log after `after` (the last seq handled); no `after`: no events and `next` at the log's end (the watermark). `gap`: rows
  * after `after` were pruned (kept 3 days). */
 export type Feed = (after?: number) => Promise<{ events: FeedEvent[]; next: number; gap: boolean }>;
