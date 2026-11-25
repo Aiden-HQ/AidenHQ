@@ -26,9 +26,13 @@ test("self_change's routine declares its fields, so a schema-validating client k
   assert.equal(schedules.type, "array");
   assert.equal(schedules.maxItems, 1, "at most one schedule");
   assert.equal(schedules.items.type, "object");
-  assert.deepEqual(Object.keys(schedules.items.properties).sort(), ["cron", "label"]);
+  // A schedule's explicit timezone is a field the compiler keeps (`scripts/modules.ts` defaults it to the instance's), so the
+  // schema must declare it or a validating client drops it.
+  assert.deepEqual(Object.keys(schedules.items.properties).sort(), ["cron", "label", "timezone"]);
   assert.deepEqual(schedules.items.required, ["cron"]);
   assert.equal(schedules.items.additionalProperties, false);
+  assert.equal(routine.properties.title.minLength, 1, "an empty title is refused");
+  assert.deepEqual(routine.required, ["title"], "the compiler refuses a routine without a title");
   const event = routine.properties.event;
   assert.equal(event.type, "object");
   assert.deepEqual([...event.required].sort(), ["connection", "filter", "resource"]);
@@ -57,8 +61,8 @@ function prune(value, schema) {
 test("a routine_def change carrying a title and schedules survives the declared schema", async () => {
   const change = await selfChangeChange();
   const changeSchema = (await rpc({ method: "tools/list" })).json.result.tools.find((t) => t.name === "self_change").inputSchema.properties.changes.items;
-  const sent = { kind: "routine_def", key: "sweep", routine: { title: "Sweep", description: "Sweep, then close this task.", schedules: [{ cron: "0 10 * * *", label: "daily" }] } };
-  assert.deepEqual(prune(sent, changeSchema), sent, "no routine field is stripped");
+  const sent = { kind: "routine_def", key: "sweep", routine: { title: "Sweep", description: "Sweep, then close this task.", schedules: [{ cron: "0 10 * * *", timezone: "Europe/London", label: "daily" }] } };
+  assert.deepEqual(prune(sent, changeSchema), sent, "no routine field is stripped, an explicit schedule timezone included");
   // The change's top level keeps `text` and `key`, and only the declared fields.
   assert.equal(change.properties.text.type, "string");
   assert.equal(change.properties.key.type, "string");
