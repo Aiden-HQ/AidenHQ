@@ -110,9 +110,24 @@ const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
 const editor = (k) => {
   const fire = (el, ev, get) => el.addEventListener(ev, () => { const v = get(); if (v !== undefined) k.set(v); });
   if (k.kind === "checks") return h("div", { className: "checks" }, ...k.values.map((v) => { const c = h("input", { type: "checkbox", checked: (k.value ?? []).includes(v), title: k.titles?.[v] }); c.dataset.f = `${k.f}:${v}`; c.addEventListener("change", () => k.set(k.values.filter((x) => x === v ? c.checked : (k.value ?? []).includes(x)))); return h("label", {}, c, v); }));
+  if (k.kind === "seg") return h("div", { className: "seg", role: "radiogroup", ariaLabel: k.label }, ...k.values.map((v, i) => { const b = h("button", { type: "button", role: "radio", textContent: v, title: k.titles?.[v] }); b.setAttribute("aria-checked", String(v === k.value)); b.tabIndex = v === k.value ? 0 : -1; b.dataset.v = v; b.dataset.f = `${k.f}:${v}`; b.addEventListener("click", () => { if (v !== k.value) k.set(v); });
+    b.addEventListener("keydown", (e) => { const d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]; if (d) { e.preventDefault(); const n = (i + d + k.values.length) % k.values.length; e.currentTarget.parentNode.children[n].focus(); k.set(k.values[n]); } }); return b; }));
+  if (k.kind === "chips") {
+    // One entry per chip; Enter (or leaving the box) adds what is typed, a multi-line paste adds one chip per line. k.dups allows a repeated entry (an ordered list).
+    let items = k.value ?? [];
+    const inp = h("input", { type: "text", ariaLabel: k.label, placeholder: k.placeholder ?? "Add one, press Enter", autocomplete: "off", spellcheck: false });
+    inp.dataset.f = k.f;
+    const put = (list) => { items = list; k.set(list); };
+    const add = (vs) => { inp.value = ""; const more = vs.map((x) => x.trim()).filter((x) => x && (k.dups || !items.includes(x))); if (more.length) put([...items, ...more]); };
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add([inp.value]); } else if (e.key === "Backspace" && !inp.value && items.length) put(items.slice(0, -1)); });
+    inp.addEventListener("paste", (e) => { const t = e.clipboardData?.getData("text") ?? ""; if (t.includes("\n")) { e.preventDefault(); add(t.split("\n")); } });
+    // What is typed is proposed with the list as you type (no redraw, so the caret stays): Save always carries it, with or without Enter.
+    let typing; inp.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { if (!inp.isConnected) return; const v = inp.value.trim(); k.set(v && (k.dups || !items.includes(v)) ? [...items, v] : items, true); }, 200); });
+    return h("div", { className: "chips" }, ...items.map((x, i) => { const b = h("button", { type: "button", className: "x", ariaLabel: `Remove ${x}`, textContent: "\u00d7" }); b.addEventListener("click", () => put(items.filter((_, j) => j !== i))); return h("span", { className: "chip", title: x }, h("span", { textContent: x }), b); }), inp);
+  }
   const el = k.kind === "select" ? h("select", { ariaLabel: k.label }, ...k.values.map((v) => h("option", { value: v, textContent: v, title: k.titles?.[v], selected: v === k.value })))
     : k.kind === "list" ? h("textarea", { rows: Math.min(6, Math.max(2, (k.value ?? []).length)), value: (k.value ?? []).join("\n"), ariaLabel: k.label, spellcheck: false })
-    : h("input", { type: "text", value: k.value ?? "", ariaLabel: k.label, autocomplete: "off", spellcheck: false, placeholder: k.kind === "num" ? "unlimited" : "" });
+    : h("input", { type: "text", value: k.value ?? "", ariaLabel: k.label, autocomplete: "off", spellcheck: false, placeholder: k.placeholder ?? (k.kind === "num" ? "unlimited" : "") });
   el.dataset.f = k.f;
   // A text control proposes as you type (after a short pause, without a redraw, so the caret stays) and again on change, so the proposal the host shows is the latest by the time Save is pressed.
   const read = (quiet) => k.kind === "list" ? lines(el.value) : k.kind === "num" ? (el.value.trim() === "" ? null : Number.isInteger(Number(el.value)) && Number(el.value) >= 0 ? Number(el.value) : (quiet || say("Use a whole number, or leave it blank.", true), undefined)) : el.value;

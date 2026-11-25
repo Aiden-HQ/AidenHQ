@@ -13,11 +13,40 @@
   .repo .link { display: flex; margin-top: 2px; font-weight: 400; }
   .row .repo { align-self: start; }
   .dhead { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
-  .tiers { display: flex; flex-wrap: wrap; gap: 4px; align-self: center; }
-  .tg { --c: #8b8f98; border-left: 3px solid var(--c); background: color-mix(in srgb, var(--c) 11%, transparent); padding: 2px 7px; border-radius: 3px; font-size: 11.5px; line-height: 1.3; white-space: nowrap; }
-  .tg b { font-weight: 600; margin-right: 4px; }
-  .tg.trivial, .drawer .grp.trivial { --c: #2f9e6a; } .tg.standard, .drawer .grp.standard { --c: #3b78d8; } .tg.sensitive, .drawer .grp.sensitive { --c: #d6603b; } .drawer .grp.skip { --c: #8b8f98; }
-  .drawer .grp[class*="tier-"] { color: inherit; border-left: 3px solid var(--c); padding-left: 8px; margin-top: 8px; }
+  .tiers { align-self: center; color: var(--soft); font-size: 12.5px; overflow-wrap: anywhere; }
+  .tiers b { color: var(--color-text-primary, CanvasText); font-weight: 560; }
+  .t-skip { --c: #8b8f98; } .t-trivial { --c: #2f9e6a; } .t-standard { --c: #3b78d8; } .t-sensitive { --c: #d6603b; } .t-unwatched { --c: #8b8f98; }
+  .sd { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 10px; align-items: start; padding: 12px clamp(10px, 2vw, 18px) 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--line) 8%, transparent); }
+  .sdc { display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .sf .seg { justify-self: start; }
+  .sec { --c: var(--accent); min-width: 0; border: 1px solid var(--line); border-top: 2px solid var(--c); border-radius: var(--r); background: var(--color-background-primary, Canvas); }
+  .sec.repair { --c: #1f9d93; } .sec.limits { --c: #c98a1b; } .sec.adv { --c: #8b8f98; }
+  .sec > h4, .sec > summary { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 12px; font-size: 12.5px; font-weight: 600; list-style: none; cursor: default; }
+  .sec > summary { cursor: pointer; } .sec > summary::-webkit-details-marker { display: none; }
+  .sec > summary::before { content: ""; flex: none; width: 5px; height: 5px; border-right: 1.5px solid var(--soft); border-bottom: 1.5px solid var(--soft); transform: rotate(-45deg); transition: transform .12s; }
+  .sec[open] > summary::before { transform: rotate(45deg); }
+  .sec h4 .sum, .sec summary .sum { margin-left: auto; font-weight: 400; color: var(--soft); font-size: 12px; }
+  .sec .body { display: grid; gap: 10px 14px; padding: 2px 12px 12px; }
+  .sec .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px 12px; }
+  .sf { display: grid; gap: 4px; align-content: start; min-width: 0; }
+  .sf.wide { grid-column: 1 / -1; }
+  .sl { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; min-height: 17px; }
+  .sf.chg .sn { color: var(--accent); font-weight: 560; }
+  .sl .rs { height: auto; padding: 0; border: 0; background: none; color: var(--accent); font-size: 11.5px; }
+  .sl .rs:hover { text-decoration: underline; }
+  .mx .rs { height: 14px; padding: 0; border: 0; }
+  .sf .warn { color: var(--color-text-danger, red); font-size: 12px; }
+  .sf .checks { gap: 6px; min-height: 0; } .sf .checks label { padding: 2px 8px 2px 6px; border: 1px solid var(--line); border-radius: 5px; font-size: 12px; }
+  .mx { display: grid; grid-template-columns: auto auto auto; justify-content: space-between; gap: 8px 8px; align-items: center; }
+  .mx .seg button { padding: 0 7px; }
+  .mx .mh { font-size: 11.5px; color: var(--soft); }
+  .mx .tn { display: flex; align-items: center; gap: 7px; font-weight: 560; font-size: 12.5px; white-space: nowrap; }
+  .mx .tn::before { content: ""; width: 3px; height: 18px; border-radius: 2px; background: var(--c); }
+  .mx .cell { position: relative; display: flex; min-width: 0; justify-self: start; }
+  .mx .cell .rs { position: absolute; top: -7px; right: -5px; width: 14px; height: 14px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--color-text-inverse, #fff); font-size: 10px; line-height: 1; }
+  .mx .cell.chg .seg { border-color: var(--accent); }
+  @media (max-width: 420px) { .mx { grid-template-columns: 1fr 1fr; } .mx > :first-child { display: none; } .mx .tn { grid-column: 1 / -1; } }
+  .mx .na { color: var(--soft); padding-left: 6px; }
   .pause { display: flex; align-items: center; gap: 8px; }
   .pause .sw { flex: none; }
   .pause.on { color: var(--color-text-danger, red); }
@@ -73,7 +102,8 @@
   let lastGood = { repos: {}, paused: undefined };
   async function propose(fields, repo, whole, live) {
     const next = { repos: { ...pending.repos }, paused: pending.paused };
-    if (repo) next.repos[repo] = whole ? fields : { ...(next.repos[repo] ?? {}), ...fields };
+    if (repo && whole && !Object.keys(fields).length) delete next.repos[repo]; // an entry edited back to nothing is no proposal at all
+    else if (repo) next.repos[repo] = whole ? fields : { ...(next.repos[repo] ?? {}), ...fields };
     else next.paused = fields.paused;
     pending = next; // at once, so a second edit before the answer comes back keeps this one
     if (!live) render();
@@ -96,22 +126,8 @@
     "caps.requeue_on_timeout": ["Requeues on timeout", "How many times a timed-out run is queued again. Blank is unlimited.", null],
     stop_label: ["Stop label", "While a PR carries this label Ship leaves it alone; removing it resumes.", null],
   };
-  for (const t of TIERS) {
-    if (t !== "skip") T[`by_tier.${t}.approve`] = [`${cap(t)}: approve`, `Whether Ship's App approves a ${t} PR.`, APPROVE_OPTS];
-    T[`by_tier.${t}.merge`] = [`${cap(t)}: merge`, `Whether Ship merges a ${t} PR.`, MERGE_OPTS];
-  }
-  T["unwatched.merge"] = ["Unwatched: merge", "A repo code review doesn't watch has no risk tier. Whether Ship merges its PRs.", MERGE_OPTS];
   const STAGES = { conflict: "When a PR conflicts", behind: "When a PR is behind", before_merge: "Before merge" };
-  const GROUPS = [
-    ...TIERS.map((t) => [`${cap(t)} PRs`, t === "skip" ? ["by_tier.skip.merge"] : [`by_tier.${t}.approve`, `by_tier.${t}.merge`], `${TIER_HELP[t]} Which PRs are ${t} is set by the tier rules on the Reviews page.`, `tier-${t} ${t}`]),
-    ["Repos code review doesn't watch", ["unwatched.merge"]],
-    ["Rebase and repair", ["rebase", "fix", "generated.globs", "generated.command", "protected"]],
-    ["Caps", ["caps.wakes_per_head", "caps.ci_rounds", "caps.same_check_heads", "caps.rounds", "caps.usd", "caps.requeue_on_timeout"], "How many times a PR is re-reviewed (and so fixed) is code review's 'Reviews per push' setting on the Reviews page."],
-    ["Other", ["stop_label"]],
-    ["Actions", Object.keys(STAGES).map((s) => `actions.${s}`), "Extra steps Ship takes at a stage: post a comment or run a workflow. One per line: comment: text, or workflow: file.yml key=value."],
-  ];
-  
-  const KIND = { rebase: "select", fix: "checks", "generated.globs": "list", "generated.command": "text", protected: "list", stop_label: "text" };
+  const KIND = { rebase: "seg", fix: "checks", "generated.globs": "chips", "generated.command": "text", protected: "chips", stop_label: "text" };
   const get = (o, path) => path.split(".").reduce((x, k) => x?.[k], o);
   const put = (o, path, v) => { const ks = path.split("."); const last = ks.pop(); const t = ks.reduce((x, k) => (x[k] ??= {}), o); t[last] = v; };
   const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -175,25 +191,71 @@
     return false;
   };
   const fmt = (path, v) => Array.isArray(v) ? (v.join(", ") || "none") : v === null || v === undefined || v === "" ? (/^caps/.test(path) ? "unlimited" : "none") : typeof v === "object" ? JSON.stringify(v) : String(v);
-  const showAction = (a) => a.workflow ? `workflow: ${a.workflow}${Object.entries(a.inputs ?? {}).map(([k, v]) => ` ${k}=${v}`).join("")}` : `comment: ${a.comment ?? ""}`;
-  const readAction = (l) => { const m = l.match(/^(comment|workflow):\s*(.*)$/); if (!m || m[1] === "comment") return { comment: m ? m[2] : l }; const [name, ...kv] = m[2].split(/\s+/); return { workflow: name, inputs: Object.fromEntries(kv.map((x) => x.split(/=(.*)/s).slice(0, 2))) }; };
+  // An action as one chip: `comment: text`, or `workflow: file.yml key=value`; a value with a space, = or quote is JSON-quoted so the chip reads back to the same action.
+  const q = (v) => (/[\s="]|^$/.test(String(v)) ? JSON.stringify(String(v)) : String(v));
+  const showAction = (a) => a.workflow ? `workflow: ${a.workflow}${Object.entries(a.inputs ?? {}).map(([k, v]) => ` ${k}=${q(v)}`).join("")}` : `comment: ${a.comment ?? ""}`;
+  const readAction = (l) => {
+    const m = l.match(/^(comment|workflow):\s*(.*)$/); if (!m || m[1] === "comment") return { comment: m ? m[2] : l };
+    const [name, ...rest] = m[2].match(/(?:"(?:[^"\\]|\\.)*"|\S)+/g) ?? [""];
+    return { workflow: name, inputs: Object.fromEntries(rest.map((x) => { const [k, ...v] = x.split("="), raw = v.join("="); let val = raw; if (raw.startsWith('"')) try { val = JSON.parse(raw); } catch {} return [k, val]; })) };
+  };
 
+  const CAPS = ["caps.wakes_per_head", "caps.ci_rounds", "caps.same_check_heads", "caps.rounds", "caps.usd", "caps.requeue_on_timeout"];
+  const secOpen = new Set();
+  const MATRIX_HELP = { ...TIER_HELP, unwatched: "A repo code review doesn't watch has no risk tier, only a merge setting.", Approve: Object.entries(APPROVE_OPTS).map(([v, m]) => `${v}: ${m}`).join(" "), Merge: Object.entries(MERGE_OPTS).map(([v, m]) => `${v}: ${m}`).join(" ") };
   function drawer(key) {
     const s = view(key), base = target(key).settings ?? {}, defaults = key === "defaults";
-    const field = (path) => {
-      const head = ["enabled", "handoff"].includes(path), tier = /^(by_tier|unwatched)\./.test(path), stage = path.startsWith("actions.") ? path.slice(8) : null;
-      const kind = head || tier ? "select" : stage ? "list" : KIND[path] ?? "num";
-      const [label, text, options] = path === "enabled" ? ["On or off", ON[1], { on: "Ship works this repo's PRs.", off: "Ship leaves it alone." }] : head ? COLS[path] : stage ? [STAGES[stage], `Steps Ship takes ${STAGES[stage].toLowerCase()}.`, null] : T[path];
-      const v = get(s, path), d = dflt(key, path), over = owns(key, path);
-      const show = (x) => (path === "enabled" ? (x ? "on" : "off") : x);
-      const ed = editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : head ? show(v) : v, values: head ? (path === "enabled" ? ["on", "off"] : controls[path].values) : tier ? Object.keys(options) : kind === "select" ? ["conflict", "behind"] : ["conflicts", "ci", "review"], titles: options, set: (x, live) => edit(key, path, stage ? x.map(readAction) : path === "enabled" ? x === "on" : x, live) });
-      const loose = pending.repos[key] && looser(path, get(base, path), v);
-      return fld(label, text, options ? { options, current: show(v) } : { note: LOOSE.has(path) ? "Loosening this is the owner's call: an agent's change is refused, your Save applies it." : undefined }, ed,
-        h("span", { className: "dflt", title: stage ? "" : fmt(path, show(d)), textContent: `Default: ${stage ? "none" : fmt(path, show(d))}` }), over ? h("span", { className: "ovr", textContent: "Overridden" }) : null, over ? linkBtn(defaults || !target(key).inherits ? "Reset to preset" : "Reset to default", () => reset(key, path)) : null,
+    const resetTo = (path) => (defaults || !target(key).inherits ? "preset" : "default");
+    // One field: its label (hover for the meaning), the editor, and, only when the entry changed it from the preset or default, a Changed mark with its reset.
+    const info = (path) => {
+      const head = ["enabled", "handoff"].includes(path), stage = path.startsWith("actions.") ? path.slice(8) : null;
+      const tier = path.match(/^(?:by_tier\.(\w+)|(unwatched))\.(approve|merge)$/);
+      const kind = tier || path === "enabled" || path === "handoff" || path === "preset" ? "seg" : stage ? "chips" : KIND[path] ?? "num";
+      const [label, text, options] = path === "enabled" ? ["On or off", ON[1], { on: "Ship works this repo's PRs.", off: "Ship leaves it alone." }] : head || path === "preset" ? COLS[path] : stage ? [STAGES[stage], `Steps Ship takes ${STAGES[stage].toLowerCase()}.`, null] : tier ? [`${cap(tier[1] ?? "unwatched")} ${tier[3]}`, `Whether Ship ${tier[3] === "approve" ? "approves" : "merges"} a ${tier[1] ?? "unwatched"} PR.`, tier[3] === "approve" ? APPROVE_OPTS : MERGE_OPTS] : T[path];
+      return { head, stage, kind, label, text, options };
+    };
+    const show = (path, x) => (path === "enabled" ? (x ? "on" : "off") : x);
+    const state = (path) => {
+      const v = get(s, path), d = dflt(key, path);
+      return { v, d, changed: owns(key, path) };
+    };
+    const control = (path, extra = {}) => {
+      const { stage, kind, label, options, head } = info(path), { v } = state(path);
+      const values = path === "enabled" ? ["on", "off"] : path === "preset" ? controls.preset.values : head ? controls[path].values : /^(by_tier|unwatched)\./.test(path) ? Object.keys(path.endsWith(".approve") ? APPROVE_OPTS : MERGE_OPTS) : path === "rebase" ? ["conflict", "behind"] : ["conflicts", "ci", "review"];
+      const cur = path === "preset" ? presetFor(key) : show(path, v);
+      return editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : cur, values, titles: options, placeholder: kind === "num" ? "no limit" : stage ? "comment: text, or workflow: file.yml" : kind === "chips" ? "glob, then Enter" : undefined, dups: !!stage, ...extra,
+        set: (x, live) => edit(key, path, stage ? x.map((t) => (v ?? []).find((a) => showAction(a) === t) ?? readAction(t)) : path === "enabled" ? x === "on" : x, live) });
+    };
+    const rs = (path) => { const { d } = state(path), b = h("button", { type: "button", className: "rs", textContent: "Reset", title: `Back to the ${resetTo(path)}: ${fmt(path, show(path, d))}` });
+      // A preset change is only pending: drop it. The server has no reset for a preset.
+      b.addEventListener("click", () => { if (path !== "preset") return reset(key, path); const p = structuredClone(pending.repos[key] ?? {}); delete p.preset; propose(p, key, true); }); return b; };
+    const sf = (path, wide) => {
+      const { label, text, kind } = info(path), { changed } = state(path), loose = pending.repos[key] && looser(path, get(base, path), get(s, path));
+      return h("div", { className: `sf${changed ? " chg" : ""}${wide || kind === "chips" || kind === "checks" ? " wide" : ""}`, title: LOOSE.has(path) ? `${text} Loosening this is the owner's call: an agent's change is refused, your Save applies it.` : text },
+        h("div", { className: "sl" }, h("span", { className: "sn", textContent: label }), changed ? rs(path) : null), control(path),
         loose ? h("span", { className: "warn", textContent: "Loosens this guard: it needs the owner's Save." }) : null);
     };
-    const headline = [...(defaults ? ["preset"] : []), "enabled", "handoff"].map((k) => k === "preset" ? (() => { const [label, text, options] = COLS.preset; const cur = presetFor(key); return fld(label, text, { options, current: cur }, editor({ kind: "select", label: `${label} (${key})`, f: `${key}|preset`, value: cur, values: controls.preset.values, titles: options, set: (x) => edit(key, "preset", x) })); })() : field(k));
-    return h("div", { className: "drawer", id: `drawer-${key}` }, h("div", { className: "grp" }, "Headline settings"), ...headline, ...GROUPS.filter(([g]) => g !== "Actions" || "actions" in base).flatMap(([g, paths, note, cls]) => [h("div", { className: cls ? `grp ${cls}` : "grp" }, g, note ? help(g, note, { bare: true }) : null), ...paths.map(field)]));
+    const section = (cls, title, paths, kids, { fold, summary, note, text, options } = {}) => {
+      const sum = h("span", { className: "sum", textContent: summary ?? "" }), hp = help(title, text ?? note ?? "", { bare: true, options: options ?? Object.fromEntries(paths.map((p) => [info(p).label, info(p).text])) });
+      if (!fold) return h("section", { className: `sec ${cls}` }, h("h4", {}, title, hp, sum), h("div", { className: "body" }, ...kids));
+      const id = `${key}|${cls}`, d = h("details", { className: `sec ${cls}`, open: secOpen.has(id) }, h("summary", {}, title, hp, sum), h("div", { className: "body" }, ...kids));
+      d.addEventListener("toggle", () => { d.open ? secOpen.add(id) : secOpen.delete(id); });
+      return d;
+    };
+    // The tier matrix: a row per tier, Approve and Merge each one segmented control; a changed cell is outlined with its reset beside it.
+    const cell = (path) => { const { changed } = state(path), r = changed ? rs(path) : null; if (r) r.textContent = "\u21ba"; return h("div", { className: changed ? "cell chg" : "cell" }, control(path), r); };
+    const rows = [...TIERS.map((t) => [t, t, t === "skip" ? null : `by_tier.${t}.approve`, `by_tier.${t}.merge`]), ["unwatched", "Unwatched", null, "unwatched.merge"]];
+    const matrix = h("div", { className: "mx" }, h("span", {}), h("span", { className: "mh", textContent: "Approve" }), h("span", { className: "mh", textContent: "Merge" }),
+      ...rows.flatMap(([t, name, a, m]) => [h("span", { className: `tn t-${t}`, textContent: cap(name), title: t === "unwatched" ? MATRIX_HELP.unwatched : MATRIX_HELP[t] }), a ? cell(a) : h("span", { className: "na", textContent: "no review" }), cell(m)]));
+    const merging = section("merge", "Merging", ["enabled", "handoff"], [
+      h("div", { className: "grid" }, ...(defaults ? [sf("preset")] : []), sf("enabled"), sf("handoff")), matrix], { text: "What Ship does for each risk tier code review gives a PR, and which PRs it takes on. Which PRs are in which tier is set by the tier rules on the Reviews page.", options: MATRIX_HELP });
+    const repair = section("repair", "Rebase and repair", ["rebase", "fix"], [sf("rebase"), sf("fix")]);
+    const set = CAPS.filter((p) => get(s, p) != null).length;
+    const limits = section("limits", "Limits", CAPS, [h("div", { className: "grid" }, ...CAPS.map((p) => sf(p)))], { fold: true, summary: set ? `${set} limit${set === 1 ? "" : "s"} set` : "No limits", note: "How many times a PR is re-reviewed (and so fixed) is code review's 'Reviews per push' setting on the Reviews page. A blank limit is unlimited." });
+    const advPaths = ["stop_label", "generated.globs", "generated.command", "protected", ...("actions" in base ? Object.keys(STAGES).map((x) => `actions.${x}`) : [])];
+    const changedN = advPaths.filter((p) => state(p).changed).length;
+    const adv = section("adv", "Advanced", advPaths, [h("div", { className: "grid" }, sf("stop_label"), sf("generated.command")), ...advPaths.slice(1).filter((p) => p !== "generated.command").map((p) => sf(p, true))], { fold: true, summary: changedN ? `${changedN} changed` : "Defaults", note: "Extra steps Ship takes at a stage (actions): comment: text, or workflow: file.yml key=value." });
+    return h("div", { className: "sd", id: `drawer-${key}` }, h("div", { className: "sdc" }, merging), h("div", { className: "sdc" }, repair, limits), h("div", { className: "sdc" }, adv));
   }
   const LOOSE = new Set(["generated.globs"]);
   const open = new Set();
@@ -206,11 +268,9 @@
     return h("div", {}, h("span", { className: "lab" }, hd(key, shown(r)[key])), sel);
   }
 
-  // The row's summary of by_tier: one tag per tier, what Ship's App does there and whether it merges.
-  const tiersCell = (r) => h("div", { className: "tiers", ariaLabel: `Risk tiers for ${r.repo}` }, ...TIERS.map((t) => {
-    const c = r.by_tier?.[t] ?? {};
-    return h("span", { className: `tg ${t}`, title: `${cap(t)}: approve ${c.approve ?? "off"}, merge ${c.merge ?? "off"}` }, h("b", { textContent: t }), t === "skip" ? "" : `approve ${c.approve}, `, `merge ${c.merge}`);
-  }));
+  // The row's one-line summary of by_tier: which tiers the App approves and which Ship merges.
+  const names = (list, all) => !list.length ? "none" : list.length === all ? "all" : list.join(", ");
+  const tiersCell = (r) => { const on = (f, v) => TIERS.filter((t) => r.by_tier?.[t]?.[f] === v); return h("div", { className: "tiers", ariaLabel: `Risk tier policy for ${r.repo}` }, "Approves ", h("b", { textContent: names(on("approve", "on"), 3) }), " · merges ", h("b", { textContent: names(on("merge", "ready"), 4) })); };
   const redraw = () => keepFocus(draw);
   function render() { soon(redraw); }
   function draw() {
@@ -240,7 +300,7 @@
     $("defhead").replaceChildren(help("Defaults", "The settings a new repo and the fleet's own repos start from until a repo's own entry changes them. The same fields as a repo's Settings.", { note: "A repo's own value wins over the default." }));
     $("deftoggle").setAttribute("aria-expanded", String(open.has("defaults")));
     $("defdrawer").replaceChildren(...(open.has("defaults") && status.defaults ? [drawer("defaults")] : []));
-    const cols = h("div", { className: "row cols" }, h("span", { textContent: "Repo" }), help(ON[0], ON[1]), ...["preset", "handoff"].map((k) => hd(k)), help("By risk tier", "What Ship does with each tier code review gives a PR: whether the App approves it and whether Ship merges it. Open Settings to change a tier.", { options: Object.fromEntries(TIERS.map((t) => [t, TIER_HELP[t]])), note: "Which PRs are in which tier is set on the Reviews page." }), h("span", {}));
+    const cols = h("div", { className: "row cols" }, h("span", { textContent: "Repo" }), help(ON[0], ON[1]), ...["preset", "handoff"].map((k) => hd(k)), help("Policy", "Which risk tiers code review gives a PR the App approves and Ship merges. Open Settings to change a tier.", { options: Object.fromEntries(TIERS.map((t) => [t, TIER_HELP[t]])), note: "Which PRs are in which tier is set on the Reviews page." }), h("span", {}));
     $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Type owner/name below and choose Add repo to start. Ship stays quiet until a repo is on.")]));
     $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { className: "repo", textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", title: HOLDS[x.hold?.kind], textContent: String(x.hold?.kind ?? "").replace("_", " ").replace(/^./, (c) => c.toUpperCase()) }), h("span", { className: "why", textContent: x.hold?.reason || HOLDS[x.hold?.kind] || "" }), h("span", { className: "soft when", textContent: x.hold?.at ? ago(x.hold.at) : "" }))) : [h("div", { className: "empty" }, h("b", { textContent: "No holds. " }), "Nothing is waiting on you.")]));
   }
