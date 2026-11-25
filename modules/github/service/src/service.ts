@@ -1243,7 +1243,7 @@ export function createService(o: Options) {
     const live = await read();
     const review = await o.reviewGate(s.slug, n, a.head, { base: String(live.baseRefName ?? ""), association: String(live.authorAssociation ?? "") });
     // A wait blocks a new enqueue, not the confirmation that an earlier attempt already queued (or merged) this head.
-    if (review && "wait" in review) return settled(await read()) ?? { ok: false, text: `not queued: ${review.wait}` };
+    if (review && "wait" in review) return settled(await read()) ?? { ok: false, text: `not queued: ${review.wait}${review.unblock ? ` (${review.unblock})` : ""}` };
     const pr = await read();
     const now = settled(pr);
     if (now) return now;

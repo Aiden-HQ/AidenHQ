@@ -7,9 +7,9 @@
 import { createHash } from "node:crypto";
 
 /** undefined: the repo isn't gated (the head may merge); pass: code review passed this head; wait: why not yet (code review's
- * reasons, each with how it unblocks, or that it can't be reached; `findings`: the reasons when the only thing left is open
+ * reasons (and, apart, how they unblock), or that it can't be reached; `findings`: the reasons when the only thing left is open
  * important findings, none still running or queued: the author's to fix). */
-export type ReviewGate = (repo: string, number: number, head: string, live?: { base?: string; association?: string }) => Promise<undefined | { pass: true; /** the head's risk tier needs no review: it passed without one */ unreviewed?: true } | { wait: string; findings?: string; findingsKey?: string }>;
+export type ReviewGate = (repo: string, number: number, head: string, live?: { base?: string; association?: string }) => Promise<undefined | { pass: true; /** the head's risk tier needs no review: it passed without one */ unreviewed?: true } | { wait: string; /** how each reason unblocks, for an agent or the merge card: ship never prints it */ unblock?: string; findings?: string; findingsKey?: string }>;
 
 export function createReviewGate(o: { gated: string[]; url: string; key: () => string; fetchFn?: typeof fetch }): ReviewGate {
   const gated = new Set(o.gated.map((r) => r.toLowerCase()));
@@ -32,8 +32,10 @@ export function createReviewGate(o: { gated: string[]; url: string; key: () => s
     if (!r.ok) return { wait: `code review answered ${r.status}` };
     // A head whose risk tier needs no review passes too, but says so: no mandatory review covered it (productMergeEligible).
     if (v.verdict === "pass") return v.requires_review === false ? { pass: true, unreviewed: true } : { pass: true };
-    const reasons = (v.reasons ?? []).map((x) => `${String(x.text ?? "").slice(0, 600)}${x.unblock ? ` (${String(x.unblock).slice(0, 300)})` : ""}`);
+    const reasons = (v.reasons ?? []).map((x) => String(x.text ?? "").slice(0, 600));
+    const unblock = (v.reasons ?? []).flatMap((x) => (x.unblock ? [String(x.unblock).slice(0, 300)] : [])).join("; ");
     const wait = `code review: ${reasons.join("; ") || "not passed yet"}`;
-    return reasons.length && (v.reasons ?? []).every((x) => x.code === "findings") ? { wait, findings: wait, findingsKey: createHash("sha1").update(JSON.stringify(v.reasons)).digest("hex").slice(0, 12) } : { wait };
+    const said = { wait, ...(unblock ? { unblock } : {}) };
+    return reasons.length && (v.reasons ?? []).every((x) => x.code === "findings") ? { ...said, findings: wait, findingsKey: createHash("sha1").update(JSON.stringify(v.reasons)).digest("hex").slice(0, 12) } : said;
   };
 }

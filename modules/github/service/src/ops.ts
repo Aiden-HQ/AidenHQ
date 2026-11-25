@@ -322,11 +322,39 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));
     // Editing a comment: only one AidenHQ posted (the kernel records each new comment's ref).
     if (b.id && !(await ctx.ours(`github:${s.slug}#${Number(b.number)}/comment/${Number(b.id)}`))) throw fail(403, `comment ${String(b.id)} isn't one AidenHQ posted: it can't be edited`);
-    const r = b.id ? await ok(ctx, "PATCH", `/repos/${s.slug}/issues/comments/${b.id}`, { body }) : await ok(ctx, "POST", `/repos/${s.slug}/issues/${b.number}/comments`, { body });
-    return { status: 200, json: { id: r.body?.id } };
+    const n = Number(b.number), patch = (id: unknown) => ctx.access.rest("PATCH", `/repos/${s.slug}/issues/comments/${id}`, { body });
+    // One post-or-edit at a time per PR, so two callers can't both find no comment and each create one.
+    const key = `${s.slug}#${n}`;
+    const run = (commentTails.get(key) ?? Promise.resolve()).then(async () => {
+      let r = b.id ? await patch(b.id) : undefined;
+      // With no id (or one whose comment is gone), a `marker` finds the comment an earlier post made: only one AidenHQ posted (the same
+      // check as an edit by id), whose text begins with the marker. Else a new one.
+      if (!r || (r.status === 404 && b.marker)) {
+        const id = b.marker ? await markedComment(ctx, s.slug, n, String(b.marker)) : undefined;
+        r = id ? await patch(id) : await ctx.access.rest("POST", `/repos/${s.slug}/issues/${n}/comments`, { body });
+      }
+      if (r.status >= 300) throw fail(r.status === 409 ? 409 : 502, `GitHub comment: ${r.status} ${r.body?.message ?? ""}`.trim());
+      return r.body?.id;
+    });
+    commentTails.set(key, run.then(() => {}, () => {}));
+    return { status: 200, json: { id: await run } };
   }
   if (op === "commit") return commit(ctx, s, b);
   throw fail(404, `no such operation ${op}`);
+}
+
+const commentTails = new Map<string, Promise<void>>();
+
+/** The newest comment on the PR that AidenHQ posted (the kernel's records, as for an edit by id) and whose text begins with `marker`, or undefined. */
+async function markedComment(ctx: OpsContext, slug: string, number: number, marker: string): Promise<number | undefined> {
+  let found: number | undefined;
+  for (let page = 1; page <= 10; page++) {
+    const cs = (await ok(ctx, "GET", `/repos/${slug}/issues/${number}/comments?per_page=100&page=${page}`)).body;
+    if (!Array.isArray(cs)) break;
+    for (const c of cs) if (String(c?.body ?? "").startsWith(marker) && await ctx.ours(`github:${slug}#${number}/comment/${c.id}`)) found = Number(c.id);
+    if (cs.length < 100) break;
+  }
+  return found;
 }
 
 /** POST /ops/<op> from the kernel (already authenticated by the caller): the answer, or an error naming its cause and fix. */

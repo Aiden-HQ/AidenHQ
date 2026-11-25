@@ -11,6 +11,7 @@
 // repair, approval or merge, until a member hands it off again at the new head. A PR in the base repo (a member's, the fleet's) has
 // no such binding.
 import type { ActionRun } from "./actions.ts";
+import { HOLD } from "./report.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { Adoption, State } from "./state.ts";
 
@@ -39,9 +40,10 @@ export type Kept = Adoption & {
   hold: (Adoption["hold"] & { at?: string }) | null;
   /** The logins ship assigned on a hold: a later trusted trigger unassigns exactly these; anyone else assigned pauses the loop. */
   assigned?: string[];
-  /** The report comment's id (edited in place). */
+  /** The report comment's id (edited in place), and the words it carries now (a same text is never written again). */
   report?: number;
-  /** The head and facts of a report that failed to post or edit: the next pass at that head posts it again (the comment never stays stale). */
+  said?: string;
+  /** The head and facts of a report that failed to post or edit: the next pass at that head posts it again (the code host finds a comment a lost answer made). */
   reportStale?: { head: string; facts: import("./report.ts").Facts };
   /** Counters for the caps: per head (wakes), per PR (rounds, ci, review) and the heads each required check was red on. */
   counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[]; /** The head GitHub was asked to update (red while behind a green base): once per head. */ updated?: string };
@@ -165,7 +167,7 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
   }
   // A hand-back is a member's decision and outranks a stall (which is resumable): it must be recorded even while the PR is stalled.
   if (was && handback && (!was.hold || was.hold.kind === "stalled")) {
-    const held: Kept = { ...was, hold: { kind: "handed_back", reason: `handed back by @${handback.actor}`, at: handback.at }, closing: tasksOf(was) };
+    const held: Kept = { ...was, hold: { kind: "handed_back", reason: `handed back by @${handback.actor}`, at: handback.at }, reportStale: { head: pr.head, facts: { kind: "hold", text: HOLD.handedBack } }, closing: tasksOf(was) };
     d.state.put(held);
     return closeHeld(d, pr, held);
   }
@@ -181,7 +183,7 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
       d.state.put(was);
     } else {
       // Held at this head; the report says so (posted by the held path's report retry this pass).
-      const held: Kept = { ...was, hold: { kind: "stopped", reason: AUTHOR_PUSHED, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { state: "on hold", stopLabel: s.stop_label } }, closing: tasksOf(was) };
+      const held: Kept = { ...was, hold: { kind: "stopped", reason: AUTHOR_PUSHED, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { kind: "hold", text: AUTHOR_PUSHED } }, closing: tasksOf(was) };
       d.state.put(held);
       d.log("fork moved past its hand-off: held", { pr: pr.url, from: was.trigger.head, head: pr.head });
       return closeHeld(d, pr, held);
@@ -206,7 +208,7 @@ async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger:
   if (was?.assigned?.length) await d.unassign(pr.repo, pr.number, was.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
   const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(pr.fork ? { fork: true as const } : {}), ...(was?.report ? { report: was.report } : {}), ...(was?.approve && !was.approve.why ? { approve: was.approve } : {}), did: [] };
   if (late) {
-    const held: Kept = { ...a, hold: { kind: "stopped", reason: HEAD_UNSEEN, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { state: "on hold", stopLabel: d.settings(pr.repo)?.stop_label } } };
+    const held: Kept = { ...a, hold: { kind: "stopped", reason: HEAD_UNSEEN, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { kind: "hold", text: HEAD_UNSEEN } } };
     d.state.put(held);
     d.log("fork handed off before its head moved: held", { pr: pr.url, generation, actor: trigger.actor });
     return held;
