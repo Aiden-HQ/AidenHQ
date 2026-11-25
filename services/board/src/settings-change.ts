@@ -202,7 +202,7 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
   } else {
     if (a.team || a.member_of) throw new ChangeRefused(`${a.name ?? ch.agent} is on a team: a team's agents have no heartbeat of their own`);
     if (ch.value !== false && !HEARTBEAT_HOURS.includes(Number(ch.value))) throw new ChangeRefused(`a heartbeat is off or every ${HEARTBEAT_HOURS.join(", ")} hours`);
-    if (ch.value !== false && a.profile === "engineer") throw new ChangeRefused("an Engineer has no heartbeat (it works on the tasks it is given)");
+    if (ch.value !== false && (a.profile === "engineer" || a.profile === "session")) throw new ChangeRefused("an Engineer or a session has no heartbeat (it works on the tasks it is given)");
     if (ch.value !== false && !HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t))) throw new ChangeRefused(`${a.name ?? ch.agent} lacks the task tools a heartbeat needs (${HEARTBEAT_TOOLS.join(", ")})`);
   }
   return ch;

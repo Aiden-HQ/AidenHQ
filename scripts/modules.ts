@@ -1380,7 +1380,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // engines: the engines a kernel job may ask its next turn to run on (`aidenhq engine`); absent, only its own.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k: string) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
   // A session's job lives on and hears its wakes as live input: every engine it may run on takes live input.
-  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.profile === "session") for (const k of [a.engine, ...(a.engines ?? [])]) if (!engines[k].live_input) fail(`agent ${key}: a session's engine takes live input, and ${k} doesn't`);
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.profile === "session") for (const k of [a.engine, ...(a.engines ?? [])]) if (!engines[k].live_input || engines[k].box !== true || engines[k].state !== "task") fail(`agent ${key}: a session's engine runs in a computer, takes live input and keeps per-task state (box, live_input, state: task), and ${k} doesn't`);
   // The one standing box hosts one engine's module and state root: every session agent runs on that same engine, or starting one would replace another's box.
   const sessionEngines = new Set(Object.values<Obj>(paperclip.agents).filter((a) => a.profile === "session").flatMap((a) => [a.engine, ...(a.engines ?? [])]));
   if (sessionEngines.size > 1) fail(`session agents share one standing box, so one engine: got ${[...sessionEngines].sort().join(", ")}`);

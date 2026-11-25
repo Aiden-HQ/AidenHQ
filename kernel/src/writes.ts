@@ -314,7 +314,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // The reason and rule shown: the strictest raise, the plan's on a tie.
     const top = filedRaises(kind, plan).reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);
     // Code's refusals read the whole planned diff (never the card cut for storage), whatever the tier.
-    const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext }) ?? (session && CODEHOSTS.includes(k.module) ? instanceRefusal(repos().instance, plan.args) : undefined);
+    const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext });
     const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) || (session && Boolean(ownerVeto(records, { kind, args: plan.args, task, digest: digestOf(base) }))) : false, autonomy: autonomyOf(requester), ownerSave, session });
     if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
@@ -566,6 +566,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const k = kindOf_(kind);
     if (!k || !(k.executor || Object.hasOwn(planners, kind) || inProcess(k))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
     if (k.filer === "owner") throw fail(403, "owner-only", `${kind} is filed only by the owner's own save on the board`);
+    // A session job (its frozen profile, whatever roles it holds) never writes the instance repo: refused before any tier.
+    const noInstance = who.profile === "session" && CODEHOSTS.includes(k.module) ? instanceRefusal(repos().instance, args) : undefined;
+    if (noInstance) throw fail(422, "refused", noInstance.reason, "instance_repo");
     // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
     // requester's (floor, the executor's plan and autonomy: computeTier). A module files its own kinds, and another module's only when that kind's `filed_by` names it (the owner of the kind consents); a kernel
     // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
@@ -673,7 +676,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}`;
       // Code's refusals hold on every call, Tier 0 included.
       const session = sessionOf(who);
-      const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null }) ?? (session && c.module === CODEHOST ? instanceRefusal(repos().instance, args) : undefined);
+      const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null }) ?? (who.profile === "session" && c.module === CODEHOST ? instanceRefusal(repos().instance, args) : undefined);
       // The owner's no on a destructive tool (an unreviewed one too), or on any tool a session calls (its writes all run at Tier 0
       // but this no), holds for that tool on the task, never for the task's other writes.
       const vetoable = c.tools.destructive.includes(tool) || session;

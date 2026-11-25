@@ -222,8 +222,8 @@ export function settingsView(s: Sources) {
       models: a.models ?? [],
       effort: a.reasoning_effort ?? "",
       heartbeatHours: a.heartbeat === true ? hours : typeof a.heartbeat === "number" ? a.heartbeat : null,
-      /** Whether a heartbeat may be turned on (compile refuses one for an Engineer, or one without the tools). */
-      canHeartbeat: a.profile !== "engineer" && !a.team && !a.member_of && HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t)),
+      /** Whether a heartbeat may be turned on (compile refuses one for an Engineer or a session, or one without the tools). */
+      canHeartbeat: a.profile !== "engineer" && a.profile !== "session" && !a.team && !a.member_of && HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t)),
       // Only an engine that takes an effort shows the setting; an engine without efforts, none.
       efforts: EFFORTS[compiledEngine(a) ?? "codex"] ?? [],
       department: a.department ?? { id: "general", name: "General", order: 1_000 },

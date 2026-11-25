@@ -324,7 +324,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     return (q("SELECT at FROM dispatch_since WHERE agent = ?").get(agent) as { at: number }).at;
   };
   // A job with `at`: what it covers, the claim of the wake that started it (its spawn time for a job no claimed wake started).
-  const liveJob = (task: string) => q(`SELECT j.id, j.profile, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? AND j.state IN ${LIVE} ORDER BY j.at DESC LIMIT 1`).get(task) as { id: string; profile: string | null; at: number } | undefined;
+  const liveJob = (task: string) => q(`SELECT j.id, j.profile, j.agent, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? AND j.state IN ${LIVE} ORDER BY j.at DESC LIMIT 1`).get(task) as { id: string; profile: string | null; agent: string; at: number } | undefined;
   const lastJob = (task: string) => q("SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? ORDER BY j.at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
 
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
@@ -380,7 +380,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // kernel notice (notices.ts) is posted with the owner's key but is never the owner's word, so it is no task.commented at all
     // (it would end an owner wait).
     for (const c of all) {
-      if (c.deletedAt || /<!-- aidenhq(:(job|op)=|-kernel-notice:)/.test(c.body ?? "")) continue;
+      // A session's timer or wait notice (dispatch's `w-<sha1>` wake id) is the module's, never the owner's word either.
+      if (c.deletedAt || /<!-- aidenhq(:(job|op)=|-kernel-notice:|-wake-id:w-[0-9a-f]{40}@)/.test(c.body ?? "")) continue;
       fact({ type: "task.commented", subject: `task:${issue.id}`, version: String(c.id), at: iso(ms(c.createdAt) || now()), actor: c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown", task: issue.id, source, data: { kind: "comment" } });
     }
     // An owner's word on a finished chat reopens it before its wake is filed: admission refuses a wake on a done task, and a
@@ -1130,7 +1131,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
             // A wake is consumed only by a job whose prompt had its cause: any other waits for the next job (still open). A
             // session's job never ends to make way for one, so its timers and waits are claimed for it too (dispatch delivers
             // them as wake notices), whenever they fell due: a session's prompt carries only the wake that started it.
-            const session = live.profile === "session";
+            // Only the task's own agent's wake: a timer set for another agent waits (admission's assignee check), never read as this job's.
+            const session = live.profile === "session" && live.agent === w.agent;
             if (!comment && !session) continue;
             if (comment && w.at < live.at) set(w, { done: `before the live job ${live.id} was claimed`, job: live.id });
             else { take.run(module, t + LEASE_MS, w.key); out.push({ ...w, state: "claimed", claimed_by: module, until: t + LEASE_MS, live_job: live.id }); }
@@ -1207,10 +1209,16 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     /** A claimed comment delivered into the live job that took it (the input's ack): bound to that job. */
     delivered(module: string, key: string, job: string) {
       return inTx(db, "wake_delivered", () => {
-        const w = q("SELECT key, task FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ?").get(key, module) as { key: string; task: string } | undefined;
+        const w = q("SELECT key, task, agent FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ?").get(key, module) as { key: string; task: string; agent: string } | undefined;
         if (!w) return false;
         q("UPDATE wakes SET state = 'delivered', until = NULL WHERE key = ?").run(key);
         covered(w, job);
+        // A comment the live job took answers the agent's own waits on the task, as a comment that starts a job ends them (admission
+        // endWaits): their timeouts must not fire for a question already answered. Other timers stay.
+        if (key.startsWith("comment:")) for (const x of q("SELECT key FROM wakes WHERE task = ? AND agent = ? AND state = 'open' AND key LIKE 'wait:%'").all(w.task, w.agent) as { key: string }[]) {
+          q("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(x.key);
+          fact({ type: "wake.dropped", subject: `wake:${x.key}`, version: "dropped", at: iso(now()), actor: "kernel", task: w.task, data: { why: "the live session took the answer" } });
+        }
         return true;
       });
     },
