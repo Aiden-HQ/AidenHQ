@@ -5,8 +5,9 @@
 #      stopped container a leftover, and nothing here should guess at what the config runs;
 #   2. only the services whose image, compose config or mounted secret content moved are recreated; every other container
 #      keeps running. When there are any, a fresh dump of the warehouse (when this host runs one) is taken first (see
-#      dump); a step that recreates nothing dumps nothing, and neither does one where no recreated service's image moved
-#      (a settings-only apply recreates containers on the same code, so no migration runs; the nightly dump is the copy);
+#      dump); a step that recreates nothing dumps nothing, and neither does one on the product already running
+#      (AIDENHQ_PRODUCT_MOVED=0) where no recreated service's image moved: a settings-only apply runs the same code, so
+#      no migration runs and the nightly dump is the copy;
 #   3. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
 #   4. a service still left `created` (never started) is started;
 #   5. a container, running or already stopped, of a service this config dropped (a removed or replaced module's, or Caddy
@@ -304,7 +305,7 @@ step() {
   IMAGE_MOVED=0
   for service in $desired; do moved "$service" && recreate+=("$service"); done
   if [ "${#recreate[@]}" -gt 0 ]; then
-    if [ "$IMAGE_MOVED" = 1 ]; then dump || return 1; else echo "compose: no image moved: the warehouse is not dumped"; fi
+    if [ "$IMAGE_MOVED" = 1 ] || [ "${AIDENHQ_PRODUCT_MOVED:-1}" != 0 ]; then dump || return 1; else echo "compose: same product, no image moved: the warehouse is not dumped"; fi
     stale=1
     docker compose up -d --no-deps --force-recreate "${recreate[@]}" 2>&1 | tee "$out" || status=$?
     RECREATED+=("${recreate[@]}")

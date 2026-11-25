@@ -994,7 +994,9 @@ switchOver() {
   # A rollback to a product from before the script has none to run.
   pgtuned=0; if [ -x ops/paperclip-pg-tune.sh ]; then ops/paperclip-pg-tune.sh || pgtuned=$?; fi
   [ "$pgtuned" = 0 ] || [ "$pgtuned" = 10 ] || exit "$pgtuned"
-  ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
+  # The warehouse dump guards a product's migrations: a recreate on the product already running dumps only if an image moved.
+  moved=1; [ "$before" != "$product" ] || moved=0
+  AIDENHQ_PRODUCT_MOVED="$moved" ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
   if [ "$pgtuned" = 10 ]; then docker compose restart paperclip; fi
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune
