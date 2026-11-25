@@ -187,7 +187,7 @@ export function createMerges(d: {
    * each name's newest judgement (merge-gate.ts headChecks), never trusting the order GitHub lists them in.
    */
   async function allChecks(repo: string, sha: string) {
-    const out: { name: string; kind: "run" | "status"; rank?: number; ok: boolean; pending: boolean }[] = [];
+    const out: { name: string; kind: "run" | "status"; rank?: number; status?: string; ok: boolean; pending: boolean }[] = [];
     for (const [path, key] of [["check-runs", "check_runs"], ["statuses", "statuses"]] as const) {
       for (let page = 1; page <= 20; page++) {
         const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);
@@ -199,8 +199,8 @@ export function createMerges(d: {
             : { __typename: "StatusContext", id: x.id, context: x.context, state: x.state, createdAt: x.created_at };
           const rank = contextRank(node);
           out.push(key === "check_runs"
-            ? { name: String(x.name ?? ""), kind: "run", ...(rank !== undefined ? { rank } : {}), pending: x.status !== "completed", ok: x.status === "completed" && ["success", "skipped", "neutral"].includes(x.conclusion) }
-            : { name: String(x.context ?? ""), kind: "status", ...(rank !== undefined ? { rank } : {}), pending: x.state === "pending", ok: x.state === "success" });
+            ? { name: String(x.name ?? ""), kind: "run", ...(rank !== undefined ? { rank } : {}), status: x.status === "completed" ? String(x.conclusion ?? "").toUpperCase() : "PENDING", pending: x.status !== "completed", ok: x.status === "completed" && ["success", "skipped", "neutral"].includes(x.conclusion) }
+            : { name: String(x.context ?? ""), kind: "status", ...(rank !== undefined ? { rank } : {}), status: String(x.state ?? "").toUpperCase(), pending: x.state === "pending", ok: x.state === "success" });
         }
         if (items.length < 100) break;
       }
@@ -740,6 +740,15 @@ export function createMerges(d: {
       // Every context by name, advisory ones included (a branch may require them), with the kind and rank the gate picks the
       // newest of a name by.
       const fromRollup = () => contextChecks(rollup);
+      // A base list cut at 100 proves nothing about the tip (baseCi reads pageInfo): read that commit's checks in full, so a base
+      // with more contexts than one page is judged on all of them instead of waiting forever.
+      const base = data.repository.pullRequest?.baseRef?.target;
+      if (base?.statusCheckRollup?.contexts?.pageInfo?.hasNextPage && base.oid) {
+        const full = await allChecks(repo, String(base.oid));
+        base.statusCheckRollup = { ...base.statusCheckRollup, contexts: { pageInfo: { hasNextPage: false }, nodes: full.map((c) => c.kind === "run"
+          ? { __typename: "CheckRun", ...(c.rank !== undefined ? { databaseId: c.rank } : {}), name: c.name, status: c.pending ? "IN_PROGRESS" : "COMPLETED", conclusion: c.pending ? null : c.status }
+          : { __typename: "StatusContext", ...(c.rank !== undefined ? { createdAt: new Date(c.rank).toISOString() } : {}), context: c.name, state: c.status }) } };
+      }
       const checks = listed && !rollup?.contexts?.pageInfo?.hasNextPage ? fromRollup() : await allChecks(repo, head);
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);

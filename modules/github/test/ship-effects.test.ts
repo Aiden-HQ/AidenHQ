@@ -586,6 +586,30 @@ test("ship's decision from its list read: no PR or check read, the branch rules 
   assert.deepEqual(calls, ["GET /repos/acme-agents/widget/rules/branches/main", "GET /repos/acme-agents/widget/branches/main/protection/required_status_checks"]);
 });
 
+test("a base rollup cut at 100 is read in full, so a base with more contexts than one page is judged, never pending forever", async () => {
+  const H = "b".repeat(40), MAIN = "c".repeat(40), calls = [];
+  const page = (nodes) => ({ status: 200, body: nodes });
+  const gh = async (method, path) => {
+    calls.push(`${method} ${path}`);
+    if (path.includes("/rules/branches/")) return { status: 200, body: [{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "build" }] } }] };
+    if (path.startsWith(`/repos/acme-agents/widget/commits/${MAIN}/check-runs`)) return page({ total_count: 2, check_runs: [
+      { id: 900, name: "packages (1)", status: "completed", conclusion: "cancelled" },
+      { id: 902, name: "packages (1)", status: "completed", conclusion: "success" },
+    ] });
+    if (path.startsWith(`/repos/acme-agents/widget/commits/${MAIN}/statuses`)) return page([]);
+    return { status: 404, body: {} };
+  };
+  const merges = createMerges({ dir: mkdtempSync(join(tmpdir(), "decision-")), gh, fleetOrg: "acme-agents", reviewGate: async () => ({ pass: true }), report: async () => {} });
+  const rollup = { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
+  const pr = { number: 3, headRefOid: H, baseRefName: "main", mergeStateStatus: "CLEAN", reviewDecision: null, isDraft: false, isInMergeQueue: false, latestOpinionatedReviews: { nodes: [] }, reviews: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } };
+  // The base's list came back cut at 100: a red past the page cannot be ruled out, so it must not read as green — and it must not
+  // read pending forever either. The commit's checks are read in full, and the newest run of each name is the verdict.
+  const baseRollup = { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: true }, nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS" }] } };
+  const view = { pr, main: { name: "main", oid: MAIN, rollup: baseRollup } };
+  assert.equal((await merges.decision("acme-agents/widget", 3, H, view)).do, "merge", "a truncated base list is read in full: its newest runs are green");
+  assert.ok(calls.some((c) => c.includes(`/commits/${MAIN}/check-runs`)), `the base's checks were read in full: ${calls.join(", ")}`);
+});
+
 // The ordinary publish path (`github.push` / `github.pr`) leases its push on the branch's head, read under the branch lock: an
 // approval card whose box bundle was planned before a later push landed carries the older commit and must be refused as
 // ship-head-moved, never force the branch back over the newer one (issue #1775: PR #1746 was rewound to a pre-fix commit).
