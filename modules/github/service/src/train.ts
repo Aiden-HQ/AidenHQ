@@ -85,8 +85,9 @@ export function createReleaseTrain(o: TrainOptions) {
     if (!r || MOVING.includes(r.state)) return;
     const retry = r.state === "failed" && REFILE.test(r.text);
     const body = settleBody(r.state, r.text, retry);
+    // Only an install closes the task done: every other settled ending leaves the bump not landed, so the task is cancelled.
     // A close the kernel refused leaves the flight entry where it is, so the next poll settles the task rather than abandoning it.
-    if (!(await close(f.task, "done", body))) return;
+    if (!(await close(f.task, r.state === "done" ? "done" : "cancelled", body))) return;
     log("release bump over", { task: f.identifier, state: r.state, retry });
     if (!retry) s.lastTried = f.to;
     delete s.flight;
@@ -120,7 +121,7 @@ export function createReleaseTrain(o: TrainOptions) {
         if (!r || MOVING.includes(r.state)) continue;
         const body = settleBody(r.state, r.text);
         // A close the kernel refuses is logged by close() and retried on the next poll: it never throws the sweep.
-        if (await close(task.id, "done", body)) log("release bump swept", { task: task.identifier ?? task.id, state: r.state });
+        if (await close(task.id, r.state === "done" ? "done" : "cancelled", body)) log("release bump swept", { task: task.identifier ?? task.id, state: r.state });
       } catch (e) {
         log("release bump sweep read failed", { task: task.identifier ?? task.id, err: (e as Error).message.slice(0, 300) });
       }
@@ -209,7 +210,7 @@ export function createReleaseTrain(o: TrainOptions) {
           if (!(e as { lasting?: boolean }).lasting) throw e;
           // Refused for good (the rules, the eval, the edit): said on the bump's task if it has one; the next merge files the next.
           // A close that doesn't land keeps the filing, so the next poll says it again instead of leaving the task open.
-          if (s.filing && !(await close(s.filing.task, "done", `**Not filed:** ${(e as Error).message.slice(0, 1000)}`))) return;
+          if (s.filing && !(await close(s.filing.task, "cancelled", `**Not filed:** ${(e as Error).message.slice(0, 1000)}`))) return;
           log("release bump refused", { to: tip, err: (e as Error).message.slice(0, 300) });
           s.lastTried = s.filing?.to ?? tip;
           delete s.filing;
