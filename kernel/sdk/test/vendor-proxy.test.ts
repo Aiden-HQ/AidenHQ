@@ -471,6 +471,68 @@ describe("a post-refresh handshake the vendor refuses marks the sign-in expired"
   });
 });
 
+describe("a sign-in that lands during the refusal probe is not marked expired by it", () => {
+  // A call's 401 refreshes, and the post-refresh handshake is refused too. The refusal probe that decides whether to mark the sign-in
+  // expired is slow; while it is out the owner signs in as a different account. The probe's verdict is on the token the sign-in
+  // replaced, so the saved sign-in must stay ok.
+  let probeRelease: () => void = () => {};
+  let probeStarted: () => void = () => {};
+  const probeIn = new Promise<void>((r) => { probeStarted = r; });
+  const probeGate = new Promise<void>((r) => { probeRelease = r; });
+  let refreshed = false;
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    // The first session caches; the call is refused; every connect after the refresh is refused too.
+    if (body.method === "tools/call" || (body.method === "tools/list" && refreshed)) {
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "boom", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the sign-in that landed during the probe stays ok", async () => {
+    const up = await listen(vendor);
+    let state: "ok" | "expired" = "ok";
+    let account = "owner-a";
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      refresh: async () => void (refreshed = true),
+      // The probe stalls; the owner signs in as another account while it is out, and the probe then says the old token was refused.
+      refused: async () => { probeStarted(); await probeGate; return true; },
+      status: () => ({ state, since: "" }),
+      mark: (s: "ok" | "expired") => void (state = s),
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (account = "owner-b"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth: auth as never, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    try {
+      const call = fetch(`${url}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "boom", arguments: {} } }),
+      }).then((r) => r.json() as Promise<any>);
+      await probeIn;
+      expect((await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } })).status).toBe(200);
+      probeRelease();
+      await call;
+      expect(state).toBe("ok");
+    } finally {
+      probeRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
 describe("a failed connect superseded by a sign-in is stale, not an auth failure", () => {
   // A connect is listing tools with the old account's token when the owner signs in again; the old handshake then fails with a 401.
   // That failure belongs to the account just replaced: the waiting call must take the sign-in's session, not refresh against the
