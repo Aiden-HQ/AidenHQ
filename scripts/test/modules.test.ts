@@ -75,6 +75,8 @@ test("engines: two modules with one engine kind fail compile", () =>
 test("engines: a runner agent on an engine no enabled module provides fails compile", () => {
   compile(mods, finst(["engrunner"]));
   assert.throws(() => compile(mods, finst(["engrunner"], base, { overrides: { agents: { coder: { engine: "nope" } } } })), /agent coder: unknown engine nope \(enabled: codex, codex-openrouter\)/);
+  // A session hears its wakes as live input: an engine that takes none is refused.
+  assert.throws(() => compile(mods, finst(["engsession"])), /agent sess: a session's engine runs in a computer, takes live input and keeps per-task state .*, and codex-openrouter doesn't/);
 });
 test("grants resolve to tool lists: read, write, or a list", () => {
   const x = compile(mods, finst(["a"])).paperclip.agents.x;

@@ -23,7 +23,7 @@ function world(t, { polls = true } = {}) {
   const file = path.join(dir, "kernel.db");
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL");
-  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
+  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER, profile TEXT)");
   const facts = openFacts(db, () => new Date(clock));
   const issues = { t0: { id: "t0", identifier: "T0", status: "blocked", assigneeAgentId: AGENT }, t1: { id: "t1", identifier: "T1", status: "todo", assigneeAgentId: AGENT, parentId: "t0", companyId: "co" }, t2: { id: "t2", status: "todo", assigneeAgentId: null, assigneeUserId: "owner" } };
   // Paperclip's agents (status + org chain: the sweep's invokability check), by id.

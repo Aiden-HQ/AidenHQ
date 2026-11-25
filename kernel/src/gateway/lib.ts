@@ -69,7 +69,7 @@ export type Caller = Brand<{
 }, "Caller">;
 type GatewayError = Error & { status?: number; type?: string; extra?: Record<string, unknown> };
 /** config/grants/grants.json `agents`, by Paperclip id (setup writes it). */
-type Grants = Record<string, { rev?: string; key?: string }>;
+type Grants = Record<string, { rev?: string; key?: string; profile?: string }>;
 /** config/gateway.json `ci` (compile writes it from the ci module's settings). */
 type CiConf = { orgs?: unknown; models?: unknown; review?: unknown; tiers?: Record<string, unknown> };
 /** A run key's settled identity (the runs table), or the same fields resolved for one call. */
@@ -444,9 +444,11 @@ const NO_OUTPUT = { reason: "ended before any output", transient: true };
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, appLogin = () => undefined, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, appLogin = () => undefined, jobLive = () => false, jobProfile = () => undefined, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
+  /** A job's profile as frozen at its admission (its row's), never its agent's current grants. */
+  jobProfile?: (id: string) => string | null | undefined;
   /** This instance's own GitHub App's bot login (`<slug>[bot]`), whose PRs the CI tier rules count as a member's. */
   appLogin?: () => string | undefined;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
@@ -682,7 +684,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         // A kernel job (boxes.ts): its run is the job, its agent's on its task (a chat or routine task by the day), while the job
         // lives.
         if (!jobLive(String(p.id))) throw fail(401, "unauthorized", "this job has ended");
-        const row = (q.run.get(runKey) as RunRow | undefined) ?? settle(runKey, { agentId: p.a, runId: String(p.id), ...(await taskOf(p.i)) });
+        let row = q.run.get(runKey) as RunRow | undefined;
+        if (!row) {
+          const t = await taskOf(p.i);
+          // A session's task lives for days (the job's frozen profile): its cap is per UTC day, as a chat task's.
+          row = settle(runKey, { agentId: p.a, runId: String(p.id), issueId: t.issueId, perpetual: t.perpetual || jobProfile(String(p.id)) === "session" });
+        }
         return as(row, routeKind, "agent");
       }
       if (p.k === "check") return { ...as(null, "check", "Check jobs"), check: { subject: String(p.c ?? "").slice(0, 80) } } as Caller;
@@ -1184,9 +1191,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * month. Each is told as a refused call's is (once), so a limit a last call crossed is never silent.
    */
   const exhausted = (agentId: string, task: string) => {
-    // Admission doesn't know whether the task is a chat or routine one (its cap by the UTC day): both subjects are read.
+    // Admission doesn't know whether the task is a chat or routine one (its cap by the UTC day): both subjects are read. A
+    // session agent's calls are only ever by the day (identify), so only that subject is.
     const t = now(), who = { agentId, issueId: task };
-    const all = [...limits({ ...who, perpetual: false }, t), ...limits({ ...who, perpetual: true }, t).filter((o) => o.scope === "task")];
+    const all = grants()[agentId]?.profile === "session" ? limits({ ...who, perpetual: true }, t) : [...limits({ ...who, perpetual: false }, t), ...limits({ ...who, perpetual: true }, t).filter((o) => o.scope === "task")];
     const over = all.filter((o) => o.spent >= o.cap);
     // Only a limit its settled spend reached is told (a limit held by calls in flight may settle below it); after the
     // caller's transaction (admission's) is over: the notice's row is a write on the same file.

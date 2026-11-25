@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createAdmission } from "../src/admission.ts";
-import { createBoxes, launcherClient } from "../src/boxes.ts";
+import { createBoxes, jobMcp, launcherClient } from "../src/boxes.ts";
+import { buildJob } from "../src/sandbox.ts";
 import { createOnce } from "../src/once.ts";
 import { createIdentity } from "../src/identity.ts";
 import { admittedJob, createJobs } from "../src/jobs.ts";
@@ -46,6 +47,7 @@ async function host(t) {
   writeFileSync(join(dir, "engines.json"), JSON.stringify({ wait: engine, wait2: engine, stale: staleEngine("stale", stale), "stale-always": staleEngine("stale-always", staleAlways) }));
   const cfg = { workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"), secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"), timeout_minutes: 2 };
   writeFileSync(join(dir, "config/handbooks/agent-1.md"), "# Acme crew handbook\n");
+  writeFileSync(join(dir, "config/handbooks/agent-9.md"), "# Session handbook\n");
   const calls = [];
   const launcher = { fail: 0 }; // a status the next /job answers with (0: a box)
   let n = 0;
@@ -61,15 +63,16 @@ async function host(t) {
       mkdirSync(outDir);
       writeFileSync(envFile, `AIDENHQ_RUN_TOKEN=${body.token}\n`);
       writeFileSync(join(cfg.boxDir, `${container}.box.json`), JSON.stringify({ workspace: body.workspace, outDir, engineDir: join(dir, "engines") }));
-      res.writeHead(200).end(JSON.stringify({ container, envFile, outDir, gen: 1 }));
+      // A session's standing box answers with the lease this job holds in it (Lane B's launcher).
+      res.writeHead(200).end(JSON.stringify({ container, envFile, outDir, gen: 1, ...(body.standing ? { lease: `l-${String(n).padStart(8, "0")}` } : {}) }));
     });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
-  const grants = { "agent-1": { key: "acme-crew", roles: ["notes"], max_parallel: 2, engine: "wait", engines: ["wait", "wait2"], model: "acme/m1", models: ["acme/m1", "acme/m2"], tools: { slack: ["search"], tasks: ["create"] } } };
+  const grants = { "agent-1": { key: "acme-crew", roles: ["notes"], max_parallel: 2, engine: "wait", engines: ["wait", "wait2"], model: "acme/m1", models: ["acme/m1", "acme/m2"], tools: { slack: ["search"], tasks: ["create"] } }, "agent-9": { key: "session", profile: "session", roles: ["session"], max_parallel: 2, engine: "wait", model: "acme/m1", tools: { slack: ["search"] } } };
   // The compiled declaration (config/paperclip.yaml) and the connections the box may use, both mutable per test.
-  const declared = { "agent-1": ["slack", "tasks"] };
+  const declared = { "agent-1": ["slack", "tasks"], "agent-9": ["slack"] };
   const conns = { slack: {}, tasks: {} };
   const db = new DatabaseSync(":memory:");
   // The wakes table admission's facts read (a real kernel's inbox; this host's wakes are fakes).
@@ -107,11 +110,11 @@ async function host(t) {
     pool: { mayAgent: () => true },
     nextTurn: jobTools,
     db, grants: () => grants, kinds: () => ({}), capacity: () => 12, spend: () => [], mayDispatch: () => true, log: () => {},
-    cp: { task: async (id) => ({ id, identifier: `PEN-${id.split("-")[1]}`, assigneeAgentId: "agent-1", status: "todo" }) },
+    cp: { task: async (id) => ({ id, identifier: `PEN-${id.split("-")[1]}`, assigneeAgentId: id.startsWith("session-") ? "agent-9" : "agent-1", status: "todo" }) },
     wakes: { claimed: (_m, k) => wakes.get(k), bind: () => {}, endWaits: () => [], unclaim: () => {} },
     launch: (job) => boxes.launch(job), release: (id) => boxes.release(id),
   });
-  const admit = (task, { full } = {}) => { wakes.set(task, { task, agent: "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello", ...(full ? { full_prompt: full } : {}) }); };
+  const admit = (task, { full } = {}) => { wakes.set(task, { task, agent: task.startsWith("session-") ? "agent-9" : "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello", ...(full ? { full_prompt: full } : {}) }); };
   const release = () => writeFileSync(join(cfg.logsDir, "release"), "");
   return { attached, dir, cfg, db, grants, conns, declared, calls, whoami, admit, release, make, jobTools, cloned, codehostDown, launcher, draining };
 }
@@ -272,3 +275,34 @@ test("a job's .aidenhq/out files are attached to its task when it ends: regular 
  * The stale-session recovery: a turn that resumed a session its engine can no longer find (Codex's "no rollout found") is
  * cleared and re-run at once on a fresh one, with the full first-turn prompt — not reported failed, and never twice.
  */
+
+test("buildJob writes the job's connections, its models, and a standing box's own folders", async (t) => {
+  const h = await host(t);
+  const jobDir = join(h.dir, "boxes", "job-x");
+  mkdirSync(jobDir);
+  const servers = jobMcp({ github: ["github_issue_read"] }, { github: { tool_timeout_sec: 60 } }, "http://gw");
+  const box = { container: "c1", envFile: "/e", outDir: join(h.dir, "boxes"), boxOut: "/aidenhq-out/l1", workdir: "/sessions/PEN-1", stateIn: "/engine-state/agent-9_session-1", servers };
+  const { argv, spec } = buildJob({ cfg: h.cfg, engine: { kind: "wait", model: "acme/m1" }, worktree: "/w", jobDir, box, boxWrap: "", models: ["acme/m1", "acme/m2"] });
+  assert.deepEqual(spec.mcp, [{ name: "github", url: "http://gw/c/github/mcp", token_env: "AIDENHQ_RUN_TOKEN", tools: ["github_issue_read"], tool_timeout_s: 60 }]);
+  assert.deepEqual(spec.model.models, ["acme/m1", "acme/m2"]);
+  assert.equal(spec.state, "/engine-state/agent-9_session-1");
+  assert.equal(argv[argv.indexOf("-w") + 1], "/sessions/PEN-1");
+  assert.equal(argv.at(-1), "/aidenhq-out/l1/job-x");
+});
+
+test("a session job: the standing box, its sessions workspace, a long token, and a release that names its lease", async (t) => {
+  const h = await host(t);
+  await h.admit("session-1");
+  const acquire = h.calls.find((c) => c.route === "/job");
+  assert.equal(acquire.body.standing, true);
+  assert.equal(acquire.body.workspace, join(h.cfg.workDir, "sessions", "PEN-1"));
+  const exp = JSON.parse(Buffer.from(acquire.body.token.slice("ahqj_".length).split(".")[0], "base64url").toString()).x;
+  assert.ok(exp - Date.now() > 300 * 24 * 3600_000, "the token outlives the job's deadline; whoami ends it with the job");
+  const row = h.db.prepare("SELECT box FROM jobs WHERE task = 'session-1'").get();
+  assert.deepEqual(JSON.parse(row.box).servers.map((s) => s.name), ["slack"], "the job's connections stay on its row");
+  h.release();
+  await until("the lease released", () => h.calls.find((c) => c.route === "/job/release"));
+  const { container, ...rest } = h.calls.find((c) => c.route === "/job/release").body;
+  assert.match(container, /^aidenhq-computer-k/);
+  assert.deepEqual(rest, { gen: 1, lease: "l-00000001", destroy: false }, "only its lease ends: the standing box stays");
+});

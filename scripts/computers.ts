@@ -50,6 +50,8 @@ export function imageTags(productDir: string, names: string[]) {
 export function validateImages(agents: Record<string, ComputerAgent>) {
   for (const [key, a] of Object.entries(agents)) {
     if (a.image == null) continue;
+    // A session's box is the `session` image alone: it holds the session-stop that releases a lease.
+    if (a.profile === "session" && a.image !== "session") throw new Error(`${key}: a session runs only in the session image (got ${a.image})`);
     if (!AGENT_IMAGES.includes(a.image)) throw new Error(`${key}: image must be one of ${AGENT_IMAGES.join(", ")} (got ${a.image})`);
     // An Engineer's jobs run in an `engineer` box.
     if (a.profile === "engineer") {
@@ -64,7 +66,7 @@ export function validateImages(agents: Record<string, ComputerAgent>) {
  * keeps both (their sum); the kernel admits each kind against its own. */
 export function computersConfig(paperclip: Record<string, any>, productDir: string, max?: number, checks?: number) {
   validateImages(paperclip.agents);
-  const used = [...new Set(Object.values<ComputerAgent>(paperclip.agents).map((a) => a.image).filter(Boolean) as string[])];
+  const used = [...new Set(Object.values<ComputerAgent>(paperclip.agents).map((a) => a.image ?? (a.profile === "session" ? "session" : null)).filter(Boolean) as string[])];
   const connections: Record<string, { tool_timeout_sec: number }> = {};
   // Every connection is reached through the kernel's proxy (the launcher forwards a box's calls there with its run token).
   for (const [name, c] of Object.entries<{ tool_timeout_sec?: number }>(paperclip.mcp_servers)) connections[name] = { tool_timeout_sec: c.tool_timeout_sec ?? 300 };

@@ -12,7 +12,8 @@ an autonomy he set below full.
 ## Principles
 
 - **Code assigns the tier, never the request.** A tier is the kind's floor, code's hard refusals, the owner's veto or save,
-  and autonomy off; nothing else (owner, 2026-11-23). The code host's `modules/github/service/src/plan.ts` (git writes) raises
+  autonomy off, and a session job's `session` role (Tier 0 on its frozen authority, after the refusals, the veto and autonomy
+  off); nothing else (owner, 2026-11-23; sessions 2026-11-25). The code host's `modules/github/service/src/plan.ts` (git writes) raises
   a floor-0 kind from state read from git and GitHub; the kernel's `apply-tier.ts` (fleet applies, floor 1) adds only its
   refusals and the authority lines on the card. `computeTier` (`kernel/src/tier.ts`) is the one function that sets the final
   tier: 0 runs at once, a floor or raise above 0 is the AI reviewer's (Tier 1), and Tier 2 (the owner's) is only his veto on

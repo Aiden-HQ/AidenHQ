@@ -1,6 +1,7 @@
 // The host's disk stays bounded (docs/operations.md "Task workspaces and disk"): what jobs and checks leave on disk goes
 // once nothing uses it. One pass, every 15 minutes and soon after start, walks what is ON DISK:
 //   <workDir>/tasks/<identifier>         a task's workspace (boxes.ts), kept between its jobs;
+//   <workDir>/sessions/<identifier>      a session's workspace (boxes.ts workRoot), swept as a task's is;
 //   <workDir>/.cache-layers/<identifier> legacy copy-on-write build-cache overlays;
 //   <stateDir>/<engine>/<agent>_<task>   a job's engine home (sandbox.ts engineState: the Codex home and its sessions), for
 //                                        engines with per-task state. stateDir (default ~/.local/state/aidenhq-runner) is the
@@ -78,6 +79,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
     const fresh = (u: Use, engine?: string) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = COALESCE(?, engine) AND NOT ${LIVE()}`).run(agent, task, engine ?? null); };
     const roots: { root: string; use: (name: string) => Use | undefined; busy: (name: string, u?: Use) => boolean; gone?: (u: Use) => void }[] = [
       { root: join(workDir, "tasks"), use: useIdent, busy: liveIdent, gone: (u) => fresh(u) },
+      { root: join(workDir, "sessions"), use: useIdent, busy: liveIdent, gone: (u) => fresh(u) },
       { root: join(workDir, ".cache-layers"), use: useIdent, busy: liveIdent },
       { root: join(workDir, "checks"), use: () => undefined, busy: (n) => running().has(n) },
       ...engines().map((kind) => ({

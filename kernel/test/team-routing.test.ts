@@ -42,7 +42,7 @@ function world({ paused = [] } = {}) {
   const issues = { [PARENT]: { id: PARENT, status: "in_progress", assigneeAgentId: "id-cos" } }, comments = {}, patches = [];
   let failPatch = false;
   const db = new DatabaseSync(":memory:");
-  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
+  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER, profile TEXT)");
   const grants = {
     [TEAM]: { key: "engineer", team: { name: "engineering", members: ["kai", "mina"] } },
     [KAI]: { key: "kai", member_of: "engineer", repos: [], max_parallel: 1 },
@@ -169,7 +169,7 @@ test("a never-started task on a busy member moves to a free one when its member'
   await w.wakes.event({ issueId: "t1" });
   assert.equal(w.issues.t1.assigneeAgentId, KAI); // both idle: the key
   w.issue("other", { assigneeAgentId: KAI, status: "in_progress" });
-  w.db.prepare("INSERT INTO jobs VALUES ('j-other', 'other', ?, 'running', 1)").run(KAI);
+  w.db.prepare("INSERT INTO jobs VALUES ('j-other', 'other', ?, 'running', 1, NULL)").run(KAI);
   w.tick();
   await w.wakes.poll();
   assert.equal(w.issues.t1.assigneeAgentId, MINA);
@@ -186,10 +186,10 @@ test("a task that ran a job, a named task and a placement that still scores best
   w.issue("ran"); w.issue("t2");
   await w.wakes.event({ issueId: "ran" });
   assert.equal(w.issues.ran.assigneeAgentId, KAI);
-  w.db.prepare("INSERT INTO jobs VALUES ('j-ran', 'ran', ?, 'done', 1)").run(KAI);
+  w.db.prepare("INSERT INTO jobs VALUES ('j-ran', 'ran', ?, 'done', 1, NULL)").run(KAI);
   w.issue("named", { assigneeAgentId: KAI });
   w.issue("other", { assigneeAgentId: KAI, status: "in_progress" });
-  w.db.prepare("INSERT INTO jobs VALUES ('j-other', 'other', ?, 'running', 1)").run(KAI);
+  w.db.prepare("INSERT INTO jobs VALUES ('j-other', 'other', ?, 'running', 1, NULL)").run(KAI);
   // A placement onto the busy member (its repo match outweighs its load) settles, and stays on the next poll.
   w.grants[KAI].repos = ["acme/*"];
   w.grants[TEAM].team.weights = { repo: 10 };

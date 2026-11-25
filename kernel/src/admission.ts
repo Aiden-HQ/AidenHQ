@@ -14,13 +14,17 @@ import type { JobTools } from "./jobtools.ts";
 import type { Skill } from "./sandbox.ts";
 import type { Pool } from "./pool.ts";
 
-export const PROFILES = ["crew", "engineer", "check"] as const;
+export const PROFILES = ["crew", "engineer", "check", "session"] as const;
 export type Profile = (typeof PROFILES)[number];
 /** The role the code host reads as the product line (requester.platform), and the roles whose filed tasks may carry it (the Architect, the Fleet Steward). */
 const PLATFORM = "platform-engineer";
 const PLATFORM_FILERS = ["architect", "fleet-audit"];
 /** The computer image a profile's jobs run in when the agent names none (`image:` wins). */
-const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer", check: "engineer" };
+const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer", check: "engineer", session: "session" };
+/** The role that makes a session job's writes run at once (tier.ts `session`): it holds only on a profile-`session` authority. */
+export const SESSION_ROLE = "session";
+/** Live agent jobs that take a computer from the pool (settings.computers_max): a session idles in the one standing box, bounded by its agent's max_parallel instead. */
+export const agentJobsLive = (db: DatabaseSync) => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running') AND profile IS NOT 'session'").get() as { n: number }).n;
 
 /** A grants-table entry (config/grants/grants.json `agents`, compiled by scripts/modules.ts grantEntry). */
 export type AgentGrant = {
@@ -45,8 +49,8 @@ export type Wakes = {
   /** The admitted job is this wake's (at most one job per wake). */
   bind(key: string, job: string): void;
   /** A job that started on the task ends the agent's own wait (idle.ts): its open timed wakes are dropped, and their keys
-   * returned. Only once the job is running: a deferred job leaves the waits armed. */
-  endWaits(key: string): string[];
+   * returned. Only once the job is running: a deferred job leaves the waits armed. `keep`: a session agent's own waits stay. */
+  endWaits(key: string, keep?: string): string[];
   /** No job came of it (deferred): no job bound, claimable again by the same module at once. */
   unclaim(key: string): void;
 };
@@ -55,8 +59,8 @@ export type Wakes = {
 export const wakeInbox = (db: DatabaseSync): Wakes => ({
   claimed: (module, key) => db.prepare("SELECT task, agent, cause, at FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as Wake | undefined,
   bind: (key, job) => { db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key); },
-  endWaits: (key) => {
-    const waits = db.prepare("SELECT key FROM wakes WHERE task = (SELECT task FROM wakes WHERE key = ?) AND state = 'open' AND key LIKE 'wait:%' AND key != ?").all(key, key) as { key: string }[];
+  endWaits: (key, keep) => {
+    const waits = db.prepare("SELECT key FROM wakes WHERE task = (SELECT task FROM wakes WHERE key = ?) AND state = 'open' AND key LIKE 'wait:%' AND key != ? AND agent IS NOT ?").all(key, key, keep ?? null) as { key: string }[];
     for (const w of waits) db.prepare("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
     return waits.map((w) => w.key);
   },
@@ -140,12 +144,16 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
     // a record its tier decides, filed with the job's own workspace.
     const engineer = (id: string, k: { module: string }) => profile === "engineer" && (CODEHOSTS.includes(k.module) || id === "kernel.apply");
+    // A session files every kind its tools reach (unrestricted: owner decisions 6 and 9), and merges and closes through the code
+    // host (its pushes are git's, its own App token); a push, PR or new repo reads a tasks/<identifier> workspace it doesn't
+    // have, and an apply is never a session's.
+    const session = (id: string, k: { module: string }) => profile === "session" && CODEHOSTS.includes(k.module) && (id === `${k.module}.merge` || id === `${k.module}.close`);
     // A kind only the owner's own save files (`filer: owner`, a share's publish) is no job's.
-    const writes = Object.entries(kinds()).filter(([id, k]) => !k.filer && ((k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k))).map(([id]) => id).sort();
+    const writes = Object.entries(kinds()).filter(([id, k]) => !k.filer && ((k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k) || session(id, k))).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
-      roles: profile === "check" ? [] : (g.roles ?? []).filter((r) => platform || r !== PLATFORM),
+      roles: profile === "check" ? [] : (g.roles ?? []).filter((r) => (platform || r !== PLATFORM) && (profile === "session" || r !== SESSION_ROLE)),
       web: g.web_search !== "disabled",
     };
   }
@@ -176,7 +184,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       if (own.team) throw new JobError(409, "team-record", `agent ${agent} is team ${own.team.name}'s record: the kernel routes its tasks to a member, and it never runs`);
       // A member holds its team record's roles (heldRoles); the platform filter below still applies.
       const g: AgentGrant = { ...own, roles: heldRoles(grants(), agent) };
-      if (!pool.mayAgent()) throw new JobError(429, "busy", `the computers agent jobs may take are taken (of ${capacity()}); try again shortly`);
+      if (own.profile !== "session" && !pool.mayAgent()) throw new JobError(429, "busy", `the computers agent jobs may take are taken (of ${capacity()}); try again shortly`);
       const mine = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND ${LIVE}`).get(agent) as { n: number }).n;
       if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "max-parallel", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
       const over = spend(agent, task);
@@ -237,9 +245,11 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     }
     launching.delete(id);
     nextTurn.taken(task);
-    // The job is running: its waits and their facts end together, and a failure here never fails the admission.
+    // The job is running: its waits and their facts end together, and a failure here never fails the admission. A session
+    // agent's own waits are its to keep: a job resumed after its box was replaced still waits on them (wakes.ts claim delivers
+    // them live). Another agent's (the task's last assignee's) end here.
     try {
-      inTx(db, "waits_end", () => { for (const k of wakes.endWaits(b.wake)) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(Date.now()), actor: "kernel", task, data: { why: "the task's next job started" } }); });
+      inTx(db, "waits_end", () => { for (const k of wakes.endWaits(b.wake, job.profile === "session" ? agent : undefined)) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(Date.now()), actor: "kernel", task, data: { why: "the task's next job started" } }); });
     } catch (e) {
       log("a started job's waits stay armed", { job: id, task, err: (e as Error).message });
     }

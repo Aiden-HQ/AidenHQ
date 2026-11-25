@@ -29,6 +29,8 @@ export type Identity = {
   tools: Record<string, string[]>;
   /** The write kinds a kernel job's authority names: what it may request at POST /v1/writes, for its agent on its task. */
   writes?: string[];
+  /** A kernel job's profile, frozen at admission. */
+  profile?: string;
   /** A kernel job's workspace: its task's identifier, from its row (admission). Its writes name this one, whatever their args say. */
   workspace?: string;
   /** A kernel job's model, frozen at admission: its writes carry it, so their reviewer is never of its family. */
@@ -73,7 +75,7 @@ export function laneCaller(mod: Identity, agent: string, agents: Record<string, 
 }
 
 /** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */
-export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; model?: string } };
+export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { profile?: string; tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; model?: string } };
 
 export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, job = () => undefined, now = Date.now }: {
   grants: () => Record<string, Grant>; connections: () => Record<string, Connection>; jobcaps: () => Record<string, Jobcap>;
@@ -97,7 +99,7 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
         // Every jobcap it was granted adds its reads.
         for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
         const g = grants()[j.agent];
-        return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], task: j.task, job: String(p.id), workspace: j.identifier, ...(j.authority.model ? { model: j.authority.model } : {}), credential: "" };
+        return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], ...(j.authority.profile ? { profile: j.authority.profile } : {}), task: j.task, job: String(p.id), workspace: j.identifier, ...(j.authority.model ? { model: j.authority.model } : {}), credential: "" };
       }
       throw new Unknown("a job's token is invalid or expired");
     }

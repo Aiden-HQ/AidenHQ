@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { computeTier } from "../src/tier.ts";
+import { instanceRefusal } from "../src/writes.ts";
 
 test("an apply is the reviewer's unless refused, the owner's save or autonomy off", () => {
   const apply = { floor: 1 as const, priorVeto: false, autonomy: "full" as const };
@@ -13,4 +14,21 @@ test("an apply is the reviewer's unless refused, the owner's save or autonomy of
   assert.deepEqual(at({ routine: "digest" } as never), [1, "review"], "a routine-run task: unchanged");
   assert.deepEqual(at({ floor: 0, raise: { tier: 2 } }), [1, "review"], "a raise is the reviewer's");
   assert.deepEqual(at({ floor: 0 }), [0, "claimed"], "floor 0 runs");
+});
+
+test("a session's writes run at once; a refusal, the owner's veto and autonomy off still hold", () => {
+  const state = (i: Partial<Parameters<typeof computeTier>[0]>) => computeTier({ floor: 1, session: true, autonomy: "full", ...i }).state;
+  assert.equal(state({}), "claimed");
+  assert.equal(state({ refusal: "x" }), "rejected");
+  assert.equal(state({ priorVeto: true }), "owner");
+  assert.equal(state({ autonomy: "off" }), "owner");
+});
+
+test("a session's code host write that names the instance repo is refused, however the repo is written", () => {
+  const inst = "acme/instance";
+  assert.equal(instanceRefusal(inst, { repo: "Acme/Instance.git" })?.code, "instance_repo");
+  assert.equal(instanceRefusal(inst, { owner: "acme", repo: "instance" })?.code, "instance_repo");
+  assert.equal(instanceRefusal(inst, { prs: [{ repo: "acme/product" }, { repo: "acme/instance" }] })?.code, "instance_repo");
+  assert.equal(instanceRefusal(inst, { repo: "acme/product" }), undefined);
+  assert.equal(instanceRefusal(undefined, { repo: "acme/instance" }), undefined);
 });

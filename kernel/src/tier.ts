@@ -1,5 +1,6 @@
 // K5, the tier formula (spec §5.1): Tier 0 runs at once (still a record), Tier 1 is the AI reviewer's, Tier 2 the owner's. A
-// tier is the kind's floor, code's hard refusals, the owner's veto or save, and autonomy off; nothing else. The AI reviewer
+// tier is the kind's floor, code's hard refusals, the owner's veto or save, autonomy off, and a session job's `session` role;
+// nothing else. The AI reviewer
 // blocks only malice and fails open (owner, 2026-11-22: "AI agents we use are trusted, not threat actors"): no write reaches
 // the owner on its merits. Pure.
 export type Tier = 0 | 1 | 2;
@@ -20,16 +21,19 @@ export const capText = (c: Cap) => `autonomy is ${c.value}`;
  * The one tier function every write goes through (writes.ts: module kinds, conn.tool, the kernel's kinds). `refusal`: code's
  * hard refusal (rejected, never reviewed). The owner's (Tier 2) only: his veto on the task (`priorVeto`), his own settings save
  * (`ownerSave`: his Save is his approval, decided as his account at filing), and autonomy off. Otherwise the floor or any
- * raise above 0 is the AI reviewer's (Tier 1), and 0 runs. The release updater's filing passes `autonomy: "full"` (it acts on
- * the owner's standing auto-update authority).
+ * raise above 0 is the AI reviewer's (Tier 1), and 0 runs. `session`: the requester is a kernel job holding the `session`
+ * role on its frozen authority (a long-lived session the owner or Aiden started, unrestricted by the owner's decision): its
+ * writes run at once, after the refusal, the veto and autonomy off. The release updater's filing passes `autonomy: "full"`
+ * (it acts on the owner's standing auto-update authority).
  */
-export function computeTier({ floor, raise, refusal, priorVeto = false, ownerSave = false, autonomy }: {
-  floor: Tier; raise?: Raise; refusal?: string; priorVeto?: boolean; ownerSave?: boolean; autonomy: Autonomy;
+export function computeTier({ floor, raise, refusal, priorVeto = false, ownerSave = false, autonomy, session = false }: {
+  floor: Tier; raise?: Raise; refusal?: string; priorVeto?: boolean; ownerSave?: boolean; autonomy: Autonomy; session?: boolean;
 }): { tier: Tier; merit: Tier; cap?: Cap; rule?: string; state: "claimed" | "review" | "owner" | "rejected" } {
   const merit = Math.max(floor, raise?.tier ?? 0) as Tier;
   if (refusal) return { tier: merit, merit, rule: refusal, state: "rejected" };
   if (ownerSave || priorVeto) return { tier: 2, merit, state: "owner" };
   if (autonomy === "off") return { tier: 2, merit, cap: { by: "autonomy", value: "off" }, rule: "autonomy-off", state: "owner" };
+  if (session) return { tier: 0, merit, rule: "session", state: "claimed" };
   if (merit === 0) return { tier: 0, merit, state: "claimed" };
   return { tier: 1, merit, ...(autonomy === "tier0" ? { cap: { by: "autonomy" as const, value: autonomy } } : {}), state: "review" };
 }
@@ -82,6 +86,16 @@ export function priorDecisions(records: Prior[], action: string, key?: string) {
   const approvedLater = (r: Prior, who: (y: Prior) => boolean = () => true) => mine.some((y) => who(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt));
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && sameContent(r) && !approvedLater(r, byOwner));
   return { ownerVeto: mine.filter(byOwner).at(-1)?.state === "rejected" || ownerNo };
+}
+
+/**
+ * A merge's heads the owner said no to: for each head the request names, his latest decision on a merge that named it was a
+ * rejection. Per head, so a batch that adds another PR (other content, another digest) never discards his no on one.
+ */
+export function headVeto(records: Prior[], heads: string[]): string | undefined {
+  const lower = (h: unknown) => String(h ?? "").toLowerCase();
+  const mine = (records ?? []).filter((r) => byOwner(r) && ["approved", "used", "expired", "rejected"].includes(r.state) && carried(r).includes("merge")).sort((a, b) => String(a.decidedAt ?? "").localeCompare(String(b.decidedAt ?? "")));
+  return heads.map(lower).find((h) => h && mine.filter((r) => (r.args?.prs ?? []).some((p: { head?: unknown }) => lower(p?.head) === h)).at(-1)?.state === "rejected");
 }
 
 /** What earlier decisions do to a request: the owner's veto (his card). Only the owner's no binds; a reviewer's reject never does. */

@@ -21,19 +21,21 @@ const LIST = await modelsList({ flat: { in: 0, cached_in: 0, out: 1, max_output:
 const modelsUrl = LIST.url;
 
 /** A gateway on `dir`'s kernel.db with one job agent `ag` (the install's day limit `dayUsd`), and an upstream `answer(body, res)`. Every secret is "js". */
-async function rig(t, { dayUsd = 30, answer, dir = mkdtempSync(join(tmpdir(), "spend-")), legacy, agents } = {}) {
+async function rig(t, { dayUsd = 30, taskUsd, answer, dir = mkdtempSync(join(tmpdir(), "spend-")), legacy, agents, clock = { t: Date.parse("2026-11-16T10:00:00Z") } } = {}) {
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: agents ?? { ag: { key: "eng" } } }));
-  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ install_day_usd: dayUsd }));
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ install_day_usd: dayUsd, ...(taskUsd ? { task_usd: taskUsd } : {}) }));
   const seen = [];
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { const body = JSON.parse(b); seen.push(body); answer(body, res, seen.length); });
   });
-  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, modelsUrl, jobLive: () => true, now: () => Date.parse("2026-11-16T10:00:00Z") });
+  const jobAgent = {}; // a job's agent, as its row's frozen profile would say
+  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, modelsUrl, jobLive: () => true, jobProfile: (id) => agents?.[jobAgent[id]]?.profile, now: () => clock.t });
   const gw = open();
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); try { gw.close(); } catch {} });
-  const call = async (body, issueId = "WOR-1") => {
-    const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { kind: "job", job: `j-${issueId}`, agentId: "ag", issueId }, Date.parse("2026-11-16T10:00:00Z"))}` }, body: JSON.stringify(body) });
+  const call = async (body, issueId = "WOR-1", { agentId = "ag", job = `j-${issueId}` } = {}) => {
+    jobAgent[job] = agentId;
+    const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { kind: "job", job, agentId, issueId }, clock.t)}` }, body: JSON.stringify(body) });
     return { status: res.status, json: await res.json().catch(() => null) };
   };
   const rows = () => gw.db.prepare("SELECT key, status, cost_usd, input, cached, output FROM calls ORDER BY rowid").all();
@@ -59,6 +61,20 @@ test("limits count real cost: a $2 limit with $0.51 spent runs the next call, ou
   const s2 = await rig(t, { dayUsd: 0.0001, answer: usage(0.00005) });
   assert.equal((await s2.call({ model: "astra", messages: [] })).status, 200);
   assert.equal(s2.seen[0].max_tokens, 1024);
+});
+
+test("a session task's cap is per day: calls over yesterday's task_usd are admitted today, a crew task's stay refused", async (t) => {
+  const clock = { t: Date.parse("2026-11-16T10:00:00Z") };
+  const r = await rig(t, { clock, taskUsd: 0.05, answer: usage(0.06), agents: { ag: { key: "eng" }, ses: { key: "session", profile: "session" } } });
+  for (const [agentId, task] of [["ses", "WOR-1"], ["ag", "WOR-2"]]) {
+    assert.equal((await r.call({ model: "flat", messages: [] }, task, { agentId, job: `j-${task}-1` })).status, 200);
+    assert.equal((await r.call({ model: "flat", messages: [] }, task, { agentId, job: `j-${task}-1` })).status, 402, `${agentId}: over the task's cap today`);
+  }
+  clock.t += 24 * 3600_000; // the next UTC day; each task's next job
+  assert.equal((await r.call({ model: "flat", messages: [] }, "WOR-1", { agentId: "ses", job: "j-WOR-1-2" })).status, 200, "a session's cap starts again");
+  assert.equal((await r.call({ model: "flat", messages: [] }, "WOR-2", { agentId: "ag", job: "j-WOR-2-2" })).status, 402, "a crew task's cap is the task's");
+  // Admission reads the same buckets: the crew task's lifetime cap is spent, but a session on it starts by today's.
+  assert.deepEqual([r.gw.exhausted("ag", "WOR-2").map((o) => o.scope), r.gw.exhausted("ses", "WOR-2")], [["task"], []]);
 });
 
 test("concurrent calls share the room: each holds its granted output, so two in flight can't both buy all of it", async (t) => {

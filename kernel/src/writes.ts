@@ -19,12 +19,24 @@ import { UPDATER, canonical, isUpdater, digestOf, type Card, type Rec, type Reco
 import type { Reviews } from "./reviews.ts";
 import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
 import { openRefusals, markRefusal } from "./refusals.ts";
-import { CODEHOSTS, routeKind } from "./codehost.ts";
+import { CODEHOST, CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { gateMode } from "./gates.ts";
 import { identifierRefused } from "./task-identifier.ts";
-import { codeRefusal } from "./review-loop.ts";
+import { codeRefusal, ownerVeto } from "./review-loop.ts";
 import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type Tier, type Verdict } from "./tier.ts";
+
+/** A session's code host write (a kind's args, or a GitHub tool's arguments) that names the instance repo: refused in code, as the session git token's route refuses it (only Apply writes there). */
+export function instanceRefusal(instance: string | undefined, args: unknown): Verdict | undefined {
+  const key = repoKey(instance);
+  if (!key) return undefined;
+  // The repo as a field, as owner + repo, or written anywhere in a value (a URL, `owner/name#12`): the same key everywhere.
+  const a = (args ?? {}) as { owner?: unknown; repo?: unknown };
+  const split = typeof a.owner === "string" && typeof a.repo === "string" ? repoKey(`${a.owner}/${a.repo}`) : undefined;
+  const written = new RegExp(`(?<![\\w.-])${key.replace(/[.]/g, "\\.")}(?:\\.git)?(?![\\w.-])`, "i").test(JSON.stringify(args ?? {}));
+  if (split !== key && !written) return undefined;
+  return { decision: "reject", code: "instance_repo", reason: `${instance} is the instance repo: only an apply writes there, never a session`, model: "kernel/code" };
+}
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** The target fields a head-bound kind can bind to: what it acts on, per target, instead of its whole plan. */
@@ -194,6 +206,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     });
   }
 
+  /** A kernel job holding the `session` role on its frozen authority (admission.ts gives it only to a session profile). */
+  const sessionOf = (who: Identity) => who.kind === "run" && Boolean(who.job) && who.roles.includes("session");
   const requesterOf = (who: Identity, task: string): Requester => ({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, kind: who.kind, ...(task ? { task } : {}), ...(who.run ? { run: who.run } : {}), ...(who.module ? { module: who.module } : {}), ...(who.model ? { model: who.model } : {}) });
   const conn = (connection: string) => (Object.hasOwn(connections(), connection) ? connections()[connection] : undefined);
 
@@ -270,7 +284,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
   /** Plan, tier and card a request, filing nothing: the record file() files (`filed`), or the plan's `satisfied` evidence. */
-  async function prepare(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string, ownerSave = false) {
+  async function prepare(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string, ownerSave = false, session = false) {
     const executor = { module: k.module, url: k.executor?.url, ...(k.executor?.rev ? { rev: k.executor.rev } : {}) };
     const own = Object.hasOwn(planners, kind) ? planners[kind] : undefined;
     const plan: Plan = own ? await own({ kind, args, requester, task, ...(workspace ? { workspace } : {}) }) : await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
@@ -301,7 +315,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const top = filedRaises(kind, plan).reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);
     // Code's refusals read the whole planned diff (never the card cut for storage), whatever the tier.
     const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext });
-    const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomyOf(requester), ownerSave });
+    const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) || (session && Boolean(ownerVeto(records, { kind, args: plan.args, task, digest: digestOf(base) }))) : false, autonomy: autonomyOf(requester), ownerSave, session });
     if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
     // context while it is open (records.ts drops it once closed), and the card keeps what it shows.
@@ -309,8 +323,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
-  async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string, ownerSave = false): Promise<Rec> {
-    const { base, satisfied, filed } = await prepare(kind, k, requester, args, task, evidence, workspace, ownerSave);
+  async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string, ownerSave = false, session = false): Promise<Rec> {
+    const { base, satisfied, filed } = await prepare(kind, k, requester, args, task, evidence, workspace, ownerSave, session);
     if (satisfied !== undefined) {
       const r = records.file({ ...base, tier: 0, state: "claimed" });
       records.finish(r.id, true, `Nothing to do: ${satisfied.slice(0, 1000)}`);
@@ -552,6 +566,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const k = kindOf_(kind);
     if (!k || !(k.executor || Object.hasOwn(planners, kind) || inProcess(k))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
     if (k.filer === "owner") throw fail(403, "owner-only", `${kind} is filed only by the owner's own save on the board`);
+    // A session job (its frozen profile, whatever roles it holds) never writes the instance repo: refused before any tier.
+    const noInstance = who.profile === "session" && CODEHOSTS.includes(k.module) ? instanceRefusal(repos().instance, args) : undefined;
+    if (noInstance) throw fail(422, "refused", noInstance.reason, "instance_repo");
     // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
     // requester's (floor, the executor's plan and autonomy: computeTier). A module files its own kinds, and another module's only when that kind's `filed_by` names it (the owner of the kind consents); a kernel
     // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
@@ -582,7 +599,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       // The refusal's kind and source are the kernel's own, as it routed them: a code an executor sends never vouches for itself,
       // and the module alone is too broad (another of its kinds could return the same code).
       const mark = (why: string | null, code?: string, at?: string, source?: string) => { if (who.job) markRefusal(records.db, who.job, why, code, at, source); };
-      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined).catch((e: { status?: number; message?: string; code?: string }) => { if (e?.status === 422) mark(`${kind}: ${e.message}`.slice(0, 1000), e.code, kind, k.module); throw e; });
+      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined, false, sessionOf(who)).catch((e: { status?: number; message?: string; code?: string }) => { if (e?.status === 422) mark(`${kind}: ${e.message}`.slice(0, 1000), e.code, kind, k.module); throw e; });
       mark(null);
       if (r.state === "claimed") await execute(r, k);
       return r;
@@ -594,7 +611,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     async preview(who: Identity, { kind: asked, args: given }: { kind: string; args: unknown }): Promise<{ rec?: Rec; satisfied?: string }> {
       if (who.kind !== "run" || !who.job) throw fail(403, "forbidden", "a precheck is a kernel job's own");
       const { kind, k, t, args } = admit(who, asked, given);
-      const { base, satisfied, filed } = await prepare(kind, k, requesterOf(who, t), args, t, undefined, who.workspace || undefined);
+      const { base, satisfied, filed } = await prepare(kind, k, requesterOf(who, t), args, t, undefined, who.workspace || undefined, false, sessionOf(who));
       if (satisfied !== undefined) return { satisfied };
       const at = new Date().toISOString();
       return { rec: { ...filed!, id: "precheck", digest: digestOf(base), created_at: at, updated_at: at } as Rec };
@@ -658,10 +675,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const shown = JSON.stringify(args ?? {});
       const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}`;
       // Code's refusals hold on every call, Tier 0 included.
-      const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null });
-      // The owner's no on a destructive tool (an unreviewed one too) holds for that tool on the task, never for the task's other writes.
-      const destructive = c.tools.destructive.includes(tool);
-      const t = computeTier({ floor, refusal: refused?.code, priorVeto: destructive && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
+      const session = sessionOf(who);
+      const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null }) ?? (who.profile === "session" && c.module === CODEHOST ? instanceRefusal(repos().instance, args) : undefined);
+      // The owner's no on a destructive tool (an unreviewed one too), or on any tool a session calls (its writes all run at Tier 0
+      // but this no), holds for that tool on the task, never for the task's other writes.
+      const vetoable = c.tools.destructive.includes(tool) || session;
+      const t = computeTier({ floor, refusal: refused?.code, priorVeto: vetoable && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy(), session });
       if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
       if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);
