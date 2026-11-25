@@ -38,7 +38,7 @@ export function withAuthToken(buf: Buffer, token: string): { frame: Buffer; rest
   const mask = buf.subarray(at, at + 4), data = Buffer.from(buf.subarray(at + 4, at + 4 + len)).map((b, i) => b ^ mask[i % 4]!);
   const rest = buf.subarray(at + 4 + len);
   let json: Record<string, unknown>;
-  try { json = JSON.parse(data.toString("utf8")); } catch { return { frame: buf.subarray(0, at + 4 + len), rest }; }
+  try { json = JSON.parse(Buffer.from(data).toString("utf8")); } catch { return { frame: buf.subarray(0, at + 4 + len), rest }; }
   const body = Buffer.from(JSON.stringify({ ...json, AuthToken: b64(token) }));
   const key = randomBytes(4), head = body.length < 126 ? Buffer.from([0x80 | (buf[0]! & 0x0f), 0x80 | body.length]) : Buffer.from([0x80 | (buf[0]! & 0x0f), 0x80 | 126, body.length >> 8, body.length & 0xff]);
   return { frame: Buffer.concat([head, key, body.map((b, i) => b ^ key[i % 4]!)]), rest };
