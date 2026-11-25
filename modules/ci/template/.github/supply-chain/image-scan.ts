@@ -290,7 +290,8 @@ export function plan(dockerfiles: string[], { root, local = new Map(), services 
   };
   for (const df of dockerfiles) visit(df, []);
   for (const ref of services) if (!images.has(ref)) images.set(ref, []);
-  return { dirs, images: [...images].map(([ref, uses]) => ({ ref, uses, ...(uses.length ? {} : services.includes(ref) ? { service: true } : {}) })), notes };
+  // Only a service ref has no uses: every Dockerfile ref carries at least one.
+  return { dirs, images: [...images].map(([ref, uses]) => ({ ref, uses, ...(uses.length ? {} : { service: true }) })), notes };
 }
 
 /**
