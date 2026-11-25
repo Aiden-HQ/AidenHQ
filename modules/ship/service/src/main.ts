@@ -87,7 +87,7 @@ const loop = startLoop({
   repos: [...repos].map(([repo, v]) => ({ repo, ...v })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, paused,
   // An open PR's adoption that isn't held (a cancelled task's kept PR too: its task may resume) or whose report is still to post, or a
   // closed one gone() hasn't ended.
-  busy: (repo, open) => (state.all() as Kept[]).some((a) => a.repo.toLowerCase() === repo.toLowerCase() && (open.has(a.number) ? !a.hold || !!a.reportStale : !ended(a))),
+  busy: (repo, open) => (state.all() as Kept[]).some((a) => a.repo.toLowerCase() === repo.toLowerCase() && (open.has(a.number) ? !a.hold || !!a.reportStale || !!a.closing?.length : !ended(a))),
   openers: () => github("GET", "openers"),
   recover: ciRecover({ gh, log }),
   // Every PR but Dependabot's: the hand-off (or a task's own PR) and its rounds (handoff.ts, rounds.ts), on GitHub through the same routes.
@@ -123,7 +123,7 @@ createServer(async (req, res) => {
     if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end();
     const q = new URL(req.url, "http://x").searchParams;
     const repo = q.get("repo") ?? "", n = Number(q.get("pr")), what = q.get("do");
-    let gen = generationOf(state, paused() || !settingsOf(repo), repo, n);
+    let gen = generationOf(state, paused() || !settingsOf(repo), repo, n, q.get("at") ?? undefined);
     // The final tier check before an approve, a merge or an enqueue (risk tiers §7), with github's live head, base and author: this
     // adoption's tier says whether the write may go; a verdict that can't be read, or a head not classified, is a no.
     let refused: { why: string; retry: boolean } | undefined;
@@ -134,7 +134,7 @@ createServer(async (req, res) => {
         refused = effectRefusal(s, v, what, (state.get(repo, n) as { approve?: { head: string; why?: string; policy?: string } } | undefined)?.approve, q.get("head") ?? "", q.get("policy") ?? undefined);
       } catch (e) { refused = { why: `code review's verdict couldn't be read (${String((e as Error).message).slice(0, 150)})`, retry: true }; }
       // The adoption is read again after the verdict: a hand-back, a stop or a re-adoption meanwhile ends the write.
-      gen = generationOf(state, paused() || !settingsOf(repo), repo, n);
+      gen = generationOf(state, paused() || !settingsOf(repo), repo, n, q.get("at") ?? undefined);
     }
     return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...gen, ...(refused ? { refused: refused.why, ...(refused.retry ? { retry: true } : {}) } : {}) }));
   }

@@ -25,7 +25,7 @@ import type { ShipAdoptions } from "./service.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; /** The base an adopted PR's merge was filed against (ship): a change fails it. */ base?: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; /** The task's own pr/push record named this bound head (pr-tasks.json had no row): kept once answered, so a settle credits the PR. A negative answer is never kept: a record filed after it is asked again each poll. A failed read is not kept either. */ bound?: { head: string }; wait?: { key: string; since: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; /** The base an adopted PR's merge was filed against (ship): a change fails it. */ base?: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; /** The task's own pr/push record named this bound head (pr-tasks.json had no row): kept once answered, so a settle credits the PR. A negative answer is never kept: a record filed after it is asked again each poll. A failed read is not kept either. */ bound?: { head: string }; wait?: { key: string; since: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; fw?: { reason: string; since: string } };
 type Queue = { id: string; state: string; /** Filed by the ship module (a fleet PR's plain merge too): ship's pause or a repo switched off ends it at the call. */ byShip?: boolean; /** An adopted PR's merge (ship, args.generation): ship's readiness, the adoption read again before the merge call, and every other action ends it for ship's next round. */ ship?: { generation: number }; /** The kernel ran the record at Tier 0 (record.tier): a product merge must still be eligible at the merge. */ tier0?: boolean; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the kernel settled it as none), so no further read is needed. A failed read is not this; a pending one is not this either. */ recovered?: boolean; /** Which version settled `recovered`: 2 is this one, which reads the kernel's `identifier_pending`. Older queues took a first "none" as final, so one with an absent stamp is read again once (the kernel's upgrade reconcile may have recorded it since); a queue this version settled is never re-read. */ recoveredBy?: number; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The record has no identifier yet and none has been read (the kernel's upgrade reconcile is about to fill it in): a comparison that needs it waits for it instead of concluding from its absence. */ identifierPending?: boolean;  /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** How many times the task-binding read (prBound) has failed for this queue: only for the log, as the read is retried on every poll until it answers. */ boundTries?: number; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -37,7 +37,7 @@ const RULES_MS = 10 * 60_000;
  * has no compare to the base: GitHub's BEHIND stands in (the merge queue reads the real one before it merges).
  */
 function listView(pr: any, main: { name: string; oid?: string; rollup?: any }) {
-  return { repository: { defaultBranchRef: { name: main.name }, pullRequest: { ...pr, state: "OPEN", reviews: pr.reviews ?? { nodes: [] },
+  return { repository: { defaultBranchRef: { name: main.name }, pullRequest: { ...pr, state: "OPEN",
     baseRef: { compare: { behindBy: pr.mergeStateStatus === "BEHIND" ? 1 : 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } } } } };
 }
 /** What a PR's record-level wait says while GitHub is signed out: the reason the card shows for a merge that cannot move yet. */
@@ -72,6 +72,8 @@ export function createMerges(d: {
   fleetOrg: string; productRepo?: string;
   /** Ship's adoptions (service.ts ShipAdoptions): an adopted PR's merge is still its adoption's (not on hold, not paused) at the call. */
   ship?: ShipAdoptions;
+  /** The reviewer App on a repo (service.ts Options.reviewer): its approval of a head counts in ship's decision. */
+  reviewer?: (repo: string) => Promise<{ login: string } | undefined>;
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
   /** Code review's verdict for a PR head (undefined: may merge; wait: why not yet). */
@@ -104,6 +106,9 @@ export function createMerges(d: {
   now?: () => Date;
   everyMs?: number;
 }) {
+  /** The reviewer App's login as GraphQL names its Bot (no `[bot]`), the one bot whose approval counts (merge-gate approvedAt);
+   * unreadable or not installed, none does. */
+  const reviewerLogin = async (repo: string) => (await d.reviewer?.(repo).catch(() => undefined))?.login.replace(/\[bot\]$/, "");
   const log = d.log ?? (() => {});
   const now = d.now ?? (() => new Date());
   const platform = [d.productRepo].filter(Boolean) as string[];
@@ -307,12 +312,6 @@ export function createMerges(d: {
     if (p.fw) d.flow?.waiting(p.repo, p.number, p.fw.reason, p.fw.since);
   }
   /** One poll of one PR; `merged` holds the repositories that merged a PR this poll. */
-  /** A merge that went without code review's verdict (code review unreachable too long), recorded once it is confirmed. */
-  const bypassed = (p: Pr) => {
-    if (!p.bypass) return;
-    log("merged without code review's verdict", { pr: p.url, why: p.bypass.slice(0, 300) });
-    d.flow?.reviewBypassed(p.repo, p.number, p.head, p.bypass);
-  };
   /**
    * The record's identifier is still owed: the queue has the record's task id but not the identifier its pr-tasks.json rows are
    * keyed by, and neither this version's read nor the kernel's answer has settled it. A queue written by a version that kept no
@@ -354,7 +353,9 @@ export function createMerges(d: {
       // Unreadable rules (an error, or a 403 that is not the plan's) wait for a check to judge; a plan with no rules has none to read.
       if (open && !rules && !required.length && !rr?.noPlan) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
       // Code review's verdict is read below, once decide says merge (its wait is the record's reason there).
-      const ship = open ? { queue: false, approve: false, required, checks } : undefined;
+      // The reviewer App's approval on the head counts as in ship's own decision (reviewerLogin).
+      const app = open ? await reviewerLogin(p.repo) : undefined;
+      const ship = open ? { queue: false, approve: false, required, checks, ...(app ? { app } : {}) } : undefined;
       // A repo with no CI at all (GitHub lists no workflow) never reports a check: with none on the head and GitHub calling the PR
       // CLEAN, decide goes on without them. A repo that has workflows always waits for their checks.
       const pr0 = data.repository.pullRequest;
@@ -390,7 +391,7 @@ export function createMerges(d: {
         delete p.refusal;
         delete p.wait;
         if (sha) d.flow?.merged(p.repo, p.number, p.head, sha, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
-        if (ours) { bypassed(p); merged.add(p.repo.toLowerCase()); }
+        if (ours) merged.add(p.repo.toLowerCase());
         return void q.said.push(ours ? `Merged ${p.url}.` : `${p.url} was ${v.why}.`);
       }
       if (v.do === "fail") return fail(v.why ?? "");
@@ -398,10 +399,6 @@ export function createMerges(d: {
       if (v.do !== "merge") return;
       // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
       const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
-      // A Tier 0 product merge rests on its eligibility at this head now, by the same rule the plan used.
-      if (q.tier0 && d.productRepo && same(p.repo, d.productRepo) && !productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");
-      if (review && "bypass" in review) p.bypass = review.bypass;
-      else delete p.bypass;
       if (review && "wait" in review) {
         // Why this PR still waits: the record's own reason is built from every PR still waiting after the poll (publishWait), so
         // one PR leaving its wait never clears another's.
@@ -409,13 +406,16 @@ export function createMerges(d: {
         p.note = review.wait;
         return wait("review");
       }
+      // A Tier 0 product merge rests on its eligibility at this head now, by the same rule the plan used (after a wait: code review
+      // unreachable or still running waits for its verdict rather than ending the merge).
+      if (q.tier0 && d.productRepo && same(p.repo, d.productRepo) && !productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");
       // Code review passed on this head: this PR no longer waits on it (the queue publishes whatever the others still wait on).
       delete p.note;
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
       // An adoption's merge is still that adoption's right before the call: a hand-back, a stop or a pause since ends it.
       // The same call asks ship's final tier check (the tier's merge, no App approval of another policy standing), with the live head, base and author.
-      const at = q.ship || (q.byShip && d.ship) ? await d.ship?.generation(p.repo, p.number, { do: "merge", head: p.head, base: String(pull?.baseRefName ?? ""), association: String(pull?.authorAssociation ?? "") }) : undefined;
+      const at = q.ship || (q.byShip && d.ship) ? await d.ship?.generation(p.repo, p.number, p.head, { do: "merge", head: p.head, base: String(pull?.baseRefName ?? ""), association: String(pull?.authorAssociation ?? "") }) : undefined;
       if (q.ship && at?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
       if (at?.refused) return fail(`${at.retry ? "ship-tier-pending: " : ""}ship's tier check refused the merge: ${at.refused}`);
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
@@ -490,7 +490,6 @@ export function createMerges(d: {
               delete p.mergeCalls;
               delete p.refusal;
               delete p.wait;
-              bypassed(p);
               d.flow?.merged(p.repo, p.number, p.head, ours, pr?.mergedAt ?? undefined, String(pr?.title ?? ""), String(pr?.body ?? ""));
               merged.add(p.repo.toLowerCase());
               return void q.said.push(`Merged ${p.url}.`);
@@ -510,7 +509,6 @@ export function createMerges(d: {
       Object.assign(p, { status: "merged", mergedAt });
       delete p.mergeCalls;
       delete p.refusal;
-      bypassed(p);
       d.flow?.merged(p.repo, p.number, p.head, String(p.sha ?? ""), mergedAt, String(pull?.title ?? ""), String(pull?.body ?? ""));
       delete p.wait;
       merged.add(p.repo.toLowerCase());
@@ -745,7 +743,8 @@ export function createMerges(d: {
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
-      const ctx = { queue, verdict: g, required, checks, ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
+      const app = await reviewerLogin(repo);
+      const ctx = { queue, verdict: g, required, checks, ...(app ? { app } : {}), ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       const v = decide(data, head, { ...ctx, approve: false });
       const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];

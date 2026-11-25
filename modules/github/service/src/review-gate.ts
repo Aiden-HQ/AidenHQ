@@ -1,36 +1,21 @@
 // Code review's gate on the merge queue (docs/design/code-review.md "Merge gate"): for a repo code review gates (settings
 // code_review: a mandatory combo, compiled into GITHUB_REVIEW_GATED), the queue asks the code-review service's verdict for the
-// PR head it is about to merge, with this module's own token (code review checks it with the kernel). Anything but pass waits;
-// a repo not on the list never calls it, so an install without code review merges as before. Infrastructure never stalls the
-// queue: code review unreachable (or answering 5xx) continuously for over DOWN_MS (one streak of failures, ended by any answer
-// or a GAP_MS silence) lets the merge go, and the merge queue records it as the
-// fact pr.review_bypassed (Flow; the Fleet Steward reads it in its flow report) so the gap is seen, never silent.
+// PR head it is about to merge, with this module's own token (code review checks it with the kernel). Anything but pass waits,
+// code review unreachable (or answering 5xx) included, for as long as it lasts: no merge goes without its verdict. A repo not on
+// the list never calls it, so an install without code review merges as before.
 
 import { createHash } from "node:crypto";
 
-/** How long code review may be unreachable before a merge goes without its verdict. */
-export const DOWN_MS = 10 * 60_000;
-/** A failure more than this after the last one starts a new streak: the queue asks every 30 s while a merge waits, so a longer
- * silence means nobody watched, not that code review stayed down. */
-const GAP_MS = 2 * 60_000;
-/** `down`: code review gave no answer at all (connection failure or timeout), not an HTTP answer about one PR.
- * undefined: the repo isn't gated (the head may merge); pass: code review passed this head; wait: why not yet (code review's reasons, each with how it unblocks; `findings`: the reasons when
- * the only thing left is open important findings, none still running or queued: the author's to fix); bypass: it may merge
- * without the verdict, code review unreachable for over DOWN_MS (why). */
-export type ReviewGate = (repo: string, number: number, head: string, live?: { base?: string; association?: string }) => Promise<undefined | { pass: true; /** the head's risk tier needs no review: it passed without one */ unreviewed?: true } | { wait: string; findings?: string; findingsKey?: string; down?: true } | { bypass: string; down?: true }>;
+/** undefined: the repo isn't gated (the head may merge); pass: code review passed this head; wait: why not yet (code review's
+ * reasons, each with how it unblocks, or that it can't be reached; `findings`: the reasons when the only thing left is open
+ * important findings, none still running or queued: the author's to fix). */
+export type ReviewGate = (repo: string, number: number, head: string, live?: { base?: string; association?: string }) => Promise<undefined | { pass: true; /** the head's risk tier needs no review: it passed without one */ unreviewed?: true } | { wait: string; findings?: string; findingsKey?: string }>;
 
-export function createReviewGate(o: { gated: string[]; url: string; key: () => string; fetchFn?: typeof fetch; now?: () => number }): ReviewGate {
+export function createReviewGate(o: { gated: string[]; url: string; key: () => string; fetchFn?: typeof fetch }): ReviewGate {
   const gated = new Set(o.gated.map((r) => r.toLowerCase()));
   const fetchFn = o.fetchFn ?? fetch;
-  const now = o.now ?? Date.now;
-  /** The current streak of failures (one service for every repo): since its first and its latest. Any answer ends it. */
-  let down: number | undefined;
-  let last = 0;
-  const unreachable = (why: string, noAnswer = false) => {
-    if (down === undefined || now() - last > GAP_MS) down = now();
-    last = now();
-    return now() - down > DOWN_MS ? { bypass: `code review has been unreachable for ${Math.round((now() - down) / 60_000)} minutes (${why})`, ...(noAnswer && { down: true as const }) } : { wait: `code review is unreachable (${why})`, ...(noAnswer && { down: true as const }) };
-  };
+  // The same words for every failure, so a wait reported each pass reads (and keys) the same until code review answers.
+  const unreachable = () => ({ wait: "code review can't be reached: the merge waits until it answers" });
   return async (repo, number, head, live = {}) => {
     if (!gated.has(repo.toLowerCase())) return undefined;
     let r: Response;
@@ -39,11 +24,10 @@ export function createReviewGate(o: { gated: string[]; url: string; key: () => s
       // risk tier came from other ones.
       const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), head, ...(live.base ? { base: live.base } : {}), ...(live.association ? { association: live.association } : {}) });
       r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/verdict?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
-    } catch (e) {
-      return unreachable(String((e as Error).message).slice(0, 200), true);
+    } catch {
+      return unreachable();
     }
-    if (r.status >= 500) return unreachable(`it answered ${r.status}`);
-    down = undefined;
+    if (r.status >= 500) return unreachable();
     const v = (await r.json().catch(() => ({}))) as { verdict?: string; requires_review?: boolean; reasons?: { code?: string; text?: string; unblock?: string }[] };
     if (!r.ok) return { wait: `code review answered ${r.status}` };
     // A head whose risk tier needs no review passes too, but says so: no mandatory review covered it (productMergeEligible).

@@ -19,8 +19,8 @@ export type Verdict = Awaited<ReturnType<ReviewGate>>;
 
 /**
  * The one product-merge eligibility rule (owner, 2026-11-23), used when planning (plan.ts) and again right before the merge
- * (merges.ts): the product repo, `ci-required` successful on this exact head, and code review's real pass for it (a bypass,
- * an ungated repo or a wait is not one). Eligible, a product merge skips the AI reviewer.
+ * (merges.ts): the product repo, `ci-required` successful on this exact head, and code review's real pass for it (an ungated
+ * repo or a wait is not one). Eligible, a product merge skips the AI reviewer.
  */
 export function productMergeEligible(p: { repo: string; head: string; checks: NamedCheck[]; verdict: Verdict | undefined; productRepo: string }): boolean {
   const same = String(p.repo).toLowerCase() === String(p.productRepo ?? "").toLowerCase() && Boolean(p.productRepo);
@@ -41,8 +41,7 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
       id number title body url state isDraft reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName authorAssociation
       mergedAt mergedBy { login } mergeCommit { oid message }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
-      latestOpinionatedReviews(first: 30) { nodes { state } }
-      reviews(last: 100) { nodes { state commit { oid } author { login } } }
+      latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } }
       reviewRequests(first: 30) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } }
       isInMergeQueue mergeQueueEntry { headCommit { oid } }
       commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state description } } } } } } }
@@ -134,12 +133,12 @@ export type Action = "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "
  * - `approve`: ship may post the App's approval now (its `approve` setting and code review's pass for this head: ship's call,
  *   lane D2's verdict carry-over and fresh-review rule included);
  * - `verdict`: code review's answer for the head (review-gate.ts), read once by the caller: undefined where the repo isn't gated.
- *   A gated repo merges on its pass (or a bypass); open important findings are a fix, anything else a wait. GitHub's own review
+ *   A gated repo merges on its pass; open important findings are a fix, anything else a wait. GitHub's own review
  *   rule (REVIEW_REQUIRED) is what asks for an approval on the head;
  * - `required`: the check names the target branch's rules require (requiredChecks): only those are judged, and none required is green;
  * - `checks`: every check on the head, every page.
  */
-export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; required: string[]; checks: NamedCheck[]; /** The open PR whose head branch this PR's base is (a stack): it waits on that PR. */ stackedOn?: number };
+export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; /** The reviewer App's login on this repo (GraphQL's Bot login, no `[bot]`), where it is installed: its approval counts. */ app?: string; required: string[]; checks: NamedCheck[]; /** The open PR whose head branch this PR's base is (a stack): it waits on that PR. */ stackedOn?: number };
 
 /**
  * The one readiness rule: what to do with one PR from `data` (PR_QUERY's answer, withGate applied) and its bound `head`.
@@ -189,12 +188,16 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
     if (named.some((c) => c.pending)) return { do: "wait", why: `${named.filter((c) => c.pending).length} check(s) still running on its head` };
   }
   if (skippedImageScan(pr)) return { do: ship ? "fix_ci" : "fail", why: "it changes an image but its image-scan check was skipped" };
-  // Code review gates the repo: its pass (or a bypass while it is down) is the review; open important findings are the PR's to fix.
+  // Code review gates the repo: its pass is the review (code review unreachable is a wait); open important findings are the PR's to fix.
   const v = ship?.verdict;
   if (v && "findings" in v && v.findings) return { do: "fix_review", why: "code review has open findings on its head" };
   if (v && "wait" in v) return { do: "wait", why: v.wait };
-  // An approval on the head is needed only where GitHub's own rules ask for a review; elsewhere the hand-off (and code review) is enough.
-  if (ship && pr.reviewDecision === "REVIEW_REQUIRED" && !approvedAt(pr, head)) return ship.approve ? { do: "approve", why: "ready, and no approval on its head yet" } : { do: "wait", why: reviewWait(pr) };
+  // An approval on the head is needed only where GitHub's own rules ask for a review (reviewDecision is set); elsewhere the hand-off
+  // (and code review) is enough. Where they do, it must be on this exact head: GitHub keeps an earlier commit's approval as APPROVED
+  // when the repo doesn't dismiss stale ones, and that approval never saw this head.
+  if (ship && (pr.reviewDecision === "REVIEW_REQUIRED" || pr.reviewDecision === "APPROVED") && !approvedAt(pr, head, ship.app)) {
+    return ship.approve ? { do: "approve", why: "ready, and no approval on its head yet" } : { do: "wait", why: pr.reviewDecision === "APPROVED" ? "its approval is on an earlier commit: someone with write access approves this head" : reviewWait(pr) };
+  }
   switch (pr.mergeStateStatus) {
     case "CLEAN":
     case "HAS_HOOKS":
@@ -242,8 +245,13 @@ export function requiredChecks(rules: unknown, classic?: Json): string[] {
   return [...named];
 }
 
-/** Whether a person's or the App's approval stands on exactly this head (a dismissed one, or one of an older head, doesn't). */
-export const approvedAt = (pr: Json, head: string) => (pr?.reviews?.nodes ?? []).some((r: Json) => r?.state === "APPROVED" && r.commit?.oid === head);
+/**
+ * Whether a person's or the App's approval stands on exactly this head: each reviewer's latest opinion (a later approval, request
+ * for changes or dismissal replaces an earlier one), on this commit, from someone who can push to the repo (only theirs count for
+ * GitHub's required review) or the reviewer App (`app`, its Bot login), never another bot.
+ */
+export const approvedAt = (pr: Json, head: string, app?: string) => (pr?.latestOpinionatedReviews?.nodes ?? []).some((r: Json) => r?.state === "APPROVED" && r.commit?.oid === head
+  && (r.author?.__typename === "Bot" ? !!app && String(r.author.login ?? "").toLowerCase() === app.toLowerCase() : r.authorCanPushToRepository === true));
 
 /** The review GitHub still asks for: the code owner team or person it requested as owner, else a plain required review. */
 function reviewWait(pr: Json) {

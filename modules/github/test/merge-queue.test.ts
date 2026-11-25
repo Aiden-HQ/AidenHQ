@@ -395,8 +395,12 @@ test("a Tier 0 product merge fails at merge once its eligibility is lost: file t
   const prs = { "acme/aidenhq": { head: HEAD, checks: "SUCCESS", names: ["build", "ci-required"] } };
   const verdict = { v: { pass: true } };
   const { handle, github, outcomes, merge, settle } = await setup(t, { prs, reviewGate: async () => verdict.v });
-  verdict.v = { bypass: "code review has been unreachable for 11 minutes" };
+  // Code review unreachable at the merge: it waits for the verdict, never ends the merge.
+  verdict.v = { wait: "code review can't be reached: the merge waits until it answers" };
   await merge("k-00000000000000e1", [{ repo: "acme/aidenhq", number: 1, head: HEAD }], undefined, undefined, 0);
+  await handle.stepMerges();
+  assert.deepEqual([github.merges(), outcomes.length], [[], 0], "waiting, not failed");
+  verdict.v = { pass: true, unreviewed: true };
   await handle.stepMerges();
   await settle();
   assert.deepEqual(github.merges(), [], "never merged without the pass it was tiered on");
@@ -1451,12 +1455,12 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
     return new Response(JSON.stringify(answer.body), { status: answer.status });
   };
   const clock = { t: Date.now() };
-  const logs = [], bypassed = [];
+  const logs = [];
   const merges = createMerges({
     dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(clock.t),
     report: async () => {}, log: (msg, f) => logs.push([msg, f]),
-    flow: { reviewBypassed: (...a) => bypassed.push(a), checksCompleted: () => {}, waiting: () => {}, resumed: () => {}, merged: () => {} },
-    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn, now: () => clock.t }),
+    flow: { checksCompleted: () => {}, waiting: () => {}, resumed: () => {}, merged: () => {} },
+    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn }),
   });
   void merges.enqueue("k-00000000000000g1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
   void merges.enqueue("k-00000000000000g2", { prs: [{ repo: "acme-agents/other", number: 2, head: HEAD }] });
@@ -1467,32 +1471,14 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
   clock.t += 7 * 24 * 3600_000; // a week of waiting on findings: still waiting
   await merges.step();
   assert.equal(merges.status("k-00000000000000g1").state, "running");
-  answer = "down"; // the service goes down: a wait, until it has been down over 10 minutes (the queue asks every 30 s)
+  answer = "down"; // the service goes down: a wait for as long as it lasts, never a merge without its verdict
+  for (let i = 0; i < 24 * 120; i++) { clock.t += 30_000; await merges.step(); }
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge"], "a day unreachable: still not merged");
+  assert.equal(merges.status("k-00000000000000g1").state, "running");
+  assert.match(logs.filter(([m]) => m === "merge waits for code review").at(-1)[1].why, /code review can't be reached: the merge waits until it answers/);
+  answer = { status: 200, body: { verdict: "pass" } };
   await merges.step();
-  for (let i = 0; i < 18; i++) { clock.t += 30_000; await merges.step(); }
-  assert.equal(github.merges().length, 1);
-  for (let i = 0; i < 3; i++) { clock.t += 30_000; await merges.step(); }
-  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/other/pulls/2/merge", HEAD], ["/repos/acme-agents/widget/pulls/1/merge", HEAD]]);
-  assert.deepEqual(bypassed.map(([repo, n, head]) => [repo, n, head]), [["acme-agents/widget", 1, HEAD]], "recorded as pr.review_bypassed");
-});
-
-test("the outage timer counts only one continuous streak of failures: an answer or a quiet spell starts it over", async () => {
-  let down = true;
-  const clock = { t: 0 };
-  const gate = createReviewGate({ gated: ["acme-agents/widget"], url: "http://code-review:8098", key: () => "k", now: () => clock.t,
-    fetchFn: async () => (down ? new Response("", { status: 503 }) : new Response(JSON.stringify({ verdict: "wait" }), { status: 200 })) });
-  const ask = () => gate("acme-agents/widget", 1, HEAD);
-  await ask(); // one blip, then hours with no merge waiting
-  clock.t += 3 * 3600_000;
-  assert.ok("wait" in (await ask()), "a single failure after a quiet spell is a new outage, not a 3-hour one");
-  for (let i = 0; i < 18; i++) { clock.t += 30_000; await ask(); }
-  down = false; // one answer ends the streak
-  clock.t += 30_000; await ask();
-  down = true;
-  clock.t += 30_000;
-  assert.ok("wait" in (await ask()), "the streak starts over after an answer");
-  for (let i = 0; i < 21; i++) { clock.t += 30_000; await ask(); }
-  assert.ok("bypass" in (await ask()), "over 10 minutes of continuous failure lets the merge go");
+  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/other/pulls/2/merge", HEAD], ["/repos/acme-agents/widget/pulls/1/merge", HEAD]], "merged once code review passes it");
 });
 
 test("the review gate's findings key follows the whole set of reasons, not the cut text", async () => {
@@ -1500,43 +1486,6 @@ test("the review gate's findings key follows the whole set of reasons, not the c
   const gate = (b: string) => createReviewGate({ gated: ["acme/x"], url: "http://cr", key: () => "k", fetchFn: async () => body(b) });
   const one = await gate("1")("acme/x", 1, "h"), two = await gate("2")("acme/x", 1, "h");
   assert.ok(one && "findingsKey" in one && two && "findingsKey" in two && one.findingsKey !== two.findingsKey);
-});
-
-test("a bypass recorded on a merge confirmed by a later poll (the PUT went unanswered) still emits reviewBypassed, once", async () => {
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  const github = fakeGitHub(prs);
-  let timeouts = 1;
-  const gh = async (m, p, b) => {
-    const r = await github.gh(m, p, b);
-    const pull = r.body?.data?.repository?.pullRequest;
-    // The PR merged by this queue's own PUT: its commit carries the message the PUT sent, so the queue's nonce is in it. (Keep it:
-    // an empty message would be a merge no call of ours can prove, which is the foreign-merge case, not this one.)
-    if (pull?.state === "MERGED") pull.mergeCommit = { oid: "c".repeat(40), message: String(prs["acme-agents/widget"].message ?? "") };
-    if (m === "PUT" && timeouts-- > 0) throw new Error("The operation was aborted due to timeout");
-    return r;
-  };
-  const clock = { t: Date.now() };
-  const fetchFn = async () => { throw new Error("connect ECONNREFUSED"); };
-  const bypassed = [];
-  const merges = createMerges({
-    dir: mkdtempSync(join(tmpdir(), "merges-")), gh, fleetOrg: "acme-agents", now: () => new Date(clock.t),
-    report: async () => {},
-    flow: { reviewBypassed: (...a) => bypassed.push(a), checksCompleted: () => {}, waiting: () => {}, resumed: () => {}, merged: () => {} },
-    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn, now: () => clock.t }),
-  });
-  void merges.enqueue("k-00000000000000h1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
-  // Code review is unreachable: a wait, until it has been down over 10 minutes (the queue asks every 30 s).
-  await merges.step();
-  for (let i = 0; i < 21; i++) { clock.t += 30_000; await merges.step(); }
-  assert.equal(merges.status("k-00000000000000h1").state, "running", "an unanswered merge call is no refusal");
-  assert.deepEqual(bypassed, [], "nothing is recorded before the merge is confirmed");
-  assert.equal(github.merges().length, 1, "the merge PUT went out once and was unanswered");
-  await merges.step(); // the re-poll sees it merged at its head: the done path
-  assert.equal(merges.status("k-00000000000000h1").state, "done");
-  assert.deepEqual(bypassed.map(([repo, n, head, why]) => [repo, n, head, /unreachable/.test(why)]), [["acme-agents/widget", 1, HEAD, true]], "recorded once, on the done path");
-  assert.equal(github.merges().length, 1, "the confirmation poll sends no second merge PUT");
-  await merges.step();
-  assert.equal(bypassed.length, 1, "not emitted again");
 });
 
 test("a migration hold says so, and never claims GitHub is signed out", async (t) => {

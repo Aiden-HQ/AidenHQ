@@ -94,8 +94,9 @@ function world(approve: string) {
     const j = judge(s, e);
     await round(deps, p, canApprove(j) ? { do: "approve", why: "ready, and no approval on its head yet" } : { do: "wait", why: "waiting for required review" }, { approval: j, risk: j.risk });
   };
-  const approvals = () => calls.filter((c) => c.what === "POST /v1/writes" && c.body.kind === "github.approve").map((c) => c.body.args);
-  return { state, calls, records, deps, pr, pass, approvals, reports, settings };
+  const approvals = () => calls.filter((c) => c.what === "POST /v1/writes" && c.body.kind === "github.approve" && !c.body.args.dismiss).map((c) => c.body.args);
+  const dismissals = () => calls.filter((c) => c.what === "POST /v1/writes" && c.body.kind === "github.approve" && c.body.args.dismiss).map((c) => c.body.args.head);
+  return { state, calls, records, deps, pr, pass, approvals, dismissals, reports, settings };
 }
 
 test("approve modes: off and observe post nothing (observe reports what it would do); on approves the exact head once, under its policy", async () => {
@@ -112,6 +113,8 @@ test("approve modes: off and observe post nothing (observe reports what it would
     // A head whose tier needs no review is never approved on.
     await w.pass(w.pr({ head: H2 }), { ...small, verdict: classified("standard", { kind: "none", requires_review: false, reviewed: null }) });
     assert.equal(w.approvals().length, mode === "on" ? 1 : 0, mode);
+    // The App's approval of H1 doesn't stand for H2 (GitHub may keep it as approving): ship dismisses it while the PR waits.
+    assert.deepEqual(w.dismissals(), mode === "on" ? [H2] : [], mode);
   }
 });
 

@@ -53,11 +53,8 @@ const migration = retiredAppId > 0
 // compile always sets it (module.yaml's default, 5-1440): anything else is a broken deploy, so fail loudly.
 const releaseWindowMinutes = Number(env.GITHUB_RELEASE_WINDOW_MINUTES);
 if (!Number.isInteger(releaseWindowMinutes) || releaseWindowMinutes < 1) throw new Error(`github: GITHUB_RELEASE_WINDOW_MINUTES is not a positive number of minutes: ${env.GITHUB_RELEASE_WINDOW_MINUTES}`);
-const gateOptions = { gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => key };
-const reviewGate = createReviewGate(gateOptions);
-// Ship's own gate (its watch loop asks through /internal/ship/verdict): its outage timer is separate, so a PR the merge queue
-// never sees can't age the queue's bypass.
-const watchGate = createReviewGate(gateOptions);
+// Code review's verdict for the merge queue and for ship's watch loop (/internal/ship/verdict) alike.
+const reviewGate = createReviewGate({ gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => key });
 const githubApp = gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "github-app") });
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
@@ -107,7 +104,7 @@ access.onWrite((_method, path) => { const m = /^\/repos\/([^/]+\/[^/?]+)(\/[^?]*
 feed.start();
 startTidy({ cacheDir, log });
 const ship = shipRoutes({
-  gh: access.rest, decision: handle.shipDecision, gate: watchGate, cacheDir,
+  gh: access.rest, decision: handle.shipDecision, gate: reviewGate, cacheDir,
   allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),
   isShip: (auth) => isModule(kernelUrl, auth, "ship"),
 });

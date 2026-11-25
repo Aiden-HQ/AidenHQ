@@ -142,7 +142,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     return "acted" as const;
   };
   // A fork's branch takes ship's commits only where its author allows maintainer edits (and GitHub accepts the App's write).
-  const noEdits = "it needs a change on its fork's branch, and the fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\", rebase or fix it";
+  const noEdits = "it needs a change on its fork's branch, and the fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\", rebase or fix it (a new commit from the contributor then needs a member to hand it off again)";
   const wake = async (kind: string, text: string) => {
     if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`);
     // The kernel keeps 2,000 characters of a wake.
@@ -173,24 +173,28 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   }
 
   /**
-   * An App approval of this head issued under another policy (or where the tier's approve is no longer `on`) never counts at a merge or an
-   * enqueue (risk tiers §7): its dismissal is filed first (github.approve with `dismiss`, as the App), and the round after it decides
-   * again: approved under the current policy, or waiting for a person's. "acted" or "nothing" while it is in hand, else undefined.
+   * An App approval made on an earlier head, under another policy, or where the tier's approve is no longer `on` never counts
+   * (staleApproval): its dismissal is filed first (github.approve with `dismiss`, as the App), at a wait, a merge, an enqueue or an
+   * approve, and the round after it decides again: approved at this head under the current policy, or waiting for a person's.
+   * "acted" or "nothing" while it is in hand, else undefined.
    */
   const dismissStale = async (): Promise<"acted" | "nothing" | undefined> => {
     const ap = a!.approve;
     if (!risk || !staleApproval(ap, pr.head, risk)) return undefined;
     if (ap!.dismissed) {
       const r = await d.kernel.call("GET", `/v1/writes/${ap!.dismissed}`);
-      if (r.state === "done") { const { approve: _, ...rest } = a!; a = { ...rest, did: [...(a!.did ?? []), `dismissed the App's approval of \`${pr.head.slice(0, 12)}\` (another review policy)`] } as typeof a; return "acted"; }
+      if (r.state === "done") { const { approve: _, ...rest } = a!; a = { ...rest, did: [...(a!.did ?? []), `dismissed the App's earlier approval (made on another commit or under another review policy)`] } as typeof a; return "acted"; }
       if (OPEN.includes(String(r.state))) return "nothing";
-      await hold(`dismissing the App's approval at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)} (${String(r.outcome?.text ?? r.reason ?? "no reason given").slice(0, 200)})`);
-      return "acted";
+      // The PR moved while it was filed (it is bound to the head it was filed at): filed again at this one, below.
+      if (!/^ship-head-moved/.test(String(r.outcome?.text ?? ""))) {
+        await hold(`dismissing the App's approval at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)} (${String(r.outcome?.text ?? r.reason ?? "no reason given").slice(0, 200)})`);
+        return "acted";
+      }
     }
     const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);
     if (holder) a = { ...a!, holder };
     const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.approve", task: a!.task ?? a!.holder, args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, dismiss: true } });
-    a = { ...a!, approve: { ...ap!, dismissed: String(r.id) }, did: [...(a!.did ?? []), `asked to dismiss the App's approval of \`${pr.head.slice(0, 12)}\` (it was issued under another review policy)`] };
+    a = { ...a!, approve: { ...ap!, dismissed: String(r.id) }, did: [...(a!.did ?? []), `asked to dismiss the App's approval of \`${ap!.head.slice(0, 12)}\` (made on another commit or under another review policy)`] };
     return "acted";
   };
   const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
@@ -221,7 +225,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // Review findings are keyed by their digest: a new set at the same head is asked again.
   const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do;
   const key = v.do === "wait" ? `${pr.head}:wait:${v.why ?? ""}:${facts.approval ?? ""}` : `${pr.head}:${act}`;
-  const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true);
+  // A wait with an App approval to dismiss (or a dismissal in flight) is followed too: its record is read each pass.
+  const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true) || (v.do === "wait" && !!risk && staleApproval(a.approve, pr.head, risk));
   // A fix already asked for at this head is not asked again after a `wait` in between (a CI re-run with no push).
   const fix = ["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty);
   if (!followed && (c.lastRound === key || (fix && (c.acted ?? []).includes(act)))) return "nothing";
@@ -416,9 +421,11 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "stall":
         return hold(v.why ?? "stalled");
-      default:
-        // wait: the report says what it waits on.
-        return "nothing";
+      default: {
+        // wait: the report says what it waits on. An App approval that no longer stands for this head goes first.
+        const dismissing = await dismissStale();
+        return dismissing ?? "nothing";
+      }
     }
   };
   const did = await step();

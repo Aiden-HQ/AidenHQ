@@ -326,10 +326,8 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   (whole, partial or carried) or failed past its retries, and no gating finding is open; else `wait` with each reason and how it unblocks
   (not started, the PR moved, queued or running, skipped, findings open). There is no fail.
 - **Merge gate.** `modules/github/service/src/review-gate.ts`: before the merge call at the bound head, a gated repo's PR asks
-  the verdict; a wait waits with no time limit, until it passes or the PR moves or closes. Infrastructure never stalls it: code
-  review unreachable (or answering 5xx) continuously for over 10 minutes (any answer, or two minutes with no attempt,
-  starts the count over) lets the merge go, recorded as the Flow fact `pr.review_bypassed`
-  (the Fleet Steward sees it in its flow report). A repo not on the list never asks, so an install without code review merges as
+  the verdict; a wait waits with no time limit, until it passes or the PR moves or closes. Code review unreachable (or
+  answering 5xx) is a wait too, for as long as it lasts: no merge goes without its verdict. A repo not on the list never asks, so an install without code review merges as
   before. The owner's own merges on GitHub are not gated.
 - **Fail closed where it counts.** A mandatory run is never skipped, reviews a fork's PR by itself, and `aiden review stop`
   never stops it (anyone posting as the owner can write a command).

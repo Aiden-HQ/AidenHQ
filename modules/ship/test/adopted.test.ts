@@ -273,3 +273,58 @@ test("a task's PR that lands tells its task, and gets no report comment", async 
   assert.deepEqual([wakes[0].task, /Merged/.test(wakes[0].text)], ["T14", true]);
   assert.equal(comments.length, 0, "a task's PR gets no report comment");
 });
+
+test("a fork's head counts as ship's own only when this adoption's write made it from the handed-off head", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const [H1, H2, H3, H4] = ["1", "2", "3", "4"].map((c) => c.repeat(40));
+  state.put({ repo: "acme/app", number: 9, generation: 1, trigger: { kind: "comment", event: "c9", actor: "maria", at: "2026-11-24T09:00:00Z", head: H1 }, owner: { kind: "member", login: "maria" }, task: "T9", asked: true, hold: null });
+  // The Engineer's pushes on T9: H1 -> H2 (from the hand-off), then H3 -> H4 (on top of the author's own H3).
+  const records = [
+    { id: "p1", kind: "github.push", state: "done", args: { pr: { repo: "acme/app", number: 9 }, expected: H1, generation: 1 } },
+    { id: "p2", kind: "github.push", state: "done", args: { pr: { repo: "acme/app", number: 9 }, expected: H3, generation: 1 } },
+  ];
+  const objects = { [`github:outsider/app@${H2}`]: "p1", [`github:outsider/app@${H4}`]: "p2" };
+  const kernel = { call: async (m, path) => {
+    if (path.startsWith("/v1/work")) return { status: "in_progress", records };
+    if (path.startsWith("/v1/objects")) { const r = objects[decodeURIComponent(path.split("ref=")[1])]; return r ? { ours: true, record: r } : { ours: false }; }
+    return {};
+  } };
+  // Every compare shows a different own change: only the records can vouch for a head.
+  const gh = async (method, path) => ({ status: 200, body: path.includes("/compare/") ? { files: [{ filename: "a.ts", status: "modified", patch: path }] } : {} });
+  const pass = adoptedPass({
+    gh, state, kernel, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: "wait", why: "checks running" }),
+    effects: { comment: async () => 1, askReview: async () => {}, verdict: async () => verdict() },
+  });
+  const pr = (head) => ({ number: 9, url: "https://github.com/acme/app/pull/9", headRefOid: head, baseRefName: "main", author: { __typename: "User", login: "outsider" }, isCrossRepository: true, maintainerCanModify: true, headRepository: { nameWithOwner: "outsider/app" }, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } });
+  const main = { name: "main", rollup: { contexts: { nodes: [] } } };
+  await pass.open("acme/app", main, pr(H2));
+  assert.deepEqual([state.get("acme/app", 9).hold, state.get("acme/app", 9).trigger.head], [null, H2], "ship's own push from the hand-off is covered");
+  await pass.open("acme/app", main, pr(H4));
+  assert.equal(state.get("acme/app", 9).hold?.kind, "stopped", "a push on top of the author's commit is not one ship made from the hand-off");
+});
+
+test("a fork head with the same patches but a changed file mode is not the same change", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const [H1, H2, H3, B] = ["1", "2", "3", "b"].map((c) => c.repeat(40));
+  state.put({ repo: "acme/app", number: 9, generation: 1, fork: true, trigger: { kind: "comment", event: "c9", actor: "maria", at: "2026-11-24T09:00:00Z", head: H1 }, owner: { kind: "member", login: "maria" }, holder: "R9", asked: true, hold: null });
+  const kernel = { call: async (m, path) => (path.startsWith("/v1/work") ? { status: "in_progress", records: [] } : path.startsWith("/v1/objects") ? { ours: false } : {}) };
+  const mode = { [H1]: "100644", [H2]: "100644", [H3]: "100755" };
+  const gh = async (method, path) => {
+    if (path.includes("/compare/")) return { status: 200, body: { files: [{ filename: "run.sh", status: "modified", patch: "@@ -1 +1 @@\n-a\n+b" }] } };
+    const tree = /git\/trees\/(\w+)/.exec(path)?.[1];
+    if (tree) return { status: 200, body: { truncated: false, tree: [{ path: "run.sh", mode: mode[tree] }] } };
+    return { status: 200, body: {} };
+  };
+  const pass = adoptedPass({
+    gh, state, kernel, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: "wait", why: "checks running" }),
+    effects: { comment: async () => 1, askReview: async () => {}, verdict: async () => verdict() },
+  });
+  const pr = (head) => ({ number: 9, url: "https://github.com/acme/app/pull/9", headRefOid: head, baseRefName: "main", author: { __typename: "User", login: "outsider" }, isCrossRepository: true, maintainerCanModify: true, headRepository: { nameWithOwner: "outsider/app" }, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } });
+  const main = { name: "main", oid: B, rollup: { contexts: { nodes: [] } } };
+  await pass.open("acme/app", main, pr(H2));
+  assert.deepEqual([state.get("acme/app", 9).hold, state.get("acme/app", 9).trigger.head], [null, H2], "same patches and modes: a base merge");
+  await pass.open("acme/app", main, pr(H3));
+  assert.equal(state.get("acme/app", 9).hold?.kind, "stopped", "the script became executable");
+});
