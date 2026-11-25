@@ -127,9 +127,11 @@ describe("app_page_canary", () => {
     // "message" and bare "comment" are not feedback wording: a chat composer must never be taken for the intake.
     expect(script).not.toMatch(/const FEEDBACK = \/[^/]*message/);
     expect(script).toContain("const field = await canaryFindField(snap");
-    // The submit is chosen from the form that owns the filled field, never from the page at large.
-    expect(script).toContain("a.closest && a.closest('form')");
-    expect(script).toContain("canarySubmit(controls)");
+    // The submit is chosen from the form that owns the filled field (the DOM form property, so a footer button linked by
+    // form="…" counts), never from the page at large, and the send rule runs in Node (the tests exercise it directly).
+    expect(script).toContain("const a = document.activeElement, f = a && a.form;");
+    expect(script).toContain("filter((b) => b.form === f)");
+    expect(script).toContain("const submit = canarySubmit(controls);");
     expect(script).toContain("data-aidenhq-canary-submit");
     expect(script).toContain("no submit control in the feedback form");
     // Evidence starts at the click: a POST a fill triggered is never read as the submission's intake.
@@ -253,13 +255,53 @@ describe("app_page_canary", () => {
       expect(CANARY_SCRIPT.indexOf('if (!own) return out({ error: "no submit control in the feedback form')).toBeLessThan(CANARY_SCRIPT.indexOf('await ab("click", "[data-aidenhq-canary-submit]")'));
     });
 
-    it("does not take a send-named 'Send feedback' control for the entry point", () => {
+    it("does not take a send-named control for the entry point, nor a feedback-named button that destroys data", () => {
       const { canaryTree, canaryEntry } = api();
       // Only the submit is on the page: clicking it would send nothing, so there is no entry to follow.
       expect(canaryEntry(canaryTree(`
 - form
   - textbox "What should change?" [ref=e1]
   - button "Send feedback" [ref=e2]`))).toBeNull();
+      // A feedback listing's "Delete feedback" is feedback-named, and clicking it would destroy a record: never an entry.
+      const listing = canaryTree(`
+- listitem
+  - text "Looks good"
+  - button "Delete feedback" [ref=e1]
+  - button "Provide feedback" [ref=e2]`);
+      expect(canaryEntry(listing)).toMatchObject({ role: "button", name: "Provide feedback", ref: "e2" });
+    });
+
+    it("still follows an ordinary 'Submit feedback' link that navigates to the intake page", () => {
+      const { canaryTree, canaryEntry, canaryField } = api();
+      // A link navigates, so a landing page's "Submit feedback" is a way in, not a send of the form it is not on.
+      const landing = canaryTree(`
+- heading "Docs" [level=1, ref=e1]
+- link "Submit feedback" [ref=e2]`);
+      expect(canaryEntry(landing)).toMatchObject({ role: "link", name: "Submit feedback", ref: "e2" });
+      expect(canaryField(landing)).toBeNull();
+    });
+
+    it("prefers a field that names itself feedback over the dialog's other box, such as a contact email", () => {
+      const { canaryTree, canaryField } = api();
+      const field = canaryField(canaryTree(`
+- dialog "Provide feedback"
+  - heading "Provide feedback" [level=2, ref=e1]
+  - form
+    - textbox "Your email" [ref=e2]
+    - textbox "Your feedback" [required, ref=e3]
+    - button "Send feedback" [ref=e4]`));
+      expect(field).toMatchObject({ name: "Your feedback", ref: "e3" });
+    });
+
+    it("refuses two anonymous boxes in a feedback dialog rather than guessing which to fill", () => {
+      const { canaryTree, canaryField } = api();
+      expect(canaryField(canaryTree(`
+- dialog "Provide feedback"
+  - heading "Provide feedback" [level=2, ref=e1]
+  - form
+    - textbox "Your email" [ref=e2]
+    - textbox "What should change?" [ref=e3]
+    - button "Send feedback" [ref=e4]`))).toBeNull();
     });
   });
 });
