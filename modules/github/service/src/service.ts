@@ -1645,7 +1645,7 @@ export function createService(o: Options) {
   let feed: Pick<Feed, "tip"> | undefined;
   // The train lands the bump through GitHub: an instance repo on this server (local/…, codehost-local's) is not its to move.
   const train = o.productRepo && o.instanceRepo && slugOf(o.instanceRepo).org.toLowerCase() !== LOCAL_ORG ? createReleaseTrain({
-    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 15, kernel, log, now: o.now,
+    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 60, kernel, log, now: o.now,
     commit: trainCommit,
     github: {
       async tip(repo) { return feed?.tip(repo); },

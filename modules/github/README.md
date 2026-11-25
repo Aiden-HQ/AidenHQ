@@ -31,7 +31,7 @@ Two connections. Destructive tools are reviewed and need a grant naming them.
 - `github_official` (GitHub's own MCP server, as you): read-only, such as `get_file_contents`, `get_commit`,
   `list_commits`. Every mutating tool is refused.
 - Warehouse source `src_github` (issues, project items, changes).
-- Settings include `upstream` (off, issues), `maintainer_repos`, `github_fleet_org` and `github_orgs`.
+- Settings include `upstream` (off, issues), `release_window_minutes` (60), `maintainer_repos`, `github_fleet_org` and `github_orgs`.
 
 ## New installs
 

@@ -8,6 +8,7 @@
 //   INSTANCE_REPO, PRODUCT_REPO
 //   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there
 //   GITHUB_MIGRATE_FROM_APP  the retired App's id, for the one release that moves the repos' rules off it (migrate.ts)
+//   GITHUB_RELEASE_WINDOW_MINUTES release_window_minutes: the release train's batch window (minutes)
 //   GITHUB_REVIEW_GATED     the repos code review gates (comma-separated; compile derives it): their merges wait for its verdict,
 //                           asked with the module's own token
 // Its loops start here: the change feed (feed.ts: the one timer-driven reader of GitHub, which also schedules the src_github sync
@@ -49,6 +50,9 @@ const retiredAppId = Number(env.GITHUB_MIGRATE_FROM_APP ?? "");
 const migration = retiredAppId > 0
   ? startAppMigration({ access, appId: retiredAppId, cacheDir: env.CACHE_DIR ?? "/cache", fleetOrg, productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), instanceRepo: env.INSTANCE_REPO || undefined, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, log })
   : undefined;
+// compile always sets it (module.yaml's default, 5-1440): anything else is a broken deploy, so fail loudly.
+const releaseWindowMinutes = Number(env.GITHUB_RELEASE_WINDOW_MINUTES);
+if (!Number.isInteger(releaseWindowMinutes) || releaseWindowMinutes < 1) throw new Error(`github: GITHUB_RELEASE_WINDOW_MINUTES is not a positive number of minutes: ${env.GITHUB_RELEASE_WINDOW_MINUTES}`);
 const gateOptions = { gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => key };
 const reviewGate = createReviewGate(gateOptions);
 // Ship's own gate (its watch loop asks through /internal/ship/verdict): its outage timer is separate, so a PR the merge queue
@@ -58,7 +62,7 @@ const githubApp = gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "githu
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   access, reportNeed, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
-  productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo),
+  productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), releaseWindowMinutes,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   reviewGate,
   // The ship module's adoptions, only while it is on (compiled): absent, every write naming an adoption is refused.
