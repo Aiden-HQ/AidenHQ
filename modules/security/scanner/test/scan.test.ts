@@ -289,6 +289,59 @@ it("src_security: an image target absent from a batch that does not claim a comp
   expect(rows.get(`${target}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
 });
 
+it("src_security: a clean sibling does not retire an absent image while another target of its repository failed", async () => {
+  // The absent hash tag may be the image running under the failed alias (an alias the survey scans in the alias's own
+  // name); the clean new hash says nothing about that, so nothing may settle until the repository scans cleanly.
+  const { store, rows, runs } = fakeStore();
+  const oldHash = "image:aidenhq/computer-browser:b000";
+  const alias = "image:aidenhq/computer-browser:current";
+  const newHash = "image:aidenhq/computer-browser:h2";
+  const sboms: Record<string, unknown> = {
+    "old.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] },
+    "new.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/usr/bin/openssl")] },
+  };
+  let now = Date.parse("2026-11-25T00:00:00Z");
+  const deps = (index: string) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps(`${oldHash}\told.json\t\t`))).toBe(1);
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps(`${newHash}\tnew.json\t\t\n${alias}\t-\tdocker save: no room\t`))).toBe(1);
+  // The failed alias is itself a present target the batch listed, so it records why it could not scan, and the old hash's
+  // finding stays present because the repository did not scan cleanly.
+  expect(runs.find((x) => x.scope === alias)?.error).toMatch(/no room/);
+  expect(runs.find((x) => x.scope === oldHash)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(`${oldHash}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
+});
+
+it("src_security: a mapped replacement that is listed but did not scan cleanly keeps the mapped target unverified", async () => {
+  // A cross-repository rename's replacement is only a replacement once it scanned: a listed target whose export failed
+  // verified nothing, so the retired name's findings stay present.
+  const { store, rows, runs } = fakeStore();
+  const retired = "image:aidenhq/github-mcp:local";
+  const replacement = "image:aidenhq/github-github:local";
+  const sboms: Record<string, unknown> = { "retired.json": { matches: [match("curl", "7.88.1", "CVE-2023-0001", "/usr/bin/curl")] } };
+  let now = Date.parse("2026-11-25T00:00:00Z");
+  const deps = (index: string) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps(`${retired}\tretired.json\t\t`))).toBe(1);
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps(`${replacement}\t-\tdocker save: no room\t`))).toBe(0);
+  expect(runs.find((x) => x.scope === retired)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(`${retired}|curl|7.88.1|CVE-2023-0001`)).toMatchObject({ present: true, resolved_at: null });
+});
+
 it("src_security: an absent image whose repository is in the batch but did not scan cleanly keeps the absent error", async () => {
   // A render may run the same image under an alias (`computer-browser:current`) the survey deduplicated away: the alias
   // is in the batch, the hash tag is not, and the alias's scan failed. That is not proof the hash tag's image is gone.

@@ -322,6 +322,15 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
     for (const { target } of r.rows as { target: string }[]) {
       if (listed.has(target)) continue;
       const mapped = RETIRED_TARGETS[target];
+      // A cross-repository rename that this batch lists but did not scan cleanly is not a replacement yet: its scan may
+      // have failed, and retiring against it would close findings nothing verified. Keep the absent row until it scans.
+      if (mapped && !clean.has(mapped)) {
+        const attempted = batch.targets.some((t) => t.target === mapped);
+        if (attempted || !target.startsWith("image:")) {
+          await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
+          continue;
+        }
+      }
       let replacement: string | null = mapped && clean.has(mapped) ? mapped : null;
       if (!replacement && target.startsWith("image:") && batch.imagesComplete !== true) {
         await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
@@ -330,13 +339,15 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
       if (!replacement && target.startsWith("image:")) {
         const repo = imageRepository(target);
         const same = repo ? [...clean.keys()].filter((t) => t.startsWith("image:") && imageRepository(t) === repo) : [];
-        if (same.length === 1) replacement = same[0]!;
         // A same-repository target the batch attempted but did not scan clean: this image may be the one that ran under
-        // that name, so its absence this pass does not prove it retired.
-        else if (same.length === 0 && repo && batch.targets.some((t) => t.target.startsWith("image:") && imageRepository(t.target) === repo)) {
+        // that name (an alias, say), so its absence this pass does not prove it retired, and a clean sibling does not
+        // prove it either. Keep the absent row until a pass scans the whole repository cleanly.
+        const failed = repo ? batch.targets.some((t) => t.target.startsWith("image:") && imageRepository(t.target) === repo && !clean.has(t.target)) : false;
+        if (failed) {
           await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
           continue;
         }
+        if (same.length === 1) replacement = same[0]!;
       }
       // A failed retirement rolls back as a whole and is recorded as absent, so it stays visible and the next pass retries.
       const retired = target.startsWith("image:") || replacement
