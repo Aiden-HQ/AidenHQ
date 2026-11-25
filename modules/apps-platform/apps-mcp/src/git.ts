@@ -42,9 +42,20 @@ function git(args: string[], cwd?: string, extra: NodeJS.ProcessEnv = {}): Promi
 // GitHub repos in the fleet org or the owner's listed orgs (github_orgs; private ones too) are read through the code host's ops.
 const viaOps = (env: GitEnv, app: App): CodeHostOps | undefined => (env.ops && (inAgentsOrg(env, app.repo) || inOrgs(env, app.repo)) && !isLocal(env.localRoot, app.repo) ? env.ops : undefined);
 
+/** The org allow-list (github_orgs, the fleet org, `local/*`) applies to apps built from GitHub. A module app's source is the host's own product checkout at the instance's pin (fetchAll), never a repo an agent or app chose: only the compiler sets `module`. */
 export function checkOrg(env: GitEnv, app: App): void {
-  if (!app.untrusted && !inOrgs(env, app.repo) && !inAgentsOrg(env, app.repo) && !isLocal(env.localRoot, app.repo)) throw new Error(`repo ${app.repo} is outside the allowed orgs; only untrusted apps may use it`);
+  if (app.module) return;
+  if (!app.untrusted && !inOrgs(env, app.repo) && !inAgentsOrg(env, app.repo) && !isLocal(env.localRoot, app.repo)) throw new Error(`repo ${app.repo} is outside the allowed orgs; only untrusted apps may use it (add the org to github_orgs, or use the fleet org)`);
 }
+
+/**
+ * A module app's source: the host's product checkout, at the commit the instance applied. Never GitHub, whatever its repo
+ * says, and never a checkout this host doesn't have: a module app is part of the product, not a repo an agent registered.
+ */
+const productSource = (env: GitEnv, app: App): string => {
+  if (!env.productDir) throw new Error(`${app.name} is a module app: its source is the host's product checkout, and none is configured (REPO_DIR)`);
+  return env.productDir;
+};
 
 /**
  * Where the app's code is fetched from: its bare repo on this server for `local/*` (the read-only mount; its owner trusted
@@ -59,6 +70,7 @@ const source = (env: GitEnv, app: App): { url: string; pre: string[] } => {
 /** Latest commit of the app's branch on origin; a module app's head is its product pin. */
 export async function remoteHead(env: GitEnv, app: App): Promise<string> {
   if (app.pin) return app.pin;
+  if (app.module) throw new Error(`${app.name} is a module app without a pin: the compiler sets it on the product commit the instance applies`);
   const ops = viaOps(env, app);
   const s = source(env, app);
   const sha = ops ? await ops.head(app.repo, app.branch) : (await git([...s.pre, "ls-remote", s.url, `refs/heads/${app.branch}`])).split(/\s/)[0];
@@ -68,9 +80,9 @@ export async function remoteHead(env: GitEnv, app: App): Promise<string> {
 
 /**
  * The app's bare repo (created on first use), fetched up to date; returns its --git-dir arg. A module app's source is the
- * product commit the instance pins, which the host's product checkout already holds: its origin/<branch> is copied from
- * there (apply-config fetched it from GitHub and refused a pin not on it), so the reachability check below still means
- * "on the product's origin/<branch>", and no token is needed for the product repo.
+ * product commit the instance pins, which the host's product checkout already holds: the pin itself is copied from there,
+ * not origin/<branch>, because an applied `product_fork` commit is fetched by sha and checked out without moving
+ * origin/main (ops/apply-config-work.sh kernelRun), and no token is needed for the product repo.
  */
 async function fetchAll(env: GitEnv, app: App): Promise<string> {
   const gd = `--git-dir=${env.gitDir}/${app.name}.git`;
@@ -78,21 +90,37 @@ async function fetchAll(env: GitEnv, app: App): Promise<string> {
     mkdirSync(env.gitDir, { recursive: true });
     await git(["init", "--bare", "-q", `${env.gitDir}/${app.name}.git`]);
   }
-  if (app.module && env.productDir) await git([gd, "fetch", "--prune", env.productDir, `+refs/remotes/origin/${app.branch}:refs/remotes/origin/${app.branch}`]);
+  if (app.module) await git([gd, "fetch", "--prune", productSource(env, app), `+${pin(env, app)}:refs/remotes/pin`]);
   else if (viaOps(env, app)) await env.ops!.fetch(app.repo, "refs/heads/*", `${env.gitDir}/${app.name}.git`);
   else await git([...source(env, app).pre, gd, "fetch", "--prune", source(env, app).url, "+refs/heads/*:refs/remotes/origin/*"]);
   return gd;
 }
 
+/** A module app's applied product commit: the compiler records it, and its source in the host's checkout is that commit. */
+function pin(env: GitEnv, app: App): string {
+  if (!app.pin) throw new Error(`${app.name} is a module app without a pin: the compiler sets it on the product commit the instance applies`);
+  return app.pin;
+}
+
 /**
  * origin/<branch> again, straight from the app's own origin: fetchAll's copy can come from a host checkout that has not
  * fetched since a merge, while GitHub has the commit. Only refs/heads/<branch> is copied, so it can add history but never
- * make a commit reachable that origin/<branch> doesn't have.
+ * make a commit reachable that origin/<branch> doesn't have. A module app: its pin, from the product checkout.
  */
 const fetchBranch = async (env: GitEnv, app: App): Promise<void> => {
+  // A module app comes from the product checkout too, never from app.repo: its repo is the compiled product_repo setting.
+  if (app.module) return void (await git([`--git-dir=${env.gitDir}/${app.name}.git`, "fetch", "--prune", productSource(env, app), `+${pin(env, app)}:refs/remotes/pin`]));
   if (viaOps(env, app)) return env.ops!.fetch(app.repo, `refs/heads/${app.branch}`, `${env.gitDir}/${app.name}.git`);
   await git([...source(env, app).pre, `--git-dir=${env.gitDir}/${app.name}.git`, "fetch", "--prune", source(env, app).url, `+refs/heads/${app.branch}:refs/remotes/origin/${app.branch}`]);
 };
+
+/**
+ * What a commit must be reachable from: a module app's applied product pin, so a deploy or rollback stays at or below the
+ * product commit this host applied and never runs code the instance hasn't applied; any other app's origin/<branch>.
+ */
+function ceiling(env: GitEnv, app: App): string {
+  return app.module ? pin(env, app) : `origin/${app.branch}`;
+}
 
 /** From what fetchAll brought; when that doesn't hold (a checkout that lags origin), origin/<branch> once from the app's own origin, then once again. */
 async function fromOrigin<T>(env: GitEnv, app: App, gd: string, find: () => Promise<T>): Promise<T> {
@@ -100,17 +128,20 @@ async function fromOrigin<T>(env: GitEnv, app: App, gd: string, find: () => Prom
   return find().catch(async () => (await fetchBranch(env, app).catch(() => {}), find()));
 }
 
-/** Checks the app out at sha (default: its pin, else head of origin/<branch>), refusing commits not reachable from origin/<branch>. */
+/** Checks the app out at sha (default: its pin, else head of origin/<branch>), refusing commits not reachable from origin/<branch> (a module app: not at or below its pin). */
 export async function checkout(env: GitEnv, app: App, sha?: string): Promise<{ sha: string; dir: string }> {
   checkOrg(env, app);
   if (sha && !/^[0-9a-f]{7,40}$/.test(sha)) throw new Error("sha must be 7-40 hex characters");
   const gd = await fetchAll(env, app);
   const full = await fromOrigin(env, app, gd, async () => {
     const full = await git([gd, "rev-parse", "--verify", `${sha ?? app.pin ?? `origin/${app.branch}`}^{commit}`]);
+    const from = ceiling(env, app);
     try {
-      await git([gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]);
+      await git([gd, "merge-base", "--is-ancestor", full, from]);
     } catch {
-      throw new Error(`commit ${full.slice(0, 8)} is not reachable from origin/${app.branch}`);
+      throw new Error(app.module
+        ? `commit ${full.slice(0, 8)} is not at or below the applied product pin ${from.slice(0, 8)}: apply the product commit first`
+        : `commit ${full.slice(0, 8)} is not reachable from ${from}`);
     }
     return full;
   });
@@ -138,6 +169,8 @@ async function workTree(env: GitEnv, app: App, gd: string, full: string): Promis
  */
 export async function checkoutPr(env: GitEnv, app: App, sha: string): Promise<{ sha: string; dir: string }> {
   checkOrg(env, app);
+  // A module app is the product's own code at the instance's pin: it has no PR preview, and nothing of its is fetched from GitHub.
+  if (app.module) throw new Error(`${app.name} is a module app: it has no pull request preview, its source is the applied product pin`);
   if (!app.preview || !/^[0-9a-f]{40}$/.test(sha)) throw new Error("a preview checks out one PR head by its full sha");
   const bare = `${env.gitDir}/${app.name}.git`;
   if (!existsSync(bare)) {
@@ -170,8 +203,9 @@ export async function resolveCommit(env: GitEnv, app: App, sha: string): Promise
   const find = async (): Promise<{ sha: string; subject: string }> => {
     const full = await git([gd, "rev-parse", "--verify", "--quiet", `${sha}^{commit}`]).catch(() => "");
     if (!/^[0-9a-f]{40}$/.test(full)) throw new Error(`no single commit ${sha} in ${app.repo}`);
-    await git([gd, "merge-base", "--is-ancestor", full, `origin/${app.branch}`]).catch(() => {
-      throw new Error(`commit ${full.slice(0, 12)} is not on origin/${app.branch}`);
+    const from = ceiling(env, app);
+    await git([gd, "merge-base", "--is-ancestor", full, from]).catch(() => {
+      throw new Error(app.module ? `commit ${full.slice(0, 12)} is not at or below the applied product pin ${from.slice(0, 8)}` : `commit ${full.slice(0, 12)} is not on ${from}`);
     });
     return { sha: full, subject: await git([gd, "log", "-1", "--format=%s", full]) };
   };

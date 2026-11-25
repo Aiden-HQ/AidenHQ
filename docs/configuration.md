@@ -284,7 +284,7 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `history_days` | jira | no | `365` | How far back the `history_projects` backfill reaches (read when a project is first backfilled). |
 | `atlassian_mcp_url` | jira | no | Atlassian's v2 MCP URL | Atlassian's remote MCP server. |
 | `fleet_ops_interval_minutes` | fleet-steward | no | `10` | Minutes between the board's fleet detector checks (lower while developing). |
-| `product_repo` | warehouse | yes | | `owner/repo` of your AidenHQ product checkout; the warehouse app is built from it at the pinned commit. Its org must be in `github_orgs` or be the agents org. |
+| `product_repo` | warehouse | yes | | `owner/repo` of your AidenHQ product checkout; the warehouse app is built from it at the pinned commit. A module app never fetches from this repo: its source is the host's own product checkout, so its org need not be in `github_orgs`. An app that is not a module app and uses this repo is still held to `github_orgs`. |
 | `search_summaries` | warehouse | no | `off` | Task search (docs/design/task-search.md): `on` has a cheap model write a short summary and tags for each task whose content changed, which keyword and meaning search read too. Spend goes through the gateway under the install's limits. |
 | `upstream` | github | no | `issues` | `off` or `issues`: whether agents may report product bugs upstream as issues on `product_repo` (`off` grants none of the upstream tools). Every report is refused while it holds owner data (names, emails, hosts, IPs, ids, credentials). |
 
