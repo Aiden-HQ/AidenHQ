@@ -145,6 +145,12 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       return await fn(upstream ?? (await connect()));
     } catch (err) {
       if (!auth.signedIn() || !isAuthFailure(err)) throw err;
+      // The vendor's REST side still answers this token: its MCP endpoint's 401 is that endpoint's own error, not a sign-in to refresh or reconnect.
+      // A new session with the current token (the cached one's headers are fixed at connect time); no refresh grant is used.
+      if (auth.refused && !(await auth.refused())) {
+        await reset(false);
+        return await fn(upstream ?? (await connect()));
+      }
       log.warn(`${o.name} rejected the token; refreshing and retrying once`);
       try {
         await reset(true);

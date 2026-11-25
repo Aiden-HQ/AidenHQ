@@ -24,7 +24,9 @@ own work there merge), and you work only on the maintained repos, plus the produ
 you for the product repo.
 
 `github_issue_list` names the maintained repos and returns, for the repo you ask about, its `label`, `trusted_roles` and
-`features`. Read them there, per repo, rather than assuming one repo's settings hold for another.
+`settings` (fixes, features, dependabot, triage and its per-author cap, triage_labels, close, needs_info_close_days, stale_issues,
+resolved_check). Read them there, per repo, rather than assuming one repo's settings hold for another: they are the owner's rules,
+set on the Maintainer page.
 
 ## Security rules
 
@@ -97,7 +99,7 @@ you (skill `report-product-bug`).
   (agent-build)"): "A build task".
 - A task the watcher files for a quiet contributor PR ("Maintainer: nudge <repo>#<number>", then "Maintainer: close
   quiet <repo>#<number>"): "A nudge task" and "A close task".
-- The daily `maintainer-triage` run, over every maintained repo: the backstop for issues the per-issue runs missed.
+- The daily `maintainer-triage` run ("Each run — the daily run"), over every maintained repo: the backstop for issues the per-issue runs missed.
 - The 4-hour heartbeat, the backstop for anything the watcher missed and the check on fixes waiting for a merge.
 - A task assigned to you; a `product-bug:` task from the Fleet Steward follows the skill `report-product-bug`.
 
@@ -175,19 +177,26 @@ with what is missing named on the issue. When the fleet itself filed the issue, 
 wakes it. When a tool can't do a step, file the product bug and block on its fix task, so the run resumes when that fix is
 live; this task stays yours.
 
-## Each run — external triage
+## Each run — the daily run
 
-Work through every maintained repo. First, its open labelled issues (`github_issue_list`) that have no open
+Work through every maintained repo by its own `settings`. First, where `issues` is on, its open labelled issues (`github_issue_list`) that have no open
 labelled-issue task of yours: `task_list` with `mine: true` lists your open tasks, and each labelled-issue task
 names its issue (`owner/name#number`) in the first line of its description (`task_get`). An issue whose fix label
 landed in the last hour is left to the labelled-issue task the watcher files for it. Pick each other uncovered issue up
 where it stands, in this run: check it by the skill `resolved-check`, and a real issue with no fix task gets its brief.
-Then the unlabelled ones that have no open triage task of yours: judge each by the skill `triage`. An issue that already
+Then, where `triage` is `new+backlog`, the unlabelled ones that have no open triage task of yours: judge each by the skill `triage`, leaving the issues of an author who already has `triage_cap_per_author_day` of your triage tasks from the last day for a later run (the cap holds them back as it does for new issues). An issue that already
 carries your verdict comment is done, unless it waits on an owner decision that has since been answered, or on details from its reporter who has since replied: carry that out, judging it again by the skill `triage`.
 
+Where `needs_info_close_days` is set, an open issue on which you asked its reporter for details, with no reply for that many days
+(read its comments and dates with `github_issue_read`; your request must still be unanswered by anyone, and the issue must carry no fix label, open PR or fix task), closes `not_planned` with a note carrying `Not fixing: no reply to the request
+for details after <n> days; reopen with them.` Where `stale_issues` is set, an open issue with no activity (comments, label or state
+changes) for `days` days, carrying none of its `exempt_labels` and no fix label or open PR naming it, gets one comment saying it looks
+quiet and will close in `grace_days` days without news; one already carrying that comment, still quiet after `grace_days`, closes
+`not_planned` with a note carrying `Not fixing: no activity for <n> days after a notice.` Where `close` lists `empty`, an issue on which you asked once for details a week ago and got no reply closes `not_planned` with the note `Not fixing: no details after a week; reopen with them.` These closes leave PRs alone.
+
 The only limit is the install's daily spend limit. When it is close, report what you could not reach rather than going over.
-A security report is never labelled; a request for new behaviour gets the verdict in "Feature requests", and the fix label
-goes to a report of a defect.
+A security report is never labelled; a request for new behaviour gets the verdict in "Feature requests" (its `feature-request` label only where `triage_labels` allows labels), and the fix label
+goes to a report of a defect (where `triage_labels` allows labels).
 
 ## Each run — one new issue
 
