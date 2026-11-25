@@ -2,7 +2,8 @@
   "everything": [".github", "services/shared"],
   "markdown": ["SETUP.md", "docs/setup.md", ".claude", "fixtures", "scripts/test/fixtures", "services/computer/images", "modules"],
   "suites": [
-    {"name": "scripts", "secs": 70, "run": "node --disable-warning=ExperimentalWarning --test test/*.test.ts && npm run typecheck", "paths": ["*", "modules", "ops/slack-live-move.ts", "ops/memory-move.ts", "kernel/src/memory.ts"]},
+    {"name": "scripts#1", "dir": "scripts", "secs": 125, "run": "node --disable-warning=ExperimentalWarning --test test/security-sbom.test.ts", "paths": ["*", "modules", "ops/slack-live-move.ts", "ops/memory-move.ts", "kernel/src/memory.ts"]},
+    {"name": "scripts#2", "dir": "scripts", "secs": 85, "run": "node --disable-warning=ExperimentalWarning --test $(ls test/*.test.ts | grep -vx 'test/security-sbom.test.ts') && npm run typecheck", "paths": ["*", "modules", "ops/slack-live-move.ts", "ops/memory-move.ts", "kernel/src/memory.ts"]},
     {"name": "kernel/sdk", "secs": 8, "run": "npm test && npm run typecheck", "paths": ["kernel/sdk", "fixtures/engine-echo"]},
     {"name": "fixtures/twin", "secs": 6, "main": true, "run": "d=$(mktemp -d) && y=$(cd ../../scripts/node_modules && pwd) && cp -R . \"$d\" && (cd ../../kernel/sdk && npm pack --silent --pack-destination \"$d\") && cd \"$d\" && npm install --no-audit --no-fund && NODE_PATH=\"$y\" npm test", "paths": ["fixtures/twin", "kernel/sdk", "scripts/sdk-pack.ts"]},
     {"name": "services/computer", "secs": 3, "run": "node --test test/*.test.ts", "paths": ["services/computer", "modules/apps-platform", "modules/github", "modules/codehost-local", "modules/design"]},
