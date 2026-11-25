@@ -1761,7 +1761,6 @@ export function createEngine(d: EngineDeps) {
   function decide(cfg: Entry, p: PullRequest, was: PrRow | undefined): boolean {
     const t = current(p.repo, p.number, p.head);
     if (!t) return false;
-    if (backlog(p)) return true;
     // The head the triggers last ran for: a push seen while its tier was pending is still a push once it is classified.
     const seen = was?.handled ?? was?.head;
     run("UPDATE prs SET handled = ? WHERE repo = ? AND number = ?", p.head, p.repo, p.number);
@@ -1771,6 +1770,8 @@ export function createEngine(d: EngineDeps) {
       run("UPDATE prs SET policy = ?, policy_since = ?, policy_at = ? WHERE repo = ? AND number = ?", t.policy, p.head, now(), p.repo, p.number);
       t.at = now();
     }
+    // Backlog (after the policy window is set, so a review asked for later counts under it): no automatic trigger.
+    if (backlog(p)) return true;
     const c = t.c;
     // A draft too, where the repo reviews drafts.
     if ((!p.draft || c.drafts) && opening(c, p, t.policy, t.at)) return true;
@@ -1886,7 +1887,7 @@ export function createEngine(d: EngineDeps) {
     after = page.next;
   }
   /** An open PR older than the newest one at its repo's first look that nothing has reviewed or been asked to review: left alone. */
-  const backlog = (p: PullRequest) => p.number < (one<{ number: number }>("SELECT number FROM cutoffs WHERE repo = ?", p.repo)?.number ?? 0) && !anyRun(p);
+  const backlog = (p: { repo: string; number: number }) => prRow(p.repo, p.number)?.mode !== "always" && p.number < (one<{ number: number }>("SELECT number FROM cutoffs WHERE repo = ?", p.repo)?.number ?? 0) && !anyRun(p);
   const anyRun = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ?", p.repo, p.number);
   /** A new head is a push (on_push, from the baseline) once any review of the PR (but a one-off) completed, whatever became of
    * its post; until then (a push before it finished) the newest head gets the opening review. A skipped or superseded run never
@@ -2287,7 +2288,7 @@ export function createEngine(d: EngineDeps) {
     // A review whose first post is still being decided: its findings gate once they have threads, so the merge waits for it. A
     // post refused once (filed again in the background) holds nothing: its findings are pending, never blocking.
     const posting = latest.filter((r) => r.status === "done" && r.posted === "pending" && !r.post_tries);
-    if (!latest.length) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
+    if (!latest.length) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: backlog({ repo, number: n }) ? "this pull request was already open when the repo was first watched: comment `aiden review` on it" : "it starts by itself within a minute or two" });
     else if (latest.some((r) => (r.status === "queued" || r.status === "running" || r.status === "failed") && SPEND_LIMIT.test(r.why ?? ""))) reasons.push({ code: "spend_limit", text: `install spend limit reached: the mandatory review of ${head.slice(0, 7)} can't run (${String(latest.find((r) => SPEND_LIMIT.test(r.why ?? ""))!.why).slice(0, 200)})`, unblock: "the owner raises spend_day_usd or spend_month_usd in Settings, or the limit resets; a failed review then runs again on `aiden review`" });
     else if (busy.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
