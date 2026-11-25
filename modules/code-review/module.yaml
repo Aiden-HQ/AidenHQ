@@ -1,8 +1,8 @@
 name: code-review
 description: "Code Review: reviews pull requests on the repos you list, or one PR on request, and reviews a whole repository at a commit on request. Each moment (a PR opens, each push) runs a list of combos (engine: Codex, Claude Code or Codegenie; model; effort) in a credential-free box; each combo posts its own GitHub review, a write the AI reviewer approves, and its cost and findings are kept for later analysis. A repo review runs the ready-made options you pick (tools, upstream skills, deepsec) and publishes a report to Primer, private to you. Idle until a repo is added or a review is asked for: nothing runs or spends by itself."
 license: MIT
-# Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
-# internal read (as this module, never /mcp), decides which head gets which combos (triggers, `aiden review …` from someone with
+# Design: docs/design/code-review.md. The state service (service/) follows the listed repos' PRs and comments from the github
+# change feed (subscribes: below) and reads each PR it names through github-mcp's internal read (as this module, never /mcp), decides which head gets which combos (triggers, `aiden review …` from someone with
 # write access now, debounce, supersede), runs each review as the kernel's
 # check job `code-review` (kernel.checks: no credentials in the box, a model token, bounded only by the install's spend limit), hands the
 # finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
@@ -77,6 +77,13 @@ check_jobs:
     title: the code review tools
     spec: { base: sha, options: json, run: text }
     result: true
+# The change feed's PR and comment events on the watched repos (service/src/engine.ts feed(); kernel events.ts log, read with the
+# service's own cursor): what changed on GitHub, so nothing polls it. The declaration is the grant: the log answers only these kinds
+# and the repos settings.code_review lists.
+subscribes:
+  github:
+    kinds: [ pull_request.opened, pull_request.synchronize, pull_request.ready_for_review, pull_request.converted_to_draft, pull_request.edited, pull_request.closed, pull_request.reopened, issue_comment.created, pull_request_review_comment.created, github.resync ]
+    resources: { setting: code_review, path: "repos[].repo" }
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
 facts:
   review.started: { subject: pr }
@@ -103,8 +110,6 @@ settings:
     writers: [ reviewer-manager ]
     default:
       repos: []
-  # Seconds between the service's looks at the watched repos.
-  code_review_poll_seconds: { default: 60 }
 # The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no
 # code tools and no delegation; its settings changes are kernel.settings records the AI reviewer decides. Aiden
 # (the chief of staff) delegates code review asks to it; no heartbeat, no schedule: it runs only when a task asks.
@@ -189,7 +194,6 @@ services:
       env:
         CODE_REVIEW_DB: /data/code-review.sqlite
         CODE_REVIEW_SETTINGS: "${settings.code_review}"
-        CODE_REVIEW_POLL_SECONDS: "${settings.code_review_poll_seconds}"
         CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
         CODE_REVIEW_SERVICE_KEY_FILE: ${secrets.code_review_service_key}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130

@@ -4,7 +4,6 @@
 //                                the owner, background, from a fixed list (the loop's reads, check re-runs, update-branch, closing
 //                                an abandoned PR and deleting its branch, its comment), on a repo the fleet merges in. No merge.
 //                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's.
-//   POST /internal/ship/flow     {fn, args} -> Flow's fact for what the loop saw (flow.ts), or `authored`'s answer
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
 //   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
 //                                context); `pr` and `main` are the list read's node and default branch (OPEN_PRS_QUERY), so the
@@ -63,10 +62,9 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
     }
   }
 }`;
-const FLOW = ["opened", "pushed", "merged", "closed", "checksStarted", "checksCompleted", "authored"] as const;
 
 export function shipRoutes(o: {
-  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }) => Promise<unknown>; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
+  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }) => Promise<unknown>; gate: ReviewGate; cacheDir: string;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
   allowed: (repo: string) => boolean;
   /** Whether a bearer is the ship module's own token (undefined: the kernel couldn't say now). */
@@ -150,13 +148,6 @@ export function shipRoutes(o: {
           const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: unknown }).cause;
           return send(res, 200, { thrown: { message: String((e as Error).message ?? e).slice(0, 500), ...(typeof cause === "string" ? { cause } : {}) } }), true;
         }
-      }
-      if (op === "flow") {
-        if (!FLOW.includes(b.fn) || !Array.isArray(b.args)) return send(res, 400, { error: `fn: one of ${FLOW.join(", ")}; args: a list` }), true;
-        // Every fact names its repo first (`authored` third): only a repo the fleet works.
-        if (!o.allowed(String(b.args[b.fn === "authored" ? 2 : 0] ?? ""))) return send(res, 403, { error: "ship may not record facts for that repo" }), true;
-        // JSON turns an omitted argument into null: it is undefined again here, so flow.ts's defaults (the time, the PR's task) apply.
-        return send(res, 200, { value: (await o.flow[b.fn as (typeof FLOW)[number]](...b.args.map((x: unknown) => (x === null ? undefined : x)))) ?? null }), true;
       }
       if (op === "verdict") return send(res, 200, (await o.gate(String(b.repo), Number(b.number), String(b.head))) ?? null), true;
       if (op === "decision" && o.decision) {

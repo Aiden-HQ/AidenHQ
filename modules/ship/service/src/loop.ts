@@ -1,13 +1,14 @@
-// Ship's watch loop: the open PRs of the product repo and of every repo ship works, and of every maintained repo with Dependabot on
-// (those get only the Dependabot task), read once a minute with one GraphQL list read per repo (github's OPEN_PRS_QUERY).
+// Ship's watch: the open PRs of the product repo and of every repo ship works, and of every maintained repo with Dependabot on
+// (those get only the Dependabot task), read with one GraphQL list read per repo (github's OPEN_PRS_QUERY) when something changed:
+// followFeed() reads the github change feed's events (the kernel's log) and passes each repo an event names.
 // - A Dependabot PR whose checks have finished becomes one task for the platform-engineer role (kernel POST /v1/tasks), closed
 //   again once the PR is merged or closed. A green one under `failing` goes through the round like any PR (handoff: all adopts it).
-// - Flow facts: what this watch sees of every open PR (opened, pushed, merged, closed, CI started and finished).
 // - Every other PR goes to one engine (adopted.ts: intake, then rounds.ts round()), the fleet's own (one the code host opened for
 //   a task: github's pr-tasks.json, read through `openers`) and everyone else's alike, after its CI recoveries (ci-recover.ts).
+// Flow's PR facts are the change feed's own (github flow.ts observe), not this watch's.
 //
-// GitHub, Flow, code review's verdict and opener provenance stay github's: ship reaches them through github's /internal/ship/*
-// routes with its own module token (main.ts). Started by main.ts.
+// GitHub, code review's verdict and opener provenance stay github's: ship reaches them through github's /internal/ship/* routes
+// with its own module token (main.ts). Started by main.ts.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
@@ -16,22 +17,12 @@ import type { Recovery } from "./ci-recover.ts";
 type Json = any;
 /** GitHub as the owner, through github's /internal/ship/gh (background work). */
 type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number }) => Promise<{ status: number; body: any }>;
-/** github's Flow facts (flow.ts), sent through github: what this watch sees of every open PR. */
-export type Flow = {
-  opened(repo: string, n: number, head: string, branch: string, at: string, task?: string | null, source?: string, o?: Record<string, unknown>): void;
-  pushed(repo: string, n: number, head: string, from: string, forced: boolean, actor: string): void;
-  merged(repo: string, n: number, head: string, sha: string, at: string, title: string, body: string): void;
-  closed(repo: string, n: number, head: string, at: string): void;
-  checksStarted(repo: string, n: number, head: string, at: string, task?: string | null): void;
-  checksCompleted(repo: string, n: number, head: string, failed: string[], at?: string, task?: string | null): void;
-  authored(login: string | undefined, association: string | undefined, repo: string): Promise<Record<string, unknown>>;
-};
 /** The default branch as the list read has it. */
 export type Main = { name: string; oid?: string; rollup: Json };
 export type LoopOptions = {
   /**
    * The repos to watch, owner/name: `all` for the ones ship works, `dependabot` for a maintained repo elsewhere, where only the
-   * Dependabot duty runs (no rounds, no recoveries, no flow facts). `dependabot`: which bumps get an Engineer task: `all` once their
+   * Dependabot duty runs (no rounds, no recoveries). `dependabot`: which bumps get an Engineer task: `all` once their
    * checks finish (the default), none (`off`), or only `failing` ones, those with a check that finished red (the repo's maintainer_repos entry).
    */
   repos: { repo: string; duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }[]; kernelUrl: string; /** Ship's own token (kernel.tasks). */ key: string; cacheDir: string;
@@ -40,18 +31,22 @@ export type LoopOptions = {
   openers: () => Promise<Record<string, { task: string; branch: string }>>;
   /** Ship's kill switch: a paused pass does nothing. */
   paused?: () => boolean;
-  /** Whether GitHub is connected: signed out, a pass reads nothing and counts as idle. */
-  connected?: () => boolean;
-  /** Flow facts. */
-  flow?: Flow;
+  /** Whether ship has work on the repo that can move with no GitHub event: an open PR's adoption that isn't held (its task's
+   * state, a merge record's outcome, a cooldown) or a closed one whose end isn't recorded yet (a task close or wake that failed).
+   * Its repo is then read again after SETTLE_MS. */
+  busy?: (repo: string, open: Set<number>) => boolean;
   /** A PR's CI recoveries (ci-recover.ts), with the repo's slice of the loop's state. */
   recover: (repo: string, pr: Json, state: Json, save: () => void) => Promise<Recovery>;
   /** The one engine (adopted.ts): every open PR but Dependabot's, with the task that opened it (if one did), and the PRs that left. */
   adopted: { begin(): void; open(repo: string, main: Main, pr: Json, open: Set<number>, ctx: { opener?: string; newer?: string; stackedOn?: { number: number; base: string }; recover?: () => Promise<Recovery>; bump?: boolean }): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
 };
 
-/** The pass runs every minute while a watched PR is open; with none open it waits twice as long each pass, up to 30 minutes. */
-const EVERY_MS = 60_000, IDLE_MAX_MS = 30 * 60_000;
+/**
+ * When a repo is read again with no event (scan's `next`): GitHub computes a PR's mergeability lazily and announces nothing when it
+ * has (UNKNOWN_MS), and a round can move with GitHub quiet: its task's state, a merge record's outcome, a re-run's backoff, a check
+ * run left wedged after its job finished (SETTLE_MS). A repo with nothing of either is read only when the feed names it.
+ */
+export const UNKNOWN_MS = 60_000, SETTLE_MS = 5 * 60_000;
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json, which: "off" | "failing" | "all") {
@@ -78,8 +73,9 @@ export function startLoop(o: LoopOptions) {
     return json;
   }
 
-  /** One repo's pass; `all` is the state file's content, keyed by lowercased repo, and `save` writes it whole. */
-  async function scan(repo: string, duties: "all" | "dependabot", which: "off" | "failing" | "all", all: Json): Promise<number> {
+  /** One repo's pass; `all` is the state file's content, keyed by lowercased repo, and `save` writes it whole. `next`: when to read
+   * it again with no event (undefined: only on one). */
+  async function scan(repo: string, duties: "all" | "dependabot", which: "off" | "failing" | "all", all: Json): Promise<{ open: number; next?: number }> {
     const [owner, name] = repo.split("/");
     let r: Json;
     const open: Json[] = [];
@@ -119,60 +115,17 @@ export function startLoop(o: LoopOptions) {
       save();
     }
 
-    if (duties === "dependabot") return open.length;
+    if (duties === "dependabot") return { open: open.length };
 
-    // Flow: what this watch sees of every open PR, whoever opened it: its opening, a head that moved (a push), and one that left
-    // the list unmerged (closed). Facts are idempotent by head, so the service's own facts for an agent's PR don't repeat.
-    if (o.flow) {
-      const flow = o.flow;
-      state.open ??= {}; // PR url -> { n, head }
-      for (const pr of open) {
-        const url = pr.url.toLowerCase(), seen = state.open[url];
-        if (!seen) flow.opened(repo, pr.number, pr.headRefOid, pr.headRefName, new Date(pr.createdAt).toISOString(), undefined, undefined, { title: String(pr.title ?? ""), ...(await flow.authored(pr.author?.login, pr.authorAssociation, repo)) });
-        else if (seen.head !== pr.headRefOid) {
-          const c = await gh("GET", `/repos/${repo}/compare/${seen.head}...${pr.headRefOid}`).catch(() => undefined);
-          flow.pushed(repo, pr.number, pr.headRefOid, seen.head, c ? !["ahead", "identical"].includes(String(c.body?.status)) : false, String(pr.author?.login ?? "ghost"));
-        }
-        state.open[url] = { n: pr.number, head: pr.headRefOid };
-      }
-      for (const [url, seen] of Object.entries<{ n: number; head: string }>(state.open)) {
-        if (open.some((p) => p.url.toLowerCase() === url)) continue;
-        const r = await gh("GET", `/repos/${repo}/pulls/${seen.n}`);
-        if (r.status >= 300) continue;
-        const head = String(r.body?.head?.sha ?? seen.head);
-        // Merged by anyone (the owner on GitHub too, not only the merge queue): the same id as the queue's and the backfill's.
-        if (r.body?.merged_at) flow.merged(repo, seen.n, head, String(r.body.merge_commit_sha ?? ""), new Date(r.body.merged_at).toISOString(), String(r.body.title ?? ""), String(r.body.body ?? ""));
-        else if (r.body?.state === "closed") flow.closed(repo, seen.n, head, new Date(r.body.closed_at ?? Date.now()).toISOString());
-        if (r.body?.state === "closed") { delete state.open[url]; delete state.checked?.[url]; delete state.ciStarted?.[url]; }
-      }
-      save();
-    }
-
-    if (!main.oid) return open.length;
+    if (!main.oid) return { open: open.length, next: SETTLE_MS };
     const opened: Json = await o.openers();
-    state.checked ??= {};
-    state.ciStarted ??= {};
+    let next: number | undefined;
+    const after = (ms: number) => { next = Math.min(next ?? ms, ms); };
     for (const pr of [...open].reverse()) { // oldest first
       const url = pr.url.toLowerCase();
       const opener = opened[url];
       // The task that opened it, when the code host opened this very branch for it (a reused PR number belongs to nobody).
       const task = pr.isCrossRepository === false && opener?.branch === pr.headRefName ? opener.task : undefined;
-      // Flow: CI on any PR's head, once per head: begun at its first check run's start, over once its named checks have all
-      // finished (at the last one's end).
-      const named = namedChecks(rollupOf(pr));
-      const runs = (rollupOf(pr)?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun");
-      const times = (k: string) => runs.map((n: Json) => Date.parse(n[k])).filter(Number.isFinite);
-      if (o.flow && times("startedAt").length && state.ciStarted[url] !== pr.headRefOid) {
-        state.ciStarted[url] = pr.headRefOid;
-        o.flow.checksStarted(repo, pr.number, pr.headRefOid, new Date(Math.min(...times("startedAt"))).toISOString(), task ?? null);
-        save();
-      }
-      if (o.flow && named.length && !named.some((c) => c.pending) && state.checked[url] !== pr.headRefOid) {
-        state.checked[url] = pr.headRefOid;
-        const ends = times("completedAt");
-        o.flow.checksCompleted(repo, pr.number, pr.headRefOid, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20), ends.length ? new Date(Math.max(...ends)).toISOString() : undefined, task ?? null);
-        save();
-      }
       // A Dependabot PR is the Engineer's once its checks fail (or always, under `all`); a green one under `failing` goes through the round like any PR.
       // Green means at least one check reported and all finished: no checks yet is not green.
       const reported = namedChecks(rollupOf(pr));
@@ -187,31 +140,86 @@ export function startLoop(o: LoopOptions) {
         const parents = open.filter((p) => p.number !== pr.number && p.isCrossRepository === false && p.headRefName === pr.baseRefName);
         const under = parents.find((p) => p.baseRefName === main.name) ?? parents[0];
         await o.adopted.open(repo, main, pr, new Set(open.map((p) => p.number)), { ...(task ? { opener: task } : {}), ...(newer ? { newer } : {}), ...(under ? { stackedOn: { number: under.number, base: String(under.baseRefName) } } : {}), recover: () => o.recover(repo, pr, state, save), ...(bump ? { bump } : {}) });
-      } catch (e) { log("PR pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }); }
+      } catch (e) { log("PR pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }); after(SETTLE_MS); }
+      if (pr.mergeable === "UNKNOWN") after(UNKNOWN_MS);
+      // A check run not completed may be left wedged after its job finished (ci-recover.ts): no event says so.
+      else if (pr.isCrossRepository === false && (rollupOf(pr)?.contexts?.nodes ?? []).some((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED")) after(SETTLE_MS);
     }
-    await o.adopted.gone(repo, main.name, new Set(open.map((p) => p.number))).catch((e) => log("landed check failed", { repo, err: String((e as Error).message).slice(0, 300) }));
-    return open.length;
+    const numbers = new Set(open.map((p) => p.number));
+    await o.adopted.gone(repo, main.name, numbers).catch((e) => log("landed check failed", { repo, err: String((e as Error).message).slice(0, 300) }));
+    // A CI recovery that backs off (a refused or unanswered re-run, ci-recover.ts) is asked again once its time comes.
+    const heads = new Set(open.map((p) => String(p.headRefOid)));
+    if (o.busy?.(repo, numbers) || Object.entries<string>(state.reran ?? {}).some(([k, v]) => v.startsWith("retry:") && Date.parse(v.slice(6)) > Date.now() - SETTLE_MS && k.split(":").some((x) => heads.has(x)))) after(SETTLE_MS);
+    return { open: open.length, ...(next !== undefined ? { next } : {}) };
   }
 
-  /** One pass over every watched repo: how many PRs were open (a repo that failed counts as open: it is tried again soon). */
+  /** One pass over every watched repo (followFeed's first, and the tests'): how many PRs were open. */
   async function tick(): Promise<number> {
     const all: Json = readJson(stateFile, {});
     let open = 0;
     o.adopted.begin();
-    if ((o.connected && !o.connected()) || o.paused?.()) return open;
+    if (o.paused?.()) return open;
     for (const { repo, duties, dependabot } of o.repos) {
-      try { open += await scan(repo, duties, dependabot ?? "all", all); }
+      try { open += (await scan(repo, duties, dependabot ?? "all", all)).open; }
       catch (e) { open++; log("PR check failed", { repo, err: String((e as Error).message).slice(0, 300) }); }
     }
     return open;
   }
+  /** One repo's pass, for followFeed: when to read it again with no event (undefined: only on one). Throws when it can't be read. */
+  async function pass(repo: string): Promise<number | undefined> {
+    const r = o.repos.find((x) => x.repo === repo)!;
+    o.adopted.begin();
+    return (await scan(r.repo, r.duties, r.dependabot ?? "all", readJson(stateFile, {}))).next;
+  }
+  return { tick, pass, repos: o.repos.map((r) => r.repo) };
+}
 
-  let every = EVERY_MS, timer: NodeJS.Timeout | undefined, stopped = false;
-  const next = () => {
-    if (stopped) return;
-    timer = setTimeout(() => void tick().then((open) => { every = open ? EVERY_MS : Math.min(every * 2, IDLE_MAX_MS); }, () => {}).finally(next), every);
-    timer.unref();
-  };
-  next();
-  return { tick, stop: () => { stopped = true; clearTimeout(timer); } };
+/** One event of the kernel's log (kernel/src/events.ts LoggedEvent): the repo it names is what ship reads of it. */
+export type FeedPage = { events: { seq: number; resource: string; kind: string }[]; next: number; gap: boolean };
+/** How often the kernel's log is read (a local call, no GitHub cost), and when a repo that couldn't be read is read again. */
+export const FEED_MS = 5_000, RETRY_MS = 60_000;
+
+/**
+ * The watch's driver: the github change feed's events on every repo (module.yaml `subscribes:`), read from the kernel's log every
+ * FEED_MS after the last seq read. A repo an event names is passed once per read (its one list read); one whose pass asked to be
+ * read again (scan's `next`) is passed then too; one that couldn't be read is read again after RETRY_MS. The cursor is this
+ * process's: a start reads every repo once (an apply restarts it, so a settings change is read too), as do a gap in the log
+ * (kept three days) and a resume from the kill switch. Paused, the log isn't read, so nothing is passed over.
+ */
+export function followFeed(loop: ReturnType<typeof startLoop>, o: { feed(after?: number): Promise<FeedPage>; paused(): boolean; log?: (msg: string, f?: Record<string, unknown>) => void; now?: () => number }) {
+  const log = o.log ?? (() => {}), now = o.now ?? Date.now;
+  const byName = new Map(loop.repos.map((r) => [r.toLowerCase(), r]));
+  /** Each repo to pass, and when. */
+  const due = new Map<string, number>();
+  const everyRepo = () => { for (const r of loop.repos) due.set(r, 0); };
+  let after: number | undefined, held = false, busy = false, said = "";
+  async function pump() {
+    if (busy) return;
+    busy = true;
+    try {
+      if (o.paused()) { held = true; return; }
+      if (held) { held = false; everyRepo(); }
+      if (after === undefined) { after = (await o.feed()).next; everyRepo(); }
+      const page = await o.feed(after);
+      if (page.gap) everyRepo();
+      for (const e of page.events) { const r = byName.get(e.resource.toLowerCase()); if (r) due.set(r, 0); }
+      after = page.next;
+      said = "";
+    } catch (e) {
+      const msg = String((e as Error).message).slice(0, 200);
+      if (msg !== said) log("the feed's log not read; the next look asks again", { err: msg });
+      said = msg;
+    } finally {
+      try {
+        for (const [repo, at] of [...due]) {
+          if (at > now() || o.paused()) continue;
+          try { const next = await loop.pass(repo); if (next === undefined) due.delete(repo); else due.set(repo, now() + next); }
+          catch (e) { due.set(repo, now() + RETRY_MS); log("PR check failed", { repo, err: String((e as Error).message).slice(0, 300) }); }
+        }
+      } finally { busy = false; }
+    }
+  }
+  const timer = setInterval(() => void pump(), FEED_MS);
+  timer.unref();
+  return { pump, stop: () => clearInterval(timer) };
 }

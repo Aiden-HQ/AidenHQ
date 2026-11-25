@@ -53,6 +53,9 @@ export function viewOf(repo: string, defaultBranch: string, pr: Json): PrView {
   };
 }
 
+/** An adoption whose PR left the open list and whose end is recorded (closed, or merged with its report current): gone() is done with it. */
+export const ended = (a: Pick<Kept, "counters" | "reportStale">) => a.counters?.lastRound === "closed" || (!!a.counters?.lastRound?.endsWith(":done") && !a.reportStale);
+
 export function adoptedPass(o: AdoptedOptions) {
   /**
    * Whether the PR is first in the repo's merge order (item 19): the earliest hand-off among the repo's open adoptions that ship
@@ -178,8 +181,8 @@ export function adoptedPass(o: AdoptedOptions) {
       // The task as the kernel keeps it, read once a pass: its id names the adoption's task, its state the PR's lifecycle.
       const work = ctx.opener ? await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(ctx.opener)}`).catch((e: Error) => (o.log("task read failed", { pr: view.url, err: String(e.message).slice(0, 200) }), undefined)) : undefined;
       const taskId = ctx.opener && work ? String(work.jobs?.find((j: Json) => typeof j.task === "string" && j.task)?.task ?? ctx.opener) : undefined;
-      // A task's PR whose task couldn't be read waits a pass: never taken in as a member's meanwhile.
-      if (ctx.opener && !work) return;
+      // A task's PR whose task couldn't be read waits a pass: never taken in as a member's meanwhile (the loop reads it again).
+      if (ctx.opener && !work) throw new Error(`its task ${ctx.opener} couldn't be read`);
       let a = await intake(handoff, view, taskId, ctx.bump) as Kept | undefined;
       if (!a) { await ctx.recover?.(); return; }
       if (a.owner?.kind === "task") {
@@ -258,7 +261,7 @@ export function adoptedPass(o: AdoptedOptions) {
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {
       for (const a of o.state.all() as Kept[]) {
-        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || a.counters?.lastRound === "closed" || (a.counters?.lastRound?.endsWith(":done") && !a.reportStale)) continue;
+        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || ended(a)) continue;
         const r = await o.gh("GET", `/repos/${repo}/pulls/${a.number}`);
         if (r.status >= 300) continue;
         // A held adoption is still finished when someone merges its PR (round closes the hand-off's task). A closed one is handed

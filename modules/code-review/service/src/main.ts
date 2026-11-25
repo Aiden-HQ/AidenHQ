@@ -1,4 +1,4 @@
-// The code-review state service: its sqlite state (CODE_REVIEW_DB), the engine's tick every CODE_REVIEW_POLL_SECONDS, flow facts
+// The code-review state service: its sqlite state (CODE_REVIEW_DB), the engine's tick (the change feed's events, then the kernel's answers), flow facts
 // and the HTTP API on :8098. Idle until settings.code_review lists a repo or someone asks for a one-off: nothing is read or spent.
 // Its module token (code_review_token) is asked for fresh, so the token the kernel writes after start is picked up.
 import { readFileSync } from "node:fs";
@@ -44,30 +44,21 @@ const engine = createEngine({
   catalog: () => loadCatalog(readFileSync(new URL("./catalog.json", import.meta.url), "utf8")),
   // Primer: the report as a primer.publish write record, a new private document per review.
   publisher: primerPublisher(kernel),
+  // The github change feed's events on the watched repos (module.yaml subscribes:), with this module's token.
+  feed: (after) => kernel.call("GET", `/v1/events/log?connection=github&limit=200${after === undefined ? "" : `&after=${after}`}`),
   emit: (f) => facts.emit(f),
   log,
 });
 
-// Two cadences, one at a time: GitHub is read every CODE_REVIEW_POLL_SECONDS; finished checks, filed posts, due runs and the
-// status mirror move every FAST_SECONDS (the kernel's answers only), so a review posts seconds after its check ends.
-const FAST_SECONDS = 10;
-// A GitHub read asked for while a tick runs runs right after it, never skipped.
-let busy = false, wantGithub = false;
-const tick = async (github: boolean) => {
-  wantGithub ||= github;
+// One tick every TICK_SECONDS, one at a time: the change feed's events (the kernel's log), then what the kernel answers (finished
+// checks, filed posts, due runs) and the status mirror, so a review posts seconds after its check ends. No GitHub timer.
+const TICK_SECONDS = 10;
+let busy = false;
+setInterval(async () => {
   if (busy || !token()) return;
   busy = true;
-  try {
-    do {
-      const g = wantGithub;
-      wantGithub = false;
-      try { await engine.tick({ github: g }); } catch (e) { log("WARNING: tick failed", { err: String((e as Error).message).slice(0, 300) }); }
-    } while (wantGithub);
-  } finally { busy = false; }
-};
-setInterval(() => void tick(true), Math.max(15, Number(env.CODE_REVIEW_POLL_SECONDS) || 60) * 1000);
-setInterval(() => void tick(false), FAST_SECONDS * 1000);
-setTimeout(() => void tick(true), 5_000);
+  try { await engine.tick(); } catch (e) { log("WARNING: tick failed", { err: String((e as Error).message).slice(0, 300) }); } finally { busy = false; }
+}, TICK_SECONDS * 1000);
 
 // executor@1 for code-review.post, .notice and .status: the kernel calls it with this module's service key, read fresh per request.
 const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086";

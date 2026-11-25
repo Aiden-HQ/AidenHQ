@@ -115,7 +115,7 @@ PR state, not config.
 
 ## Triggers
 
-The service reads the watched repos every `code_review_poll_seconds` (default 60); finished checks, filed posts, due runs and the status mirror move every 10 seconds (only the kernel is asked), so a review posts within seconds of its check ending. A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
+The service hears what changed on the watched repos from the github module's change feed (its PR and comment events in the kernel's log, `subscribes:` in module.yaml; within about a minute): each PR an event names is read once, a comment is checked for a command, and a review reply reads that PR's threads. A repo is read whole at the service's start, after a gap in the log, on the feed's resync and when an event's handling failed. Every 10 seconds it also moves finished checks, filed posts, due runs and the status mirror (only the kernel is asked), so a review posts within seconds of its check ending. A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
 queued batch). Only the first `push_rounds` pushes of a PR (default 1; null: every push) get one: a round is a pushed head
 whose push review completed (a superseded one doesn't count); later heads are skipped ("push review cap reached") and gated

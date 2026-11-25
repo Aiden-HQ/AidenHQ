@@ -1,5 +1,5 @@
 // Ship's watch loop end to end against a fake GitHub and a fake kernel, through the one engine (adopted.ts, rounds.ts) and the CI
-// recoveries (ci-recover.ts), under `cautious`: Dependabot tasks, Flow facts, a task's own PR (adopted on its task, merged by ship,
+// recoveries (ci-recover.ts), under `cautious`: Dependabot tasks, a task's own PR (adopted on its task, merged by ship,
 // woken for red checks and findings, closed when superseded or done), and the re-runs of checks that never started or got wedged.
 import { verdict } from "./risk.ts";
 import { test } from "node:test";
@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startLoop } from "../service/src/loop.ts";
+import { followFeed, RETRY_MS, SETTLE_MS, startLoop } from "../service/src/loop.ts";
 import { adoptedPass } from "../service/src/adopted.ts";
 import { ciRecover } from "../service/src/ci-recover.ts";
 import { PRESETS } from "../service/src/settings.ts";
@@ -82,7 +82,6 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
-  t.after(() => watch.stop());
   const made = () => calls.filter((c) => c.url === "/v1/tasks");
   const wakes = () => calls.filter((c) => c.url === "/v1/wakes");
 
@@ -118,39 +117,6 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
 });
 
 
-
-// Flow: any PR's CI (the owner's too, not only an agent's) and its merge, whoever merged it (here the owner on GitHub, not the queue).
-test("an owner's PR records its CI per head and its merge once it leaves the open list", async (t) => {
-  let open = [];
-  const kernel = await listen(async (req, res) => { for await (const _ of req); res.writeHead(200).end("{}"); });
-  t.after(() => kernel.s.close());
-  const merged = { state: "closed", merged_at: "2026-11-20T10:05:00Z", merge_commit_sha: "s7", head: { sha: "h7" }, title: "feat: x", body: "" };
-  const gh = async (m, path) => path === "/graphql"
-    ? { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } }
-    : path === "/repos/acme/app/pulls/7" ? { status: 200, body: merged } : { status: 404, body: {} };
-  const got = [];
-  const rec = (name) => (...a) => void got.push([name, ...a]);
-  const flow = { opened: rec("opened"), pushed: rec("pushed"), closed: rec("closed"), merged: rec("merged"), checksStarted: rec("started"), checksCompleted: rec("completed"), authored: async () => ({ author: "owner", author_kind: "owner" }) };
-  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh, flow });
-  t.after(() => watch.stop());
-  const run = (status, o = {}) => ({ __typename: "CheckRun", name: "test", status, conclusion: status === "COMPLETED" ? "SUCCESS" : null, startedAt: "2026-11-20T10:01:00Z", ...o });
-  const rollup = (nodes) => ({ commits: { nodes: [{ commit: { statusCheckRollup: { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes } } } }] } });
-  const owner = { author: { __typename: "User", login: "owner" }, createdAt: "2026-11-20T10:00:00Z" };
-
-  open = [pr(7, { ...owner, ...rollup([run("IN_PROGRESS")]) })];
-  await watch.tick();
-  open = [pr(7, { ...owner, ...rollup([run("COMPLETED", { completedAt: "2026-11-20T10:04:00Z" })]) })];
-  await watch.tick();
-  await watch.tick();
-  open = [];
-  await watch.tick();
-  assert.deepEqual(got.filter(([n]) => n !== "opened"), [
-    ["started", "acme/app", 7, "h7", "2026-11-20T10:01:00.000Z", null],
-    ["completed", "acme/app", 7, "h7", [], "2026-11-20T10:04:00.000Z", null],
-    ["merged", "acme/app", 7, "h7", "s7", "2026-11-20T10:05:00.000Z", "feat: x", ""],
-  ]);
-});
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
@@ -255,7 +221,6 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate, ...(settings ? { settings } : {}) });
-  t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
   return { woke, gh, merges, sent, closed, watch, cacheDir, kernelUrl: kernel.url, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
@@ -405,7 +370,6 @@ test("an Actions read that throws does not stop another PR's merge", async (t) =
     return { status: 200, body: {} };
   };
   const real = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
-  t.after(() => real.stop());
   notePrTask(cacheDir, "https://github.com/acme/app/pull/47", { task: "ACME-47", branch: "b47" });
   open = [pr(47, { author: { __typename: "Bot", login: "aidenhq" } }), pr(48, { ...stuckPr(48, 77), number: 48, url: "https://github.com/acme/app/pull/48", headRefOid: "h48", headRefName: "b48", author: { __typename: "Bot", login: "aidenhq" } })];
   await real.tick();
@@ -563,7 +527,6 @@ async function multi(t, repos, open, extra = {}) {
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
   const watch = startPrWatch({ repos, kernelUrl: kernel.url, key: "k", cacheDir, gh: api, ...extra });
-  t.after(() => watch.stop());
   return { watch, tasks, closes, gh, cacheDir };
 }
 const dep = (repo, n, o = {}) => pr(n, { url: `https://github.com/${repo}/pull/${n}`, ...o });
@@ -1210,7 +1173,6 @@ test("a stack A←B: B waits on #A; once A merges, B is retargeted onto main and
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
-  t.after(() => watch.stop());
   const agent = { author: { __typename: "Bot", login: "aidenhq" } };
   notePrTask(cacheDir, "https://github.com/acme/app/pull/1", { task: "ACME-1", branch: "bA" });
   notePrTask(cacheDir, "https://github.com/acme/app/pull/2", { task: "ACME-2", branch: "bB" });
@@ -1255,7 +1217,6 @@ test("a stack GitHub retargeted itself (the parent's branch deleted) still bring
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
-  t.after(() => watch.stop());
   const agent = { author: { __typename: "Bot", login: "aidenhq" } };
   notePrTask(cacheDir, "https://github.com/acme/app/pull/1", { task: "ACME-1", branch: "bA" });
   notePrTask(cacheDir, "https://github.com/acme/app/pull/2", { task: "ACME-2", branch: "bB" });
@@ -1274,4 +1235,33 @@ test("a stack GitHub retargeted itself (the parent's branch deleted) still bring
   open = [{ ...c, baseRefName: "main", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }];
   await watch.tick();
   assert.equal(writes.filter((w) => w.kind === "github.repair" && w.args.number === 3).length, 1, "the conflict goes to ship's repair, not a hold");
+});
+
+test("the change feed drives the passes: every repo once at the start, then a repo an event names; a pass that asks is read again when due; paused, nothing is read", async () => {
+  let t = 1_000_000, paused = false;
+  const passed = [], log = [];
+  const next = { "acme/app": SETTLE_MS };
+  const loop = { repos: ["acme/app", "other/lib"], pass: async (r) => { passed.push(r); if (r === "other/lib" && log.length === 0) { log.push(1); throw new Error("GitHub 502"); } return next[r]; } };
+  const queue = [];
+  let seq = 0;
+  const feed = followFeed(loop, { now: () => t, paused: () => paused, feed: async (after) => after === undefined ? { events: [], next: seq, gap: false } : { events: queue.splice(0).map((e) => ({ seq: ++seq, ...e })), next: seq, gap: false } });
+  feed.stop();
+  await feed.pump();
+  assert.deepEqual(passed.splice(0), ["acme/app", "other/lib"], "the start reads every repo");
+  await feed.pump();
+  assert.deepEqual(passed.splice(0), [], "nothing changed, nothing is due");
+  queue.push({ resource: "Other/Lib", kind: "pull_request.synchronize" }, { resource: "other/lib", kind: "check_run.completed" }, { resource: "elsewhere/x", kind: "push" });
+  await feed.pump();
+  assert.deepEqual(passed.splice(0), ["other/lib"], "one pass for the repo the events name");
+  t += RETRY_MS; await feed.pump();
+  assert.deepEqual(passed.splice(0), [], "a repo read fine waits for its next event");
+  t += SETTLE_MS - RETRY_MS; await feed.pump();
+  assert.deepEqual(passed.splice(0), ["acme/app"], "a pass that asked to be read again is, when due");
+  paused = true;
+  queue.push({ resource: "acme/app", kind: "pull_request.closed" });
+  await feed.pump();
+  assert.deepEqual([passed.splice(0), queue.length], [[], 1], "paused: the log isn't read");
+  paused = false;
+  await feed.pump();
+  assert.deepEqual(passed.splice(0), ["acme/app", "other/lib"], "a resume reads every repo");
 });

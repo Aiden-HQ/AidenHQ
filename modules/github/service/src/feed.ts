@@ -201,7 +201,7 @@ export function createFeed(o: FeedOptions) {
       }
       if (before.head !== p.head) emit({ ...base, id: nextId(`${repo}#${p.n}:head`), kind: "pull_request.synchronize", data: { ...record(p), before: before.head } });
       if (before.draft !== p.draft) emit({ ...base, id: nextId(`${repo}#${p.n}:draft`), kind: p.draft ? "pull_request.converted_to_draft" : "pull_request.ready_for_review", data: record(p) });
-      if (before.title !== p.title) emit({ ...base, id: nextId(`${repo}#${p.n}:title`), kind: "pull_request.edited", data: record(p) });
+      if (before.title !== p.title || before.base_ref !== p.base_ref) emit({ ...base, id: nextId(`${repo}#${p.n}:${before.title !== p.title ? "title" : "base"}`), kind: "pull_request.edited", data: record(p) });
     }
     for (const [n, p] of Object.entries(was)) {
       if (now_[n]) continue;
@@ -468,6 +468,11 @@ export function createFeed(o: FeedOptions) {
       const h = rs.heads[p.head];
       return { state: "OPEN", headRefOid: p.head, commits: { nodes: [{ commit: { statusCheckRollup: h ? rollup(h) : { contexts: { nodes: [] } } } }] } };
     },
+    /** A head's check runs and statuses as a rollup (the newest of each): for Flow's checks facts. */
+    rollup(repo: string, sha: string) {
+      const h = state.repos[repo.toLowerCase()]?.heads[sha];
+      return h ? rollup(h) : { contexts: { nodes: [] } };
+    },
     /** A head's check runs, newest per (suite, name): for Flow's checks facts. */
     runs(repo: string, sha: string): Run[] {
       const h = state.repos[repo.toLowerCase()]?.heads[sha];
@@ -492,6 +497,6 @@ function latestStatuses(h: Head): Status[] {
 function rollup(h: Head) {
   return { contexts: { nodes: [
     ...latestRuns(h).map((r) => ({ __typename: "CheckRun", name: r.name, status: r.status.toUpperCase(), conclusion: r.conclusion ? r.conclusion.toUpperCase() : null })),
-    ...latestStatuses(h).map((s) => ({ __typename: "StatusContext", context: s.context, state: s.state.toUpperCase() })),
+    ...latestStatuses(h).map((s) => ({ __typename: "StatusContext", context: s.context, state: s.state.toUpperCase(), createdAt: s.at })),
   ] } };
 }

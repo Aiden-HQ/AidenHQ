@@ -168,7 +168,7 @@ connections:
 # Check jobs read the repos the code host lands through the kernel's snapshot.
 codehost:
   snapshot: { repos: [ "*/*" ] }
-# The PR watch is the ship module's (modules/ship/service/src/loop.ts): it reaches GitHub, Flow, code review's verdict and
+# The PR watch is the ship module's (modules/ship/service/src/loop.ts): it reaches GitHub, code review's verdict and
 # pr-tasks.json through this service's /internal/ship/* routes (service/src/ship-routes.ts), with ship's own token.
 # A cancelled task's PR is left open and intact for a successor; a done task's unmerged PR is closed.
 # The design review's tasks (service/src/design-review.ts, W6) are filed for the UI Reviewer's role and cancelled when

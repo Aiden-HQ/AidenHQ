@@ -1,4 +1,4 @@
-// The ship service: its state (SHIP_STATE_FILE), the watch loop (loop.ts: every PR through one engine, adopted.ts and rounds.ts,
+// The ship service: its state (SHIP_STATE_FILE), the watch loop (loop.ts, driven by the github change feed: every PR through one engine, adopted.ts and rounds.ts,
 // after its CI recoveries, ci-recover.ts), the contributor-PR pass (contributor.ts), the HTTP API and the MCP connection `ship` on :8101.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -6,13 +6,14 @@ import { dirname, join } from "node:path";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
-import { adoptedPass } from "./adopted.ts";
+import { adoptedPass, ended } from "./adopted.ts";
+import type { Kept } from "./handoff.ts";
 import { ciRecover } from "./ci-recover.ts";
 import { configTools } from "./config-tool.ts";
 import { contributorPrs, contributorPrWake, prTick } from "./contributor.ts";
 import { shipEffects } from "./effects.ts";
 import { effectRefusal } from "./safe.ts";
-import { startLoop, type Flow } from "./loop.ts";
+import { followFeed, startLoop } from "./loop.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { effective, scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
@@ -62,11 +63,6 @@ const gh = async (method: string, path: string, body?: unknown, o?: { deadline?:
   if (r.thrown) throw Object.assign(new Error(String(r.thrown.message)), { cause: r.thrown.cause });
   return r as { status: number; body: any };
 };
-const fact = (fn: string) => (...args: unknown[]) => void github("POST", "flow", { fn, args }).catch((e) => log("flow fact not sent", { fn, err: String(e.message).slice(0, 200) }));
-const flow: Flow = {
-  opened: fact("opened"), pushed: fact("pushed"), merged: fact("merged"), closed: fact("closed"), checksStarted: fact("checksStarted"), checksCompleted: fact("checksCompleted"),
-  authored: async (...args) => (await github("POST", "flow", { fn: "authored", args })).value ?? {},
-};
 
 // The repos the loop watches: the product repo and every maintained repo ship works (all duties), and the other maintained repos
 // with Dependabot on (that duty only).
@@ -87,8 +83,11 @@ for (const m of maintained) {
   else if (m.dependabot !== "off" || tracked(m.repo)) repos.set(m.repo, { duties: "dependabot", dependabot: m.dependabot });
 }
 const effects = shipEffects(kernel, { codeReview: "http://code-review:8098", key: token });
-startLoop({
-  repos: [...repos].map(([repo, v]) => ({ repo, ...v })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, flow, paused,
+const loop = startLoop({
+  repos: [...repos].map(([repo, v]) => ({ repo, ...v })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, paused,
+  // An open PR's adoption that isn't held (a cancelled task's kept PR too: its task may resume) or whose report is still to post, or a
+  // closed one gone() hasn't ended.
+  busy: (repo, open) => (state.all() as Kept[]).some((a) => a.repo.toLowerCase() === repo.toLowerCase() && (open.has(a.number) ? !a.hold || !!a.reportStale : !ended(a))),
   openers: () => github("GET", "openers"),
   recover: ciRecover({ gh, log }),
   // Every PR but Dependabot's: the hand-off (or a task's own PR) and its rounds (handoff.ts, rounds.ts), on GitHub through the same routes.
@@ -99,6 +98,8 @@ startLoop({
     effects,
   }),
 });
+// What changed on GitHub: the change feed's events (module.yaml subscribes:), with this module's token. No GitHub timer.
+followFeed(loop, { feed: (after) => kernel.call("GET", `/v1/events/log?connection=github&limit=200${after === undefined ? "" : `&after=${after}`}`), paused: () => paused() || !token(), log });
 log("ship watch loop", { repos: [...repos].map(([r, v]) => `${r}:${v.duties}:${v.dependabot ?? "all"}`) });
 
 // The contributor_prs pass (contributor.ts): its one state value in data/contributor-prs.json, checked every five minutes (at most
