@@ -461,23 +461,31 @@ set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry comm
 # the path comes from the .env.example a new install copies.
 declare -A VAULT_M=()
 vault_expand() { # RAW: the value the shell gives for one KEY= line, without running it; sets VAULT_UNSET when it would not set it
-  local raw=$1 v='' c n i=0 st=u len=${#1}
+  local raw=$1 v='' c n op def i=0 st=u len=${#1}
   VAULT_UNSET=0
   while [ "$i" -lt "$len" ]; do
     c="${raw:$i:1}"
     if [ "$st" = s ]; then                                                                    # single quotes: literal, till '
       if [ "$c" = "'" ]; then st=u; else v+=$c; fi; i=$((i+1)); continue
     fi
-    if [ "$c" = "'" ]; then st=s; i=$((i+1)); continue; fi                                    # opens only outside quotes
-    if [ "$c" = '"' ]; then [ "$st" = d ] && st=u || st=d; i=$((i+1)); continue; fi            # opens and closes
+    if [ "$c" = "'" ] && [ "$st" = u ]; then st=s; i=$((i+1)); continue; fi                   # opens only outside quotes
+    if [ "$c" = '"' ]; then [ "$st" = d ] && st=u || st=d; i=$((i+1)); continue; fi             # opens and closes
     if [ "$c" = '\' ]; then i=$((i+1)); v+="${raw:$i:1}"; i=$((i+1)); continue; fi             # escapes the next character
     if [ "$c" = '$' ]; then
       i=$((i+1)); n=''
-      if [ "${raw:$i:1}" = '{' ]; then n="${raw:i+1}"; n="${n%%\}*}"; i=$((i+${#n}+1))
-      else while [ "$i" -lt "$len" ]; do case "${raw:$i:1}" in [A-Za-z0-9_]) n+="${raw:$i:1}"; i=$((i+1)) ;; *) break ;; esac; done
-           i=$((i-1)); fi
-      case "$n" in '' ) v+='$' ;; HOME) v+=$H ;; PWD) v+=$REPO ;; *) v+="${VAULT_M[${n}]-}" ;; esac
-      i=$((i+1)); continue
+      if [ "${raw:$i:1}" = '{' ]; then                                                         # ${NAME}, ${NAME:-text}, ${NAME-text}
+        n="$(vault_braced "${raw:$((i+1))}")"; i=$((i+1+${#n}))                     # i: '{', then the text, then '}'
+
+        case "$n" in
+          *:-*) op="${n%:-*}"; def="${n##*:-}"; [ -n "$(vault_var "$op")" ] && v+="$(vault_var "$op")" || v+="$(vault_expand "$def"; printf %s "$VAULT_EXPANDED")" ;;
+          *-*)  op="${n%-*}"; def="${n##*-}"; [ -n "$(vault_var "$op")" ] && v+="$(vault_var "$op")" || v+="$(vault_expand "$def"; printf %s "$VAULT_EXPANDED")" ;;
+          *)    v+="$(vault_var "$n")" ;;
+        esac
+        i=$((i+1)); continue
+      fi
+      while [ "$i" -lt "$len" ]; do case "${raw:$i:1}" in [A-Za-z0-9_]) n+="${raw:$i:1}"; i=$((i+1)) ;; *) break ;; esac; done
+      [ -n "$n" ] && v+="$(vault_var "$n")" || v+='$'
+      continue                                                                                 # i is already past the name
     fi
     if [ "$c" = '~' ] && [ "$st" = u ] && [ -z "$v" ]; then v=$H; i=$((i+1)); continue; fi     # a word-leading ~ is HOME
     if { [ "$c" = ' ' ] || [ "$c" = "$(printf '\t')" ]; } && [ "$st" = u ]; then
@@ -487,6 +495,18 @@ vault_expand() { # RAW: the value the shell gives for one KEY= line, without run
     v+=$c; i=$((i+1))
   done
   VAULT_EXPANDED=$v
+}
+vault_var() { # NAME: what that .env name holds (HOME and PWD as the apply gives them)
+  case "$1" in HOME) printf '%s' "$H" ;; PWD) printf '%s' "$REPO" ;; *) printf '%s' "${VAULT_M[$1]-}" ;; esac
+}
+vault_braced() { # TEXT after '${': the text up to its matching '}'
+  local t=$1 d=1 i=0 c
+  while [ "$i" -lt "${#t}" ]; do c="${t:$i:1}"
+    [ "$c" = '{' ] && d=$((d+1))
+    if [ "$c" = '}' ]; then d=$((d-1)); [ "$d" -eq 0 ] && { printf '%s' "${t:0:$i}"; return; }; fi
+    i=$((i+1))
+  done
+  printf '%s' "$t"
 }
 vault_read() { # FILE: every KEY=value in order (a later line may use an earlier $VAR), the way the apply and compile read it
   VAULT_M=()

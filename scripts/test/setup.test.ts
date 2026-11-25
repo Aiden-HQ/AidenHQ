@@ -137,6 +137,8 @@ test("vault settings are read as the apply's shell reads them", () => {
     ["VAULT_DIR=$HOME/notes/vault", "/home/alice/notes/vault"],                     // unquoted, expands
     ["VAULT_DIR=~/notes/vault # note", "/home/alice/notes/vault"],                  // bare ~ is the shell's tilde
     ["VAULT_DIR='$HOME/notes/vault'", null],                                        // single quotes expand nothing: refused
+    [`VAULT_DIR="it's notes"`, null],                                               // an apostrophe inside "…" is literal: not absolute
+    ['VAULT_DIR=${VAULT_UNSET_X:-/srv/default}', "/srv/default"],                    // a shell default applies when the name is empty
   ];
   for (const [line, dir] of cases) {
     if (dir === null) { assert.throws(() => vaultPlan([line, 'VAULT_FOLDERS="Meetings"']), /must be an absolute path/); continue; }
