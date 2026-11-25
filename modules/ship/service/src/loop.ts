@@ -33,7 +33,7 @@ export type LoopOptions = {
   paused?: () => boolean;
   /** Whether ship has work on the repo that can move with no GitHub event: an open PR's adoption that isn't held (its task's
    * state, a merge record's outcome, a cooldown) or a closed one whose end isn't recorded yet (a task close or wake that failed).
-   * Its repo is then read again after SETTLE_MS. */
+   * Its repo is then read again after RECHECK_MS. */
   busy?: (repo: string, open: Set<number>) => boolean;
   /** A PR's CI recoveries (ci-recover.ts), with the repo's slice of the loop's state. */
   recover: (repo: string, pr: Json, state: Json, save: () => void) => Promise<Recovery>;
@@ -42,11 +42,12 @@ export type LoopOptions = {
 };
 
 /**
- * When a repo is read again with no event (scan's `next`): GitHub computes a PR's mergeability lazily and announces nothing when it
- * has (UNKNOWN_MS), and a round can move with GitHub quiet: its task's state, a merge record's outcome, a re-run's backoff, a check
- * run left wedged after its job finished (SETTLE_MS). A repo with nothing of either is read only when the feed names it.
+ * When a repo is read again with no event (scan's `next`, RECHECK_MS): GitHub computes a PR's mergeability lazily and announces
+ * nothing when it has, and a round can move with GitHub quiet: its task's state, a merge record's outcome, a re-run's backoff, a
+ * check run left wedged after its job finished. A repo with nothing of either is read only when the feed names it. One read is one
+ * GraphQL list (4 points a page of 50 PRs), so a minute costs at most 240 of the 5,000 points an hour per active repo.
  */
-export const UNKNOWN_MS = 60_000, SETTLE_MS = 5 * 60_000;
+export const RECHECK_MS = 60_000;
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json, which: "off" | "failing" | "all") {
@@ -117,7 +118,7 @@ export function startLoop(o: LoopOptions) {
 
     if (duties === "dependabot") return { open: open.length };
 
-    if (!main.oid) return { open: open.length, next: SETTLE_MS };
+    if (!main.oid) return { open: open.length, next: RECHECK_MS };
     const opened: Json = await o.openers();
     let next: number | undefined;
     const after = (ms: number) => { next = Math.min(next ?? ms, ms); };
@@ -140,16 +141,16 @@ export function startLoop(o: LoopOptions) {
         const parents = open.filter((p) => p.number !== pr.number && p.isCrossRepository === false && p.headRefName === pr.baseRefName);
         const under = parents.find((p) => p.baseRefName === main.name) ?? parents[0];
         await o.adopted.open(repo, main, pr, new Set(open.map((p) => p.number)), { ...(task ? { opener: task } : {}), ...(newer ? { newer } : {}), ...(under ? { stackedOn: { number: under.number, base: String(under.baseRefName) } } : {}), recover: () => o.recover(repo, pr, state, save), ...(bump ? { bump } : {}) });
-      } catch (e) { log("PR pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }); after(SETTLE_MS); }
-      if (pr.mergeable === "UNKNOWN") after(UNKNOWN_MS);
+      } catch (e) { log("PR pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }); after(RECHECK_MS); }
+      if (pr.mergeable === "UNKNOWN") after(RECHECK_MS);
       // A check run not completed may be left wedged after its job finished (ci-recover.ts): no event says so.
-      else if (pr.isCrossRepository === false && (rollupOf(pr)?.contexts?.nodes ?? []).some((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED")) after(SETTLE_MS);
+      else if (pr.isCrossRepository === false && (rollupOf(pr)?.contexts?.nodes ?? []).some((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED")) after(RECHECK_MS);
     }
     const numbers = new Set(open.map((p) => p.number));
     await o.adopted.gone(repo, main.name, numbers).catch((e) => log("landed check failed", { repo, err: String((e as Error).message).slice(0, 300) }));
     // A CI recovery that backs off (a refused or unanswered re-run, ci-recover.ts) is asked again once its time comes.
     const heads = new Set(open.map((p) => String(p.headRefOid)));
-    if (o.busy?.(repo, numbers) || Object.entries<string>(state.reran ?? {}).some(([k, v]) => v.startsWith("retry:") && Date.parse(v.slice(6)) > Date.now() - SETTLE_MS && k.split(":").some((x) => heads.has(x)))) after(SETTLE_MS);
+    if (o.busy?.(repo, numbers) || Object.entries<string>(state.reran ?? {}).some(([k, v]) => v.startsWith("retry:") && Date.parse(v.slice(6)) > Date.now() - RECHECK_MS && k.split(":").some((x) => heads.has(x)))) after(RECHECK_MS);
     return { open: open.length, ...(next !== undefined ? { next } : {}) };
   }
 

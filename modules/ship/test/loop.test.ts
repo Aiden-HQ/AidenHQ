@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { followFeed, RETRY_MS, SETTLE_MS, startLoop } from "../service/src/loop.ts";
+import { followFeed, RETRY_MS, startLoop } from "../service/src/loop.ts";
 import { adoptedPass } from "../service/src/adopted.ts";
 import { ciRecover } from "../service/src/ci-recover.ts";
 import { PRESETS } from "../service/src/settings.ts";
@@ -1240,7 +1240,8 @@ test("a stack GitHub retargeted itself (the parent's branch deleted) still bring
 test("the change feed drives the passes: every repo once at the start, then a repo an event names; a pass that asks is read again when due; paused, nothing is read", async () => {
   let t = 1_000_000, paused = false;
   const passed = [], log = [];
-  const next = { "acme/app": SETTLE_MS };
+  const due = 3 * RETRY_MS;
+  const next = { "acme/app": due };
   const loop = { repos: ["acme/app", "other/lib"], pass: async (r) => { passed.push(r); if (r === "other/lib" && log.length === 0) { log.push(1); throw new Error("GitHub 502"); } return next[r]; } };
   const queue = [];
   let seq = 0;
@@ -1255,7 +1256,7 @@ test("the change feed drives the passes: every repo once at the start, then a re
   assert.deepEqual(passed.splice(0), ["other/lib"], "one pass for the repo the events name");
   t += RETRY_MS; await feed.pump();
   assert.deepEqual(passed.splice(0), [], "a repo read fine waits for its next event");
-  t += SETTLE_MS - RETRY_MS; await feed.pump();
+  t += due - RETRY_MS; await feed.pump();
   assert.deepEqual(passed.splice(0), ["acme/app"], "a pass that asked to be read again is, when due");
   paused = true;
   queue.push({ resource: "acme/app", kind: "pull_request.closed" });
