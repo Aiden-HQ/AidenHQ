@@ -144,19 +144,24 @@ test("a review task whose close fails is closed on a later tick", async () => {
   assert.equal(w.closed.length, 1);
 });
 
-test("a PR open at the first look, or seen before any run, gets its on_open review once; a draft waits; a merge while the review ran still posts, a close does not", async () => {
+test("the first look at a repo reviews only its newest open PR, then each PR opened after it; an older one is reviewed when asked for", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
-  w.pr(1, sha("1")); w.pr(2, sha("2"), { draft: true }); w.pr(3, sha("3"), { author: "dependabot[bot]" });
-  await w.tick(); // first look
-  assert.deepEqual(w.started.map((s) => s.number), [1, 3]);
-  await w.tick(); w.later(1000); await w.tick();
-  assert.equal(w.started.length, 2); // once each
+  w.pr(1, sha("1")); w.pr(2, sha("2"), { draft: true }); w.pr(3, sha("3")); w.pr(5, sha("5"));
+  await w.tick(); // first look: #5 is the newest
+  assert.deepEqual(w.started.map((s) => s.number), [5]);
+  assert.deepEqual(w.classifieds.map((a) => a.number), [5]); // no tier comment on the backlog either
+  // A new PR is reviewed, a push to the backlog is not; the idle pass leaves the backlog alone.
+  w.later(1000); w.pr(6, sha("6")); w.pr(3, sha("3b")); await w.tick(); w.later(3_600_000); await w.tick(); w.later(DEBOUNCE); await w.tick();
+  assert.deepEqual(w.started.map((s) => s.number), [5, 6]);
+  // `aiden review` on the backlog's PR reviews it (any head), and it is followed from then on.
+  w.later(1000); w.say(3, "alice", "aiden review"); await w.tick();
+  assert.deepEqual(w.started.map((s) => s.number), [5, 6, 3]);
   // Merged while its review ran: the finished review posts. Closed unmerged: it doesn't.
-  w.prs.set(1, { ...w.prs.get(1), open: false, merged: true });
-  w.prs.set(3, { ...w.prs.get(3), open: false, merged: false });
+  w.prs.set(5, { ...w.prs.get(5), open: false, merged: true });
+  w.prs.set(6, { ...w.prs.get(6), open: false, merged: false });
   await w.tick(); w.finish(0); w.finish(1); await w.tick();
-  assert.deepEqual(w.posted.map((p) => p.review.pr), [1]);
-  assert.deepEqual(w.engine.runs({ repo: REPO }).filter((r) => r.number === 3).map((r) => [r.status, r.why]), [["skipped", "closed"]]);
+  assert.deepEqual(w.posted.map((p) => p.review.pr), [5]);
+  assert.deepEqual(w.engine.runs({ repo: REPO }).filter((r) => r.number === 6).map((r) => [r.status, r.why]), [["skipped", "closed"]]);
 });
 
 test("a force-push past the last reviewed head reviews in full", async () => {

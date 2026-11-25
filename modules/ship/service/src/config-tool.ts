@@ -69,22 +69,22 @@ const same = (a: unknown, b: string) => String(typeof a === "string" ? a : (a as
 
 /**
  * Adds a repo to ship: one settings change that lists it for the Maintainer (maintainer_repos, no duty on, unless already listed) and
- * code review (code_review, its defaults) and gives it its ship entry, so what is missing lands together or none does. Only the owner's Fleet page calls it.
+ * gives it its ship entry, so what is missing lands together or none does. Code review is separate and stays as it is: the owner
+ * turns it on from the Reviews page (a repo it doesn't watch merges by the `unwatched` setting). Only the owner's Fleet page calls it.
  */
 export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string, change: unknown) {
   if (!REPO.test(repo)) throw new Error(`${repo.slice(0, 100)} isn't owner/name`);
   const { value, summary } = applyShipChange(d.raw, { repo, change: change ?? "cautious", scope: { ...d.scope, listed: [...d.scope.listed, repo] } });
   // A repo the Maintainer already lists (or the fleet covers) keeps its entry and duties: only what is missing is added.
-  const listed = covers(repo, d.scope), watched = ((d.codeReview.repos as unknown[]) ?? []);
+  const listed = covers(repo, d.scope);
   const changes: Dict[] = [
     ...(listed ? [] : [{ kind: "setting", key: "maintainer_repos", value: [...d.maintainerRepos, { repo, fixes: false }] }]),
-    ...(watched.some((x) => same(x, repo)) ? [] : [{ kind: "setting", key: "code_review", value: { ...d.codeReview, repos: [...watched, { repo }] } }]),
     { kind: "setting", key: "ship", value: (({ paused: _p, ...ship }) => ship)(value) },
   ];
-  return { changes, summary: [`${repo}: added to ship (${listed ? "already listed" : "listed for the Maintainer"}, and code review), then ${summary[0]!.slice(repo.length + 2)}`] };
+  return { changes, summary: [`${repo}: added to ship (${listed ? "already listed" : "listed for the Maintainer"}; code review is turned on from the Reviews page), then ${summary[0]!.slice(repo.length + 2)}`] };
 }
 
-/** Takes a listed repo off ship, the Maintainer and code review in one change: no ship entry is left outside the scope. Only the owner's Fleet page calls it. */
+/** Takes a listed repo off ship and the Maintainer in one change (and off code review when the owner watches it there): no ship entry is left outside the scope. Only the owner's Fleet page calls it. */
 export function removeRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string) {
   if (!covers(repo, d.scope) && Object.keys((d.raw.repos as Dict) ?? {}).some((k) => same(k, repo))) {
     // An orphan entry (its repo left the Maintainer): only the ship entry goes.
@@ -96,20 +96,21 @@ export function removeRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknow
   const { paused: _p, ...ship } = structuredClone(d.raw);
   const repos = (ship.repos ?? {}) as Dict;
   for (const k of Object.keys(repos)) if (same(k, repo)) delete repos[k];
-  const watched = ((d.codeReview.repos as unknown[]) ?? []).filter((x) => !same(x, repo));
+  const reviewed = ((d.codeReview.repos as unknown[]) ?? []);
+  const watched = reviewed.filter((x) => !same(x, repo));
   return {
     changes: [
       { kind: "setting", key: "maintainer_repos", value: d.maintainerRepos.filter((x) => !same(x, repo)) },
-      { kind: "setting", key: "code_review", value: { ...d.codeReview, repos: watched } },
+      ...(watched.length === reviewed.length ? [] : [{ kind: "setting", key: "code_review", value: { ...d.codeReview, repos: watched } }]),
       { kind: "setting", key: "ship", value: { ...ship, repos } },
     ] as Dict[],
-    summary: [`${repo}: removed from ship, the Maintainer and code review`],
+    summary: [`${repo}: removed from ship and the Maintainer${watched.length === reviewed.length ? "" : " and code review"}`],
   };
 }
 
 export function configTools(d: {
   raw: () => Dict; scope: () => Scope; state: State;
-  /** maintainer_repos and settings.code_review as compiled (a new repo is added to both). */
+  /** maintainer_repos and settings.code_review as compiled (a new repo is added to maintainer_repos; code_review is only read, for a remove). */
   maintainerRepos: () => unknown[]; codeReview: () => Dict;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
@@ -133,13 +134,13 @@ export function configTools(d: {
     },
     {
       name: "ship_configure", roles: ["ship-admin"],
-      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (reset: [field, caps.x, by_tier.<tier>.approve or merge, or unwatched.merge to drop back to the preset], enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label, actions { conflict | behind | before_merge: [ { comment: /rebase } | { workflow: pr-rebase.yml, inputs? } ] }: the repo's own commands and workflows, before_merge workflows only, an ordinary change) or null to drop the entry } and/or { paused: true | false } for the kill switch (its own setting, ship_paused: it works whatever state the repo entries are in); { edits: { repos: { <repo>: change, … }, paused? } } applies several together (the Fleet page's pending edits); or { repo, add: true } (the owner's: lists a new repo for the Maintainer and code review and gives it its ship entry), or { repo, remove: true } (the owner's: it takes a listed repo off ship, the Maintainer and code review). A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a tier's approve or merge raised, a wider fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
+      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (reset: [field, caps.x, by_tier.<tier>.approve or merge, or unwatched.merge to drop back to the preset], enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label, actions { conflict | behind | before_merge: [ { comment: /rebase } | { workflow: pr-rebase.yml, inputs? } ] }: the repo's own commands and workflows, before_merge workflows only, an ordinary change) or null to drop the entry } and/or { paused: true | false } for the kill switch (its own setting, ship_paused: it works whatever state the repo entries are in); { edits: { repos: { <repo>: change, … }, paused? } } applies several together (the Fleet page's pending edits); or { repo, add: true } (the owner's: lists a new repo for the Maintainer and gives it its ship entry; code review is separate, turned on from the Reviews page), or { repo, remove: true } (the owner's: it takes a listed repo off ship and the Maintainer, and off code review when it is watched there). A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a tier's approve or merge raised, a wider fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
       inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {}, paused: { type: "boolean" }, add: { type: "boolean" }, remove: { type: "boolean" }, edits: { type: "object" } }, additionalProperties: false },
       run: async (a, caller) => {
         const raw = d.raw(), scope = d.scope(), owner = caller.kind === "owner";
         const repo = typeof a.repo === "string" ? a.repo : undefined;
         const hasEntry = (r: string) => Object.keys((raw.repos as Dict) ?? {}).some((k) => same(k, r));
-        const notYours = (r: string) => `${r} isn't covered yet: adding a repo (its maintainer_repos, code_review and ship entries together) is the owner's: ask them to add it from the Fleet page`;
+        const notYours = (r: string) => `${r} isn't covered yet: adding a repo (its maintainer_repos and ship entries together) is the owner's: ask them to add it from the Fleet page`;
         let changes: Dict[], summary: string[], l: string[] = [];
         if (a.remove === true && repo) {
           if (!owner) throw new Error("removing a repo is the owner's: ask them to remove it from the Fleet page");

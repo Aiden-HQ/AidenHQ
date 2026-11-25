@@ -276,7 +276,7 @@
   function draw() {
     closeHelp();
     $("pausehelp").replaceChildren(help("Pause", "The kill switch. While paused, Ship adopts, pushes, approves and merges nothing, and PRs resume where they were when you switch it back on.", { note: "It works whatever each repo is set to." }));
-    $("addhelp").replaceChildren(help("Add repo", "Lists a repo as owner/name for Ship, the Maintainer and code review. It starts on the cautious preset.", { bare: true }));
+    $("addhelp").replaceChildren(help("Add repo", "Lists a repo as owner/name for Ship and the Maintainer. It starts on the cautious preset. Code review is separate and stays off for it: turn it on from the Reviews page (until then the Unwatched row below says when Ship merges).", { bare: true }));
     $("holdhead").replaceChildren(help("On hold", "A hold means Ship stopped working a PR and is waiting for a person. It stays held until a member hands the PR off again: add the ship label or comment /ship.", { options: HOLDS, note: "A PR carrying the stop label (ship:stop by default) is left alone until the label is removed." }));
     $("count").textContent = status.repos.length ? `${status.repos.length}` : "";
     const paused = pending.paused ?? status.paused;

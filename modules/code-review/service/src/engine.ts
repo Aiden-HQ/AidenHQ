@@ -12,8 +12,9 @@
 // ledger's tokens, duration, and its findings (table findings) with their later outcome: fixed (a later recheck found it gone),
 // open_at_merge or open_at_close (still open when the PR closed).
 //
-// A PR open at the first look at a repo (or seen before any run existed) gets its on_open batch like a new one: every open,
-// non-draft PR is reviewed once. Only the install's spend limit bounds how many.
+// The first look at a repo (it was just added to the watched repos) reviews only the newest open PR (the highest number: the last one
+// opened) and every PR opened after it, with their pushes. The older open PRs are backlog (cutoffs): they get no automatic review, no tier
+// comment, until `aiden review` or a request asks for one; after that they are followed like any PR.
 // A push debounces (DEBOUNCE): another push in the window replaces the queued batch, so a burst of pushes is one review each.
 // On a gated repo each open PR's head carries the commit status aidenhq/review, mirroring verdict() (mirror): GitHub's view of the
 // verdict; the merge queue still asks verdict() itself.
@@ -196,6 +197,8 @@ CREATE TABLE IF NOT EXISTS dispositions (finding TEXT NOT NULL, repo TEXT NOT NU
   reason TEXT NOT NULL, evidence TEXT, by TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS dispositions_pr ON dispositions (repo, number, finding);
 CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);
+-- The newest open PR's number at a repo's first look: an older PR with no review is backlog and gets none unless asked for.
+CREATE TABLE IF NOT EXISTS cutoffs (repo TEXT PRIMARY KEY, number INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));
 CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, repo TEXT NOT NULL, sha TEXT NOT NULL, options TEXT NOT NULL, combo TEXT NOT NULL,
   status TEXT NOT NULL, verdict TEXT, report TEXT, report_url TEXT, report_version INTEGER, report_why TEXT, created INTEGER NOT NULL, ended TEXT,
@@ -1729,7 +1732,7 @@ export function createEngine(d: EngineDeps) {
   async function noteTier(p: PullRequest) {
     const row = prRow(p.repo, p.number);
     const key = `${p.head}:${row?.tier}`;
-    if (!row?.tier || row.head !== p.head || row.noted === key || acking_(p.repo, p.number)) return;
+    if (backlog(p) || !row?.tier || row.head !== p.head || row.noted === key || acking_(p.repo, p.number)) return;
     // A head a run already reported on keeps that run's notice (its phase, counts and review link): the run's own notices carry the tier line.
     const reported = lastRunAck(p.repo, p.number)?.head === p.head;
     if (reported || await ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
@@ -1758,6 +1761,7 @@ export function createEngine(d: EngineDeps) {
   function decide(cfg: Entry, p: PullRequest, was: PrRow | undefined): boolean {
     const t = current(p.repo, p.number, p.head);
     if (!t) return false;
+    if (backlog(p)) return true;
     // The head the triggers last ran for: a push seen while its tier was pending is still a push once it is classified.
     const seen = was?.handled ?? was?.head;
     run("UPDATE prs SET handled = ? WHERE repo = ? AND number = ?", p.head, p.repo, p.number);
@@ -1817,6 +1821,7 @@ export function createEngine(d: EngineDeps) {
   async function bootstrap(cfg: Entry) {
     const cursor = one<{ comments: string }>("SELECT comments FROM cursors WHERE repo = ?", cfg.repo);
     const open = await d.source.open(cfg.repo);
+    if (!cursor) run("INSERT OR IGNORE INTO cutoffs (repo, number) VALUES (?, ?)", cfg.repo, Math.max(0, ...open.map((p) => p.number)));
     const seenNow = new Set(open.map((p) => p.number));
     for (const p of open) await observe(cfg, p);
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
@@ -1847,6 +1852,8 @@ export function createEngine(d: EngineDeps) {
   async function feed() {
     const repos = new Map(d.config().repos.map((c) => [c.repo, c]));
     if (after === undefined) {
+      // A repo taken off the watched list forgets its first look: adding it again is a new first look.
+      for (const r of all<{ repo: string }>("SELECT repo FROM cursors")) if (!repos.has(r.repo)) { run("DELETE FROM cursors WHERE repo = ?", r.repo); run("DELETE FROM cutoffs WHERE repo = ?", r.repo); }
       after = (await d.feed()).next;
       for (const r of repos.keys()) boot.add(r);
     }
@@ -1878,6 +1885,8 @@ export function createEngine(d: EngineDeps) {
     for (const { cfg, n } of threads.values()) claimsDue.add(`${cfg.repo}#${n}`);
     after = page.next;
   }
+  /** An open PR older than the newest one at its repo's first look that nothing has reviewed or been asked to review: left alone. */
+  const backlog = (p: PullRequest) => p.number < (one<{ number: number }>("SELECT number FROM cutoffs WHERE repo = ?", p.repo)?.number ?? 0) && !anyRun(p);
   const anyRun = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ?", p.repo, p.number);
   /** A new head is a push (on_push, from the baseline) once any review of the PR (but a one-off) completed, whatever became of
    * its post; until then (a push before it finished) the newest head gets the opening review. A skipped or superseded run never

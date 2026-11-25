@@ -41,14 +41,14 @@ test("ship_status reads headline settings and holds for the Fleet page", async (
   assert.deepEqual([r.paused, row, r.held.length, settings.caps.usd, r.defaults.preset, r.defaults.settings.caps.usd], [false, { repo: "a/b", preset: "full", enabled: true, handoff: "all", by_tier: PRESETS.full.by_tier, unwatched: { merge: "ready" }, actions: {}, over: [] }, 1, null, "cautious", 5]);
 });
 
-test("ship_configure for the owner returns the settings change and files nothing; a new repo covers its three settings", async () => {
+test("ship_configure for the owner returns the settings change and files nothing; a new repo covers maintainer_repos and ship, and leaves code review alone", async () => {
   const filed: unknown[] = [];
   const tool = configTools({ raw: () => ({ repos: { "a/b": "cautious" } }), scope: () => scope, state: state(), maintainerRepos: () => ["a/b"], codeReview: () => ({ repos: [] }), file: async (c) => (filed.push(c), {}) }).find((t) => t.name === "ship_configure")!;
   const owner = { agent: "", roles: [], kind: "owner" };
   const loosened = (await tool.run({ repo: "a/b", change: { by_tier: { sensitive: { approve: "on" } } } }, owner)) as any;
   assert.deepEqual(loosened._aidenhq.settings_change.map((c: any) => [c.key, c.value.repos["a/b"].by_tier]), [["ship", { sensitive: { approve: "on" } }]]);
   const added = (await tool.run({ repo: "x/y", add: true }, owner)) as any;
-  assert.deepEqual(added._aidenhq.settings_change.map((c: any) => c.key), ["maintainer_repos", "code_review", "ship"]);
+  assert.deepEqual(added._aidenhq.settings_change.map((c: any) => c.key), ["maintainer_repos", "ship"]);
   assert.deepEqual(added._aidenhq.settings_change[0].value, ["a/b", { repo: "x/y", fixes: false }]);
   assert.deepEqual(filed, []);
   await assert.rejects(tool.run({ repo: "x/y", add: true }, { agent: "x", roles: ["ship-admin"], assertion: "jwt" }), /owner's/);
@@ -57,10 +57,14 @@ test("ship_configure for the owner returns the settings change and files nothing
   await assert.rejects(tool.run({ repo: "a/b", add: true }, owner), /already on ship/);
 });
 
-test("removing a listed repo is one change across maintainer_repos, code_review and ship, and the owner's", async () => {
+test("removing a listed repo is one change across maintainer_repos and ship (and code_review when it is watched there), and the owner's", async () => {
   const tool = configTools({ raw: () => ({ repos: { "a/b": "cautious" } }), scope: () => scope, state: state(), maintainerRepos: () => ["a/b", "c/d"], codeReview: () => ({ repos: [{ repo: "a/b" }] }), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
   const r = (await tool.run({ repo: "a/b", remove: true }, { agent: "", roles: [], kind: "owner" })) as any;
   assert.deepEqual(r._aidenhq.settings_change.map((c: any) => c.value), [["c/d"], { repos: [] }, { repos: {} }]);
+  // A repo code review doesn't watch: code_review is not touched.
+  const plain = configTools({ raw: () => ({ repos: { "a/b": "cautious" } }), scope: () => scope, state: state(), maintainerRepos: () => ["a/b"], codeReview: () => ({ repos: [{ repo: "c/d" }] }), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
+  const q = (await plain.run({ repo: "a/b", remove: true }, { agent: "", roles: [], kind: "owner" })) as any;
+  assert.deepEqual(q._aidenhq.settings_change.map((c: any) => c.key), ["maintainer_repos", "ship"]);
   await assert.rejects(tool.run({ repo: "a/b", remove: true }, { agent: "x", roles: ["ship-admin"] }), /owner's/);
 });
 
