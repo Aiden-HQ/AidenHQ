@@ -888,7 +888,7 @@ rm -rf "$archives"
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
 if [ -n "$inst" ]; then scan repo:instance "$(git -C "$inst" rev-parse HEAD 2>/dev/null || true)" -v "$inst:/src:ro" -- dir:/src --exclude './.git/**' --exclude '**/node_modules/**'; fi
 apps="$PWD/data/apps/.platform"
-apps_real="$(realpath -e "$apps" 2>/dev/null || printf '%s' "$apps")"
+apps_real="$(realpath -e "$PWD/data/apps" 2>/dev/null || printf '%s' "$PWD/data/apps")"
 for src in "$apps"/*/src; do
   # A checkout that is gone is nothing to report; a link whose target is gone is a checkout this pass cannot scan, and
   # realpath below is what says so.
@@ -898,11 +898,13 @@ for src in "$apps"/*/src; do
   # tree while its rows still name this app, and the findings would read as the app's. The scan root has to be the app's
   # own checkout: one that resolves anywhere else is a line naming both paths, and no syft run that could misread it.
   if ! real="$(realpath -e "$src" 2>/dev/null)"; then
-    fail "app:$app" "checkout $src does not resolve (a broken link?); it should be the app's own checkout $apps_real/$app/src"
+    fail "app:$app" "checkout $src does not resolve (a broken link?); it should be the app's own checkout $apps_real/.platform/$app/src"
     continue
   fi
-  if [ "$real" != "$apps_real/$app/src" ]; then
-    fail "app:$app" "checkout $src resolves to $real; it should be the app's own checkout $apps_real/$app/src"
+  # The expected path is built from the data dir alone, never from `.platform`: resolving that level too would make a
+  # redirected platform tree compare equal to itself, and its apps would still be published under their own names.
+  if [ "$real" != "$apps_real/.platform/$app/src" ]; then
+    fail "app:$app" "checkout $src resolves to $real; it should be the app's own checkout $apps_real/.platform/$app/src"
     continue
   fi
   # The commit names the tree the rows came from, as for repo: targets. An app checkout that is not a git repo of its
