@@ -18,7 +18,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), app = true } = {}) {
+async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), app = true, toolsDir = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -28,9 +28,24 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   sh(root, "init", "--quiet", "-b", "main", ws);
   writeFileSync(join(ws, "a.txt"), "a\n");
   sh(ws, "add", "a.txt");
+  // `toolsDir`: the base holds `tools` as a file, and main makes it a directory (`tools/run`) while the PR's head keeps the file:
+  // git merges the two cleanly into `tools/run` alone, so the repair's result names a directory where the head names a file.
+  if (toolsDir) writeFileSync(join(ws, "tools"), "hi\n");
+  sh(ws, "add", "a.txt", ...(toolsDir ? ["tools"] : []));
   sh(ws, "commit", "--quiet", "-m", "init");
   sh(ws, "push", "--quiet", origin, "main");
-  sh(ws, "checkout", "--quiet", "-b", "contrib");
+  const base = sh(ws, "rev-parse", "HEAD");
+  if (toolsDir) {
+    // `toolsDir: "deep"` puts nothing directly under `tools` (only `tools/bin/run`): the file->directory probe must handle depth.
+    const inner = toolsDir === "deep" ? "bin/run" : "run";
+    sh(ws, "rm", "--quiet", "tools");
+    mkdirSync(join(ws, "tools", dirname(inner)), { recursive: true });
+    writeFileSync(join(ws, "tools", inner), toolsDir === "deep" ? "run\n" : "run\n");
+    sh(ws, "add", `tools/${inner}`);
+    sh(ws, "commit", "--quiet", "-m", "main: tools is a directory");
+    sh(ws, "push", "--quiet", origin, "main");
+  }
+  sh(ws, "checkout", "--quiet", "-b", "contrib", base);
   writeFileSync(join(ws, "b.txt"), "b\n");
   sh(ws, "add", "b.txt");
   sh(ws, "commit", "--quiet", "-m", "contributor");
@@ -59,6 +74,19 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   sh(ws, "commit", "--quiet", "-m", "F");
   const F = sh(ws, "rev-parse", "HEAD");
   sh(ws, "push", "--quiet", origin, "HEAD:refs/heads/lease");
+  // A box commit that turns the head's file `tools` into a directory (`tools/run`): the ordinary publish path (`apiCommits`) must
+  // build its tree from the commit's own tree too, never a `D tools` next to `A tools/run`.
+  let fileToDir;
+  if (toolsDir) {
+    sh(ws, "checkout", "--quiet", "-b", "filedir", c1);
+    sh(ws, "rm", "--quiet", "tools");
+    mkdirSync(join(ws, "tools"));
+    writeFileSync(join(ws, "tools", "run"), "run as a file first\n");
+    sh(ws, "add", "tools/run");
+    sh(ws, "commit", "--quiet", "-m", "tools becomes a directory");
+    fileToDir = sh(ws, "rev-parse", "HEAD");
+    bundle(fileToDir);
+  }
   // A branch the same task already owns at H, for the ordinary fast-forward it must still land.
   sh(ws, "push", "--quiet", origin, `${H}:refs/heads/ff`);
   bundle(H);
@@ -73,6 +101,9 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   let duringRepair;
   // A ref update GitHub refuses for its own reasons (a rule), never a moved head: the branch reads back at the expected head.
   let refuseRef = false;
+  // A tree GitHub refuses (as it does on a null entry for a path that is a directory in the result): the repair's failure text.
+  let refuseTree = false;
+  const treePosts = [];
   // A PR closed after ship's first read and before its ref update (`duringPush`), so the recheck before the branch moves is tested.
   let duringPush;
   const kernel = await listen(async (req, res) => {
@@ -116,10 +147,32 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (body?.as === "app" && path.startsWith(`/repos/${REPO}/git/`)) return { status: 403, body: { message: "Resource not accessible by integration" } };
     const git = (args, o = {}) => execFileSync("git", args, { cwd: origin, encoding: "utf8", ...o, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_COMMITTER_NAME: "app", GIT_COMMITTER_EMAIL: "app@example.com", GIT_AUTHOR_NAME: "app", GIT_AUTHOR_EMAIL: "app@example.com", ...o.env } }).trim();
     if (method === "POST" && path === `/repos/${REPO}/git/blobs`) return { status: 201, body: { sha: git(["hash-object", "-w", "--stdin"], { input: Buffer.from(body.content, "base64") }) } };
+    // The blob store's own answer, which is how the writes find a blob they need not upload (a GET is a read, never a write).
+    if (method === "GET" && new RegExp(`^/repos/${REPO}/git/blobs/[0-9a-f]{40}$`).test(path)) {
+      const sha = path.split("/").pop();
+      try { git(["cat-file", "-e", `${sha}^{blob}`]); return { status: 200, body: { sha } }; } catch { return { status: 404, body: { message: "Not Found" } }; }
+    }
     if (method === "POST" && path === `/repos/${REPO}/git/trees`) {
+      treePosts.push(body);
+      if (refuseTree) return { status: 422, body: { message: "Invalid tree info", ...(typeof refuseTree === "object" ? { errors: refuseTree.errors } : {}) } };
+      // GitHub's own validation: a `sha:null` entry names a path to delete, and it refuses the whole tree (422 Invalid tree info)
+      // when that path is a directory in the resulting tree, as a diff's `D tools` next to an added `tools/run` is. The base's
+      // own entries play no part: the result is the base with the entries applied, so a deletion the base also lists is still a
+      // deletion, and what makes it a directory is a path *added* under it.
+      const added = body.tree.filter((e) => e.sha !== null).map((e) => e.path);
+      for (const e of body.tree) if (e.sha === null && added.some((p) => p.startsWith(`${e.path}/`))) return { status: 422, body: { message: "Invalid tree info" } };
       const env = { GIT_INDEX_FILE: join(root, `idx-${Math.random()}`) };
       git(["read-tree", body.base_tree], { env });
-      for (const e of body.tree) git(e.sha === null ? ["update-index", "--force-remove", e.path] : ["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`], { env });
+      for (const e of body.tree) {
+        // A deletion is a null-sha entry: the index drops the path (its own mode bytes go with it).
+        if (e.sha === null) { execFileSync("git", ["update-index", "-z", "--index-info"], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", ...env }, input: `0 ${"0".repeat(40)}\t${e.path}\0` }); continue; }
+        // A path under a file at the base replaces that file with a directory, as GitHub's tree write does.
+        for (const dir of e.path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))) {
+          if (!git(["ls-files", "--", dir], { env })) continue;
+          execFileSync("git", ["update-index", "-z", "--index-info"], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", ...env }, input: `0 ${"0".repeat(40)}\t${dir}\0` });
+        }
+        git(["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`], { env });
+      }
       return { status: 201, body: { sha: git(["write-tree"], { env }) } };
     }
     // GitHub signs a commit as the identity whose token made it: the owner's login, or the reviewer App's bot.
@@ -185,7 +238,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, c1, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; } };
+  return { root, ws, origin, base, c1, fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, checks, repairResult, treePosts, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; }, refuseTree: (v) => { refuseTree = v; } };
 }
 
 test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
@@ -375,6 +428,21 @@ test("a push onto an adopted PR's branch that GitHub's own rules refuse keeps Gi
   sh(scratch, "commit", "--quiet", "-m", "contributor again");
   sh(scratch, "push", "--quiet", origin, "contrib");
   assert.match((await run("k-00000000000000b5", "github.push", args)).text, /^ship-head-moved/);
+});
+
+// Issue #1820, the other construction: `apiCommits` (ship's ordinary publish onto an adopted PR's branch) built its tree from a
+// diff pair too, so a commit that turns a file into a directory (`tools` -> `tools/run`) was refused the same way.
+test("a publish that turns the head's file into a directory builds its tree from the commit's tree, with no null-sha entry", async (t) => {
+  const { origin, c1, fileToDir, run, treePosts } = await setup(t, { toolsDir: true });
+  const pushed = await run("k-00000000000000a3", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fileToDir }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
+  assert.equal(pushed.ok, true, pushed.text);
+  const sent = treePosts.at(-1).tree;
+  assert.ok(!sent.some((e) => e.sha === null && e.path === "tools"), `no null-sha entry for \`tools\`: ${JSON.stringify(sent)}`);
+  const entry = sent.find((e) => e.path === "tools/run");
+  assert.ok(entry, `\`tools/run\` is sent: ${JSON.stringify(sent)}`);
+  assert.equal(entry.mode, "100644", "the mode is git's own");
+  assert.equal(entry.sha, sh(origin, "rev-parse", "refs/heads/contrib:tools/run"));
+  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "the published branch has the directory");
 });
 
 test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts as the App", async (t) => {
@@ -683,6 +751,99 @@ test("a fork that allows maintainer edits: the fix and the repair are pushed to 
   assert.equal(sh(fork, "rev-parse", "refs/heads/contrib^2"), main);
   assert.equal(sh(fork, "ls-tree", "--name-only", "refs/heads/contrib", "gen.txt"), "", "the generated file's deletion is applied");
   assert.equal(sh(fork, "show", "refs/heads/contrib:b.txt"), "b", "the contributor's own file stays");
+});
+
+// Issue #1820: a path that is a file at the PR's head and a directory in the merge (`tools` -> `tools/run`). The raw diff pairs
+// `D tools` with `A tools/run`, and a `sha:null` entry for `tools` next to `tools/run` is a tree GitHub refuses (422 Invalid tree
+// info). The entries come from the merge tree instead: no null-sha entry for a path the result holds as a directory, and every
+// mode is git's own.
+test("ship's repair builds the tree from the merge tree: a path that is a file at the head and a directory in the merge has no null-sha entry, and the tree lands", async (t) => {
+  const { origin, c1, main, run, treePosts } = await setup(t, { toolsDir: true });
+  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools"), "blob", "the head holds `tools` as a file");
+  assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/main", "tools/"), "tools/run", "main holds `tools` as a directory");
+  const r = await run("k-00000000000000a1", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
+  assert.equal(r.ok, true, r.text);
+  // The entries the repair sent: no null-sha entry for `tools` (a directory in the merge), and `tools/run` at git's own mode/sha.
+  const sent = treePosts.at(-1).tree;
+  assert.deepEqual(sent.filter((e) => e.sha === null), [], `no deletion is needed: ${JSON.stringify(sent)}`);
+  assert.ok(!sent.some((e) => e.path === "tools"), "no entry names `tools`, which the merge holds as a directory");
+  assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/contrib", "tools/"), "tools/run", "the branch holds `tools` as the merge's directory, never the head's file");
+  const tools = sent.find((e) => e.path === "tools/run");
+  assert.ok(tools, `\`tools/run\` is sent: ${JSON.stringify(sent)}`);
+  assert.equal(tools.mode, sh(origin, "ls-tree", "refs/heads/contrib", "tools/run").split(/\s+/)[0], "the mode is git's own for that path");
+  assert.equal(tools.sha, sh(origin, "rev-parse", "refs/heads/contrib:tools/run"), "and its sha");
+  // The branch moved to the repair's merge commit, whose tree is git's, and `tools` is the directory main made it.
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^1"), c1);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^2"), main);
+  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "the repair's tree has `tools/run`");
+  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "owner1");
+});
+
+// A deletion in the same repair is still an entry — the head's own path, at git's own mode for it — so the fix does not trade the
+// 422 for a lost deletion.
+test("ship's repair's deletion is the head's own path, next to a path that became a directory", async (t) => {
+  const { origin, c1, run, repairResult, treePosts } = await setup(t, { toolsDir: true });
+  repairResult.keep.entries = [{ path: "b.txt", mode: "100644", sha: null }];
+  const r = await run("k-00000000000000a7", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["b.txt"] } });
+  assert.equal(r.ok, true, r.text);
+  assert.deepEqual(treePosts.at(-1).tree.filter((e) => e.sha === null), [{ path: "b.txt", mode: "100644", type: "blob", sha: null }], "the delete is the head's own path, never `tools`");
+  assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/contrib", "b.txt"), "", "the deleted file is gone");
+  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "and `tools` is still the merge's directory");
+});
+
+// The same defect one level down: `tools` becomes `tools/bin/run`, so nothing sits directly under `tools`. A probe that only reads
+// `tools/`'s direct children sees the tree `tools/bin` and can still send `D tools` beside it — the same 422.
+test("ship's repair treats a path as a directory at any depth: `tools` -> `tools/bin/run` sends no null-sha entry for it", async (t) => {
+  const { origin, c1, run, treePosts } = await setup(t, { toolsDir: "deep" });
+  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools"), "blob", "the head holds `tools` as a file");
+  assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/main", "tools/"), "tools/bin", "main holds `tools` with only a directory under it");
+  const r = await run("k-00000000000000a5", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
+  assert.equal(r.ok, true, r.text);
+  const sent = treePosts.at(-1).tree;
+  assert.deepEqual(sent.filter((e) => e.path === "tools"), [], `no entry names \`tools\`: ${JSON.stringify(sent)}`);
+  const entry = sent.find((e) => e.path === "tools/bin/run");
+  assert.ok(entry, `\`tools/bin/run\` is sent: ${JSON.stringify(sent)}`);
+  assert.equal(entry.mode, "100644");
+  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/bin/run"), "blob");
+});
+
+// A blob at another path: the head holds `big.bin`, and the repair keeps the same bytes under `copy.bin` (a rename both sides
+// agree on). The blob is already on GitHub as the head's copy, so it is reused by its sha and never read here — a lookup by the
+// destination path alone would miss it, and a large enough blob would exceed the read limit and abort the repair.
+test("ship's repair reuses a blob GitHub already holds at another path instead of uploading it again", async (t) => {
+  const { origin, ws, pr, run, calls, repairResult } = await setup(t);
+  const big = Buffer.alloc(5000, 7);
+  sh(ws, "checkout", "--quiet", "contrib");
+  writeFileSync(join(ws, "big.bin"), big);
+  sh(ws, "add", "big.bin");
+  sh(ws, "commit", "--quiet", "-m", "contributor: a binary");
+  sh(ws, "push", "--quiet", origin, "contrib");
+  const head = sh(ws, "rev-parse", "HEAD");
+  pr.head = head;
+  const sha = sh(ws, "hash-object", "big.bin");
+  repairResult.keep.entries = [{ path: "copy.bin", mode: "100644", sha }];
+  const before = calls.filter((c) => c.method === "POST" && c.path.endsWith("/git/blobs")).length;
+  const r = await run("k-00000000000000a6", "github.repair", { repo: REPO, number: 7, head, generation: 2, base: "main", plan: { globs: ["copy.bin"] } });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/git/blobs")).length, before, "the blob GitHub already held at the head is not uploaded again");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib:copy.bin"), sha);
+});
+
+test("ship's repair's refusal text names the tree diff and the entry GitHub refused, never a bare 422", async (t) => {
+  const { c1, run, refuseTree } = await setup(t);
+  refuseTree(true);
+  const r = await run("k-00000000000000a2", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
+  assert.equal(r.ok, false);
+  // The entry leads (ship's hold keeps the first 300 characters of the first line, so it must name the path), then the diff,
+  // GitHub's words and the whole entry list — never a bare 422.
+  assert.match(r.text, /^ship-refused: GitHub refused tree entry \{"path":"gen\.txt","mode":"100644","type":"blob","sha":"[0-9a-f]{40}"\} \(the first sent: GitHub named none\) — acme-agents\/widget [0-9a-f]{12}\.\.[0-9a-f]{12}: 422 Invalid tree info; carried 1 change\(s\): \+gen\.txt@100644/);
+  assert.match(r.text, /\(https:\/\/github\.com\/acme-agents\/widget\/pull\/7\): nothing was changed\.$/);
+  // GitHub pointing at the entry (`errors[].index`) is used as is, with its reason.
+  refuseTree({ errors: [{ index: 0, message: "tools is a tree in this result, not a file to delete" }] });
+  const named = await run("k-00000000000000a4", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
+  assert.equal(named.ok, false);
+  assert.match(named.text, /^ship-refused: GitHub refused tree entry \{"path":"gen\.txt"/);
+  assert.match(named.text, /422 Invalid tree info \(tools is a tree in this result, not a file to delete\)/);
 });
 
 test("ship's repair takes the box's files only on generated paths and conflicted lockfiles: never a workflow, a gitlink, a source file, an untouched lockfile or a new symlink", async (t) => {
