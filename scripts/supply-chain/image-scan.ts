@@ -12,11 +12,13 @@
 // Accepted risks (.github/image-scan-accepted.yaml, read from the base commit, the owner's approval): one finding in one
 // image pinned by digest that no newer upstream release of that image fixes yet, for at most 14 days; an expired entry fails the scan.
 // No dependencies, Node 22+; a byte-identical copy is in the app CI template.
-//   node image-scan.ts [--exceptions <file>] [--accepted <file>] [--local <name>=<Dockerfile>]... -- <Dockerfile>...
+//   node image-scan.ts [--exceptions <file>] [--accepted <file>] [--local <name>=<Dockerfile>]... [--service-image <ref>]... -- <Dockerfile>...
 //     (options only before --; everything after it is a path, even one that starts with -)
 //     (grype on PATH; GRYPE_DB_CACHE_DIR)
 // --local: an image this repository builds itself, named by a FROM (e.g. an ARG default): scanned through its own
 // Dockerfile, never pulled from a registry under the same name.
+// --service-image: an image a module's module.yaml pins outright (services.run.<service>.image): the change that re-pins it
+// names it, and it is scanned from the registry as published, exactly as a Dockerfile's FROM base image is (never built).
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -45,7 +47,7 @@ interface Stage { base: Source; runs: string[]; copies: { src: Source; paths: st
 export interface Use { final: boolean; finalRuns: string[]; copies: { paths: string[]; runs: string[] }[]; mounted: boolean }
 export interface Exception { image: string; vulnerability?: string; expires?: string; path?: string; when?: string }
 export interface Accepted { id: string; image: string; expires: string }
-type PlannedImage = { ref: string; uses: (Use & { df: string })[] };
+type PlannedImage = { ref: string; uses: (Use & { df: string })[]; service?: boolean };
 
 /**
  * What a Dockerfile's text names: `refs`, each { image } (a registry reference) or { local } (a --local name) with
@@ -259,8 +261,12 @@ export function meets(e: Exception, use: Use): boolean {
   return (!use.final || replaced(use.finalRuns)) && use.copies.every((c) => !covers(c.paths, e.path!) || replaced(c.runs));
 }
 
-/** The scan targets for some Dockerfiles: directories, and images each with every use of it, each once, in order. */
-export function plan(dockerfiles: string[], { root, local = new Map() }: { root: string; local?: Map<string, string> }) {
+/**
+ * The scan targets for some Dockerfiles: directories, and images each with every use of it, each once, in order. A
+ * `services` ref is a module service image no Dockerfile names: scanned whole from the registry (`service: true`), so no
+ * Dockerfile exception (which needs a use) applies to it.
+ */
+export function plan(dockerfiles: string[], { root, local = new Map(), services = [] }: { root: string; local?: Map<string, string>; services?: string[] }) {
   const realRoot = realpathSync(root);
   const inside = (p: string) => p === realRoot || p.startsWith(realRoot + sep);
   const dirs: string[] = [], images = new Map<string, (Use & { df: string })[]>(), done = new Set<string>(), notes: string[] = [];
@@ -283,7 +289,8 @@ export function plan(dockerfiles: string[], { root, local = new Map() }: { root:
     done.add(df);
   };
   for (const df of dockerfiles) visit(df, []);
-  return { dirs, images: [...images].map(([ref, uses]) => ({ ref, uses })), notes };
+  for (const ref of services) if (!images.has(ref)) images.set(ref, []);
+  return { dirs, images: [...images].map(([ref, uses]) => ({ ref, uses, ...(uses.length ? {} : services.includes(ref) ? { service: true } : {}) })), notes };
 }
 
 /**
@@ -298,6 +305,8 @@ export function ignored(image: PlannedImage, exceptions: Exception[], now = Date
     else skipped.push(`${e.vulnerability} not ignored: its exception expired on ${e.expires}`);
   }
   for (const path of new Set(mine.filter((x) => x.path).map((e) => e.path))) {
+    // A service image ships as its registry publishes it: no Dockerfile builds on it, so no path exception can hold.
+    if (image.service) { skipped.push(`${path} not ignored: ${nameOf(image.ref)} is a module service image, published as it is`); continue; }
     const forPath = mine.filter((e) => e.path === path);
     const miss = image.uses.find((u) => !forPath.some((e) => meets(e, u)));
     if (miss) skipped.push(`${path} not ignored: ${miss.df} meets none of its conditions (${forPath.map((e) => e.when).join("; ")})`);
@@ -307,7 +316,7 @@ export function ignored(image: PlannedImage, exceptions: Exception[], now = Date
 }
 
 function main(argv: string[]): number {
-  const local = new Map<string, string>(), dockerfiles: string[] = [];
+  const local = new Map<string, string>(), dockerfiles: string[] = [], services: string[] = [];
   let exceptions: Exception[] = [], accepted: { entries: Accepted[]; expired: Accepted[] } = { entries: [], expired: [] };
   try {
     for (let i = 0; i < argv.length; i++) {
@@ -316,6 +325,10 @@ function main(argv: string[]): number {
         const m = /^([^=]+)=(.+)$/.exec(argv[++i] ?? "");
         if (!m || !NAMED.test(m[1]!) || !PATH.test(m[2]!)) throw new Error(`--local ${show(argv[i])} is not <name>=<Dockerfile>`);
         local.set(m[1]!, m[2]!);
+      } else if (argv[i] === "--service-image") {
+        const ref = argv[++i] ?? "";
+        if (!IMAGE.test(ref)) throw new Error(`--service-image ${show(ref)} is not a digest-pinned reference (name:tag@sha256:…)`);
+        services.push(ref);
       } else if (argv[i] === "--exceptions") exceptions = readExceptions(readFileSync(argv[++i]!, "utf8"));
       else if (argv[i] === "--accepted") accepted = readAccepted(readFileSync(argv[++i]!, "utf8"));
       else throw new Error(`${show(argv[i])} is not an option; paths go after --`);
@@ -325,7 +338,7 @@ function main(argv: string[]): number {
   console.log("image-scan scans each image's directory (lock files, manifests) and the base images its Dockerfile names, without building it.");
   console.log("::warning::Not covered: packages that RUN steps install (apt, pip, downloads) and ADD downloads. Only base-image and lock-file changes are proven here.");
   let p: ReturnType<typeof plan>;
-  try { p = plan(dockerfiles, { root, local }); } catch (e) { console.log(`::error::${(e as Error).message}`); return 1; }
+  try { p = plan(dockerfiles, { root, local, services }); } catch (e) { console.log(`::error::${(e as Error).message}`); return 1; }
   for (const n of p.notes) console.log(n);
   // grype runs from an empty directory, as its HOME too, with its own config and no other environment: nothing in the
   // checkout or the job (a .grype.yaml, GRYPE_* variables) configures it.

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { checkAges, dateApt, scanFile } from "../supply-chain/pins.ts";
+import { checkAges, dateApt, scanFile, wanted } from "../supply-chain/pins.ts";
 
 // Debian publishes its -updates/-security indexes as Packages.xz only, decoded by the system `xz` (no dependency). The
 // decoder check skips where it isn't installed, so the suite still runs on a bare Node.
@@ -63,6 +63,43 @@ test("pins: unpinned images, actions, installs and apt after a repo fail; new pi
   for (const over of [{ digest: undefined }, { digest: `sha256:${"e".repeat(64)}` }, { expires: "2020-01-01" }, { expires: new Date(now + 30 * 86400000).toISOString().slice(0, 10) }]) {
     assert.equal((await checkAges({ pins: [img], exceptions: owner(over), date: fresh, now })).length, 1, JSON.stringify(over));
   }
+});
+
+test("pins: a module.yaml service image is a pin, and an agent-level image line is not", async () => {
+  const d = (c: string) => `@sha256:${c.repeat(64)}`;
+  const text = [
+    "name: primer",
+    "agents:",
+    "  ui-designer:",
+    "    image: agent-base", // a computer image, never a registry pin
+    "services:",
+    "  data: true",
+    "  run:",
+    "    primer-server:",
+    "      build: ./server", // built here: this repository's own image
+    "    primer-db:",
+    "      when: { primer_mode: self-host }",
+    `      image: postgres:17.12${d("a")}`,
+    "      env:",
+    "        PGDATA: /var/lib/postgresql/data/pgdata",
+    `        REF: "x${d("e")}"`, // a digest-shaped value under a service is not the service's image
+    "    plain:",
+    "      tmp: 16m", // neither build nor image
+  ].join("\n");
+  const r = scanFile("modules/primer/module.yaml", text);
+  assert.deepEqual(r.problems, []);
+  assert.deepEqual(r.pins.map((p) => [p.kind, p.name, p.version, p.digest, p.at]), [["docker", "postgres:17.12", "17.12", `sha256:${"a".repeat(64)}`, "modules/primer/module.yaml:12"]]);
+  // A tag alone is a problem, with the Dockerfile path's message; a flow-style services map is refused rather than read past.
+  assert.deepEqual(scanFile("modules/x/module.yaml", "services:\n  run:\n    db:\n      image: postgres:17\n").problems, ["modules/x/module.yaml:4: image postgres:17 has no digest (name:tag@sha256:…)"]);
+  assert.match(scanFile("modules/x/module.yaml", `services: { run: { db: { image: postgres:17${d("a")} } } }\n`).problems[0]!, /flow map/);
+  // Only modules/<name>/module.yaml: a template's manifest is not a service the instance runs.
+  assert.equal(wanted("modules/primer/module.yaml"), true);
+  assert.equal(wanted("modules/agent-builder/templates/digest-writer/module.yaml"), false);
+  // The pin is dated once it changes against the base: scanRef visits the file at both refs, so a re-pin is a new pin.
+  const base = scanFile("modules/primer/module.yaml", text.replace(`17.12${d("a")}`, `17.12${d("b")}`)).pins;
+  const date = async (p: { name: string }) => ({ published: day(p.name === "postgres:17.12" ? 2 : 30), via: "registry" });
+  assert.equal((await checkAges({ pins: r.pins, basePins: base, date, now })).length, 1);
+  assert.deepEqual(await checkAges({ pins: r.pins, basePins: r.pins, date, now }), []);
 });
 
 test("pins: a debian:sid-slim base dates its apt pin from Debian sid", async () => {

@@ -1,11 +1,74 @@
 // The image-scan check (the product's CI and the app CI template). Its selection step, run for real on a scratch repo: a
 // Dockerfile a PR changes is always selected, whatever its FROM (a `FROM $X` it can't resolve fails the scan; it is never
-// skipped), and a change that touches no image selects nothing. And its Dockerfile reader (supply-chain/image-scan.ts),
-// which names the only images grype pulls: it refuses anything but a plain digest-pinned reference.
+// skipped), a module.yaml-only service image re-pin selects that registry image, and a change that touches no image selects
+// nothing. And its Dockerfile reader (supply-chain/image-scan.ts), which names the only images grype pulls: it refuses
+// anything but a plain digest-pinned reference.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { bases } from "../supply-chain/image-scan.ts";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { parse } from "yaml";
+import { bases, plan } from "../supply-chain/image-scan.ts";
+
+const root = join(import.meta.dirname, "../..");
+// The product's CI: its `find` step selects the service images a module.yaml-only change re-pins (an app repo's template has
+// no modules/, so it is unchanged there).
+const findStep = () => { const { jobs } = parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8")); return jobs.checks.steps.find((s: { id: string }) => s.id === "find").run; };
+// A scratch repository of its own, with a git and a put bound to it.
+const scratch = (t: { after: (f: () => void) => void }) => {
+  const dir = mkdtempSync(join(tmpdir(), "image-scan-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+  const git = (...a: string[]) => execFileSync("git", a, { cwd: dir, env, stdio: "pipe" }).toString().trim();
+  const put = (p: string, text: string) => (mkdirSync(join(dir, dirname(p)), { recursive: true }), writeFileSync(join(dir, p), text));
+  git("init", "-q", "-b", "main");
+  return { dir, git, put, env };
+};
+
+test("image-changes selects a module.yaml-only service image re-pin, and never an agent-level image line", (t) => {
+  const { dir, git, put, env } = scratch(t);
+  const d = (c: string) => `@sha256:${c.repeat(64)}`;
+  const manifest = (ref: string, agent = "agent-base") => `name: primer\nagents:\n  ui-designer:\n    image: ${agent}\nservices:\n  run:\n    primer-db:\n      image: ${ref}\n    primer-server:\n      build: ./server\n`;
+  put("modules/primer/module.yaml", manifest(`postgres:17.12${d("a")}`));
+  put("modules/design/module.yaml", manifest(`postgres:17.12${d("a")}`, "agent-base"));
+  put("README.md", "x\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD");
+  // The step run for real on the scratch repo, as CI runs it: both outputs it writes.
+  const select = () => {
+    const head = git("rev-parse", "HEAD"), out = join(dir, "out");
+    writeFileSync(out, "");
+    execFileSync("bash", ["-c", findStep()], { cwd: dir, env: { ...env, BASE_SHA: base, PR_BASE: base, HEAD_SHA: head, GITHUB_OUTPUT: out, GITHUB_EVENT_NAME: "pull_request" }, stdio: "pipe" });
+    return readFileSync(out, "utf8").trim();
+  };
+  // A docs-only change, and a change to the agent-level `image:` line alone, select nothing.
+  put("README.md", "y\n");
+  git("commit", "-qam", "docs");
+  assert.equal(select(), "dockerfiles=\nservices=");
+  put("modules/design/module.yaml", manifest(`postgres:17.12${d("a")}`, "engineer"));
+  git("commit", "-qam", "agent image");
+  assert.equal(select(), "dockerfiles=\nservices=");
+  // A module.yaml-only re-pin of the service image selects that registry image (and no Dockerfile).
+  put("modules/primer/module.yaml", manifest(`postgres:17.12${d("b")}`));
+  git("commit", "-qam", "re-pin");
+  assert.equal(select(), `dockerfiles=\nservices=postgres:17.12${d("b")}`);
+});
+
+test("plan scans a selected service image from the registry, never as a build", (t) => {
+  const d = "@sha256:" + "a".repeat(64);
+  const ref = `postgres:17.12${d}`;
+  // A service image with no Dockerfile is a registry target, whole: no per-path Dockerfile exception can hold for it.
+  const p = plan([], { root, services: [ref] });
+  assert.deepEqual(p.dirs, []);
+  assert.deepEqual(p.images, [{ ref, uses: [], service: true }]);
+  // A Dockerfile that names the same image keeps its uses, so its exceptions still apply to it.
+  const { dir, put } = scratch(t);
+  put("db/Dockerfile", `FROM ${ref}\n`);
+  assert.deepEqual(plan(["db/Dockerfile"], { root: dir, services: [ref] }).images, [{ ref, uses: [{ final: true, finalRuns: [], copies: [], mounted: false, df: "db/Dockerfile" }] }]);
+});
 
 test("the image-scan reader passes grype digest-pinned references only, and refuses injected or odd ones", () => {
   const d = "@sha256:" + "a".repeat(64);

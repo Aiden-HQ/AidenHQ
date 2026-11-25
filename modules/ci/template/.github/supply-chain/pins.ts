@@ -6,6 +6,8 @@
 // Pinned (checked over the whole tree at head):
 //   Dockerfiles   `# syntax=`, FROM and COPY --from images by digest (build stages, `scratch` and FROM ${ARG} aside);
 //   compose       every `image:` by digest, unless its service has a `build:`;
+//   modules       modules/<name>/module.yaml: every `services.run.<service>.image` by digest (a `build:` service is this
+//                 repository's own image, and the agent-level `image:` lines name a computer image: neither is a pin);
 //   workflows     every `uses:` by a 40-character commit SHA with its tag in a comment (`# v1.2.3`), local ./ aside;
 //   commands      (Dockerfile RUN, *.sh, workflow lines) `npm i -g` and `npx -y` at an exact version, `pip install`
 //                 at `==`, no `curl | sh`, and after a script adds an apt repository (sources.list.d) every apt install
@@ -62,6 +64,7 @@ const WORKFLOW = /(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/;
 const SHELL = /\.sh$/;
 const CODE = /\.(m?js|ts)$/;
 const HOST_PINS = /(^|\/)ops\/vm\/pins\.json$/;
+const MODULE = /^modules\/[^/]+\/module\.yaml$/;
 const SKIP = /(^|\/)(node_modules|test\/fixtures)\//;
 const DIGEST = /@sha256:[0-9a-f]{64}$/;
 const DEFAULT_RELEASE = "noble"; // a host file that names no release: Ubuntu 24.04 (hosts are amd64)
@@ -123,7 +126,7 @@ function baseDistro(ref: string): { distro: string; release: string; suiteAlias?
   return undefined;
 }
 
-export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));
+export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path) || MODULE.test(path));
 
 // The delimiter of the first here-document a line opens, with quoted text as data: `echo 'a << b'` opens none, and
 // `<<'EOF'` names EOF. `<<<` is a here-string, not a here-document, and so is `<<` with no word after it (a redirection of
@@ -827,6 +830,51 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
 }
 
 /**
+ * modules/<name>/module.yaml: each service's `image:` under `services.run` is a registry pin, by digest like a compose
+ * service's (a `build:` service is this repository's own image, and the agent-level `image:` lines name a computer image:
+ * neither is one). Read with a small indentation-aware walk of the one key path, not a YAML parser (this file takes no
+ * dependencies): the modules write `services` in block form, and a flow-style map is refused rather than read past, since it
+ * would hide an image from the check.
+ */
+function modulePins(path: string, text: string): { pins: Pin[]; problems: string[] } {
+  const pins: Pin[] = [], problems: string[] = [];
+  const at = (n: number) => `${path}:${n}`;
+  // Each service's declaration, in the order the file first names it.
+  const services = new Map<string, { image?: { ref: string; line: number }; build: boolean }>();
+  const stack: { indent: number; key: string }[] = [];
+  let flow = 0; // the first `services`/`services.run` written as a flow map: its images can't be read below
+  text.split("\n").forEach((raw, i) => {
+    const line = raw.replace(/\r$/, "");
+    if (/^\s*(#.*)?$/.test(line)) return;
+    // A key line only: a list item, a directive or anything else is not part of a service declaration's keys.
+    const m = /^(\s*)([A-Za-z0-9_.-]+):(?:\s+(.*))?$/.exec(line);
+    if (!m) return;
+    const indent = m[1]!.length, key = m[2]!, value = m[3];
+    while (stack.length && stack.at(-1)!.indent >= indent) stack.pop();
+    stack.push({ indent, key });
+    const keys = stack.map((s) => s.key);
+    const flowMap = /^[{[\[]/.test(value ?? "") && ((key === "services" && keys.length === 1) || (key === "run" && keys.length === 2 && keys[0] === "services"));
+    if (flowMap && !flow) flow = i + 1;
+    if (keys.length === 3 && keys[0] === "services" && keys[1] === "run") {
+      if (!services.has(key)) services.set(key, { build: false });
+    } else if (keys.length === 4 && keys[0] === "services" && keys[1] === "run") {
+      const svc = services.get(keys[2]!);
+      if (!svc) return;
+      if (key === "build") svc.build = true;
+      // The value is a plain scalar: no quotes, no comment; a ref never holds whitespace.
+      const ref = value === undefined ? undefined : /^["']?([^\s"'#]+)/.exec(value)?.[1];
+      if (key === "image" && ref && !ref.includes("$") && !svc.image) svc.image = { ref, line: i + 1 };
+    }
+  });
+  if (flow) problems.push(`${at(flow)}: services is written as a flow map; only the block form's service images can be checked`);
+  for (const { image, build } of services.values()) {
+    if (build || !image) continue;
+    DIGEST.test(image.ref) ? pins.push(imagePin(image.ref, at(image.line))) : problems.push(`${at(image.line)}: image ${image.ref} has no digest (name:tag@sha256:…)`);
+  }
+  return { pins, problems };
+}
+
+/**
  * ops/vm/pins.json: one apt pin per package and release, with the file's repositories as that release reads them. A file
  * with no releases dates its top-level `apt` for DEFAULT_RELEASE (as scanFile does for a host script naming none); an `apt`
  * block no release can read (not an object of pins, or under a release that isn't an object) is a problem, never skipped.
@@ -1005,6 +1053,7 @@ function applyCopy(state: State, targets: { name: string; entries: string[]; unk
 /** One file's pins and its unpinned problems. */
 export function scanFile(path: string, text: string): { pins: Pin[]; problems: string[] } {
   if (HOST_PINS.test(path)) return hostPins(path, text);
+  if (MODULE.test(path)) return modulePins(path, text);
   const pins: Pin[] = [], problems: string[] = [];
   let state: State = emptyState();
   const at = (n: number) => `${path}:${n}`;

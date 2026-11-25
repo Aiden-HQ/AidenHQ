@@ -332,6 +332,7 @@ jobs:
       actions: read # how busy hosted runners are
     outputs:
       dockerfiles: ${{ steps.find.outputs.dockerfiles }}
+      services: ${{ steps.find.outputs.services }}
       tests: ${{ steps.tests.outputs.tests }}
       packages: ${{ steps.tests.outputs.packages }}
       modules: ${{ steps.tests.outputs.modules }}
@@ -485,8 +486,59 @@ jobs:
               esac
             done <<< "$changed"
           done < <(git ls-files -z | grep -izE '(^|/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$' | grep -zvE '\.(m?[jt]s|json|md|ya?ml|sh)$')
+          # A module's service image is pinned in its manifest (modules/<name>/module.yaml, services.run.<service>.image), not
+          # in a Dockerfile, so a module.yaml-only change would select nothing. The service images whose ref changes between
+          # base and head are printed one space-separated line of digest-pinned references (the scan step passes each as
+          # --service-image, one argv word), read from the head's file: only services.run's own `image:`, never the
+          # agent-level `image:` lines (a computer image, not a registry pin). An unpinned or odd ref is left out here: policy
+          # (pins.ts) is what fails it, and the scan takes only what it can pull.
+          services=$(node --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            const [base, head] = process.argv.slice(1);
+            const git = (...a) => execFileSync("git", a, { encoding: "utf8" });
+            const show = (ref, file) => { try { return git("show", `${ref}:${file}`); } catch { return ""; } };
+            // services.run.<service> from its keys by indentation: each service and its `image:` and `build:`, nothing deeper.
+            const images = (text) => {
+              const out = new Map(), stack = [];
+              for (const raw of text.split("\n")) {
+                const line = raw.replace(/\r$/, "");
+                if (/^\s*(#.*)?$/.test(line)) continue;
+                const m = /^(\s*)([A-Za-z0-9_.-]+):(?:\s+(.*))?$/.exec(line);
+                if (!m) continue;
+                const indent = m[1].length, key = m[2], value = m[3];
+                while (stack.length && stack.at(-1).indent >= indent) stack.pop();
+                stack.push({ indent, key });
+                const keys = stack.map((s) => s.key);
+                if (keys.length === 3 && keys[0] === "services" && keys[1] === "run") out.set(key, { build: false, image: undefined });
+                else if (keys.length === 4 && keys[0] === "services" && keys[1] === "run") {
+                  const svc = out.get(keys[2]);
+                  if (!svc) continue;
+                  if (key === "build") svc.build = true;
+                  const ref = value === undefined ? undefined : /^[\x22\x27]?([^\s\x22\x27#]+)/.exec(value)?.[1];
+                  if (key === "image" && ref && !ref.includes("$")) svc.image = ref;
+                }
+              }
+              return out;
+            };
+            // One argv word, no option: the scan script holds the strict reference grammar and refuses anything looser.
+            const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._:@\/-]*@sha256:[0-9a-f]{64}$/;
+            const refs = [];
+            for (const file of git("diff", "--name-only", base, head).split("\n").filter((f) => /^modules\/[^/]+\/module\.yaml$/.test(f))) {
+              const now = images(show(head, file)), before = images(show(base, file));
+              for (const [svc, { build, image }] of now) {
+                if (build || !image || before.get(svc)?.image === image) continue;
+                if (PLAIN.test(image)) refs.push(image);
+                else console.error(`::warning::${file}: services.run.${svc}.image ${JSON.stringify(image)} is not a digest-pinned reference; policy reports it`);
+              }
+            }
+            console.error(`Service images to scan: ${refs.length ? refs.join(" ") : "none"}`);
+            // stdout holds the refs alone: the shell keeps this line as the output.
+            console.log(refs.join(" "));
+          ' "$base" "$HEAD_SHA") || exit 1
           echo "Images to scan:${found:- none}"
+          echo "Service images to scan:${services:- none}"
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
+          echo "services=$services" >> "$GITHUB_OUTPUT"
 
   # The 7-day rule (lockfile entries, images, actions, apt packages and global installs this change adds or alters must be
   # 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the head)
@@ -560,11 +612,12 @@ jobs:
   # annotations on the check. Secrets (secrets.yml, gitleaks) and the 7-day rule (policy) stay blocking.
   image-scan:
     needs: checks
-    if: needs.checks.outputs.dockerfiles != ''
+    if: needs.checks.outputs.dockerfiles != '' || needs.checks.outputs.services != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       DOCKERFILES: ${{ needs.checks.outputs.dockerfiles }}
+      SERVICES: ${{ needs.checks.outputs.services }}
       PR_BASE: ${{ github.event.pull_request.base.sha }}
       PUSH_BEFORE: ${{ github.event.before }}
     steps:
@@ -610,7 +663,12 @@ jobs:
           # image): each scanned through its own Dockerfile, never pulled from a registry image of the same name. DOCKERFILES is split on spaces, never globbed (set -f); the
           # find step refused any path with whitespace or a leading -, and -- ends the options.
           set -f
+          # SERVICES is a module's changed service images (services.run.<service>.image), each a digest-pinned ref the find step
+          # already grammar-checked; split on spaces like DOCKERFILES and passed one --service-image each, so a ref is one argv word.
+          service_args=()
+          for ref in $SERVICES; do service_args+=(--service-image "$ref"); done
           GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.ts" --exceptions "$RUNNER_TEMP/exceptions.yaml" "${accepted[@]}" \
+            "${service_args[@]}" \
             --local aidenhq/computer-engineer=services/computer/images/engineer/Dockerfile \
             --local aidenhq/computer-agent-base=services/computer/images/agent-base/Dockerfile \
             --local aidenhq/computer-browser=services/computer/images/browser/Dockerfile -- $DOCKERFILES
