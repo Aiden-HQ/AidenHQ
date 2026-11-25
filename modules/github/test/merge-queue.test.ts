@@ -1559,6 +1559,14 @@ test("the review gate's findings key follows the whole set of reasons, not the c
   assert.ok(one && "findingsKey" in one && two && "findingsKey" in two && one.findingsKey !== two.findingsKey);
 });
 
+test("the gate keeps how a wait unblocks apart from the wait itself, which is what ship's decision carries", async () => {
+  const body = { ok: true, status: 200, json: async () => ({ verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "record each outcome with the code_review_resolve tool" }] }) } as Response;
+  const g = await createReviewGate({ gated: ["acme/x"], url: "http://cr", key: () => "k", fetchFn: async () => body })("acme/x", 1, "h");
+  assert.ok(g && "wait" in g);
+  assert.equal(g.wait, "code review: 1 important finding open: t (a.ts:3)");
+  assert.equal(g.unblock, "record each outcome with the code_review_resolve tool");
+});
+
 test("a sign-out still says signed out, and is cleared when GitHub reconnects", async (t) => {
   // The other half of the split: `connected` false is a sign-out, and its reason is the reconnect's.
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };

@@ -10,7 +10,7 @@ import { advance, discovered, stageOf, suggestLines, type Gh } from "./actions.t
 import type { Discovered } from "./discover.ts";
 import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
 import { queueNext, type QueueFacts, type QueueNext, type Queued } from "./queue.ts";
-import { renderReport, type Facts } from "./report.ts";
+import { ACK, HOLD, renderReport, say, waitFacts, type Facts } from "./report.ts";
 import { staleApproval, type Judged, type Risk } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
@@ -39,8 +39,6 @@ export interface RoundFacts extends QueueFacts {
   findingsKey?: string;
   /** Red at a head behind a green base: GitHub's update-branch is tried once at this head before any fix_ci wake. */
   behindGreen?: boolean;
-  /** Report-only facts (risk, review). */
-  report?: Omit<Facts, "state" | "waits" | "failing" | "onBase">;
 }
 
 export interface RoundDeps {
@@ -93,7 +91,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       if (a.queue && a.queue.base !== pr.base) {
         a = { ...a, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
         d.state.put(a);
-        await report(d, a, pr, { state: `merged into \`${pr.base}\`, not the base it was queued for (\`${a.queue.base}\`)`, stopLabel: s.stop_label });
+        a = await report(d, a, pr, { kind: "hold", text: `Merged into \`${pr.base}\`, not the base it was queued for (\`${a.queue.base}\`). A person checks that this is what was meant.` });
         return "acted";
       }
       for (const t of tasksOf(a)) {
@@ -106,7 +104,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       if (a.owner?.kind === "task") await tell(d, a, pr, `**Merged:** ${pr.url} is merged at \`${pr.head.slice(0, 12)}\`. Finish your task if this was its change.`, `merged.${pr.head.slice(0, 12)}`);
       a = { ...a, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
       d.state.put(a);
-      await report(d, a, pr, { state: "merged", stopLabel: s.stop_label });
+      a = await report(d, a, pr, a.merge?.head === pr.head ? { kind: "merged", text: "Merged by Ship." } : { kind: "merged" });
     }
     return "acted";
   }
@@ -128,23 +126,21 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const j = f.approval;
   const risk = f.risk;
   const merge = risk?.merge ?? "off";
-  const facts: Facts = { ...(suggest.length ? { suggest } : {}), state: "working", stopLabel: s.stop_label, ...(risk ? { risk } : {}), ...(f.report ?? {}), ...(f.failing?.length ? { failing: f.failing, onBase: f.onBase ?? [] } : {}),
-    ...(j && risk && risk.approve !== "off" ? { approval: risk.approve === "observe" ? (j.ok ? `would approve: ${j.why}` : `would not: ${j.why}`) : j.ok ? `approves: ${j.why}` : `not yet: ${j.why}` } : {}) };
-  const save = async (state: string, waits?: string) => { d.state.put(a!); await report(d, a!, pr, { ...facts, state, ...(waits ? { waits } : {}) }); };
-  const hold = async (reason: string) => {
+  const save = async (f: Facts) => { d.state.put(a!); a = await report(d, a!, pr, f); };
+  const hold = async (reason: string, plain: string) => {
     // Its owner is told: a task's PR wakes whoever asked for the task; a member's PR assigns its author (and the report says why).
     const assign = a!.owner?.kind === "task" || pr.authorBot || !pr.author ? [] : [pr.author];
     if (assign.length) await d.assign(pr.repo, pr.number, assign).catch((e) => d.log("assign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
     if (a!.owner?.kind === "task") await tell(d, a!, pr, `**Ship stopped on ${pr.url}** at \`${pr.head.slice(0, 12)}\`: ${reason}. A new push resumes it. Decide its next step: re-scope the task, fix the cause another way, or tell the owner.`, `hold.${pr.head.slice(0, 12)}.${c.rounds}.${c.wakes}`, true);
     a = { ...a!, hold: { kind: "stalled", reason, at: new Date().toISOString() }, assigned: assign };
     d.log("hold", { pr: pr.url, reason });
-    await save("on hold");
+    await save({ kind: "hold", text: plain });
     return "acted" as const;
   };
   // A fork's branch takes ship's commits only where its author allows maintainer edits (and GitHub accepts the App's write).
   const noEdits = "it needs a change on its fork's branch, and the fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\", rebase or fix it (a new commit from the contributor then needs a member to hand it off again)";
   const wake = async (kind: string, text: string) => {
-    if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`);
+    if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`, HOLD.cap);
     // The kernel keeps 2,000 characters of a wake.
     text = text.slice(0, 2000);
     // The first job files the adoption's task (which starts the Engineer on it); later ones wake that same task.
@@ -153,7 +149,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     else if ((await d.kernel.call("POST", "/v1/wakes", { task: a!.task, text, id: wakeKey(`${pr.repo}#${pr.number}:${kind}:${pr.head}:${c.wakes}`) }))?.closed) {
       // Someone closed or cancelled the task: that ends the adoption until a fresh hand-off.
       a = { ...a!, hold: { kind: "handed_back", reason: "its task was closed", at: new Date().toISOString() } };
-      await save("on hold");
+      await save({ kind: "hold", text: HOLD.closed });
       return "acted" as const;
     }
     c.wakes++;
@@ -187,7 +183,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       if (OPEN.includes(String(r.state))) return "nothing";
       // The PR moved while it was filed (it is bound to the head it was filed at): filed again at this one, below.
       if (!/^ship-head-moved/.test(String(r.outcome?.text ?? ""))) {
-        await hold(`dismissing the App's approval at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)} (${String(r.outcome?.text ?? r.reason ?? "no reason given").slice(0, 200)})`);
+        await hold(`dismissing the App's approval at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)} (${String(r.outcome?.text ?? r.reason ?? "no reason given").slice(0, 200)})`, HOLD.failed);
         return "acted";
       }
     }
@@ -206,25 +202,25 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   if (stage && steps.length) {
     // Each step started spends a round.
     const r = await advance(d.gh!, pr, stage, steps, a!.action, () => (over(c.rounds, caps.rounds) ? false : (c.rounds++, true)));
-    if (r.go === "capped") return hold(`${c.rounds} rounds (rounds)`);
+    if (r.go === "capped") return hold(`${c.rounds} rounds (rounds)`, HOLD.cap);
     const changed = r.rec !== a!.action;
     a = { ...a!, ...(r.rec ? { action: r.rec } : {}), ...(r.did ? { did: [...(a!.did ?? []), r.did] } : {}) };
     if (r.go === "waiting") return "nothing";
-    if (r.go === "started") { await save("working", `the repo's own ${stage.replace("_", " ")} step`); return "acted"; }
-    if (r.go === "failed" && stage === "before_merge") return hold(`the repo's before_merge steps didn't pass (${a.action?.why ?? "failed"})`);
+    if (r.go === "started") { await save({ kind: "active" }); return "acted"; }
+    if (r.go === "failed" && stage === "before_merge") return hold(`the repo's before_merge steps didn't pass (${a.action?.why ?? "failed"})`, HOLD.steps);
     if (changed) d.state.put(a);
   }
   // A queue branch: the removal is read here. A red required check on the merge_group run that is this PR's own is a fix_ci round.
   let qn: QueueNext | undefined, viaQueue = false;
   if (v.do === "enqueue" && merge !== "off") {
     qn = await queueNext(d.kernel, a.queue, pr, f);
-    if (qn.act === "fix_ci") { v = { do: "fix_ci", why: "a required check failed on its merge queue run" }; f = { ...f, failing: qn.failing }; facts.failing = qn.failing; facts.onBase = f.onBase ?? []; viaQueue = true; qn = undefined; }
+    if (qn.act === "fix_ci") { v = { do: "fix_ci", why: "a required check failed on its merge queue run" }; f = { ...f, failing: qn.failing }; viaQueue = true; qn = undefined; }
   }
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
-  // A wait is said again when what it waits on, or its approval line, changes; every other action once per head.
+  // A wait is said again when its kind (what a person is asked for) changes; every other action once per head.
   // Review findings are keyed by their digest: a new set at the same head is asked again.
   const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do;
-  const key = v.do === "wait" ? `${pr.head}:wait:${v.why ?? ""}:${facts.approval ?? ""}` : `${pr.head}:${act}`;
+  const key = v.do === "wait" ? `${pr.head}:wait:${say(waitFacts(v.why)).text}` : `${pr.head}:${act}`;
   // A wait with an App approval to dismiss (or a dismissal in flight) is followed too: its record is read each pass.
   const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true) || (v.do === "wait" && !!risk && staleApproval(a.approve, pr.head, risk));
   // A fix already asked for at this head is not asked again after a `wait` in between (a CI re-run with no push).
@@ -240,16 +236,16 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     }
     switch (v.do) {
       case "repair": {
-        if (!s.fix.includes("conflicts")) return hold("it needs a repair, and this repo's `fix` setting excludes conflicts");
+        if (!s.fix.includes("conflicts")) return hold("it needs a repair, and this repo's `fix` setting excludes conflicts", HOLD.settings("fix merge conflicts"));
         // A fork's branch takes ship's writes (update-branch too) only where its author allows maintainer edits.
-        if (pr.fork && !pr.canModify) return hold(noEdits);
+        if (pr.fork && !pr.canModify) return hold(noEdits, HOLD.noEdits);
         if (!f.dirty) {
           // GitHub refusing the update (a rule, a permission) holds with its reason rather than asking every pass.
           try { await d.updateBranch(pr.repo, pr.number, pr.head); }
           catch (e) {
             // A refusal (a 4xx but a rate limit) holds; anything else is asked again next pass.
             const why = String((e as Error).message), status = Number(/: (\d{3})\b/.exec(why)?.[1]);
-            if (status >= 400 && status < 500 && status !== 429 && !/rate limit/i.test(why)) return hold(`GitHub refused to update the branch with \`${pr.base}\`: ${why.slice(0, 200)}`);
+            if (status >= 400 && status < 500 && status !== 429 && !/rate limit/i.test(why)) return hold(`GitHub refused to update the branch with \`${pr.base}\`: ${why.slice(0, 200)}`, HOLD.github);
             throw e;
           }
           a = { ...a!, did: [...(a!.did ?? []), `updated the branch with \`${pr.base}\``] };
@@ -262,12 +258,12 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           const text = String(r.outcome?.text ?? r.reason ?? "");
           // Done (or the PR moved meanwhile): the next head is the next round's.
           if (r.state === "done" || /^ship-head-moved/.test(text)) return "nothing";
-          if (r.state !== "failed") return hold(`ship's repair was ${r.state}: ${text.slice(0, 300)}`);
+          if (r.state !== "failed") return hold(`ship's repair was ${r.state}: ${text.slice(0, 300)}`, HOLD.repair);
           const left = text.split("\n").filter((l) => l.startsWith("leftover: ")).length;
           // The box lacks the generator's tool: the Engineer's computer is the same image, so the PR holds, and the report suggests
           // the repo's own command or workflow as an `actions` step.
           const missing = /^ship-generator/.test(text) && /^toolchain missing: ([\w.+-]{1,60})/m.exec(text)?.[1];
-          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure an \`actions\` step for conflicts, such as the repo's own regenerate command or workflow${suggest.length ? `: ${suggest[0]}` : ""}`);
+          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure an \`actions\` step for conflicts, such as the repo's own regenerate command or workflow${suggest.length ? `: ${suggest[0]}` : ""}`, HOLD.repair);
           if (/^ship-leftovers/.test(text) || /^ship-generator/.test(text)) {
             if (a!.repair.woke) return "nothing";
             a = { ...a!, repair: { ...a!.repair, woke: true } };
@@ -280,7 +276,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
             ].join("\n"));
           }
           // A run that didn't finish (nothing kept) is asked for once more at this head; anything else holds with its reason.
-          if (!/^ship-repair:/.test(text) || a!.repair.retried) return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`);
+          if (!/^ship-repair:/.test(text) || a!.repair.retried) return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`, HOLD.repair);
         }
         const retry = a!.repair?.head === pr.head;
         const held = spend();
@@ -292,8 +288,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         return "acted";
       }
       case "fix_ci": {
-        if (!s.fix.includes("ci")) return hold("a required check is red, and this repo's `fix` setting excludes CI");
-        if (pr.fork && !pr.canModify) return hold(noEdits);
+        if (!s.fix.includes("ci")) return hold("a required check is red, and this repo's `fix` setting excludes CI", HOLD.settings("fix CI"));
+        if (pr.fork && !pr.canModify) return hold(noEdits, HOLD.noEdits);
         // Red while behind a green base: perhaps only the base moved. GitHub updates the branch once at this head before any wake;
         // a refusal has spent its round and the fix follows.
         if (f.behindGreen && c.updated !== pr.head) {
@@ -313,8 +309,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (own.length) {
           for (const n of own) c.red[n] = [...new Set([...(c.red[n] ?? []), pr.head])];
           const repeat = own.find((n) => over(c.red[n]!.length, caps.same_check_heads));
-          if (repeat) return hold(`required check \`${repeat}\` failed on ${c.red[repeat]!.length} heads (same_check_heads)`);
-          if (over(c.ci, caps.ci_rounds)) return hold(`${c.ci} CI fix rounds (ci_rounds)`);
+          if (repeat) return hold(`required check \`${repeat}\` failed on ${c.red[repeat]!.length} heads (same_check_heads)`, HOLD.cap);
+          if (over(c.ci, caps.ci_rounds)) return hold(`${c.ci} CI fix rounds (ci_rounds)`, HOLD.cap);
           c.ci++;
         }
         return wake("fix_ci", [
@@ -326,8 +322,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         ].filter(Boolean).join("\n"));
       }
       case "fix_review": {
-        if (!s.fix.includes("review")) return hold("review findings are open, and this repo's `fix` setting excludes review");
-        if (pr.fork && !pr.canModify) return hold(noEdits);
+        if (!s.fix.includes("review")) return hold("review findings are open, and this repo's `fix` setting excludes review", HOLD.settings("fix review findings"));
+        if (pr.fork && !pr.canModify) return hold(noEdits, HOLD.noEdits);
         // How many review and fix cycles a PR gets is code review's (its push_rounds): ship fixes what each review finds.
         c.review++;
         return wake("fix_review", `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.\n${push()}`);
@@ -340,13 +336,13 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           const r = await d.kernel.call("GET", `/v1/writes/${a!.merge.record}`);
           if (OPEN.includes(String(r.state))) return "nothing";
           // A veto (the AI reviewer's or the owner's) is final for this head: never asked again.
-          if (r.state === "rejected") return hold(`the merge at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})`);
+          if (r.state === "rejected") return hold(`the merge at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})`, HOLD.failed);
           // The PR moved meanwhile: the next head is the next round's.
           const text = String(r.outcome?.text ?? r.reason ?? r.state);
           if (/^ship-head-moved/.test(text)) return "nothing";
           // Ended by a pause or a stop (the adoption moved on): filed again now that it is worked again. Anything else didn't land:
           // the PR holds (its owner told, the outcome on the record), never filed again at this head; a new head resumes it.
-          if (!/adoption ended or moved on|^ship-generation|ship-tier-pending/.test(text)) return hold(`ship's merge at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}; its outcome is on record ${a!.merge.record}`);
+          if (!/adoption ended or moved on|^ship-generation|ship-tier-pending/.test(text)) return hold(`ship's merge at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}; its outcome is on record ${a!.merge.record}`, HOLD.failed);
         }
         const attempt = a!.merge?.head === pr.head ? a!.merge.attempt + 1 : 1;
         // A reviewed merge needs a task: the Engineer's, or the adoption's quiet records task.
@@ -357,7 +353,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         catch (e) {
           // The kernel refused to file it (its policy, a closed task): that is the owner's to decide; anything else is asked again.
           const status = (e as { status?: number }).status;
-          if (status !== undefined && status < 500) return hold(`ship's merge couldn't be filed: ${String((e as Error).message).slice(0, 200)}`);
+          if (status !== undefined && status < 500) return hold(`ship's merge couldn't be filed: ${String((e as Error).message).slice(0, 200)}`, HOLD.failed);
           throw e;
         }
         a = { ...a!, merge: { head: pr.head, attempt, record: String(r.id) }, did: [...(a!.did ?? []), `asked to merge at \`${pr.head.slice(0, 12)}\` (attempt ${attempt})`] };
@@ -368,10 +364,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (!q || q.act === "nothing") return "nothing";
         const dismissing = await dismissStale();
         if (dismissing) return dismissing;
-        if (q.act === "hold") return hold(q.why);
+        if (q.act === "hold") return hold(q.why, HOLD.failed);
         if (q.act === "wait") { queueWait = q.why; return "nothing"; }
         if (q.attempt > 1) {
-          if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`);
+          if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`, HOLD.cap);
           c.rounds++;
         }
         // A reviewed enqueue needs a task: the Engineer's, or the adoption's quiet records task.
@@ -400,8 +396,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           const text = String(r.outcome?.text ?? r.reason ?? "");
           if (/^ship-head-moved/.test(text)) return "nothing";
           if (NO_APP.test(text)) return person(text);
-          if (r.state === "rejected") return hold(`the approval at \`${pr.head.slice(0, 12)}\` was rejected (${text.slice(0, 200) || "no reason given"})`);
-          if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`);
+          if (r.state === "rejected") return hold(`the approval at \`${pr.head.slice(0, 12)}\` was rejected (${text.slice(0, 200) || "no reason given"})`, HOLD.failed);
+          if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`, HOLD.cap);
           c.rounds++;
         }
         const attempt = a!.approve?.head === pr.head ? a!.approve.attempt + 1 : 1;
@@ -420,7 +416,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         return "acted";
       }
       case "stall":
-        return hold(v.why ?? "stalled");
+        return hold(v.why ?? "stalled", HOLD.stall);
       default: {
         // wait: the report says what it waits on. An App approval that no longer stands for this head goes first.
         const dismissing = await dismissStale();
@@ -437,8 +433,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const marker = queueWait ? `${key}:wait` : updatedOnly ? `${key}:updated` : key;
   if (did === "nothing" && c.lastRound === marker) return did;
   c.lastRound = marker;
-  const state = v.do === "done" ? "merged" : v.do === "merge" ? (merge === "off" ? `ready (${risk?.state === "classified" ? `tier \`${risk.tier}\`: ` : ""}merge is off: a person merges it)` : "merging") : v.do === "enqueue" ? (merge === "off" ? `ready (${risk?.state === "classified" ? `tier \`${risk.tier}\`: ` : ""}merge is off: a person queues it)` : "queueing") : v.do === "approve" ? (a!.approve?.why ? "ready: waiting for a person's approval" : "approving") : v.do === "wait" ? "waiting" : "working";
-  await save(queueWait ? "waiting" : state, queueWait ?? (["wait", "approve", "enqueue"].includes(v.do) ? v.why : undefined));
+  // What a person is asked for, if anything; the rest is Ship's own work and says so only once a comment exists.
+  const person = risk?.state === "classified" && merge === "off";
+  await save(queueWait ? { kind: "active" } : v.do === "merge" || v.do === "enqueue" ? { kind: person ? "person_merge" : "active" } : v.do === "approve" ? { kind: a!.approve?.why ? "approval" : "active" } : v.do === "wait" ? waitFacts(v.why) : v.do === "fix_review" ? { kind: "findings" } : { kind: "active" });
   return did;
 }
 
@@ -446,9 +443,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
 export async function retryReport(d: RoundDeps, a: Kept, pr: PrView): Promise<Kept> {
   const stale = a.reportStale;
   if (!stale) return a;
-  if (stale.head === pr.head) await report(d, a, pr, stale.facts);
-  else { const { reportStale: _, ...kept } = a; d.state.put(kept); }
-  return d.state.get(pr.repo, pr.number) as Kept;
+  if (stale.head === pr.head) return report(d, a, pr, stale.facts);
+  const { reportStale: _, ...kept } = a;
+  d.state.put(kept);
+  return kept;
 }
 
 /**
@@ -470,14 +468,32 @@ export async function tell(d: Pick<RoundDeps, "kernel" | "log">, a: Kept, pr: Pr
 /** A wake's bounded key from its whole identity: a retry reuses it, distinct wakes never share one. */
 const wakeKey = (identity: string) => `ship.${createHash("sha256").update(identity).digest("hex").slice(0, 32)}`;
 
-/** Posts the report, or edits it in place (its id kept on the adoption). A task's PR gets none: its task is told instead. */
-async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts) {
-  if (a.owner?.kind === "task") return;
+/**
+ * Says what a person must act on, or acknowledges a member's hand-off, in the PR's one comment (edited in place; the code host finds
+ * it by its marker before it creates one, so a lost id never makes a second). Answers the adoption with the comment's id in it:
+ * callers keep it, so a later save can't drop the id. A task's PR gets none (its task is told), nor does a PR nobody must act on
+ * unless its hand-off was explicit. A comment that exists is kept true.
+ */
+async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts): Promise<Kept> {
+  if (a.owner?.kind === "task") return a;
+  const s = say(f);
+  const explicit = a.trigger.kind === "label" || a.trigger.kind === "comment";
+  // Nothing to say yet: no comment exists, and no person must act or was handed the PR on purpose (a merged one is never news).
+  const text = a.report || s.act ? s.text : explicit && f.kind !== "merged" ? ACK : undefined;
+  const { reportStale: stale, ...kept } = a;
+  if (!text || (a.report && a.said === text)) {
+    if (stale) d.state.put(kept);
+    return stale ? kept : a;
+  }
   try {
-    const id = await d.comment(pr.repo, pr.number, renderReport(a, pr, f), a.report);
-    if (id !== a.report || a.reportStale) { const { reportStale: _, ...kept } = a; d.state.put({ ...kept, report: id }); }
+    const id = await d.comment(pr.repo, pr.number, renderReport(text), a.report);
+    const next = { ...kept, report: id, said: text };
+    d.state.put(next);
+    return next;
   } catch (e) {
     d.log("report failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
-    d.state.put({ ...a, reportStale: { head: pr.head, facts: f } });
+    const next = { ...a, reportStale: { head: pr.head, facts: f } };
+    d.state.put(next);
+    return next;
   }
 }

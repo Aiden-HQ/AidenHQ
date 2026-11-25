@@ -106,10 +106,8 @@ test("approve modes: off and observe post nothing (observe reports what it would
     await intake(w.deps, w.pr());
     await w.pass(w.pr(), small);
     await w.pass(w.pr(), small);
-    if (mode === "off") assert.doesNotMatch(w.reports.at(-1)!, /\*\*Approval:\*\*/);
-    if (mode === "observe") assert.match(w.reports.at(-1)!, /\*\*Approval:\*\* would approve: code review passed on its head/);
     assert.deepEqual(w.approvals(), mode === "on" ? [{ repo: "a/b", number: 7, head: H1, generation: 1, base: "main", policy: "p1" }] : [], mode);
-    assert.match(w.reports.at(-1)!, /Risk tier: `standard`/);
+    assert.doesNotMatch(w.reports.join("\n"), /generation|rule \d|Risk tier|Approval:/, "plain words only");
     // A head whose tier needs no review is never approved on.
     await w.pass(w.pr({ head: H2 }), { ...small, verdict: classified("standard", { kind: "none", requires_review: false, reviewed: null }) });
     assert.equal(w.approvals().length, mode === "on" ? 1 : 0, mode);
@@ -157,6 +155,6 @@ test("a model fix past the review cap asks code review once and isn't approved; 
   await w.pass(w.pr({ head: H2 }), { ...fix, verdict: { ...PASS, reviewed: H2 } });
   await w.pass(w.pr({ head: H2 }), { ...fix, verdict: { ...PASS, reviewed: H2 } });
   assert.equal(w.approvals().length, 1);
-  assert.match(w.reports.at(-1)!, /waiting for a person's approval/);
+  assert.match(w.reports.at(-1)!, /Waiting for an approval on the latest commit\./);
   assert.equal(w.state.get("a/b", 7)?.hold, null);
 });

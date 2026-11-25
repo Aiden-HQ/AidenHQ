@@ -174,7 +174,7 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = [], set
     }
     return { kind, number: int(b.number, "number") };
   }
-  if (op === "comment") return { number: int(b.number, "number"), body: text(b.body, "body", 65_000), ...(b.id == null ? {} : { id: int(b.id, "id") }) };
+  if (op === "comment") return { number: int(b.number, "number"), body: text(b.body, "body", 65_000), ...(b.id == null ? {} : { id: int(b.id, "id") }), ...(b.marker == null ? {} : { marker: text(b.marker, "marker", 100) }) };
   if (op === "setup") {
     const entries = b.files && typeof b.files === "object" && !Array.isArray(b.files) ? Object.entries(b.files as Record<string, unknown>) : [];
     if (!entries.length || entries.length > 8) throw fail(400, "files is 1 to 8 paths");

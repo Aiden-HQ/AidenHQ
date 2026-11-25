@@ -55,7 +55,7 @@ test("a ready PR on a queue branch is enqueued once, bound to head and base, and
   w.records["rec-1"] = { state: "done" };
   await round(w.deps as any, w.pr(), { do: "wait", why: "in the merge queue" }, { queue: true });
   assert.equal(await round(w.deps as any, w.pr({ state: "merged" }), { do: "done" }), "acted");
-  assert.match(w.of("comment").at(-1)!.body, /\*\*State:\*\* merged/);
+  assert.match(w.of("comment").at(-1)!.body, /\*\*Ship:\*\* Merged\./);
   // A merge that landed on another base than the one it was queued for is reported, not called merged.
   const o = world();
   await round(o.deps as any, o.pr(), ready, { queue: true });
@@ -87,7 +87,7 @@ test("removed from the queue: a conflict is repaired and queued again; its own r
   x.records["rec-2"] = { state: "done" };
   await round(x.deps as any, x.pr(), ready, baseRed);
   assert.equal(x.of("POST /v1/writes").length, 2, "only one more enqueue");
-  assert.match(x.of("comment").at(-1)!.body, /Waiting on:\*\* removed from the merge queue again/);
+  assert.equal(x.of("comment").length, 1, "only the hand-off's acknowledgement: a queue wait needs no one");
 });
 
 const of = (w: ReturnType<typeof world>, what: string) => w.of(what);

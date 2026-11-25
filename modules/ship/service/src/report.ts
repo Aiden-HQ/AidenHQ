@@ -1,57 +1,57 @@
-// The report (spec §7): one comment per adopted PR, edited in place, written by code from the adoption and this round's facts, so
-// a code owner can approve from it without opening the diff. The model writes none of it. Posted through the code host's
-// `comment` op (POST /v1/codehost/comment, edit by id), which adds the "via AidenHQ" footer.
-import type { Kept, PrView } from "./handoff.ts";
-import type { Risk } from "./safe.ts";
-
+// The report: the one comment on an adopted PR, edited in place, in plain words, written by code. It exists only for what a person
+// has to do (a hold, a hand-back, a code owner's or a required review, an approval, a merge Ship may not make) and for the one
+// line that acknowledges a member's hand-off; once it exists it is kept true (edited), never added to. Nothing internal reaches it:
+// no generation, hash, rule, counter, finding or agent instruction. Posted through the code host's `comment` op, which finds the
+// comment by MARKER before it creates one and adds the "via AidenHQ" footer.
 export const MARKER = "<!-- aidenhq-ship -->";
 
-/** What a round knows beyond the adoption: the state it derived, what the PR waits on, and its risk facts. */
-export interface Facts {
-  /** working, waiting, ready, merging, merged (derived from decide), or the hold's reason. */
-  state: string;
-  /** What it waits on, and who can unblock it (decide's reason). */
-  waits?: string;
-  /** The areas' code owners. */
-  owners?: string[];
-  /** The head's risk tier, code review's rule that picked it and why (the facts it came from), and what the repo's `by_tier` does with it. */
-  risk?: Risk;
-  /** The App's approval line under the tier's `approve`. */
-  approval?: string;
-  /** Protected or denied paths the PR touches. */
-  protectedHit?: string[];
-  /** Code review's verdict on the head, and its open important findings. */
-  review?: { verdict: string; open: number };
-  /** Failing required checks, and which of them fail on the target branch too (likely pre-existing). */
-  failing?: string[]; onBase?: string[];
-  /** The repo's own regenerate commands or workflows discovery found, as `actions` steps to configure (none enabled). */
-  suggest?: string[];
-  /** The repo's stop label (its `stop_label` setting). */
-  stopLabel?: string;
+/** The line that acknowledges a member's explicit hand-off (the `ship` label or a `/ship` comment). */
+export const ACK = "Ship has this PR: it will rebase, fix CI and review findings, and merge when ready.";
+
+const FIXED = {
+  /** Ship is working, or waiting on something that needs no one. */
+  active: ACK,
+  /** Code review's findings are open: Ship's task fixes or answers them. */
+  findings: "Waiting for review findings to be fixed or answered.",
+  review: "Waiting for a required review.",
+  approval: "Waiting for an approval on the latest commit.",
+  person_merge: "Ready to merge. Merge is off for this PR, so a person merges it.",
+  merged: "Merged.",
+};
+/** The kinds a person has to act on. */
+const ACT = new Set<Kind>(["review", "approval", "person_merge", "owner", "hold"]);
+
+export type Kind = keyof typeof FIXED | "owner" | "hold";
+/** What a round says about the PR: its kind, and the sentence for the kinds that carry one (owner, hold, a special merge). */
+export interface Facts { kind: Kind; text?: string }
+
+/** The words, and whether a person must act on them. */
+export function say(f: Facts): { text: string; act: boolean } {
+  return { text: f.text ?? FIXED[f.kind as keyof typeof FIXED], act: ACT.has(f.kind) };
 }
 
-const list = (xs: string[]) => xs.map((x) => `\`${x.replace(/`/g, "")}\``).join(", ");
+/** What a hold says, in plain words, with what a person can do. A hold's own reason stays on the adoption and in the task's wake. */
+export const HOLD = {
+  cap: "Ship stopped: it reached its limit of tries on this PR. A new commit lets it continue; otherwise a person takes it from here.",
+  settings: (what: string) => `Ship can't ${what} here: this repo's Ship settings don't allow it. A person does it, or changes the repo's Ship settings.`,
+  noEdits: "Ship can't push to this fork's branch. The contributor can allow edits by maintainers, or rebase and fix it themselves.",
+  github: "GitHub refused to update this branch. A person updates or fixes it.",
+  repair: "Ship couldn't repair this PR on its own. A person needs to resolve it.",
+  steps: "A step the repo asks Ship to run before merging didn't pass. A person needs to look at it.",
+  failed: "Ship's merge or approval for the latest commit was refused or didn't go through. A person decides what happens next.",
+  stall: "GitHub blocks the merge on a rule Ship doesn't handle, such as review threads to resolve. A person clears it.",
+  closed: "Ship stopped: its task was closed. A person decides what happens to this PR.",
+  handedBack: "Ship handed this PR back. A person takes it from here; handing it over again restarts Ship.",
+};
 
-export function renderReport(a: Kept, pr: PrView, f: Facts): string {
-  const lines = [MARKER, `**Ship** · generation ${a.generation} · head \`${pr.head.slice(0, 12)}\``, ""];
-  const held = a.hold && f.state !== "merged";
-  lines.push(`**State:** ${held ? `on hold (${a.hold!.kind}): ${a.hold!.reason}` : f.state}`);
-  if (f.waits && !a.hold) lines.push(`**Waiting on:** ${f.waits}`);
-  // Code owners stay human: the App's approval never stands for theirs, so the report is what they approve from.
-  if (f.waits && !a.hold && /code owner/.test(f.waits)) lines.push("A code owner approves it on GitHub: the risk facts below are written by code from the PR's change, and code review's verdict is on its head.");
-  if (f.approval) lines.push(`**Approval:** ${f.approval}`);
-  const handed = a.trigger.kind === "fleet" ? "opened by the fleet" : a.trigger.kind === "all" ? `adopted (handoff: all, author @${a.trigger.actor})` : `handed over by @${a.trigger.actor} (${a.trigger.kind === "comment" ? "/ship" : "ship label"})`;
-  lines.push(`**Hand-off:** ${handed}${pr.fork ? `; a fork${pr.canModify ? " that allows maintainer edits" : " without maintainer edits (ship can't push to it)"}` : ""}`);
-  if (a.did?.length) lines.push("", "**What ship did**", ...a.did.slice(-10).map((d) => `- ${d}`));
-  const risk: string[] = [];
-  if (f.risk) risk.push(f.risk.state === "classified" ? `- Risk tier: \`${f.risk.tier}\` (${f.risk.rule !== undefined && f.risk.rule >= 0 ? `rule ${f.risk.rule + 1}: ` : ""}${f.risk.why}); approve ${f.risk.approve}, merge ${f.risk.merge}` : `- Risk tier: ${f.risk.why}; merge ${f.risk.merge}`);
-  if (f.owners?.length) risk.push(`- Areas touched (code owners): ${f.owners.map((o) => `@${o.replace(/^@/, "")}`).join(", ")}`);
-  if (f.protectedHit?.length) risk.push(`- Protected or denied paths: ${list(f.protectedHit)}`);
-  if (f.review) risk.push(`- Code review: ${f.review.verdict}${f.review.open ? `, ${f.review.open} open important finding(s)` : ", no open important findings"}`);
-  if (f.failing?.length) risk.push(`- Failing required checks: ${list(f.failing)}${f.onBase?.length ? `; also failing on \`${pr.defaultBranch}\`: ${list(f.onBase)}` : ""}`);
-  if (risk.length) lines.push("", "**Risk facts**", ...risk);
-  if (f.suggest?.length) lines.push("", "**Suggested** (not enabled: set it in ship's settings for this repo)", ...f.suggest.map((x) => `- ${x}`));
-  if (a.counters) lines.push("", `<sub>rounds ${a.counters.rounds} · CI fixes ${a.counters.ci} · review fixes ${a.counters.review}</sub>`);
-  lines.push("", `<sub>Stop with the \`${f.stopLabel ?? "ship:stop"}\` label; hand back by removing the \`ship\` label.</sub>`);
-  return lines.join("\n");
+/** What a wait from the merge gate means for a person (its own text is for agents and is never printed). */
+export function waitFacts(why = ""): Facts {
+  const owner = /^waiting on code owner @(\S+)/.exec(why)?.[1];
+  if (owner) return { kind: "owner", text: `Waiting for a review from code owner @${owner}.` };
+  if (/^waiting for required review/.test(why)) return { kind: "review" };
+  if (/^its approval is on an earlier commit/.test(why)) return { kind: "approval" };
+  if (/^code review/.test(why)) return { kind: "findings" };
+  return { kind: "active" };
 }
+
+export const renderReport = (text: string) => `${MARKER}\n**Ship:** ${text}`;

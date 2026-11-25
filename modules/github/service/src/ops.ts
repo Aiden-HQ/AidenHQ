@@ -322,11 +322,27 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));
     // Editing a comment: only one AidenHQ posted (the kernel records each new comment's ref).
     if (b.id && !(await ctx.ours(`github:${s.slug}#${Number(b.number)}/comment/${Number(b.id)}`))) throw fail(403, `comment ${String(b.id)} isn't one AidenHQ posted: it can't be edited`);
-    const r = b.id ? await ok(ctx, "PATCH", `/repos/${s.slug}/issues/comments/${b.id}`, { body }) : await ok(ctx, "POST", `/repos/${s.slug}/issues/${b.number}/comments`, { body });
+    // With no id, a `marker` finds the comment an earlier post (whose answer was lost) made: this account's own, carrying the marker.
+    const id = b.id ?? (b.marker ? await markedComment(ctx, s.slug, Number(b.number), String(b.marker)) : undefined);
+    const r = id ? await ok(ctx, "PATCH", `/repos/${s.slug}/issues/comments/${id}`, { body }) : await ok(ctx, "POST", `/repos/${s.slug}/issues/${b.number}/comments`, { body });
     return { status: 200, json: { id: r.body?.id } };
   }
   if (op === "commit") return commit(ctx, s, b);
   throw fail(404, `no such operation ${op}`);
+}
+
+/** The newest comment on the PR that this account wrote and that carries `marker` (its text is quoted by others, so the author counts), or undefined. */
+async function markedComment(ctx: OpsContext, slug: string, number: number, marker: string): Promise<number | undefined> {
+  const me = String((await ok(ctx, "GET", "/user")).body?.login ?? "").toLowerCase();
+  if (!me) throw fail(502, "GitHub didn't say which account this is");
+  let found: number | undefined;
+  for (let page = 1; page <= 10; page++) {
+    const cs = (await ok(ctx, "GET", `/repos/${slug}/issues/${number}/comments?per_page=100&page=${page}`)).body;
+    if (!Array.isArray(cs)) break;
+    for (const c of cs) if (String(c?.user?.login ?? "").toLowerCase() === me && String(c?.body ?? "").includes(marker)) found = Number(c.id);
+    if (cs.length < 100) break;
+  }
+  return found;
 }
 
 /** POST /ops/<op> from the kernel (already authenticated by the caller): the answer, or an error naming its cause and fix. */

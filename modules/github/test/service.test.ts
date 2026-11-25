@@ -889,6 +889,19 @@ test("editing a comment is allowed only for one the kernel recorded as ours", as
   assert.equal((await call("/ops/comment", edit)).status, 200);
 });
 
+test("a comment with a marker and no id edits this account's own comment that carries it, else posts once", async (t) => {
+  const mine = { id: 55, user: { login: "Owner" }, body: "<!-- m -->\nold" };
+  const quoted = { id: 56, user: { login: "someone" }, body: "<!-- m -->\nquoting it" };
+  let comments = [quoted, mine];
+  const { call, ghCalls } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/user" ? { status: 200, body: { login: "owner" } } : m === "GET" && p.startsWith("/repos/acme-agents/widget/issues/3/comments") ? { status: 200, body: comments } : m === "PATCH" && p === "/repos/acme-agents/widget/issues/comments/55" ? { status: 200, body: { id: 55 } } : m === "POST" && p === "/repos/acme-agents/widget/issues/3/comments" ? { status: 201, body: { id: 77 } } : undefined) });
+  const post = { repo: "acme-agents/widget", number: 3, body: "<!-- m -->\nnew", marker: "<!-- m -->" };
+  assert.deepEqual((await call("/ops/comment", post)).json, { id: 55 });
+  assert.equal(ghCalls.some((c) => c.method === "POST"), false, "found it: edited, not created again");
+  comments = [quoted];
+  assert.deepEqual((await call("/ops/comment", post)).json, { id: 77 });
+  assert.equal(ghCalls.filter((c) => c.method === "POST").length, 1);
+});
+
 test("reading a job: a missing one is null, a permission refusal stays a 403 and any other failure a 502", async (t) => {
   const { call } = await setup(t, { routes: (m, p) => (p === "/repos/acme/gone/actions/jobs/1" ? { status: 404, body: {} } : p === "/repos/acme/denied/actions/jobs/1" ? { status: 403, body: { message: "Resource not accessible by integration" } } : p === "/repos/acme/down/actions/jobs/1" ? { status: 500, body: {} } : undefined) });
   const job = (repo) => call("/ops/read", { kind: "job", repo, id: 1 });
