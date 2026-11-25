@@ -136,11 +136,26 @@ test("vault settings are read as the apply's shell reads them", () => {
     ['VAULT_DIR="$HOME/notes/vault" # meeting notes', "/home/alice/notes/vault"],   // quoted, with a comment after it
     ["VAULT_DIR=$HOME/notes/vault", "/home/alice/notes/vault"],                     // unquoted, expands
     ["VAULT_DIR=~/notes/vault # note", "/home/alice/notes/vault"],                  // bare ~ is the shell's tilde
+    ["VAULT_DIR='$HOME/notes/vault'", null],                                        // single quotes expand nothing: refused
   ];
   for (const [line, dir] of cases) {
+    if (dir === null) { assert.throws(() => vaultPlan([line, 'VAULT_FOLDERS="Meetings"']), /must be an absolute path/); continue; }
     const out = vaultPlan([line, 'VAULT_FOLDERS="Meetings"']);
     assert.ok(out.includes(`(as alice) mkdir -p ${dir} ${dir}/Meetings`), `${line}\n${out}`);
   }
+});
+
+// The value is read, never run: a dry run may be a root shell over a checkout a user owns, and the apply's .env is not code
+// a preview gets to execute. A command substitution in the value is left as text, so it fails compile's absolute-path test.
+test("a dry run reads .env without executing it", () => {
+  assert.throws(() => vaultPlan(["VAULT_DIR=$(touch /tmp/pwned-setup-test)", 'VAULT_FOLDERS="Meetings"']), /must be an absolute path/);
+});
+
+// $PWD is the checkout, as it is where the apply sources .env, so setup makes the directory compile mounts.
+test("$PWD in a vault path is the checkout the apply sources .env in", () => {
+  const out = vaultPlan(["VAULT_DIR=$PWD/notes", 'VAULT_FOLDERS="Meetings"']);
+  assert.ok(/mkdir -p \S*\/notes \S*\/notes\/Meetings/.test(out), out);
+  assert.ok(!out.includes("$PWD"), out);
 });
 
 // An upgrade from the old installer: it wrote the default path and emptied the folders, but never made the directory.

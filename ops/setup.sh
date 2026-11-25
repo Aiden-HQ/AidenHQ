@@ -451,18 +451,35 @@ set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.y
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub
 # Meetings' vault: a host that lists folders keeps them (an empty list would leave the module no /vault mount), and only
 # a host with a vault path gets the default. The module runs as the owner (uid 1000), so its folders are made as the owner.
-# A dry run has no .env yet (only the write above is printed): the path comes from the .env.example a new install copies.
-vault_val() { # FILE KEY: the value `set -a; . FILE` gives for KEY (quotes, a ' #' comment, $HOME, ~), as the apply reads it
-  local v raw
-  # A real run sources the file as the owner, exactly as the apply does, so the two cannot disagree. A dry run makes no
-  # step as the user, so there the shell reads the KEY line itself: the same rules, without a parser of setup's own.
-  if [ "$DRY" = 1 ]; then
-    raw="$(sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -1 || true)"
-    v="$(HOME="$H" bash -c 'eval "v=$1" 2>/dev/null || v=; printf %s "${v-}"' _ "$raw" 2>/dev/null || true)"
-  else
-    v="$(as_user VF="$1" VK="$2" sh -c 'set -a; . "$VF" >/dev/null 2>&1; set +a; eval "printf %s \"\${$VK-}\""' 2>/dev/null || true)"
-  fi
-  [ "$1" = "$ENVF" ] || v="${v//\/home\/USER/$H}"                                              # the example's placeholder
+# The value is read the way the apply's `set -a; . .env` reads it (quotes, a ' #' comment, $HOME, ~), but never by running
+# the file: a dry run may be run as root over a checkout a user owns, and no step of a preview runs that code. $PWD is the
+# checkout, as the apply (ops/apply-config-work.sh) has it. A dry run has no .env yet (only the write above is printed):
+# the path comes from the .env.example a new install copies.
+vault_val() { # FILE KEY: the value `set -a; . FILE` gives for KEY, read without running FILE (setup may read a user's .env)
+  local raw v='' c n i=0 st=u len
+  raw="$(sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -1 || true)"
+  len=${#raw}
+  while [ "$i" -lt "$len" ]; do
+    c="${raw:$i:1}"
+    if [ "$st" = s ]; then                                                                    # single quotes: literal, till '
+      if [ "$c" = "'" ]; then st=u; else v+=$c; fi; i=$((i+1)); continue
+    fi
+    if [ "$c" = "'" ]; then st=s; i=$((i+1)); continue; fi                                    # opens only outside quotes
+    if [ "$c" = '"' ]; then [ "$st" = d ] && st=u || st=d; i=$((i+1)); continue; fi            # opens and closes
+    if [ "$c" = '\' ]; then i=$((i+1)); v+="${raw:$i:1}"; i=$((i+1)); continue; fi             # escapes the next character
+    if [ "$c" = '$' ]; then
+      i=$((i+1)); n=''
+      if [ "${raw:$i:1}" = '{' ]; then n="${raw:i+1}"; n="${n%%\}*}"; i=$((i+${#n}+1))
+      else while [ "$i" -lt "$len" ]; do case "${raw:$i:1}" in [A-Za-z0-9_]) n+="${raw:$i:1}"; i=$((i+1)) ;; *) break ;; esac; done
+           i=$((i-1)); fi
+      case "$n" in '') v+='$' ;; HOME) v+=$H ;; PWD) v+=$REPO ;; *) v+="${!n-}" ;; esac
+      i=$((i+1)); continue
+    fi
+    if [ "$c" = '~' ] && [ "$st" = u ] && [ -z "$v" ]; then v=$H; i=$((i+1)); continue; fi     # a word-leading ~ is HOME
+    if { [ "$c" = ' ' ] || [ "$c" = "$(printf '\t')" ]; } && [ "$st" = u ]; then break; fi     # ends an unquoted value
+    v+=$c; i=$((i+1))
+  done
+  [ "$1" = "$ENVF" ] || v="${v//\/home\/USER/$H}"                                            # the example's placeholder
   printf '%s' "$v"
 }
 vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"
