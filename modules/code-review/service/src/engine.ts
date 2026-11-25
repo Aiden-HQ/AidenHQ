@@ -1721,7 +1721,7 @@ export function createEngine(d: EngineDeps) {
       const was = prRow(p.repo, p.number);
       upsertPr(p);
       await classifyPr(cfg, p);
-      await noteTier(p);
+      void noteTier(p); // not awaited: a slow comment write never delays queueing a review (the PR's slot, taken inside, guards a second)
       // Pending (no current tier): nothing is queued, never on a guessed tier.
       const t = current(p.repo, p.number, p.head);
       if (!t) continue;
