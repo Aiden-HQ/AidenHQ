@@ -21,7 +21,7 @@ import { checklistText, matchChecklist } from "./review-checklist.ts";
 import { gitListed, gitSafe, runEngine } from "./engines.ts";
 import { changed, guidePaths, place, scope } from "./scope.ts";
 
-const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20, REVIEWS = 2;
+const MODEL = "~openai/gpt-luna-latest", FIRST = "medium", AGAIN = "low", MINUTES = 20, REVIEWS = 2;
 
 const raw = (...a: string[]) => gitListed(process.cwd(), a); // untrimmed (a NUL-separated path list may start with a space) and strictly UTF-8
 const ln = (...a: string[]) => raw(...a).replace(/\n$/, ""); // a ref, a sha or a path: git's one final newline off, nothing else (a name may end in a space)
