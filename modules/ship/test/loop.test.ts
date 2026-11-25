@@ -575,6 +575,20 @@ test("under failing a green Dependabot PR is adopted by the round (handoff: all)
   assert.equal(openState(join(n.cacheDir, "state.json")).get("acme/app", 3), undefined, "no reported check is not green");
 });
 
+test("a Dependabot PR whose older run is still pending beside a newer pass reads one history: no task, and the round adopts it", async (t) => {
+  // An edit started the replacement run; the run before it lingers as IN_PROGRESS on the head. Both decisions read each name's
+  // newest run, so the PR is neither filed as failing nor dropped from the merge round.
+  const superseded = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", databaseId: 80, name: "test", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", databaseId: 81, name: "test", status: "COMPLETED", conclusion: "SUCCESS", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const green = dep("acme/app", 4, { commits: { nodes: [{ commit: { statusCheckRollup: superseded } }] } });
+  const m = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "failing" }], { "acme/app": [green] }, { settings: () => PRESETS.full });
+  await m.watch.tick();
+  assert.deepEqual(m.tasks.filter((x) => x.source.startsWith("dependabot:")), [], "a superseded run is not a failure to file");
+  assert.equal(openState(join(m.cacheDir, "state.json")).get("acme/app", 4)?.trigger.kind, "all", "and it is not held out of the round either");
+});
+
 test("a Dependabot PR with no checks is filed", async (t) => {
   const none = dep("acme/app", 3, { commits: { nodes: [{ commit: { statusCheckRollup: null } }] } });
   const m = await multi(t, [{ repo: "acme/app", duties: "all" }], { "acme/app": [none] });

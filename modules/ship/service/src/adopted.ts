@@ -7,7 +7,7 @@
 // review's verdict and judges the App's approval (safe.ts).
 import { discovered } from "./actions.ts";
 import { withFooter } from "./aidenhq-sdk/attribution.ts";
-import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import { latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
 import { handBack, intake, recordTask, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
 import { retryReport, round, tell, type Decision, type RoundDeps } from "./rounds.ts";
@@ -313,7 +313,8 @@ export function adoptedPass(o: AdoptedOptions) {
       const approval = v.approval && s && verdict && risk && risk.approve !== "off" && main.oid ? await approvalOf(s, view, main.oid, verdict) : undefined;
       if (canApprove(approval)) Object.assign(v, { do: "approve", why: "ready, and no approval on its head yet" });
       // Red on the base too: the same required check names (on the head or the merge_group run) red on the default branch's head.
-      const onBase = new Set(namedChecks(main.rollup).filter((c) => !c.ok && !c.pending).map((c) => c.name));
+      // The base head's newest judgement per name, as the gate reads a head: a run an edit superseded is not red.
+      const onBase = new Set(latestChecks(namedChecks(main.rollup)).filter((c) => !c.ok && !c.pending).map((c) => c.name));
       const red = [...new Set([...(v.failing ?? []), ...(v.groupFailing ?? [])])];
       // Red while behind a green base: round() has GitHub update the branch once at this head before asking for a fix.
       const behindGreen = v.do === "fix_ci" && main.rollup?.state === "SUCCESS" && main.oid && a.counters?.updated !== view.head

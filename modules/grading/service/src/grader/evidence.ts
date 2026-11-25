@@ -3,7 +3,7 @@
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
 import { findPrs, staleHead } from "./text.ts";
-import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
 import { closedBy } from "../aidenhq-sdk/closed-event.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
@@ -223,10 +223,25 @@ const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
  * rollup settles too: no aggregate there means the repository's CI had none for that commit.
  */
 function gateOn(pr: any, checks: any[]): string {
-  const gate = checks.find((c) => c.name === GATE_CHECK);
-  if (gate) return gate.pending ? "running" : gate.status === "SUCCESS" ? "green" : "red";
+  // The gate's newest run at the head (checks.ts latestChecks): an edit re-runs CI and cancels the run before it, and that
+  // superseded run's check stays on the head forever. It cannot make a head whose latest `ci-required` passed read red. A check
+  // run and a status sharing the gate's name are two judgements: the worst one counts, as the merge gate reads them.
+  const gates = latestChecks(checks.filter((c: any) => c.name === GATE_CHECK));
+  if (gates.length) return gates.some((c: any) => c.pending) ? "running" : gates.every((c: any) => c.status === "SUCCESS") ? "green" : "red";
   if (pr.state !== "OPEN" || !checks.length) return "missing";
   return namedChecks(pr.baseRef?.target?.statusCheckRollup).some((c: any) => c.name === GATE_CHECK) ? "running" : "missing";
+}
+
+/**
+ * Each name once, as the worst judgement this module would state for it: a not-green (0) outranks a still-running (1) check,
+ * which outranks a green (2) one. The rank follows `checkState`, the verdict the fact is written from, not the merge gate's
+ * `ok`: a neutral run or a skip the aggregate did not accept reads not green here, so it must not be dropped beside a success.
+ */
+function worstPerName(checks: any[], pr: any, gate: string): any[] {
+  const severity = (c: any) => { const state = checkState(pr, c, gate); return state === "still running" ? 1 : state.startsWith("green") ? 2 : 0; };
+  const out = new Map<string, any>();
+  for (const c of checks) { const had = out.get(c.name); if (!had || severity(c) < severity(had)) out.set(c.name, c); }
+  return [...out.values()];
 }
 
 /**
@@ -624,12 +639,17 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
       }
     }
     if (pr.state === "CLOSED") return { awaiting: `${p.url} was closed without merging` };
-    const checks = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
-    const gate = gateOn(pr, checks);
+    // Each name's newest run at the head, as GitHub's branch protection reads it: a cancelled run an edit superseded is not a
+    // judgement of this head, and a name whose only runs were cancelled reads not green rather than still running. A name still
+    // reported twice (a check run and a status) is stated once, as its worst judgement: that is the one the merge gate holds on.
+    const latest = latestChecks(namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
+    const gate = gateOn(pr, latest);
+    const checks = worstPerName(latest, pr, gate);
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
     // a whole as PENDING until they all finish, so the individual states are the finer read), and so is a head whose
     // aggregate required check is not written yet: its jobs appear only as it finishes.
-    if (checks.some((c: any) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
+    // Readiness looks at every judgement, not the collapsed list: a name with a red run and a still-pending status is not settled.
+    if (latest.some((c: any) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
     // Outside the agents org and the product repo the runner can't merge and the owner doesn't: someone else merges it.
     if (pr.state === "OPEN" && deps.ownRepo && !deps.ownRepo(p.repo)) return { awaiting: `${p.url} is not merged yet` };
     // The runner's record names the PR; GitHub says what became of it, and a closed one was held above whatever named it.
