@@ -696,7 +696,12 @@ stagedComposeFiles() {
 
 # Step 1 of spec §5.7.2: everything that can refuse, before anything is touched. Sets `why` on a refusal.
 validate() {
-  AIDENHQ_COMPILE_STAGE=1 node scripts/compile.ts || { why="the staged compile failed"; return 1; }
+  # The compile's last error line goes in the generation's reason, where fleet_generation_status shows it (the log stays on the host).
+  local err; err="$(mktemp)"
+  if ! AIDENHQ_COMPILE_STAGE=1 node scripts/compile.ts 2>"$err"; then
+    cat "$err" >&2; why="the staged compile failed: $(grep . "$err" | tail -1 | cut -c1-300)"; rm -f "$err"; return 1
+  fi
+  cat "$err" >&2; rm -f "$err"
   if [ -f config.next/cloudflared.yml ]; then
     node scripts/edge.ts check config.next/cloudflared.yml || { why="the staged config/cloudflared.yml targets something other than the gate"; return 1; }
   fi
