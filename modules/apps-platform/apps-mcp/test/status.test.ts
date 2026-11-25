@@ -9,6 +9,7 @@ import { buildServer } from "../src/mcp.js";
 import { previewApp } from "../src/previews.js";
 import type { TlsCheck } from "../src/doors.js";
 import { isSensitive, parseApp } from "../src/registry.js";
+import { canaryContent, type CanaryResult } from "../src/canary.js";
 
 // The status row is what the board's grader reads for "deployed at the merged commit": it carries the running commit, who
 // deployed it and the recent deploy history, so a reader can tell the platform's own auto-deploy from a hand deploy.
@@ -249,7 +250,7 @@ describe("app_status previews", () => {
 describe("app_page_canary registration", () => {
   // docs/design/access.md §Test-user sign-in: the tool exists only on an instance that names a test user. A default install
   // lists no tool it can never run (no listener binds, no session mints).
-  const names = async (gateFile?: string) => {
+  const tools = async (gateFile?: string) => {
     const dir = mkdtempSync(join(tmpdir(), "canary-tool-"));
     const registryPath = join(dir, "apps.yaml");
     writeFileSync(registryPath, "apps:\n  - { name: notes, repo: local/notes, owner: a, description: d }\n");
@@ -263,8 +264,9 @@ describe("app_page_canary registration", () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const r = await client.listTools();
     await client.close();
-    return r.tools.map((t) => t.name);
+    return r.tools;
   };
+  const names = async (gateFile?: string) => (await tools(gateFile)).map((t) => t.name);
 
   it("is absent with no test user, and present once the setting is compiled in", async () => {
     expect(await names()).not.toContain("app_page_canary");
@@ -276,5 +278,22 @@ describe("app_page_canary registration", () => {
     const other = join(dir, "gate2.json");
     writeFileSync(other, JSON.stringify({ previews: { file: "x", ports: [39000, 39100] } }));
     expect(await names(other)).not.toContain("app_page_canary");
+  });
+
+  it("keeps its contract: name, action, text, optional path and width in, the submission's result fields out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "canary-schema-"));
+    const gateFile = join(dir, "gate.json");
+    writeFileSync(gateFile, JSON.stringify({ test_user: { email: "canary@aidenhq.test", apps: ["notes"] } }));
+    const tool = (await tools(gateFile)).find((t) => t.name === "app_page_canary")!;
+    const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["action", "name", "path", "text", "width"]);
+    expect((schema.required ?? []).sort()).toEqual(["action", "name", "text"]);
+    // The result is the canary's own answer (canaryContent): meta fields and, when it took one, the screenshot.
+    const r = { ok: true, status: 200, finalUrl: "http://notes.canary.localhost:3132/", pageTitle: "Notes", notify: "fired" as const, notifyStatus: 204, reference: "R-1", submittedAt: new Date().toISOString(), session: { id: "s", expires: "", revoked: true } };
+    const content = canaryContent(r as CanaryResult);
+    const text = content.content[0];
+    expect(text?.type).toBe("text");
+    const meta = JSON.parse(String(text && "text" in text ? text.text : "").split("\n")[0]!);
+    expect(meta).toMatchObject({ notify: "fired", notifyStatus: 204, reference: "R-1", submittedAt: r.submittedAt, session: { revoked: true } });
   });
 });
