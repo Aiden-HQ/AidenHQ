@@ -43,3 +43,24 @@ test("dry run prints the plan and no secrets", () => {
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const secret of ["mgmt-SECRET-123", "gsecret-456"]) assert.ok(!out.includes(secret), `printed a secret: ${secret}`);
 });
+
+// The setup link goes to the owner over a channel: on an install with no address of its own it is a loopback URL, so
+// the output says so right above it, keeps the AIDENHQ_SETUP_URL line a bare URL, and says nothing when there is one.
+const local = ["AIDENHQ_USER=alice", "OWNER_NAME=Alice Doe", "OWNER_EMAIL=alice@example.com"];
+const CAVEAT = /^This address is loopback-only: open it on this host or through the SSH tunnel printed above\. For a public address, run: sudo ops\/setup\.sh --unattended --exposure public \(or --exposure tailscale\)\.$/;
+
+test("unattended local: one loopback caveat line immediately before the setup link, which stays a bare URL", () => {
+  const out = dry(conf(local), "--unattended", "--exposure", "local").split("\n");
+  const lines = out.filter((l) => CAVEAT.test(l));
+  assert.equal(lines.length, 1, `expected exactly one caveat line\n${out.join("\n")}`);
+  const url = out.findIndex((l) => l.includes("AIDENHQ_SETUP_URL="));
+  assert.ok(url > 0, `no setup link\n${out.join("\n")}`);
+  assert.equal(out[url - 1], lines[0]);
+  assert.match(out[url]!, /AIDENHQ_SETUP_URL=(<url>|https?:\/\/[^\s"]+\/setup\?token=[A-Za-z0-9_-]+)$/);
+});
+
+test("unattended with a tailnet address: no loopback caveat", () => {
+  const out = dry(conf([...local, "BOARD_HOST=alice.tail1234.ts.net"]), "--unattended", "--exposure", "tailscale");
+  assert.ok(out.includes("AIDENHQ_SETUP_URL=<url>"), out);
+  assert.ok(!out.split("\n").some((l) => CAVEAT.test(l)), `caveat with a real address\n${out}`);
+});

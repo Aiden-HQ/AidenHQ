@@ -51,6 +51,18 @@ export const NAME = /^[\w.:/@-]{1,100}$/;
 const agentWords: Record<Cause, string> = { not_connected: "not connected", expired: "sign-in expired", scope: "missing a permission", sso: "an organization needs SSO authorization", restricted: "an organization restricts outside apps" };
 const ownerWords = (n: Pick<Row, "cause"> & { scope?: string; org?: string }) =>
   n.cause === "scope" ? `missing the ${n.scope ?? "needed"} permission` : n.cause === "sso" ? `${n.org ?? "an organization"} needs SSO authorization` : n.cause === "restricted" ? `${n.org ?? "an organization"} restricts outside apps` : agentWords[n.cause];
+/** Whether a URL's host is this machine's loopback: its links open on the host (or through the SSH tunnel) only. */
+export const isLoopback = (url: string): boolean => {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+  } catch {
+    return false;
+  }
+};
+/** Next to a loopback link: it opens on the host or through the SSH tunnel, and this is how the install gets a real address. */
+export const LOOPBACK_CAVEAT = "(this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a public address, run sudo ops/setup.sh --unattended --exposure public)";
+
 const verb = (n: { cause: Cause; scope?: string; org?: string }) =>
   ({ not_connected: "connect it", expired: "reconnect it", scope: `grant the ${n.scope ?? "missing"} permission`, sso: `authorize SSO for ${n.org ?? "the organization"}`, restricted: `request access for ${n.org ?? "the organization"}` })[n.cause];
 
@@ -138,6 +150,12 @@ export function createConnectionState(o: {
   const stateKey = (module: string, n: { cause: Cause; account?: string; scope?: string; org?: string }) =>
     `${module}:${n.cause}${n.cause === "sso" || n.cause === "restricted" ? `:${n.org ?? ""}` : n.cause === "scope" && n.scope ? `:${n.scope}` : n.account ? `:account:${n.account}` : ""}`;
   const link = (module: string, url: string | null | undefined) => url ?? `${o.boardUrl().replace(/\/+$/, "")}/connect/${module}`;
+  /** The owner-facing link with its caveat when the board's origin is loopback (local exposure, reached through the SSH
+   * tunnel): the address opens on that host only, and this says where and how to give the install a real one. */
+  const ownerLink = (module: string, url: string | null | undefined) => {
+    const l = link(module, url);
+    return isLoopback(l) ? `${l} ${LOOPBACK_CAVEAT}` : l;
+  };
   /** An org row's org, folded as the key stores it: `<connection>:<sso|restricted>:<org>`. */
   const orgOf = (r: Pick<Row, "key" | "module" | "cause">) => r.key.slice(`${r.module}:${r.cause}:`.length).toLowerCase();
   /** The configured code-host orgs, folded; undefined is an unreadable config (no org row is stale then, as tick prunes no
@@ -223,7 +241,7 @@ export function createConnectionState(o: {
         if (q("UPDATE connection_state SET told = 1 WHERE key = ? AND told = 0").run(key).changes)
           o.queue({
             kind: "decision",
-            text: `${label} needs you to ${verb(n)} so I can ${what}: ${link(module, row.url)}`,
+            text: `${label} needs you to ${verb(n)} so I can ${what}: ${ownerLink(module, row.url)}`,
             task: root.identifier ?? root.id,
             dedupe_key: `connect:${key}`,
             ...(via ? { reply: { via, agent, issue: root.id } } : { head: { agent, issue: root.id } }),
@@ -317,7 +335,7 @@ export function createConnectionState(o: {
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
         const module = moduleOf(r.module);
-        return `${o.label(module)}${r.account ? ` (${r.account})` : ""} isn't connected (${ownerWords(n)}): ${link(module, r.url)}`;
+        return `${o.label(module)}${r.account ? ` (${r.account})` : ""} isn't connected (${ownerWords(n)}): ${ownerLink(module, r.url)}`;
       });
     },
 

@@ -8,7 +8,7 @@ import { createConnectionState } from "../src/connection-state.ts";
 const H = 3600_000, DAY = 24 * H, LASTED = 11 * 60_000;
 const OWNER_COMMENT = { body: "please read my inbox", authorUserId: "u1", createdAt: "2026-11-20T09:00:00Z" };
 
-function world(issues: Record<string, Record<string, unknown>>, comments: Record<string, unknown[]> = {}, conns: Record<string, { module: string }> = { google: { module: "google" }, github: { module: "github" }, slack: { module: "slack" }, slack_live: { module: "slack" } }, orgs: string[] = []) {
+function world(issues: Record<string, Record<string, unknown>>, comments: Record<string, unknown[]> = {}, conns: Record<string, { module: string }> = { google: { module: "google" }, github: { module: "github" }, slack: { module: "slack" }, slack_live: { module: "slack" } }, orgs: string[] = [], boardUrl = "http://board.example") {
   let clock = Date.parse("2026-11-20T10:00:00Z");
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT)");
@@ -32,7 +32,7 @@ function world(issues: Record<string, Record<string, unknown>>, comments: Record
     label: (m) => m[0]!.toUpperCase() + m.slice(1),
     connections: () => conns as never,
     grants: () => ({ a1: { tools: { google: ["gmail_search"], github: ["x"], slack: ["x"], slack_live: ["x"] } } }),
-    boardUrl: () => "http://board.example",
+    boardUrl: () => boardUrl,
     orgs: () => orgs,
     now: () => clock,
   });
@@ -92,6 +92,24 @@ test("a background hit only records and queues nothing; the digest pulls it once
   await w.s.hit({ kind: "module", module: "dispatch", roles: [], tools: {}, credential: "" }, "github", { cause: "not_connected", detail: "" });
   w.tick(LASTED);
   assert.ok(w.s.needs().some((l) => l.startsWith("Github isn't connected")));
+});
+
+// A loopback board origin (local exposure, through the SSH tunnel) is not reachable from the owner's machine: both
+// owner-facing lines say so next to the link, and how the install gets a real address.
+test("a loopback board origin adds the caveat to the notice and the digest line", async () => {
+  const caveat = /this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a public address, run sudo ops\/setup\.sh --unattended --exposure public/;
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] }, undefined, [], "http://localhost:3121");
+  await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
+  assert.equal(w.queued.length, 1);
+  assert.match(w.queued[0].text, /http:\/\/localhost:3121\/connect\/google/);
+  assert.match(w.queued[0].text, caveat);
+  const b = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } }, {}, undefined, [], "http://localhost:3121");
+  await b.s.hit(b.who("r1"), "github", { cause: "not_connected", detail: "" });
+  b.tick(LASTED);
+  const [line, ...more] = b.s.needs().filter((l) => l.startsWith("Github "));
+  assert.deepEqual(more, []);
+  assert.match(line!, /^Github isn't connected \(not connected\): http:\/\/localhost:3121\/connect\/github /);
+  assert.match(line!, caveat);
 });
 
 test("a failed wait leaves no orphan registration (da3a0678)", async () => {

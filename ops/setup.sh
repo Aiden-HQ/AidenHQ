@@ -234,8 +234,15 @@ owner_link() {
 # Unattended: the kernel's first-run page (/setup), its single-use link the last line of the output, exactly once, for the
 # installer to read: AIDENHQ_SETUP_URL=<url>. The vault's recovery key moves from root's home into the vault for that page,
 # which shows it once.
+# The setup link is a loopback address when the install has none of its own: say so, and how to give it one. The
+# AIDENHQ_SETUP_URL line itself stays a bare URL (an installer parses it), so this is the line just before it.
+loopback_link_note() {
+  [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ] || return 0
+  echo "This address is loopback-only: open it on this host or through the SSH tunnel printed above. For a public address, run: sudo ops/setup.sh --unattended --exposure public (or --exposure tailscale)."
+}
+
 setup_link() {
-  if [ "$DRY" = 1 ]; then echo "  + kernel: the first-run page's one-time link, last: AIDENHQ_SETUP_URL=<url>"; return 0; fi
+  if [ "$DRY" = 1 ]; then loopback_link_note; echo "  + kernel: the first-run page's one-time link, last: AIDENHQ_SETUP_URL=<url>"; return 0; fi
   for _ in $(seq 60); do curl -fsS -o /dev/null "http://${AIDENHQ_KERNEL_BACKPLANE:-10.231.0.1:3130}/healthz" 2>/dev/null && break; sleep 2; done
   local resp code url
   resp="$(operator setup_token "" -w '\n%{http_code}' 2>/dev/null || true)"
@@ -246,6 +253,7 @@ setup_link() {
       shred -u /root/aidenhq-vault-recovery.txt
     fi
     echo "Open this page to finish: your account and authenticator, the model key, channels (one use; until an admin exists, a rerun prints a new one):"
+    loopback_link_note
     echo "AIDENHQ_SETUP_URL=$url"
   elif [ "$code" = 409 ]; then echo "(an admin exists, so first-run setup is over: sign in at $ADMIN_URL; a lost owner: sudo ops/setup.sh --reset $OWNER_EMAIL)"
   else die "the kernel gave no first-run link (HTTP ${code:-none}; is it up? systemctl --user status aidenhq-kernel)"; fi
