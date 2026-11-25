@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { repair } from "../recipe/repair.ts";
+import { goSumOrder, repair } from "../recipe/repair.ts";
 
 test("ship-repair: generated conflicts regenerated into the files on top of the head; a source conflict is left over", () => {
   const root = mkdtempSync(join(tmpdir(), "ship-recipe-"));
@@ -75,4 +75,9 @@ test("ship-repair: a conflicted go.sum keeps both sides' lines and no command ru
   const r = repair(snap(head, mkdtempSync(join(root, "ws-"))), out, { base, merge_base: mb, base_ref: "main", plan: "{}" });
   assert.deepEqual(r.result, { changed: 1 });
   assert.equal(Buffer.from(r.keep!.entries[0]!.content!, "base64").toString(), "a v1 h1:a\nb v1 h1:b\nc v1 h1:c\n");
+});
+
+test("go.sum order: path, then semantic version, /go.mod after its version", () => {
+  const lines = ["b v1.0.0/go.mod h1:x", "a v1.10.0 h1:x", "a v1.9.0 h1:x", "b v1.0.0 h1:x", "a v1.9.0-rc.1 h1:x", "a v1.9.0/go.mod h1:x"];
+  assert.deepEqual(lines.sort(goSumOrder), ["a v1.9.0-rc.1 h1:x", "a v1.9.0 h1:x", "a v1.9.0/go.mod h1:x", "a v1.10.0 h1:x", "b v1.0.0 h1:x", "b v1.0.0/go.mod h1:x"]);
 });

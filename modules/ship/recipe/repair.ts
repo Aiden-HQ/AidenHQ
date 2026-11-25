@@ -40,6 +40,30 @@ export function missingTool(out: string): string | undefined {
   return m?.[1];
 }
 
+/** go.sum's own line order (golang.org/x/mod module.Sort): module path, then semantic version, a `/go.mod` line after its version's. */
+export function goSumOrder(a: string, b: string): number {
+  const key = (l: string) => { const [path = "", v = ""] = l.split(" "); return { path, gomod: v.endsWith("/go.mod"), ver: v.replace(/\/go\.mod$/, "").replace(/^v/, "").replace(/\+.*$/, "") }; };
+  const x = key(a), y = key(b);
+  if (x.path !== y.path) return x.path < y.path ? -1 : 1;
+  const [xc = "", xp] = x.ver.split(/-(.*)/s), [yc = "", yp] = y.ver.split(/-(.*)/s);
+  const xn = xc.split(".").map(Number), yn = yc.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((xn[i] ?? 0) !== (yn[i] ?? 0)) return (xn[i] ?? 0) < (yn[i] ?? 0) ? -1 : 1;
+  if (xp !== yp) {
+    if (xp === undefined || yp === undefined) return xp === undefined ? 1 : -1; // a release sorts after its prereleases
+    const xi = xp.split("."), yi = yp.split(".");
+    for (let i = 0; i < Math.max(xi.length, yi.length); i++) {
+      const m = xi[i], n = yi[i];
+      if (m === undefined || n === undefined) return m === undefined ? -1 : 1;
+      if (m === n) continue;
+      const mn = /^\d+$/.test(m), nn = /^\d+$/.test(n);
+      if (mn && nn) return Number(m) < Number(n) ? -1 : 1;
+      if (mn !== nn) return mn ? -1 : 1;
+      return m < n ? -1 : 1;
+    }
+  }
+  return x.gomod === y.gomod ? 0 : x.gomod ? 1 : -1;
+}
+
 export function repair(ws: string, out: string, spec: Record<string, string>) {
   const plan = JSON.parse(spec.plan || "{}") as { globs?: string[]; commands?: { dir: string; cmd: string }[] };
   const globs = (plan.globs ?? []).filter((x) => typeof x === "string" && x);
@@ -80,7 +104,7 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   for (const p of unmerged()) {
     if (name(p) === "go.sum") {
       // Every line of go.sum is a checksum that stays valid: both sides' lines together are the merge (a stale one is harmless).
-      writeFileSync(join(repo, p), `${[...new Set([...side(2, p), ...side(3, p)].filter(Boolean))].sort().join("\n")}\n`);
+      writeFileSync(join(repo, p), `${[...new Set([...side(2, p), ...side(3, p)].filter(Boolean))].sort(goSumOrder).join("\n")}\n`);
       g(["add", "--", p]);
       decided.add(p);
       continue;

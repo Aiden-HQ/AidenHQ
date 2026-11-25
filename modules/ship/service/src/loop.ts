@@ -174,7 +174,9 @@ export function startLoop(o: LoopOptions) {
         save();
       }
       // A Dependabot PR is the Engineer's once its checks fail (or always, under `all`); a green one under `failing` goes through the round like any PR.
-      const bump = isDependabot(pr) && which === "failing" && !dependabotDue(pr, which) && !namedChecks(rollupOf(pr)).some((c) => c.pending);
+      // Green means at least one check reported and all finished: no checks yet is not green.
+      const reported = namedChecks(rollupOf(pr));
+      const bump = isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending);
       if (isDependabot(pr) && !bump) continue;
       // One PR's failure (a recovery read, a round) never stops the repo's others.
       try {

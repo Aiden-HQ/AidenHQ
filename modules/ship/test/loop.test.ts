@@ -606,6 +606,10 @@ test("under failing a green Dependabot PR is adopted by the round (handoff: all)
   const a = openState(join(m.cacheDir, "state.json"));
   assert.equal(a.get("acme/app", 1)?.trigger.kind, "all");
   assert.equal(a.get("acme/app", 2), undefined);
+  const none = dep("acme/app", 3, { commits: { nodes: [{ commit: { statusCheckRollup: null } }] } });
+  const n = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "failing" }], { "acme/app": [none] }, { settings: () => PRESETS.full });
+  await n.watch.tick();
+  assert.equal(openState(join(n.cacheDir, "state.json")).get("acme/app", 3), undefined, "no reported check is not green");
 });
 
 test("a Dependabot PR with no checks is filed", async (t) => {
