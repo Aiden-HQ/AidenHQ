@@ -778,6 +778,35 @@ test("a queue persisted before the identifier was kept recovers it from the reco
     [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the upgraded queue found the identifier and kept the evidence");
 });
 
+test("a queue across a kernel upgrade waits for the identifier the reconcile is about to record", async (t) => {
+  // The queue was claimed when the kernel went down, so the restart leaves it running (never handed execute again), and its first
+  // read is answered before the kernel's own upgrade reconcile has filled the record's identifier in: a null answer at that point
+  // is "not yet", not "this record has none". The next poll sees what reconcile recorded, and the merged PR is still credited.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-upgrade-null-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  mkdirSync(join(cacheDir, "merges"), { recursive: true });
+  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000c0": {
+    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9",
+    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending" }],
+  } } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  let reads = 0;
+  const { handle, outcomes, settle } = await setup(t, {
+    prs, cacheDir,
+    // The record before reconcile recorded the identifier (null), then as it reads once reconcile has: WOR-9.
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: null } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9" }) : undefined),
+  });
+  await handle.stepMerges();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(outcomes.length, 0, "a null identifier is not yet the record's answer on the first poll");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the identifier reconcile recorded kept the evidence");
+});
+
 test("a legacy queue waits out a failed identifier read instead of settling without the evidence", async (t) => {
   // The kernel is briefly unavailable on the first poll after an upgrade, while the PR is already merged at its bound head. The
   // failed read must not be taken for "the record has no identifier": the queue holds, retries, and only settles once the read

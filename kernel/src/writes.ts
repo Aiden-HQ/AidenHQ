@@ -334,9 +334,22 @@ export function createWrites({ records, registry, connections, secret, resolver,
   const running = new Set<string>();
   const runRetries = new Map<string, { n: number; next: number }>();
 
+  /**
+   * A record filed by the version before this one may carry no identifier of its own (its filing read none): read its task's
+   * here, so the code host's queue gets what it keys a PR's task by rather than failing closed for good. A job's record has no
+   * identifier of its own — its workspace already names it — and a task the control plane can't resolve keeps none. The read's
+   * own failure throws: the caller decides (a run is retried, a restart's reconcile keeps the record as it is).
+   */
+  async function identified(r: Rec): Promise<Rec> {
+    if (r.identifier || !r.task || r.requester?.kind === "run" || !taskIdentifier) return r;
+    const identifier = await taskIdentifier(r.task);
+    return identifier && records.setIdentifier(r.id, identifier) ? records.get(r.id)! : r;
+  }
   async function execute(r: Rec, k: Kind | undefined): Promise<void> {
     executing.add(r.id);
     try {
+      // A read that fails leaves it as it was: failing closed, never running with a guess.
+      r = await identified(r).catch(() => r);
       await executeOnce(r, k);
     } finally {
       executing.delete(r.id);
@@ -416,11 +429,14 @@ export function createWrites({ records, registry, connections, secret, resolver,
     }
   }
   async function runOnce(id: string): Promise<void> {
-    const pre = records.get(id);
+    let pre = records.get(id);
     if (!pre || pre.state !== "approved") return void runRetries.delete(id);
     let open: boolean, again: Plan | undefined, stale = false;
     const k = pre.kind !== CONN_TOOL && !native[pre.kind] ? registry()[pre.kind] : undefined;
     try {
+      // Its task's identifier is read before the claim: a transient failure here leaves the record approved and unclaimed, so
+      // retryApproved asks again, rather than the executor running with only the bare task id and its merge failing closed.
+      pre = await identified(pre).catch((e) => { if (transient(e)) throw e; return pre!; });
       if (!(await revalidate(pre))) return void runRetries.delete(id);
       // A closed task ends an agent's leftover request; a module's write of its own kind (code review's post, filed on a task that
       // only holds its approvals) is no leftover: it runs whatever became of that task.
@@ -728,6 +744,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const claimed = (modules ? records.ofModules(modules, ["claimed"]) : records.list(["claimed"], 1000)).filter((r) => !executing.has(r.id) && (!before || r.updated_at < before));
       const unresolved: string[] = [];
       for (const r of claimed) {
+        // A record an upgrade found already claimed (a merge queue still running) is never handed execute again, so its task's
+        // identifier is filled in here: the queue reads it from the record before it settles, and a pr-tasks.json row is keyed by
+        // it, not by the task's id. A failed read keeps the record as it is, for the next reconcile.
+        if (!r.identifier && r.task && r.requester?.kind !== "run") await identified(r).catch(() => r);
         if (!modules && resume.includes(r.kind) && native[r.kind]) { void execute(r, undefined); continue; }
         const k = registry()[r.kind];
         // An executor whose status can't be read now (still starting after the restart): asked again on the next reconcile, for

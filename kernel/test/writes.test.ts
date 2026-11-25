@@ -215,6 +215,58 @@ test("a module-filed write whose task the control plane can't read now is refuse
   assert.equal(dropped.records.list(["review", "owner", "claimed", "done"]).length, 0);
 });
 
+test("an approved record's identifier is read before the claim, so a rate-limited read waits instead of running with the bare id", async (t) => {
+  // A record filed by the version before this one (approved with no identifier of its own): its task's identifier is read
+  // before it is claimed. Paperclip's rate limit is no answer, so it stays approved, unclaimed and unrun, and runs once it answers.
+  let limited = false;
+  const { k, fx, review } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE },
+    onControl: (req) => (limited && /^\/api\/issues\//.test(req.url ?? "") ? { status: 429, body: { error: "rate limited" } } : undefined) });
+  const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(filed.status, 200, JSON.stringify(filed.json));
+  k.records.db.prepare("UPDATE records SET identifier = NULL WHERE id = ?").run(filed.json.id);
+  limited = true;
+  await review(filed.json.id, { decision: "approve", reason: "fine", model: "~acme/model-a" });
+  for (let i = 0; i < 20 && fx.executes.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual([k.records.get(filed.json.id).state, fx.executes.length], ["approved", 0], "the rate-limited read leaves it approved, unclaimed");
+  limited = false;
+  await k.writes.run(filed.json.id);
+  await until(() => k.records.get(filed.json.id).state === "done");
+  assert.equal(fx.executes[0].identifier, "WOR-8637", "the executor got the identifier, never only the task id");
+  // The same, with the read still rate-limited when the reviewer approves: it is not claimed, and a later run gets the identifier.
+  const busy = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "s" }, task: "TASK-9" }, "other-key");
+  k.records.db.prepare("UPDATE records SET identifier = NULL WHERE id = ?").run(busy.json.id);
+  limited = true;
+  await review(busy.json.id, { decision: "approve", reason: "fine", model: "~acme/model-a" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual([k.records.get(busy.json.id).state, fx.executes.filter((e) => e.id === busy.json.id).length], ["approved", 0], "the claim waits for the identifier");
+  limited = false;
+  await k.writes.run(busy.json.id);
+  await until(() => k.records.get(busy.json.id).state === "done");
+  assert.equal(fx.executes.find((e) => e.id === busy.json.id).identifier, "WOR-8637");
+});
+
+test("a claimed record an upgrade left without an identifier is filled in by reconcile, before its queue settles", async (t) => {
+  // Its executor still reports the merge queue running: the record is left claimed, never handed execute again, and the queue
+  // reads its identity from the record. Reconcile fills it in there; a task it can't resolve still keeps none (fails closed).
+  const ex = await serve((req, res) => {
+    if (req.url?.endsWith("/status")) return void res.writeHead(200, { "content-type": "application/json" }).end('{"state":"running"}');
+    res.writeHead(404).end();
+  });
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
+  const executor = { module: "twin", url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key", rev: "r1" };
+  const k = await kernel(t, { issues: { ...HEARTBEAT, ...TRIAGE }, secrets: { twin_service_key: "twin-key" }, writes: { "twin.merge": { module: "twin", floor: 1, tools: [], executor } } });
+  const card = { sentence: "Merge.", changes: "", reads: "", cost: "", details: "" };
+  const file = (task) => k.records.file({ kind: "twin.merge", module: "twin", args: { prs: [], task }, targets: {}, executor, policy: "p", tier: 1, card,
+    requester: { agent: "", key: "", name: "ship", roles: [], kind: "module", module: "ship" }, task, state: "claimed" });
+  const rec = file("TASK-9");
+  assert.equal(k.records.get(rec.id).identifier, null);
+  assert.deepEqual(await k.writes.reconcile(), []);
+  assert.deepEqual([k.records.get(rec.id).state, k.records.get(rec.id).identifier], ["claimed", "WOR-8637"]);
+  const unknown = file("TASK-404");
+  await k.writes.reconcile();
+  assert.equal(k.records.get(unknown.id).identifier, null);
+});
+
 test("a job's plan-time refusal keeps its rule's stable code beside its words, and a write that goes through clears both", async (t) => {
   const { k, fx } = await twin(t);
   // The executor refuses this plan with a code, as the code host's platform-only rule does: the job's row keeps both, so a
