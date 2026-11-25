@@ -419,7 +419,9 @@ exact email match only).
 - Slack's gap sync reads as the owner through slack-mcp's relay of the Slack sign-in (`slack_relay_key`, its read scopes);
   until the owner connects Slack, src_slack gets live events only.
 - Each pass writes `src_meta.ingest_run` (source, scope, rows, error; `status` holds a non-error marker, e.g. `retired`
-  for a security target whose replacement was scanned). src_docs has two scopes: `drive` (code) and
+  for an image target absent from a batch that inventoried every running and configured image: settled against the
+  replacement scanned that pass, or, for a fleet computer image no container runs and no configured image names, with no
+  replacement). src_docs has two scopes: `drive` (code) and
   `summaries` (OpenRouter, the root `openrouter_key`; model `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`,
   ZDR). Without the key it stores metadata only.
 - Confluence pages are `src_jira.confluence_pages` (jira-mcp; ingest_run source `jira`, scopes `confluence` and
