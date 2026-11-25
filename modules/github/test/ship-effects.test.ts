@@ -856,6 +856,38 @@ test("the tree construction handles the mirror too: a directory that becomes a f
   assert.equal(tree.filter((e) => e.sha === null).length, 1, "only `tools/run`, the base's own file");
 });
 
+test("the tree construction looks a changed path up as itself, never as a pathspec: `:(draft).md`, `*.md` and `a[1].txt`", async () => {
+  const { treeWrites } = await import("../service/src/service.ts");
+  const dir = mkdtempSync(join(tmpdir(), "tree-literal-"));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@b", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@b" };
+  const g = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env }).trim();
+  // A raw runner with no GIT_LITERAL_PATHSPECS in its env: the construction itself must ask git for literal paths.
+  const raw = async (args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env: Object.fromEntries(Object.entries(env).filter(([k]) => k !== "GIT_LITERAL_PATHSPECS")) });
+  g("init", "--quiet", "-b", "main", ".");
+  writeFileSync(join(dir, "plain.md"), "plain\n");
+  g("add", "-A");
+  g("commit", "--quiet", "-m", "before");
+  const before = g("rev-parse", "HEAD");
+  // Paths that a pathspec would read as magic, a glob or a character class; plus decoys each pattern would otherwise match.
+  writeFileSync(join(dir, ":(draft).md"), "magic\n");
+  writeFileSync(join(dir, "*.md"), "star\n");
+  writeFileSync(join(dir, "a[1].txt"), "class\n");
+  writeFileSync(join(dir, "other.md"), "decoy-one\n");
+  writeFileSync(join(dir, "a1.txt"), "decoy-two\n");
+  g("add", "-A");
+  g("commit", "--quiet", "-m", "hostile names");
+  const after = g("rev-parse", "HEAD");
+  const { tree } = await treeWrites(raw, before, after);
+  assert.deepEqual(tree.map((e) => e.path).sort(), ["*.md", ":(draft).md", "a1.txt", "a[1].txt", "other.md"].sort(), `got ${JSON.stringify(tree)}`);
+  assert.equal(new Set(tree.map((e) => e.sha)).size, 5, "each path carries its own blob, never a decoy's");
+  // Each path carries its own blob, never a decoy's: a pattern lookup would have paired them wrongly.
+  const sha = (p) => g("rev-parse", `HEAD:${p}`);
+  for (const p of [":(draft).md", "*.md", "a[1].txt", "other.md", "a1.txt"]) {
+    assert.equal(tree.find((e) => e.path === p)?.sha, sha(p), p);
+    assert.equal(tree.find((e) => e.path === p)?.mode, "100644", p);
+  }
+});
+
 test("ship's repair's refusal text names the tree diff and the entry GitHub refused, never a bare 422", async (t) => {
   const { c1, run, refuseTree } = await setup(t);
   refuseTree(true);

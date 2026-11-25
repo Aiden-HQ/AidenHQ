@@ -185,11 +185,14 @@ const treeShas = async (raw: Raw, tree: string) => new Set((await raw(["ls-tree"
 /**
  * The paths among `paths` that `<tree>` holds as a directory, at any depth (`git ls-tree -d`): `x` is a directory in the result
  * whether it holds `x/y` or only `x/y/z`. These are the paths a tree write must never name as a `sha:null` deletion.
+ * Both lookups pass `--literal-pathspecs`: a changed path is looked up as itself. `--` ends option parsing, not pathspec
+ * parsing, so without it a file named `:(draft).md` is read as pathspec magic (`fatal: Invalid pathspec magic 'draft'`) and
+ * `*.md`/`a[1].txt` are read as patterns that match other paths.
  */
 export const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
   const dirs = new Set<string>();
   for (let i = 0; i < paths.length; i += TREE_CHUNK) {
-    for (const rec of NUL(await raw(["ls-tree", "-d", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
+    for (const rec of NUL(await raw(["--literal-pathspecs", "ls-tree", "-d", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
       const [meta, ...rest] = rec.split("\t");
       if (String(meta).split(" ")[1] === "tree") dirs.add(rest.join("\t"));
     }
@@ -200,7 +203,7 @@ export const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
 export const entriesAt = async (raw: Raw, tree: string, paths: string[]) => {
   const files = new Map<string, TreeEntry>();
   for (let i = 0; i < paths.length; i += TREE_CHUNK) {
-    for (const rec of NUL(await raw(["ls-tree", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
+    for (const rec of NUL(await raw(["--literal-pathspecs", "ls-tree", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
       const [meta, ...rest] = rec.split("\t");
       const [mode, kind, sha] = String(meta).split(" ");
       if (kind !== "blob" && kind !== "commit") continue;
@@ -303,8 +306,12 @@ export function createService(o: Options) {
     const full = [...SAFE_GIT_ARGS, ...(token ? CREDENTIAL_ARGS : []), "--git-dir", dir, ...args];
     return (await run("git", full, { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
   }
-  /** The same clone, read for tree data: git's own bytes, never trimmed (a tree path may start with whitespace). */
-  const rawGit = (dir: string, env: NodeJS.ProcessEnv = ENV): Raw => async (args) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout;
+  /**
+   * The same clone, read for tree data: git's own bytes, never trimmed (a tree path may start with whitespace).
+   * `--literal-pathspecs` is on every run: a changed path is looked up as itself, never as a pathspec, so a file named
+   * `:(draft).md`, `*.md` or `a[1].txt` resolves to that file (`--` ends option parsing, not pathspec parsing).
+   */
+  const rawGit = (dir: string, env: NodeJS.ProcessEnv = ENV): Raw => async (args) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout;
   const initBare = async (dir: string) => void (await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", dir], { env: ENV }));
   const access = o.access;
   /** The owner's token, for one git child's env only. */
@@ -1095,9 +1102,8 @@ export function createService(o: Options) {
     let final: string, made: string;
     try {
       const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await access.identity()) };
-      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
       const raw = rawGit(dir, env);
-      const at = Raw => Raw;
       const blobAt = async (tree: string, p: string) => (await g(["ls-tree", "-z", tree, "--", p])).split("\0")[0]?.split(/[ \t]/) ?? [];
       // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
       const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", a.head, baseSha], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
