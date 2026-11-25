@@ -111,7 +111,12 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/outcome`, { ok: false, text: "again" }, "twin-key")).status, 409);
   assert.equal(fx.executes.length, 1);
   // Its requester reads its own record; another agent can't, nor can another module report its outcome.
-  assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, ADA)).json.state, "done");
+  // Read later, its outcome is fenced as the live answer of its untrusted connection would have been.
+  const later = (await k.v1("GET", `/v1/writes/${p.approval}`, undefined, ADA)).json;
+  assert.equal(later.state, "done");
+  assert.match(later.outcome.text, /^UNTRUSTED CONTENT from twin\.post_note[\s\S]*\nposted hi\n<\/untrusted-data>$/);
+  // The board reads it as filed.
+  assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`)).json.outcome.text, "posted hi");
   assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, BO)).status, 404);
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/outcome`, { ok: true, text: "x" }, "other-key")).status, 403);
   // The kind's executor reads only {id, state}, never the outcome; another module's key reads nothing.

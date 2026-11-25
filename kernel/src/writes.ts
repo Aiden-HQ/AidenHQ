@@ -12,6 +12,7 @@
 // kernel.apply by the kernel.
 import http from "node:http";
 import { createHash } from "node:crypto";
+import { fence } from "../sdk/src/fence.ts";
 import { neutral } from "./channels.ts";
 import type { Connection, Identity } from "./identity.ts";
 import type { Resolver } from "./net.ts";
@@ -58,6 +59,11 @@ export type FiledCheckFn = (input: { kind: string; args: unknown; paths: unknown
 /** The kernel's own planner for one of its kinds (kernel.apply: apply-tier.ts), in place of an executor's plan. */
 export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string; workspace?: string }) => Promise<Plan>;
 export const CONN_TOOL = "conn.tool";
+// What an agent may be handed back from one tool call (a result with an image block, a screenshot, is exempt): the proxy's
+// live answers and a record's outcome read later (shownOutcome) alike.
+export const MAX_RESULT = 1024 * 1024;
+/** What an agent is told in place of a result over MAX_RESULT: the call ran. */
+export const oversized = (connection: string, tool: string | undefined, n: number) => `oversized-result: ${connection}.${tool} answered ${n} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
 /**
  * The largest serialised conn.tool payload a card may carry, measured with the JSON.stringify the card builds.
  */
@@ -589,8 +595,25 @@ export function createWrites({ records, registry, connections, secret, resolver,
     return { kind, k, t, args };
   }
 
+  /**
+   * A record's outcome as its own job reads it later (GET /v1/writes/:id): fenced exactly as its live answer through the proxy
+   * would be (the connection it came through is untrusted: a conn.tool record's own, or any connection whose tool routes into
+   * its kind; one no longer there fails closed) and capped like one. A kind filed straight to /v1/writes (the in-box CLI's git
+   * writes) came through no connection, and its outcome is shown as the filing answer shows it.
+   */
+  function shownOutcome(r: Rec): Rec["outcome"] {
+    if (!r.outcome) return r.outcome;
+    const a = (r.args ?? {}) as { connection?: unknown; tool?: unknown };
+    const via = r.kind === CONN_TOOL ? [[String(a.connection ?? ""), String(a.tool ?? "")]] : (kindOf_(r.kind)?.tools ?? []).map((ct) => [ct.slice(0, ct.indexOf(".")), ct.slice(ct.indexOf(".") + 1)]);
+    const untrusted = via.find(([c]) => conn(c!)?.returns !== "trusted");
+    const n = Buffer.byteLength(r.outcome.text);
+    const text = n > MAX_RESULT ? oversized(via[0]?.[0] ?? r.kind, via[0]?.[1], n) : r.outcome.text;
+    return { ok: r.outcome.ok, text: untrusted && n <= MAX_RESULT ? fence(text, `${untrusted[0]}.${untrusted[1]}`) : text };
+  }
+
   return {
     kindOf,
+    shownOutcome,
     /** POST /v1/writes, and the proxy for a tool mapped to a kind. */
     async request(who: Identity, { kind: asked, args: given, task, evidence }: { kind: string; args: unknown; task?: string; evidence?: unknown }): Promise<Rec> {
       const { kind, k, t, args } = admit(who, asked, given, task);
