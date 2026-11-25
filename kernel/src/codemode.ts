@@ -138,16 +138,20 @@ async function discover(kernelUrl: string, token: string, servers: McpServer[], 
     const tools: Tool[] = [];
     const seen = new Set<string>();
     let cursor: string | undefined;
+    // What this listing charged the budget: given back when it ends unavailable and keeps nothing.
+    let mine = 0;
+    const none = (why: string): Listing => { kept -= mine; return { server, state: "unavailable", tools: [], why }; };
     try {
       for (let page = 0; ; page++) {
         if (page >= MAX_PAGES) return { server, state: "incomplete", tools };
         const { message } = await client.request(server.name, "tools/list", cursor ? { cursor } : {}, { signal });
-        if (message.error || !Array.isArray(message.result?.tools)) return { server, state: "unavailable", tools: [], why: "it refused the listing" };
+        if (message.error || !Array.isArray(message.result?.tools)) return none("it refused the listing");
         for (const t of message.result.tools as { name?: unknown; description?: unknown; inputSchema?: unknown }[]) {
           if (typeof t?.name !== "string" || !t.name) continue;
           const tool = { name: t.name, description: typeof t.description === "string" ? t.description : "", inputSchema: t.inputSchema ?? null };
-          kept += Buffer.byteLength(JSON.stringify(tool));
-          if (tools.length >= MAX_TOOLS || kept > MAX_BYTES) return { server, state: "incomplete", tools };
+          const n = Buffer.byteLength(JSON.stringify(tool));
+          if (tools.length >= MAX_TOOLS || kept + n > MAX_BYTES) return { server, state: "incomplete", tools };
+          kept += n, mine += n;
           tools.push(tool);
         }
         const next = message.result.nextCursor;
@@ -157,7 +161,7 @@ async function discover(kernelUrl: string, token: string, servers: McpServer[], 
         cursor = next;
       }
     } catch (e) {
-      return { server, state: "unavailable", tools: [], why: e instanceof ToolError ? e.code : "it failed" };
+      return none(e instanceof ToolError ? e.code : "it failed");
     }
   };
   const out: Listing[] = new Array(servers.length);
