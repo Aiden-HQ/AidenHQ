@@ -124,3 +124,19 @@ it("a connection line keeps its whole reconnect link in the digest (d5305a6e)", 
   await flushDigest(store, cfg, async (t) => ((out = t), true), Date.UTC(2026, 10, 17, 9), async () => [`GitHub isn't connected (acme needs SSO authorization): ${link}`]);
   expect(out).toContain(link);
 });
+
+// A connection need the kernel queues is a decision: decisions never wait for the digest, so its loopback caveat (next to
+// the /connect link) reaches the owner whole, never through the digest line's 300-character clip (AidenHQ#1755).
+it("a connection decision reaches the owner whole on a channel, caveat included, and is never digested", async () => {
+  const store = openStore(":memory:");
+  const caveat = "(this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a real address, run sudo ops/setup.sh --unattended --exposure public, or --exposure tailscale for remote access over a tailnet)";
+  const text = `Google needs you to connect it so I can ${"x".repeat(80)}: http://localhost:3121/connect/google ${caveat}`;
+  const sent: { kind: string; text: string }[] = [];
+  const attention = { mode: "enforce" as const, blocked: [], dailyCap: 99, digestHours: Array.from({ length: 24 }, (_, h) => h), timezone: "UTC" };
+  const d: Deps = { store, transports: ["channel-telegram"], attention, send: async (_to, m) => (sent.push(m), { sent: true }) };
+  await notify(d, { kind: "decision", text, task: "WOR-1", head: { agentName: "Aiden", issueId: "i1" } });
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.text).toContain("http://localhost:3121/connect/google");
+  expect(sent[0]!.text).toContain(caveat);
+  expect(JSON.parse(store.getKv("digest:queue") || "[]")).toEqual([]);
+});

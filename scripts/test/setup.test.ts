@@ -64,3 +64,28 @@ test("unattended with a tailnet address: no loopback caveat", () => {
   assert.ok(out.includes("AIDENHQ_SETUP_URL=<url>"), out);
   assert.ok(!out.split("\n").some((l) => CAVEAT.test(l)), `caveat with a real address\n${out}`);
 });
+
+// A --link rerun prints only the link, so where it opens comes from the URL the kernel returned: a loopback one gets the
+// caveat and the tunnel command (built from the SSH destination the owner reached the host by), a tailnet one the
+// "on the tailnet" note and no caveat.
+const here = [...local, "TIMEZONE=Europe/London"];
+const linkRun = (file, extra = [], env = {}) => execFileSync("bash", [setup, "--dry-run", "--config", file, ...extra, "--link"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+
+test("unattended --link prints the tunnel to the address the owner reached this host by, not a private hostname", () => {
+  const out = linkRun(conf(here), ["--unattended", "--exposure", "local"], { SSH_CONNECTION: "10.0.0.9 51234 203.0.113.7 22" });
+  assert.ok(out.includes("ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 alice@203.0.113.7"), out);
+});
+
+test("a config-based --link on a local install says the link is loopback-only rather than 'on the tailnet'", () => {
+  const out = linkRun(conf(here), ["--exposure", "local"]);
+  assert.ok(out.includes("the owner's one-time setup link"), out);
+  assert.ok(!out.includes("on the tailnet; one use"), `claims the tailnet for a loopback link\n${out}`);
+  assert.ok(out.split("\n").some((l) => CAVEAT.test(l)), `no loopback caveat\n${out}`);
+});
+
+test("is_loopback_url knows every loopback form and no real one", () => {
+  const fn = `source <(sed -n '/^is_loopback_url()/,/^}/p' ${JSON.stringify(setup)}); `;
+  const check = (u) => { try { execFileSync("bash", ["-c", `${fn} is_loopback_url "$1"`, "_", u]); return true; } catch { return false; } };
+  for (const u of ["http://localhost", "http://localhost/x", "http://localhost:3120/setup?token=a", "http://127.0.0.1", "http://127.0.0.1:3121/connect/x", "http://[::1]", "http://[::1]/x", "http://[::1]:8446/x"]) assert.ok(check(u), `missed ${u}`);
+  for (const u of ["https://alice.tail1234.ts.net:8446/x", "http://board.example/connect/x", "https://203.0.113.7/x"]) assert.ok(!check(u), `called ${u} loopback`);
+});
