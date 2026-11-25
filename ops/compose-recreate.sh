@@ -5,7 +5,9 @@
 #      stopped container a leftover, and nothing here should guess at what the config runs;
 #   2. only the services whose image, compose config or mounted secret content moved are recreated; every other container
 #      keeps running. When there are any, a fresh dump of the warehouse (when this host runs one) is taken first (see
-#      dump); a step that recreates nothing dumps nothing;
+#      dump); a step that recreates nothing dumps nothing, and neither does one on the product already running
+#      (AIDENHQ_PRODUCT_MOVED=0) where no recreated service's image moved: a settings-only apply runs the same code, so
+#      no migration runs and the nightly dump is the copy;
 #   3. compose's leftovers for services this config dropped are removed, and never a CI job's runner;
 #   4. a service still left `created` (never started) is started;
 #   5. a container, running or already stopped, of a service this config dropped (a removed or replaced module's, or Caddy
@@ -46,6 +48,8 @@ declare -A BEFORE_DIGESTS=()
 # project's containers (snapshot), each service's config hash (HASHES), each image's platform manifest (IMAGE_IDS) and
 # each service's mounted-secret digest (DIGESTS).
 CONTAINERS=""
+# Set when a recreated service runs another image than before (new code that may migrate), or had no running container.
+IMAGE_MOVED=0
 declare -A SERVICE_ID=() RUNNING=() STATUS=() IMAGE_OF=() HASH_OF=() HASHES=() SERVICE_IMAGE=() IMAGE_IDS=() DIGESTS=() DESIRED=()
 # The warehouse's own Postgres image, as scripts/backup.sh uses it: already pinned, so the dump needs nothing new.
 dump_image='postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f'
@@ -262,13 +266,13 @@ moved() {
   # record after the up too, or the next apply finds the old container's record and recreates it once more.
   digest="${DIGESTS[$service]-}"
   BEFORE_DIGESTS[$service]="$digest"
-  [ -n "$id" ] || return 0
-  [ "${RUNNING[$id]-}" = true ] || return 0
+  [ -n "$id" ] || { IMAGE_MOVED=1; return 0; }
+  [ "${RUNNING[$id]-}" = true ] || { IMAGE_MOVED=1; return 0; }
   image="${SERVICE_IMAGE[$service]-}"
   if [ -n "$image" ]; then
     want="${IMAGE_IDS[$image]-}"
     have="${IMAGE_OF[$id]-}"
-    [ -n "$want" ] && [ "$want" = "$have" ] || return 0
+    [ -n "$want" ] && [ "$want" = "$have" ] || { IMAGE_MOVED=1; return 0; }
   fi
   now="${HASHES[$service]-}"
   then="${HASH_OF[$id]-}"
@@ -298,9 +302,15 @@ step() {
   done <<< "$(leftovers kept)"
   refresh
   secretDigests || exit 1
-  for service in $desired; do moved "$service" && recreate+=("$service"); done
+  IMAGE_MOVED=0
+  for service in $desired; do
+    moved "$service" || continue
+    recreate+=("$service")
+    # A service with no explicit image (build-only) has a replacement image that can't be compared: counted as moved.
+    [ -n "${SERVICE_IMAGE[$service]-}" ] || IMAGE_MOVED=1
+  done
   if [ "${#recreate[@]}" -gt 0 ]; then
-    dump || return 1
+    if [ "$IMAGE_MOVED" = 1 ] || [ "${AIDENHQ_PRODUCT_MOVED:-1}" != 0 ]; then dump || return 1; else echo "compose: same product, no image moved: the warehouse is not dumped"; fi
     stale=1
     docker compose up -d --no-deps --force-recreate "${recreate[@]}" 2>&1 | tee "$out" || status=$?
     RECREATED+=("${recreate[@]}")

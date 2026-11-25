@@ -30,7 +30,7 @@ main() {
   # are then applied by the first one (it applies origin/main as it is once it holds the lock), and the ones queued behind it
   # find that pair already applied, so a burst costs one apply and at most one kernel restart.
   local settle=0
-  [ $# -gt 0 ] || settle="${AIDENHQ_APPLY_SETTLE_SECONDS:-5}"
+  [ $# -gt 0 ] || settle="${AIDENHQ_APPLY_SETTLE_SECONDS:-2}"
   # The last line of the unit's output is the apply's status, which --wait reads (the unit itself is gone by then).
   systemd-run --user --quiet --collect --unit="$unit" --working-directory="$PWD" \
     --setenv=PATH="$PATH" --setenv=HOME="$HOME" --setenv=AIDENHQ_APPLY_SETTLE="$settle" -- \
