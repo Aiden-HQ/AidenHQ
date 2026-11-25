@@ -1295,3 +1295,25 @@ test("a head's checks are probed at most every five minutes however often the lo
   assert.ok(calls.length > m, "a failed read is not stamped: the next pass reads again");
   assert.equal((await recover("acme/app", queued("h2"), state, () => {})).again, true, "and the loop is told to read the repo again");
 });
+
+test("a list page that times out is retried at half the size, the size is kept, and a quick page grows it back", async (t) => {
+  const sizes = [];
+  const gh = async (method, path, body) => {
+    if (path !== "/graphql") return { status: 404, body: {} };
+    sizes.push(body.variables.first);
+    if (body.variables.first > 10) return { status: 504, body: {} };
+    return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] } } } } };
+  };
+  const m = await multi(t, [{ repo: "acme/app", duties: "all" }], {}, { gh });
+  await m.watch.tick();
+  assert.deepEqual(sizes, [50, 25, 12, 6], "halved at once until a page answered");
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 6);
+  await m.watch.tick();
+  assert.deepEqual(sizes.slice(4), [6], "the next read starts at the kept size");
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 6, "no growth right after a shrink");
+  const db = JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"));
+  db["acme/app"].shrunkAt = Date.now() - 11 * 60_000;
+  writeFileSync(join(m.cacheDir, "loop.json"), JSON.stringify(db));
+  await m.watch.tick();
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick page doubles it once the cooldown passed");
+});
