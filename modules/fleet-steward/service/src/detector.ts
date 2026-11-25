@@ -277,6 +277,8 @@ interface JobRow { id: string; agent: string; task?: string; routine?: string | 
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
+/** A comment the fleet's own machinery wrote, never someone's words: its body carries an internal HTML comment, `<!-- aidenhq-…` or `<!-- aidenhq:…` (the kernel's notices, a wake, the wait-park note). */
+const internalNote = (c: CommentRow) => /<!--\s*aidenhq[:-]/.test(String(c.body));
 interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
@@ -343,7 +345,7 @@ export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (
     // A comment is only readable as activity with the directory that says whose it is: without it, the comments are unknown.
     const known = people.status === "fulfilled" && comments.status === "fulfilled";
     const comment = known
-      ? comments.value.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === (row?.holder ? people.value.holders.get(row.holder) ?? row.holder : undefined) || people.value.auditors.has(c.authorAgentId))))?.createdAt
+      ? comments.value.find((c) => !c.deletedAt && c.authorType === "agent" && !internalNote(c) && (c.authorAgentId != null && (c.authorAgentId === (row?.holder ? people.value.holders.get(row.holder) ?? row.holder : undefined) || people.value.auditors.has(c.authorAgentId))))?.createdAt
       : undefined;
     // A run that started and ended between two ticks left no comment and no current state: its own start and end are the activity.
     let job: string | undefined;
@@ -408,7 +410,7 @@ export async function unresumedWaits(rows: StateRow[], t: number, comments: (tas
     const r = due[(start + n) % due.length]!;
     const since = r.wait_since ?? r.since;
     const mine = r.reason === "delegator_wait" ? await holder(r.task).catch(() => undefined) : undefined;
-    const answer = (await comments(r.task).catch(() => [])).find((c) => !c.deletedAt && Date.parse(c.createdAt) > Date.parse(since) && age(c.createdAt, t) > UNRESUMED_MS && !/<!-- aidenhq-/.test(String(c.body)) && (r.reason === "owner_wait" ? ownerWords(c) : c.authorAgentId !== (mine ?? r.holder)));
+    const answer = (await comments(r.task).catch(() => [])).find((c) => !c.deletedAt && Date.parse(c.createdAt) > Date.parse(since) && age(c.createdAt, t) > UNRESUMED_MS && !internalNote(c) && (r.reason === "owner_wait" ? ownerWords(c) : c.authorAgentId !== (mine ?? r.holder)));
     if (answer) found.push({ key: r.task, reason: `task ${r.identifier ?? r.task} has not resumed ${mins(age(answer.createdAt, t))} after its ${r.reason === "owner_wait" ? "owner's" : "delegator's"} answer arrived (the wait began ${mins(age(since, t))} ago)` });
   }
   return { found, unscanned: Array.from({ length: due.length - scan }, (_, n) => due[(start + scan + n) % due.length]!.task) };
@@ -529,7 +531,7 @@ export function rejectLoops(records: WorkRecord[], t: number): { task: string; i
 }
 
 /** The owner's own typed words on a chat task (not a relayed notice, the kernel's, or deleted). */
-const ownerWords = (c: CommentRow) => c.authorType === "user" && !c.deletedAt && !/<!-- aidenhq-/.test(String(c.body));
+const ownerWords = (c: CommentRow) => c.authorType === "user" && !c.deletedAt && !internalNote(c);
 
 /**
  * Owner-assigned todos nobody has touched in 3 days, ranked (priority, then age), for the morning brief. A task the owner

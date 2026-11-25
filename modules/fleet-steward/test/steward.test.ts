@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { dueList } from "../service/src/coach.ts";
-import { checks, detectorState, failingScopes, gateActivity, reviewStalls, shortScopes, spendSpike, stewardOn, tick } from "../service/src/detector.ts";
+import { checks, detectorState, failingScopes, gateActivity, reviewStalls, shortScopes, spendSpike, stewardOn, tick, unresumedWaits } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -465,4 +465,19 @@ test("the stuck-work rule exempts a routine run by the row's own origin, and sti
   };
   const found = await checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW }).stuck();
   assert.deepEqual(found.map((i) => i.key), ["t2:idle-capped"], "the routine's own run is exempt; the agent's task still raises it");
+});
+
+test("the kernel's wait-park note is not an answer: an owner wait stays quiet, a genuine owner comment still raises the incident, and another agent's park note settles nothing", async () => {
+  const park = "Parked while the wait is armed.\n\n<!-- aidenhq:job=kernel kind=wait-park -->";
+  const wait = (reason, holder) => ({ task: "t1", identifier: "WOR-T1", since: ago(4), reason, holder, attention: [{ who: reason === "owner_wait" ? "owner" : "eng", why: reason, ref: "wait:t1" }], idle_wakes: 0, origin: null, wait_since: ago(4) });
+  const read = (comments) => async () => comments;
+  const noHolder = async () => undefined;
+  const parkOnly = [{ authorType: "user", body: park, createdAt: ago(2) }];
+  assert.deepEqual((await unresumedWaits([wait("owner_wait", null)], NOW, read(parkOnly), noHolder)).found, [], "the park note is no owner answer");
+  const typed = [{ authorType: "user", body: "Yes, go ahead.", createdAt: ago(2) }, ...parkOnly];
+  const [incident, ...rest] = (await unresumedWaits([wait("owner_wait", null)], NOW, read(typed), noHolder)).found;
+  assert.equal(rest.length, 0);
+  assert.match(incident.reason, /WOR-T1 has not resumed 120 min after its owner's answer arrived/);
+  const agentPark = [{ authorType: "agent", authorAgentId: "maintainer", body: park, createdAt: ago(2) }];
+  assert.deepEqual((await unresumedWaits([wait("delegator_wait", "eng")], NOW, read(agentPark), async () => "eng")).found, [], "another agent's park note is no delegator answer");
 });
