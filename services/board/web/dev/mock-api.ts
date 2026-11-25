@@ -451,7 +451,7 @@ const SETTING = { repos: [
 let watched: any[] = [
   { ...SETTING.repos[0], preset: "standard", repo_class: "standard", rules: DEFAULT_RULES, custom: false, drafts: false, forks: "manual", day_spent_usd: 3.2, error: null, identity: "owner", prs: [
     { number: 44, title: "Rotate the session signing key", head: "f".repeat(40), tier: "sensitive", rule: 2, why: "touches src/auth/session.ts", facts: { lines: 84, files: 3, author: "member" } },
-    { number: 43, title: "Add idempotency keys to refunds", head: "b".repeat(40), tier: "standard", rule: 8, why: "no earlier rule matched (142 lines in 6 files, by a member)", facts: { lines: 142, files: 6, author: "member" } },
+    { number: 43, title: "Add idempotency keys to refunds", head: "b".repeat(40), tier: "standard", rule: 8, why: "142 lines in 6 files, by a member", facts: { lines: 142, files: 6, author: "member" } },
     { number: 42, title: "Retry failed charges", head: "a".repeat(40), tier: "trivial", rule: 7, why: "by a member, 8 lines, 1 file", facts: { lines: 8, files: 1, author: "member" } },
     { number: 41, title: "Bump stripe from 14.2.0 to 14.3.1", head: "c".repeat(40), tier: "standard", rule: 1, why: "by a bot, only 2 matching files", facts: { lines: 0, files: 0, author: "bot" } },
     { number: 40, title: "Docs: explain refunds", head: "d".repeat(40), tier: null },

@@ -105,6 +105,9 @@
    "minimum": 0,
    "maximum": 100000
   },
+  "partial": {
+   "type": "boolean"
+  },
   "run": {
    "type": "string",
    "pattern": "^[A-Za-z0-9_.-]{1,64}$"

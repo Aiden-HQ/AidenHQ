@@ -333,7 +333,7 @@ export function createEngine(d: EngineDeps) {
   const lastRunAck = (repo: string, n: number): Ack | undefined => {
     const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? ORDER BY created DESC LIMIT 1", repo, n);
     return last && { repo: last.repo, number: last.number, head: last.head, state: last.status, run: last.id, combo: comboOf(last), why: last.why ?? undefined,
-      counts: { important: last.important, nit: last.nit, pre_existing: last.pre_existing, cost_usd: round(last.cost_usd) } };
+      counts: { important: last.important, nit: last.nit, pre_existing: last.pre_existing, cost_usd: round(last.cost_usd), ...(last.complete === 0 ? { partial: true } : {}) } };
   };
   /** The head's classification on its notice: every phase of the one comment carries the tier line (none while the head is pending). */
   const withTier = (a: Ack): Ack => {
@@ -1445,7 +1445,7 @@ export function createEngine(d: EngineDeps) {
       landed(r);
       // The review's own summary says what the acknowledgement would, so a PR with no acknowledgement yet (an automatic review) gets
       // none; one already asked for (a command's queued notice) is updated with the outcome. A review of an older head leaves it to the newer one's.
-      if ((ackOf(r.repo, r.number) || acking_(r.repo, r.number)) && prRow(r.repo, r.number)?.head === r.head) void ack({ repo: r.repo, number: r.number, head: r.head, state: "done", run: r.id, combo: comboOf(r), counts: { important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: round(r.cost_usd) }, ...(o.url ? { review: o.url } : {}) });
+      if ((ackOf(r.repo, r.number) || acking_(r.repo, r.number)) && prRow(r.repo, r.number)?.head === r.head) void ack({ repo: r.repo, number: r.number, head: r.head, state: "done", run: r.id, combo: comboOf(r), counts: { important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: round(r.cost_usd), ...(r.complete === 0 ? { partial: true } : {}) }, ...(o.url ? { review: o.url } : {}) });
     }
     if (r.write_id && ownTask(r)) void d.poster.close(r.repo, r.number, "The one-off review's post is settled.", r.id).catch((e) => log("review task not closed", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
     if (r.kind === "oneoff") summarise(r.batch, r.id);
