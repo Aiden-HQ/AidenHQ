@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.js";
 import { type Db, openDb } from "./db/db.js";
@@ -72,15 +72,32 @@ export async function healthChecks(app: App): Promise<{ ok: boolean; state?: "mi
     }
   });
   checks.transcripts_readable = { ok: roots.every(Boolean), detail: roots.every(Boolean) ? undefined : "one or more transcript roots unreadable" };
-  checks.vault_available = { ok: app.vault.available() };
-  const unwritable = app.cfg.vault.write_roots.filter((dir) => {
+  // A configured write root is what makes the vault real: the image creates an empty /vault itself (Dockerfile), so
+  // the root existing says nothing. vault_available is the first write root usable; vault_writable is every write root
+  // usable. Usable means a directory this process can write to and search (a rw-only directory cannot be traversed).
+  // `mounted` says a vault folder was mounted at all, which the root's own contents show: the compile mounts each
+  // VAULT_FOLDERS entry as /vault/<folder>, so a non-empty /vault is a configured vault, whatever write_roots names.
+  const writePath = (dir: string) => join(app.cfg.vault.root, dir);
+  const usable = (dir: string) => {
     try {
-      accessSync(join(app.cfg.vault.root, dir), constants.W_OK);
-      return false;
-    } catch {
+      if (!statSync(writePath(dir)).isDirectory()) return false;
+      accessSync(writePath(dir), constants.W_OK | constants.X_OK);
       return true;
+    } catch {
+      return false;
     }
-  });
+  };
+  const unwritable = app.cfg.vault.write_roots.filter((dir) => !usable(dir));
+  const mounted = (() => {
+    try {
+      return readdirSync(app.cfg.vault.root).length > 0;
+    } catch {
+      return false;
+    }
+  })();
+  const first = app.cfg.vault.write_roots[0]!;
+  const firstUsable = usable(first);
+  checks.vault_available = { ok: firstUsable, detail: firstUsable ? undefined : `not usable: ${first}` };
   checks.vault_writable = { ok: unwritable.length === 0, detail: unwritable.length ? `not writable: ${unwritable.join(", ")}` : undefined };
   // Optional: reported, never required.
   const bases = app.knowledge.names();
@@ -92,8 +109,13 @@ export async function healthChecks(app: App): Promise<{ ok: boolean; state?: "mi
   }
   const required = ["sqlite_writable", "transcripts_readable", "vault_available", "vault_writable"];
   const ok = required.every((k) => checks[k]?.ok);
+  // A 503 names which required check failed and why; the board and the kernel read only this top-level detail.
+  const failed = required.filter((k) => !checks[k]?.ok);
+  const failures = failed.map((k) => `${k}: ${checks[k]?.detail ?? "failed"}`).join("; ");
   // No vault mounted at all (VAULT_FOLDERS empty in the host's .env) while the rest works: not set up yet (state "missing"),
-  // which the apply's live agent check notes rather than fails. A mounted vault that is unwritable stays a failure.
-  const unset = !ok && !checks.vault_available.ok && checks.sqlite_writable.ok && checks.transcripts_readable.ok;
-  return { ok, ...(unset ? { state: "missing" as const, detail: "vault not configured (set VAULT_DIR and VAULT_FOLDERS in .env)" } : {}), checks };
+  // which the apply's live agent check notes rather than fails. A vault that is mounted but has no usable write root (an
+  // unwritable folder, or VAULT_FOLDERS naming folders write_roots does not) stays a named failure.
+  const unset = !ok && !mounted && checks.sqlite_writable.ok && checks.transcripts_readable.ok;
+  const detail = ok ? undefined : unset ? `vault not configured (set VAULT_DIR and VAULT_FOLDERS in .env); ${failures}` : failures;
+  return { ok, ...(unset ? { state: "missing" as const } : {}), ...(detail ? { detail } : {}), checks };
 }

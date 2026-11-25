@@ -87,8 +87,17 @@ export interface Verdict {
 /** What a built-in connection is for, in the owner's words (it runs inside each agent run: nothing to check). */
 const BUILT_IN: Record<string, string> = { paperclip_tasks: "How agents read and update their tasks, delegate, and ask for approvals." };
 
-const NAMES: Record<string, string> = { google_workspace: "Google", ops_mcp: "Meetings and notes", telegram: "Telegram", slack_live: "Slack live", chat_lane: "Fast chat lane", paperclip_tasks: "Tasks bridge", apps: "Apps and warehouse", glean: "Glean", jira: "Jira", primer: "Primer", slack: "Slack", github: "GitHub", grafana: "Grafana", clickhouse: "ClickHouse" };
+const NAMES: Record<string, string> = { google_workspace: "Google", ops_mcp: "Meetings and notes", telegram: "Telegram", slack_live: "Slack: Aiden's bot", chat_lane: "Fast chat lane", paperclip_tasks: "Tasks bridge", apps: "Apps and warehouse", glean: "Glean", jira: "Jira", primer: "Primer", slack: "Slack: read as you", github: "GitHub", grafana: "Grafana", clickhouse: "ClickHouse" };
 export const displayName = (name: string) => NAMES[name] ?? name.replace(/[_-]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+// `slack` is the owner's own user sign-in (the setup flow's "Read Slack as you"), not Aiden's bot channel (`slack_live`).
+// A bare "Not connected yet" made a working bot's DMs read as Slack itself being broken. The tile clamps its reason to two
+// lines (ui.css .ui-tile-desc), so the bot distinction comes first and the generic lead is left to the status label.
+const NOT_CONNECTED: Record<string, string> = {
+  slack: "Aiden's bot is a separate connection, so its DMs to you don't depend on this sign-in; this one lets agents read Slack as you.",
+};
+const notConnectedReason = (name: string, reason: string) =>
+  NOT_CONNECTED[name] ? [NOT_CONNECTED[name], reason === "Not connected yet." ? null : reason].filter(Boolean).join(" ") : reason;
 
 const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
 
@@ -116,8 +125,8 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
   // `fields`); one without fields that isn't set up has a setup flow to make its client first. State "none": this connection
   // signs in to nothing (Grafana with grafana_source: local), so only its health counts.
   const s = row.signIn;
-  if (s && !s.configured) return s.fields?.length ? { status: "not_connected", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) } : { status: "not_configured", reason: s.detail ?? "Not set up yet." };
-  if (s?.state === "missing") return { status: "not_connected", reason: "Not connected yet.", ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
+  if (s && !s.configured) return s.fields?.length ? { status: "not_connected", reason: notConnectedReason(row.name, "Not connected yet."), ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) } : { status: "not_configured", reason: notConnectedReason(row.name, s.detail ?? "Not set up yet.") };
+  if (s?.state === "missing") return { status: "not_connected", reason: notConnectedReason(row.name, "Not connected yet."), ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
   if (s?.state === "expired") return { status: "signed_out", reason: `Sign-in stopped working (since ${day(s.since)})${s.detail ? `: ${s.detail}` : "."}`, ...connect("Reconnect", `/${row.name}/connect`, canConnect.signIn) };
 
   const p = row.probe;

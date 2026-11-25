@@ -72,6 +72,9 @@ const match = (repo: string, list: string[]) => list.some((c) => { const [a, b] 
 const ALL: Scope = { fleet: ["*/*"], listed: [] };
 /** Whether ship works the repo: a fleet repo, or a listed one (its ship entry is what turns a listed repo on). */
 export const covers = (repo: string, scope: Scope) => match(repo, scope.fleet) || match(repo, scope.listed);
+/** Whether removing the repo is allowed (removeRepo's rule, and the Fleet page's Remove button): a listed repo the fleet doesn't cover by itself, or an orphan entry. */
+export const removable = (repo: string, scope: Scope, hasEntry: boolean) =>
+  (!covers(repo, scope) && hasEntry) || (scope.listed.some((x) => x.toLowerCase() === repo.toLowerCase()) && !covers(repo, { fleet: scope.fleet, listed: [] }));
 
 /** The entry as a preset name plus overrides: `"full"`, `{ preset, ...fields }` or `{ ...fields }` over `base`. */
 function entryOf(e: unknown, base: "cautious" | "full"): { preset: "cautious" | "full"; over: Dict } {
