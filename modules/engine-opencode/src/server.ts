@@ -39,6 +39,7 @@ export async function serve(o: { bin?: string; port: number; password: string; e
         if (dead) { failed(new Error("opencode serve exited before its event stream connected")); return; }
         try {
           const r = await fetch(url + "/event", { headers: { authorization: auth } });
+          if (!r.ok || !r.body) throw new Error(`/event answered ${r.status}`);
           connected();
           const dec = new TextDecoder();
           let buf = "";

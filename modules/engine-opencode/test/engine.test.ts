@@ -10,7 +10,7 @@ const bin = join(import.meta.dirname, "bin");
 const engine = join(import.meta.dirname, "../bin/engine");
 let port = 24000 + (process.pid % 1000) * 4;
 
-function setup(session?: string, known = session ?? "", pending?: string[]) {
+function setup(session?: string, known = session ?? "", pending?: string[], extra: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), "oc-engine-"));
   const lease = join(root, "l-test"), job = join(lease, "job-1"), state = join(root, "state"), work = join(root, "work", "PEN-1"), plug = join(root, "opt");
   for (const d of [job, state, work, join(plug, "node_modules")]) mkdirSync(d, { recursive: true });
@@ -20,7 +20,7 @@ function setup(session?: string, known = session ?? "", pending?: string[]) {
   writeFileSync(join(job, "job.json"), JSON.stringify(spec));
   const log = join(root, "fake.log");
   writeFileSync(log, "");
-  const child = spawn(engine, [job], { cwd: work, stdio: ["ignore", "inherit", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: log, AIDENHQ_OPENCODE_BIN: join(bin, "opencode"), AIDENHQ_OPENCODE_PLUGINS: plug, AIDENHQ_SESSION_PORT: String(port++), AIDENHQ_TERM_PORT: String(port++), OPENCODE_SERVER_PASSWORD: "pw", AIDENHQ_TERM_CREDENTIAL: "sekret", AIDENHQ_RUN_TOKEN: "ahqj_tok", FAKE_SESSIONS: known, FAKE_BUSY_MS: "1500" } });
+  const child = spawn(engine, [job], { cwd: work, stdio: ["ignore", "inherit", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: log, AIDENHQ_OPENCODE_BIN: join(bin, "opencode"), AIDENHQ_OPENCODE_PLUGINS: plug, AIDENHQ_SESSION_PORT: String(port++), AIDENHQ_TERM_PORT: String(port++), OPENCODE_SERVER_PASSWORD: "pw", AIDENHQ_TERM_CREDENTIAL: "sekret", AIDENHQ_RUN_TOKEN: "ahqj_tok", FAKE_SESSIONS: known, FAKE_BUSY_MS: "1500", ...extra } });
   let stderr = "";
   child.stderr!.on("data", (d) => (stderr += d));
   const exited = new Promise<{ code: number | null }>((r) => child.on("close", (code) => r({ code })));
@@ -103,4 +103,21 @@ test("stop: SIGTERM aborts the turn and exits 143 with no final", async () => {
   assert.ok(e.calls().some((c: any) => c.abort));
   assert.match(readFileSync(e.log, "utf8"), /tmux kill-session -t l-test/);
   assert.ok(!e.events().some((x: any) => x.t === "final"));
+});
+
+test("a turn the gateway refuses ends the job loudly", async () => {
+  const e = setup(undefined, "", undefined, { FAKE_ERROR: "1" });
+  const { code } = await e.exited;
+  assert.equal(code, 1);
+  assert.match(e.err(), /opencode turn failed: out of credit/);
+});
+
+test("stop keeps a queued comment for the next job", async () => {
+  const e = setup();
+  await e.until(() => e.calls().some((c: any) => c.prompt));
+  appendFileSync(join(e.job, "inbox.jsonl"), JSON.stringify({ t: "comment", from: "o", text: "late" }) + "\n");
+  e.child.kill("SIGTERM");
+  assert.equal((await e.exited).code, 143);
+  assert.deepEqual(JSON.parse(readFileSync(join(e.state, "pending.json"), "utf8")), ["late"]);
+  assert.equal(e.calls().filter((c: any) => c.prompt).length, 1);
 });

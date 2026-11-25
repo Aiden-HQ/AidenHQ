@@ -10,7 +10,7 @@ export interface OpencodeConfig {
   enabled_providers: string[];
   model: string;
   permission: { edit: "allow"; bash: "allow"; webfetch: "allow" | "deny" };
-  provider: { aidenhq: { npm: string; name: string; options: { baseURL: string; apiKey: string }; models: Record<string, { name: string; tool_call: true; reasoning: true; options?: { reasoningEffort: string } }> } };
+  provider: { aidenhq: { npm: string; name: string; options: { baseURL: string; apiKey: string }; models: Record<string, { name: string; tool_call: true; reasoning: true; limit: { context: number; output: number }; options?: { reasoningEffort: string } }> } };
   mcp: Record<string, { type: "remote"; url: string; headers: { "X-Agent-Key": string }; enabled: true; timeout?: number }>;
   instructions: string[];
   plugin: string[];
@@ -19,11 +19,17 @@ export interface OpencodeConfig {
 /** A model id as the gateway knows it: OpenRouter's prefix is the provider's, not part of the id. */
 const modelId = (id: string) => id.replace(/^openrouter\//, "");
 
+/**
+ * opencode compacts a session only for a model with a context limit (a custom model's default of 0 turns it off). The job spec
+ * does not carry the gateway model's own limits, so every model gets a bound under all of them: compaction starts early, never late.
+ */
+const LIMIT = { context: 128_000, output: 16_000 };
+
 export function opencodeConfig(spec: JobSpec, { plugins, stateDir }: { plugins: string[]; stateDir: string }): OpencodeConfig {
   const def = modelId(spec.model.id);
   const models: OpencodeConfig["provider"]["aidenhq"]["models"] = {};
   for (const id of [def, ...(spec.model.models ?? []).map(modelId)])
-    models[id] ??= { name: id, tool_call: true, reasoning: true, ...(id === def && spec.model.effort ? { options: { reasoningEffort: spec.model.effort } } : {}) };
+    models[id] ??= { name: id, tool_call: true, reasoning: true, limit: LIMIT, ...(id === def && spec.model.effort ? { options: { reasoningEffort: spec.model.effort } } : {}) };
   return {
     $schema: "https://opencode.ai/config.json",
     autoupdate: false,

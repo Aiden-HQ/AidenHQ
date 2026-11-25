@@ -3,7 +3,7 @@
 import type { EngineEvent, JobSpec } from "../sdk/types.ts";
 import { tracker, withArg } from "../sdk/progress.ts";
 
-export function sseEvents(spec: JobSpec, emit: (e: EngineEvent) => void, sessionId: () => string) {
+export function sseEvents(spec: JobSpec, emit: (e: EngineEvent) => void, sessionId: () => string, onError: (why: string) => void = () => {}) {
   const p = tracker();
   const started = new Set<string>();
   const billed = new Set<string>();
@@ -11,6 +11,7 @@ export function sseEvents(spec: JobSpec, emit: (e: EngineEvent) => void, session
     take(ev: any) {
       const props = ev?.properties;
       if (!props || (props.sessionID && props.sessionID !== sessionId())) return;
+      if (ev.type === "session.error" && props.error?.name !== "MessageAbortedError") onError(String(props.error?.data?.message ?? props.error?.name ?? "unknown error").slice(0, 300));
       if (ev.type === "message.part.updated") {
         const part = props.part;
         if (part?.type === "tool" && part.state?.status === "running" && !started.has(part.id)) {

@@ -29,6 +29,7 @@ createServer((req, res) => {
       log({ prompt: m[1], text, busy: busy.has(m[1]) });
       busy.add(m[1]);
       send({ type: "message.part.updated", properties: { sessionID: m[1], part: { id: "p" + text, type: "tool", tool: "bash", state: { status: "running", input: { command: "echo " + text } } } } });
+      if (process.env.FAKE_ERROR) return setTimeout(() => { send({ type: "session.error", properties: { sessionID: m[1], error: { name: "APIError", data: { message: "out of credit" } } } }); busy.delete(m[1]); }, 100), res.writeHead(204), res.end();
       setTimeout(() => {
         send({ type: "message.part.updated", properties: { sessionID: m[1], part: { id: "t" + text, type: "text", text: "done " + text, time: { start: 1, end: 2 } } } });
         send({ type: "message.updated", properties: { sessionID: m[1], info: { id: "m" + text, role: "assistant", modelID: "m1", tokens: { input: 10, output: 3, reasoning: 0, cache: { read: 4, write: 0 } }, time: { created: 1, completed: 2 } } } });

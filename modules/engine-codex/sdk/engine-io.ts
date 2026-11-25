@@ -65,17 +65,23 @@ export function engineIO(jobDir: string, { pollMs = 200 } = {}) {
   const spec = JSON.parse(readFrom(join(jobDir, "job.json")).toString("utf8")) as JobSpec;
   if (spec.contract !== "engine@1") throw new Error(`job.json is ${spec.contract}, not engine@1`);
   const inbox = join(jobDir, "inbox.jsonl");
+  let offset = 0;
+  const drain = () => {
+    const { values, used } = lines(readFrom(inbox, offset));
+    offset += used;
+    return values.filter((v): v is InboxLine => (v as InboxLine)?.t === "comment" && typeof (v as InboxLine).text === "string");
+  };
   return {
     spec,
     emit: (ev: EngineEvent) => appendLine(join(jobDir, "events.jsonl"), ev),
+    /** The comments in the inbox not yet read, in order (an engine flushes them before it stops). */
+    drain,
     /** The runner's comments, as they arrive; ends when the caller stops iterating. */
     async *comments(): AsyncGenerator<InboxLine> {
-      let offset = 0;
       for (;;) {
-        const { values, used } = lines(readFrom(inbox, offset));
-        offset += used;
-        for (const v of values) if ((v as InboxLine)?.t === "comment" && typeof (v as InboxLine).text === "string") yield v as InboxLine;
-        if (!values.length) await new Promise((r) => setTimeout(r, pollMs));
+        const got = drain();
+        yield* got;
+        if (!got.length) await new Promise((r) => setTimeout(r, pollMs));
       }
     },
   };
