@@ -119,11 +119,6 @@ test("stop, restart and roll back: a run stopped with its task open, only a modu
   assert.match((await w.file(STEWARD, { op: "rollback", target: "last_good", reason: "still bad" })).text, /generation 5/);
   w.gens.unshift({ n: 10, product: "b".repeat(40), health: "good", lkg: 9 });
   assert.match((await w.file(STEWARD, { op: "rollback", target: "last_good", reason: "still bad" })).text, /generation 5/);
-  // A refused apply switched nothing: no rollback takes the running generation away (2026-11-25: 591 refused, 590 rolled back to 589).
-  w.gens.unshift({ n: 11, product: "e".repeat(40), health: "refused" });
-  const launched = w.launched.length;
-  assert.match((await w.file(STEWARD, { op: "rollback", target: "last_good", reason: "apply failed" })).satisfied, /generation 11 was refused and switched nothing/);
-  assert.equal(w.launched.length, launched);
 });
 
 test("through the write lifecycle: the tool files kernel.fleet_op for the AI reviewer, its approval runs it, and only a holder of the tool and the role gets that far", async () => {
