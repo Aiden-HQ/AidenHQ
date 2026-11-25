@@ -1,0 +1,3 @@
+#!/bin/sh
+[ -n "$FAKE_LOG" ] && echo "tmux $*" >> "$FAKE_LOG"
+exit 0

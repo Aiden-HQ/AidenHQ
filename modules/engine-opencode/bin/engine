@@ -1,0 +1,3 @@
+#!/usr/bin/env node
+// engine@1 for opencode (src/engine.ts): a long-lived session over `opencode serve`.
+import "../src/engine.ts";

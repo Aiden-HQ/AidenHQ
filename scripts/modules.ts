@@ -210,12 +210,12 @@ export function grantEntry(key: string, a: Obj, routines: Obj = {}) {
 /** An agent's profile (kernel/src/admission.ts PROFILES): which tools, writes and computer its kernel jobs get. */
 const JOB_PROFILES = ["crew", "engineer", "check", "session"];
 
-const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed"];
+const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "default"];
 const relPath = (p: string) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
 /**
  * A module's `providers.engine` (spec §3.3.1, engine@1): one or more engine kinds, each a `bin` the runner runs in the
  * job's agent computer (only a kind with `box: true` runs at all). The rest is data the runner reads instead of knowing
- * engines: how to pick one (effort_key, model_prefix), where its model calls go (gateway), its state folder (state:
+ * engines: how to pick one (effort_key, model_prefix; `default: true`: the engine an agent without `engine:` takes), where its model calls go (gateway), its state folder (state:
  * task | shared, under the runner's state dir; reset names and seed copies made before each run; seed `from` is the module's,
  * or the product's with a leading /). Returns config/engines.json's entries, by kind.
  */
@@ -1371,8 +1371,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const generatedSecrets = [...KERNEL_DEFAULTS.generated_secrets, ...enabled.flatMap((name) => all.get(name)!.def.generated_secrets ?? [])];
   validateImages(paperclip.agents); // image: an agent computer (module, local module or instance override)
   // Every agent's jobs run on an engine (after the overrides that may set it): its own `engine:`, else the one enabled engine
-  // that runs in a computer.
-  const boxEngines = Object.keys(engines).filter((k) => engines[k].box === true).sort();
+  // that runs in a computer (when several do, the one marked `default: true`).
+  const allBox = Object.keys(engines).filter((k) => engines[k].box === true).sort();
+  const boxEngines = allBox.filter((k) => engines[k].default === true).length ? allBox.filter((k) => engines[k].default === true) : allBox;
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     a.engine ??= boxEngines.length === 1 ? boxEngines[0] : fail(`agent ${key}: set engine: (enabled engines that run in a computer: ${boxEngines.join(", ") || "none"})`);
     if (!engines[a.engine]) fail(`agent ${key}: unknown engine ${a.engine} (enabled: ${Object.keys(engines).sort().join(", ") || "none"})`);

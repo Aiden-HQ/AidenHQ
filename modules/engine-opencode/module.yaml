@@ -1,0 +1,18 @@
+name: engine-opencode
+description: "opencode as the engine for long-lived sessions, on OpenRouter models through the model gateway, in the standing session computer. It ships fully set up (gateway, models, connections, plugins, skills), so there is nothing to configure."
+license: MIT
+kernel: { engine: 1 }
+provides: [ engine ]
+providers:
+  engine:
+    # One `opencode serve` per session (docs/superpowers/specs/2026-11-25-sessions-design.md): the kernel's jobs drive it over
+    # opencode's own HTTP API, and its TUI is served on the same session through tmux and ttyd. src/config.ts builds opencode's
+    # whole config from the job (plugins.json is the curated plugin set); nothing is hand-maintained.
+    - kind: opencode
+      bin: bin/engine
+      label: opencode
+      live_input: true
+      gateway: true
+      box: true
+      state: task
+      reset: [opencode.json, AGENTS.md, skills, dcp.jsonc]
