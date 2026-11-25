@@ -28,30 +28,36 @@ const timeOf = (v: unknown): number | undefined => {
 
 /**
  * Where a context sits in its name's history, higher is later: a check run's `databaseId` (GitHub creates every run, a re-run
- * included, with a higher one), else its `id` where that is a number (REST), else its completion or start time; a status's
- * `createdAt`. Undefined when GitHub gave none, so a caller never trusts a rollup's node order as a contract.
+ * included, with a higher one), else its `id` where that is a number (REST), else its start or completion time; a status's
+ * `id` (REST), else its `createdAt`. Undefined when GitHub gave none, so a caller never trusts a rollup's node order as a contract.
  */
 export function contextRank(n: Json): number | undefined {
-  if (contextKind(n) === "status") return timeOf(n.createdAt ?? n.created_at) ?? numOf(n.id);
-  return numOf(n.databaseId ?? n.id) ?? timeOf(n.completedAt ?? n.completed_at) ?? timeOf(n.startedAt ?? n.started_at);
+  if (contextKind(n) === "status") return numOf(n.id) ?? timeOf(n.createdAt ?? n.created_at);
+  // A run's id is the authority; without one, its start is the point every run of a name shares, so the fallback never compares
+  // one run's completion with another's start (a cancelled run finishes after its replacement has started, and would outrank it).
+  return numOf(n.databaseId ?? n.id) ?? timeOf(n.startedAt ?? n.started_at) ?? timeOf(n.completedAt ?? n.completed_at);
 }
 
 /**
  * One judgement per name and kind: the newest check run of a name, and the newest status of a name (a check run and a status
  * sharing a name judge the same name twice, so both survive and the gate takes the worst). `rank` (contextRank) decides the
  * newest. An entry with no rank proves no order, so it stays its own judgement and the worst of the name still counts: only
- * entries carrying a rank are resolved against each other. An entry with no `kind` is left as it is for the same reason.
+ * entries carrying a rank are resolved against each other, and entries of one name whose ranks tie (two statuses in the same
+ * second) all stay judgements, so the worst of them counts rather than whichever the rollup listed first. An entry with no
+ * `kind` is left as it is for the same reason.
  */
 export function latestChecks<T extends { name?: string; kind?: "run" | "status"; rank?: number }>(checks: T[]): T[] {
   const out: T[] = [];
-  const at = new Map<string, number>();
+  const groups = new Map<string, { top: number; items: T[] }>();
   for (const c of checks) {
     if (!c.kind || c.rank === undefined) { out.push(c); continue; }
     const key = `${c.kind}\u0000${c.name ?? ""}`;
-    const i = at.get(key);
-    if (i === undefined) { at.set(key, out.push(c) - 1); continue; }
-    if (c.rank > out[i]!.rank!) out[i] = c;
+    const g = groups.get(key);
+    if (!g) { groups.set(key, { top: c.rank, items: [c] }); continue; }
+    if (c.rank > g.top) { g.top = c.rank; g.items = [c]; }
+    else if (c.rank === g.top) g.items.push(c);
   }
+  for (const g of groups.values()) out.push(...g.items);
   return out;
 }
 

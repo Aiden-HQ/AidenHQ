@@ -656,6 +656,26 @@ test("the gate check is read from its newest run at the head, and two judgements
   assert.match(redLine, /checks: ci-required not green \(failed\)/, "a red judgement beside a green run is not papered over");
 });
 
+test("a pending judgement of a name is never dropped behind a red one, and the fact states the verdict it displays", async () => {
+  // A failed run and a still-pending status of the same name: the grade waits, since the pending one may still judge the head.
+  const running = { ...merged(1507, "m", "n"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    { __typename: "CheckRun", databaseId: 20, name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" },
+    { __typename: "CheckRun", databaseId: 21, name: "build", status: "COMPLETED", conclusion: "FAILURE" },
+    { __typename: "StatusContext", context: "build", state: "PENDING", createdAt: "2026-01-01T00:00:00Z" },
+  ] } } } }] } };
+  const ev = await prEvidence([{ repo: REPO, number: 1507, url: url(1507), heads: ["branch-m"] }], "", depsFor([running]));
+  assert.match(String(ev.awaiting ?? ""), /checks still running/, `no verdict is stated while a judgement is pending: ${JSON.stringify(ev)}`);
+  // A neutral run beside a successful status of one name displays the neutral verdict (not green here), never the success.
+  const neutral = { ...merged(1508, "o", "p"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    { __typename: "CheckRun", databaseId: 22, name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" },
+    { __typename: "CheckRun", databaseId: 23, name: "lint", status: "COMPLETED", conclusion: "NEUTRAL" },
+    { __typename: "StatusContext", context: "lint", state: "SUCCESS", createdAt: "2026-01-01T00:00:00Z" },
+  ] } } } }] } };
+  const ev2 = await prEvidence([{ repo: REPO, number: 1508, url: url(1508), heads: ["branch-o"] }], "", depsFor([neutral]));
+  const line = ev2.facts.find((f) => f.startsWith(`${url(1508)}: merged`));
+  assert.match(line, /checks: .*lint not green \(neutral\)/, "the stated verdict is the worst judgement, not the pass beside it");
+});
+
 test("a check run merely named aidenhq/review is not code review's status", async () => {
   // Code review publishes a commit status; a check run wearing the name is something else and proves nothing about its verdict.
   const pr = { ...merged(1504, "g", "h"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [

@@ -232,9 +232,13 @@ function gateOn(pr: any, checks: any[]): string {
   return namedChecks(pr.baseRef?.target?.statusCheckRollup).some((c: any) => c.name === GATE_CHECK) ? "running" : "missing";
 }
 
-/** Each name once, as its worst judgement: a red (0) outranks a still-running (1) check, which outranks a green (2) one. */
-function worstPerName(checks: any[]): any[] {
-  const severity = (c: any) => (c.pending ? 1 : c.ok ? 2 : 0);
+/**
+ * Each name once, as the worst judgement this module would state for it: a not-green (0) outranks a still-running (1) check,
+ * which outranks a green (2) one. The rank follows `checkState`, the verdict the fact is written from, not the merge gate's
+ * `ok`: a neutral run or a skip the aggregate did not accept reads not green here, so it must not be dropped beside a success.
+ */
+function worstPerName(checks: any[], pr: any, gate: string): any[] {
+  const severity = (c: any) => { const state = checkState(pr, c, gate); return state === "still running" ? 1 : state.startsWith("green") ? 2 : 0; };
   const out = new Map<string, any>();
   for (const c of checks) { const had = out.get(c.name); if (!had || severity(c) < severity(had)) out.set(c.name, c); }
   return [...out.values()];
@@ -639,12 +643,13 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     // judgement of this head, and a name whose only runs were cancelled reads not green rather than still running. A name still
     // reported twice (a check run and a status) is stated once, as its worst judgement: that is the one the merge gate holds on.
     const latest = latestChecks(namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
-    const checks = worstPerName(latest);
     const gate = gateOn(pr, latest);
+    const checks = worstPerName(latest, pr, gate);
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
     // a whole as PENDING until they all finish, so the individual states are the finer read), and so is a head whose
     // aggregate required check is not written yet: its jobs appear only as it finishes.
-    if (checks.some((c: any) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
+    // Readiness looks at every judgement, not the collapsed list: a name with a red run and a still-pending status is not settled.
+    if (latest.some((c: any) => c.pending) || gate === "running") return { awaiting: `checks still running on ${p.url}` };
     // Outside the agents org and the product repo the runner can't merge and the owner doesn't: someone else merges it.
     if (pr.state === "OPEN" && deps.ownRepo && !deps.ownRepo(p.repo)) return { awaiting: `${p.url} is not merged yet` };
     // The runner's record names the PR; GitHub says what became of it, and a closed one was held above whatever named it.

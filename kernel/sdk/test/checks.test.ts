@@ -38,4 +38,12 @@ test("the newest run of a name is picked by its id, never by the order GitHub li
   assert.equal(contextRank({ __typename: "StatusContext", context: "ci", state: "SUCCESS", createdAt: "2026-01-02T00:00:00Z" }), Date.parse("2026-01-02T00:00:00Z"));
   assert.equal(contextRank(at("build", "SUCCESS", 7)), 7);
   assert.equal(contextRank({ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS", completedAt: "2026-01-03T00:00:00Z" }), Date.parse("2026-01-03T00:00:00Z"));
+  // Without an id, a run ranks by when it started, never by when it finished: a cancelled run finishes after the run that
+  // replaced it has started, and completion order would make the superseded run look newer.
+  const cancelled = { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-01-01T00:00:00Z", completedAt: "2026-01-01T00:05:00Z" };
+  const replacement = { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-01-01T00:01:00Z", completedAt: "2026-01-01T00:04:00Z" };
+  assert.deepEqual(latestChecks(namedChecks(rollup(cancelled, replacement))).map((c) => c.status), ["SUCCESS"]);
+  // Two statuses of one name created in the same second prove no order: both stay judgements, so the worst of them counts.
+  const at2 = (state) => ({ __typename: "StatusContext", context: "ci", state, createdAt: "2026-01-01T00:00:00Z" });
+  assert.deepEqual(latestChecks(namedChecks(rollup(at2("SUCCESS"), at2("PENDING")))).map((c) => c.status).sort(), ["PENDING", "SUCCESS"]);
 });

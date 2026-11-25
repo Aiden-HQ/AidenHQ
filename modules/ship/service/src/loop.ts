@@ -149,7 +149,8 @@ export function startLoop(o: LoopOptions) {
     const after = (ms: number) => { next = Math.min(next ?? ms, ms); };
     // A Dependabot PR is the Engineer's once its checks fail (or always, under `all`); a green one under `failing` goes through the round like any PR.
     // Green means at least one check reported and all finished: no checks yet is not green.
-    const bumpOf = (pr: Json) => { const reported = namedChecks(rollupOf(pr)); return isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending); };
+    // The same each-name newest run `dependabotDue` judges on, so a superseded run never files a task and never holds the bump back.
+    const bumpOf = (pr: Json) => { const reported = latestChecks(namedChecks(rollupOf(pr))); return isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending); };
     o.adopted.see(repo, main.name, open.filter((pr) => !isDependabot(pr) || bumpOf(pr)));
     for (const pr of [...open].reverse()) { // oldest first
       const url = pr.url.toLowerCase();
