@@ -33,6 +33,7 @@
     "failed",
     "incomplete",
     "not_reviewed",
+    "backlog",
     "config",
     "ungated"
    ]
