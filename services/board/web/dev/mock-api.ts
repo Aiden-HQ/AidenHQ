@@ -129,11 +129,14 @@ let views = [
 ];
 // A module's Fleet page (board.pages): the example view (web/dev/example-view.html) and its two tools, as the kernel would relay them.
 const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }, { id: "code-review", title: "Reviews", icon: "reviews", order: 5, module: "code-review" }];
+// The Notes page's last Save stays "applying" for 8 seconds, then lands (the Save-while-applying state).
+let savedAt = 0;
+const notesChange = () => (savedAt ? [{ identifier: "WOR-901", title: "Keep notes", createdAt: new Date(savedAt).toISOString(), items: [], stage: Date.now() - savedAt < 8_000 ? "applying" : "applied" }] : []);
 function pageRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
   if (url.pathname === "/api/pages") return [200, { pages: mock.empty ? [] : PAGES }];
   if (method === "POST" && url.pathname === "/api/pages/code-review/save") return [200, { identifier: "WOR-902", record: "k-0000000000000902", tier: 2, state: "approved" }];
   if (method === "POST" && url.pathname === "/api/pages/code-review/call") { const r = reviewCall(body.name, body.arguments ?? {}); return r ? [200, r] : [403, { error: `${body.name} isn't one of this page's tools` }]; }
-  if (method === "POST" && url.pathname === "/api/pages/notes/save") return [200, { identifier: "WOR-901", record: "k-0000000000000901", tier: 2, state: "approved" }];
+  if (method === "POST" && url.pathname === "/api/pages/notes/save") return (savedAt = Date.now(), [200, { identifier: "WOR-901", record: "k-0000000000000901", tier: 2, state: "approved" }]);
   if (method !== "POST" || url.pathname !== "/api/pages/notes/call") return undefined;
   if (body.name === "example_notes") return [200, { result: { content: [{ type: "text", text: "3 notes" }], structuredContent: { notes: [{ text: "Renewal call with Acme moved to Thursday", at: "2h ago" }, { text: "Invoices export shipped", at: "yesterday" }, { text: "Draft the Q1 offsite agenda", at: "3 days ago" }] } } }];
   if (body.name === "example_configure") return [200, { result: { content: [{ type: "text", text: `Proposed keeping ${body.arguments?.limit} notes: save it above.` }], structuredContent: { _aidenhq: { settings_change: [{ kind: "setting", key: "example_limit", value: body.arguments?.limit }] } } } }];
@@ -527,7 +530,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/modules/browse": return [200, { modules: [{ name: "hiring", description: "Screens candidates and schedules interviews.", marketplace: "aidenhq", tier: "official", adds: ["agent", "app"], installed: false }] }];
     case "/api/marketplaces": return [200, { marketplaces: [{ name: "aidenhq", source: "github:aidenhq/modules", sha: "a1b2c3d", modules: 14, newer: false }] }];
     case "/api/settings": return [200, settingsData()];
-    case "/api/settings/changes": return [200, { changes: [] }];
+    case "/api/settings/changes": return [200, { changes: notesChange() }];
     case "/api/settings/connections": return [200, connections()];
     case "/api/accounts": return [200, { accounts: [{ id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true, twoFactorEnabled: true, disabled: false, lockedUntil: null, createdAt: ago(40000) }], me: "u1" }];
     case "/api/accounts/sessions": return [200, { sessions: [{ id: "s1", userAgent: "Safari on macOS", ipAddress: "192.0.2.10", createdAt: ago(2000), updatedAt: ago(1), current: true }] }];

@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, SignInRequired } from "./api";
 import type { PageRow } from "./types";
+import { IN_FLIGHT } from "./settings-ui";
 import { Button, Page, PageHeader } from "./ui";
 import "./modules.css";
 
@@ -39,6 +40,10 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [saving, setSaving] = useState(false);
   const [said, setSaid] = useState("");
+  // The change this page saved while it is still being applied. A page proposes from the settings as applied, so a proposal made now
+  // would build on stale values and overwrite the saved one: Save waits, and the tool call that made it runs again once the change is live.
+  const [applying, setApplying] = useState("");
+  const lastProposing = useRef<{ name: string; args: unknown } | null>(null);
   // The frame's document: the bridge serves only the first one each attempt loads (a view that navigates itself is stopped),
   // and one that hasn't said ui/initialize a few seconds after loading failed (its module is down, or the view is broken).
   const [attempt, setAttempt] = useState(0);
@@ -81,12 +86,31 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       });
       // A settings change the tool proposed: shown on the bar below, saved only by the owner's click (/save checks it).
       const changes = (r.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
-      if (Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
+      if (Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid(""), (lastProposing.current = { name: String(m.params?.name ?? ""), args: m.params?.arguments });
       if (loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [id, sub, onSignIn]);
+
+  // While a saved change is under way, follow it; when it lands, propose again from the live settings.
+  useEffect(() => {
+    if (!applying || !id) return;
+    let live = true;
+    const t = setInterval(async () => {
+      const f = await api.settingsChanges().then((r) => r.changes.find((c) => c.identifier === applying), () => undefined);
+      if (!live || !f || IN_FLIGHT.includes(f.stage)) return;
+      setApplying("");
+      if (f.stage !== "applied") return setSaid(`${applying} was not applied (${f.stage})${f.detail ? `: ${f.detail}` : ""}. Save again to retry.`);
+      setSaid(`${applying} is live.`);
+      const again = lastProposing.current;
+      if (!again) return;
+      const r = await api.viewCall(id, again.name, again.args).catch(() => undefined);
+      const next = (r?.result as { structuredContent?: { _aidenhq?: { settings_change?: Proposal["changes"] } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
+      if (live) setProposal(next?.length ? { changes: next } : null);
+    }, 3_000);
+    return () => (live = false, clearInterval(t));
+  }, [applying, id]);
 
   if (!page)
     return (
@@ -100,6 +124,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
     try {
       const r = await api.viewSave(page!.id, proposal.changes);
       setProposal(null);
+      setApplying(r.identifier);
       setSaid(`Saved as ${r.identifier}: the change applies in a moment.`);
     } catch (e) {
       setSaid(`Not saved: ${(e as Error).message}`);
@@ -114,6 +139,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
         <div className="mv-proposal" role="region" aria-label="Proposed change">
           <div className="mv-proposal-text">
             <b>Save this change to {page.module}'s settings?</b>
+            {applying && <p className="mv-said">Applying your last change ({applying}) first: this one is then built on it.</p>}
             {proposal.changes.map((c) => (
               <pre key={c.key}>
                 {c.key} = {JSON.stringify(c.value, null, 2)}
@@ -122,7 +148,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
           </div>
           <div className="mv-proposal-actions">
             <Button variant="quiet" onClick={() => (setProposal(null), setAttempt((a) => a + 1))} /* a discarded edit must not linger in the page: it starts over from what is saved */ disabled={saving}>Discard</Button>
-            <Button variant="primary" onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+            <Button variant="primary" onClick={() => void save()} disabled={saving || !!applying}>{saving ? "Saving…" : applying ? "Applying…" : "Save"}</Button>
           </div>
         </div>
       )}
