@@ -899,7 +899,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   async function startChat(text: string, agentRef: string | undefined, req: IncomingMessage | undefined, owned: boolean) {
     const ctx = await context();
     const crew = ctx.agents;
-    const named = agentRef ? crew.find((a) => a.id === agentRef || a.metadata?.setupKey === `aidenhq:${agentRef}` || a.name.toLowerCase() === agentRef.toLowerCase()) : undefined;
+    const named = agentRef ? crew.find((a) => a.id === agentRef) ?? crew.find((a) => a.metadata?.setupKey === `aidenhq:${agentRef}` || a.name.toLowerCase() === agentRef.toLowerCase()) : undefined;
     const { agent, note } = named && !agentPaused(named) ? { agent: named, note: undefined } : pickAgent(text, crew);
     // A fast-lane agent answers in the lane, not in a task: the board opens its lane chat (`lane:<key>`).
     const lane = (await laneAgents(pc, opts.lane)).find((l) => l.id === agent.id);
@@ -1241,7 +1241,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           store.setMeta(`relayed:${comment_id}`, new Date().toISOString());
           try {
             // The channel the owner wrote from stays on the opening, so the agent's first form goes back to it; the board's byline too.
-            const via = /^\s*(\[(?:telegram|slack)[^\]]*\])/i.exec(source.comment.body)?.[1];
+            const via = /^\s*(\[(?:telegram|slack)\])/i.exec(source.comment.body)?.[1];
             const started = await startChat(via ? `${via} ${words}` : words, to.id, req, false);
             const by = store.authoredBy(source.comment.id);
             if (by && "id" in started && started.id) store.setAuthored(started.id, by);

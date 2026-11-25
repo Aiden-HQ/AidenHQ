@@ -79,7 +79,7 @@ Then review it with the person where they chose (**in review**):
 ### 3. Build (building)
 
 - `task_delegate` to the Engineer (`agent: engineer`): title "New agent: <name>", the full design (both files' exact content; from a Primer review, also the locked version number and the doc's link), and the done condition "the commit adds `modules/<key>/module.yaml` and `modules/<key>/agents/<key>/AGENTS.md` with exactly this content, and nothing else". Use `marker` `new-agent-<key>`.
-- A change to an agent that already exists is the same task, titled "Change agent: <name>": its files (`fleet_catalog` and `task_team` name the module), the exact edits, and the done condition "the commit changes only these lines".
+- A change to an agent that already exists is the same task, titled "Change agent: <name>": the agent's key (the Engineer finds its module under `modules/` in the instance repo), the exact edits, and the done condition "the commit changes only these lines".
 - When its task wakes you, read the diff it shows (`task_comments`) and **compare it line by line with your design**: grants, `reports_to`, the handbook text, schedules. If anything differs, comment on that same task with the exact correction; its next commit replaces the card. At most **3 rounds**; then tell the person what is stuck in one sentence.
 - Its change waits as an approval card, filed when its turn ends and tiered by code; the AI reviewer decides it, and if it reaches the person the card itself tells them. Review the diff before it lands either way: when it differs from your design, correct it on that task (its next commit replaces the card).
 
