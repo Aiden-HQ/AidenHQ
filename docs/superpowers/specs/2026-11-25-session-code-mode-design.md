@@ -9,10 +9,9 @@ A session (opencode 1.19.6, `modules/engine-opencode`, in the standing gVisor bo
 schemas: 192 tools from 16 connections, every one the Session agent grants. Most turns use a handful. The schemas crowd out the
 work, cost money on every uncached turn, and make the model worse at picking tools.
 
-A session already has what code mode needs: a shell, node and a filesystem. So the tools become files: the agent lists and
-greps them, writes a short script that calls the few it needs, and runs it with node. Prior art: Anthropic's "code execution
-with MCP" (tools as files) and Cloudflare Code Mode (search + execute, chosen there because their clients have no sandbox; ours
-has a box, so the files are the search).
+A session has a shell, node and a filesystem, so the tools become files: the agent greps them, writes a short script and runs
+it. Prior art: Anthropic's "code execution with MCP" and Cloudflare Code Mode (search + execute, for clients with no sandbox;
+ours has a box, so the files are the search).
 
 ## Owner decisions (fixed)
 
@@ -70,9 +69,6 @@ cursor stops a listing.
 **Why the kernel, at launch.** Not at compile: `module.yaml` holds tool names only and compile is offline, so the schemas exist
 only in the live connections. Not in each engine: one generator serves every harness, and the kernel already owns the rest of
 the engine home (`AGENTS.md`, `skills/`).
-
-**Deferred: a persistent catalog** (lazy fetch, warm startup, offline browsing). Cold tools would still need fetching, and
-accounts, grants and schema versions would need invalidation. Measure cold and warm launches first.
 
 **Publishing.** The tree is built in a kernel-private staging folder, validated, and renamed into the job's engine home after
 the task's previous lease is released, exactly as `sandbox.ts` publishes `skills/`. The box sees it at
@@ -225,48 +221,33 @@ nothing is generated until a session starts.
 | Upstream schema changed during the job | The module's argument error, as `ToolError` |
 | Write waits (veto, autonomy off) / Tier 0 still running | `ToolPending` with the record id / the client waits; result fenced |
 | Timeout on any call | `ToolError`; the record id when there is one; never replayed |
-| Job ended under a running script | 401 from the launcher, `ToolError` (transport) |
 
 ## Test plan
 
-- **One end-to-end test** (`kernel/test`, the existing fake launcher and fake connections):
-  - Admit a session job for an agent granted one read tool and one write tool on a fake connection, which also lists a third,
-    ungranted tool and a tool whose name needs a safe path. Assert that `aidenhq-tools/` holds exactly the granted wrappers
-    and their `.json`.
-  - From the lease workdir, run a script that imports both wrappers. The read returns its fenced text. The write files a record
-    and returns its outcome.
-  - A direct `call()` of the third tool throws `ToolError` with `no-grant`.
-- **engine-opencode tests:**
-  - The fresh-session e2e asserts the model request carries no connection tools.
-  - The events test loses native comment detection.
-  - The reply check covers two adjacent turns, a comment on another task and a pending comment.
-- **SDK client:** the sync-shared drift test covers the image copy.
+- **One end-to-end test** (`kernel/test`, the existing fake launcher and connections): admit a session job granted one read and
+  one write tool on a fake connection that also lists an ungranted tool and a tool whose name needs a safe path; assert
+  `aidenhq-tools/` holds exactly the granted wrappers and their `.json`; from the lease workdir, a script imports both: the read
+  returns fenced text, the write files a record and returns its outcome; a direct `call()` of the third throws `no-grant`.
+- **engine-opencode:** the fresh-session e2e asserts no connection tools in the model request; the events test loses native
+  comment detection; the reply check covers two adjacent turns, a comment on another task and a pending comment.
 
 ## Size
 
-About 18 files: ~600 lines added and ~200 removed, of which the old `mcpBlock`/`jobMcp` wiring, the CLI's own MCP client and
-opencode's `mcp` block are most of the removal. Six areas:
+About 18 files, ~600 lines added and ~200 removed (mostly the `mcpBlock`/`jobMcp` duplicate, the CLI's own MCP client and
+opencode's `mcp` block):
 
-- **kernel:**
-  - `src/codemode.ts` (new: discover, convert, stage);
-  - `src/boxes.ts` (one descriptor list, the generator at launch);
-  - `src/sandbox.ts` (the engine entry's `tools`, the staged publish shared with skills);
-  - `src/proxy.ts` (pending header, upstream copies stripped, job id in logs);
-  - `src/backplane.ts` (`GET /v1/writes/:id` fencing);
-  - `src/cp.ts` and `main.ts` (comment fact wired, with the job id);
-  - `src/jobs.ts` (reply check);
-  - the e2e test.
-- **kernel SDK:** `sdk/src/tools-client.ts` (new), and `reply` turn bounds in `engine@1` types.
-- **services/computer:** `lib.ts` (Codex TOML rendered from the descriptor list), `images/engineer/bin/aidenhq` (`task`,
-  `tasks` and `advise` on the client), and the Dockerfile `COPY`.
-- **scripts:** `modules.ts` (`tools: code` accepted and checked), `sync-shared.ts` (the client copy).
-- **engine-opencode:**
-  - `module.yaml` (`tools: code`, `aidenhq-tools` in `reset:`);
-  - `src/config.ts` (no `mcp`, the index in instructions);
-  - `src/events.ts` (turn bounds on `reply`, comment detection removed);
-  - two tests.
-- **docs:** the sessions design links this one; the engine-opencode README says how sessions get tools.
+- **kernel:** `src/codemode.ts` (new: discover, convert, stage); `src/boxes.ts` (one descriptor list, generator at launch);
+  `src/sandbox.ts` (engine entry `tools`, staged publish shared with skills); `src/proxy.ts` (pending header, upstream copies
+  stripped, job id in logs); `src/backplane.ts` (`GET /v1/writes/:id` fencing); `src/cp.ts` + `main.ts` (comment fact wired,
+  with the job id); `src/jobs.ts` (reply check); the e2e test.
+- **kernel SDK:** `sdk/src/tools-client.ts` (new); `reply` turn bounds in the engine@1 types.
+- **services/computer:** `lib.ts` (Codex TOML from the descriptor list); `bin/aidenhq` (`task`/`tasks`/`advise` on the client);
+  the Dockerfile `COPY`.
+- **scripts:** `modules.ts` (`tools: code` accepted and checked); `sync-shared.ts` (the client copy).
+- **engine-opencode:** `module.yaml` (`tools: code`, `aidenhq-tools` in `reset:`); `src/config.ts` (no `mcp`, index in
+  instructions); `src/events.ts` (turn bounds on `reply`, comment detection removed); two tests.
+- **docs:** the sessions design and the engine-opencode README link this one.
 
 ## Open questions for the owner
 
-None. Every choice above is an engineering call made for the simplest path to maintain.
+None: every choice above is an engineering call, made for the simplest path to maintain.
