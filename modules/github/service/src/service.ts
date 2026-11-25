@@ -261,6 +261,22 @@ export function createService(o: Options) {
       });
     return { dir, ref, sha: await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]) };
   }
+  /**
+   * A branch's head on GitHub, fetched into the ws cache so its commits are here for the ancestry check: undefined when the branch
+   * isn't there (a task's first publish, or one deleted since). Only a missing ref reads as "none"; any other failure throws.
+   * The ref is keyed by a digest, not the branch name: `release` and `release/v2` are both valid branches and git cannot hold
+   * `refs/remote-heads/release` beside `refs/remote-heads/release/v2`.
+   */
+  async function publishHead(dir: string, slug: string, branch: string): Promise<string | undefined> {
+    const ref = `refs/remote-heads/${createHash("sha256").update(branch).digest("hex")}`;
+    try {
+      await git(dir, ["fetch", "--quiet", "--no-tags", remote(slug), `+refs/heads/${branch}:${ref}`], await token());
+    } catch (e) {
+      if (/couldn't find remote ref/i.test(String((e as Error)?.message ?? e))) return undefined;
+      throw e;
+    }
+    return await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]);
+  }
 
   /**
    * Who may publish to `branch`, from the open PRs on it and their recorded owner tasks (pr-tasks.json) alone:
@@ -726,7 +742,21 @@ export function createService(o: Options) {
             // and refused before the push, so nothing lands on a proposal nobody reviewed.
             const reviewed = asker?.bases?.[`${s.slug} ${b.branch}`];
             if (typeof reviewed === "string" && reviewed && reviewed !== base0) throw fail(409, `\`${b.branch}\` now targets \`${base0}\`, not \`${reviewed}\` as its change was reviewed: publish again so the diff is read against its base`);
-            await push(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${b.branch === def ? "" : "+"}${b.sha}:refs/heads/${b.branch}`]);
+            // A task branch may be rewritten, but never wound back: its head is read here, under the lock and immediately before the
+            // push, and a commit the branch already holds (a bundle planned before a later push, #1775) is refused rather than
+            // forced over it. The push is then leased on that head, so a push landing in the gap wins too. A branch that isn't there
+            // yet (a task's first publish, or one deleted since) is a plain create: nothing exists to lease against or to rewind.
+            const head = b.branch === def ? undefined : await publishHead(dir, s.slug, b.branch);
+            const refused = (seen: string, to?: string) => fail(409, `ship-head-moved: ${s.slug} \`${b.branch}\` ${to ? `moved to \`${to.slice(0, 12)}\` since the write read \`${seen.slice(0, 12)}\`` : `appeared since the write read \`${seen.slice(0, 12)}\``}: nothing was pushed to it; read it again.`);
+            if (head && head !== b.sha && (await git(dir, ["merge-base", "--is-ancestor", b.sha, head]).then(() => true, () => false))) throw refused(b.sha, head);
+            // The lease, on the head just read: an absent branch is leased empty, so a branch created in the gap refuses this create
+            // rather than taking its push as a fast-forward. A lease never widens what may move -- git forces a refspec it can -- so
+            // the ancestry check above is what keeps a stale bundle from winding the branch back.
+            await push(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${head ?? ""}`, remote(s.slug), `${b.sha}:refs/heads/${b.branch}`])
+              .catch(async (e: Error) => {
+                if (b.branch === def || !/stale info|fetch first|non-fast-forward/i.test(String(e?.message ?? e))) throw e;
+                throw refused(head ?? b.sha, await publishHead(dir, s.slug, b.branch).catch(() => undefined));
+              });
             notePushed(s.slug, b.sha);
             objects.push(`${ref(s.slug)}@${b.sha}`);
             if (action === "pr") await openOrUpdatePr(s, b, def, rec, b.sha, objects, done, base0, gatedOwnership && (ownership === "own" || handoff));

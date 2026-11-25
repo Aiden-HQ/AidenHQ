@@ -41,9 +41,28 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   sh(ws, "add", "gen.txt");
   sh(ws, "commit", "--quiet", "-m", "repair");
   const fix = sh(ws, "rev-parse", "HEAD");
+  const bundle = (sha) => {
+    sh(ws, "update-ref", `refs/aidenhq/publish/${sha}`, sha);
+    sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${sha}.bundle`), `refs/aidenhq/publish/${sha}`);
+  };
   mkdirSync(join(dirname(ws), ".aidenhq", "bundles"), { recursive: true });
-  sh(ws, "update-ref", `refs/aidenhq/publish/${fix}`, fix);
-  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${fix}.bundle`), `refs/aidenhq/publish/${fix}`);
+  bundle(fix);
+  // A published task branch at F, a child of H, and the box bundle of H: the write that must never rewind it (a bundle planned
+  // before the fix landed). A `github.pr` on it is open at F.
+  sh(ws, "checkout", "--quiet", "-b", "lease", "main");
+  writeFileSync(join(ws, "h.txt"), "h\n");
+  sh(ws, "add", "h.txt");
+  sh(ws, "commit", "--quiet", "-m", "H");
+  const H = sh(ws, "rev-parse", "HEAD");
+  writeFileSync(join(ws, "f.txt"), "f\n");
+  sh(ws, "add", "f.txt");
+  sh(ws, "commit", "--quiet", "-m", "F");
+  const F = sh(ws, "rev-parse", "HEAD");
+  sh(ws, "push", "--quiet", origin, "HEAD:refs/heads/lease");
+  // A branch the same task already owns at H, for the ordinary fast-forward it must still land.
+  sh(ws, "push", "--quiet", origin, `${H}:refs/heads/ff`);
+  bundle(H);
+  bundle(F);
 
   const pr = { head: c1, author: "contributor" };
   const checks = [];
@@ -67,6 +86,8 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     res.writeHead(404).end("{}");
   });
   const calls = [];
+  /** git against the bare origin, as GitHub's side would hold it (no hooks from the host's own environment). */
+  const bare = (args) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   const gh = async (method, path, body) => {
     calls.push({ method, path, body, as: body?.as });
     if (path === "/graphql" && body.query.includes("enqueuePullRequest")) return enqueueAnswer(queue);
@@ -74,6 +95,14 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
     if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
+    // The open PR on the published task branch (`github.pr` on it): its head follows a PATCH, so a rewind would show here.
+    if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls?state=open&head=acme-agents%3A`)) {
+      const branch = decodeURIComponent(path.slice(path.indexOf("acme-agents%3A") + "acme-agents%3A".length));
+      return { status: 200, body: branch === "lease" ? [{ number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } }] : [] };
+    }
+    if (method === "PATCH" && path === `/repos/${REPO}/pulls/8`) return { status: 200, body: { number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } } };
+    // A new PR the publish opens (a branch with none yet): its head is whatever the branch holds when it asks.
+    if (method === "POST" && path === `/repos/${REPO}/pulls`) return { status: 201, body: { number: 9, html_url: `https://github.com/${REPO}/pull/9`, head: { sha: bare(["rev-parse", `refs/heads/${body.head}`]), ref: body.head }, base: { ref: body.base, sha: main }, user: { login: "owner1" } } };
     if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
@@ -138,7 +167,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, c1, fix, main, pr, queue, calls, call, run, adoption, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; } };
+  return { root, ws, origin, c1, fix, main, H, F, pr, queue, calls, call, run, adoption, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; } };
 }
 
 test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
@@ -528,4 +557,50 @@ test("ship's decision from its list read: no PR or check read, the branch rules 
   verdict = { pass: true };
   assert.equal((await merges.decision("acme-agents/widget", 3, H, view)).do, "merge", "a gated repo merges on code review's pass, no GitHub approval");
   assert.deepEqual(calls, ["GET /repos/acme-agents/widget/rules/branches/main", "GET /repos/acme-agents/widget/branches/main/protection/required_status_checks"]);
+});
+
+// The ordinary publish path (`github.push` / `github.pr`) leases its push on the branch's head, read under the branch lock: an
+// approval card whose box bundle was planned before a later push landed carries the older commit and must be refused as
+// ship-head-moved, never force the branch back over the newer one (issue #1775: PR #1746 was rewound to a pre-fix commit).
+test("a publish whose bundle carries H cannot rewind a branch at F, a child of H: it is refused as ship-head-moved and F stays", async (t) => {
+  const { ws, origin, H, F, run, calls } = await setup(t);
+  // The task's workspace box is at F (the fix, pushed), holding the bundle of H (the plan's older read).
+  sh(ws, "checkout", "--quiet", "lease");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch stands at F before the stale write");
+
+  for (const kind of ["github.push", "github.pr"]) {
+    const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: H }], ...(kind === "github.pr" ? { text: { title: "fix: stale write", body: "Why." } } : {}) };
+    const before = calls.length;
+    const r = await run(`k-00000000000000f${kind === "github.pr" ? "1" : "0"}`, kind, args);
+    assert.equal(r.ok, false, `${kind}: ${JSON.stringify(r)}`);
+    assert.match(r.text, /^ship-head-moved/, `${kind}: ${r.text}`);
+    assert.match(r.text, new RegExp(`moved to \`${F.slice(0, 12)}\` since the write read \`${H.slice(0, 12)}\``), r.text);
+    assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, `${kind}: the branch still stands at F`);
+    assert.deepEqual(calls.slice(before).filter((c) => c.method === "PATCH" && c.path.includes("/pulls/")), [], `${kind}: no PR was moved`);
+  }
+
+  // A first publish to a branch that doesn't exist yet still lands: there is no head to lease against, so no lease.
+  sh(ws, "checkout", "--quiet", "-b", "fresh", H);
+  const first = await run("k-00000000000000f2", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "fresh", sha: H }] });
+  assert.equal(first.ok, true, first.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/fresh"), H);
+
+  // The same write's own fast-forward of a branch this task owns still lands (the lease is on the head it read).
+  sh(ws, "checkout", "--quiet", "lease");
+  const ff = await run("k-00000000000000f3", "github.pr", { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: F }] });
+  assert.equal(ff.ok, true, ff.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "an unchanged head pushes nothing new and stays where it is");
+
+  // A rewrite of this task's own branch (a commit on H, diverging from F) is still allowed: the lease is on the head just read, and
+  // the new commit isn't one the branch already holds, so nothing is rewound.
+  sh(ws, "checkout", "--quiet", "-b", "rewrite", H);
+  writeFileSync(join(ws, "r.txt"), "r\n");
+  sh(ws, "add", "r.txt");
+  sh(ws, "commit", "--quiet", "-m", "rewrite");
+  const R = sh(ws, "rev-parse", "HEAD");
+  sh(ws, "update-ref", `refs/aidenhq/publish/${R}`, R);
+  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${R}.bundle`), `refs/aidenhq/publish/${R}`);
+  const rewrite = await run("k-00000000000000f4", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] });
+  assert.equal(rewrite.ok, true, rewrite.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), R, "the task's own rewrite lands");
 });
