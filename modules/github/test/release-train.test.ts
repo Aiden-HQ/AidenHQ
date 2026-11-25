@@ -4,7 +4,7 @@
 // ends failed or unknown — even one whose written-down state was lost — closes its task cancelled with a "Not landed" note,
 // while only one whose card ended done closes done; a lasting refusal to file the apply closes "Not filed", also cancelled.
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,6 +12,12 @@ import { createReleaseTrain } from "../service/src/train.ts";
 
 const [OLD, NEW] = ["a", "b"].map((c) => c.repeat(40));
 const INSTANCE = `product: ${OLD}\nmodules: [core]\n`;
+/** The train's own state file, written as a previous process would have left it (a restored or migrated filing). */
+const writeState = (dir, state) => writeFileSync(join(dir, "release-instance.json"), JSON.stringify(state));
+/** The instance revision the fake preflight compiles by default: what a commit is built on. */
+const BASE = "c".repeat(40);
+/** The bump's instance.yaml, as the train's commit makes it (the file with its one `product:` line moved). */
+const bumpText = (to) => `product: ${to}\nmodules: [core]\n`;
 
 function fakes() {
   // `tasks`: every filing call; `made`: the tasks the control plane actually created (one per source, as the kernel's
@@ -57,17 +63,29 @@ function fakes() {
     }
     throw new Error(`no route ${path}`);
   };
+  // `instanceText`: the instance.yaml this fake answers with, so a test can move the instance (a settings push) without a commit.
+  // The instance's own main: what the kernel's compile check reads and returns as `base`, and what a refusal is keyed to.
+  const state = { instanceText: undefined, instanceTip: "1".repeat(40) };
   const github = {
-    tip: async () => ({ tip: NEW, green: true }),
-    text: async (repo, path) => (path === "instance.yaml" ? INSTANCE : undefined),
+    // The product tip is NEW; the instance's own tip (`instanceTip`) is what a refusal is keyed to.
+    tip: async (repo) => ({ tip: repo === "acme/aidenhq-instance" ? state.instanceTip : NEW, green: true }),
+    text: async (repo, path) => (path === "instance.yaml" ? (state.instanceText ?? INSTANCE) : undefined),
     commits: async (repo, from, to) => [{ repo, sha: to, subject: "(#1)" }],
   };
-  return { k, kernel, github };
+  return { k, kernel, github, state };
 }
 const train = (dir, f, clock, extra = {}) => createReleaseTrain({
   dir, productRepo: "acme/aidenhq", instanceRepo: "acme/aidenhq-instance", windowMinutes: 15,
   kernel: f.kernel, github: f.github, now: () => clock.t,
-  commit: async (repo, path, edit) => { const t = edit(f.head ?? INSTANCE); f.committed = t; return t.includes(NEW) ? "e".repeat(40) : "0".repeat(40); }, ...extra,
+  // The real route compiles the instance at its main and returns that commit as `base`. A test that moves the instance's main
+  // sets `f.base` too, so the two stay in step; the default is BASE.
+  compile: f.compile ?? (async () => ({ ok: true, base: f.base ?? BASE })),
+  // The preflight's `base` is the instance revision it compiled: a commit is built on it (the service's trainCommit refuses
+  // any other head), and this fake records the base it was handed.
+  commit: async (repo, path, edit, message, base) => {
+    if (base !== undefined) { f.commitBase = base; if (base !== (f.base ?? BASE)) throw Object.assign(new Error(`acme/aidenhq-instance's main moved since the compile check`), { status: 409 }); }
+    const t = edit(f.head ?? INSTANCE); f.committed = t; return t.includes(NEW) ? "e".repeat(40) : "0".repeat(40);
+  }, ...extra,
 });
 
 /**
@@ -170,4 +188,238 @@ test("a lasting refusal to file the apply closes the bump's task cancelled with 
   await train(dir, refused, clock).step();
   assert.equal(f.k.writes.length, 0, "no card is filed");
   assert.deepEqual(f.k.closed, [{ task: `t-release:instance:${NEW}`, status: "cancelled", body: "**Not filed:** /v1/writes answered 422: the rules refuse this apply" }]);
+});
+
+/**
+ * The compile preflight (#1730): before a bump is committed or filed, the instance at its main is compiled against the target
+ * product. A target that doesn't compile is never filed — logged with the target sha and the compiler's own first message —
+ * and its tip is over, so the train waits for the next merge. A target that compiles files as before. A check that throws is
+ * transient: nothing is filed, nothing is closed, and the next poll asks again with the same tip.
+ */
+test("a target that doesn't compile the instance is neither committed nor filed, and the log names its sha and the compiler's message", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step(); // the batch window opens
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const refused = "compile: settings.code_review: repos[0]: on_open, on_push and push_rounds are per tier now: by_tier.<tier>.… (see the Reviews page)";
+  const asked = [];
+  f.compile = async (to) => (asked.push(to), { ok: false, error: refused, base: BASE });
+  const logs = [];
+  const bumped = [];
+  await train(dir, f, clock, { compile: f.compile, log: (m, x) => logs.push([m, x]), commit: async (repo, path, edit) => { bumped.push(1); return "e".repeat(40); } }).step();
+  assert.deepEqual(asked, [NEW], "the target product is what was compiled");
+  assert.equal(bumped.length, 0, "the bump is never committed");
+  assert.equal(f.k.tasks.length, 0, "no task is filed for a target that doesn't compile");
+  assert.equal(f.k.writes.length, 0, "no card is filed for a target that doesn't compile");
+  const line = logs.find(([m]) => /doesn't compile/.test(m));
+  assert.ok(line, "the refusal is logged");
+  assert.equal(line[1].to, NEW, "the log names the target sha");
+  assert.match(String(line[1].err), /^compile: settings\.code_review/, "and the compiler's own first message");
+  // Its tip is over: nothing is filed again until a newer merge moves the product.
+  clock.t = new Date("2026-11-18T10:40:00Z");
+  await train(dir, f, clock, { compile: f.compile }).step();
+  assert.equal(asked.length, 1, "the same tip is never tried again");
+  assert.equal(f.k.writes.length, 0);
+});
+
+/**
+ * A refusal is about the instance that was compiled. Once the instance's own text changes (the owner fixes the setting the target
+ * refuses), the same product tip is checked again instead of waiting for another product merge.
+ */
+test("a refused target is checked again once the instance changes, not only on a newer product merge", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  // The refusal is about the instance's main as the real route reads it, so the base tracks the instance tip.
+  f.compile = async (to) => (asked.push(to), { ok: false, error: "compile: settings.code_review: per tier now", base: f.state.instanceTip });
+  const t = train(dir, f, clock, { compile: f.compile });
+  await t.step();
+  assert.deepEqual(asked, [NEW], "the target is refused once");
+  // The instance is fixed (its text changes) and is pushed: the same tip is due again.
+  f.state.instanceText = `product: ${OLD}\nmodules: [core]\nsettings: { code_review: { by_tier: {} } }\n`;
+  await t.refresh();
+  clock.t = new Date("2026-11-18T10:40:00Z");
+  await t.step();
+  clock.t = new Date("2026-11-18T11:00:00Z");
+  await t.step();
+  assert.deepEqual(asked, [NEW, NEW], "the same target is checked against the fixed instance");
+  // With no instance change, it stays refused: no further check until something moves.
+  await t.step();
+  assert.deepEqual(asked, [NEW, NEW], "and is not checked again in a loop");
+  // A push that moves the instance without editing instance.yaml (apps.yaml, a local module) is still an instance change.
+  f.state.instanceTip = "2".repeat(40);
+  f.compile = async (to) => (asked.push(to), { ok: false, error: "compile: settings.code_review: per tier now", base: f.state.instanceTip });
+  clock.t = new Date("2026-11-18T11:20:00Z");
+  await t.step();
+  assert.deepEqual(asked, [NEW, NEW], "the new instance commit opens a fresh batch window, not an immediate recheck");
+  clock.t = new Date("2026-11-18T11:40:00Z");
+  await t.step();
+  assert.deepEqual(asked, [NEW, NEW, NEW], "and the same tip is checked again once that window is over");
+});
+
+test("a target that compiles the instance files the bump as today", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: true, base: BASE }) }).step();
+  assert.deepEqual(asked, [NEW], "the check runs against the target before the commit");
+  assert.equal(f.committed, bumpText(NEW), "the bump is committed as before");
+  assert.deepEqual(f.k.writes.map((w) => [w.kind, w.args.sha, w.task]), [["kernel.apply", "e".repeat(40), `t-release:instance:${NEW}`]]);
+  assert.equal(f.k.tasks.length, 1, "the bump's task is filed");
+});
+
+/**
+ * The preflight's verdict is bound to the instance revision it compiled: if instance main moves between the check and the
+ * commit, the bump is held (not built on settings the check never saw) and the next poll compiles the new main first.
+ */
+test("an instance that moves after the compile check holds the bump instead of committing unchecked settings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const moved = "d".repeat(40);
+  // Main moved after the check: the commit is refused on the stale base.
+  f.base = moved;
+  const logs = [];
+  // The check read main at BASE; main then moved to `moved` before the commit (the fake's `commit` refuses a stale base).
+  await train(dir, f, clock, { compile: async () => ({ ok: true, base: BASE }), log: (m) => logs.push(m) }).step();
+  assert.equal(f.committed, undefined, "nothing is committed on a main the check didn't see");
+  assert.equal(f.k.writes.length, 0, "and no card is filed");
+  assert.ok(logs.some((m) => /held: the instance moved/.test(m)), "the hold is logged");
+  // The next poll compiles the new main and commits on it.
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: true, base: moved }) }).step();
+  assert.deepEqual(asked, [NEW], "the same target is checked again against the new main");
+  assert.equal(f.commitBase, moved, "the commit builds on the revision the check compiled");
+  assert.equal(f.k.writes.length, 1, "and the bump files");
+});
+
+/**
+ * A filing restored from the previous version's state has a task but no base and no commit: it was never preflighted. The train
+ * checks it now, before committing — and it never opens a second task, it reuses the one already filed for this target.
+ */
+test("a filing restored without a preflight is checked before it commits, on its existing task", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  // The state the previous version left behind: a task filed, no base, no commit.
+  writeState(dir, { open: { since: "2026-11-18T10:00:00Z" }, filing: { to: NEW, task: `t-release:instance:${NEW}`, identifier: "ACME-7" } });
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: false, error: "compile: nope", base: BASE }) }).step();
+  assert.deepEqual(asked, [NEW], "the restored filing is preflighted");
+  assert.equal(f.committed, undefined, "and is never committed on a verdict it never had");
+  assert.equal(f.k.writes.length, 0, "no card is filed");
+  assert.equal(f.k.tasks.length, 0, "and no second task is opened");
+  assert.deepEqual(f.k.closed.map((c) => c.task), [`t-release:instance:${NEW}`], "the task it restored is settled, not stranded");
+  assert.match(String(f.k.closed[0].body), /doesn't compile the instance/);
+});
+
+/**
+ * A filing restored with a saved commit but no base (a state the previous version could leave) was never preflighted: the commit
+ * is only this service's train ref, never pushed, so filing its card would file an unchecked bump — the #1730 break. It is
+ * checked now; a refusal files no card and settles the task it restored.
+ */
+/**
+ * A restored filing whose card the previous process already filed is adopted, never closed "Not filed": the card can still land
+ * the bump, and closing its task would leave an applied bump with a cancelled task behind it.
+ */
+test("a restored filing whose card already exists is followed, not preflighted and cancelled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  const task = `t-release:instance:${NEW}`;
+  // The previous process filed the card and died before saving its flight.
+  f.k.records[`k-${task}`] = { id: `k-${task}`, kind: "kernel.apply", task, state: "review" };
+  writeState(dir, { open: { since: "2026-11-18T10:00:00Z" }, filing: { to: NEW, task, identifier: "ACME-7" } });
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: false, error: "compile: nope", base: BASE }) }).step();
+  assert.deepEqual(asked, [], "the existing card is found before any compile runs");
+  assert.deepEqual(f.k.closed.map((c) => c.task), [], "and its task is never cancelled under it");
+  assert.equal(f.k.writes.length, 0, "nor is a second card filed");
+});
+
+test("a restored filing with a saved commit but no preflight is checked, and a refusal files nothing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  // The previous version's state: a task and a commit, written down with no verdict.
+  writeState(dir, { open: { since: "2026-11-18T10:00:00Z" }, filing: { to: NEW, sha: "9".repeat(40), task: `t-release:instance:${NEW}`, identifier: "ACME-7" } });
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: false, error: "compile: settings.modules: the kernel TLS module is gone", base: BASE }) }).step();
+  assert.deepEqual(asked, [NEW], "the restored commit is preflighted before its card is filed");
+  assert.equal(f.k.writes.length, 0, "a refused target files no card, even though a commit was saved");
+  assert.deepEqual(f.k.closed.map((c) => c.task), [`t-release:instance:${NEW}`], "and the restored task is settled, not stranded");
+  assert.match(String(f.k.closed[0].body), new RegExp(`${NEW.slice(0, 12)}.*doesn't compile|doesn't compile the instance`));
+});
+
+/**
+ * A 409 (instance main moved between the check and the commit) drops the verdict, not the task: the next poll checks the new main,
+ * commits on it and files the card on the task already filed for this target.
+ */
+test("a 409 keeps the filed task, so the next poll rechecks and files rather than stranding it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  // Main moved to `d` after the check read it at BASE: the commit is refused on the stale base.
+  f.base = "d".repeat(40);
+  await train(dir, f, clock, { compile: async () => ({ ok: true, base: BASE }) }).step();
+  assert.equal(f.committed, undefined, "the bump is held");
+  const asked = [];
+  f.base = BASE;
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: true, base: BASE }) }).step();
+  assert.deepEqual(asked, [NEW], "the same target is checked again on the new main");
+  assert.equal(f.k.tasks.length, 1, "no second task was opened");
+  assert.equal(f.k.writes.length, 1, "the card is filed on the task that already existed");
+  assert.equal(f.k.closed.length, 0, "and nothing was cancelled");
+});
+
+test("a restored filing with a saved commit is rebuilt on the checked revision when the target compiles", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  writeState(dir, { open: { since: "2026-11-18T10:00:00Z" }, filing: { to: NEW, sha: "9".repeat(40), task: `t-release:instance:${NEW}`, identifier: "ACME-7" } });
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  await train(dir, f, clock, { compile: async () => ({ ok: true, base: BASE }) }).step();
+  assert.equal(f.commitBase, BASE, "the bump is recommitted on the revision the check passed");
+  assert.equal(f.committed, bumpText(NEW));
+  assert.equal(f.k.writes.length, 1, "then filed on the task already filed for this target");
+  assert.equal(f.k.tasks.length, 0, "with no second task opened");
+  assert.equal(f.k.closed.length, 0, "and nothing cancelled");
+});
+
+test("a compile check that throws is transient: nothing is filed or closed, and the next poll retries the same tip", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  let calls = 0;
+  const flaky = { compile: async () => { calls++; throw new Error("the compile check couldn't run: the target product ffff isn't on the product's main"); } };
+  await assert.rejects(train(dir, f, clock, flaky).step(), /isn't on the product's main|compile check/);
+  assert.equal(calls, 1);
+  assert.equal(f.k.tasks.length, 0, "a transient check files no task");
+  assert.equal(f.k.writes.length, 0, "a transient check files no card");
+  assert.deepEqual(f.k.closed, [], "and closes nothing");
+  // The next poll asks again, with the same tip: the failure did not mark it tried.
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: true, base: BASE }) }).step();
+  assert.deepEqual(asked, [NEW], "the same tip is retried");
+  assert.equal(f.k.writes.length, 1, "and now the bump files");
 });
