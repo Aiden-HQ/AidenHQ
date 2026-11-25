@@ -102,7 +102,8 @@
   let lastGood = { repos: {}, paused: undefined };
   async function propose(fields, repo, whole, live) {
     const next = { repos: { ...pending.repos }, paused: pending.paused };
-    if (repo) next.repos[repo] = whole ? fields : { ...(next.repos[repo] ?? {}), ...fields };
+    if (repo && whole && !Object.keys(fields).length) delete next.repos[repo]; // an entry edited back to nothing is no proposal at all
+    else if (repo) next.repos[repo] = whole ? fields : { ...(next.repos[repo] ?? {}), ...fields };
     else next.paused = fields.paused;
     pending = next; // at once, so a second edit before the answer comes back keeps this one
     if (!live) render();
@@ -190,8 +191,14 @@
     return false;
   };
   const fmt = (path, v) => Array.isArray(v) ? (v.join(", ") || "none") : v === null || v === undefined || v === "" ? (/^caps/.test(path) ? "unlimited" : "none") : typeof v === "object" ? JSON.stringify(v) : String(v);
-  const showAction = (a) => a.workflow ? `workflow: ${a.workflow}${Object.entries(a.inputs ?? {}).map(([k, v]) => ` ${k}=${v}`).join("")}` : `comment: ${a.comment ?? ""}`;
-  const readAction = (l) => { const m = l.match(/^(comment|workflow):\s*(.*)$/); if (!m || m[1] === "comment") return { comment: m ? m[2] : l }; const [name, ...kv] = m[2].split(/\s+/); return { workflow: name, inputs: Object.fromEntries(kv.map((x) => x.split(/=(.*)/s).slice(0, 2))) }; };
+  // An action as one chip: `comment: text`, or `workflow: file.yml key=value`; a value with a space, = or quote is JSON-quoted so the chip reads back to the same action.
+  const q = (v) => (/[\s="]|^$/.test(String(v)) ? JSON.stringify(String(v)) : String(v));
+  const showAction = (a) => a.workflow ? `workflow: ${a.workflow}${Object.entries(a.inputs ?? {}).map(([k, v]) => ` ${k}=${q(v)}`).join("")}` : `comment: ${a.comment ?? ""}`;
+  const readAction = (l) => {
+    const m = l.match(/^(comment|workflow):\s*(.*)$/); if (!m || m[1] === "comment") return { comment: m ? m[2] : l };
+    const [name, ...rest] = m[2].match(/(?:"(?:[^"\\]|\\.)*"|\S)+/g) ?? [""];
+    return { workflow: name, inputs: Object.fromEntries(rest.map((x) => { const [k, ...v] = x.split("="), raw = v.join("="); let val = raw; if (raw.startsWith('"')) try { val = JSON.parse(raw); } catch {} return [k, val]; })) };
+  };
 
   const CAPS = ["caps.wakes_per_head", "caps.ci_rounds", "caps.same_check_heads", "caps.rounds", "caps.usd", "caps.requeue_on_timeout"];
   const secOpen = new Set();

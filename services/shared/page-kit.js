@@ -122,7 +122,7 @@ const editor = (k) => {
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add([inp.value]); } else if (e.key === "Backspace" && !inp.value && items.length) put(items.slice(0, -1)); });
     inp.addEventListener("paste", (e) => { const t = e.clipboardData?.getData("text") ?? ""; if (t.includes("\n")) { e.preventDefault(); add(t.split("\n")); } });
     // What is typed is proposed with the list as you type (no redraw, so the caret stays): Save always carries it, with or without Enter.
-    let typing; inp.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { const v = inp.value.trim(); k.set(v && (k.dups || !items.includes(v)) ? [...items, v] : items, true); }, 200); });
+    let typing; inp.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { if (!inp.isConnected) return; const v = inp.value.trim(); k.set(v && (k.dups || !items.includes(v)) ? [...items, v] : items, true); }, 200); });
     return h("div", { className: "chips" }, ...items.map((x, i) => { const b = h("button", { type: "button", className: "x", ariaLabel: `Remove ${x}`, textContent: "\u00d7" }); b.addEventListener("click", () => put(items.filter((_, j) => j !== i))); return h("span", { className: "chip", title: x }, h("span", { textContent: x }), b); }), inp);
   }
   const el = k.kind === "select" ? h("select", { ariaLabel: k.label }, ...k.values.map((v) => h("option", { value: v, textContent: v, title: k.titles?.[v], selected: v === k.value })))
