@@ -41,9 +41,28 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   sh(ws, "add", "gen.txt");
   sh(ws, "commit", "--quiet", "-m", "repair");
   const fix = sh(ws, "rev-parse", "HEAD");
+  const bundle = (sha) => {
+    sh(ws, "update-ref", `refs/aidenhq/publish/${sha}`, sha);
+    sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${sha}.bundle`), `refs/aidenhq/publish/${sha}`);
+  };
   mkdirSync(join(dirname(ws), ".aidenhq", "bundles"), { recursive: true });
-  sh(ws, "update-ref", `refs/aidenhq/publish/${fix}`, fix);
-  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${fix}.bundle`), `refs/aidenhq/publish/${fix}`);
+  bundle(fix);
+  // A published task branch at F, a child of H, and the box bundle of H: the write that must never rewind it (a bundle planned
+  // before the fix landed). A `github.pr` on it is open at F.
+  sh(ws, "checkout", "--quiet", "-b", "lease", "main");
+  writeFileSync(join(ws, "h.txt"), "h\n");
+  sh(ws, "add", "h.txt");
+  sh(ws, "commit", "--quiet", "-m", "H");
+  const H = sh(ws, "rev-parse", "HEAD");
+  writeFileSync(join(ws, "f.txt"), "f\n");
+  sh(ws, "add", "f.txt");
+  sh(ws, "commit", "--quiet", "-m", "F");
+  const F = sh(ws, "rev-parse", "HEAD");
+  sh(ws, "push", "--quiet", origin, "HEAD:refs/heads/lease");
+  // A branch the same task already owns at H, for the ordinary fast-forward it must still land.
+  sh(ws, "push", "--quiet", origin, `${H}:refs/heads/ff`);
+  bundle(H);
+  bundle(F);
 
   const pr = { head: c1, author: "contributor" };
   const checks = [];
@@ -67,6 +86,8 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     res.writeHead(404).end("{}");
   });
   const calls = [];
+  /** git against the bare origin, as GitHub's side would hold it (no hooks from the host's own environment). */
+  const bare = (args) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   const gh = async (method, path, body) => {
     calls.push({ method, path, body, as: body?.as });
     if (path === "/graphql" && body.query.includes("enqueuePullRequest")) return enqueueAnswer(queue);
@@ -74,6 +95,16 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
     if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
+    // The open PR on the published task branch (`github.pr` on it): its head follows a PATCH, so a rewind would show here.
+    if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls?state=open&head=acme-agents%3A`)) {
+      // The whole query, `&base=main` and all: the branch is its `head` value, never the rest of the path.
+      const q = new URLSearchParams(path.slice(path.indexOf("?") + 1));
+      const branch = decodeURIComponent(String(q.get("head") ?? "")).replace(/^acme-agents:/, "");
+      return { status: 200, body: branch === "lease" ? [{ number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } }] : [] };
+    }
+    if (method === "PATCH" && path === `/repos/${REPO}/pulls/8`) return { status: 200, body: { number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } } };
+    // A new PR the publish opens (a branch with none yet): its head is whatever the branch holds when it asks.
+    if (method === "POST" && path === `/repos/${REPO}/pulls`) return { status: 201, body: { number: 9, html_url: `https://github.com/${REPO}/pull/9`, head: { sha: bare(["rev-parse", `refs/heads/${body.head}`]), ref: body.head }, base: { ref: body.base, sha: main }, user: { login: "owner1" } } };
     if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
@@ -132,13 +163,20 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     const r = await fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: "Bearer ch-key", "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: r.status, json: await r.json() };
   };
-  const run = async (id, kind, args) => {
+  const run = async (id, kind, args, filed) => {
     const n = outcomes.length;
-    assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id, kind, args, digest: "d", idempotency_key: id, tier: 0 })).json, { accepted: true });
+    // The kernel executes a record with the args its plan stored, never the caller's: the plan's own args carry the head it read
+    // (and a revalidation gets the record's stored args back unchanged). A publish files its card first, so the test does too; a
+    // test that already filed one passes that plan (the card a later push does not widen).
+    const plan = filed ?? (kind === "github.push" || kind === "github.pr"
+      ? await call("/aidenhq/v1/executor/plan", { kind, args, requester: { kind: "job", roles: [] }, task: "t1" })
+      : undefined);
+    const exec = plan?.status === 200 ? plan.json.args : args;
+    assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id, kind, args: exec, digest: "d", idempotency_key: id, tier: 0 })).json, { accepted: true });
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, c1, fix, main, pr, queue, calls, call, run, adoption, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; } };
+  return { root, ws, origin, c1, fix, main, H, F, pr, queue, calls, call, run, adoption, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; } };
 }
 
 test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
@@ -528,4 +566,132 @@ test("ship's decision from its list read: no PR or check read, the branch rules 
   verdict = { pass: true };
   assert.equal((await merges.decision("acme-agents/widget", 3, H, view)).do, "merge", "a gated repo merges on code review's pass, no GitHub approval");
   assert.deepEqual(calls, ["GET /repos/acme-agents/widget/rules/branches/main", "GET /repos/acme-agents/widget/branches/main/protection/required_status_checks"]);
+});
+
+// The ordinary publish path (`github.push` / `github.pr`) leases its push on the branch's head, read under the branch lock: an
+// approval card whose box bundle was planned before a later push landed carries the older commit and must be refused as
+// ship-head-moved, never force the branch back over the newer one (issue #1775: PR #1746 was rewound to a pre-fix commit).
+test("a publish whose bundle carries H cannot rewind a branch at F, a child of H: it is refused as ship-head-moved and F stays", async (t) => {
+  const { ws, origin, H, F, run, call, calls } = await setup(t);
+  // The task's workspace box is at F (the fix, pushed), holding the bundle of H (the plan's older read).
+  sh(ws, "checkout", "--quiet", "lease");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch stands at F before the stale write");
+
+  for (const kind of ["github.push", "github.pr"]) {
+    const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: H }], ...(kind === "github.pr" ? { text: { title: "fix: stale write", body: "Why." } } : {}) };
+    const before = calls.length;
+    const r = await run(`k-00000000000000f${kind === "github.pr" ? "1" : "0"}`, kind, args);
+    assert.equal(r.ok, false, `${kind}: ${JSON.stringify(r)}`);
+    assert.match(r.text, /^ship-head-moved/, `${kind}: ${r.text}`);
+    assert.match(r.text, new RegExp(`moved to \`${F.slice(0, 12)}\` since the write read \`${H.slice(0, 12)}\``), r.text);
+    assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, `${kind}: the branch still stands at F`);
+    assert.deepEqual(calls.slice(before).filter((c) => c.method === "PATCH" && c.path.includes("/pulls/")), [], `${kind}: no PR was moved`);
+  }
+
+  // A first publish to a branch that doesn't exist yet still lands: there is no head to lease against, so no lease.
+  sh(ws, "checkout", "--quiet", "-b", "fresh", H);
+  const first = await run("k-00000000000000f2", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "fresh", sha: H }] });
+  assert.equal(first.ok, true, first.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/fresh"), H);
+
+  // The same write's own fast-forward of a branch this task owns still lands (the lease is on the head it read).
+  sh(ws, "checkout", "--quiet", "lease");
+  const ff = await run("k-00000000000000f3", "github.pr", { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: F }] });
+  assert.equal(ff.ok, true, ff.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "an unchanged head pushes nothing new and stays where it is");
+
+  // A rewrite of this task's own branch (a commit on H, diverging from F) is still allowed: its plan read the branch at F and it is
+  // still at F, and the new commit isn't one the branch already holds, so nothing is rewound.
+  sh(ws, "checkout", "--quiet", "-b", "rewrite", H);
+  writeFileSync(join(ws, "r.txt"), "r\n");
+  sh(ws, "add", "r.txt");
+  sh(ws, "commit", "--quiet", "-m", "rewrite");
+  const R = sh(ws, "rev-parse", "HEAD");
+  sh(ws, "update-ref", `refs/aidenhq/publish/${R}`, R);
+  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${R}.bundle`), `refs/aidenhq/publish/${R}`);
+  const rewriteArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: rewriteArgs, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  const rewrite = await run("k-00000000000000f4", "github.push", rewriteArgs);
+  assert.equal(rewrite.ok, true, rewrite.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), R, "the task's own rewrite lands");
+
+  // The card path: a write planned while the branch is at H does not rewrite it after the branch moves to F (a different child of
+  // H). The bundle's commit isn't an ancestor of F, so only the head the plan bound refuses it -- the ancestry check would not.
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const staleArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  const staleCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: staleArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(staleCard.status, 200, JSON.stringify(staleCard.json));
+  // The card is bound to the head it read, in its own stored args: the branch was at H when it was filed.
+  assert.deepEqual(staleCard.json.args.heads, { [`${REPO} lease`]: H });
+  sh(origin, "update-ref", "refs/heads/lease", F);
+  assert.throws(() => sh(ws, "merge-base", "--is-ancestor", R, F), "R and F diverge: the ancestry check alone would not refuse this");
+  const stale = await run("k-00000000000000f5", "github.push", staleArgs, staleCard);
+  assert.equal(stale.ok, false, stale.text);
+  assert.match(stale.text, /^ship-head-moved/, stale.text);
+  assert.match(stale.text, new RegExp(`moved to \`${F.slice(0, 12)}\` since the write read \`${H.slice(0, 12)}\``), stale.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch the card planned against moved; it is never rewritten");
+
+  // A card filed at H cannot be widened by planning the same request again after the branch moved to F: the second plan is its
+  // own record (its own args, its own head), and the first card still refuses. This is the finding's case: a mutable cache keyed
+  // by the request alone would hand the old card F.
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const widenArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  const filed = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: widenArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(filed.status, 200);
+  assert.equal(filed.json.args.heads[`${REPO} lease`], H);
+  sh(origin, "update-ref", "refs/heads/lease", F);
+  const again = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: widenArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(again.status, 200);
+  assert.equal(again.json.args.heads[`${REPO} lease`], F, "the new plan reads F, as its own record");
+  const oldCard = await run("k-00000000000000f7", "github.push", widenArgs, filed);
+  assert.match(oldCard.text, /^ship-head-moved/, oldCard.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the earlier card keeps H and never rewrites the branch from F");
+
+  // A revalidation is handed the record's stored args back unchanged: the head it bound is the one it still checks.
+  const revalidated = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: filed.json.args, requester: { kind: "job", roles: [] }, task: "t1", revalidate: true });
+  assert.equal(revalidated.status, 200);
+  assert.deepEqual(revalidated.json.args.heads, { [`${REPO} lease`]: H });
+
+  // A card whose own push already landed before GitHub dropped the connection is resumed, not refused: the branch already holds
+  // the commit, so there is nothing to push and the PR is finished (a held write retried by id is the same record).
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const resumeArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  const resumeCard = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { ...resumeArgs, text: { title: "fix: resume" } }, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(resumeCard.status, 200);
+  sh(origin, "update-ref", "refs/heads/lease", R);
+  const beforeResume = calls.length;
+  const resumed = await run("k-00000000000000f8", "github.pr", { ...resumeArgs, text: { title: "fix: resume" } }, resumeCard);
+  assert.equal(resumed.ok, true, resumed.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), R, "the branch still holds the commit its write pushed");
+  const resumeCalls = calls.slice(beforeResume);
+  assert.deepEqual(resumeCalls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/pulls`), [], "the branch already had its PR: none is opened");
+  assert.equal(resumeCalls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/8`).length, 1, "the existing PR #8 is the one finished");
+
+  // A branch planned absent and created before the push is refused: this write would take a create over a branch it never read.
+  const absentArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "late", sha: H }] };
+  const absentCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: absentArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(absentCard.status, 200);
+  assert.deepEqual(absentCard.json.args.heads, { [`${REPO} late`]: null }, "planned absent");
+  sh(origin, "update-ref", "refs/heads/late", F);
+  const late = await run("k-00000000000000f9", "github.push", absentArgs, absentCard);
+  assert.match(late.text, /^ship-head-moved: .*appeared at/, late.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/late"), F, "the branch someone else created is left where it is");
+
+  // A branch deleted since the plan is "missing", not a crash: the write lands as an ordinary first publish.
+  const goneArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "gone", sha: F }] };
+  sh(origin, "update-ref", "refs/heads/gone", F);
+  const goneCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: goneArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(goneCard.status, 200);
+  assert.equal(goneCard.json.args.heads[`${REPO} gone`], F);
+  sh(origin, "update-ref", "-d", "refs/heads/gone");
+  const gone = await run("k-00000000000000fa", "github.push", goneArgs, goneCard);
+  assert.equal(gone.ok, true, gone.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/gone"), F, "a branch deleted since is created again, no crash");
+
+  // A push straight to an agents-org repo's default branch (plan.ts raises it as `default-branch` rather than refusing it) moves
+  // forward with no force and no lease. A lease here would name an empty expected head against an existing `main` and refuse it
+  // ("stale info"), which is the regression a default-branch lease introduces.
+  const toMain = await run("k-00000000000000f6", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "main", sha: H }] });
+  assert.equal(toMain.ok, true, toMain.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/main"), H, "the default branch moved forward, unleased");
 });
