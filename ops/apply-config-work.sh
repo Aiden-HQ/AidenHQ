@@ -269,10 +269,6 @@ retireUnits() {
     systemctl --user stop aidenhq-update.timer 2>/dev/null || true
     rm -f "$units/aidenhq-update.service" "$units/aidenhq-update.timer" && systemctl --user daemon-reload && echo "release update timer removed (the kernel files releases now)"
   fi
-  # DELETE in the release after #1065: the GitHub App's key dir in the vault (the App is retired; verify-security fails while it exists).
-  if [ -n "${AIDENHQ_SECRETS_DIR:-}" ] && [ -d "$AIDENHQ_SECRETS_DIR/github-app" ]; then
-    rm -rf "$AIDENHQ_SECRETS_DIR/github-app" && echo "github-app secrets dir removed (the GitHub App is retired)"
-  fi
   # Applies the kernel started before ops/aidenhq-apply stayed loaded when they ended (RemainAfterExit): only the ended
   # ones are stopped, so the unit running this apply never is.
   local ended

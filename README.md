@@ -1,12 +1,17 @@
 # AidenHQ
 
-A self-hosted platform for creating, running and managing your own AI agents and the applications they build.
+**Powerful agents, made easy.** Website: **[aidenhq.ai](https://aidenhq.ai)**.
 
-Describe an agent or an app you need, and AidenHQ designs it, deploys it, runs it on a schedule or when something
-happens, and keeps it maintained, on a server you control. Agents share one set of tool connections and one data
-warehouse, and every write they make (a push, a deploy, a message, a config change) passes an approval gate
-enforced in code. You work with all of it through **Aiden**, your chief of staff, on Telegram, Slack or the web: Aiden
-turns what you ask for into work for the right agent, chases it, and brings you only the decisions.
+AidenHQ is the open-source Agent OS for building the most powerful agents. Describe who you need in a sentence and the
+Agent Architect builds an AI teammate that works 24/7, or install agents someone else built, just like apps. Start with
+Aiden, your chief of staff, who cuts the noise in your Slack, email and meetings and hands work to the rest of the team
+(connect your accounts first; a new install [starts quiet](docs/design/quiet-start.md), so routines wait until you resume them, see [docs/setup.md](docs/setup.md#slack)). The OS gives every agent its own computer, memory, only the
+tools you grant, and a team to hand work to; every write an agent makes (a push, a deploy, a message, a config change)
+passes an approval gate enforced in code.
+
+Install it on a fresh Ubuntu or Debian server or a Mac: see [aidenhq.ai/install](https://aidenhq.ai/install/) and
+[SETUP.md](SETUP.md). Releases and the installer live in
+[aidenhq-distro](https://github.com/Aiden-HQ/aidenhq-distro).
 
 ## Building blocks
 
