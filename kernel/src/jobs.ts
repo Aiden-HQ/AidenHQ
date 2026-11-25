@@ -483,7 +483,12 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       for (const e of got.events) {
         if (e.t === "session" && typeof e.id === "string" && SESSION.test(e.id)) session = e.id;
         if (e.t === "final" && typeof e.text === "string") final = e.text;
-        if (e.t === "reply" && typeof e.text === "string" && typeof e.id === "string" && TURN.test(e.id) && !progress.replies?.some((x) => x.id === e.id)) progress.replies = [...(progress.replies ?? []), { id: e.id, text: e.text.slice(0, REPLY_MAX) }].slice(-REPLIES_KEPT);
+        if (e.t === "reply" && typeof e.text === "string" && typeof e.id === "string" && TURN.test(e.id) && !progress.replies?.some((x) => x.id === e.id)) {
+          progress.replies = [...(progress.replies ?? []), { id: e.id, text: e.text.slice(0, REPLY_MAX) }];
+          // Dispatch drains these every tick; a backlog past the cap (its post failing for that long) loses the oldest, loudly.
+          if (progress.replies.length > REPLIES_KEPT) log("session turn reply dropped: dispatch has not posted the backlog", { job: id, task: r.task, dropped: progress.replies.length - REPLIES_KEPT });
+          progress.replies = progress.replies.slice(-REPLIES_KEPT);
+        }
         if (e.t === "usage") {
           for (const k of ["input", "cached", "output"] as const) usage[k] += Number.isFinite(e[k]) && e[k] > 0 ? e[k] : 0;
           usage.seen = true;

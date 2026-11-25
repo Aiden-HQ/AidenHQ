@@ -28,3 +28,9 @@ test("no reply for a silent turn or one that already commented on this task; a c
   assert.equal(turn(comment("OTHER-9"), text("p1", "Answer.")).length, 1);
   assert.equal(turn(comment(undefined, "error"), text("p1", "Answer.")).length, 1);
 });
+test("narration before a tool call, and an interrupted turn, are not replies", () => {
+  const tool = { type: "message.part.updated", properties: { sessionID: "s", part: { id: "t1", type: "tool", tool: "bash", state: { status: "running", input: { command: "ls" } } } } };
+  assert.deepEqual(turn(text("p1", "Let me check CI."), tool), []);
+  assert.equal(turn(text("p1", "Let me check CI."), tool, text("p2", "CI is green.")).length, 1);
+  assert.deepEqual(turn(text("p1", "Half an ans"), { type: "session.error", properties: { sessionID: "s", error: { name: "MessageAbortedError" } } }), []);
+});
