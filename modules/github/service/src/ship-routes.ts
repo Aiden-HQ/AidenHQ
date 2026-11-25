@@ -52,7 +52,7 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
 ];
 /** The loop's one GraphQL read: a repo's open PRs (a page of them) with their checks, and its default branch's. Ship names only the
  * variables, so no other query runs on the owner's sign-in. */
-const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { id databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
+const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { id databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state createdAt } } } }";
 export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }

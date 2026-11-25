@@ -3,7 +3,7 @@
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
 import { findPrs, staleHead } from "./text.ts";
-import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
 import { closedBy } from "../aidenhq-sdk/closed-event.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
@@ -223,7 +223,9 @@ const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
  * rollup settles too: no aggregate there means the repository's CI had none for that commit.
  */
 function gateOn(pr: any, checks: any[]): string {
-  const gate = checks.find((c) => c.name === GATE_CHECK);
+  // The gate's newest run at the head (checks.ts latestChecks): an edit re-runs CI and cancels the run before it, and that
+  // superseded run's check stays on the head forever. It cannot make a head whose latest `ci-required` passed read red.
+  const gate = latestChecks(checks.filter((c: any) => c.name === GATE_CHECK)).find((c: any) => c.name === GATE_CHECK);
   if (gate) return gate.pending ? "running" : gate.status === "SUCCESS" ? "green" : "red";
   if (pr.state !== "OPEN" || !checks.length) return "missing";
   return namedChecks(pr.baseRef?.target?.statusCheckRollup).some((c: any) => c.name === GATE_CHECK) ? "running" : "missing";
@@ -624,7 +626,9 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
       }
     }
     if (pr.state === "CLOSED") return { awaiting: `${p.url} was closed without merging` };
-    const checks = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
+    // Each name's newest run at the head, as GitHub's branch protection reads it: a cancelled run an edit superseded is not a
+    // judgement of this head, and a name whose only runs were cancelled reads not green rather than still running.
+    const checks = latestChecks(namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
     const gate = gateOn(pr, checks);
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as
     // a whole as PENDING until they all finish, so the individual states are the finer read), and so is a head whose

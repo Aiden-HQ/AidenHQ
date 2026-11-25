@@ -9,11 +9,11 @@
 // for a new merge at its new head. Missing evidence (no checks, a truncated page of checks, the base's aggregate gate
 // check not yet on the head) never counts as passing.
 
-import { DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
-/** A check on a head, by name (service.ts checksAt, checks.ts namedChecks). */
-export type NamedCheck = { name?: string; ok?: boolean; success?: boolean; pending?: boolean; skipped?: boolean };
+/** A check on a head, by name (service.ts checksAt, checks.ts namedChecks): `kind` and `rank` are what pick the newest of a name. */
+export type NamedCheck = { name?: string; kind?: "run" | "status"; rank?: number; ok?: boolean; success?: boolean; pending?: boolean; skipped?: boolean };
 /** Code review's answer for a head (review-gate.ts). */
 export type Verdict = Awaited<ReturnType<ReviewGate>>;
 
@@ -24,14 +24,28 @@ export type Verdict = Awaited<ReturnType<ReviewGate>>;
  */
 export function productMergeEligible(p: { repo: string; head: string; checks: NamedCheck[]; verdict: Verdict | undefined; productRepo: string }): boolean {
   const same = String(p.repo).toLowerCase() === String(p.productRepo ?? "").toLowerCase() && Boolean(p.productRepo);
-  // Success itself: a neutral or skipped gate is no pass for a merge that skips the reviewer.
-  const ci = p.checks.some((c) => c.name === GATE_CHECK && c.success === true && !c.pending);
+  // Success itself: a neutral or skipped gate is no pass for a merge that skips the reviewer. The gate's newest run on the head
+  // decides: a superseded cancelled run (an edit re-ran CI) never blocks a head whose latest `ci-required` passed, and an older
+  // pass never hides a later red one. A check run and a status sharing the gate's name are two judgements; the worst counts.
+  const gate = headChecks(p.checks.filter((c) => c.name === GATE_CHECK));
+  const ci = gate.length > 0 && gate.every((c) => c.success === true && !c.pending);
   // A pass with no mandatory review behind it (a tier that needs none) is no pass for a merge that skips the AI reviewer.
   return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true && !p.verdict.unreviewed);
 }
 
 // GitHub GraphQL payloads (PR_QUERY's answer), read by field.
 type Json = any;
+
+/**
+ * The one judgement per check name on a head, as GitHub's branch protection makes it: each name's newest run at that head, and
+ * each name's newest status (a check run and a status that share a name are two judgements, so the worst of the two holds).
+ * `rank` (checks.ts contextRank) decides the newest, never the rollup's node order: an edited PR starts a new run that cancels
+ * the old one, and the cancelled run's check stays on the head forever. An entry without `kind` (an older caller's list) is its
+ * own judgement, counted as before.
+ */
+export function headChecks<T extends NamedCheck>(checks: T[]): T[] {
+  return latestChecks(checks.map((c) => ({ ...c, ...(c.kind ? {} : { kind: "run" as const }) })));
+}
 
 export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $pullRef: String!) {
   repository(owner: $owner, name: $repo) {
@@ -44,8 +58,8 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
       latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } }
       reviewRequests(first: 30) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } }
       isInMergeQueue mergeQueueEntry { headCommit { oid } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state description } } } } } } }
-      baseRef { compare(headRef: $pullRef) { behindBy } target { oid ... on Commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt } ... on StatusContext { context state description createdAt } } } } } } }
+      baseRef { compare(headRef: $pullRef) { behindBy } target { oid ... on Commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt } ... on StatusContext { context state createdAt } } } } } } }
     }
   }
 }`;
@@ -165,9 +179,11 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
   if (ship && (pr.mergeStateStatus === "DIRTY" || pr.mergeStateStatus === "BEHIND")) return { do: "repair", why: pr.mergeStateStatus === "DIRTY" ? `it conflicts with \`${def}\`` : `it is behind \`${def}\`` };
   if (ship) {
     // Only the checks the rules require: an optional red check doesn't hold the PR, and a required one not reported yet is running.
-    // A name may report more than once (a check run and a status): the worst of them counts.
+    // Each name is judged by its newest run on the head (headChecks): an edit's re-run supersedes the cancelled run before it, and
+    // a name whose only runs were cancelled stays red rather than looking like it is still running. A check run and a status that
+    // share a name are separate judgements, so the worst of them counts.
     const judged = ship.required.map((name) => {
-      const all = ship.checks.filter((c) => c.name === name);
+      const all = headChecks(ship.checks.filter((c) => c.name === name));
       return all.find((c) => !(c.ok ?? c.success) && !c.pending) ?? all.find((c) => c.pending) ?? all[0] ?? { name, pending: true };
     });
     const red = judged.filter((c) => !(c.ok ?? c.success) && !c.pending);
@@ -179,7 +195,10 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
   } else {
     const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
     if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail", why: "more than 100 checks on its head, so not all of them can be read" };
-    const named = namedChecks(rollup);
+    // Each name is judged by its newest run at the head (headChecks), as GitHub's branch protection does: an edit starts a re-run
+    // that cancels the one before it, and the cancelled run's check stays on the head, so counting every context would hold the
+    // PR forever. A name whose only runs were cancelled passes nothing and does not wait either: it is red.
+    const named = headChecks(namedChecks(rollup));
     // A repo with no checks never reports one: the caller says nothing is coming (noChecksOk), and the rest of the gate still runs.
     if (!named.length && !noChecksOk) return { do: "wait", why: "no checks on its head yet" };
     // Check names are set by whoever can push to the repo: counted, never quoted.

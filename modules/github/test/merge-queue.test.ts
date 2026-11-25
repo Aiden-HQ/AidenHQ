@@ -15,8 +15,10 @@ import { createReviewGate } from "../service/src/review-gate.ts";
 
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const HEAD = "a".repeat(40);
-const check = (name, state) => ({ __typename: "CheckRun", name, status: state === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: state === "PENDING" ? null : state });
-const rollup = (state, { names = ["build"], more = false } = {}) => ({ state, contexts: { pageInfo: { hasNextPage: more }, nodes: names.map((n) => check(n, state)) } });
+const check = (name, state, rank) => ({ __typename: "CheckRun", ...(rank === undefined ? {} : { databaseId: rank }), name, status: state === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: state === "PENDING" ? null : state });
+/** A rollup: one check per name in `names` with one `state`, or `runs` when they differ ({ name, state, rank }); `rank` is the
+ * check run's databaseId, the only thing that says which of two runs of one name is newer. */
+const rollup = (state, { names = ["build"], more = false, runs } = {}) => ({ state, contexts: { pageInfo: { hasNextPage: more }, nodes: (runs ?? names.map((n) => ({ name: n, state }))).map((r) => check(r.name, r.state, r.rank)) } });
 
 /** GitHub with one open PR per repo (`prs[repo]`, or `prs["repo#n"]` for one PR of a repo with several); merges and writes are recorded. */
 function fakeGitHub(prs) {
@@ -1334,6 +1336,48 @@ test("a red default branch takes no merge on top, except the PR that already hol
   assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD), { do: "merge" }, "a cancelled run never judged the base");
   assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD), { do: "merge" });
   assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD), { do: "merge" }, "a base whose CI runs on PRs only");
+});
+
+test("each check name on a head is judged by its newest run: a cancelled run an edit superseded is not red, and a later red or running one still holds", () => {
+  // An edit to a PR body/title while CI runs starts a new run that cancels the old one (ci.yml `edited` +
+  // `cancel-in-progress`); the superseded run's CANCELLED checks stay on the head forever. GitHub's branch protection judges a
+  // required name by its latest run at the head, and so must the gate: by `databaseId`, never by the order the rollup lists.
+  const data = (head) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
+    number: 1, state: "OPEN", isDraft: false, baseRefName: "main", headRefOid: HEAD, mergeStateStatus: "CLEAN", latestOpinionatedReviews: { nodes: [] },
+    files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, commits: { nodes: [{ commit: { statusCheckRollup: head } }] },
+    baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup("SUCCESS") } },
+  } } });
+  const at = (...runs) => data(rollup("SUCCESS", { runs }));
+  assert.deepEqual(decide(at({ name: "build", state: "CANCELLED", rank: 1 }, { name: "build", state: "SUCCESS", rank: 2 }), HEAD), { do: "merge" },
+    "a cancelled run followed by a successful run of the same name merges");
+  assert.deepEqual(decide(at({ name: "build", state: "SUCCESS", rank: 2 }, { name: "build", state: "CANCELLED", rank: 1 }), HEAD), { do: "merge" },
+    "the same, whichever order the rollup lists them in");
+  assert.equal(decide(at({ name: "build", state: "SUCCESS", rank: 1 }, { name: "build", state: "FAILURE", rank: 2 }), HEAD).do, "fail",
+    "a successful run followed by a failed run does not merge");
+  assert.equal(decide(at({ name: "build", state: "FAILURE", rank: 2 }, { name: "build", state: "SUCCESS", rank: 1 }), HEAD).do, "fail",
+    "an older pass never hides a later red run");
+  assert.deepEqual(decide(at({ name: "build", state: "SUCCESS", rank: 1 }, { name: "build", state: "PENDING", rank: 2 }), HEAD), { do: "wait", why: "checks are still running on its head" },
+    "a successful run followed by a pending run waits");
+  const cancelledOnly = decide(at({ name: "build", state: "CANCELLED", rank: 1 }), HEAD);
+  assert.equal(cancelledOnly.do, "fail", "a name whose only run at the head was cancelled does not pass");
+  assert.match(cancelledOnly.why, /1 check\(s\) failed on its head/, "and it is red, never left pending forever");
+  assert.equal(decide(at({ name: "build", state: "CANCELLED", rank: 1 }, { name: "lint", state: "SUCCESS", rank: 2 }), HEAD).do, "fail",
+    "one name's cancelled run is not rescued by another name's green one");
+});
+
+test("ship's judged path applies the same newest-run rule to the required checks", () => {
+  const H = "a".repeat(40);
+  const data = (head) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
+    state: "OPEN", headRefOid: H, baseRefName: "main", mergeStateStatus: "CLEAN", reviewDecision: null, isDraft: false, isInMergeQueue: false,
+    commits: { nodes: [{ commit: { statusCheckRollup: head } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, latestOpinionatedReviews: { nodes: [] },
+  } } });
+  const ctx = (checks) => ({ queue: false, approve: false, required: ["build"], checks });
+  const status = (s) => ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(s) ? { ok: true, success: s === "SUCCESS", pending: false } : s === "CANCELLED" || s === "FAILURE" ? { ok: false, success: false, pending: false } : { ok: false, success: false, pending: true };
+  const run = (state, rank) => ({ name: "build", kind: "run", rank, ...status(state) });
+  assert.equal(decide(data(rollup("SUCCESS")), H, ctx([run("CANCELLED", 1), run("SUCCESS", 2)])).do, "merge", "cancelled then green: ship merges");
+  assert.equal(decide(data(rollup("SUCCESS")), H, ctx([run("SUCCESS", 1), run("FAILURE", 2)])).do, "fix_ci", "green then red: ship fixes CI");
+  assert.deepEqual(decide(data(rollup("SUCCESS")), H, ctx([run("SUCCESS", 1), run("PENDING", 2)])), { do: "wait", why: "required checks are still running on its head" }, "green then pending: ship waits");
+  assert.equal(decide(data(rollup("SUCCESS")), H, ctx([run("CANCELLED", 1)])).do, "fix_ci", "a required name whose only run was cancelled does not pass");
 });
 
 test("a maintained repo merges as the owner; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {

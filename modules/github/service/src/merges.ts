@@ -13,11 +13,11 @@
 // The UI Reviewer's design review is advisory: it never holds a merge.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DESIGN_REVIEW_CHECK, contextStatus, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { DESIGN_REVIEW_CHECK, contextChecks, contextRank, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { PR_QUERY, decide, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
+import { PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
 
@@ -190,23 +190,32 @@ export function createMerges(d: {
     if (["state", "headRefOid", "baseRefName"].some((k) => !(k in pr))) throw new Error("GitHub GraphQL: the answer omitted the pull request's fields");
     return withGate(data);
   }
-  /** Every check on a head, every page (REST check runs and statuses): ship's readiness past the query's first 100. */
+  /**
+   * Every check on a head, every page (REST check runs and statuses): ship's readiness past the query's first 100. Each entry
+   * carries its `kind` and `rank` (checks.ts contextRank): a check run by its id, a status by its creation time. The gate keeps
+   * each name's newest judgement (merge-gate.ts headChecks), never trusting the order GitHub lists them in.
+   */
   async function allChecks(repo: string, sha: string) {
-    const out: { name: string; ok: boolean; pending: boolean; status?: true }[] = [];
+    const out: { name: string; kind: "run" | "status"; rank?: number; ok: boolean; pending: boolean; status?: true }[] = [];
     for (const [path, key] of [["check-runs", "check_runs"], ["statuses", "statuses"]] as const) {
       for (let page = 1; page <= 20; page++) {
         const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);
         if (r.status >= 300) throw new Error(`GitHub GET ${path}: ${r.status}`);
         const items: any[] = Array.isArray(r.body) ? r.body : r.body?.[key] ?? [];
-        for (const x of items) out.push(key === "check_runs"
-          ? { name: String(x.name ?? ""), pending: x.status !== "completed", ok: x.status === "completed" && ["success", "skipped", "neutral"].includes(x.conclusion) }
-          : { name: String(x.context ?? ""), pending: x.state === "pending", ok: x.state === "success", status: true });
+        for (const x of items) {
+          const node = key === "check_runs"
+            ? { __typename: "CheckRun", id: x.id, name: x.name, status: x.status, conclusion: x.conclusion, startedAt: x.started_at, completedAt: x.completed_at }
+            : { __typename: "StatusContext", id: x.id, context: x.context, state: x.state, createdAt: x.created_at };
+          const rank = contextRank(node);
+          out.push(key === "check_runs"
+            ? { name: String(x.name ?? ""), kind: "run", ...(rank !== undefined ? { rank } : {}), pending: x.status !== "completed", ok: x.status === "completed" && ["success", "skipped", "neutral"].includes(x.conclusion) }
+            : { name: String(x.context ?? ""), kind: "status", ...(rank !== undefined ? { rank } : {}), pending: x.state === "pending", ok: x.state === "success", status: true });
+        }
         if (items.length < 100) break;
       }
     }
-    // Every entry is kept: a check run and a status may share a name, and the red one must hold the PR. A status context that
-    // reported again on every update keeps only its newest (first listed) state.
-    return out.filter((c, i) => !c.status || out.findIndex((x) => x.status && x.name === c.name) === i);
+    // Every entry is returned: a check run and a status may share a name, and the gate judges each by the newest of its kind.
+    return out;
   }
   /**
    * The checks the branch requires (its rulesets and classic protection; merge-gate.ts requiredChecks): none is a confirmed answer.
@@ -256,7 +265,7 @@ export function createMerges(d: {
     const run = (r.body?.workflow_runs ?? []).find((x: any) => String(x.head_branch ?? "").startsWith(`gh-readonly-queue/${base}/pr-${number}-`));
     if (!run) return [];
     const checks = await allChecks(repo, String(run.head_sha));
-    return [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
+    return [...new Set(headChecks(checks).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
   }
   /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts but the
    * advisory design review; with none of those reported yet (the design review alone included) the caller waits. */
@@ -370,8 +379,9 @@ export function createMerges(d: {
       // may only be seen as merged a few polls later, and its nonce is what proves that merge this queue's. The attempts are dropped
       // when the PR is settled (a fail clears them, a done read uses them) or GitHub answers a retry, so an owner's merge is never
       // credited.
-      // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so.
-      const named = namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup);
+      // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so. Each name is
+      // judged by its newest run (headChecks), as decide does: a run an edit superseded neither holds the poll nor reads failing.
+      const named = headChecks(namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup));
       if (p.checked !== p.head && pull?.headRefOid === p.head && named.length && named.every((c) => !c.pending)) {
         p.checked = p.head;
         d.flow?.checksCompleted(p.repo, p.number, p.head, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20));
@@ -738,9 +748,9 @@ export function createMerges(d: {
       // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
       const g = await d.reviewGate(repo, number, head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       const rollup = data.repository.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
-      // Every context by name, advisory ones included (a branch may require them), as the REST read gives them.
-      const fromRollup = () => (rollup?.contexts?.nodes ?? []).map((n: any) => ({ name: String(n.name ?? n.context ?? ""), status: contextStatus(n) })).filter((c: { name: string }) => c.name)
-        .map((c: { name: string; status: string | null | undefined }) => ({ name: c.name, ok: ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(String(c.status)), pending: ["PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS"].includes(String(c.status)) || c.status == null }));
+      // Every context by name, advisory ones included (a branch may require them), with the kind and rank the gate picks the
+      // newest of a name by.
+      const fromRollup = () => contextChecks(rollup);
       const checks = listed && !rollup?.contexts?.pageInfo?.hasNextPage ? fromRollup() : await allChecks(repo, head);
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
@@ -749,7 +759,7 @@ export function createMerges(d: {
       const ctx = { queue, verdict: g, required, checks, ...(app ? { app } : {}), ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       const v = decide(data, head, { ...ctx, approve: false });
       const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
-      const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
+      const failing = [...new Set(headChecks(checks).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
       return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "fix_review" && g && "findingsKey" in g && g.findingsKey ? { findingsKey: g.findingsKey } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */

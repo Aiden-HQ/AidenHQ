@@ -11,7 +11,7 @@
 // with its own module token (main.ts). Started by main.ts.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import { latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
 
 type Json = any;
@@ -54,7 +54,8 @@ const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json, which: "off" | "failing" | "all") {
   if (which === "off" || !isDependabot(pr)) return false;
-  const checks = namedChecks(rollupOf(pr));
+  // Each name's newest run: an edit re-ran CI and cancelled the run before it, which is no failure of this head.
+  const checks = latestChecks(namedChecks(rollupOf(pr)));
   if (checks.some((c) => c.pending)) return false; // a PR with no named checks has none to wait for
   // Past the query's first page of contexts a red one can't be ruled out, so the bump counts as failing.
   return which === "all" || checks.some((c) => !c.ok) || !!rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;

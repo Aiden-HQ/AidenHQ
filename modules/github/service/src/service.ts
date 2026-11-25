@@ -30,6 +30,7 @@ import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/ex
 import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 import { approvedAt } from "./merge-gate.ts";
+import { contextRank } from "./aidenhq-sdk/checks.ts";
 import { MIGRATION_WAIT, createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
@@ -367,9 +368,11 @@ export function createService(o: Options) {
     return { s, dir };
   }
 
-  // GitHub's checks on a commit as plan.ts reads them: { name, ok, pending, skipped } each. The name is only matched (the gate
-  // check `ci-required`, merge-gate.ts productMergeEligible), never shown: the card counts checks.
+  // GitHub's checks on a commit as plan.ts reads them: { name, kind, rank, ok, pending, skipped } each. The name is only matched
+  // (the gate check `ci-required`, merge-gate.ts productMergeEligible), never shown: the card counts checks. `kind` and `rank`
+  // let the gate keep each name's newest judgement (merge-gate.ts headChecks), so a cancelled run an edit superseded never blocks.
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
+  const rankOf = (rank: number | undefined) => (rank !== undefined ? { rank } : {});
   async function checksAt(s: ReturnType<typeof slugOf>, sha: string) {
     const all = async (path: string, key: string) => {
       const items: any[] = [];
@@ -388,8 +391,8 @@ export function createService(o: Options) {
     const unread = runs.complete && status.complete ? [] : [{ pending: true, skipped: false, ok: false }];
     return [
       ...unread,
-      ...runs.items.map((r: any) => ({ name: String(r.name ?? ""), pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion), success: r.status === "completed" && r.conclusion === "success" })),
-      ...status.items.map((x: any) => ({ name: String(x.context ?? ""), pending: x.state === "pending", skipped: false, ok: x.state === "success", success: x.state === "success" })),
+      ...runs.items.map((r: any) => ({ name: String(r.name ?? ""), kind: "run" as const, ...rankOf(contextRank(r)), pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion), success: r.status === "completed" && r.conclusion === "success" })),
+      ...status.items.map((x: any) => ({ name: String(x.context ?? ""), kind: "status" as const, ...rankOf(contextRank(x)), pending: x.state === "pending", skipped: false, ok: x.state === "success", success: x.state === "success" })),
     ];
   }
   // The commits this code host pushed, each as "<repo, lowercase> <sha>": a head is the runner's own only in the repo it was
