@@ -1039,6 +1039,10 @@ export function createService(o: Options) {
             }
             tree.push({ path, mode: mode!, type: mode === "160000" ? "commit" : "blob", sha: sha! });
           }
+          // An empty entry list is a head the merge leaves as it is (a base already merged, or a conflict the kept set resolves
+          // to the head's own side): there is nothing to record, so it is a clean "nothing was changed", never an empty tree
+          // (GitHub refuses one with 422 Invalid tree info).
+          if (!tree.length) return refuse("changed nothing: the merge and the kept files leave every path at the head's");
           const t = await post("trees", { base_tree: await g(["rev-parse", `${a.head}^{tree}`]), tree });
           if (t.sha !== final) return refuse(`built a tree on GitHub (${String(t.sha).slice(0, 12)}) that isn't the merge's (${final.slice(0, 12)})`);
           made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000), tree: final, parents: [a.head, baseSha] })).sha);
@@ -1129,8 +1133,12 @@ export function createService(o: Options) {
           tree.push({ path, mode: e.mode, type, sha: e.sha });
         }
         const want = await git(dir, ["rev-parse", `${c}^{tree}`]);
-        const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
-        if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        // An empty changed set is a commit whose tree is its first parent's (an "ours" merge): the commit carries that tree as it
+        // is, with no tree written (GitHub refuses an empty tree array).
+        if (tree.length) {
+          const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
+          if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        }
         const message = await git(dir, ["log", "-1", "--format=%B", c]);
         const made = await post("commits", { message, tree: want, parents: [parent, ...others] });
         parent = String(made.sha);
