@@ -492,9 +492,9 @@ jobs:
           # --service-image, one argv word), read from the head's file: only services.run's own `image:`, never the
           # agent-level `image:` lines (a computer image, not a registry pin). An unpinned or odd ref is left out here: policy
           # (pins.ts) is what fails it, and the scan takes only what it can pull.
-          services=$(node --input-type=module -e '
+          services=$(CHANGED="$changed" BASE="$base" HEAD="$HEAD_SHA" node --input-type=module -e '
             import { execFileSync } from "node:child_process";
-            const [base, head] = process.argv.slice(1);
+            const { BASE: base, HEAD: head, CHANGED } = process.env;
             const git = (...a) => execFileSync("git", a, { encoding: "utf8" });
             const show = (ref, file) => { try { return git("show", `${ref}:${file}`); } catch { return ""; } };
             // services.run.<service> from its keys by indentation: each service and its `image:` and `build:`, nothing deeper.
@@ -523,7 +523,7 @@ jobs:
             // One argv word, no option: the scan script holds the strict reference grammar and refuses anything looser.
             const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._:@\/-]*@sha256:[0-9a-f]{64}$/;
             const refs = [];
-            for (const file of git("diff", "--name-only", base, head).split("\n").filter((f) => /^modules\/[^/]+\/module\.yaml$/.test(f))) {
+            for (const file of CHANGED.split("\n").filter((f) => /^modules\/[^/]+\/module\.yaml$/.test(f))) {
               const now = images(show(head, file)), before = images(show(base, file));
               for (const [svc, { build, image }] of now) {
                 if (build || !image || before.get(svc)?.image === image) continue;
@@ -534,7 +534,7 @@ jobs:
             console.error(`Service images to scan: ${refs.length ? refs.join(" ") : "none"}`);
             // stdout holds the refs alone: the shell keeps this line as the output.
             console.log(refs.join(" "));
-          ' "$base" "$HEAD_SHA") || exit 1
+          ') || exit 1
           echo "Images to scan:${found:- none}"
           echo "Service images to scan:${services:- none}"
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
