@@ -136,7 +136,7 @@
   const ON = ["On", "On: Ship works this repo's PRs. Off: it leaves them alone."];
   const HOLDS = { stalled: "Ship made no progress and gave up for now.", handed_back: "Ship gave it back to its author.", stopped: "A stop label or a person paused it." };
   const hd = (key, current) => { const [label, text, options, note] = COLS[key]; return help(label, text, { options, current, note }); };
-  let controls = {}, presets = {}, status = { paused: false, repos: [], held: [] }, scope = { fleet: [] };
+  let controls = {}, presets = {}, status = { paused: false, repos: [], held: [] };
   // The repo being added: its name, what it starts from (defaults | cautious | full | copy) and its settings edits. Its fields live here, not in the
   // proposal: the Save bar gets nothing until Add. A repo row asked to be removed waits for its confirmation.
   const DRAFT = "+new";
@@ -371,7 +371,6 @@
     try { const x = await tool("ship_configure", { repo, remove: true }); pending = lastGood = { repos: {}, paused: undefined }; confirming = null; proposed(x); render(); } catch (e) { say(e.message, true); }
   }
   const GH = (path) => `https://github.com/${path}`;
-  const fleetRepo = (r) => scope.fleet.some((f) => f.toLowerCase() === r.toLowerCase());
 
   function draw() {
     closeHelp();
@@ -399,7 +398,7 @@
       rm.addEventListener("click", () => { confirming = raw.repo; render(); });
       const row = h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
         h("div", { className: "repo" }, chev, link(GH(r.repo), r.repo)), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: ON[0] }), sw),
-        choice(raw, "preset"), choice(raw, "handoff"), policy(r, `Risk tier policy for ${r.repo}`), h("div", { className: "acts" }, fleetRepo(r.repo) ? null : rm));
+        choice(raw, "preset"), choice(raw, "handoff"), policy(r, `Risk tier policy for ${r.repo}`), h("div", { className: "acts" }, raw.removable ? rm : null));
       // A click on the row's own space opens Settings; a click on a control, switch or link does only its own job.
       row.addEventListener("click", (e) => { if (!e.target.closest("button, a, input, select, label")) flip(); });
       chev.addEventListener("click", flip);
@@ -429,7 +428,7 @@
   async function load() {
     try {
       const config = await tool("ship_config", {});
-      controls = config.controls ?? {}; presets = config.presets ?? {}; scope = { fleet: [], ...config.scope };
+      controls = config.controls ?? {}; presets = config.presets ?? {};
       status = await tool("ship_status", {});
       render();
     } catch (e) { say(e.message, true); }

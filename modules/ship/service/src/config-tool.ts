@@ -2,7 +2,7 @@
 // repo, `ship_configure` changes one repo's entry. Built like code-review's: the change is applied to the raw value, the whole
 // result validated, and one typed settings change filed as the calling job (POST /v1/settings/agent).
 // A change that loosens anything (loosens()) is the owner's: the tool refuses it and the owner makes it from the board.
-import { CAP_KEYS, CONTROLS, covers, effective, FIELDS, loosens, PRESETS, TIERS, validate, type Scope } from "./settings.ts";
+import { CAP_KEYS, CONTROLS, covers, effective, FIELDS, loosens, PRESETS, removable, TIERS, validate, type Scope } from "./settings.ts";
 import { status } from "./status.ts";
 import type { State } from "./state.ts";
 import type { Tool } from "./mcp.ts";
@@ -87,13 +87,14 @@ export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]
 
 /** Takes a listed repo off ship, the Maintainer and code review in one change: no ship entry is left outside the scope. Only the owner's Fleet page calls it. */
 export function removeRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string) {
-  if (!covers(repo, d.scope) && Object.keys((d.raw.repos as Dict) ?? {}).some((k) => same(k, repo))) {
+  const hasEntry = Object.keys((d.raw.repos as Dict) ?? {}).some((k) => same(k, repo));
+  if (!removable(repo, d.scope, hasEntry)) throw new Error(`${repo} isn't a listed repo (a fleet repo stays covered)`);
+  if (!covers(repo, d.scope) && hasEntry) {
     // An orphan entry (its repo left the Maintainer): only the ship entry goes.
     const { paused: _p, ...ship } = structuredClone(d.raw);
     ship.repos = Object.fromEntries(Object.entries((ship.repos ?? {}) as Dict).filter(([k]) => !same(k, repo)));
     return { changes: [{ kind: "setting", key: "ship", value: ship }] as Dict[], summary: [`${repo}: its ship entry removed`] };
   }
-  if (!d.scope.listed.some((x) => x.toLowerCase() === repo.toLowerCase()) || covers(repo, { fleet: d.scope.fleet, listed: [] })) throw new Error(`${repo} isn't a listed repo (a fleet repo stays covered)`);
   const { paused: _p, ...ship } = structuredClone(d.raw);
   const repos = (ship.repos ?? {}) as Dict;
   for (const k of Object.keys(repos)) if (same(k, repo)) delete repos[k];

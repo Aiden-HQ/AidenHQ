@@ -120,7 +120,7 @@ const editor = (k) => {
     const put = (list) => { items = list; k.set(list); };
     const add = (vs) => { inp.value = ""; const more = vs.map((x) => x.trim()).filter((x, i, all) => x && (k.dups || (!items.includes(x) && all.indexOf(x) === i))); if (more.length) put([...items, ...more]); };
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add([inp.value]); } else if (e.key === "Backspace" && !inp.value && items.length) put(items.slice(0, -1)); });
-    inp.addEventListener("paste", (e) => { const t = e.clipboardData?.getData("text") ?? ""; if (/[\n,]/.test(t)) { e.preventDefault(); add(k.dups ? t.split("\n") : t.split(/\n|,(?![^{]*\})/)); } });
+    inp.addEventListener("paste", (e) => { const t = e.clipboardData?.getData("text") ?? ""; if (!/[\n,]/.test(t)) return; e.preventDefault(); const all = inp.value.slice(0, inp.selectionStart) + t + inp.value.slice(inp.selectionEnd); add(k.dups ? all.split("\n") : all.split(/\n|,(?![^{]*\})/)); });
     // What is typed is proposed with the list as you type (no redraw, so the caret stays): Save always carries it, with or without Enter.
     let typing; inp.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { if (!inp.isConnected) return; const v = inp.value.trim(); k.set(v && (k.dups || !items.includes(v)) ? [...items, v] : items, true); }, 200); });
     return h("div", { className: "chips" }, ...items.map((x, i) => { const b = h("button", { type: "button", className: "x", ariaLabel: `Remove ${x}`, textContent: "\u00d7" }); b.addEventListener("click", () => put(items.filter((_, j) => j !== i))); return h("span", { className: "chip", title: x }, h("span", { textContent: x }), b); }), inp);
