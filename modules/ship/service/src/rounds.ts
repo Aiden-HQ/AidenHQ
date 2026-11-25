@@ -244,8 +244,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const ownRed = [...new Set([...ownFailing, ...(f.redChecks ?? [])])].filter((n) => !baseRed.has(n));
   const metadata = (n: string) => n === "policy" || n === GATE_CHECK;
   const titleOnly = v.do === "fix_ci" && !viaQueue && ownRed.length > 0 && ownRed.every(metadata) && ownRed.includes("policy");
+  // The `policy` job also runs the lockfile age and pin checks: a title edit clears only the title step. Read the job's own steps
+  // before the action is keyed, so the wake that is actually sent is the one recorded (a code-fix wake at this head leaves the
+  // title wake to follow). Already asked at this head: nothing to read, the dedup below answers.
+  const titleAsked = (c.acted ?? []).includes("fix_ci:title");
+  const policyStep = titleOnly && d.policyStep && !titleAsked ? await d.policyStep(pr.repo, pr.head).catch(() => "unknown" as const) : undefined;
+  const titleFix = titleOnly && policyStep !== "other";
   // A title-only CI wake is its own action at the head: it fixes no commit, so a real red check at the same head is still woke for.
-  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do === "fix_ci" && titleOnly ? "fix_ci:title" : v.do;
+  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do === "fix_ci" && titleFix ? "fix_ci:title" : v.do;
   const key = v.do === "wait" ? `${pr.head}:wait:${v.why ?? ""}:${facts.approval ?? ""}` : `${pr.head}:${act}`;
   // A wait with an App approval to dismiss (or a dismissal in flight) is followed too: its record is read each pass.
   const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true) || (v.do === "wait" && !!risk && staleApproval(a.approve, pr.head, risk));
@@ -316,9 +322,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       case "fix_ci": {
         if (!s.fix.includes("ci")) return hold("a required check is red, and this repo's `fix` setting excludes CI");
         // A metadata-only failure is a title edit: it needs neither the fork's branch (the title is the base repo's) nor a branch
-        // update. Both are judged after the failure's own kind is known, below.
-        const titleStep = titleOnly && d.policyStep ? await d.policyStep(pr.repo, pr.head).catch(() => "unknown" as const) : undefined;
-        const titleFix = titleOnly && titleStep !== "other";
+        // update (titleFix, read above).
         if (!titleFix && pr.fork && !pr.canModify) return hold(noEdits);
         // Red while behind a green base: perhaps only the base moved. GitHub updates the branch once at this head before any wake;
         // a refusal has spent its round and the fix follows.
@@ -351,7 +355,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
           ...(titleFix ? [
             "The red check is the PR's Conventional Commit title (the `policy` job's title step), which no commit can fix: a title edit re-runs `policy` in place.",
-            ...(titleStep === "unknown" ? ["(The job's steps couldn't be read to confirm which one failed: if the title is already Conventional Commit, read the `policy` run's log.)"] : []),
+            ...(policyStep === "unknown" ? ["(The job's steps couldn't be read to confirm which one failed: if the title is already Conventional Commit, read the `policy` run's log.)"] : []),
             `Fix the title with \`aidenhq ship title ${pr.url} ${pr.head} ${a!.generation} "<type>(<scope>): <summary>"\` (types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert), giving the title that describes this PR. Change nothing in the code for it: a check, test or lint rule stays as strict as you found it.`,
           ] : [
             "Fix what this PR broke as the `ship` skill says: one commit, never weaken a check.",

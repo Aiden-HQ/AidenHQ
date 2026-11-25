@@ -379,6 +379,19 @@ test("the policy job's own failing step decides the wake: another of its steps k
   assert.equal(only.woke.length, 1);
   assert.match(only.woke[0].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/21 h21 1 /);
   assert.doesNotMatch(only.woke[0].text, /one commit|aidenhq ship push/);
+
+  // The job's age step failed first and only the title step fails now, at the same head: the code-fix wake recorded above must not
+  // swallow the title wake (each action is keyed by what it actually asks for).
+  const steps = { v: [{ name: "Age check (lockfiles) and pins (images, actions, apt, global installs)", conclusion: "failure" }, { name: "Conventional Commit title", conclusion: "failure" }] };
+  const turned = await rig(t, { job: { get steps() { return steps.v; } } });
+  turned.set([turned.agentPr(23, titleOnlyPr(23))]);
+  await turned.watch.tick(); await turned.watch.tick();
+  assert.equal(turned.woke.length, 1);
+  assert.match(turned.woke[0].text, /one commit, never weaken a check\./);
+  steps.v = [{ name: "Age check (lockfiles) and pins (images, actions, apt, global installs)", conclusion: "success" }, { name: "Conventional Commit title", conclusion: "failure" }];
+  await turned.watch.tick(); await turned.watch.tick();
+  assert.equal(turned.woke.length, 2, "the title fix is still asked for at the same head");
+  assert.match(turned.woke[1].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/23 h23 1 /);
 });
 
 test("red checks whose job never started are re-run once at the head, with no wake", async (t) => {
