@@ -114,6 +114,12 @@ test("roles: unknown ones, and ones a module may not grant, fail compile", () =>
   assert.throws(() => compile(mods, finst(["roley"])), /r: module roley may not grant fleet-admin/);
   assert.deepEqual(compile(mods, finst(["roleopt"])).paperclip.agents.o.roles, [], "an optional role whose module is off is dropped");
 });
+test("session role needs the session profile", () => {
+  assert.throws(() => compile(mods, finst(["sessbad"])), /agent s: the session role is for a profile-session agent/);
+  const s = compile(mods, finst(["sessok"])).paperclip.agents.s;
+  assert.deepEqual([s.profile, s.roles], ["session", ["session"]]);
+  assert.equal(grantEntry("s", s).profile, "session");
+});
 test("an agent from an untrusted module gets no roles and no write grants", () =>
   assert.throws(() => compile(mods, finst(["wild"])), /w: an untrusted module's agent may not have tasks write tools \(t2\)/));
 test("every connection tags its tools read or write", () => assert.throws(() => compile(mods, finst(["untagged"])), /connection u: tools\.read and tools\.write/));
@@ -519,4 +525,8 @@ test("subscribes: compiled from settings into the kernel's module table, kinds c
   assert.throws(() => kernelModuleTable({ github: gh, x: { subscribes: { github: { kinds: ["push"], resources: "*" } } } }, {}), /product modules/);
   assert.throws(() => kernelModuleTable({ github: gh, x: { subscribes: { github: { kinds: ["status"], resources: [] } } } }, {}), /isn't one of github's events.kinds/);
   assert.throws(() => kernelModuleTable({ github: gh, x: { subscribes: { github: { kinds: ["push"], resources: ["org/a"] } } } }, {}), /"\*" or \{ setting, path \}/);
+  // `github?`: dropped while no enabled module's connection declares events; with GitHub in, it is kept.
+  const opt = { optional: { subscribes: { "github?": { kinds: ["push"], resources: "*" } } } };
+  assert.equal(kernelModuleTable(opt, {}, new Set(["optional"])).optional?.subscribes, undefined);
+  assert.deepEqual(kernelModuleTable({ github: gh, ...opt }, {}, new Set(["optional"])).optional.subscribes, { github: { kinds: ["push"], resources: "*" } });
 });

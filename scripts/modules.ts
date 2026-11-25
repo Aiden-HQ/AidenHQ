@@ -1273,6 +1273,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     if (a.graded != null && typeof a.graded !== "boolean") fail(`${key}: graded is true, false or absent`);
     if (a.profile != null && !JOB_PROFILES.includes(a.profile)) fail(`${key}: profile is ${JOB_PROFILES.join(", ")} (absent: crew)`);
+    // The session role (Tier 0 writes on a long-lived job) belongs to the session profile alone; the kernel drops it from any other at admission.
+    if ((a.roles ?? []).includes("session") && a.profile !== "session") fail(`agent ${key}: the session role is for a profile-session agent`);
     if (a.caps != null) fail(`${key}: caps ${SPEND_GONE}`);
   }
 
@@ -1536,6 +1538,7 @@ function flowDecls(name: string, def: Obj, declared: Obj) {
  * Each kind is one its connection's `events.kinds` declares. `resources` is "*" (every resource; a product module's only) or
  * `{ setting, path }`: the repos the owner's settings name, resolved here so a module can't widen them at run time (`path`
  * walks the setting: `repos[].repo` is each entry's `repo`; a plain string entry stands for itself). Resources are lower case.
+ * A connection written `name?` is optional: dropped while no enabled module's connection declares events.
  */
 export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, official: boolean) {
   const sub = def.subscribes;
@@ -1543,8 +1546,12 @@ export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, 
   const at = `module ${name}: subscribes`;
   if (typeof sub !== "object" || Array.isArray(sub)) fail(`${at} is a map of connection: { kinds, resources }`);
   const out: Obj = {};
-  for (const [conn, s] of Object.entries<Obj>(sub)) {
+  for (const [raw, s] of Object.entries<Obj>(sub)) {
+    // `conn?`: kept only while an enabled module's connection declares events (a module that reads GitHub's events compiles
+    // on an install without GitHub); without the `?`, a missing connection fails.
+    const conn = raw.replace(/\?$/, "");
     const ev = Object.values<Obj>(defs).map((d) => d.connections?.[conn]?.events).find(Boolean);
+    if (!ev && raw.endsWith("?")) continue;
     if (!ev) fail(`${at}.${conn}: no enabled module's connection ${conn} declares events`);
     if (!s || typeof s !== "object" || Object.keys(s).some((k) => !["kinds", "resources"].includes(k))) fail(`${at}.${conn} is { kinds, resources }`);
     if (!Array.isArray(s.kinds) || !s.kinds.length) fail(`${at}.${conn}.kinds is a list`);
@@ -1564,7 +1571,7 @@ export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, 
     } else fail(`${at}.${conn}.resources is "*" or { setting, path }`);
     out[conn] = { kinds: [...s.kinds], resources: resources === "*" ? "*" : [...new Set((resources as string[]).map((r) => r.toLowerCase()))] };
   }
-  return out;
+  return Object.keys(out).length ? out : undefined;
 }
 
 export function kernelModuleTable(defs: Obj, settings: Obj = {}, official: Set<string> = new Set()) {

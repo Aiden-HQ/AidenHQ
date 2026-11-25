@@ -1,0 +1,9 @@
+{
+  "name": "sessions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "description": "Sessions: the Session agent and the event watches that wake it.",
+  "scripts": { "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts" }
+}

@@ -29,7 +29,7 @@ ships no compose file: compile generates its services from `services:`. There is
 | `board_env` | Environment (and its `${secrets.x}`) added to the root board service, until the board is a module. |
 | `privileged` | Entries of the closed list (spec §5.6); `host-metrics` allows `host_mounts` (read-only `/`, `/sys`, `/proc`). |
 | `optional_secrets` | Secret files created empty when missing (an empty value means "not configured"). |
-| `subscribes` | `{ <connection>: { kinds, resources } }`: the events of the kernel's log a code service reads (`GET /v1/events/log` with its own committed cursor; `kernel/src/events.ts`). Each kind is one of the connection's `events.kinds`. `resources` is `{ setting, path }` (resolved from the instance's settings at compile: `path: "repos[].repo"` takes each entry's `repo`; a plain string entry stands for itself) or `"*"` (every resource; product modules only). The declaration is the grant: the log answers only these kinds and resources. |
+| `subscribes` | `{ <connection>: { kinds, resources } }` (`<connection>?` is optional: dropped while no enabled module's connection declares events): the events of the kernel's log a code service reads (`GET /v1/events/log` with its own committed cursor; `kernel/src/events.ts`). Each kind is one of the connection's `events.kinds`. `resources` is `{ setting, path }` (resolved from the instance's settings at compile: `path: "repos[].repo"` takes each entry's `repo`; a plain string entry stands for itself) or `"*"` (every resource; product modules only). The declaration is the grant: the log answers only these kinds and resources. |
 
 A connection connects with one Connect click from wherever the board lists it (a `board.signins` entry; the vendor's sign-in
 does the rest). The sign-in returns to loopback, `http://localhost:3121` plus the entry's `callback` (fixed, so a hand-made
@@ -114,7 +114,7 @@ outcomes:
   `jobcaps:` (`id`, `connection`, `tools` or `read`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on an
   agent names the engine its jobs run on; without one, the one enabled engine that runs in a computer (compile fails when
   there are none or several).
-- `profile:` on an agent: `crew` (the default), `engineer` or `check`: which tools, writes and computer its kernel jobs get.
+- `profile:` on an agent: `crew` (the default), `engineer`, `check` or `session` (a long-lived session, the sessions module's): which tools, writes and computer its kernel jobs get.
 - `max_parallel` on an agent: how many of its kernel jobs run at once, each on its own task.
 - `prompts:` in a module: handbook sections it adds after the kernel's Approvals, to every crew (`profile: crew`) agent
   and to an Engineer (`profile: engineer`) whose entry's `when` admits it (only `chief-of-staff`'s Replying rule does

@@ -163,6 +163,14 @@
     {
       "name": "up",
       "source": "./up"
+    },
+    {
+      "name": "sessbad",
+      "source": "./sessbad"
+    },
+    {
+      "name": "sessok",
+      "source": "./sessok"
     }
   ]
 }

@@ -55,6 +55,7 @@ export function serveMcp(handle: ReturnType<typeof createMcp>, key: () => string
     for await (const c of req) { n += (c as Buffer).length; if (n > 400_000) return void res.writeHead(413).end(), true; chunks.push(c as Buffer); }
     let msg: Msg | Msg[];
     try { msg = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return void res.writeHead(400).end(), true; }
+    if (!(Array.isArray(msg) ? msg : [msg]).every((m) => m && typeof m === "object" && !Array.isArray(m))) return void res.writeHead(400).end(), true;
     const who = () => caller(req);
     const out = Array.isArray(msg) ? (await Promise.all(msg.map((m) => handle(m, who)))).filter(Boolean) : await handle(msg, who);
     if (out === undefined) return void res.writeHead(202).end(), true;

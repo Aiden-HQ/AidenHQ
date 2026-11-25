@@ -3,4 +3,4 @@ description: engines
 providers:
   engine:
     - { kind: codex, bin: bin/engine }
-    - { kind: codex-openrouter, bin: bin/engine, gateway: true, box: true, state: task, seed: [ { from: bin/engine, to: x/engine } ] }
+    - { kind: codex-openrouter, default: true, bin: bin/engine, gateway: true, box: true, state: task, seed: [ { from: bin/engine, to: x/engine } ] }

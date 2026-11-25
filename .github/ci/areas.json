@@ -40,6 +40,7 @@
     {"name": "modules/platform", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/platform", "modules"]},
     {"name": "modules/grading", "secs": 4, "job": "modules", "run": "npm test", "paths": ["modules/grading", "kernel/src", "ops/grades-move.ts"]},
     {"name": "modules/ship", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/ship", "modules/github/service/src/merge-gate.ts", "modules/github/service/src/aidenhq-sdk/checks.ts"]},
-    {"name": "modules/dispatch", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/dispatch"]}
+    {"name": "modules/dispatch", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/dispatch"]},
+    {"name": "modules/sessions", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/sessions"]}
   ]
 }

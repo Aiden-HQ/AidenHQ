@@ -146,6 +146,10 @@
       "source": "./security"
     },
     {
+      "name": "sessions",
+      "source": "./sessions"
+    },
+    {
       "name": "ship",
       "source": "./ship"
     },
@@ -179,6 +183,7 @@
     "design",
     "dispatch",
     "engine-codex",
+    "engine-opencode",
     "engineering",
     "fleet-steward",
     "glean",
@@ -194,6 +199,7 @@
     "platform",
     "primer",
     "security",
+    "sessions",
     "ship",
     "slack",
     "tasks",

@@ -1468,13 +1468,16 @@ export function createService(o: Options) {
     if (rec.state !== "done" || !rec.outcome?.ok) return { status: 409, json: { error: `the setup wasn't done: write ${rec.id} ${rec.state}${rec.outcome?.text ? `: ${rec.outcome.text.slice(0, 300)}` : ""}`, write: rec.id } };
     return { status: 200, json: JSON.parse(rec.outcome.text) };
   }
+  /** The change feed's rule (managedRepos, and main.ts adds maintainer_repos): the product, instance and maintained repos, and the fleet org's non-fork, non-archived ones. */
+  const feedWatched = (slug: string, repo: { isFork?: boolean; isArchived?: boolean }) =>
+    same(slug, o.productRepo) || same(slug, o.instanceRepo) || (o.maintained ?? []).some((m) => same(m, slug)) || (same(slug.split("/")[0], o.fleetOrg) && !repo.isFork && !repo.isArchived);
   async function ops(op: string, req: IncomingMessage, res: ServerResponse) {
     // Only the kernel calls the ops, with this service's key: POST /v1/codehost/:op brokers them under each module's grant.
     if (!keyed(req)) throw fail(401, "the kernel only");
     if (op !== "snapshot" && op !== "bundle") {
       if (!o.ops) throw fail(404, "no such operation");
       return o.ops(req, res, {
-        access, cacheDir: o.cacheDir, cache: (s) => cache(s), git, fetchRemote: (s, name) => fetchRemote(slugOf(s.slug), name),
+        access, cacheDir: o.cacheDir, feedWatched, cache: (s) => cache(s), git, fetchRemote: (s, name) => fetchRemote(slugOf(s.slug), name),
         initBare, ours, app: o.app,
       });
     }
