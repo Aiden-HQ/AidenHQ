@@ -900,6 +900,57 @@ test("a legacy queue waits out a failed identifier read instead of settling with
     [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the retried read kept the merge as evidence");
 });
 
+test("a queue an older version settled with none waits out a failed re-read instead of settling without the evidence", async (t) => {
+  // The version before this one took a record's first "no identifier" as final and kept the queue marked recovered with none. This
+  // version reads it again (the kernel's upgrade reconcile may have recorded it since), and that read fails on the first poll while
+  // the PR is already merged: the old flag is not an answer, so the queue must hold and retry rather than finish without the merge.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-settled-none-retry-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  mkdirSync(join(cacheDir, "merges"), { recursive: true });
+  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000c0": {
+    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9", recovered: true,
+    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending" }],
+  } } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  let reads = 0;
+  const { handle, outcomes, settle } = await setup(t, {
+    prs, cacheDir,
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { __status: 503 } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false }) : undefined),
+  });
+  await handle.stepMerges();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual([outcomes.length, reads], [0, 1], "an old recovered flag is no answer: the failed re-read holds the queue");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the retried re-read kept the merge as evidence");
+});
+
+test("an open PR with its identifier read failing waits for it instead of refusing it as another task's", async (t) => {
+  // The record's task id is the bare UUID, the pr-tasks.json row names WOR-9, and the recovery read fails (the kernel restarting).
+  // The row is no proof of another owner while the identifier is owed, and a fail could never be undone: the merge waits, then lands
+  // once the read answers with the identifier the row names.
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-pending-failed-read-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  let reads = 0;
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { __status: 503 } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false }) : undefined),
+  });
+  await merge("k-00000000000000c0", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", "");
+  await handle.stepMerges();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(outcomes.length, 0, "the merge waits for the identifier; it is not refused as another task's");
+  assert.equal(prs["acme-agents/widget"].state, undefined, "nothing was merged or failed on a comparison the identifier was missing from");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(prs["acme-agents/widget"].state, "MERGED", JSON.stringify(outcomes));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+});
+
 test("an owner's merge at the bound head after an unanswered merge call stays skipped: it is no commit this queue made", async (t) => {
   const cacheDir = mkdtempSync(join(tmpdir(), "codehost-owner-"));
   writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));

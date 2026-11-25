@@ -64,6 +64,11 @@ test("a record read says whether its missing identifier is still owed or the con
   // One it has is never pending.
   const known = file("WOR-1");
   assert.deepEqual([work.record(known.id).identifier, work.record(known.id).identifier_pending], ["WOR-1", false]);
+  // A record that ended is never pending: no lookup the kernel will still perform can change it, so a queue that reads it takes
+  // the absence as final instead of polling for an answer that will never come.
+  const ended = file();
+  records.close(ended.id, "unknown", "unknown: it was claimed and its outcome never came back; it is not run again");
+  assert.deepEqual([work.record(ended.id).state, work.record(ended.id).identifier, work.record(ended.id).identifier_pending], ["unknown", null, false]);
 });
 
 test("a task's read carries an apply's card diff (its grader's APPLY_CHANGE) and no other kind's card details", () => {

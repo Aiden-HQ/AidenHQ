@@ -292,6 +292,14 @@ export function createMerges(d: {
     log("merged without code review's verdict", { pr: p.url, why: p.bypass.slice(0, 300) });
     d.flow?.reviewBypassed(p.repo, p.number, p.head, p.bypass);
   };
+  /**
+   * The record's identifier is still owed: the queue has the record's task id but not the identifier its pr-tasks.json rows are
+   * keyed by, and neither this version's read nor the kernel's answer has settled it. A queue written by a version that kept no
+   * identifier needs one read; this version's read that failed or answered "pending" is not an answer; only a read that answered
+   * (with one, or with a settled none) ends it. The same condition decides settlement and the ownership check, so a read that
+   * failed never lets a queue settle without evidence or refuse a PR as another task's.
+   */
+  const identifierOwed = (q: Queue) => Boolean(q.task && !q.taskIdentifier && d.identifierOf && (!q.recovered || q.recoveredBy !== 2 || q.identifierPending));
   async function poll(id: string, q: Queue, p: Pr, merged: Set<string>) {
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
@@ -406,10 +414,11 @@ export function createMerges(d: {
           if (id === null) return wait("task-status");
           if (id === q.task) { q.taskIdentifier = now; save(); }
         }
-        // The record's identifier is still owed (the kernel's upgrade reconcile has not read it yet): a row naming it is not
-        // proof this is another task's PR, and a fail here could never be undone (a later poll only reads a pending PR), so the
-        // merge waits for the identifier instead of refusing on a comparison the missing identifier makes incomplete.
-        if (now && now !== q.task && !q.taskIdentifier && q.identifierPending) return wait("task-identifier");
+        // The record's identifier is still owed (a read that failed, or one that answered "pending" because the kernel's
+        // upgrade reconcile has not filled it in yet): a row naming it is not proof this is another task's PR, and a fail here
+        // could never be undone (a later poll only reads a pending PR), so the merge waits for the identifier instead of
+        // refusing on a comparison the missing identifier makes incomplete.
+        if (now && now !== q.task && identifierOwed(q)) return wait("task-identifier");
         if (now && now !== q.task && now !== q.taskIdentifier) return fail(`${p.url} now belongs to ${now}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
@@ -641,10 +650,11 @@ export function createMerges(d: {
             save();
           } else q.recoverTries = (q.recoverTries ?? 0) + 1;
         }
-        // The identifier an already-merged PR must be proven against is still unknown (a read that failed, or a record that has
-        // none yet and none read): the PRs may be read, but the queue is not finished, so a poll that comes back after the kernel
-        // does can still credit the evidence.
-        const unrecovered = Boolean(q.task && !q.taskIdentifier && (!q.recovered || q.identifierPending) && d.identifierOf);
+        // The identifier an already-merged PR must be proven against is still owed (a read that failed, or a record that has none
+        // yet and none read): the PRs may be read, but the queue is not finished, so a poll that comes back after the kernel does
+        // can still credit the evidence. The same condition waits the ownership check, so a failed read can neither settle the
+        // queue without evidence nor refuse an open PR as another task's.
+        const unrecovered = identifierOwed(q);
         for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(id, q, p, merged);
         // The second link for an already-merged PR the queue did not merge itself: with no pr-tasks.json row (a push refused
         // before the PR write could note it), the task's own pr/push record must name this repo and bound head. Read after the

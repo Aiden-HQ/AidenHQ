@@ -151,7 +151,7 @@ test("a module-filed write on a task records that task's identifier, and GET /v1
   const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
   assert.equal(filed.status, 200, JSON.stringify(filed.json));
   const rec = k.records.get(filed.json.id);
-  assert.deepEqual([rec.task, rec.identifier, rec.requester.kind], ["TASK-9", "WOR-8637", "module"]);
+  assert.deepEqual([rec.task, rec.identifier, rec.identifier_checked, rec.requester.kind], ["TASK-9", "WOR-8637", true, "module"]);
   const read = await k.v1("GET", `/v1/work?record=${filed.json.id}`);
   assert.equal(read.status, 200, JSON.stringify(read.json));
   assert.deepEqual([read.json.task, read.json.identifier], ["TASK-9", "WOR-8637"]);
@@ -172,6 +172,12 @@ test("a module-filed write on a task the control plane can't resolve leaves its 
   const gone = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "b" }, task: "TASK-404" }, "other-key");
   assert.equal(gone.status, 200, JSON.stringify(gone.json));
   assert.equal(k.records.get(gone.json.id).identifier ?? null, null);
+  // The lookup answered (with none), so it is settled at filing: a reader is never promised a read that already happened, and a
+  // later approval does not repeat a lookup the control plane could by then rate-limit.
+  for (const id of [empty.json.id, gone.json.id]) {
+    const read = await k.v1("GET", `/v1/work?record=${id}`);
+    assert.deepEqual([k.records.get(id).identifier_checked, read.json.identifier_pending], [true, false]);
+  }
 });
 
 test("a task that answers 200 with no issue body is no answer: the write is refused retryably, never filed", async (t) => {
@@ -223,7 +229,8 @@ test("an approved record's identifier is read before the claim, so a rate-limite
     onControl: (req) => (limited && /^\/api\/issues\//.test(req.url ?? "") ? { status: 429, body: { error: "rate limited" } } : undefined) });
   const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
   assert.equal(filed.status, 200, JSON.stringify(filed.json));
-  k.records.db.prepare("UPDATE records SET identifier = NULL WHERE id = ?").run(filed.json.id);
+  // A record the previous version filed: neither column was there, so both are cleared (filing now records the answered lookup).
+  k.records.db.prepare("UPDATE records SET identifier = NULL, identifier_checked = NULL WHERE id = ?").run(filed.json.id);
   limited = true;
   await review(filed.json.id, { decision: "approve", reason: "fine", model: "~acme/model-a" });
   for (let i = 0; i < 20 && fx.executes.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
@@ -234,7 +241,7 @@ test("an approved record's identifier is read before the claim, so a rate-limite
   assert.equal(fx.executes[0].identifier, "WOR-8637", "the executor got the identifier, never only the task id");
   // The same, with the read still rate-limited when the reviewer approves: it is not claimed, and a later run gets the identifier.
   const busy = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "s" }, task: "TASK-9" }, "other-key");
-  k.records.db.prepare("UPDATE records SET identifier = NULL WHERE id = ?").run(busy.json.id);
+  k.records.db.prepare("UPDATE records SET identifier = NULL, identifier_checked = NULL WHERE id = ?").run(busy.json.id);
   limited = true;
   await review(busy.json.id, { decision: "approve", reason: "fine", model: "~acme/model-a" });
   await new Promise((r) => setTimeout(r, 50));

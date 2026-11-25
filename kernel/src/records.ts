@@ -242,9 +242,9 @@ export function openRecords(file: string, now = () => new Date()) {
           cancelled(o, "replaced");
         }
         const replaced = old.length;
-        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap, context, paths) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, identifier_checked, replaced, target, content, chain, cap, context, paths) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
-            null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null, r.paths?.length ? JSON.stringify(r.paths) : null);
+            null, r.rule ?? null, r.identifier ?? null, r.identifier_checked ? 1 : null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null, r.paths?.length ? JSON.stringify(r.paths) : null);
         const requester = r.requester.key || r.requester.module || "";
         fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, requester, state: r.state, ...prOf(r.args) }));
         db.exec("COMMIT");

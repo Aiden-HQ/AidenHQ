@@ -287,9 +287,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // A module's or the kernel's record that names a task has no job row to take it from (only these may name one; an agent's
     // record is always on its own run task), so it carries that task's canonical identifier from the control plane: a job's
     // workspace is never overwritten, and a task that answers with none leaves it unset.
-    const named = workspace || (task && (requester.kind === "module" || requester.kind === "kernel") ? await taskIdentifier?.(task) : undefined);
+    // A job's workspace is that answer already; a module's or the kernel's record reads it here. Either way the lookup is
+    // settled once it returns, including when it answers "none": recorded beside the identifier, so a reader never waits for a
+    // lookup that already happened, and a later approval runs without repeating a read that can be rate-limited.
+    const looked = Boolean(workspace) || Boolean(task && (requester.kind === "module" || requester.kind === "kernel") && taskIdentifier);
+    const named = workspace || (looked ? await taskIdentifier!(task) : undefined);
     const identifier = named || undefined;
-    const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(identifier ? { identifier } : {}), paths: planPaths(plan.paths) };
+    const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(identifier ? { identifier } : {}), ...(looked ? { identifier_checked: true } : {}), paths: planPaths(plan.paths) };
     if (plan.satisfied) return { base, satisfied: String(plan.satisfied.evidence) };
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     // The reason and rule shown: the strictest raise, the plan's on a tie.
@@ -322,6 +326,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       // The record is this request, so it is on the task by the identifier this call resolved: one filed before the lookup
       // (or before it could resolve) would otherwise keep `identifier: null`, and the code host's guard stay closed on it.
       if (base.identifier && !same.identifier) records.setIdentifier(same.id, base.identifier);
+      else if (base.identifier_checked && !same.identifier_checked) records.markIdentified(same.id);
       return records.get(same.id)!;
     }
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
@@ -351,8 +356,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
   async function execute(r: Rec, k: Kind | undefined): Promise<void> {
     executing.add(r.id);
     try {
-      // A read that fails leaves it as it was: failing closed, never running with a guess.
-      r = await identified(r).catch(() => r);
+      // The record is claimed by now, so a failed read has no later path back to it (retryApproved reads approved records only,
+      // and a restart's reconcile reads the claims from before it started): running the write with only the bare task id hands
+      // the code host a merge queue that waits for an identifier nothing will fill in. Failing closed is explicit here instead.
+      try { r = await identified(r); } catch (e) {
+        if (!r.identifier && !r.identifier_checked) return void outcomeOf(r.id, false, `not executed: its task's identifier could not be read (${String((e as Error).message ?? e).slice(0, 300)})`);
+      }
       await executeOnce(r, k);
     } finally {
       executing.delete(r.id);
@@ -437,9 +446,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
     let open: boolean, again: Plan | undefined, stale = false;
     const k = pre.kind !== CONN_TOOL && !native[pre.kind] ? registry()[pre.kind] : undefined;
     try {
-      // Its task's identifier is read before the claim: a transient failure here leaves the record approved and unclaimed, so
-      // retryApproved asks again, rather than the executor running with only the bare task id and its merge failing closed.
-      pre = await identified(pre).catch((e) => { if (transient(e)) throw e; return pre!; });
+      // Its task's identifier is read before the claim: any failure here is decided by the catch below, never run past. A
+      // transient one (a 5xx, a timeout, a rate limit) leaves the record approved and unclaimed, so retryApproved asks again;
+      // one the control plane refuses for good (a 4xx) ends the record with that reason rather than starting a write with only
+      // the bare task id.
+      pre = await identified(pre);
       if (!(await revalidate(pre))) return void runRetries.delete(id);
       // A closed task ends an agent's leftover request; a module's write of its own kind (code review's post, filed on a task that
       // only holds its approvals) is no leftover: it runs whatever became of that task.
