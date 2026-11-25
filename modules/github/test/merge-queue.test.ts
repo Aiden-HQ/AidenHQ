@@ -815,7 +815,7 @@ test("a queue that cached a null identifier before the upgrade reads it again on
   writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
   mkdirSync(join(cacheDir, "merges"), { recursive: true });
   writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000c0": {
-    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9", recovered: true, recoveredNone: true,
+    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9", recovered: true,
     prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending" }],
   } } }));
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
@@ -828,6 +828,47 @@ test("a queue that cached a null identifier before the upgrade reads it again on
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
     [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the re-read found the identifier and kept the evidence");
+});
+
+test("a PR whose row names the identifier the kernel is still reading waits instead of looking like another task's", async (t) => {
+  // A module's record carries the task's UUID, and pr-tasks.json names the identifier. While the record has no identifier yet and
+  // none has been read (the kernel's upgrade reconcile is about to fill it in), a row that doesn't match the bare UUID is not
+  // proof of another owner: the merge waits, because a fail could never be undone (only a pending PR is polled again).
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-pending-owner-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  let reads = 0;
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: null, identifier_pending: true } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false }) : undefined),
+  });
+  await merge("k-00000000000000c0", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", "");
+  await handle.stepMerges();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(outcomes.length, 0, "the merge waits for the identifier, it does not fail as another task's");
+  assert.equal(prs["acme-agents/widget"].state, undefined, "nothing was merged on a comparison the identifier was missing from");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(prs["acme-agents/widget"].state, "MERGED", JSON.stringify(outcomes));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+});
+
+test("a settled none is cached, not read from the kernel on every poll", async (t) => {
+  // The kernel answered: this task has no identifier (gone, or none). That is the answer, so the queue holds the merge without
+  // asking again on each poll, and an already-merged PR still credits only what it can prove.
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-settled-none-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
+  let reads = 0;
+  const { handle, merge } = await setup(t, {
+    prs, cacheDir,
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (reads++, { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: null, identifier_pending: false }) : undefined),
+  });
+  await merge("k-00000000000000c0", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", "");
+  await handle.stepMerges();
+  await handle.stepMerges();
+  await handle.stepMerges();
+  assert.equal(reads, 1, "the settled answer is kept, never re-read");
 });
 
 test("a legacy queue waits out a failed identifier read instead of settling without the evidence", async (t) => {
