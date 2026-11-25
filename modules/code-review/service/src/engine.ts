@@ -2116,7 +2116,7 @@ export function createEngine(d: EngineDeps) {
 
   type Reason = { code: string; text: string; unblock?: string };
   /** A failed attempt the install's spend limit refused (the gateway's 402, as the recipe words it). */
-  const SPEND_LIMIT = /spend limit|spend cap reached|cap_reached/i;
+  const SPEND_LIMIT = /spend limit (?:was )?reached|spend cap reached|cap_reached/i;
   /** The tier the verdict serves (ship and the merge queue read it): classified with its rule and why, pending, or unwatched. */
   type TierView = { state: "unwatched" | "pending" } | { state: "classified"; tier: Tier; rule: number; why: string };
   type Verdict = { verdict: "pass" | "wait"; reasons: Reason[]; requires_review: boolean; tier: TierView; policy?: string };

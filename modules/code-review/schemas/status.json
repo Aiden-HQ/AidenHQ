@@ -28,6 +28,7 @@
     "running",
     "not_started",
     "moved",
+    "spend_limit",
     "findings",
     "failed",
     "incomplete",
