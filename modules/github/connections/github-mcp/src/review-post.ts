@@ -399,6 +399,13 @@ export class ReviewPoster {
     // Threads already open for a finding: the service's recorded ones, and this run's own from an earlier attempt (its run marker).
     const own = new Set(a.own);
     const earlier = new Map(threads.filter((t) => t.finding && (own.has(t.comment) || (t.run === a.run && isWho(who, { login: t.author, type: t.bot ? "Bot" : "User" })))).map((t) => [t.finding!, t.url]));
+    // An important finding where someone else already has an open thread (same file, within 3 lines) keeps its place in the gate and
+    // the summary's table, which links that thread: only the comment is not posted twice.
+    for (const f of r.findings) {
+      if (f.severity !== "important" || earlier.has(f.id)) continue;
+      const t = threads.find((x) => !x.ours && !x.resolved && !x.outdated && x.path === f.path && x.line !== null && Math.abs(x.line - f.line) <= 3);
+      if (t) earlier.set(f.id, t.url);
+    }
     // Only findings whose comment the AI reviewer's card showed get one (the card renders the same choice, without GitHub's view).
     const { comments: carded, scale } = card(a);
     const shown = new Set(carded.map((c) => c.id));
