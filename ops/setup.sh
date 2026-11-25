@@ -159,6 +159,10 @@ set_env() { # KEY VALUE: sets KEY in .env (replacing a commented or old line, el
   if [ "$DRY" = 1 ]; then echo "  + .env: $1=$( [[ "$1" =~ KEY|SECRET|PASSWORD|TOKEN ]] && echo '…' || echo "$2")"; return 0; fi
   as_user K="$1" V="$2" F="$ENVF" sh -c 'umask 077; awk -v k="$K" -v v="$V" '"'"'BEGIN{d=0} $0 ~ "^#? *" k "=" && !d {print k "=" v; d=1; next} {print} END{if(!d) print k "=" v}'"'"' "$F" > "$F.tmp" && mv -f "$F.tmp" "$F"'
 }
+set_env_effective() { # KEY VALUE: like set_env, but the line the apply reads wins (the last one), not the first match
+  if [ "$DRY" = 1 ]; then echo "  + .env: $1=$( [[ "$1" =~ KEY|SECRET|PASSWORD|TOKEN ]] && echo '…' || echo "$2")"; return 0; fi
+  as_user K="$1" V="$2" F="$ENVF" sh -c 'umask 077; awk -v k="$K" -v v="$V" '"'"'BEGIN{d=0} $0 ~ "^#? *" k "=" {last=NR} {l[NR]=$0} END{n=NR; for(i=1;i<=n;i++){if(i==last) print k "=" v; else print l[i]} if(!last) print k "=" v}'"'"' "$F" > "$F.tmp" && mv -f "$F.tmp" "$F"'
+}
 json() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }   # a JSON string, without node (a dry run has none)
 read_secret() { [ -s "$SECRETS/$1" ] && cat "$SECRETS/$1" || true; }
 operator() { # OP [JSON]: the kernel's accounts (its backplane, POST /v1/operator/<op>) with the operator's key: setup link, resets.
@@ -437,9 +441,7 @@ PGID="$(id -g "$U" 2>/dev/null || echo 1000)"
 if [ "$PUID" != 1000 ]; then
   die "the service user $U has uid $PUID, but the Paperclip container runs as that uid and only works as 1000: set AIDENHQ_USER to a user whose uid is 1000, or change the uid of $U to 1000 (usermod -u 1000 $U)"
 fi
-vault_new=0
 if [ ! -f "$ENVF" ]; then
-  vault_new=1   # a new install: the vault root below is this install's to make
   if [ "$DRY" = 1 ]; then echo "  + write $ENVF (from .env.example)"
   else as_user sh -c 'umask 077; sed "s#/home/USER#$1#g" "$2/.env.example" > "$2/.env"' _ "$H" "$REPO"; fi
 fi
@@ -453,23 +455,81 @@ set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.y
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub
 # Meetings' vault: a host that lists folders keeps them (an empty list would leave the module no /vault mount), and only
 # a host with a vault path gets the default. The module runs as the owner (uid 1000), so its folders are made as the owner.
-# A dry run has no .env yet (only the write above is printed): the path comes from the .env.example a new install copies.
-vault_val() { # FILE KEY: the value .env gives (last line, quotes, an unquoted ' #' comment, $HOME/~ as the apply expands it)
-  local v home_lit='${HOME}'
-  v="$(sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -1 || true)"
-  if [ "${#v}" -ge 2 ] && { [[ "$v" == \"*\" ]] || [[ "$v" == \'*\' ]]; }; then v="${v:1:${#v}-2}"   # quoted: any ' #' stays
-  else v="${v%%[[:space:]]#*}"; fi                                                             # unquoted: the shell ends it at ' #'
-  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
-  [ "$1" = "$ENVF" ] || v="${v//\/home\/USER/$H}"                                              # the example's placeholder
-  v="${v//"$home_lit"/$H}"; v="${v//\$HOME/$H}"                                                # the apply sources .env, so it expands
-  if [[ "$v" == '~' || "$v" == '~/'* ]]; then v="$H${v:1}"; fi
+# The value is read the way the apply's `set -a; . .env` reads it (quotes, a ' #' comment, $HOME, ~), but never by running
+# the file: a dry run may be run as root over a checkout a user owns, and no step of a preview runs that code. $PWD is the
+# checkout, as the apply (ops/apply-config-work.sh) has it. A dry run has no .env yet (only the write above is printed):
+# the path comes from the .env.example a new install copies.
+declare -A VAULT_M=()
+vault_expand() { # RAW: the value the shell gives for one KEY= line, without running it; sets VAULT_UNSET when it would not set it
+  local raw=$1 v='' c n op def i=0 st=u len=${#1}
+  VAULT_UNSET=0
+  while [ "$i" -lt "$len" ]; do
+    c="${raw:$i:1}"
+    if [ "$st" = s ]; then                                                                    # single quotes: literal, till '
+      if [ "$c" = "'" ]; then st=u; else v+=$c; fi; i=$((i+1)); continue
+    fi
+    if [ "$c" = "'" ] && [ "$st" = u ]; then st=s; i=$((i+1)); continue; fi                   # opens only outside quotes
+    if [ "$c" = '"' ]; then [ "$st" = d ] && st=u || st=d; i=$((i+1)); continue; fi             # opens and closes
+    if [ "$c" = '\' ]; then i=$((i+1)); v+="${raw:$i:1}"; i=$((i+1)); continue; fi             # escapes the next character
+    if [ "$c" = '$' ]; then
+      i=$((i+1)); n=''
+      if [ "${raw:$i:1}" = '{' ]; then                                                         # ${NAME}, ${NAME:-text}, ${NAME-text}
+        n="$(vault_braced "${raw:$((i+1))}")"; i=$((i+1+${#n}))                     # i: '{', then the text, then '}'
+
+        case "$n" in
+          *:-*) op="${n%:-*}"; def="${n##*:-}"; [ -n "$(vault_var "$op")" ] && v+="$(vault_var "$op")" || v+="$(vault_expand "$def"; printf %s "$VAULT_EXPANDED")" ;;
+          *-*)  op="${n%-*}"; def="${n##*-}"; [ -n "$(vault_var "$op")" ] && v+="$(vault_var "$op")" || v+="$(vault_expand "$def"; printf %s "$VAULT_EXPANDED")" ;;
+          *)    v+="$(vault_var "$n")" ;;
+        esac
+        i=$((i+1)); continue
+      fi
+      while [ "$i" -lt "$len" ]; do case "${raw:$i:1}" in [A-Za-z0-9_]) n+="${raw:$i:1}"; i=$((i+1)) ;; *) break ;; esac; done
+      [ -n "$n" ] && v+="$(vault_var "$n")" || v+='$'
+      continue                                                                                 # i is already past the name
+    fi
+    if [ "$c" = '~' ] && [ "$st" = u ] && [ -z "$v" ]; then v=$H; i=$((i+1)); continue; fi     # a word-leading ~ is HOME
+    if { [ "$c" = ' ' ] || [ "$c" = "$(printf '\t')" ]; } && [ "$st" = u ]; then
+      case "${raw:$i}" in " #"*|"$(printf '\t')#"*) break ;; esac                            # a ' #' comment: a valid value
+      VAULT_UNSET=1; break                                                                    # a second word: the shell runs it, so KEY stays unset
+    fi
+    v+=$c; i=$((i+1))
+  done
+  VAULT_EXPANDED=$v
+}
+vault_var() { # NAME: what that .env name holds (HOME and PWD as the apply gives them)
+  case "$1" in HOME) printf '%s' "$H" ;; PWD) printf '%s' "$REPO" ;; *) printf '%s' "${VAULT_M[$1]-}" ;; esac
+}
+vault_braced() { # TEXT after '${': the text up to its matching '}'
+  local t=$1 d=1 i=0 c
+  while [ "$i" -lt "${#t}" ]; do c="${t:$i:1}"
+    [ "$c" = '{' ] && d=$((d+1))
+    if [ "$c" = '}' ]; then d=$((d-1)); [ "$d" -eq 0 ] && { printf '%s' "${t:0:$i}"; return; }; fi
+    i=$((i+1))
+  done
+  printf '%s' "$t"
+}
+vault_read() { # FILE: every KEY=value in order (a later line may use an earlier $VAR), the way the apply and compile read it
+  VAULT_M=()
+  [ -f "$1" ] || return 0                                                                    # a fresh preview has no .env yet
+  local line key rest
+  while IFS= read -r line || [ -n "$line" ]; do                                                # a last line with no newline counts
+    key="${line%%=*}"; [ "$key" != "$line" ] || continue
+    key="${key#"${key%%[![:space:]]*}"}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    rest="${line#*=}"; vault_expand "$rest"
+    if [ "$VAULT_UNSET" = 1 ]; then                                                           # hostEnv's fallback: the raw text
+      VAULT_M["$key"]="${rest%\"}"; VAULT_M["$key"]="${VAULT_M[$key]#\"}"; VAULT_M["$key"]="${VAULT_M[$key]%\'}"; VAULT_M["$key"]="${VAULT_M[$key]#\'}"
+    else VAULT_M["$key"]=$VAULT_EXPANDED; fi
+  done < "$1"
+}
+vault_val() { # FILE KEY
+  vault_read "$1"
+  local v="${VAULT_M[$2]-}"
+  [ "$1" = "$ENVF" ] || v="${v//\/home\/USER/$H}"                                            # the example's placeholder
   printf '%s' "$v"
 }
 vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"
 vault_dir="$(vault_val "$vault_env" VAULT_DIR)"; vault_folders="$(vault_val "$ENVF" VAULT_FOLDERS)"
-# The installer's own default (the .env.example path, in the owner's home), which is this host's to make even on a rerun:
-# an upgrade from the old installer has it in .env and never made it. Any other path is the owner's disk, possibly offline.
-vault_default="$(sed -n 's#^VAULT_DIR=##p' "$REPO/.env.example" 2>/dev/null | tail -1 | sed "s#/home/USER#$H#")"
 if [ -z "$vault_dir" ]; then
   # No vault path: folders left behind make compile refuse .env ("VAULT_DIR must be an absolute path"), so drop them.
   # Every line, since the last one wins in the apply and the first-match set_env would leave a later override.
@@ -477,7 +537,7 @@ if [ -z "$vault_dir" ]; then
     if [ "$DRY" = 1 ]; then echo "  + .env: VAULT_FOLDERS="
     else as_user K=VAULT_FOLDERS F="$ENVF" sh -c 'umask 077; awk -v k="$K" '"'"'$0 ~ "^ *" k "=" {print k "="; next} {print}'"'"' "$F" > "$F.tmp" && mv -f "$F.tmp" "$F"'; fi
   fi
-elif [ -n "$vault_folders" ] || { set_env VAULT_FOLDERS Meetings; vault_folders=Meetings; }; then
+elif [ -n "$vault_folders" ] || { set_env_effective VAULT_FOLDERS Meetings; vault_folders=Meetings; }; then
   # compile refuses these, so name them here rather than let the apply fail later on the same values.
   [[ "$vault_dir" == /* ]] || die "VAULT_DIR must be an absolute path in $ENVF (it is \"$vault_dir\")"
   vault_paths=("$vault_dir")
@@ -489,13 +549,9 @@ elif [ -n "$vault_folders" ] || { set_env VAULT_FOLDERS Meetings; vault_folders=
     [[ "$vf" == *..* || "$vf" == .* || "$vf" == *:* ]] && die "invalid vault folder: $vf (VAULT_FOLDERS in $ENVF must be vault-relative)"
     vault_paths+=("$vault_dir/$vf")
   done
-  # The default root is made on a new install and on an upgrade from a version that never made it. A custom mount point is
-  # made only when it is there (it holds something): with that disk offline, mkdir would leave an empty directory the
-  # module's checks would pass against while the real notes stay elsewhere.
-  if [ "$vault_new" = 1 ] || [ "$vault_dir" = "$vault_default" ] || { [ -d "$vault_dir" ] && [ -n "$(ls -A "$vault_dir" 2>/dev/null)" ]; }; then
-    as_user mkdir -p "${vault_paths[@]}" || say "couldn't create ${vault_paths[*]} (a disk that isn't mounted?); the Meetings health check reports it"
-  else say "VAULT_DIR ($vault_dir) is missing or empty: not creating it (a disk that isn't mounted?)"
-  fi
+  # The root and every listed folder, as the owner: a vault on a disk that isn't mounted is the Meetings module's to
+  # report, never a reason the rest of setup fails.
+  as_user mkdir -p "${vault_paths[@]}" || say "couldn't create ${vault_paths[*]} (a disk that isn't mounted?); the Meetings health check reports it"
 fi
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
 set_env BOARD_LAN_HOSTS "${BOARD_HOST:-${PUBLIC_IP:+$PUBLIC_IP,}127.0.0.1:3121,localhost:3121}"
