@@ -72,7 +72,7 @@ settings:
   # a trusted collaborator labels agent-build), `dependabot` (off, failing, all; default failing: the ship module files an Engineer task for the open Dependabot PRs whose checks fail, or for every one with `all`), `contributor_prs` (default false: the ship module has the Maintainer nudge, then close, a human's PR that has been quiet), `stale_days` (default 7: quiet
   # days before the nudge and again before the close; drafts wait twice as long). The Maintainer's other per-repo rules, all optional (the
   # Maintainer page edits them; kernel/sdk/src/maintained-repos.ts checks them): `preset` (quiet, triage, full: what `features` and `triage` default to),
-  # `triage` (off, new, new+backlog), `triage_cap_per_author_day` (5), `triage_labels` (true), `close` (what triage may close: duplicate, invalid, empty,
+  # `triage` (off, new, new+backlog), `triage_cap_per_author_day` (5 a day per outside author; members and collaborators have no limit), `triage_labels` (true), `close` (what triage may close: duplicate, invalid, empty,
   # incorrect; default duplicate), `needs_info_close_days` (null), `stale_issues` ({ days, grace_days, exempt_labels }; null), `resolved_check` ({ max_closes, exempt_labels }). A listed repo is also where the fleet's
   # work may merge and close, with no duty on. Read by github-mcp (maintainer.ts), which the Maintainer's tools and the
   # Maintainer's watcher go through (kernel/sdk/src/maintained-repos.ts parses it).

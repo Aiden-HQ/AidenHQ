@@ -179,6 +179,9 @@ test("triage runs are capped a day per author, the rest held until a slot frees 
   w.log.push(ev(6, "issues.labeled", { number: 1, label: "agent-fix" }));
   await w.look();
   assert.deepEqual(w.triaged, [1, 3, 4, 2]);
+  w.log.push(...[10, 11, 12, 13, 14, 15, 16].map((n) => opened(n, n, "member", { author_kind: "owner" })));
+  await w.look();
+  assert.deepEqual(w.triaged.slice(4), [10, 11, 12, 13, 14, 15, 16], "an owner-kind author past the cap is never held");
   const off = world({ repos: [repo()] });
   await off.look();
   off.log.push(opened(1, 1, "ada"));
