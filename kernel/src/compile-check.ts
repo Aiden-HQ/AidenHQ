@@ -168,7 +168,10 @@ async function installCompiler(o: RunInput) {
 
 /** The default `run`: the target tree's compiler deps, then its own compiler, staged — as the apply does both. */
 async function stagedCompile(o: RunInput, install: (o: RunInput) => Promise<void>): Promise<Verdict> {
+  // The deps install first, before the host's .env is in the tree: a target's lifecycle scripts shouldn't find it. The compiler
+  // needs it exactly as the apply's checkout has it, so it is seeded after.
   await install(o);
+  seedInputs(o.repo, o.productDir);
   const compiled = await run(process.execPath, [COMPILER], o.productDir, o.env, left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
   if (compiled.ok) return { ok: true };
   // A compiler that never finished (a timeout, a killed child) is operational: the caller retries, never records a refusal the
@@ -229,7 +232,6 @@ export function createCompileCheck(d: CompileDeps) {
         productDir = join(dir, "kernel-fork");
         await extract(d.repo, kernelSha, productDir, until);
       }
-      seedInputs(d.repo, productDir);
       const env = stagedEnv(productDir, instanceDir, d.inputs);
       const o = { productDir, instanceDir, repo: d.repo, env, until };
       const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? installCompiler);
