@@ -277,6 +277,21 @@ interface JobRow { id: string; agent: string; task?: string; routine?: string | 
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
+/** The kernel's own job tag, which ends the note it wrote: `\n\n<!-- aidenhq:job=kernel kind=… -->`. An agent's own comment ends with its own `<!-- aidenhq:op=…` or `<!-- aidenhq:job=<id> kind=cp -->`, and quoting this tag mid-body keeps its own tag last. */
+const KERNEL_TAG = /<!--\s*aidenhq:job=kernel\b[^>]*-->\s*$/;
+/** The board's "Not right" correction: the owner's one line, carrying a marker of its own but still their words. */
+const CORRECTION_TAG = /<!--\s*aidenhq-correction\s*-->/;
+/** A note the kernel wrote to move or annotate the task (a park, an unblock, a route, a grade note): bookkeeping, never an answer. */
+const kernelNote = (c: CommentRow) => KERNEL_TAG.test(String(c.body));
+/**
+ * A comment the fleet's own machinery wrote, never someone's words: the kernel's `<!-- aidenhq-…` markers (a wake, an approval,
+ * a notice) or its own `aidenhq:job=kernel` note. The board's "Not right" correction carries such a marker and is still the
+ * owner's words.
+ */
+const internalNote = (c: CommentRow) => {
+  const body = String(c.body);
+  return (/<!-- aidenhq-/.test(body) && !CORRECTION_TAG.test(body)) || kernelNote(c);
+};
 interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
@@ -343,7 +358,7 @@ export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (
     // A comment is only readable as activity with the directory that says whose it is: without it, the comments are unknown.
     const known = people.status === "fulfilled" && comments.status === "fulfilled";
     const comment = known
-      ? comments.value.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === (row?.holder ? people.value.holders.get(row.holder) ?? row.holder : undefined) || people.value.auditors.has(c.authorAgentId))))?.createdAt
+      ? comments.value.find((c) => !c.deletedAt && c.authorType === "agent" && !internalNote(c) && (c.authorAgentId != null && (c.authorAgentId === (row?.holder ? people.value.holders.get(row.holder) ?? row.holder : undefined) || people.value.auditors.has(c.authorAgentId))))?.createdAt
       : undefined;
     // A run that started and ended between two ticks left no comment and no current state: its own start and end are the activity.
     let job: string | undefined;
@@ -408,7 +423,7 @@ export async function unresumedWaits(rows: StateRow[], t: number, comments: (tas
     const r = due[(start + n) % due.length]!;
     const since = r.wait_since ?? r.since;
     const mine = r.reason === "delegator_wait" ? await holder(r.task).catch(() => undefined) : undefined;
-    const answer = (await comments(r.task).catch(() => [])).find((c) => !c.deletedAt && Date.parse(c.createdAt) > Date.parse(since) && age(c.createdAt, t) > UNRESUMED_MS && !/<!-- aidenhq-/.test(String(c.body)) && (r.reason === "owner_wait" ? ownerWords(c) : c.authorAgentId !== (mine ?? r.holder)));
+    const answer = (await comments(r.task).catch(() => [])).find((c) => !c.deletedAt && Date.parse(c.createdAt) > Date.parse(since) && age(c.createdAt, t) > UNRESUMED_MS && (r.reason === "owner_wait" ? ownerWords(c) : !internalNote(c) && c.authorAgentId !== (mine ?? r.holder)));
     if (answer) found.push({ key: r.task, reason: `task ${r.identifier ?? r.task} has not resumed ${mins(age(answer.createdAt, t))} after its ${r.reason === "owner_wait" ? "owner's" : "delegator's"} answer arrived (the wait began ${mins(age(since, t))} ago)` });
   }
   return { found, unscanned: Array.from({ length: due.length - scan }, (_, n) => due[(start + scan + n) % due.length]!.task) };
@@ -529,7 +544,7 @@ export function rejectLoops(records: WorkRecord[], t: number): { task: string; i
 }
 
 /** The owner's own typed words on a chat task (not a relayed notice, the kernel's, or deleted). */
-const ownerWords = (c: CommentRow) => c.authorType === "user" && !c.deletedAt && !/<!-- aidenhq-/.test(String(c.body));
+const ownerWords = (c: CommentRow) => c.authorType === "user" && !c.deletedAt && !internalNote(c);
 
 /**
  * Owner-assigned todos nobody has touched in 3 days, ranked (priority, then age), for the morning brief. A task the owner
@@ -892,8 +907,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
         for (const i of chats) {
           const comments = (((await d.kernel.read(`/api/issues/${i.id}/comments?order=desc&limit=20`).catch(() => [])) as CommentRow[]) ?? []).filter((x) => !x.deletedAt);
           const last = comments.find(ownerWords); // newest first
-          // Any later comment, an agent's or a relayed notice, is an answer (a deferral note counts).
-          if (last && age(last.createdAt, t) > SILENT_MS && age(last.createdAt, t) < SILENT_LOOKBACK_MS && !comments.some((x) => x.createdAt > last.createdAt && !ownerWords(x))) out.push({ key: i.id, critical: true, reason: `an owner message on chat ${i.identifier ?? i.id} has had no reply for ${mins(age(last.createdAt, t))}` });
+          // Any later comment, an agent's or a relayed notice, is an answer (a deferral note counts); a note the kernel wrote to move
+          // the task is not.
+          if (last && age(last.createdAt, t) > SILENT_MS && age(last.createdAt, t) < SILENT_LOOKBACK_MS && !comments.some((x) => x.createdAt > last.createdAt && !ownerWords(x) && !kernelNote(x))) out.push({ key: i.id, critical: true, reason: `an owner message on chat ${i.identifier ?? i.id} has had no reply for ${mins(age(last.createdAt, t))}` });
         }
       }
       return out;

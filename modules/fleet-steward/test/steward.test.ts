@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { dueList } from "../service/src/coach.ts";
-import { checks, detectorState, failingScopes, gateActivity, reviewStalls, shortScopes, spendSpike, stewardOn, tick } from "../service/src/detector.ts";
+import { checks, detectorState, failingScopes, gateActivity, reviewStalls, shortScopes, spendSpike, stewardOn, tick, unresumedWaits } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -126,16 +126,20 @@ test("an owner message on a chat task unanswered for 15 minutes is a critical in
   const own = (m, body = "hello") => ({ authorType: "user", body, createdAt: minsAgo(m) });
   const w = world({
     chatLabel: true,
-    tasks: { c1: chat("c1"), c2: chat("c2"), c3: chat("c3"), c4: chat("c4") },
+    tasks: { c1: chat("c1"), c2: chat("c2"), c3: chat("c3"), c4: chat("c4"), c5: chat("c5"), c6: chat("c6"), c7: chat("c7"), c8: chat("c8") },
     comments: {
       c1: [own(20)], // unanswered
       c2: [{ authorType: "agent", body: "on it", createdAt: minsAgo(18) }, own(20)], // answered (newest first)
       c3: [own(5)], // too recent
+      c8: [own(20, "Not right: not like that\n\n<!-- aidenhq-correction -->")], // a correction is the owner's message, not a marker to skip
       c4: [own(30, "x\n<!-- aidenhq-wake -->"), own(40, "hi")].slice(0, 1), // only a relayed notice: no owner words
+      c5: [own(30, "parked\n\n<!-- aidenhq:job=kernel kind=wait-park -->"), own(40, "hi")], // the kernel's park note is no reply
+      c6: [own(30, "Unblocked\n\n<!-- aidenhq:job=kernel kind=unblocked -->"), own(40, "hi")], // nor its unblock note
+      c7: [{ authorType: "agent", body: "on it", createdAt: minsAgo(20) }, own(40, "hi")], // an agent's reply answers it
     },
   });
   const found = await detect(w).front();
-  assert.deepEqual(found.map((i) => [i.key, i.critical]), [["c1", true]]);
+  assert.deepEqual(found.map((i) => [i.key, i.critical]), [["c1", true], ["c5", true], ["c6", true], ["c8", true]]);
 });
 
 test("an alert's label text is fenced in its incident, its closing marker neutralised; a critical one files a Steward check in a fixed line", async () => {
@@ -299,6 +303,11 @@ test("gate activity counts only the holder's or a fleet-audit agent's comment, n
   // The Steward's own comment is the work moving too.
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-audit", body: "routing it", createdAt: minsAgo(2) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(2));
+  // The holder's own comment keeps its kernel op/job tag: it is still the work moving, even quoting a kernel tag mid-body.
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-eng", body: "Rebasing.\n\n<!-- aidenhq:job=abc kind=cp -->", createdAt: minsAgo(3) }];
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(3));
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-eng", body: "The note `<!-- aidenhq:job=kernel kind=wait-park -->` parked it.\n\n<!-- aidenhq:job=abc kind=cp -->", createdAt: minsAgo(4) }];
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(4), "a quoted tag is no marker");
   // Another agent's comment alone is no activity at all.
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-reviewer", body: "looks odd", createdAt: minsAgo(1) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), undefined);
@@ -475,4 +484,22 @@ test("the stuck-work rule exempts a routine run by the row's own origin, and sti
   };
   const found = await checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW }).stuck();
   assert.deepEqual(found.map((i) => i.key), ["t2:idle-capped"], "the routine's own run is exempt; the agent's task still raises it");
+});
+
+test("the kernel's wait-park note is not an answer: an owner wait stays quiet, a genuine owner comment still raises the incident, and another agent's park note settles nothing", async () => {
+  const park = "Parked while the wait is armed.\n\n<!-- aidenhq:job=kernel kind=wait-park -->";
+  const wait = (reason, holder) => ({ task: "t1", identifier: "WOR-T1", since: ago(4), reason, holder, attention: [{ who: reason === "owner_wait" ? "owner" : "eng", why: reason, ref: "wait:t1" }], idle_wakes: 0, origin: null, wait_since: ago(4) });
+  const read = (comments) => async () => comments;
+  const noHolder = async () => undefined;
+  const parkOnly = [{ authorType: "user", body: park, createdAt: ago(2) }];
+  assert.deepEqual((await unresumedWaits([wait("owner_wait", null)], NOW, read(parkOnly), noHolder)).found, [], "the park note is no owner answer");
+  const typed = [{ authorType: "user", body: "Yes, go ahead.", createdAt: ago(2) }, ...parkOnly];
+  const [incident, ...rest] = (await unresumedWaits([wait("owner_wait", null)], NOW, read(typed), noHolder)).found;
+  assert.equal(rest.length, 0);
+  assert.match(incident.reason, /WOR-T1 has not resumed 120 min after its owner's answer arrived/);
+  const agentPark = [{ authorType: "agent", authorAgentId: "maintainer", body: park, createdAt: ago(2) }];
+  assert.deepEqual((await unresumedWaits([wait("delegator_wait", "eng")], NOW, read(agentPark), async () => "eng")).found, [], "another agent's park note is no delegator answer");
+  // An agent's own comment carries the kernel's op/job tag too; that one is a real answer.
+  const tagged = [{ authorType: "agent", authorAgentId: "maintainer", body: "Approved: rebase and go.\n\n<!-- aidenhq:job=abc kind=cp -->", createdAt: ago(2) }];
+  assert.deepEqual((await unresumedWaits([wait("delegator_wait", "eng")], NOW, read(tagged), async () => "eng")).found.map((f) => f.key), ["t1"], "a tagged but genuine agent comment still answers");
 });
