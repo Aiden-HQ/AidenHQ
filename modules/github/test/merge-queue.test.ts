@@ -769,7 +769,7 @@ test("a queue persisted before the identifier was kept recovers it from the reco
   // The kernel's work read: the record keeps the task's identifier, which the queue written before this change never stored.
   const { handle, outcomes, settle } = await setup(t, {
     prs, cacheDir,
-    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9" } : undefined),
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false } : undefined),
   });
   await handle.stepMerges();
   await settle();
@@ -794,8 +794,8 @@ test("a queue across a kernel upgrade waits for the identifier the reconcile is 
   let reads = 0;
   const { handle, outcomes, settle } = await setup(t, {
     prs, cacheDir,
-    // The record before reconcile recorded the identifier (null), then as it reads once reconcile has: WOR-9.
-    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: null } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9" }) : undefined),
+    // Before the kernel's reconcile has recorded it the record has none and is pending; after, it is WOR-9.
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: null, identifier_pending: true } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false }) : undefined),
   });
   await handle.stepMerges();
   await new Promise((r) => setTimeout(r, 50));
@@ -805,6 +805,29 @@ test("a queue across a kernel upgrade waits for the identifier the reconcile is 
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
     [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the identifier reconcile recorded kept the evidence");
+});
+
+test("a queue that cached a null identifier before the upgrade reads it again once the kernel has it", async (t) => {
+  // The version before this one took a record's first "no identifier" as final and kept the queue settled with none. The kernel's
+  // upgrade reconcile has recorded it since: the queue must read again, or a PR merged at its bound head is credited to nobody.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-upgrade-recached-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  mkdirSync(join(cacheDir, "merges"), { recursive: true });
+  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000c0": {
+    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9", recovered: true, recoveredNone: true,
+    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending" }],
+  } } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  const { handle, outcomes, settle } = await setup(t, {
+    prs, cacheDir,
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false } : undefined),
+  });
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the re-read found the identifier and kept the evidence");
 });
 
 test("a legacy queue waits out a failed identifier read instead of settling without the evidence", async (t) => {
@@ -824,7 +847,7 @@ test("a legacy queue waits out a failed identifier read instead of settling with
   const { handle, outcomes, settle } = await setup(t, {
     prs, cacheDir,
     // The first read fails (a 503 while the kernel restarts), the next answers: the queue must retry, not settle.
-    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { __status: 503 } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9" }) : undefined),
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { __status: 503 } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false }) : undefined),
   });
   await handle.stepMerges();
   await new Promise((r) => setTimeout(r, 50));

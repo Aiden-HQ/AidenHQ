@@ -25,12 +25,10 @@ type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: nu
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
 type Pr = { repo: string; number: number; head: string; /** The base an adopted PR's merge was filed against (ship): a change fails it. */ base?: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; /** The task's own pr/push record named this bound head (pr-tasks.json had no row): kept once answered, so a settle credits the PR. A negative answer is never kept: a record filed after it is asked again each poll. A failed read is not kept either. */ bound?: { head: string }; wait?: { key: string; since: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
-type Queue = { id: string; state: string; /** Filed by the ship module (a fleet PR's plain merge too): ship's pause or a repo switched off ends it at the call. */ byShip?: boolean; /** An adopted PR's merge (ship, args.generation): ship's readiness, the adoption read again before the merge call, and every other action ends it for ship's next round. */ ship?: { generation: number }; /** The kernel ran the record at Tier 0 (record.tier): a product merge must still be eligible at the merge. */ tier0?: boolean; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** How many polls the record has answered with no identifier: a claimed record the kernel's restart reconcile has not filled in yet also answers none, so the answer is only taken once it has held. */ noneTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** How many times the task-binding read (prBound) has failed for this queue: only for the log, as the read is retried on every poll until it answers. */ boundTries?: number; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
+type Queue = { id: string; state: string; /** Filed by the ship module (a fleet PR's plain merge too): ship's pause or a repo switched off ends it at the call. */ byShip?: boolean; /** An adopted PR's merge (ship, args.generation): ship's readiness, the adoption read again before the merge call, and every other action ends it for ship's next round. */ ship?: { generation: number }; /** The kernel ran the record at Tier 0 (record.tier): a product merge must still be eligible at the merge. */ tier0?: boolean; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the kernel settled it as none), so no further read is needed. A failed read is not this; a pending one is not this either. */ recovered?: boolean; /** `recovered` was settled with no identifier by the version before this one, which took the first none as final: read again once, in case the kernel's upgrade reconcile recorded it since. */ recoveredNone?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The record's identifier lookup is settled (`recovered`), and how many polls it has stayed unsettled since: a claimed record the kernel's restart reconcile is about to fill in answers "pending", never a final none. */ noneTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** How many times the task-binding read (prBound) has failed for this queue: only for the log, as the read is retried on every poll until it answers. */ boundTries?: number; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
-/** How many polls a record's "no identifier" answer is taken as final: the kernel's restart reconcile fills a claimed record in a minute in, so the first polls after an upgrade can still answer none. */
-const NONE_TRIES = 3;
 /** How long a branch's rules (required checks, merge queue) are kept before they are read again. */
 const RULES_MS = 10 * 60_000;
 /**
@@ -82,8 +80,12 @@ export function createMerges(d: {
   /** A task's id from its identifier (WOR-12), as the kernel's work read resolves it (by its jobs): a module's record (ship's)
    * names its task by id only, and pr-tasks.json keys a PR's owner by the identifier. */
   taskIdOf?: (identifier: string) => Promise<string | undefined>;
-  /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
-  identifierOf?: (record: string) => Promise<string | undefined>;
+  /**
+   * A record's task identifier as the kernel has it (GET /v1/work?record=), read once for a queue persisted before the queue kept
+   * it. `pending`: the record has none yet and the kernel has not answered for its task (a claimed record its upgrade reconcile
+   * is about to fill in), so the absence is not final. `undefined`: no such record any more.
+   */
+  identifierOf?: (record: string) => Promise<{ identifier?: string; pending: boolean } | undefined>;
   /** A task's status (GET /v1/work?task=): a merge ship filed on a task that has since ended is never called. */
   taskStatus?: (task: string) => Promise<string | null | undefined>;
   /**
@@ -613,18 +615,24 @@ export function createMerges(d: {
         // never handed `execute` again: read the identifier from the record so an already-merged PR is still found to be this
         // task's. A read that failed (kernel briefly unavailable) is not a record without an identifier: only keep `recovered`
         // once the read answered, and until it has, hold the queue rather than settle it without the evidence.
-        if (q.task && !q.taskIdentifier && !q.recovered && d.identifierOf) {
+        // A null identifier cached by the version before this one (the record answered none, and it took that as final) is
+        // read again once: the kernel's upgrade reconcile may have recorded it since, and a queue settled without an identifier
+        // omits the evidence of a PR already merged at its bound head. (`recovered` alone never says which version cached it.)
+        if (q.task && !q.taskIdentifier && d.identifierOf && (!q.recovered || q.recoveredNone)) {
           const r = await d.identifierOf(id).then((v) => ({ v }), (e: Error) => {
             log("merge queue: task identifier not read (retrying)", { record: id, tries: (q.recoverTries ?? 0) + 1, err: says(e) });
             return undefined;
           });
           if (r) {
             delete q.recoverTries;
-            if (r.v) { q.recovered = true; delete q.noneTries; q.taskIdentifier = r.v; }
-            // A record that answers with no identifier may be one the kernel's own upgrade reconcile fills in a minute later (a
-            // claimed record, and a merge queue running across the restart is never handed execute again): that answer is only
-            // taken as final once it has held for a few polls, so the identity about to be recorded is not given up on.
-            else if ((q.noneTries = (q.noneTries ?? 0) + 1) >= NONE_TRIES) q.recovered = true;
+            const v = r.v;
+            // The kernel has no record by that id any more (`undefined`): nothing to read again, settled as before.
+            if (!v) { q.recovered = true; q.recoveredNone = false; delete q.noneTries; }
+            // Pending: the record has no identifier and the kernel has not answered for its task. Its upgrade reconcile fills
+            // it in a minute in (a claimed record is never handed execute again), so the queue holds rather than settling.
+            else if (!v.identifier && v.pending) { q.noneTries = (q.noneTries ?? 0) + 1; }
+            // Settled with one, or settled with none (the control plane answered: gone, or no identifier): that is the answer.
+            else { q.recovered = true; q.recoveredNone = !v.identifier; delete q.noneTries; if (v.identifier) q.taskIdentifier = v.identifier; }
             save();
           } else q.recoverTries = (q.recoverTries ?? 0) + 1;
         }

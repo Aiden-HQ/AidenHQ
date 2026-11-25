@@ -1290,8 +1290,11 @@ export function createService(o: Options) {
       // A record that is gone (404) has no identifier to find; any other failure is transient (the kernel restarting), and the
       // queue must retry it rather than settle a legacy queue without the evidence the identifier would have proven.
       const r = await kernel("GET", `/v1/work?record=${encodeURIComponent(record)}`).catch((e: Error & { status?: number }) => { if (e.status === 404) return undefined; throw e; });
-      const ident = String((r as { identifier?: unknown })?.identifier ?? "");
-      return ident || undefined;
+      if (!r) return undefined;
+      const ident = String((r as { identifier?: unknown }).identifier ?? "");
+      // `pending`: no identifier yet and none read (a claimed record the kernel's upgrade reconcile is about to fill in), so an
+      // absence here is not the task's answer and the queue holds for it rather than settling.
+      return { ...(ident ? { identifier: ident } : {}), pending: (r as { identifier_pending?: unknown }).identifier_pending === true };
     },
     // A cancelled task's approved merge never lands: ship's loop leaves its PR for a successor, and the queue checks this before
     // every merge, not only when the record was filed. A failed read holds the merge rather than landing it.

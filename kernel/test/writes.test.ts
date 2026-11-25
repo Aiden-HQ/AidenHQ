@@ -262,9 +262,11 @@ test("a claimed record an upgrade left without an identifier is filled in by rec
   assert.equal(k.records.get(rec.id).identifier, null);
   assert.deepEqual(await k.writes.reconcile(), []);
   assert.deepEqual([k.records.get(rec.id).state, k.records.get(rec.id).identifier], ["claimed", "WOR-8637"]);
+  // A task the control plane has no row for is the answer "none": settled, so a queue does not hold forever for one.
   const unknown = file("TASK-404");
+  assert.equal(k.records.get(unknown.id).identifier_checked, false);
   await k.writes.reconcile();
-  assert.equal(k.records.get(unknown.id).identifier, null);
+  assert.deepEqual([k.records.get(unknown.id).identifier, k.records.get(unknown.id).identifier_checked], [null, true]);
 });
 
 test("a job's plan-time refusal keeps its rule's stable code beside its words, and a write that goes through clears both", async (t) => {

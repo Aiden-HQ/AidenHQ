@@ -50,6 +50,22 @@ test("a task's read carries its status as the wake scan last saw it, null when i
   assert.deepEqual(work.task("ACME-1").jobs.map((j) => j.id), ["j-2", "j-1"]);
 });
 
+test("a record read says whether its missing identifier is still owed or the control plane's answer", () => {
+  const { work, records } = setup();
+  const card = { sentence: "s", changes: "c", reads: "r", cost: "none", details: "" };
+  const file = (identifier) => records.file({ kind: "github.merge", module: "github", args: {}, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, card,
+    requester: { agent: "", key: "", name: "ship", roles: [], kind: "module", module: "ship" }, task: "t1", state: "claimed", ...(identifier ? { identifier } : {}) });
+  // No identifier and no answer yet: a claimed record an upgrade is about to fill in, so a queue waits rather than settling.
+  const owed = file();
+  assert.deepEqual([work.record(owed.id).identifier, work.record(owed.id).identifier_pending], [null, true]);
+  // The control plane answered with none: the absence is the task's, and the reader may take it.
+  records.markIdentified(owed.id);
+  assert.deepEqual([work.record(owed.id).identifier, work.record(owed.id).identifier_pending], [null, false]);
+  // One it has is never pending.
+  const known = file("WOR-1");
+  assert.deepEqual([work.record(known.id).identifier, work.record(known.id).identifier_pending], ["WOR-1", false]);
+});
+
 test("a task's read carries an apply's card diff (its grader's APPLY_CHANGE) and no other kind's card details", () => {
   const { work, records } = setup();
   const card = (details) => ({ sentence: "s", changes: "c", reads: "r", cost: "none", details });

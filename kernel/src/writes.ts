@@ -341,9 +341,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * own failure throws: the caller decides (a run is retried, a restart's reconcile keeps the record as it is).
    */
   async function identified(r: Rec): Promise<Rec> {
-    if (r.identifier || !r.task || r.requester?.kind === "run" || !taskIdentifier) return r;
+    if (r.identifier || r.identifier_checked || !r.task || r.requester?.kind === "run" || !taskIdentifier) return r;
     const identifier = await taskIdentifier(r.task);
-    return identifier && records.setIdentifier(r.id, identifier) ? records.get(r.id)! : r;
+    // None is the control plane's answer (a task gone, or one without an identifier), not a read still owed: recorded, so a
+    // reader waiting on it takes the absence as final instead of holding a merge for an identifier the task does not have.
+    if (!identifier) { records.markIdentified(r.id); return records.get(r.id)!; }
+    return records.setIdentifier(r.id, identifier) ? records.get(r.id)! : r;
   }
   async function execute(r: Rec, k: Kind | undefined): Promise<void> {
     executing.add(r.id);
@@ -747,7 +750,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         // A record an upgrade found already claimed (a merge queue still running) is never handed execute again, so its task's
         // identifier is filled in here: the queue reads it from the record before it settles, and a pr-tasks.json row is keyed by
         // it, not by the task's id. A failed read keeps the record as it is, for the next reconcile.
-        if (!r.identifier && r.task && r.requester?.kind !== "run") await identified(r).catch(() => r);
+        if (!r.identifier && !r.identifier_checked && r.task && r.requester?.kind !== "run") await identified(r).catch(() => r);
         if (!modules && resume.includes(r.kind) && native[r.kind]) { void execute(r, undefined); continue; }
         const k = registry()[r.kind];
         // An executor whose status can't be read now (still starting after the restart): asked again on the next reconcile, for
