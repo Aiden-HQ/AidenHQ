@@ -78,22 +78,25 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
 
     // Nothing moves until the ack; a replay sees the same batch.
     expect((await ws.gmailInbox(start, 2)).cursor).toEqual(first.cursor);
+    cursors.offer("agent-1", first.cursor);
     cursors.ack("agent-1", first.cursor);
     expect(cursors.get("agent-1")).toEqual(first.cursor);
 
     const second = await ws.gmailInbox(cursors.get("agent-1"), 1);
     expect(second.threads.map((t) => t.thread_id).sort()).toEqual(["td", "te"]);
     expect(second.cursor).toEqual({ "me@work.com": T0 + 7_000 });
+    cursors.offer("agent-1", second.cursor);
     cursors.ack("agent-1", second.cursor);
 
     const third = await ws.gmailInbox(cursors.get("agent-1"), 5);
     expect(third.threads.map((t) => t.thread_id)).toEqual(["tf"]);
     expect(third.accounts[0]).toMatchObject({ more: false });
 
-    // Never back, never past now; another agent has its own cursor.
+    // Never back, never past what the feed gave; another agent has its own cursor and nothing offered.
     cursors.ack("agent-1", { "me@work.com": T0 });
     expect(cursors.get("agent-1")).toEqual(second.cursor);
-    expect(() => cursors.ack("agent-1", { "me@work.com": Date.now() + 3_600_000 })).toThrow(/not a time/);
+    expect(() => cursors.ack("agent-1", { "me@work.com": T0 + 7_001 })).toThrow(/not a time/);
+    expect(() => cursors.ack("agent-2", second.cursor)).toThrow(/not a time/);
     expect(cursors.get("agent-2")).toEqual({});
   });
 

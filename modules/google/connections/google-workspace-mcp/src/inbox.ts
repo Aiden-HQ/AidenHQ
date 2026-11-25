@@ -36,11 +36,13 @@ export function ccOnly(me: string, to: string | undefined, cc: string | undefine
 }
 
 export type Cursor = Record<string, number>;
-/** Gmail stamps receipt times on its own clock, which may run a little ahead of the host's. */
-const CLOCK_SKEW_MS = 300_000;
 
 /** Each agent's inbox cursor, one small JSON file in the service's state dir. */
 export class InboxCursors {
+  /** The cursor gmail_inbox_new last gave each agent, in memory: an ack may move only up to it. After a restart nothing
+   *  is offered, so an ack fails and the agent reads the feed again (task markers make the replay idempotent). */
+  private readonly offered = new Map<string, Cursor>();
+
   constructor(private readonly file: string) {}
 
   private load(): Record<string, Cursor> {
@@ -51,12 +53,19 @@ export class InboxCursors {
     return this.load()[agent] ?? {};
   }
 
-  /** Moves the agent's cursor forward to `cursor` (never back; never past now, give or take Gmail's clock against ours). */
-  ack(agent: string, cursor: Cursor, now = Date.now()): Cursor {
+  /** Records the cursor gmail_inbox_new just returned to this agent. */
+  offer(agent: string, cursor: Cursor): void {
+    this.offered.set(agent, { ...cursor });
+  }
+
+  /** Moves the agent's cursor forward to `cursor`, never back and never past what gmail_inbox_new last gave it. */
+  ack(agent: string, cursor: Cursor): Cursor {
+    const given = this.offered.get(agent) ?? {};
     const all = this.load();
     const mine = { ...(all[agent] ?? {}) };
     for (const [account, ms] of Object.entries(cursor)) {
-      if (!Number.isFinite(ms) || ms > now + CLOCK_SKEW_MS) throw new Error(`cursor for ${account} is not a time gmail_inbox_new gave`);
+      const max = given[account];
+      if (!Number.isFinite(ms) || max === undefined || ms > max) throw new Error(`cursor for ${account} is not a time gmail_inbox_new gave; call gmail_inbox_new again`);
       mine[account] = Math.max(mine[account] ?? 0, ms);
     }
     all[agent] = mine;

@@ -202,7 +202,9 @@ function buildServer(caller?: Caller): McpServer {
     },
     run("gmail_inbox_new", async (ws, a: { limit: number; account?: string }) => {
       if (!ws.gmailInbox) throw new Error("Gmail is not available in fixture mode");
-      return { notice: UNTRUSTED, ...(await ws.gmailInbox(inboxCursors.get(agentKey()), a.limit)) };
+      const feed = await ws.gmailInbox(inboxCursors.get(agentKey()), a.limit);
+      inboxCursors.offer(agentKey(), feed.cursor);
+      return { notice: UNTRUSTED, ...feed };
     }, true),
   );
   server.registerTool(
