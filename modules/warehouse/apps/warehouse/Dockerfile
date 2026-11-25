@@ -24,6 +24,7 @@ RUN rm -rf /var/lib/apt/lists/*
 # the image keeps only the rebuilt binary. .github/image-scan-exceptions.yaml ignores this path when the final
 # `RUN gosu --version` is present.
 RUN set -eux; \
+    savedAptMark="$(apt-mark showmanual)"; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
     mkdir -p /tmp/gosu-build; \
@@ -43,6 +44,8 @@ RUN set -eux; \
       /tmp/gosu-build/go/bin/go build -o /usr/local/bin/gosu; \
     cd /; \
     rm -rf /tmp/gosu-build; \
-    apt-get purge -y --auto-remove ca-certificates curl; \
+    apt-mark auto '.*' > /dev/null; \
+    [ -z "$savedAptMark" ] || apt-mark manual $savedAptMark > /dev/null; \
+    apt-get purge -y --auto-remove; \
     rm -rf /var/lib/apt/lists/*
 RUN gosu --version
