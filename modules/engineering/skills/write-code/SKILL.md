@@ -54,9 +54,9 @@ description: "Sets how code is changed in any repository: starting the branch, P
 
 ## App repositories
 
-- `.github/code-review-critical` lists the globs `code-review` reviews at full depth. Add the paths of a new app, and of
-  code that reads owner data, handles sign-in or identity, takes public input or payments, or sends messages out. Lines
-  leave only when the task says so.
+- The repo's `code_review` entry in the instance settings holds its risk tier `rules`: a path rule naming `sensitive` makes
+  `code-review` look harder. Ask for the paths of a new app, and of code that reads owner data, handles sign-in or identity,
+  takes public input or payments, or sends messages out, to be added there. `REVIEW.md` holds the repo's house rules for the reviewer.
 - A data app (`database: warehouse`) migrates by adding: tables, nullable or defaulted columns, indexes. A replaced
   column or table is dropped only by a later release, once the deployed one already runs without it, so a deploy can
   roll back.

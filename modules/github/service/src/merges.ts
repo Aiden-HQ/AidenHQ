@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
 import { PR_QUERY, decide, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
+import type { ShipAdoptions } from "./service.ts";
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
@@ -68,7 +69,7 @@ export function createMerges(d: {
   holdReason?: () => string | null | undefined;
   fleetOrg: string; productRepo?: string;
   /** Ship's adoptions (service.ts ShipAdoptions): an adopted PR's merge is still its adoption's (not on hold, not paused) at the call. */
-  ship?: { generation(repo: string, number: number): Promise<{ generation: number | null }> };
+  ship?: ShipAdoptions;
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
   /** Code review's verdict for a PR head (undefined: may merge; wait: why not yet). */
@@ -357,7 +358,8 @@ export function createMerges(d: {
       if (v.do === "fail") return fail(v.why ?? "");
       if (v.do === "wait") return wait(v.why ?? "");
       if (v.do !== "merge") return;
-      const review = await d.reviewGate(p.repo, p.number, p.head);
+      // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
+      const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       // A Tier 0 product merge rests on its eligibility at this head now, by the same rule the plan used.
       if (q.tier0 && d.productRepo && same(p.repo, d.productRepo) && !productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");
       if (review && "bypass" in review) p.bypass = review.bypass;
@@ -374,9 +376,12 @@ export function createMerges(d: {
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
       // An adoption's merge is still that adoption's right before the call: a hand-back, a stop or a pause since ends it.
-      if (q.ship && (await d.ship?.generation(p.repo, p.number))?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
+      // The same call asks ship's final tier check (the tier's merge, no App approval of another policy standing), with the live head, base and author.
+      const at = q.ship || (q.byShip && d.ship) ? await d.ship?.generation(p.repo, p.number, { do: "merge", head: p.head, base: String(pull?.baseRefName ?? ""), association: String(pull?.authorAssociation ?? "") }) : undefined;
+      if (q.ship && at?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
+      if (at?.refused) return fail(`${at.retry ? "ship-tier-pending: " : ""}ship's tier check refused the merge: ${at.refused}`);
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
-      if (q.byShip && !q.ship && d.ship && (await d.ship.generation(p.repo, p.number)).generation === null) return fail("ship is paused, or this repo is switched off in ship: not merged");
+      if (q.byShip && !q.ship && d.ship && at?.generation === null) return fail("ship is paused, or this repo is switched off in ship: not merged");
       // The kernel files a module's write on any task: a fleet PR's merge ship filed stops when its task is cancelled.
       if (q.byShip && !q.ship && q.task && d.taskStatus) {
         const status = await d.taskStatus(q.task);
@@ -671,7 +676,8 @@ export function createMerges(d: {
       // A skipped image scan is judged on the PR's files, which only the full read has.
       const listed = view && !skippedImageScan(view.pr);
       const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);
-      const g = await d.reviewGate(repo, number, head);
+      // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
+      const g = await d.reviewGate(repo, number, head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       const rollup = data.repository.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
       // Every context by name, advisory ones included (a branch may require them), as the REST read gives them.
       const fromRollup = () => (rollup?.contexts?.nodes ?? []).map((n: any) => ({ name: String(n.name ?? n.context ?? ""), status: contextStatus(n) })).filter((c: { name: string }) => c.name)

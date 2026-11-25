@@ -9,10 +9,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 /*kit:css*/
-  .row { grid-template-columns: minmax(150px, 1.6fr) 64px repeat(4, minmax(104px, 1fr)) 72px; }
+  .row { grid-template-columns: minmax(150px, 1.4fr) 64px repeat(2, minmax(104px, 0.8fr)) minmax(280px, 3fr) 72px; }
   .repo .link { display: flex; margin-top: 2px; font-weight: 400; }
   .row .repo { align-self: start; }
   .dhead { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+  .tiers { display: flex; flex-wrap: wrap; gap: 4px; align-self: center; }
+  .tg { --c: #8b8f98; border-left: 3px solid var(--c); background: color-mix(in srgb, var(--c) 11%, transparent); padding: 2px 7px; border-radius: 3px; font-size: 11.5px; line-height: 1.3; white-space: nowrap; }
+  .tg b { font-weight: 600; margin-right: 4px; }
+  .tg.trivial, .drawer .grp.trivial { --c: #2f9e6a; } .tg.standard, .drawer .grp.standard { --c: #3b78d8; } .tg.sensitive, .drawer .grp.sensitive { --c: #d6603b; } .drawer .grp.skip { --c: #8b8f98; }
+  .drawer .grp[class*="tier-"] { color: inherit; border-left: 3px solid var(--c); padding-left: 8px; margin-top: 8px; }
   .pause { display: flex; align-items: center; gap: 8px; }
   .pause .sw { flex: none; }
   .pause.on { color: var(--color-text-danger, red); }
@@ -21,7 +26,7 @@
   .q { display: inline-block; width: 15px; height: 15px; line-height: 15px; text-align: center; border: 1px solid var(--line); border-radius: 50%; font-size: 10px; cursor: help; margin-left: 6px; }
   @media (max-width: 860px) {
     .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; }
-    .row .repo { grid-column: 1; } .row .onoff { grid-column: 2; justify-self: end; }
+    .row .repo { grid-column: 1; } .row .onoff { grid-column: 2; justify-self: end; } .row .tiers { grid-column: 1 / -1; }
     .hold { grid-template-columns: 1fr auto; gap: 2px 10px; } .hold .why { grid-column: 1 / -1; } .hold .when { grid-column: 2; grid-row: 1; justify-self: end; } .hold .tag { grid-column: 1; grid-row: 2; }
   }
 </style>
@@ -48,9 +53,13 @@
   const COLS = {
     preset: ["Preset", "The starting set of guards for this repo. A field you set yourself keeps its value when the preset changes.", { cautious: "The default guards: caps on rounds and spend, and protected files held for you.", full: "No guards: no caps and no protected files." }],
     handoff: ["Hand-off", "Which pull requests Ship takes on.", { label: "A member adds the ship label or comments /ship.", all: "Every member PR is adopted.", none: "Off: nothing is adopted." }],
-    approve: ["Approve", "Whether Ship approves PRs it has worked.", { off: "Ship never approves.", observe: "Records what it would approve, approves nothing.", safe: "Approves small, low-risk PRs that pass review.", all: "Approves any PR that passes review." }, "A PR that touches code-owner files still needs the owner."],
-    merge: ["Merge", "Whether Ship merges.", { off: "Ship never merges.", ready: "Merges once the PR is ready: checks pass, review is clean and it is approved." }],
   };
+  // Risk tiers (code review gives each PR head one; its rules are on the Reviews page): what Ship's App and merge do for each.
+  const TIERS = ["skip", "trivial", "standard", "sensitive"];
+  const TIER_HELP = { skip: "No review. Only a rule you add picks it; the default rules never do. It has a merge setting only: there is no review to approve on.", trivial: "A small change by a member, with one cheap review.", standard: "Everything that is neither trivial nor sensitive.", sensitive: "Sensitive paths, outsiders, big changes and critical repos get the strongest review." };
+  const APPROVE_OPTS = { off: "Ship never approves this tier: a person does.", observe: "The report says what Ship would approve; nothing is approved.", on: "The App approves once code review has passed the PR's head." };
+  const MERGE_OPTS = { off: "Ship never merges this tier.", ready: "Merges once every gate passes: checks, code review, approval." };
+  const cap = (x) => x[0].toUpperCase() + x.slice(1);
   const ON = ["On", "On: Ship works this repo's PRs. Off: it leaves them alone."];
   const HOLDS = { stalled: "Ship made no progress and gave up for now.", handed_back: "Ship gave it back to its author.", stopped: "A stop label or a person paused it." };
   const hd = (key, current) => { const [label, text, options, note] = COLS[key]; return help(label, text, { options, current, note }); };
@@ -58,7 +67,7 @@
   // The edits the owner hasn't saved yet, one proposal for the page: field changes per repo, and the pause. Each edit merges into it.
   let pending = { repos: {}, paused: undefined };
   // What the proposal shows of a repo's headline fields: its preset, and the effective on, hand-off, approve and merge with the pending edits and resets.
-  const shown = (r) => { const s = view(r.repo); return { ...r, preset: presetFor(r.repo), enabled: s.enabled, handoff: s.handoff, approve: s.approve, merge: s.merge }; };
+  const shown = (r) => { const s = view(r.repo); return { ...r, preset: presetFor(r.repo), enabled: s.enabled, handoff: s.handoff, by_tier: s.by_tier, unwatched: s.unwatched }; };
 
   // The last proposal the host accepted: a refused edit drops back to it, so one bad value never blocks the next proposal (and the page is what the Save bar holds).
   let lastGood = { repos: {}, paused: undefined };
@@ -85,21 +94,24 @@
     "caps.rounds": ["Rounds", "The most repair rounds of any kind one PR gets. Blank is unlimited.", null],
     "caps.usd": ["Spend (USD)", "The most Ship spends on one PR, in dollars. Blank is unlimited.", null],
     "caps.requeue_on_timeout": ["Requeues on timeout", "How many times a timed-out run is queued again. Blank is unlimited.", null],
-    "safe.max_lines": ["Safe: max lines", "With Approve on safe, a PR changing more lines than this is not small enough to approve. Blank is unlimited.", null],
-    "safe.max_files": ["Safe: max files", "With Approve on safe, a PR touching more files than this is not small enough to approve. Blank is unlimited.", null],
-    "safe.deny": ["Safe: never approve paths", "With Approve on safe, a PR touching any of these paths is never approved by Ship, one glob per line.", null],
     stop_label: ["Stop label", "While a PR carries this label Ship leaves it alone; removing it resumes.", null],
   };
+  for (const t of TIERS) {
+    if (t !== "skip") T[`by_tier.${t}.approve`] = [`${cap(t)}: approve`, `Whether Ship's App approves a ${t} PR.`, APPROVE_OPTS];
+    T[`by_tier.${t}.merge`] = [`${cap(t)}: merge`, `Whether Ship merges a ${t} PR.`, MERGE_OPTS];
+  }
+  T["unwatched.merge"] = ["Unwatched: merge", "A repo code review doesn't watch has no risk tier. Whether Ship merges its PRs.", MERGE_OPTS];
   const STAGES = { conflict: "When a PR conflicts", behind: "When a PR is behind", before_merge: "Before merge" };
   const GROUPS = [
+    ...TIERS.map((t) => [`${cap(t)} PRs`, t === "skip" ? ["by_tier.skip.merge"] : [`by_tier.${t}.approve`, `by_tier.${t}.merge`], `${TIER_HELP[t]} Which PRs are ${t} is set by the tier rules on the Reviews page.`, `tier-${t} ${t}`]),
+    ["Repos code review doesn't watch", ["unwatched.merge"]],
     ["Rebase and repair", ["rebase", "fix", "generated.globs", "generated.command", "protected"]],
     ["Caps", ["caps.wakes_per_head", "caps.ci_rounds", "caps.same_check_heads", "caps.rounds", "caps.usd", "caps.requeue_on_timeout"], "How many times a PR is re-reviewed (and so fixed) is code review's 'Reviews per push' setting on the Reviews page."],
-    ["Safe approval", ["safe.max_lines", "safe.max_files", "safe.deny"]],
     ["Other", ["stop_label"]],
     ["Actions", Object.keys(STAGES).map((s) => `actions.${s}`), "Extra steps Ship takes at a stage: post a comment or run a workflow. One per line: comment: text, or workflow: file.yml key=value."],
   ];
   
-  const KIND = { rebase: "select", fix: "checks", "generated.globs": "list", "generated.command": "text", protected: "list", "safe.deny": "list", stop_label: "text" };
+  const KIND = { rebase: "select", fix: "checks", "generated.globs": "list", "generated.command": "text", protected: "list", stop_label: "text" };
   const get = (o, path) => path.split(".").reduce((x, k) => x?.[k], o);
   const put = (o, path, v) => { const ks = path.split("."); const last = ks.pop(); const t = ks.reduce((x, k) => (x[k] ??= {}), o); t[last] = v; };
   const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -112,11 +124,22 @@
   const baseOf = (key) => (key !== "defaults" && target(key).inherits && !pending.repos[key]?.preset ? view("defaults") : presets[presetFor(key)] ?? {});
   const dflt = (key, path) => get(baseOf(key), path);
   // The settings as the proposal would leave them: the base, then the fields the entry sets (minus the pending resets), then the pending edits.
+  // Fields that merge leaf by leaf (a cap, one tier's approve or merge): an edit or a reset names the leaf, the rest keep their values.
+  const DEEP = ["caps", "by_tier", "unwatched"];
+  function mergeInto(dst, src, path, resets, skip) {
+    for (const [k, v] of Object.entries(src ?? {})) {
+      const at = `${path}.${k}`;
+      if (v && typeof v === "object" && !Array.isArray(v)) mergeInto(dst[k] ??= {}, v, at, resets, skip);
+      else if (!skip || !resets.has(at)) dst[k] = v;
+    }
+  }
+  // A leaf removed from a map, and the maps it leaves empty.
+  function drop(o, path) { const [k, ...rest] = path.split("."); if (rest.length) { if (!o[k]) return; drop(o[k], rest.join(".")); if (!Object.keys(o[k]).length) delete o[k]; } else delete o[k]; }
   function view(key) {
     const t = target(key), p = pending.repos[key] ?? {}, resets = new Set(p.reset ?? []), s = structuredClone(baseOf(key));
     const apply = (src, skipReset) => { for (const [k, v] of Object.entries(src ?? {})) {
       if (["preset", "reset"].includes(k)) continue;
-      if (k === "caps" || k === "safe") { for (const [sub, x] of Object.entries(v ?? {})) if (!skipReset || !resets.has(`${k}.${sub}`)) (s[k] ??= {})[sub] = x; }
+      if (DEEP.includes(k)) { if (!skipReset || !resets.has(k)) mergeInto(s[k] ??= {}, v, k, resets, skipReset); }
       else if (!skipReset || !resets.has(k)) s[k] = k === "generated" ? (v ? { globs: v.globs ?? [], command: v.command ?? "" } : null) : v;
     } };
     apply(t.own, true); apply(p, false);
@@ -129,46 +152,48 @@
   function edit(key, path, value, live) {
     const p = { ...(pending.repos[key] ?? {}) }, [root, sub] = path.split(".");
     p.reset = (p.reset ?? []).filter((x) => x !== path && x !== root);
-    if (root === "caps" || root === "safe") p[root] = { ...p[root], [sub]: value };
+    if (DEEP.includes(root)) { p[root] = structuredClone(p[root] ?? {}); put(p, path, value); }
     else if (sub) p[root] = { ...(view(key)[root] ?? {}), [sub]: value };
     else p[root] = value;
     if (!p.reset.length) delete p.reset;
     propose(p, key, true, live);
   }
   function reset(key, path) {
-    const p = { ...(pending.repos[key] ?? {}) }, r = rootOf(path), [root, sub] = r.split(".");
-    if (sub) { const m = { ...p[root] }; delete m[sub]; if (Object.keys(m).length) p[root] = m; else delete p[root]; } else delete p[root];
+    const p = structuredClone(pending.repos[key] ?? {}), r = rootOf(path);
+    drop(p, r);
     p.reset = [...new Set([...(p.reset ?? []), r])];
     propose(p, key, true);
   }
   // Loosening: a higher or removed cap, more paths fixed or less protected, a branch rebased whenever it is behind.
   const looser = (path, a, b) => {
-    if (path.startsWith("caps.") || /^safe\.max/.test(path)) return b === null ? a !== null : a !== null && b > a;
+    if (path.startsWith("caps.")) return b === null ? a !== null : a !== null && b > a;
+    if (/^by_tier\..*\.approve$/.test(path)) return ["off", "observe", "on"].indexOf(b) > ["off", "observe", "on"].indexOf(a);
+    if (/\.merge$/.test(path)) return b === "ready" && a !== "ready";
     if (path === "rebase") return b === "behind" && a !== "behind";
     if (path === "fix" || path === "generated.globs") return (b ?? []).some((x) => !(a ?? []).includes(x));
-    if (path === "protected" || path === "safe.deny") return (a ?? []).some((x) => !(b ?? []).includes(x));
+    if (path === "protected") return (a ?? []).some((x) => !(b ?? []).includes(x));
     return false;
   };
-  const fmt = (path, v) => Array.isArray(v) ? (v.join(", ") || "none") : v === null || v === undefined || v === "" ? (/^(caps|safe\.max)/.test(path) ? "unlimited" : "none") : typeof v === "object" ? JSON.stringify(v) : String(v);
+  const fmt = (path, v) => Array.isArray(v) ? (v.join(", ") || "none") : v === null || v === undefined || v === "" ? (/^caps/.test(path) ? "unlimited" : "none") : typeof v === "object" ? JSON.stringify(v) : String(v);
   const showAction = (a) => a.workflow ? `workflow: ${a.workflow}${Object.entries(a.inputs ?? {}).map(([k, v]) => ` ${k}=${v}`).join("")}` : `comment: ${a.comment ?? ""}`;
   const readAction = (l) => { const m = l.match(/^(comment|workflow):\s*(.*)$/); if (!m || m[1] === "comment") return { comment: m ? m[2] : l }; const [name, ...kv] = m[2].split(/\s+/); return { workflow: name, inputs: Object.fromEntries(kv.map((x) => x.split(/=(.*)/s).slice(0, 2))) }; };
 
   function drawer(key) {
     const s = view(key), base = target(key).settings ?? {}, defaults = key === "defaults";
     const field = (path) => {
-      const head = ["enabled", "handoff", "approve", "merge"].includes(path), stage = path.startsWith("actions.") ? path.slice(8) : null;
-      const kind = head ? "select" : stage ? "list" : KIND[path] ?? "num";
+      const head = ["enabled", "handoff"].includes(path), tier = /^(by_tier|unwatched)\./.test(path), stage = path.startsWith("actions.") ? path.slice(8) : null;
+      const kind = head || tier ? "select" : stage ? "list" : KIND[path] ?? "num";
       const [label, text, options] = path === "enabled" ? ["On or off", ON[1], { on: "Ship works this repo's PRs.", off: "Ship leaves it alone." }] : head ? COLS[path] : stage ? [STAGES[stage], `Steps Ship takes ${STAGES[stage].toLowerCase()}.`, null] : T[path];
       const v = get(s, path), d = dflt(key, path), over = owns(key, path);
       const show = (x) => (path === "enabled" ? (x ? "on" : "off") : x);
-      const ed = editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : head ? show(v) : v, values: head ? (path === "enabled" ? ["on", "off"] : controls[path].values) : kind === "select" ? ["conflict", "behind"] : ["conflicts", "ci", "review"], titles: options, set: (x, live) => edit(key, path, stage ? x.map(readAction) : path === "enabled" ? x === "on" : x, live) });
+      const ed = editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : head ? show(v) : v, values: head ? (path === "enabled" ? ["on", "off"] : controls[path].values) : tier ? Object.keys(options) : kind === "select" ? ["conflict", "behind"] : ["conflicts", "ci", "review"], titles: options, set: (x, live) => edit(key, path, stage ? x.map(readAction) : path === "enabled" ? x === "on" : x, live) });
       const loose = pending.repos[key] && looser(path, get(base, path), v);
       return fld(label, text, options ? { options, current: show(v) } : { note: LOOSE.has(path) ? "Loosening this is the owner's call: an agent's change is refused, your Save applies it." : undefined }, ed,
         h("span", { className: "dflt", title: stage ? "" : fmt(path, show(d)), textContent: `Default: ${stage ? "none" : fmt(path, show(d))}` }), over ? h("span", { className: "ovr", textContent: "Overridden" }) : null, over ? linkBtn(defaults || !target(key).inherits ? "Reset to preset" : "Reset to default", () => reset(key, path)) : null,
         loose ? h("span", { className: "warn", textContent: "Loosens this guard: it needs the owner's Save." }) : null);
     };
-    const headline = [...(defaults ? ["preset"] : []), "enabled", "handoff", "approve", "merge"].map((k) => k === "preset" ? (() => { const [label, text, options] = COLS.preset; const cur = presetFor(key); return fld(label, text, { options, current: cur }, editor({ kind: "select", label: `${label} (${key})`, f: `${key}|preset`, value: cur, values: controls.preset.values, titles: options, set: (x) => edit(key, "preset", x) })); })() : field(k));
-    return h("div", { className: "drawer", id: `drawer-${key}` }, h("div", { className: "grp" }, "Headline settings"), ...headline, ...GROUPS.filter(([g]) => g !== "Actions" || "actions" in base).flatMap(([g, paths, note]) => [h("div", { className: "grp" }, g, note ? help(g, note, { bare: true }) : null), ...paths.map(field)]));
+    const headline = [...(defaults ? ["preset"] : []), "enabled", "handoff"].map((k) => k === "preset" ? (() => { const [label, text, options] = COLS.preset; const cur = presetFor(key); return fld(label, text, { options, current: cur }, editor({ kind: "select", label: `${label} (${key})`, f: `${key}|preset`, value: cur, values: controls.preset.values, titles: options, set: (x) => edit(key, "preset", x) })); })() : field(k));
+    return h("div", { className: "drawer", id: `drawer-${key}` }, h("div", { className: "grp" }, "Headline settings"), ...headline, ...GROUPS.filter(([g]) => g !== "Actions" || "actions" in base).flatMap(([g, paths, note, cls]) => [h("div", { className: cls ? `grp ${cls}` : "grp" }, g, note ? help(g, note, { bare: true }) : null), ...paths.map(field)]));
   }
   const LOOSE = new Set(["generated.globs"]);
   const open = new Set();
@@ -181,6 +206,11 @@
     return h("div", {}, h("span", { className: "lab" }, hd(key, shown(r)[key])), sel);
   }
 
+  // The row's summary of by_tier: one tag per tier, what Ship's App does there and whether it merges.
+  const tiersCell = (r) => h("div", { className: "tiers", ariaLabel: `Risk tiers for ${r.repo}` }, ...TIERS.map((t) => {
+    const c = r.by_tier?.[t] ?? {};
+    return h("span", { className: `tg ${t}`, title: `${cap(t)}: approve ${c.approve ?? "off"}, merge ${c.merge ?? "off"}` }, h("b", { textContent: t }), t === "skip" ? "" : `approve ${c.approve}, `, `merge ${c.merge}`);
+  }));
   const redraw = () => keepFocus(draw);
   function render() { soon(redraw); }
   function draw() {
@@ -203,14 +233,14 @@
       rm.addEventListener("click", async () => { try { const x = await tool("ship_configure", { repo: r.repo, remove: true }); pending = lastGood = { repos: {}, paused: undefined }; proposed(x); render(); } catch (e) { say(e.message, true); } });
       const row = h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
         h("div", { className: "repo" }, r.repo, (() => { const b = linkBtn("Settings", () => { open.has(r.repo) ? open.delete(r.repo) : open.add(r.repo); render(); }); b.className = "link toggle"; b.setAttribute("aria-expanded", String(open.has(r.repo))); b.setAttribute("aria-controls", `drawer-${r.repo}`); return b; })()), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: ON[0] }), sw),
-        choice(raw, "preset"), choice(raw, "handoff"), choice(raw, "approve"), choice(raw, "merge"), rm);
+        choice(raw, "preset"), choice(raw, "handoff"), tiersCell(r), rm);
       return open.has(raw.repo) ? [row, drawer(raw.repo)] : [row];
     }).flat();
     $("defcard").hidden = !status.defaults;
     $("defhead").replaceChildren(help("Defaults", "The settings a new repo and the fleet's own repos start from until a repo's own entry changes them. The same fields as a repo's Settings.", { note: "A repo's own value wins over the default." }));
     $("deftoggle").setAttribute("aria-expanded", String(open.has("defaults")));
     $("defdrawer").replaceChildren(...(open.has("defaults") && status.defaults ? [drawer("defaults")] : []));
-    const cols = h("div", { className: "row cols" }, h("span", { textContent: "Repo" }), help(ON[0], ON[1]), ...["preset", "handoff", "approve", "merge"].map((k) => hd(k)), h("span", {}));
+    const cols = h("div", { className: "row cols" }, h("span", { textContent: "Repo" }), help(ON[0], ON[1]), ...["preset", "handoff"].map((k) => hd(k)), help("By risk tier", "What Ship does with each tier code review gives a PR: whether the App approves it and whether Ship merges it. Open Settings to change a tier.", { options: Object.fromEntries(TIERS.map((t) => [t, TIER_HELP[t]])), note: "Which PRs are in which tier is set on the Reviews page." }), h("span", {}));
     $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Type owner/name below and choose Add repo to start. Ship stays quiet until a repo is on.")]));
     $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { className: "repo", textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", title: HOLDS[x.hold?.kind], textContent: String(x.hold?.kind ?? "").replace("_", " ").replace(/^./, (c) => c.toUpperCase()) }), h("span", { className: "why", textContent: x.hold?.reason || HOLDS[x.hold?.kind] || "" }), h("span", { className: "soft when", textContent: x.hold?.at ? ago(x.hold.at) : "" }))) : [h("div", { className: "empty" }, h("b", { textContent: "No holds. " }), "Nothing is waiting on you.")]));
   }

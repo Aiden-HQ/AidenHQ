@@ -1,8 +1,13 @@
 // The code-review service's HTTP API: only what another module asks of it, each with its own token (the kernel says whose);
 // the Reviews page and the Reviewer Manager's tools are the MCP connection (mcp.ts and config-tool.ts):
-//   GET  /v1/verdict?repo=&pr=&head=     → { verdict: pass|wait, reasons: [{ code, text, unblock? }], reviewed, kind }   the github
-//                                        module's merge queue and ship's approval; kind: completed (the head is covered), exhausted
-//                                        (the verdict stands on `reviewed`, an earlier head) or skipped
+//   GET  /v1/verdict?repo=&pr=&head=[&base=&association=]
+//                                        → { verdict: pass|wait, reasons: [{ code, text, unblock? }], requires_review, tier, policy?,
+//                                        reviewed, kind }   the github module's merge queue and ship's approval. tier: { state:
+//                                        classified, tier, rule, why } | { state: pending } (no current classification of that head,
+//                                        or the caller's live base branch or author association differ from what it came from) |
+//                                        { state: unwatched }; requires_review: the head's tier has a mandatory combo; policy: the
+//                                        head's review policy; kind: completed (the head is covered under its policy), exhausted (the
+//                                        verdict stands on `reviewed`, an earlier head), skipped, or none (its tier needs no review)
 //   POST /reviews { pr_url, task? }      → { runs }   the ship module's ask on a fork it adopted: a one-off review of that PR,
 //                                        its summary on `task` (the adoption's)
 //   POST /reviews { pr_url, fresh: true, head } → { runs }   ship's gating review of the head (a writer's `aiden review`), when a
@@ -43,7 +48,8 @@ export function handler(engine: Engine, isModule: (authorization: string, module
       const q = url.searchParams;
       const repo = (q.get("repo") ?? "").toLowerCase(), pr = Number(q.get("pr")), head = q.get("head") ?? "";
       if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(pr) || pr < 1 || !/^[0-9a-f]{40}$/.test(head)) return send(res, 400, { error: "bad_request", detail: "repo, pr and head (a 40-character sha)" });
-      return send(res, 200, { ...engine.verdict(repo, pr, head), ...engine.evidence(repo, pr, head) });
+      const live = { ...(q.has("base") ? { base: q.get("base")! } : {}), ...(q.has("association") ? { association: q.get("association")! } : {}) };
+      return send(res, 200, { ...engine.verdict(repo, pr, head, live), ...engine.evidence(repo, pr, head) });
     }
     if (route === "POST /reviews") {
       const ok = await isModule(String(req.headers.authorization ?? ""), "ship");

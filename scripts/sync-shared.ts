@@ -14,6 +14,7 @@
 //   kernel/sdk/src/box-bundle.ts     a job's branch from its box's bundle, never its .git, in the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/pin-owner.ts      who moves the product pin, in the code host's release train (the kernel's updater imports it)
 //   kernel/sdk/src/instance-paths.ts what an apply may land, in the code host (src/aidenhq-sdk/; the kernel and codehost-local import it)
+//   kernel/sdk/src/tiers.ts          risk tiers (facts, rules, classify), in code review's service and recipe, the engineer image and the CI template
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer, grading and code-review services
 //   services/shared/review-files.ts  the changed files as the reviewer reads them, in the reviewer module's service
 //   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
@@ -86,6 +87,9 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/pass-rule.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts"],
   // The one kernel client (design: one Paperclip/kernel client): every module that calls the kernel with its own token.
   "kernel/sdk/src/kernel-client.ts": ["modules/dispatch/service/src/aidenhq-sdk/kernel-client.ts", "modules/github/service/src/aidenhq-sdk/kernel-client.ts", "modules/grading/service/src/aidenhq-sdk/kernel-client.ts", "modules/maintainer/service/src/aidenhq-sdk/kernel-client.ts", "modules/code-review/service/src/aidenhq-sdk/kernel-client.ts", "modules/ship/service/src/aidenhq-sdk/kernel-client.ts", "modules/fleet-steward/service/src/aidenhq-sdk/kernel-client.ts", "modules/chat-lane/connections/lane/src/aidenhq-sdk/kernel-client.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/kernel-client.ts", "modules/owner-channel/connections/notify/src/aidenhq-sdk/kernel-client.ts"],
+  // Risk tiers: code review classifies PRs (its service) and leaves out the same generated files and lockfiles (its recipe, which
+  // the engineer image's self-review runs too); the CI template classifies an app repo's PR itself.
+  "kernel/sdk/src/tiers.ts": ["modules/code-review/service/src/aidenhq-sdk/tiers.ts", "modules/code-review/recipe/tiers.ts", "services/computer/images/engineer/code-review/tiers.ts", "modules/ci/template/.github/tiers.ts"],
   // The judges' shared library (design §4.4): the reviewer and the grader keep their own contracts and credentials.
   "kernel/sdk/src/judge.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts", "modules/grading/service/src/aidenhq-sdk/judge.ts"],
   // How GitHub check results are read: the merge gate, the PR watcher and the grader.

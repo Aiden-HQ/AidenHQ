@@ -852,6 +852,7 @@ const gw = createGateway({
   legacyDbFile: path.join(dataDir, "gateway", "usage.db"), // the old ledger: merged in at every start while it is there
   grantsFile,
   settingsFile: path.join(configDir, "gateway.json"),
+  appLogin: () => { try { const slug = readFileSync(path.join(githubVault, "github-app", "slug"), "utf8").trim(); return slug ? `${slug}[bot]` : undefined; } catch { return undefined; } },
   asCaller: createAsCaller({ whoami, connections, asserter, log }), // a module's model calls for its caller (cp.ts)
   secret,
   upstream,

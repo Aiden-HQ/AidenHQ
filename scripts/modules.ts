@@ -20,9 +20,11 @@ import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, o
 import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
+import { oldShape } from "../modules/ship/service/src/settings.ts";
 import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
 import { KERNEL_KINDS, KERNEL_ROLES, repoKey } from "../kernel/src/kinds.ts";
 import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
+import { gatesAll, readConfig as readCodeReview } from "../modules/code-review/service/src/config.ts";
 
 // Manifests, instance files and Paperclip data are YAML/JSON read at run time: their shapes are described by the docs, not by types here.
 export type Obj = Record<string, any>;
@@ -450,7 +452,6 @@ function spendGone(instance: Obj) {
   if (cr.day_usd != null) fail(`settings.code_review.day_usd ${SPEND_GONE}`);
   for (const [i, r] of (Array.isArray(cr.repos) ? cr.repos : []).entries()) {
     if (r?.day_usd != null) fail(`settings.code_review.repos.${i}.day_usd ${SPEND_GONE}`);
-    for (const m of ["on_open", "on_push"]) if ([r?.[m] ?? []].flat().some((c: Obj) => c?.run_usd != null)) fail(`settings.code_review.repos.${i}.${m}: run_usd ${SPEND_GONE}`);
   }
   for (const [k, a] of Object.entries<Obj>(instance.overrides?.agents ?? {})) if (a?.caps != null) fail(`overrides.agents.${k}.caps ${SPEND_GONE}`);
 }
@@ -458,12 +459,16 @@ function spendGone(instance: Obj) {
 /**
  * The gateway's CI code review switches (config/gateway.json `ci`, kernel/src/gateway/ci.ts): only the agents org's app repos;
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped); the review model and
- * effort the code-review job gets with its CI token (always one of the allowed models).
+ * effort the code-review job gets with its CI token (always one of the allowed models); and each code review entry's tier rules and class.
  */
-function ciReview(settings: Obj) {
+function ciReview(settings: Obj, codeReview: unknown) {
   const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m: unknown) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
   const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
-  return { orgs: [settings.agents_org].filter(Boolean), models, review };
+  // Each code review entry's risk tier rules and class, for the CI template's own classification (kernel/src/gateway/lib.ts /ci/token).
+  const entries = readCodeReview(JSON.stringify(codeReview ?? {}));
+  if (entries.errors.length) fail(`settings.code_review: ${entries.errors.join("; ")}`);
+  const tiers = Object.fromEntries(entries.repos.map((e) => [e.repo, { rules: e.rules, repo_class: e.repo_class }]));
+  return { orgs: [settings.agents_org].filter(Boolean), models, review, tiers };
 }
 
 /**
@@ -843,11 +848,15 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // Derived (not settable): the orgs the src_github sync covers, github_orgs plus the fleet org.
   settings.agents_org = fleetOrg;
   settings.github_sync_orgs = [...new Set([...[settings.github_orgs ?? []].flat(), fleetOrg].filter(Boolean))].join(",");
-  // Derived: the repos whose merges wait for code review (a mandatory combo), for the github module's merge queue and the kernel.
-  const reviewGated = enabled.includes("code-review") ? codeReviewGated(settings.code_review) : [];
-  settings.code_review_gated = reviewGated.join(",");
+  // Derived: the repos whose merges ask code review's verdict (every watched repo: the verdict says per head whether a review is
+  // required), for the github module's merge queue; and those where every tier the rules can select has a mandatory combo, for the
+  // kernel (ai_review_code: unless_code_review_mandatory).
+  const reviewGated = enabled.includes("code-review") ? codeReviewGated(settings.code_review) : { watched: [], mandatory: [] };
+  settings.code_review_gated = reviewGated.watched.join(",");
   // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
   settings.ship_enabled = enabled.includes("ship") ? "1" : "";
+  // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (risk tiers §11).
+  if (enabled.includes("ship") && oldShape(settings.ship).length) fail(`settings.ship: ${oldShape(settings.ship).join(", ")}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
   // sets, with whether instance.yaml sets it. Snapshotted before the derived keys below; never a secret-looking key.
@@ -1369,7 +1378,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // The model gateway's CI review and spend limits (config/gateway.json, re-read per call; prices come from OpenRouter itself):
   // the install's day and month on every model call, and one cap per task.
   for (const k of ["spend_day_usd", "spend_month_usd", "task_usd"]) if (!(typeof settings[k] === "number" && settings[k] > 0 && settings[k] <= 100_000)) fail(`settings.${k}: USD, above 0`);
-  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
+  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings, settings.code_review) } : {}), install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes });
@@ -1383,7 +1392,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // (a service outside the owning module can mount one), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)), review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated }, modules: kernelModuleTable(enabledDefs, settings, new Set(enabled.filter((n) => all.get(n)!.tier === "official"))), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)), review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated.mandatory }, modules: kernelModuleTable(enabledDefs, settings, new Set(enabled.filter((n) => all.get(n)!.tier === "official"))), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
@@ -1399,19 +1408,14 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
 }
 
 /**
- * The repos settings.code_review gates: those with a mandatory combo, which then has one in on_open (a PR's first head is reviewed
- * by on_open's; on_push's is optional). A gated repo whose setting can't gate is refused here, never dropped quietly.
+ * settings.code_review through code review's own parser (its config.ts readConfig, the one the service and the Reviews page use): the
+ * watched repos, and those where every tier their rules can select has a mandatory combo. An entry that doesn't parse (an old shape
+ * included) fails the compile before anything is written, never dropped quietly.
  */
-export function codeReviewGated(cr: unknown): string[] {
-  const out: string[] = [];
-  for (const [i, e] of [(cr as Obj)?.repos ?? []].flat().entries()) {
-    if (e && typeof e === "object" && "mandatory" in e) fail(`settings.code_review.repos[${i}]: a repo's mandatory is gone: mark the combos whose review gates merges \`mandatory: true\``);
-    const has = (k: string) => [e?.[k] ?? []].flat().some((c: Obj) => c?.mandatory === true);
-    if (!has("on_open") && !has("on_push")) continue;
-    if (!has("on_open")) fail(`settings.code_review.repos[${i}] (${e?.repo}): a mandatory on_push combo needs a mandatory on_open one`);
-    out.push(String(e.repo).toLowerCase());
-  }
-  return out;
+export function codeReviewGated(cr: unknown): { watched: string[]; mandatory: string[] } {
+  const c = readCodeReview(JSON.stringify(cr ?? {}));
+  if (c.errors.length) fail(`settings.code_review: ${c.errors.join("; ")}`);
+  return { watched: c.repos.map((e) => e.repo), mandatory: c.repos.filter(gatesAll).map((e) => e.repo) };
 }
 
 /**

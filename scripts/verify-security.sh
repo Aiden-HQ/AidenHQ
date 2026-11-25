@@ -814,7 +814,8 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);' "$rq" \
   && grep -qF 'const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);' "$rq" \
   && grep -qF 'const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);' "$rq" \
-  && grep -qF 'if (q.ship && (await d.ship?.generation(p.repo, p.number))?.generation !== q.ship.generation) return fail(' "$rq" \
+  && grep -qF 'if (q.ship && at?.generation !== q.ship.generation) return fail(' "$rq" \
+  && grep -qF 'if (at?.refused) return fail(' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}`);' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/pulls/${number}`);' "$rq" \
   && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });' "$rq" \
@@ -841,7 +842,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);' "$rplan" \
   && grep -qF 'const eligible = productMergeEligible({ repo: p.repo, head: String(p.head ?? ""), checks: p.checks, verdict: p.verdict, productRepo: String(s.productRepo ?? "") });' "$rplan" \
   && grep -qF 'const ci = p.checks.some((c) => c.name === GATE_CHECK && c.success === true && !c.pending);' "$rm_" \
-  && grep -qF 'return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true);' "$rm_" \
+  && grep -qF 'return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true && !p.verdict.unreviewed);' "$rm_" \
   && grep -qF '!productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");' "$rq" \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
   && grep -qF 'if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close"' "$rplan" \

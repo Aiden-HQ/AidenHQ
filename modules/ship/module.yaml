@@ -44,8 +44,10 @@ settings:
   # The per-repo ship settings: { defaults: cautious | full | { preset, …fields }, repos: { owner/name: cautious | full | { preset?,
   # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command },
   # fix: [conflicts, ci, review], protected: [globs], caps: { wakes_per_head, ci_rounds, same_check_heads,
-  # rounds, usd, requeue_on_timeout: a number, or null for unlimited }, approve: off|observe|safe|all,
-  # safe: { max_lines, max_files, deny }, merge: off|ready, enabled: true|false, stop_label,
+  # rounds, usd, requeue_on_timeout: a number, or null for unlimited },
+  # by_tier: { skip|trivial|standard|sensitive: { approve: off|observe|on (not skip), merge: off|ready } } (the risk tier code review gives
+  # each PR head; a tier or field omitted takes the preset's), unwatched: { merge: off|ready } (a repo code review doesn't watch has no
+  # tier), enabled: true|false, stop_label,
   # actions: { conflict|behind|before_merge: [ { comment: "/cmd" } | { workflow: "file.yml", inputs? } ] } (the repo's own commands
   # and workflows, run before ship's own step; before_merge takes workflows only; service/src/actions.ts) } } }. Ship works the fleet org's repos and the product repo; a maintainer_repos repo is worked only once it has an entry here (quiet until enabled). The Fleet page
   # edits it; this is the advanced form. Read by the service (service/src/settings.ts).

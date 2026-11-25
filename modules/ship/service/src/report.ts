@@ -2,6 +2,7 @@
 // a code owner can approve from it without opening the diff. The model writes none of it. Posted through the code host's
 // `comment` op (POST /v1/codehost/comment, edit by id), which adds the "via AidenHQ" footer.
 import type { Kept, PrView } from "./handoff.ts";
+import type { Risk } from "./safe.ts";
 
 export const MARKER = "<!-- aidenhq-ship -->";
 
@@ -11,10 +12,11 @@ export interface Facts {
   state: string;
   /** What it waits on, and who can unblock it (decide's reason). */
   waits?: string;
-  /** Substantive changed lines and files (generated, lock, test and docs files not counted), and the areas' code owners. */
-  lines?: number; files?: number; owners?: string[];
-  /** The safe-class verdict and why (safe.ts), and the App's approval line under the repo's `approve`. */
-  safe?: { safe: boolean; why: string };
+  /** The areas' code owners. */
+  owners?: string[];
+  /** The head's risk tier, code review's rule that picked it and why (the facts it came from), and what the repo's `by_tier` does with it. */
+  risk?: Risk;
+  /** The App's approval line under the tier's `approve`. */
   approval?: string;
   /** Protected or denied paths the PR touches. */
   protectedHit?: string[];
@@ -42,9 +44,8 @@ export function renderReport(a: Kept, pr: PrView, f: Facts): string {
   lines.push(`**Hand-off:** ${handed}${pr.fork ? `; a fork${pr.canModify ? " that allows maintainer edits" : " without maintainer edits (ship can't push to it)"}` : ""}`);
   if (a.did?.length) lines.push("", "**What ship did**", ...a.did.slice(-10).map((d) => `- ${d}`));
   const risk: string[] = [];
-  if (f.lines !== undefined || f.files !== undefined) risk.push(`- ${f.lines ?? "?"} substantive lines in ${f.files ?? "?"} files (generated, lock, test and docs files not counted)`);
+  if (f.risk) risk.push(f.risk.state === "classified" ? `- Risk tier: \`${f.risk.tier}\` (${f.risk.rule !== undefined && f.risk.rule >= 0 ? `rule ${f.risk.rule + 1}: ` : ""}${f.risk.why}); approve ${f.risk.approve}, merge ${f.risk.merge}` : `- Risk tier: ${f.risk.why}; merge ${f.risk.merge}`);
   if (f.owners?.length) risk.push(`- Areas touched (code owners): ${f.owners.map((o) => `@${o.replace(/^@/, "")}`).join(", ")}`);
-  if (f.safe) risk.push(`- Safe class: ${f.safe.safe ? "inside" : "outside"} (${f.safe.why})`);
   if (f.protectedHit?.length) risk.push(`- Protected or denied paths: ${list(f.protectedHit)}`);
   if (f.review) risk.push(`- Code review: ${f.review.verdict}${f.review.open ? `, ${f.review.open} open important finding(s)` : ", no open important findings"}`);
   if (f.failing?.length) risk.push(`- Failing required checks: ${list(f.failing)}${f.onBase?.length ? `; also failing on \`${pr.defaultBranch}\`: ${list(f.onBase)}` : ""}`);

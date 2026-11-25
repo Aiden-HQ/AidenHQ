@@ -1,49 +1,38 @@
-// Approval (spec §5): the safe class, whether code review's pass carries to a later head, and the one judgement of whether the
-// App may approve an adopted PR's head. Facts only, from code: no model reads anything here. The loop reads the PR's own change
-// (GitHub's compare from its merge base) and code review's verdict only where approval is needed (GitHub's review rule, or code
-// review gating the repo: decide's own rule), passes judge()'s answer to decide as ShipContext.approve (canApprove) and to
-// round() as RoundFacts.approval; round() files github.approve and asks code review for a fresh review once per head.
+// Approval (spec §5, risk tiers §7): the PR's risk tier from code review's verdict, whether code review's pass carries to a later head,
+// and the one judgement of whether the App may approve an adopted PR's head. Facts only, from code: no model reads anything here.
+// The round reads the PR's own change (GitHub's compare from its merge base) only where a pass stands on an earlier head, and passes
+// riskOf()'s answer (the tier's approve and merge) and judge()'s to round().
 import { posix } from "node:path";
 import { LOCKFILES } from "./discover.ts";
-import type { ShipSettings } from "./settings.ts";
+import { TIERS, type ShipSettings, type Tier } from "./settings.ts";
 
 /** One file of the PR's own change: GitHub's compare (merge base...head) `files` entry. */
 export interface ChangedFile { filename: string; previous_filename?: string; status: string; additions: number; deletions: number; patch?: string }
-/** Code review's GET /v1/verdict at the head: `kind` and `reviewed` say what a pass stands on. */
-export interface Verdict { verdict: "pass" | "wait"; reasons: { code: string; text: string }[]; reviewed?: string | null; kind?: "completed" | "exhausted" | "skipped" }
-export type SafeClass = { safe: boolean; why: string; lines: number; files: number };
-export type Judged = { ok: boolean; why: string; ask?: boolean; safe: SafeClass };
+/** Code review's GET /v1/verdict at the head: `tier` says whether the head is classified (and its tier, rule and why), pending or
+ * unwatched; `policy` is how it is reviewed; `kind` and `reviewed` say what a pass stands on (`none`: its tier needs no review). */
+export interface Verdict {
+  verdict: "pass" | "wait"; reasons: { code: string; text: string }[]; reviewed?: string | null; kind?: "completed" | "exhausted" | "skipped" | "none";
+  requires_review?: boolean; policy?: string; tier?: { state: "classified"; tier: Tier; rule: number; why: string } | { state: "pending" | "unwatched" };
+}
+/** The head's risk tier with what the repo's `by_tier` says about it: the App's approval and ship's merge. `pending`: not classified
+ * yet, so nothing is approved, queued or merged; `unwatched`: code review doesn't watch the repo (no tier; `unwatched.merge`). */
+export type Risk = { state: "classified" | "pending" | "unwatched"; tier?: Tier; rule?: number; why: string; policy?: string; requiresReview: boolean; approve: ShipSettings["by_tier"][Tier]["approve"]; merge: ShipSettings["by_tier"][Tier]["merge"] };
+export type Judged = { ok: boolean; why: string; ask?: boolean; risk: Risk };
 
 /** GitHub's compare lists at most 300 files: past that the change can't be read whole. */
 const COMPARE_CAP = 300;
-const TESTS = ["**/test/**", "**/tests/**", "**/__tests__/**", "**/testdata/**", "**/fixtures/**", "**/*.test.*", "**/*.spec.*", "**/*_test.go", "**/test_*.py"];
-const DOCS = ["**/*.md", "**/*.mdx", "**/*.rst", "**/LICENSE*", "**/CHANGELOG*"];
-const MANIFESTS = ["package.json", "go.mod", "Cargo.toml", "pyproject.toml"];
 const hit = (path: string, globs: string[]) => globs.some((g) => posix.matchesGlob(path, g));
 const isGenerated = (f: ChangedFile, generated: string[]) => LOCKFILES.includes(posix.basename(f.filename)) || hit(f.filename, generated);
-const names = (fs: ChangedFile[]) => `${fs.slice(0, 3).map((f) => `\`${f.filename}\``).join(", ")}${fs.length > 3 ? ` and ${fs.length - 3} more` : ""}`;
 
-/**
- * The safe class: substantive lines and files (generated, lock, test and docs files not counted). Out of it when the change is over
- * `max_lines` or `max_files`, touches a `deny` glob (any file, counted or not), or changes generated files without any source.
- */
-export function safeClass(files: ChangedFile[], s: ShipSettings["safe"], generated: string[]): SafeClass {
-  const gen = files.filter((f) => isGenerated(f, generated));
-  const counted = files.filter((f) => !gen.includes(f) && !hit(f.filename, TESTS) && !hit(f.filename, DOCS));
-  const lines = counted.reduce((n, f) => n + f.additions + f.deletions, 0);
-  const out = (why: string): SafeClass => ({ safe: false, why, lines, files: counted.length });
-  if (files.length >= COMPARE_CAP) return out(`${files.length}+ changed files: GitHub doesn't list them all`);
-  const denied = files.filter((f) => hit(f.filename, s.deny) || (f.previous_filename !== undefined && hit(f.previous_filename, s.deny)));
-  if (denied.length) return out(`touches ${names(denied)} (safe.deny)`);
-  // A lockfile's source is a manifest at or under its directory (a workspace member's too); any other generated file's is some
-  // substantive change (its generator's input).
-  const under = (dir: string, path: string) => dir === "." || path.startsWith(`${dir}/`);
-  const manifest = (f: ChangedFile) => files.some((m) => MANIFESTS.includes(posix.basename(m.filename)) && under(posix.dirname(f.filename), m.filename));
-  const orphan = gen.filter((f) => (LOCKFILES.includes(posix.basename(f.filename)) ? !manifest(f) : !counted.length));
-  if (orphan.length) return out(`changes generated files (${names(orphan)}) without the source they come from`);
-  if (s.max_lines !== null && lines > s.max_lines) return out(`${lines} lines > ${s.max_lines}`);
-  if (s.max_files !== null && counted.length > s.max_files) return out(`${counted.length} files > ${s.max_files}`);
-  return { safe: true, why: `${lines} lines in ${counted.length} files`, lines, files: counted.length };
+/** The verdict's tier and the repo's settings for it. A tier this build doesn't know is pending (never guessed). */
+export function riskOf(s: ShipSettings, v: Verdict): Risk {
+  const t = v.tier;
+  if (t?.state === "classified" && TIERS.includes(t.tier)) {
+    const cell = s.by_tier[t.tier];
+    return { state: "classified", tier: t.tier, rule: t.rule, why: t.why, ...(v.policy ? { policy: v.policy } : {}), requiresReview: v.requires_review !== false, approve: cell.approve, merge: cell.merge };
+  }
+  if (t?.state === "unwatched") return { state: "unwatched", why: "code review doesn't watch this repo", requiresReview: false, approve: "off", merge: s.unwatched.merge };
+  return { state: "pending", why: "code review hasn't classified this head's risk tier yet", requiresReview: true, approve: "off", merge: "off" };
 }
 
 /** The PR's own change without its generated paths: each file's status, names and patch, hunk positions included (code review's
@@ -65,25 +54,56 @@ export function carries(reviewed: ChangedFile[], head: ChangedFile[], generated:
 }
 
 /**
- * Whether the App may approve the head, with why (the report's line). It needs code review's pass on this head: completed there, or
- * an earlier head's (`reviewed`) whose change this head keeps (carries). A pass on an earlier head with a different change asks
- * for a fresh review (`ask`). `safe` (and `observe`, which reports what `safe` would do) also needs the safe class.
+ * Whether the App may approve the head, with why (the report's line). By the head's tier: `off` never, a head without a tier (pending,
+ * or an unwatched repo) never, and a tier that needs no review (`kind: none`) never. Else it needs code review's pass on this head
+ * under its current policy: completed there, or an earlier head's (`reviewed`) whose change this head keeps (carries). A pass on an
+ * earlier head with a different change asks for a fresh review (`ask`). `observe` reports what `on` would do.
  * `reviewedFiles`: the PR's own change at the verdict's `reviewed` head, read only when the verdict isn't completed at this head.
  */
-export function judge(s: ShipSettings, e: { files: ChangedFile[]; generated: string[]; verdict?: Verdict; reviewedFiles?: ChangedFile[] }): Judged {
-  const safe = safeClass(e.files, s.safe, e.generated);
-  const no = (why: string, ask?: boolean): Judged => ({ ok: false, why, safe, ...(ask ? { ask } : {}) });
+export function judge(s: ShipSettings, e: { files: ChangedFile[]; generated: string[]; verdict: Verdict; reviewedFiles?: ChangedFile[] }): Judged {
   const v = e.verdict;
-  if (!v) return no("code review doesn't gate this repo, so there is no review to approve on");
+  const risk = riskOf(s, v);
+  const no = (why: string, ask?: boolean): Judged => ({ ok: false, why, risk, ...(ask ? { ask } : {}) });
+  if (risk.state === "pending") return no(risk.why);
+  if (risk.state === "unwatched") return no(`${risk.why}, so there is no review to approve on`);
+  if (risk.approve === "off") return no(`tier \`${risk.tier}\`: approval is off`);
+  if (v.kind === "none" || !risk.requiresReview) return no(`tier \`${risk.tier}\` needs no review: there is none to approve on`);
   if (v.verdict !== "pass") return no(`code review: ${String(v.reasons[0]?.text ?? "not passed").slice(0, 200)}`);
   if (v.kind === "skipped") return no("code review skipped its head");
   const carried = v.kind !== "completed";
   if (carried && !(v.reviewed && e.reviewedFiles && carries(e.reviewedFiles, e.files, e.generated))) {
     return no(`its change since code review's last full review${v.reviewed ? ` (\`${v.reviewed.slice(0, 12)}\`)` : ""} has no review of its own yet`, true);
   }
-  if (s.approve !== "all" && !safe.safe) return no(`outside the safe class: ${safe.why}`);
-  return { ok: true, why: carried ? `code review passed at \`${v.reviewed!.slice(0, 12)}\`, and its own change is the same here` : "code review passed on its head", safe };
+  return { ok: true, why: carried ? `code review passed at \`${v.reviewed!.slice(0, 12)}\`, and its own change is the same here` : "code review passed on its head", risk };
 }
 
-/** decide's ShipContext.approve: the repo's `approve` lets the App approve, and the evidence holds. */
-export const canApprove = (s: ShipSettings, j: Judged | undefined) => (s.approve === "safe" || s.approve === "all") && j?.ok === true;
+/** decide's ShipContext.approve: the tier's `approve` is `on`, and the evidence holds. */
+export const canApprove = (j: Judged | undefined) => j?.ok === true && j.risk.approve === "on";
+
+/** The App's approval ship filed (the adoption's `approve`): at which head, under which policy, and whether a person's is awaited. */
+export type Approved = { head: string; why?: string; policy?: string };
+/** An App approval of this head that was issued under another policy than the head's current one, or where the tier's `approve`
+ * is no longer `on`, whatever head it was made at (GitHub may keep an approval across pushes; a person's stays whatever the tier says;
+ * an approval ship never made is none). It is dismissed
+ * before a merge or an enqueue, never counted (risk tiers §7). */
+export const staleApproval = (ap: Approved | undefined, _head: string, r: Risk) => !!ap && !ap.why && (r.approve !== "on" || ap.policy !== r.policy);
+
+/**
+ * The final check before the App approves, or ship merges or queues (github asks right before the write): the verdict read now, with
+ * the live base and author. Why not, or undefined; `retry`: only for now (a head not classified yet, a verdict that can't be read),
+ * so the write is tried again rather than ended. An approval also needs the verdict's policy to be the one it was filed under and
+ * code review's pass to cover this head itself (a pass standing on an earlier head asks for its own judgement in the round).
+ */
+export function effectRefusal(s: ShipSettings, v: Verdict, what: "approve" | "merge", app: Approved | undefined, head: string, policy?: string): { why: string; retry: boolean } | undefined {
+  const r = riskOf(s, v);
+  const no = (why: string, retry = false) => ({ why, retry });
+  if (r.state === "pending") return no(`${r.why}: try again once it is`, true);
+  if (what === "merge" && staleApproval(app, head, r)) return no("an App approval under another policy stands on this head: ship dismisses it first");
+  if (what === "merge") return r.merge === "ready" ? undefined : no(r.state === "unwatched" ? "the repo's unwatched merge setting is off" : `tier \`${r.tier}\`: merge is off`);
+  if (r.state === "unwatched") return no("code review doesn't watch this repo: nothing to approve on");
+  if (r.approve !== "on") return no(`tier \`${r.tier}\`: approval is ${r.approve}`);
+  if (policy !== undefined && v.policy !== policy) return no("the head's review policy changed since the approval was filed", true);
+  // `exhausted`: the pass stands on an earlier head whose change this head keeps; judge() verified that when the approval was filed,
+  // and github binds the write to that head and policy (checked above).
+  return v.verdict === "pass" && (v.kind === "completed" || v.kind === "exhausted") ? undefined : no("code review hasn't passed this head under its current policy", true);
+}

@@ -125,18 +125,20 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
 }
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
  * now or is on hold (stalled, handed back, stopped or paused): nothing is written for it then. */
-export type ShipAdoptions = { generation(repo: string, number: number): Promise<{ generation: number | null; task?: string }> };
+export type ShipAdoptions = { generation(repo: string, number: number, check?: ShipCheck): Promise<{ generation: number | null; task?: string; refused?: string; retry?: boolean }> };
+/** Ship's final tier check before a write (risk tiers §7): what is about to happen and the PR as GitHub has it right now (head, base branch, author association). */
+export type ShipCheck = { do: "approve" | "merge"; head: string; base: string; association: string; /** The policy an approval was filed under. */ policy?: string };
 /** Ship's adoptions read from its service with this module's own token (`url`: compiled only when the ship module is on). */
 export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typeof fetch }): ShipAdoptions {
   const fetchFn = o.fetchFn ?? fetch;
   return {
-    async generation(repo, number) {
-      const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number) });
+    async generation(repo, number, check) {
+      const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), ...(check ? { do: check.do, head: check.head, base: check.base, association: check.association, ...(check.policy ? { policy: check.policy } : {}) } : {}) });
       const r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/generation?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
-      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown };
+      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown };
       const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 && (j.hold === null || j.hold === undefined) ? (j.generation as number) : null;
-      return { generation, ...(typeof j.task === "string" && j.task ? { task: j.task } : {}) };
+      return { generation, ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
     },
   };
 }
@@ -181,7 +183,7 @@ const slugOf = (repo: unknown) => {
 };
 
 /** A PR's merge-queue state, for an enqueue and its reconcile. */
-const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName isInMergeQueue mergeQueueEntry { headCommit { oid } } } } }`;
+const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation isInMergeQueue mergeQueueEntry { headCommit { oid } } } } }`;
 
 /** GitHub's enqueue, bound to the head: it refuses when the PR's head isn't `head`. */
 const ENQUEUE = `mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { state } } }`;
@@ -449,10 +451,10 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
+      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (issued under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
       return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
-        ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha)) } : {}),
+        ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha), { base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? "") }) } : {}),
         ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))) }] }, facts: { target: url, sentence: `${what} (generation ${a.generation}).`, diff } };
     }
     // What the reviewer reads beside the diff (review): each changed file at the reviewed head, and the PR's Evidence section.
@@ -494,7 +496,7 @@ export function createService(o: Options) {
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files, checks: await checksAt(s, pr.head?.sha),
           // Code review's verdict for this head on the product repo: with ci-required green, a real pass skips the AI reviewer.
-          ...(merge && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, Number(p.number), String(pr.head?.sha)) } : {}),
+          ...(merge && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, Number(p.number), String(pr.head?.sha), { base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? "") }) } : {}),
           ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), dependabot: pr.user?.login === "dependabot[bot]",
           ...(merge && a.generation !== undefined ? { ship: await adoption(s.slug, Number(p.number), a.generation, p.head, pr, p.base) } : {}),
         });
@@ -786,8 +788,9 @@ export function createService(o: Options) {
     const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
     return r.status < 300 ? { ok: true, text: `${url} now targets \`${a.to}\`.` } : { ok: false, text: `GitHub refused the retarget of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
-  async function adoptionEnded(repo: string, n: number, generation: number): Promise<string | undefined> {
-    const at = o.ship ? await o.ship.generation(repo, n).catch(() => undefined) : undefined;
+  async function adoptionEnded(repo: string, n: number, generation: number, check?: ShipCheck): Promise<string | undefined> {
+    const at = o.ship ? await o.ship.generation(repo, n, check).catch(() => undefined) : undefined;
+    if (at?.generation === generation && at.refused) return `${at.retry ? "ship-tier-pending" : "ship-tier"}: https://github.com/${repo}/pull/${n}: ${at.refused}: nothing was done.`;
     return at?.generation === generation ? undefined : `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
   }
 
@@ -1071,11 +1074,31 @@ export function createService(o: Options) {
     const url = `https://github.com/${s.slug}/pull/${n}`;
     const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not approved.` };
-    const ended = await adoptionEnded(s.slug, n, a.generation);
+    // A dismissal asks ship nothing but the adoption; an approval also asks its final tier check (the tier's approve is `on` and code
+    // review passed this head), with the live base and author.
+    const ended = await adoptionEnded(s.slug, n, a.generation, a.dismiss === true ? undefined : { do: "approve", head: a.head, base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? ""), ...(typeof a.policy === "string" ? { policy: a.policy } : {}) });
     if (ended) return { ok: false, text: ended };
     const app = await o.reviewer?.(s.slug);
     if (!app) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App isn't installed on this repo).` };
     if (same(String(pr.user?.login ?? ""), app.login)) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App opened it).` };
+    // An App approval issued under another review policy is dismissed (ship files it before a merge it must not count for): every
+    // approval of this PR the App made, whatever its head.
+    if (a.dismiss === true) {
+      // Every page: GitHub lists a PR's reviews oldest first, so a recent approval may be on a later one.
+      const mine: any[] = [];
+      for (let page = 1; ; page++) {
+        const list = await app.rest("GET", `/repos/${s.slug}/pulls/${n}/reviews?per_page=100&page=${page}`);
+        if (list.status >= 300) return { ok: false, text: `GitHub refused to list ${url}'s reviews: ${list.status}` };
+        const got = list.body as any[];
+        mine.push(...got.filter((r) => r.state === "APPROVED" && same(String(r.user?.login ?? ""), app.login)));
+        if (got.length < 100 || page >= 20) break;
+      }
+      for (const r of mine) {
+        const d = await app.rest("PUT", `/repos/${s.slug}/pulls/${n}/reviews/${r.id}/dismissals`, { message: "Ship: this approval was issued under another review policy; it is dismissed and the PR is approved again under the current one, or by a person." });
+        if (d.status >= 300) return { ok: false, text: `GitHub refused to dismiss the App's approval of ${url}: ${d.status} ${String(d.body?.message ?? "").slice(0, 200)}` };
+      }
+      return { ok: true, text: `Dismissed ${mine.length} App approval(s) of ${url}.` };
+    }
     const r = await app.rest("POST", `/repos/${s.slug}/pulls/${n}/reviews`, { event: "APPROVE", commit_id: a.head });
     if (r.status >= 300) return { ok: false, text: `GitHub refused the approval of ${url}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
     // No object: an approval makes nothing the fleet owns (the PR stays its author's).
@@ -1108,7 +1131,8 @@ export function createService(o: Options) {
     };
     // Code review's gate holds a queued merge as it holds a direct one (merges.ts): only its pass (or its audited bypass) queues.
     // Asked first, so the PR read below is the last one before the mutation.
-    const review = await o.reviewGate(s.slug, n, a.head);
+    const live = await read();
+    const review = await o.reviewGate(s.slug, n, a.head, { base: String(live.baseRefName ?? ""), association: String(live.authorAssociation ?? "") });
     // A wait blocks a new enqueue, not the confirmation that an earlier attempt already queued (or merged) this head.
     if (review && "wait" in review) return settled(await read()) ?? { ok: false, text: `not queued: ${review.wait}` };
     const pr = await read();
@@ -1117,7 +1141,7 @@ export function createService(o: Options) {
     if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
     if (pr.baseRefName !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed: it now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
     if (review && "bypass" in review) bypass = review.bypass;
-    const ended = await adoptionEnded(s.slug, n, a.generation);
+    const ended = await adoptionEnded(s.slug, n, a.generation, { do: "merge", head: a.head, base: String(pr.baseRefName ?? ""), association: String(pr.authorAssociation ?? "") });
     if (ended) return { ok: false, text: ended };
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     let r: { status: number; body: any } | undefined;

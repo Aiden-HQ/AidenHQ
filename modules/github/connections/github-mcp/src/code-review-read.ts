@@ -1,5 +1,5 @@
 // Code review's watcher reads (the code-review module's PrSource seam, modules/code-review/service/src/seams.ts): open PRs, one PR,
-// the PR conversation comments since a time, and a login's permission. Read-only, through the same GitHub client as every other read
+// a PR's files for its risk tier (snapshot), the PR conversation comments since a time, and a login's permission. Read-only, through the same GitHub client as every other read
 // (the owner's sign-in).
 import { createHash } from "node:crypto";
 import { GitHubRefused, type GitHub } from "./github.js";
@@ -7,7 +7,14 @@ import { GitHubRefused, type GitHub } from "./github.js";
 export type PullRequest = {
   repo: string; number: number; head: string; base: string; base_ref: string; draft: boolean;
   fork: boolean; author: string; open: boolean; merged: boolean; url: string; title: string; body: string;
+  /** GitHub's author_association (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, …), and whether the author is this instance's own
+   * App: what code review's risk tiers read the author kind from. */
+  association: string; own: boolean;
 };
+/** One file of a PR's own change (GitHub's files list, merge base to head). */
+export type PrFile = { path: string; previous?: string; additions: number; deletions: number };
+/** GitHub's files list stops at this many files. */
+const FILES_MAX = 3000;
 export type PrComment = { id: string; number: number; author: string; body: string; created_at: string };
 export type Permission = "admin" | "maintain" | "write" | "triage" | "read" | "none";
 
@@ -39,11 +46,12 @@ export function sinceArg(v: string | null): string {
 }
 
 type GhPr = {
+  author_association?: string; changed_files?: number;
   number: number; state: string; merged_at?: string | null; merge_commit_sha?: string | null; title?: string; body?: string | null; draft?: boolean; html_url: string; user?: { login?: string } | null;
   head?: { sha?: string; repo?: { full_name?: string } | null }; base?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
 };
 
-function shape(repo: string, p: GhPr): PullRequest {
+function shape(repo: string, p: GhPr, self?: string): PullRequest {
   const baseRepo = (p.base?.repo?.full_name ?? repo).toLowerCase();
   const headRepo = p.head?.repo?.full_name?.toLowerCase();
   return {
@@ -51,12 +59,14 @@ function shape(repo: string, p: GhPr): PullRequest {
     draft: Boolean(p.draft), fork: !headRepo || headRepo !== baseRepo, author: p.user?.login ?? "", open: p.state === "open", merged: !!p.merged_at, url: p.html_url,
     // A stranger's words: plain text on the board, never in a task title; a review gets title and body only fenced as data.
     title: String(p.title ?? "").slice(0, 200), body: String(p.body ?? "").slice(0, 2000),
+    association: String(p.author_association ?? "NONE"), own: !!self && (p.user?.login ?? "").toLowerCase() === self.toLowerCase(),
   };
 }
 
 export class CodeReviewReader {
   /** `identity`: who a review on owner/repo would post as (review-post.ts identity, auto), or null when nobody may. */
-  constructor(private readonly github: GitHub, private readonly identity: (owner: string, repo: string) => Promise<"app" | "owner" | null> = async () => null) {}
+  /** `self`: this instance's own App's bot login (`<slug>[bot]`), whose PRs are a member's. */
+  constructor(private readonly github: GitHub, private readonly identity: (owner: string, repo: string) => Promise<"app" | "owner" | null> = async () => null, private readonly self: () => string | undefined = () => undefined) {}
 
   /** Whether a review may post on the repo, and as whom: the owner, once GitHub is connected (null until then). */
   async postable(repo: string): Promise<{ identity: "app" | "owner" | null; org: string }> {
@@ -68,14 +78,33 @@ export class CodeReviewReader {
     const out: PullRequest[] = [];
     for (let page = 1; page <= MAX_PAGES; page++) {
       const rows = await this.github.request<GhPr[]>("GET", `/repos/${repo}/pulls`, { query: { state: "open", per_page: 100, page } });
-      out.push(...rows.map((p) => shape(repo, p)));
+      out.push(...rows.map((p) => shape(repo, p, this.self())));
       if (rows.length < 100) return out;
     }
     throw new Error(`more than ${MAX_PAGES * 100} open pull requests in ${repo}`);
   }
 
   async get(repo: string, number: number): Promise<PullRequest> {
-    return shape(repo, await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`));
+    return shape(repo, await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`), this.self());
+  }
+
+  /**
+   * One consistent read of a PR's own change, for its risk tier: the PR, every page of its files, then the PR again. `moved` when the
+   * head or base moved meanwhile, or the pages don't hold exactly `changed_files` files (the next poll asks again). Over FILES_MAX
+   * files GitHub can't list them all: the snapshot holds none and the tier is sensitive, unread.
+   */
+  async snapshot(repo: string, number: number): Promise<{ moved: true } | { pr: PullRequest; changed_files: number; files: PrFile[] }> {
+    const a = await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`);
+    const n = Number(a.changed_files ?? 0);
+    const files: PrFile[] = [];
+    if (n <= FILES_MAX) for (let page = 1; page <= FILES_MAX / 100; page++) {
+      const rows = await this.github.request<{ filename: string; previous_filename?: string; additions?: number; deletions?: number }[]>("GET", `/repos/${repo}/pulls/${number}/files`, { query: { per_page: 100, page } });
+      files.push(...rows.map((f) => ({ path: f.filename, ...(f.previous_filename ? { previous: f.previous_filename } : {}), additions: Number(f.additions ?? 0), deletions: Number(f.deletions ?? 0) })));
+      if (rows.length < 100) break;
+    }
+    const b = await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`);
+    if (b.head?.sha !== a.head?.sha || b.base?.sha !== a.base?.sha || b.base?.ref !== a.base?.ref || (n <= FILES_MAX && files.length !== n)) return { moved: true };
+    return { pr: shape(repo, b, this.self()), changed_files: n, files: n > FILES_MAX ? [] : files };
   }
 
   /** PR conversation comments created at or after `since`, oldest first; the cursor is the newest created_at seen (else `since`); at most MAX_PAGES pages a call. */
@@ -172,6 +201,7 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     const repo = repoArg(q.get("repo"));
     if (op === "prs") return { status: 200, body: { prs: await reader.open(repo) } };
     if (op === "pr") return { status: 200, body: { pr: await reader.get(repo, numberArg(q.get("number"))) } };
+    if (op === "snapshot") return { status: 200, body: await reader.snapshot(repo, numberArg(q.get("number"))) };
     if (op === "comments") return { status: 200, body: await reader.comments(repo, sinceArg(q.get("since"))) };
     if (op === "compare") return { status: 200, body: await reader.compare(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };
     if (op === "patch-id") return { status: 200, body: await reader.patchId(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };

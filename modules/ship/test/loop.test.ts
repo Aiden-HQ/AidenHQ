@@ -1,6 +1,7 @@
 // Ship's watch loop end to end against a fake GitHub and a fake kernel, through the one engine (adopted.ts, rounds.ts) and the CI
 // recoveries (ci-recover.ts), under `cautious`: Dependabot tasks, Flow facts, a task's own PR (adopted on its task, merged by ship,
 // woken for red checks and findings, closed when superseded or done), and the re-runs of checks that never started or got wedged.
+import { verdict } from "./risk.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -48,7 +49,7 @@ const startPrWatch = (o) => {
     adopted: adoptedPass({
       gh: o.gh, state, kernel, settings: o.settings ?? (() => PRESETS.cautious), paused: () => false, log() {},
       decision: decisionOf(o.reviewGate),
-      effects: { comment: async (repo, n, body) => (comments.push({ n, body }), 1), askReview: async () => {}, askFresh: async () => {}, verdict: async () => ({ verdict: "wait", reasons: [] }) },
+      effects: { comment: async (repo, n, body) => (comments.push({ n, body }), 1), askReview: async () => {}, askFresh: async () => {}, verdict: async () => verdict("standard", { verdict: "wait" }) },
     }),
     ...o,
   });
@@ -461,10 +462,10 @@ test("a green task's PR is adopted on its task and ship files its merge once per
   assert.equal(c.woke.length, 0, "no agent turn between green and the merge");
   const adopted = openState(join(c.cacheDir, "state.json")).get("acme/app", 3);
   assert.deepEqual([adopted.generation, adopted.task, adopted.owner, adopted.hold], [1, "ACME-3", { kind: "task", task: "ACME-3" }, null], "adopted at first sight, owned by its task");
-  const off = await rig(t, { merge: () => [200, { id: "r9", tier: 0, state: "claimed" }], settings: () => ({ ...PRESETS.cautious, merge: "off" }) });
+  const off = await rig(t, { merge: () => [200, { id: "r9", tier: 0, state: "claimed" }], settings: () => ({ ...PRESETS.cautious, by_tier: { ...PRESETS.cautious.by_tier, standard: { approve: "observe", merge: "off" } } }) });
   off.set([off.agentPr(9)]);
   await off.watch.tick(); await off.watch.tick();
-  assert.deepEqual([off.merges.length, off.woke.length], [0, 0], "Auto-merge off: no merge filed and none asked for");
+  assert.deepEqual([off.merges.length, off.woke.length], [0, 0], "the tier's merge off: no merge filed and none asked for");
   const refused = await rig(t);
   refused.set([refused.agentPr(5)]);
   await refused.watch.tick(); await refused.watch.tick();
