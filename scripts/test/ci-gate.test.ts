@@ -166,7 +166,7 @@ test("the review tools read the PR's tree and history only: nothing outside the 
 const F = (path, additions = 1, deletions = 0, previous) => ({ path, additions, deletions, ...(previous ? { previous } : {}) });
 const tier = (files, o = {}) => tierOf(files, { author: "dev", association: "MEMBER", base: "main", effort: "high", ...o });
 
-test("the tier: a small member change is trivial, an auth path or a bumped lockfile is sensitive and reviewed one effort higher, a bot's bump is standard", () => {
+test("the tier: a small member change is trivial, an auth path or a bumped lockfile is sensitive and reviewed one effort higher, a bot's bump is skipped", () => {
   assert.equal(tier([F("src/a.ts", 3)]).tier, "trivial");
   assert.equal(tier([F("src/a.ts", 30)]).tier, "standard");
   const s = tier([F("src/auth/login.ts")]);
@@ -175,7 +175,7 @@ test("the tier: a small member change is trivial, an auth path or a bumped lockf
   assert.equal(tier([F("src/auth.ts", 30)], { addressed: true }).effort, "xhigh");
   assert.equal(tier([F("package-lock.json", 40), F("src/a.ts", 2)]).tier, "sensitive", "any lockfile change");
   const bump = { author: "dependabot[bot]", association: "NONE" };
-  assert.equal(tier([F("package.json"), F("package-lock.json", 40)], bump).tier, "standard");
+  assert.equal(tier([F("package.json"), F("package-lock.json", 40)], bump).tier, "skip");
   assert.equal(tier([F("src/a.ts", 3)], { association: "NONE" }).tier, "sensitive", "an outsider");
   assert.equal(tier([F("src/a.ts", 3)], { author: "app[bot]", association: "NONE", tiers: { self: "App[bot]" } }).tier, "trivial", "the instance's own App is a member");
   assert.equal(tier([F("logo.png", 0, 0)]).tier, "sensitive", "no substantive line");

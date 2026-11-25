@@ -311,7 +311,7 @@ export function createEngine(d: EngineDeps) {
   const prRow = (repo: string, n: number) => one<PrRow>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
   /** What a head's classification was computed from: a stored one whose inputs differ from these is stale (pending). */
   type Inputs = { head: string; base: string; ref: string; author: string; association: string; config: string };
-  const inputsOf = (p: PullRequest, cfg: Entry): Inputs => ({ head: p.head, base: p.base, ref: p.base_ref, author: authorKind(p.author, p.association, p.own), association: String(p.association ?? ""), config: cfg.hash });
+  const inputsOf = (p: PullRequest, cfg: Entry): Inputs => ({ head: p.head, base: p.base, ref: p.base_ref, author: authorKind(p.author, p.association, p.own, p.fork), association: String(p.association ?? ""), config: cfg.hash });
   /** A PR head's tier as code review serves it: classified (current inputs), pending (none yet, or stale), or unwatched. `live` is a
    * caller's own read of the PR (its base branch and author association): one that differs from what the tier came from is pending. */
   type TierState = { state: "unwatched" } | { state: "pending" } | { state: "classified"; tier: Tier; rule: number; why: string; facts: Facts | null; c: Repo; policy: string; at: number };
@@ -341,9 +341,18 @@ export function createEngine(d: EngineDeps) {
   };
   /** The head's classification on its notice: every phase of the one comment carries the tier line (none while the head is pending). */
   const withTier = (a: Ack): Ack => {
-    const p = prRow(a.repo, a.number);
-    return p?.tier && p.head === a.head ? { ...a, tier: { tier: p.tier, why: p.why ?? "" } } : a;
+    const tier = riskOf(a);
+    return tier ? { ...a, tier } : a;
   };
+  /** The threads other reviewers and people opened, one line each (path:line, who, the comment's first words), within the check's text limit. */
+  const othersOf = (ts: Thread[]) => {
+    const lines = ts.filter((t) => !t.finding && t.body && !t.resolved && !t.outdated).slice(0, 25).map((t) => `${t.path ?? "?"}:${t.line ?? "?"} (${String(t.author ?? "").slice(0, 40)}): ${t.body!.replace(/\s+/g, " ").slice(0, 200)}`);
+    let out = "";
+    for (const l of lines) if ((out + l).length < 1990) out += `${l}\n`;
+    return out.trim();
+  };
+  /** The head's risk tier and why, said in its review's header (none while the head is unclassified or has moved). */
+  const riskOf = (r: { repo: string; number: number; head: string }) => { const p = prRow(r.repo, r.number); return p?.tier && p.head === r.head ? { tier: p.tier, why: p.why ?? "" } : undefined; };
   /** The acknowledgement comment each PR has (recorded from an outcome, never found by its marker), and notices still settling. */
   const ackOf = (repo: string, n: number) => one<{ ack: number | null }>("SELECT ack FROM prs WHERE repo = ? AND number = ?", repo, n)?.ack ?? undefined;
   /** Records an acknowledgement's outcome; false when its comment's id could not be recorded (the notice stays pending). */
@@ -644,7 +653,10 @@ export function createEngine(d: EngineDeps) {
       // The PR's stated intent, fenced as data in the brief; a fork's author is an outsider, so none.
       const pr = await d.source.get(r.repo, r.number);
       const intent = pr.fork ? "" : [pr.title, pr.body].filter(Boolean).join("\n\n");
-      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", focus: r.focus, intent,
+      // What others already raised on the PR's threads (not Aiden's own, which `previous` carries): the review skips what is said.
+      // None on a fork: its commenters are strangers (as the PR text is: `intent`).
+      const threads = pr.fork ? "" : await d.source.threads(r.repo, r.number).then(othersOf, () => "");
+      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", focus: r.focus, intent, threads,
         incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5, ...await deepsecData(r) });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -693,7 +705,7 @@ export function createEngine(d: EngineDeps) {
     try {
       if (r.profile === PLAN) {
         const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: PLAN, combo: comboOf(r), stacks: stacksOf(catalog()),
-          focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 0 });
+          focus: null, intent: "", threads: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 0 });
         return void run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
       }
       const opts = new Map(catalog().map((o) => [o.id, o]));
@@ -715,7 +727,7 @@ export function createEngine(d: EngineDeps) {
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
         ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}), ...await deepsecData(r),
         ...(area ? { area: { id: area.id, name: area.name, files: area.files } } : {}), ...(unseen ? { unseen } : {}), ...(o?.scope === "map" && plan && plan.areas.length > 1 ? { area_map: areaMap(plan) } : {}),
-        focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
+        focus: null, intent: "", threads: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       if (!permanent(e)) {
@@ -830,7 +842,8 @@ export function createEngine(d: EngineDeps) {
       else failed();
       end(runRow(r.id)!);
       if (r.target === "tree") return batchEnded(r.batch);
-      if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
+      // An automatic review has no one to tell and its sibling may still speak: it is said only when nothing else at this head will.
+      if (r.kind !== "auto" || !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND id != ? AND status IN ('queued', 'running', 'done')", r.repo, r.number, r.head, r.id)) void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
     }
     const cost = charge(r, res.billed_usd);
@@ -1229,7 +1242,7 @@ export function createEngine(d: EngineDeps) {
     let posted: Posted;
     try {
       const own = all<{ comment: number }>("SELECT comment FROM comments WHERE repo = ? AND number = ? ORDER BY comment DESC LIMIT 1000", r.repo, r.number).map((c) => c.comment);
-      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!repoCfg(r.repo) && !!r.mandatory, own });
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!repoCfg(r.repo) && !!r.mandatory, own, first: !previous, ...(riskOf(r) ? { tier: riskOf(r) } : {}) });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
     }
@@ -1733,7 +1746,9 @@ export function createEngine(d: EngineDeps) {
   async function noteTier(p: PullRequest) {
     const row = prRow(p.repo, p.number);
     const key = `${p.head}:${row?.tier}`;
-    if (backlog(p) || !row?.tier || row.head !== p.head || row.noted === key || acking_(p.repo, p.number)) return;
+    // A review says its own risk in its header, so the comment is for a PR no review will speak on (tier skip), or one that has it already
+    // (kept current, edited in place): a reviewed PR gets no comment of its own.
+    if (backlog(p) || !row?.tier || row.head !== p.head || row.noted === key || acking_(p.repo, p.number) || (row.tier !== "skip" && !ackOf(p.repo, p.number))) return;
     // A head a run already reported on keeps that run's notice (its phase, counts and review link): the run's own notices carry the tier line.
     const reported = lastRunAck(p.repo, p.number)?.head === p.head;
     if (reported || await ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
@@ -2143,6 +2158,10 @@ export function createEngine(d: EngineDeps) {
 
   /** A reply that answers a finding: its first word (fixed, disputed, by design, won't fix) and the reason after it. */
   const ANSWER = /^\s*(fixed|disputed|by design|won['’]?t fix)\b[\s:,.;\-–—]*([\s\S]*)$/i;
+  /** A resolution word (and its separator) a reason starts with, repeated. */
+  /** An answer's word as it is stored and shown: lower case, no apostrophe, `won't fix`. */
+  const wordOf = (w: string) => w.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
+  const LEADING_WORD = /^(?:\s*(?:fixed|disputed|by design|won['’]?t fix)(?:\s*:|\s+[-–—])\s*)+/i;
   /** The answer in a reply: its word and its reason, which must say something (letters, not only punctuation or a signature). */
   const answerOf = (body: string) => {
     if (body.includes("<!-- aidenhq-")) return undefined; // our own posts (a mirrored answer, a review) never answer a finding
@@ -2152,8 +2171,8 @@ export function createEngine(d: EngineDeps) {
   };
   /** The one way an answer closes an open finding (fixed, else dismissed), whatever carried it (a thread reply, an agent's call): kept as the finding's claim. */
   function answer(at: { repo: string; number: number; head: string }, id: string, word: string, reason: string, by: string, evidence: string | null, label: string) {
-    const w = word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
-    const claim = `${w}: ${reason}`.slice(0, 1500), outcome = w === "fixed" ? "fixed" : "dismissed";
+    const w = wordOf(word);
+    const claim = `${w}: ${reason.replace(LEADING_WORD, "")}`.slice(0, 1500), outcome = w === "fixed" ? "fixed" : "dismissed";
     // Every answer closes the finding at once; a later review reopens it only if it finds the fix or the reason unsafe.
     const changed = tx(() => {
       const c = run("UPDATE findings SET outcome = ?, outcome_at = ?, claim = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", outcome, iso(), claim, at.repo, at.number, id).changes;
@@ -2168,7 +2187,9 @@ export function createEngine(d: EngineDeps) {
   function resolve(b: { repo?: unknown; number?: unknown; id?: unknown; word?: unknown; reason?: unknown; by?: unknown }) {
     const repo = String(b.repo ?? "").toLowerCase(), n = Number(b.number), id = String(b.id ?? "");
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(n) || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new RequestError("give repo, number and the finding's id");
-    const word = String(b.word ?? "").trim(), reason = typeof b.reason === "string" ? b.reason.trim() : "";
+    // The reason is what the answer says after its word: one that repeats the word ("fixed: the check now …") is read without it, so the
+    // thread shows `fixed: the check now …`, never `fixed: fixed: …`.
+    const word = String(b.word ?? "").trim(), reason = typeof b.reason === "string" ? b.reason.trim().replace(LEADING_WORD, "") : "";
     if (!/^(fixed|disputed|by design|won['’]?t fix)$/i.test(word)) throw new RequestError("word is one of fixed, disputed, by design or won't fix");
     if (!/\p{L}{2,}/u.test(reason) || reason.length > 1500) throw new RequestError("reason says what changed or why (letters, at most 1500 characters)");
     const p = prRow(repo, n);
@@ -2176,7 +2197,7 @@ export function createEngine(d: EngineDeps) {
     const severity = one<{ severity: string }>("SELECT severity FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", repo, n, id)?.severity;
     if (!answer(p, id, word, reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
     // An important finding's answer is also replied on its thread (so it shows closed): queued here (a newer answer replaces an older queued one), posted by `replies` and never holding the outcome. A nit gets none.
-    if (severity === "important") run("INSERT OR REPLACE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't")}: ${reason}`.slice(0, 1600), now());
+    if (severity === "important") run("INSERT OR REPLACE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${wordOf(word)}: ${reason}`.slice(0, 1600), now());
     return { resolved: id };
   }
 
@@ -2191,6 +2212,8 @@ export function createEngine(d: EngineDeps) {
         if (q.write) o = await d.poster.outcome(q.write);
         else {
           const t = (await d.source.threads(q.repo, q.number)).find((x) => x.finding === q.finding);
+          // The agent already gave this answer on the thread itself (a reply that starts with the word and gives a reason): one answer per thread, so no mirror.
+          if (t?.replies.some((x) => { const m = answerOf(x.body); return m && `${wordOf(m.word)}: ${m.reason}`.replace(/\s+/g, " ").trim().startsWith(q.body.replace(/\s+/g, " ").trim()); })) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
           if (!t) o = { state: "refused", why: "its thread isn't on the pull request (yet)", retry: true };
           else o = await d.poster.reply({ repo: q.repo, number: q.number, head: prRow(q.repo, q.number)!.head, comment: t.comment, body: q.body });
           if (o.write) run("UPDATE replies SET write = ? WHERE repo = ? AND number = ? AND finding = ?", o.write, ...key);

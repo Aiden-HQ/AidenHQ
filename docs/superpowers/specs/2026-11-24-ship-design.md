@@ -364,19 +364,21 @@ close.
 
 ### 7. The report
 
-One App comment per PR, edited in place (marker `<!-- aidenhq-ship -->`). Code renders it from the adoption record, the
-kernel's record outcomes and code review's verdict. The model's only text is a one-line summary of each fix.
+One comment per PR (marker `<!-- aidenhq-ship -->`), edited in place, in plain words, rendered by code (`report.ts`). The code
+host's `comment` op finds the account's own comment carrying the marker before it creates one, so a lost answer never makes a
+second. It is posted only when a person must act, or once to acknowledge a member's explicit hand-off (the `ship` label or a
+`/ship` comment); once it exists it is kept true:
 
-- **State:** derived, or the `hold` reason.
-- **What ship did:** rebased; regenerated `<globs>` with `<command>`; fixed `<check>`; answered N findings (fixed, or declined
-  with the reason).
-- **Risk facts:**
-  - substantive lines and files;
-  - areas touched (CODEOWNERS owners);
-  - protected or denied paths hit;
-  - the safe-class verdict and why;
-  - code review's verdict and open findings.
-- **What it waits on**, and who can unblock it.
+| When | It says |
+| --- | --- |
+| A member hands the PR over | "Ship has this PR: it will rebase, fix CI and review findings, and merge when ready." |
+| A hold or a hand-back | one fixed sentence for the cause, with what a person can do |
+| A code owner's review, a required review, an approval, a merge Ship may not make | the wait, in words |
+| A comment exists and the PR merges | "Merged by Ship." (or "Merged.") |
+
+Nothing is posted for `handoff: all` adoptions or the fleet's own PRs unless a person must act. No generation, hash, rule
+number, counter, finding or agent instruction is printed: the merge gate's `unblock` text is a separate field Ship never reads
+into a comment. A wait is said again only when its kind changes, never when its finding list does.
 
 ### 8. Metrics
 

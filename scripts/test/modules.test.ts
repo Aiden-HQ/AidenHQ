@@ -490,7 +490,8 @@ test("code review: every watched repo asks its verdict; the kernel skips the AI 
   const c = (mandatory?: boolean) => ({ engine: "codex", model: "~a/b", effort: "low", ...(mandatory ? { mandatory } : {}) });
   const advice = { on_open: [c()], on_push: [] };
   assert.deepEqual(codeReviewGated({ repos: [{ repo: "Acme/App" }, { repo: "acme/lib", by_tier: { trivial: advice } }] }), { watched: ["acme/app", "acme/lib"], mandatory: ["acme/app"] });
-  // A rule that can reach skip keeps the AI reviewer on: a skip head passes neither.
+  // A rule that can reach skip keeps the AI reviewer on: a skip head passes neither. One only a bot's PR reaches (the fleet's own pushes are members') does not.
+  assert.deepEqual(codeReviewGated({ repos: [{ repo: "acme/app", rules: [{ when: { author: "bot" }, tier: "skip" }, { tier: "standard" }] }] }).mandatory, ["acme/app"]);
   assert.deepEqual(codeReviewGated({ repos: [{ repo: "acme/app", rules: [{ when: { lines_max: 2 }, tier: "skip" }, { tier: "standard" }] }] }).mandatory, []);
   assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c(true)] }] }), /per tier now: by_tier/);
   assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", by_tier: { standard: { on_open: [c()], on_push: [c(true)] } } }] }), /needs a mandatory on_open one/);

@@ -296,3 +296,20 @@ test("every engine's output loses the run's token and key-shaped text before it 
     assert.ok(!JSON.stringify(res).includes("opaque-run-token-123") && !JSON.stringify(res).includes("sk-or-v1"));
   } finally { if (old === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = old; }
 });
+
+test("files the repo's .gitattributes marks linguist-generated are left out (no coverage gap); other reviewers' threads reach the brief as data", async () => {
+  const base = { ".gitattributes": "schema.svg linguist-generated=true\n/gen/out.ts linguist-generated\nvendor/** linguist-generated\nvendor/keep.ts -linguist-generated\nvendor/other.ts !linguist-generated\ndocs/ linguist-generated\n", "schema.svg": "<svg/>\n", "gen/out.ts": "export {};\n", "vendor/x.ts": "x\n", "vendor/keep.ts": "k\n", "vendor/other.ts": "o\n", "src/a.js": "export const a = 1;\n", "docs/plan.md": "plan\n" };
+  // The PR changes each of them and adds vendor/new.ts: an added file is never left out by the declaration.
+  const head = { ...base, "schema.svg": "<svg>2</svg>\n", "gen/out.ts": "export const g = 1;\n", "vendor/x.ts": "x2\n", "vendor/keep.ts": "k2\n", "vendor/other.ts": "o2\n", "vendor/new.ts": "n\n", "src/a.js": "export const a = 2;\n" };
+  const seen = [];
+  const run = async (_e, o) => (seen.push(o), { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) });
+  const r = await review({ spec: spec({ combo: combo({ effort: "low", ignore: [] }), threads: "src/a.js:1 (codegenie): a is a constant" }), ...box({ head, base }), run });
+  assert.deepEqual(r.coverage, { reviewed: ["src/a.js", "vendor/keep.ts", "vendor/new.ts", "vendor/other.ts"], excluded: ["gen/out.ts (generated (.gitattributes))", "schema.svg (generated (.gitattributes))", "vendor/x.ts (generated (.gitattributes))"], incomplete: null }); // a later -linguist-generated exempts a file
+  assert.match(seen[0].instructions, /already opened on this pull request[\s\S]*a is a constant/);
+  assert.match(seen[0].instructions, /not already covered/);
+  // A change that is only documents: an important finding is a non-blocking design note (3 at most, the rest nits), whatever the finder said; code beside them keeps it.
+  const doc = { ...base, "docs/plan.md": "plan v2\n" };
+  const found = async () => ({ read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [F({ path: "docs/plan.md", line: 1, title: "Plan contradicts itself" })] }) });
+  const p = await review({ spec: spec({ combo: combo({ effort: "low", ignore: [] }) }), ...box({ head: doc, base }), run: found });
+  assert.deepEqual(p.findings.map((f) => [f.severity, f.why.startsWith("[design note] ")]), [["pre_existing", true]]);
+});

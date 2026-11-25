@@ -16,9 +16,17 @@ test("the default rules: size, author, sensitive paths, repo class", () => {
   assert.equal(tier([f("src/Auth/Login.ts", 1)]), "sensitive", "the common capitalised form");
   assert.equal(tier([f(".github/.release.yml", 1)]), "sensitive", "a dot-file under a sensitive folder");
   assert.equal(tier([f("src/b.ts", 1, "src/session.ts")]), "sensitive", "a rename's old path counts");
-  // A lockfile is sensitive, unless a bot's PR changes only manifests and lockfiles (Dependabot).
+  // A lockfile is sensitive, unless a bot's PR changes only manifests and lockfiles (Dependabot): skipped, reviewed when asked.
   assert.equal(tier([f("src/a.ts", 2), f("package-lock.json", 400)]), "sensitive");
-  assert.equal(tier([f("package.json", 2), f("package-lock.json", 400)], { author: "bot" }), "standard");
+  assert.equal(tier([f("package.json", 2), f("package-lock.json", 400)], { author: "bot" }), "skip");
+  // Docs and plans are judged by what they say, not by a keyword in a path; an instruction file or an outsider's docs stay sensitive.
+  assert.equal(tier([f("docs/plans/session-cookies/design.md", 80)]), "standard");
+  assert.equal(tier([f("docs/token-design.md", 80), f("docs/plans/auth.md", 5)]), "standard");
+  assert.equal(tier([f("docs/plans/session.md", 80), f("src/session.ts", 2)]), "sensitive");
+  assert.equal(tier([f("docs/plans/session.md", 80), f("AGENTS.md", 1)]), "sensitive");
+  assert.equal(tier([f("docs/token/page.mdx", 30)]), "sensitive", "mdx can run code: not prose");
+  assert.equal(tier([f("docs/site/package.json", 3)]), "sensitive", "docs/ holds code too: prose is by file type");
+  assert.equal(tier([f("docs/plans/session.md", 80)], { author: "outsider" }), "sensitive");
   // No substantive line (generated or binary only) is sensitive: generated files never count.
   assert.equal(tier([f("dist/app.min.js", 900)]), "sensitive");
   assert.equal(tier([f("src/a.ts", 4), f("dist/app.min.js", 900)]), "trivial");
@@ -32,6 +40,9 @@ test("the default rules: size, author, sensitive paths, repo class", () => {
 test("authors, rule validation and a custom rule's why", () => {
   assert.equal(authorKind("aidenhq-x[bot]", "NONE", true), "member");
   assert.equal(authorKind("dependabot[bot]", "NONE"), "bot");
+  assert.equal(authorKind("renovate[bot]", "NONE"), "bot");
+  assert.equal(authorKind("dependabot[bot]", "NONE", false, true), "outsider", "never from a fork");
+  assert.equal(authorKind("evil-dependabot[bot]", "NONE"), "outsider", "exact logins only");
   assert.equal(authorKind("alice", "COLLABORATOR"), "member");
   assert.equal(authorKind("mallory", "CONTRIBUTOR"), "outsider");
   assert.match((parseRules([{ tier: "standard" }, { tier: "trivial" }]) as { error: string }).error, /only the last rule has no when/);

@@ -17,6 +17,25 @@ export interface Changed { path: string; added: number; removed: number; binary:
 // Lockfiles: no findings asked for, never a coverage gap (they carry no code). Generated and bundled code: a gap when
 // the change adds it (a place to hide code). Both lists are the risk tiers' (tiers.ts), their one definition.
 
+/**
+ * What a repo's own `.gitattributes` says of `linguist-generated` (its root file, as the merge base has it: the PR's own copy is its
+ * author's to write), in file order: a path's effective value is the last rule that matches it, as git reads it (a later
+ * `-linguist-generated` or `!linguist-generated` exempts a file an earlier pattern marked). A line is `pattern attr…`; a pattern with no slash matches at any
+ * depth, a leading slash anchors it (a folder pattern, a trailing slash, sets nothing on the files in it).
+ */
+export function generatedRules(text: string): { glob: string; on: boolean }[] {
+  const out: { glob: string; on: boolean }[] = [];
+  for (const line of text.split("\n")) {
+    const [pattern, ...attrs] = line.trim().split(/\s+/);
+    if (!pattern || pattern.startsWith("#") || pattern.startsWith('"') || pattern.endsWith("/")) continue; // git sets no attribute on a folder's files by a folder pattern
+    const last = attrs.filter((a) => /^[-!]?linguist-generated(=|$)/.test(a)).pop();
+    if (!last) continue;
+    const p = pattern.replace(/^\//, "");
+    out.push({ glob: pattern.startsWith("/") || p.includes("/") ? p : `**/${p}`, on: last === "linguist-generated" || last === "linguist-generated=true" });
+  }
+  return out;
+}
+
 /** The changed files from `from` to `to` (the head) with their line counts: [{ path, added, removed, binary }]. */
 export function changed(git: Git, from: string, to = "HEAD"): Changed[] {
   const out = git(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none", "--numstat", "-z", from, to]);
@@ -32,13 +51,13 @@ export function changed(git: Git, from: string, to = "HEAD"): Changed[] {
  * path), so the review is incomplete and never reads as a clean pass. Size never leaves a file out. The repo's own ignore globs
  * (its config) and binary files are no gap. `added`: the paths this change adds.
  */
-export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new Set<string>()) {
-  const mine = [...ignore].map(String).map(globRe), gen = GENERATED.map(globRe), locks = LOCKS.map(globRe);
+export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new Set<string>(), declared: { glob: string; on: boolean }[] = [], added = new Set<string>()) {
+  const mine = [...ignore].map(String).map(globRe), gen = GENERATED.map(globRe), locks = LOCKS.map(globRe), marked = declared.map((d) => ({ re: globRe(d.glob), on: d.on }));
   const reviewed: string[] = [], excluded: Excluded[] = [];
   for (const f of files) {
     // A change to how git reads files is always reviewed, whatever the globs say.
     const attrs = posix.basename(f.path) === ".gitattributes";
-    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : undefined;
+    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : !added.has(f.path) && marked.findLast((m) => m.re.test(f.path))?.on ? "generated (.gitattributes)" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : undefined;
     ((why ? excluded : reviewed) as (Excluded | string)[]).push(why ? { path: f.path, why, gap: why === "generated, changed by this PR" } : f.path);
   }
   return { reviewed, excluded };
