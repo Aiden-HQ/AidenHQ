@@ -123,7 +123,7 @@ test("a rerun with no vault path clears VAULT_FOLDERS, so compile accepts .env",
 // An existing .env is read as the compiler reads it (any indent, quotes stripped) and as the apply's `set -a; . ./.env`
 // expands it ($HOME), so setup makes the same directory compile mounts; an indented configured list is never rewritten.
 test("a rerun reads .env as the apply does, and keeps a configured list", () => {
-  const out = vaultPlan(['VAULT_DIR="$HOME/notes/vault"', "  VAULT_FOLDERS=Meetings, Ark"]);
+  const out = vaultPlan(['VAULT_DIR="$HOME/notes/vault"', '  VAULT_FOLDERS="Meetings, Ark"']);   // as the apply can source it
   assert.ok(out.includes("(as alice) mkdir -p /home/alice/notes/vault /home/alice/notes/vault/Meetings /home/alice/notes/vault/Ark"), out);
   assert.ok(!out.includes("+ .env: VAULT_FOLDERS="), `rewrote a configured list\n${out}`);
 });
@@ -148,7 +148,7 @@ test("a vault folder compile refuses stops setup with that message", () => {
 // fresh operator with no notes folder still ends up with one the module (uid 1000) can write.
 test("a configured custom vault root is created with its folders", () => {
   const vault = join(mkdtempSync(join(tmpdir(), "custom-")), "vault");  // it doesn't exist yet
-  const out = vaultPlan([`VAULT_DIR=${vault}`, "VAULT_FOLDERS=Meetings, Ark"]);
+  const out = vaultPlan([`VAULT_DIR=${vault}`, 'VAULT_FOLDERS="Meetings, Ark"']);   // sourceable by the apply
   assert.ok(out.includes(`(as alice) mkdir -p ${vault} ${vault}/Meetings ${vault}/Ark`), out);
 });
 
