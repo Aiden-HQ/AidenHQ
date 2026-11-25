@@ -85,7 +85,7 @@ export type FeedEvent = { seq: number; resource: string; id: string; kind: strin
 export type Feed = (after?: number) => Promise<{ events: FeedEvent[]; next: number; gap: boolean }>;
 export type Thread = { finding: string | null; comment: number; replies: { id: number; author: string; body: string }[];
   /** Where the thread sits, who opened it and its first comment's text (data: another reviewer's or a person's). */
-  path?: string; line?: number | null; author?: string; body?: string };
+  path?: string; line?: number | null; author?: string; body?: string; resolved?: boolean; outdated?: boolean };
 
 /** What one review run reviews: the check job's spec (lane E's recipe takes exactly these). */
 export type ReviewSpec = {

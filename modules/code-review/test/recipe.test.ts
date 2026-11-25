@@ -298,12 +298,12 @@ test("every engine's output loses the run's token and key-shaped text before it 
 });
 
 test("files the repo's .gitattributes marks linguist-generated are left out (no coverage gap); other reviewers' threads reach the brief as data; a prose-only change has no important finding", async () => {
-  const base = { ".gitattributes": "schema.svg linguist-generated=true\n/gen/ linguist-generated\n*.js -linguist-generated\n", "src/a.js": "export const a = 1;\n", "docs/plan.md": "plan\n" };
-  const head = { ...base, "schema.svg": "<svg/>\n", "gen/out.ts": "export {};\n", "src/a.js": "export const a = 2;\n" };
+  const base = { ".gitattributes": "schema.svg linguist-generated=true\n/gen/ linguist-generated\nvendor/** linguist-generated\nvendor/keep.ts -linguist-generated\n", "src/a.js": "export const a = 1;\n", "docs/plan.md": "plan\n" };
+  const head = { ...base, "schema.svg": "<svg/>\n", "gen/out.ts": "export {};\n", "vendor/x.ts": "x\n", "vendor/keep.ts": "k\n", "src/a.js": "export const a = 2;\n" };
   const seen = [];
   const run = async (_e, o) => (seen.push(o), { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) });
   const r = await review({ spec: spec({ combo: combo({ effort: "low", ignore: [] }), threads: "src/a.js:1 (codegenie): a is a constant" }), ...box({ head, base }), run });
-  assert.deepEqual(r.coverage, { reviewed: ["src/a.js"], excluded: ["gen/out.ts (generated (.gitattributes))", "schema.svg (generated (.gitattributes))"], incomplete: null });
+  assert.deepEqual(r.coverage, { reviewed: ["src/a.js", "vendor/keep.ts"], excluded: ["gen/out.ts (generated (.gitattributes))", "schema.svg (generated (.gitattributes))", "vendor/x.ts (generated (.gitattributes))"], incomplete: null }); // a later -linguist-generated exempts a file
   assert.match(seen[0].instructions, /already opened on this pull request[\s\S]*a is a constant/);
   assert.match(seen[0].instructions, /not already covered/);
   // A change that is only prose: an important finding is a nit, whatever the finder said.

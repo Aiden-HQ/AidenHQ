@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { brief, clean, downgrade, scrub } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
 import { gitListed, gitSafe, runEngine } from "./engines.ts";
-import { changed, generatedGlobs, guidePaths, place, scope } from "./scope.ts";
+import { changed, generatedRules, guidePaths, place, scope } from "./scope.ts";
 
 const MODEL = "~openai/gpt-luna-latest", FIRST = "medium", AGAIN = "low", MINUTES = 20, REVIEWS = 2;
 
@@ -75,8 +75,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
 
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
   const prChanged = new Set(raw("diff", "--no-renames", "--ignore-submodules=none", "--name-only", "-z", base, head).split("\0").filter(Boolean));
-  let declared: string[] = [];
-  try { declared = generatedGlobs(git("show", `${base}:.gitattributes`)); } catch {}
+  let declared: ReturnType<typeof generatedRules> = [];
+  try { declared = generatedRules(git("show", `${base}:.gitattributes`)); } catch {}
   const { reviewed, excluded } = scope(changed((a) => raw(...a), from, head), [], prChanged, declared);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
   const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged, declared);

@@ -24,6 +24,7 @@ test("the default rules: size, author, sensitive paths, repo class", () => {
   assert.equal(tier([f("docs/token-design.md", 80), f("docs/plans/auth.md", 5)]), "standard");
   assert.equal(tier([f("docs/plans/session.md", 80), f("src/session.ts", 2)]), "sensitive");
   assert.equal(tier([f("docs/plans/session.md", 80), f("AGENTS.md", 1)]), "sensitive");
+  assert.equal(tier([f("docs/site/package.json", 3)]), "sensitive", "docs/ holds code too: prose is by file type");
   assert.equal(tier([f("docs/plans/session.md", 80)], { author: "outsider" }), "sensitive");
   // No substantive line (generated or binary only) is sensitive: generated files never count.
   assert.equal(tier([f("dist/app.min.js", 900)]), "sensitive");

@@ -346,7 +346,7 @@ export function createEngine(d: EngineDeps) {
   };
   /** The threads other reviewers and people opened, one line each (path:line, who, the comment's first words), within the check's text limit. */
   const othersOf = (ts: Thread[]) => {
-    const lines = ts.filter((t) => !t.finding && t.body).slice(0, 25).map((t) => `${t.path ?? "?"}:${t.line ?? "?"} (${String(t.author ?? "").slice(0, 40)}): ${t.body!.replace(/\s+/g, " ").slice(0, 200)}`);
+    const lines = ts.filter((t) => !t.finding && t.body && !t.resolved && !t.outdated).slice(0, 25).map((t) => `${t.path ?? "?"}:${t.line ?? "?"} (${String(t.author ?? "").slice(0, 40)}): ${t.body!.replace(/\s+/g, " ").slice(0, 200)}`);
     let out = "";
     for (const l of lines) if ((out + l).length < 1990) out += `${l}\n`;
     return out.trim();
@@ -841,7 +841,8 @@ export function createEngine(d: EngineDeps) {
       else failed();
       end(runRow(r.id)!);
       if (r.target === "tree") return batchEnded(r.batch);
-      if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
+      // An automatic review has no one to tell and its sibling may still speak: it is said only when nothing else at this head will.
+      if (r.kind !== "auto" || !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND id != ? AND status IN ('queued', 'running', 'done')", r.repo, r.number, r.head, r.id)) void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
     }
     const cost = charge(r, res.billed_usd);
@@ -1240,7 +1241,7 @@ export function createEngine(d: EngineDeps) {
     let posted: Posted;
     try {
       const own = all<{ comment: number }>("SELECT comment FROM comments WHERE repo = ? AND number = ? ORDER BY comment DESC LIMIT 1000", r.repo, r.number).map((c) => c.comment);
-      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!repoCfg(r.repo) && !!r.mandatory, own, first: !previous, ...(riskOf(r) ? { tier: riskOf(r) } : {}) });
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!repoCfg(r.repo) && !!r.mandatory, own, first: !previous && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND id != ? AND posted IN ('posted', 'pending', 'retry')", r.repo, r.number, r.id), ...(riskOf(r) ? { tier: riskOf(r) } : {}) });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
     }
@@ -2157,6 +2158,8 @@ export function createEngine(d: EngineDeps) {
   /** A reply that answers a finding: its first word (fixed, disputed, by design, won't fix) and the reason after it. */
   const ANSWER = /^\s*(fixed|disputed|by design|won['’]?t fix)\b[\s:,.;\-–—]*([\s\S]*)$/i;
   /** A resolution word (and its separator) a reason starts with, repeated. */
+  /** An answer's word as it is stored and shown: lower case, no apostrophe, `won't fix`. */
+  const wordOf = (w: string) => w.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
   const LEADING_WORD = /^(?:\s*(?:fixed|disputed|by design|won['’]?t fix)\s*[:\-–—]\s*)+/i;
   /** The answer in a reply: its word and its reason, which must say something (letters, not only punctuation or a signature). */
   const answerOf = (body: string) => {
@@ -2167,7 +2170,7 @@ export function createEngine(d: EngineDeps) {
   };
   /** The one way an answer closes an open finding (fixed, else dismissed), whatever carried it (a thread reply, an agent's call): kept as the finding's claim. */
   function answer(at: { repo: string; number: number; head: string }, id: string, word: string, reason: string, by: string, evidence: string | null, label: string) {
-    const w = word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
+    const w = wordOf(word);
     const claim = `${w}: ${reason.replace(LEADING_WORD, "")}`.slice(0, 1500), outcome = w === "fixed" ? "fixed" : "dismissed";
     // Every answer closes the finding at once; a later review reopens it only if it finds the fix or the reason unsafe.
     const changed = tx(() => {
@@ -2193,7 +2196,7 @@ export function createEngine(d: EngineDeps) {
     const severity = one<{ severity: string }>("SELECT severity FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", repo, n, id)?.severity;
     if (!answer(p, id, word, reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
     // An important finding's answer is also replied on its thread (so it shows closed): queued here (a newer answer replaces an older queued one), posted by `replies` and never holding the outcome. A nit gets none.
-    if (severity === "important") run("INSERT OR REPLACE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't")}: ${reason}`.slice(0, 1600), now());
+    if (severity === "important") run("INSERT OR REPLACE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${wordOf(word)}: ${reason}`.slice(0, 1600), now());
     return { resolved: id };
   }
 
@@ -2208,8 +2211,8 @@ export function createEngine(d: EngineDeps) {
         if (q.write) o = await d.poster.outcome(q.write);
         else {
           const t = (await d.source.threads(q.repo, q.number)).find((x) => x.finding === q.finding);
-          // The agent answered on the thread itself (a reply that starts with a word and gives a reason): one answer per thread, so no mirror.
-          if (t?.replies.some((x) => answerOf(x.body))) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
+          // The agent already gave this answer on the thread itself (a reply that starts with the word and gives a reason): one answer per thread, so no mirror.
+          if (t?.replies.some((x) => { const m = answerOf(x.body); return m && wordOf(m.word) === q.body.split(":")[0]; })) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
           if (!t) o = { state: "refused", why: "its thread isn't on the pull request (yet)", retry: true };
           else o = await d.poster.reply({ repo: q.repo, number: q.number, head: prRow(q.repo, q.number)!.head, comment: t.comment, body: q.body });
           if (o.write) run("UPDATE replies SET write = ? WHERE repo = ? AND number = ? AND finding = ?", o.write, ...key);

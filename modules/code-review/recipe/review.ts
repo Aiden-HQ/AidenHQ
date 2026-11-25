@@ -42,7 +42,7 @@ import { atReviewer } from "./code-review.ts";
 import { answer, brief, cap, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
 import type { Cleaned, Excluded, Placed, Severity } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
-import { changed, generatedGlobs, guidePaths, place, scope } from "./scope.ts";
+import { changed, generatedRules, guidePaths, place, scope } from "./scope.ts";
 import type { Changed } from "./scope.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
 import { setupPath } from "./deepsec.ts";
@@ -344,8 +344,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const prChanged = new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", h.base, "HEAD"]).split("\0").filter(Boolean));
   // (A tree's files are all "changed": generated ones are left out, not a hiding place.)
   // Files the repo's own .gitattributes (at the merge base) marks linguist-generated are left out, as its ignore globs are.
-  let declared: string[] = [];
-  if (!tree) try { declared = generatedGlobs(h.git(["show", `${h.base}:.gitattributes`])); } catch {}
+  let declared: ReturnType<typeof generatedRules> = [];
+  if (!tree) try { declared = generatedRules(h.git(["show", `${h.base}:.gitattributes`])); } catch {}
   const { reviewed, excluded } = scope(changed(h.git, h.from), combo.ignore ?? [], tree ? new Set() : prChanged, declared);
   const mine = tree ? { reviewed, excluded } : scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), combo.ignore ?? [], prChanged, declared);
   const reviewedSet = new Set(reviewed), own = new Set(mine.reviewed), out_ = new Set([...excluded, ...mine.excluded].map((e) => e.path));
@@ -357,7 +357,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   try { if (list) checks = checklistText(matchChecklist(JSON.parse(list).items, diff)); } catch {}
   // Text addressed to a reviewer is looked for in the whole change, left-out files included (they can't hide it).
   // The PR's title and body (spec.intent) too: steering text there is the same attempt.
-  const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer) || (!tree && atReviewer([spec.intent, spec.threads].filter(Boolean).join("\n").split("\n").map((l) => `+${l}`).join("\n")));
+  const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer) || (!tree && atReviewer(String(spec.intent ?? "").split("\n").map((l) => `+${l}`).join("\n")));
   // The PR's still-open findings: already reported (the finders say when theirs restates one) and rechecked below.
   // Each shard is read on its own: a bad one is a gap naming it, never every earlier finding lost; `cut` is how many the
   // service couldn't fit in the check.
@@ -552,8 +552,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       candidates = dedupe(place(confirmed.map(({ id, ...f }) => f), ws, reviewedSet, own, out_));
     }
   }
-  // A change that is only prose (docs, plans, specs) never has an important finding: a design note, at most, and a nit stays on the board.
-  if (!tree && !addressed && reviewed.length && reviewed.every((p) => matches(p, PROSE) && !matches(p, INSTRUCTIONS))) candidates = candidates.map((f) => (f.severity === "important" ? { ...f, severity: "nit" as const } : f));
+  // A pull request (the whole of it, whatever this run's diff) that is only prose (docs, plans, specs) never has an important finding: a design note, at most, and a nit stays on the board.
+  if (!tree && !addressed && mine.reviewed.length && mine.reviewed.every((p) => matches(p, PROSE) && !matches(p, INSTRUCTIONS))) candidates = candidates.map((f) => (f.severity === "important" ? { ...f, severity: "nit" as const } : f));
   // A tree review reports only on its own files (an area's: the rest of the checkout is there to follow calls).
   if (tree) candidates = candidates.filter((f) => reviewedSet.has(f.path));
   const { kept, withheld } = withhold(candidates, Number.isInteger(combo.max_nits) ? combo.max_nits! : 5);
