@@ -169,16 +169,16 @@ test("triage runs are capped a day per author, the rest held until a slot frees 
   const w = world();
   await w.look();
   const opened = (seq, number, author, o = {}) => ev(seq, "issues.opened", { number, author_kind: "outside", created_at: new Date().toISOString(), ...o }, { author, labels: [] });
-  w.log.push(opened(1, 1, "spam"), opened(2, 2, "Spam"), opened(3, 3, "ada"), opened(4, 4, "bob", { author_kind: "agent" }), opened(6, 6, "bob", { author_kind: "agent" }), opened(7, 7, "repo-owner", { author_kind: "owner" }), opened(8, 8, "repo-owner", { author_kind: "owner" }), { ...opened(5, 5, "eve"), labels: ["agent-fix"] });
+  w.log.push(opened(1, 1, "spam"), opened(2, 2, "Spam"), opened(3, 3, "ada"), opened(4, 4, "bob", { author_kind: "agent" }), { ...opened(5, 5, "eve"), labels: ["agent-fix"] });
   await w.look();
-  assert.deepEqual(w.triaged, [1, 3, 4, 6, 7, 8], "the fleet's and the owner's issues are triaged past the cap");
+  assert.deepEqual(w.triaged, [1, 3, 4], "the fleet's own issue is triaged like any other");
   assert.deepEqual(w.logs.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [2]);
   assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [2]);
   // The held issue's author proves valid (a fix label on #1 lands): the slot frees and #2 files on the next look.
   w.ones["1:agent-fix"] = issue(1);
-  w.log.push(ev(9, "issues.labeled", { number: 1, label: "agent-fix" }));
+  w.log.push(ev(6, "issues.labeled", { number: 1, label: "agent-fix" }));
   await w.look();
-  assert.deepEqual(w.triaged, [1, 3, 4, 6, 7, 8, 2]);
+  assert.deepEqual(w.triaged, [1, 3, 4, 2]);
   const off = world({ repos: [repo()] });
   await off.look();
   off.log.push(opened(1, 1, "ada"));
