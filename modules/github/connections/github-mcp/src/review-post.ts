@@ -254,7 +254,7 @@ export class ReviewPoster {
 
   /** The pull request's acknowledgement comment, for a notice whose comment id isn't known: a create whose answer was lost is
    * found here rather than made again. Only a comment that *is* a notice counts — the generated header (`ACK_HEAD`: the marker
-   * and the bold title on its own first line, which `renderNotice` always writes) by this writer. The marker alone is not enough:
+   * and the bold status on its own first line, which `renderNotice` always writes) by this writer. The marker alone is not enough:
    * a person using the same login can quote a notice's raw Markdown in an ordinary comment, and that comment must never be taken
    * for one code review may edit. Undefined when there is none (or it can't be read). */
   private async ackComment(ref: Ref, w: Writer): Promise<number | undefined> {
@@ -346,7 +346,7 @@ export class ReviewPoster {
     const ref = { ...split(n.repo), number: n.pr };
     const w = await this.writer(n.repo);
     await this.pull(ref);
-    const ack = await this.ack(ref, `${renderNotice(n)}${n.review ? `\n[The review](${n.review})` : ""}`, w, n.ack);
+    const ack = await this.ack(ref, renderNotice(n), w, n.ack);
     return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, ack: ack.url, ack_id: ack.id }), objects: [ack.object] };
   }
 

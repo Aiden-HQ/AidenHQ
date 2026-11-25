@@ -137,7 +137,7 @@ export function classify(f: Facts, rules: Rule[]): { tier: Tier; rule: number; w
 export const tooMany = (n: number) => ({ tier: "sensitive" as Tier, rule: -1, why: `too many files to read (${n} changed; GitHub lists at most ${TOO_MANY_FILES})` });
 
 function why(f: Facts, w: When | undefined): string {
-  if (!w) return `no earlier rule matched (${f.lines} line${f.lines === 1 ? "" : "s"} in ${f.files} file${f.files === 1 ? "" : "s"}, by a ${f.author})`;
+  if (!w) return `${f.lines} line${f.lines === 1 ? "" : "s"} in ${f.files} file${f.files === 1 ? "" : "s"}, by a ${f.author}`;
   const parts: string[] = [];
   if (w.repo_class) parts.push(`the repo is ${w.repo_class}`);
   if (w.author) parts.push(`by a ${w.author}`);

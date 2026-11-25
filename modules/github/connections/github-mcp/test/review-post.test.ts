@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accessFor } from "./fake-access.js";
-import { NoticeArgsSchema, SCALES, anchors, modelName, plain, redact, renderFinding, renderNotice, renderReview, renderStatus, rightLines, type Review } from "../src/review-render.js";
+import { ACK_HEAD, NoticeArgsSchema, SCALES, anchors, modelName, plain, redact, renderFinding, renderNotice, renderReview, renderStatus, rightLines, type Review } from "../src/review-render.js";
 
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
@@ -168,19 +168,50 @@ describe("the refused-post notice", () => {
   it("says in fixed words that the review of that head was not posted, and to ask again", () => {
     const text = renderNotice({ ...notice, reason: "post_refused" });
     expect(text).toContain("<!-- aidenhq-review-ack -->");
-    expect(text).toContain(`the review of \`${HEAD.slice(0, 7)}\``);
-    expect(text).toContain("was not posted");
-    expect(text).toContain("Ask again with `@aiden review`");
+    expect(text).toContain(`<sub>${HEAD.slice(0, 7)} · run cr-1 · `);
+    expect(text).toContain("**Review finished but was not posted**");
+    expect(text).toContain("`aiden review` runs it again");
     // The kernel's or a reviewer's text never reaches the notice: fixed words only.
     expect(text).not.toMatch(/write k-|not posted: /);
   });
-  it("says the head's risk tier and why on every phase, and a classified head with no review has just that", () => {
+  it("leads with the status and the risk on every phase, in plain words, and keeps the sha and help in a small footer", () => {
     const tier = { tier: "sensitive" as const, tier_why: "touches .github/ci.yml, by a member" };
-    const c = renderNotice({ repo: notice.repo, pr: 12, head: HEAD, phase: "classified", ...tier });
-    expect(c).toContain("Risk tier **sensitive**: `touches .github/ci.yml, by a member`");
-    expect(renderNotice({ ...notice, ...tier })).toContain("Risk tier **sensitive**");
-    expect(renderNotice({ ...notice })).not.toContain("Risk tier");
-    expect(NoticeArgsSchema.safeParse({ repo: notice.repo, pr: 12, head: HEAD, phase: "classified", tier: "skip", tier_why: "a `@x`\nmention" }).success).toBe(false);
+    const base = { repo: notice.repo, pr: 12, head: HEAD };
+    const sha = HEAD.slice(0, 7);
+    const std = { tier: "standard" as const, tier_why: "293 lines in 4 files, by a member" };
+    expect(renderNotice({ ...base, phase: "classified", ...tier })).toBe(`<!-- aidenhq-review-ack -->\n**Review not started yet**\nRisk: \u{1F7E0} **Sensitive** \u00B7 touches .github/ci.yml, by a member\n\n<sub>${sha} \u00B7 \`aiden review help\` for commands</sub>`);
+    expect(renderNotice({ ...base, phase: "classified", tier: "skip" })).toContain("**No review needed** for this risk");
+    const m = { engine: "codex" as const, model: "~openai/gpt-6.2-sol", effort: "medium" as const };
+    expect(renderNotice({ ...base, phase: "queued", ...m, ...std })).toContain("**Review queued** · GPT 6.2 Sol (medium)\nRisk: \u{1F535} **Standard** \u00B7 293 lines in 4 files, by a member");
+    expect(renderNotice({ ...base, phase: "running", ...m })).toContain("**Review running** · GPT 6.2 Sol (medium)");
+    expect(renderNotice({ ...base, phase: "done", ...m, important: 0, nit: 2 })).toContain("**No important findings** \u00B7 2 nits");
+    const done = renderNotice({ ...base, phase: "done", ...m, important: 2, review: "https://github.com/acme/payments/pull/12#pullrequestreview-9" });
+    expect(done).toContain("**2 important findings** to fix \u00B7 [see the review](https://github.com/acme/payments/pull/12#pullrequestreview-9)");
+    expect(renderNotice({ ...base, phase: "done", ...m, important: 0, partial: true })).toContain("**Partial review** \u00B7 not everything was covered");
+    expect(renderNotice({ ...base, phase: "done", ...m, important: 1, partial: true })).toContain("to fix \u00B7 partial coverage");
+    expect(renderNotice({ ...base, phase: "skipped", reason: "draft" })).toContain("**Review skipped** \u00B7 this is a draft pull request");
+    expect(renderNotice({ ...base, phase: "failed", run: "cr-1" })).toContain("**Review failed**");
+    expect(renderNotice({ ...base, phase: "answered", answer: "always" })).toContain("**Every push to this pull request will be reviewed**");
+    expect(renderNotice({ ...base, phase: "answered", answer: "help" })).not.toContain("for commands</sub>");
+    expect(renderNotice({ ...notice })).not.toContain("Risk:");
+    // The tier's why is the PR's own text: inert, never a link, a mention, a marker or emphasis.
+    const evil = renderNotice({ ...base, phase: "classified", tier: "skip", tier_why: "touches [x](https://evil.example) @bob <!-- aidenhq-review-ack --> a_b_c" });
+    expect(evil).not.toMatch(/<!-- aidenhq-review-ack -->.*<!-- aidenhq-review-ack -->/s);
+    expect(evil).not.toContain("](https://evil");
+    expect(evil).toContain("a\\_b\\_c");
+    expect(renderNotice({ ...base, phase: "classified", tier: "skip", tier_why: "into http://x.test www.x.test" })).not.toMatch(/https?:\/\/|www\.x/);
+    // Every phase the notice writes (and a classified head, which is a phase too) is recognised, so a lost ack id is recovered.
+    for (const phase of ["classified", "queued", "running", "done", "skipped", "failed"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase }))).toBe(true);
+    expect(ACK_HEAD.test(renderNotice({ ...base, phase: "classified", ...tier }))).toBe(true);
+    expect(ACK_HEAD.test(renderNotice({ ...base, phase: "classified", tier: "skip" }))).toBe(true);
+    for (const important of [1, 2]) expect(ACK_HEAD.test(renderNotice({ ...base, phase: "done", important }))).toBe(true);
+    // A partial review's own headlines (with and without findings) are recognised too.
+    expect(ACK_HEAD.test(renderNotice({ ...base, phase: "done", important: 0, partial: true }))).toBe(true);
+    expect(ACK_HEAD.test(renderNotice({ ...base, phase: "done", important: 2, partial: true }))).toBe(true);
+    for (const answer of ["help", "always", "focus", "focus_cleared", "no_review"] as const) expect(ACK_HEAD.test(renderNotice({ ...base, phase: "answered", answer }))).toBe(true);
+    expect(ACK_HEAD.test("<!-- aidenhq-review-ack -->\n**Review notes**\nmine")).toBe(false);
+    expect(ACK_HEAD.test("<!-- aidenhq-review-ack -->\n**Release notes**\nmine")).toBe(false);
+    expect(NoticeArgsSchema.safeParse({ ...base, phase: "classified", tier: "skip", tier_why: "a `@x`\nmention" }).success).toBe(false);
   });
   it("names the post's own fate, never the approval's, when a post fails in the executor", () => {
     const text = renderNotice({ ...notice, reason: "post_refused" });
@@ -189,13 +220,13 @@ describe("the refused-post notice", () => {
   });
   it("keeps the failed-run notice as it was when the run itself failed", () => {
     const text = renderNotice({ ...notice, reason: undefined });
-    expect(text).toContain("failed (run cr-1)");
-    expect(text).toContain("Say `@aiden review` to try again");
+    expect(text).toContain("**Review failed** \u00B7 comment `aiden review` to try again");
+    expect(text).toContain("run cr-1");
   });
   it("lets a skip reason only on a skip and a refusal only on a failure", () => {
     expect(() => NoticeArgsSchema.parse({ ...notice, phase: "skipped", reason: "post_refused" })).toThrow(/refused-post reason/);
     expect(() => NoticeArgsSchema.parse({ ...notice, reason: "draft" })).toThrow(/skip reason/);
-    expect(renderNotice({ ...notice, phase: "skipped", reason: "draft" })).toContain("skipped");
+    expect(renderNotice({ ...notice, phase: "skipped", reason: "draft" })).toContain("Review skipped");
     expect(renderNotice({ ...notice, reason: "post_refused" })).toContain("was not posted");
   });
 });
