@@ -47,6 +47,7 @@ import type { Changed } from "./scope.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
 import { setupPath } from "./deepsec.ts";
 import { plain, readSmall } from "./proc.ts";
+import { INSTRUCTIONS, matches, PROSE } from "./tiers.ts";
 import { page, tools } from "./review-tools.ts";
 import type { Combo, EngineResult } from "./engines.ts";
 
@@ -551,6 +552,9 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       candidates = dedupe(place(confirmed.map(({ id, ...f }) => f), ws, reviewedSet, own, out_));
     }
   }
+  // A pull request that is only documents (its docs folder's plans, specs, designs: the whole PR, whatever this run's diff) never has an important
+  // finding: a non-blocking design note at most, so a nit. Guidance files and skills are behaviour, not prose.
+  if (!tree && !addressed && mine.reviewed.length && mine.reviewed.every((p) => matches(p, PROSE) && !matches(p, INSTRUCTIONS))) candidates = candidates.map((f) => (f.severity === "important" ? { ...f, severity: "nit" as const } : f));
   // A tree review reports only on its own files (an area's: the rest of the checkout is there to follow calls).
   if (tree) candidates = candidates.filter((f) => reviewedSet.has(f.path));
   const { kept, withheld } = withhold(candidates, Number.isInteger(combo.max_nits) ? combo.max_nits! : 5);

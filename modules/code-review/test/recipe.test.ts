@@ -306,4 +306,9 @@ test("files the repo's .gitattributes marks linguist-generated are left out (no 
   assert.deepEqual(r.coverage, { reviewed: ["src/a.js", "vendor/keep.ts", "vendor/other.ts"], excluded: ["gen/out.ts (generated (.gitattributes))", "schema.svg (generated (.gitattributes))", "vendor/x.ts (generated (.gitattributes))"], incomplete: null }); // a later -linguist-generated exempts a file
   assert.match(seen[0].instructions, /already opened on this pull request[\s\S]*a is a constant/);
   assert.match(seen[0].instructions, /not already covered/);
+  // A change that is only documents: an important finding is a nit, whatever the finder said; code beside them keeps it.
+  const doc = { ...base, "docs/plan.md": "plan v2\n" };
+  const found = async () => ({ read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [F({ path: "docs/plan.md", line: 1, title: "Plan contradicts itself" })] }) });
+  const p = await review({ spec: spec({ combo: combo({ effort: "low", ignore: [] }) }), ...box({ head: doc, base }), run: found });
+  assert.deepEqual(p.findings.map((f) => f.severity), ["nit"]);
 });

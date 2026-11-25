@@ -131,7 +131,7 @@ rule lacks one. An invalid list refuses the repo's entry whole with the message.
 - Lockfiles have one rule: any changed lockfile is a sensitive path (it is in `<sensitive>`), so a PR touching one is
   `sensitive` whatever else it changes. The only exception is the rule above it: a bot's PR that touches only manifests and
   lockfiles (Dependabot) is `skip`: no review unless someone asks (owner, 2026-11-25).
-- A member's change that is only prose (docs, plans, specs: `PROSE`) is `standard`, not `sensitive` for a keyword such as
+- A member's change that is only prose (the docs folder's plans, specs and designs: `PROSE`) is `standard`, not `sensitive` for a keyword such as
   `token` or `session` in a path; a change to an instruction file (`AGENTS.md`, `CLAUDE.md`, `REVIEW.md`: `INSTRUCTIONS`) stays
   `sensitive` (owner, 2026-11-25: 30 of 41 PRs on one repo were sensitive on path keywords alone).
 - `lines_max: 0` is a PR with no substantive line: only generated files, lockfiles, binaries or renames. That is ship's

@@ -21,8 +21,8 @@ export const GENERATED = ["**/generated/**", "**/__generated__/**", "**/node_mod
 export const MANIFESTS = ["**/package.json", "**/go.mod", "**/Cargo.toml", "**/pyproject.toml"];
 // Globs are case-sensitive, so the default list spells the common capitalised forms too (Auth, Session…).
 const RISKY = ["auth", "secur", "token", "session", "permission"].flatMap((w) => [w, w[0]!.toUpperCase() + w.slice(1)]).flatMap((w) => [`**/*${w}*`, `**/*${w}*/**`]);
-/** Prose: docs, plans and specs. A change that is only these is judged by what it says, not by a keyword in a path. */
-export const PROSE = ["**/*.md", "**/*.mdx", "**/*.rst"];
+/** Prose: the docs folder's documents (plans, specs, designs). A change that is only these is judged by what it says, not by a keyword in a path. */
+export const PROSE = ["docs/**/*.md", "docs/**/*.mdx", "docs/**/*.rst"];
 /** The files that steer an agent (a reviewer reads them as guidance): prose, but never demoted. */
 export const INSTRUCTIONS = ["**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE.md", "**/REVIEW.md"];
 /** The default sensitive paths: what CI's critical-path regex and ship's safe.deny meant, in one list. */

@@ -2160,7 +2160,7 @@ export function createEngine(d: EngineDeps) {
   /** A resolution word (and its separator) a reason starts with, repeated. */
   /** An answer's word as it is stored and shown: lower case, no apostrophe, `won't fix`. */
   const wordOf = (w: string) => w.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
-  const LEADING_WORD = /^(?:\s*(?:fixed|disputed|by design|won['’]?t fix)(?::|\s+[-–—])\s*)+/i;
+  const LEADING_WORD = /^(?:\s*(?:fixed|disputed|by design|won['’]?t fix)(?:\s*:|\s+[-–—])\s*)+/i;
   /** The answer in a reply: its word and its reason, which must say something (letters, not only punctuation or a signature). */
   const answerOf = (body: string) => {
     if (body.includes("<!-- aidenhq-")) return undefined; // our own posts (a mirrored answer, a review) never answer a finding
