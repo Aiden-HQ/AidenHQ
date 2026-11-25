@@ -20,25 +20,34 @@ export async function serve(o: { bin?: string; port: number; password: string; e
   child.on("exit", () => (dead = true));
   child.on("error", () => (dead = true));
   let stopped = false;
-  const call: Server["call"] = async (method, path, body) => {
-    const r = await fetch(url + path, { method, headers: { authorization: auth, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body: body === undefined ? undefined : JSON.stringify(body) });
+  // Every call has a deadline: a request opencode accepts while it is still starting can go unanswered for good (seen live
+  // on 1.19.6: the first /session/status never returned and the engine waited forever).
+  const call = async (method: string, path: string, body?: unknown, timeoutMs = 60_000) => {
+    const r = await fetch(url + path, { method, signal: AbortSignal.timeout(timeoutMs), headers: { authorization: auth, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await r.text();
     if (!r.ok) throw new Error(`opencode ${method} ${path}: ${r.status} ${text.slice(0, 200)}`);
     return text ? JSON.parse(text) : undefined;
   };
-  for (let i = 0; ; i++) {
+  // Ready once /session/status answers; each try gets 10 s (the first one also builds opencode's instance), all of them 2 minutes.
+  const until = Date.now() + 120_000;
+  for (;;) {
     if (dead) throw new Error("opencode serve exited before it answered");
-    try { await call("GET", "/session/status"); break; } catch { if (i > 300) throw new Error("opencode serve never answered"); await sleep(100); }
+    try { await call("GET", "/session/status", undefined, 10_000); break; } catch { if (Date.now() > until) throw new Error("opencode serve never answered"); await sleep(200); }
   }
   const events: Server["events"] = (onEvent) => {
     let connected!: () => void;
     let failed!: (e: Error) => void;
     const ready = new Promise<void>((r, j) => { connected = r; failed = j; });
+    const deadline = setTimeout(() => failed(new Error("opencode's event stream never connected")), 120_000);
+    void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
     void (async () => {
       while (!stopped) {
         if (dead) { failed(new Error("opencode serve exited before its event stream connected")); return; }
         try {
-          const r = await fetch(url + "/event", { headers: { authorization: auth } });
+          // The stream's headers get 10 s; once they arrive the stream stays open as long as the server keeps it.
+          const ac = new AbortController();
+          const timer = setTimeout(() => ac.abort(), 10_000);
+          const r = await fetch(url + "/event", { headers: { authorization: auth }, signal: ac.signal }).finally(() => clearTimeout(timer));
           if (!r.ok || !r.body) throw new Error(`/event answered ${r.status}`);
           connected();
           const dec = new TextDecoder();

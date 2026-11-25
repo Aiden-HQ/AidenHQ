@@ -53,7 +53,10 @@ async function run() {
   const keepUnread = () => { try { for (const c of io.drain()) queue.push({ text: c.text, comment: true }); save(); } catch {} };
   // A failed loop ends the job loudly (the kernel reads a non-zero exit as a failure and retries), never an unhandled rejection.
   const fail = (e: unknown) => { if (stopping) return; console.error(`engine failed: ${(e as Error)?.message ?? e}`); keepUnread(); process.exit(1); };
-  const server = await serve({ bin: env.AIDENHQ_OPENCODE_BIN, port, password, env: serverEnv });
+  // Comments a previous job kept come first, and are loaded before anything can fail() and rewrite pending.json.
+  try { for (const text of JSON.parse(readFileSync(pendingFile, "utf8")) as string[]) queue.push({ text, comment: true }); } catch {}
+  // A server that never comes up fails through fail(), so comments already in the inbox are kept for the next job.
+  const server = await serve({ bin: env.AIDENHQ_OPENCODE_BIN, port, password, env: serverEnv }).catch((e) => { fail(e); throw e; });
 
   process.on("exit", () => server.child.kill("SIGKILL"));   // a failure past this point never leaves the server behind
   let session = spec.session ?? "";
@@ -66,17 +69,16 @@ async function run() {
   } else session = (await server.call("POST", "/session", { title: basename(process.cwd()) })).id;
   io.emit({ t: "session", id: session });
 
-  server.child.on("exit", (code) => { if (stopping) return; console.error(`opencode serve exited (${code})`); process.exit(code || 1); });
+  server.child.on("exit", (code) => fail(`opencode serve exited (${code})`));
   // A turn the model gateway refuses (no credit, a bad key) comes back only as a session.error event after prompt_async's 204: loud, not a silent job.
   const sse = sseEvents(spec, io.emit, () => session, (why) => fail(`opencode turn failed: ${why}`));
-  await server.events((ev) => sse.take(ev));
+  await server.events((ev) => sse.take(ev)).catch((e) => { fail(e); throw e; });
 
   const busy = async () => Boolean((await server.call("GET", "/session/status"))?.[session]);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   // One turn at a time: a prompt goes in once the session is idle, and the next waits for that turn to end. Dispatch counts a
   // comment delivered once it is in the inbox, so a comment not yet accepted by opencode is kept on disk (pending.json in the
   // state folder) and replayed by the next job of this session if the box is replaced first.
-  try { for (const text of JSON.parse(readFileSync(pendingFile, "utf8")) as string[]) queue.push({ text, comment: true }); } catch {}
   queue.push({ text: spec.prompt, comment: false });
   void (async () => {
     // The text is kept exactly as dispatch delivered it (fenced when it is not the owner's): never stripped or re-wrapped here.
