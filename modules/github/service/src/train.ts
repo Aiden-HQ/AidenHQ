@@ -37,6 +37,12 @@ export type TrainOptions = {
   };
   /** The bump's commit on the instance's main, in this service's cache: `edit` reads the file at the head it builds on. */
   commit(repo: string, path: string, edit: (text: string) => string, message: string): Promise<string>;
+  /**
+   * Compiles the instance as it stands on its main against product commit `to`, the way the apply stages it (the kernel's
+   * /v1/compile/check): `{ok: true}`, or the compiler's first message when the target would refuse it. Throws when the check
+   * itself couldn't run (a transient read), which is retried on the next poll, never read as a refusal.
+   */
+  compile(to: string): Promise<{ ok: true } | { ok: false; error: string }>;
   now?: () => Date; log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 type State = {
@@ -146,6 +152,17 @@ export function createReleaseTrain(o: TrainOptions) {
     let adopt = Boolean(s.filing?.to === to);
     if (!s.filing || s.filing.to !== to) {
       edit(text); // refused before a task is filed for it
+      // The target must compile the instance it would pin, before anything is committed or filed: the apply's own staged
+      // compile against the target product (#1730). A target that doesn't is never tried again (the next merge files the next
+      // attempt, at a target that may compile); a check that couldn't run throws and is retried on the next poll with no state
+      // touched, so nothing is closed for a transient failure.
+      const compiled = await o.compile(to);
+      if (!compiled.ok) {
+        log(`release bump not filed: the target product ${to.slice(0, 12)} doesn't compile the instance`, { to, err: compiled.error });
+        s.lastTried = to;
+        delete s.open;
+        return;
+      }
       const carries = await o.github.commits(o.productRepo, pinned, to);
       const source = `release:instance:${to}`;
       // Idempotent per source: a restart adopts the task an earlier process filed for this commit instead of opening a second.

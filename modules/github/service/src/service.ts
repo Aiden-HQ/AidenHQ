@@ -1263,8 +1263,8 @@ export function createService(o: Options) {
     const r = await fetch(`${o.kernelUrl}/v1/writes/${id}/wait`, { method: "POST", headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify({ reason }), signal: AbortSignal.timeout(15_000) });
     if (!r.ok && r.status !== 409) throw new Error(`the kernel answered ${r.status}`);
   }
-  async function kernel(method: "GET" | "POST", path: string, b?: unknown) {
-    const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, ...(b ? { "content-type": "application/json" } : {}) }, ...(b ? { body: JSON.stringify(b) } : {}), signal: AbortSignal.timeout(30_000) });
+  async function kernel(method: "GET" | "POST", path: string, b?: unknown, timeoutMs = 30_000) {
+    const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, ...(b ? { "content-type": "application/json" } : {}) }, ...(b ? { body: JSON.stringify(b) } : {}), signal: AbortSignal.timeout(timeoutMs) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw Object.assign(new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`), { status: r.status });
     return j;
@@ -1650,6 +1650,15 @@ export function createService(o: Options) {
   const train = o.productRepo && o.instanceRepo && slugOf(o.instanceRepo).org.toLowerCase() !== LOCAL_ORG ? createReleaseTrain({
     dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 60, kernel, log, now: o.now,
     commit: trainCommit,
+    // The target must compile the instance before a bump is filed (#1730): the kernel's read-only preflight, which runs the
+    // target's own staged compiler exactly as the apply does. Its throw is transient (the next poll retries); a refusal is the
+    // compiler's own first message.
+    async compile(to) {
+      // A staged compile can outlast the kernel's other reads (it installs the target's deps on a lockfile change): its own bound.
+      const r = await kernel("POST", "/v1/compile/check", { product: to }, 400_000);
+      if (typeof r?.ok === "boolean") return r.ok ? { ok: true } : { ok: false, error: String(r.error ?? "the staged compile failed").slice(0, 300) };
+      throw new Error("the kernel's compile check answered no verdict");
+    },
     github: {
       async tip(repo) { return feed?.tip(repo); },
       async text(repo, path, at) {

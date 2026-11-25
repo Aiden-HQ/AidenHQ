@@ -12,6 +12,8 @@ import { createReleaseTrain } from "../service/src/train.ts";
 
 const [OLD, NEW] = ["a", "b"].map((c) => c.repeat(40));
 const INSTANCE = `product: ${OLD}\nmodules: [core]\n`;
+/** The bump's instance.yaml, as the train's commit makes it (the file with its one `product:` line moved). */
+const bumpText = (to) => `product: ${to}\nmodules: [core]\n`;
 
 function fakes() {
   // `tasks`: every filing call; `made`: the tasks the control plane actually created (one per source, as the kernel's
@@ -66,7 +68,7 @@ function fakes() {
 }
 const train = (dir, f, clock, extra = {}) => createReleaseTrain({
   dir, productRepo: "acme/aidenhq", instanceRepo: "acme/aidenhq-instance", windowMinutes: 15,
-  kernel: f.kernel, github: f.github, now: () => clock.t,
+  kernel: f.kernel, github: f.github, now: () => clock.t, compile: f.compile ?? (async () => ({ ok: true })),
   commit: async (repo, path, edit) => { const t = edit(f.head ?? INSTANCE); f.committed = t; return t.includes(NEW) ? "e".repeat(40) : "0".repeat(40); }, ...extra,
 });
 
@@ -170,4 +172,71 @@ test("a lasting refusal to file the apply closes the bump's task cancelled with 
   await train(dir, refused, clock).step();
   assert.equal(f.k.writes.length, 0, "no card is filed");
   assert.deepEqual(f.k.closed, [{ task: `t-release:instance:${NEW}`, status: "cancelled", body: "**Not filed:** /v1/writes answered 422: the rules refuse this apply" }]);
+});
+
+/**
+ * The compile preflight (#1730): before a bump is committed or filed, the instance at its main is compiled against the target
+ * product. A target that doesn't compile is never filed — logged with the target sha and the compiler's own first message —
+ * and its tip is over, so the train waits for the next merge. A target that compiles files as before. A check that throws is
+ * transient: nothing is filed, nothing is closed, and the next poll asks again with the same tip.
+ */
+test("a target that doesn't compile the instance is neither committed nor filed, and the log names its sha and the compiler's message", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step(); // the batch window opens
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const refused = "compile: settings.code_review: repos[0]: on_open, on_push and push_rounds are per tier now: by_tier.<tier>.… (see the Reviews page)";
+  const asked = [];
+  f.compile = async (to) => (asked.push(to), { ok: false, error: refused });
+  const logs = [];
+  const bumped = [];
+  await train(dir, f, clock, { compile: f.compile, log: (m, x) => logs.push([m, x]), commit: async (repo, path, edit) => { bumped.push(1); return "e".repeat(40); } }).step();
+  assert.deepEqual(asked, [NEW], "the target product is what was compiled");
+  assert.equal(bumped.length, 0, "the bump is never committed");
+  assert.equal(f.k.tasks.length, 0, "no task is filed for a target that doesn't compile");
+  assert.equal(f.k.writes.length, 0, "no card is filed for a target that doesn't compile");
+  const line = logs.find(([m]) => /doesn't compile/.test(m));
+  assert.ok(line, "the refusal is logged");
+  assert.equal(line[1].to, NEW, "the log names the target sha");
+  assert.match(String(line[1].err), /^compile: settings\.code_review/, "and the compiler's own first message");
+  // Its tip is over: nothing is filed again until a newer merge moves the product.
+  clock.t = new Date("2026-11-18T10:40:00Z");
+  await train(dir, f, clock, { compile: f.compile }).step();
+  assert.equal(asked.length, 1, "the same tip is never tried again");
+  assert.equal(f.k.writes.length, 0);
+});
+
+test("a target that compiles the instance files the bump as today", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: true }) }).step();
+  assert.deepEqual(asked, [NEW], "the check runs against the target before the commit");
+  assert.equal(f.committed, bumpText(NEW), "the bump is committed as before");
+  assert.deepEqual(f.k.writes.map((w) => [w.kind, w.args.sha, w.task]), [["kernel.apply", "e".repeat(40), `t-release:instance:${NEW}`]]);
+  assert.equal(f.k.tasks.length, 1, "the bump's task is filed");
+});
+
+test("a compile check that throws is transient: nothing is filed or closed, and the next poll retries the same tip", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  let calls = 0;
+  const flaky = { compile: async () => { calls++; throw new Error("the compile check couldn't run: the target product ffff isn't on the product's main"); } };
+  await assert.rejects(train(dir, f, clock, flaky).step(), /isn't on the product's main|compile check/);
+  assert.equal(calls, 1);
+  assert.equal(f.k.tasks.length, 0, "a transient check files no task");
+  assert.equal(f.k.writes.length, 0, "a transient check files no card");
+  assert.deepEqual(f.k.closed, [], "and closes nothing");
+  // The next poll asks again, with the same tip: the failure did not mark it tried.
+  const asked = [];
+  await train(dir, f, clock, { compile: async (to) => (asked.push(to), { ok: true }) }).step();
+  assert.deepEqual(asked, [NEW], "the same tip is retried");
+  assert.equal(f.k.writes.length, 1, "and now the bump files");
 });
