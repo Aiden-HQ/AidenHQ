@@ -37,3 +37,12 @@ test("a cap_reached the reviewer merely read, or a provider rate limit, is not t
   assert.match(stopped(r("upstream stream error: rate_limit_exceeded")), /rate limited/);
   assert.match(stopped(r("unexpected status 402: spend cap reached: the install's daily limit, $50.00 of $50.00")), /spend limit/);
 });
+
+test("the engine's reported error decides over an echoed fixture, and in-stream rate limits read as rate limits", async () => {
+  const { stopped } = await import("../recipe/proc.ts");
+  const r = (stderr: string) => ({ code: 1, stderr, timedOut: false });
+  const echoed = '402 {"error":"cap_reached"}';
+  assert.match(stopped(r(echoed), "error event: rate_limit_exceeded"), /rate limited/);
+  assert.match(stopped(r(echoed), "error event: 429"), /rate limited/);
+  assert.match(stopped(r(echoed)), /spend limit/);
+});

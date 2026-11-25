@@ -48,7 +48,8 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
   const timeline = (r: Record<string, any>) => {
     const wake = r.wake ? one("SELECT key, cause FROM wakes WHERE key = ?", r.wake) : one("SELECT key, cause FROM wakes WHERE job = ?", r.id);
     const ended = factData(`job:${r.id}`, "job.ended");
-    const failed = ["failed", "lost", "timeout", "cancelled"].includes(r.state);
+    // A SIGTERM stop (exit 143: a stop, restart or box replaced) is no failure (jobs.ts), here as on the task's timeline.
+    const failed = ["failed", "lost", "timeout", "cancelled"].includes(r.state) && !(r.state === "failed" && r.exit === 143);
     const writes = (() => {
       try {
         return rows("SELECT id, kind, tier, state, decided_by, review_code, created_at FROM records WHERE task = ? AND json_extract(requester, '$.agent') = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at LIMIT 30", r.task, r.agent, iso(r.at) ?? "", iso(r.ended) ?? "9999")
