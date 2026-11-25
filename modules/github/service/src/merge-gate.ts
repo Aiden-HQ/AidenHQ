@@ -58,7 +58,7 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
       reviewRequests(first: 30) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } }
       isInMergeQueue mergeQueueEntry { headCommit { oid } }
       commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt } ... on StatusContext { context state description createdAt } } } } } } }
-      baseRef { compare(headRef: $pullRef) { behindBy } target { oid ... on Commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt } ... on StatusContext { context state createdAt } } } } } } }
+      baseRef { compare(headRef: $pullRef) { behindBy } target { oid ... on Commit { statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt } ... on StatusContext { context state createdAt } } } } } } }
     }
   }
 }`;
@@ -124,11 +124,16 @@ export function withGate(data: Json) {
  * (a newer push superseded its run), and the aggregate gate check fails along with it, so neither makes the base red.
  */
 function baseCi(rollup: Json) {
+  // A list GitHub truncated proves nothing about the tip: a red check past the page would read as green. No evidence never passes.
+  if (rollup?.contexts?.pageInfo?.hasNextPage) return "pending";
   // Each name's newest run at the tip, as on a head: a run an edit or a re-run superseded is not the tip's verdict. Cancelled
   // stays a result that never judged the commit, as before.
   const named = latestChecks(namedChecks(rollup));
-  const cancelled = named.some((c) => c.status === "CANCELLED");
-  if (named.some((c) => !c.ok && !c.pending && c.status !== "CANCELLED" && !(cancelled && c.name === GATE_CHECK))) return "red";
+  // A cancelled run never judged the commit, so a cancelled check (the aggregate gate among them) is no verdict: it is neither
+  // red nor pending. But nothing else is excused — a gate or a job that completed red at the tip is red beside any cancellation,
+  // since an unrelated cancelled run must never mask a failure. A whole run whose jobs were cancelled is superseded by the next
+  // run's own checks of the same names, which is what newest-run resolution reads here.
+  if (named.some((c) => !c.ok && !c.pending && c.status !== "CANCELLED")) return "red";
   return named.some((c) => c.pending) ? "pending" : "green";
 }
 

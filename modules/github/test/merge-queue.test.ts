@@ -1344,6 +1344,13 @@ test("a red default branch takes no merge on top, except the PR that already hol
     "a base whose cancelled run was superseded by a red one is red");
   assert.equal(decide(data(rollup("SUCCESS", { runs: [{ name: "build", state: "CANCELLED", rank: 1 }, { name: "build", state: "PENDING", rank: 2 }] }), 2), HEAD).do, "wait",
     "a base whose cancelled run was superseded by a running one waits");
+  // Only a cancelled check is no verdict: an unrelated cancelled run never masks a gate or a job that completed red at the tip.
+  assert.deepEqual(decide(data(rollup("SUCCESS", { runs: [{ name: "deploy", state: "CANCELLED", rank: 1 }, { name: "ci-required", state: "FAILURE", rank: 2 }] }), 2), HEAD), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" },
+    "an unrelated cancellation does not mask a failed base gate");
+  assert.deepEqual(decide(data(rollup("SUCCESS", { runs: [{ name: "build", state: "CANCELLED", rank: 1 }, { name: "lint", state: "FAILURE", rank: 2 }] }), 2), HEAD), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" },
+    "a failing job is red even beside a cancelled one");
+  // A truncated base list proves nothing about the tip: a red past the first page must never read as a green base.
+  assert.equal(decide(data(rollup("SUCCESS", { more: true }), 2), HEAD).do, "wait", "a base whose check list GitHub truncated waits, never merges on a partial read");
 });
 
 test("each check name on a head is judged by its newest run: a cancelled run an edit superseded is not red, and a later red or running one still holds", () => {
