@@ -3,13 +3,15 @@
 // admits ship's module token for a one-off review whose summary lands on the adoption's task, and for a gating fresh review of a
 // head), and code review's verdict (GET /v1/verdict, the same token).
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
+import { MARKER } from "./report.ts";
 import type { Verdict } from "./safe.ts";
 
 export function shipEffects(kernel: Pick<KernelClient, "call">, o: { codeReview: string; key: () => string; fetchFn?: typeof fetch }) {
   const fetchFn = o.fetchFn ?? fetch;
   return {
     async comment(repo: string, number: number, body: string, id?: number): Promise<number> {
-      const r = await kernel.call("POST", "/v1/codehost/comment", { repo, number, body, ...(id ? { id } : {}) });
+      // The marker lets the code host find the report a lost answer already made, so a create is never made twice.
+      const r = await kernel.call("POST", "/v1/codehost/comment", { repo, number, body, marker: MARKER, ...(id ? { id } : {}) });
       return Number(r.id);
     },
     /** Code review's verdict at the head, with what it stands on (approval evidence). */

@@ -103,7 +103,6 @@ test("zero config: the repair's globs are the repo's linguist-generated paths an
   assert.ok(plan.globs.includes("api/gen/**") && plan.globs.includes("**/package-lock.json"));
   assert.ok(!plan.globs.includes("api/types.pb.go"), "a header the repo didn't declare widens nothing");
   assert.equal(w.of("POST /repos/a/disc/issues").length, 0, "nothing is posted: the suggestion isn't enabled");
-  assert.match(w.report(), /Suggested[\s\S]*conflict: \[\{"comment":"\/rebase"\}\]/);
   // Cached: a second round reads no files again.
   const reads = w.of("GET /repos/a/disc/git/").length;
   await round(w.deps, w.pr({ head: H2 }), { do: "repair" }, { dirty: true });

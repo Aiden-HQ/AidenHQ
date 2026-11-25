@@ -17,13 +17,17 @@ export type AuthorKind = (typeof AUTHORS)[number];
 export const LOCKS = ["**/package-lock.json", "**/npm-shrinkwrap.json", "**/*.lock", "**/*-lock.json", "**/*-lock.yaml", "**/go.sum", "**/bun.lockb"];
 /** Generated code and build output: never counted toward `lines`. */
 export const GENERATED = ["**/generated/**", "**/__generated__/**", "**/node_modules/**", "**/dist/**", "**/*.min.js", "**/*.min.css", "**/*.map", "**/*.snap"];
-/** Package manifests: a bot's PR that changes only these and lockfiles (Dependabot) is standard, not sensitive. */
+/** Package manifests: a bot's PR that changes only these and lockfiles (Dependabot) is skipped: no review unless someone asks. */
 export const MANIFESTS = ["**/package.json", "**/go.mod", "**/Cargo.toml", "**/pyproject.toml"];
 // Globs are case-sensitive, so the default list spells the common capitalised forms too (Auth, Session…).
 const RISKY = ["auth", "secur", "token", "session", "permission"].flatMap((w) => [w, w[0]!.toUpperCase() + w.slice(1)]).flatMap((w) => [`**/*${w}*`, `**/*${w}*/**`]);
+/** Prose: the docs folder's documents (plans, specs, designs). A change that is only these is judged by what it says, not by a keyword in a path. */
+export const PROSE = ["docs/**/*.md", "docs/**/*.rst"]; // not mdx: it can run code
+/** The files that steer an agent (a reviewer reads them as guidance): prose, but never demoted. */
+export const INSTRUCTIONS = ["**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE.md", "**/REVIEW.md"];
 /** The default sensitive paths: what CI's critical-path regex and ship's safe.deny meant, in one list. */
 export const SENSITIVE = [
-  ".github/**", "**/Dockerfile*", "**/package.json", "**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE.md", "**/REVIEW.md", "**/.codex/**", "**/codex.toml", ...RISKY,
+  ".github/**", "**/Dockerfile*", "**/package.json", ...INSTRUCTIONS, "**/.codex/**", "**/codex.toml", ...RISKY,
   ...LOCKS, "**/.eslintrc*", "**/eslint.config.*", "**/vitest.config.*", "**/jest.config.*", "**/tsconfig*.json", "**/CODEOWNERS",
   "**/migrations/**", "**/*.tf", "infra/**", "**/.env*", "**/config/**", "**/docker-compose*",
 ];
@@ -54,10 +58,11 @@ export function factsOf(files: FileChange[], o: { author: AuthorKind; base: stri
   return { lines: counted.reduce((n, f) => n + f.additions + f.deletions, 0), files: counted.length, paths, ...o };
 }
 
-/** Who opened the PR: the instance's own App is a member (`own`), any other `*[bot]` a bot, an owner, member or collaborator a member. */
-export function authorKind(login: string, association: string | undefined, own = false): AuthorKind {
+/** Who opened the PR: the instance's own App is a member (`own`), Dependabot and Renovate (exact logins, never from a fork) bots,
+ * an owner, member or collaborator a member. Any other `*[bot]` is judged by its association, as a person is. */
+export function authorKind(login: string, association: string | undefined, own = false, fork = false): AuthorKind {
   if (own) return "member";
-  if (/\[bot\]$/i.test(login)) return "bot";
+  if (!fork && /^(dependabot|renovate)\[bot\]$/i.test(login)) return "bot";
   return ["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase()) ? "member" : "outsider";
 }
 
@@ -73,7 +78,9 @@ export const CONDITIONS = [...COUNTS, ...GLOBS, "author", "repo_class"] as const
 /** The default rules: the first that holds names the tier. */
 export const DEFAULT_RULES: Rule[] = [
   { when: { repo_class: "critical" }, tier: "sensitive" },
-  { when: { author: "bot", only_paths: [...MANIFESTS, ...LOCKS] }, tier: "standard" },
+  { when: { author: "bot", only_paths: [...MANIFESTS, ...LOCKS] }, tier: "skip" },
+  { when: { paths: INSTRUCTIONS }, tier: "sensitive" },
+  { when: { author: "member", only_paths: PROSE }, tier: "standard" },
   { when: { paths: SENSITIVE }, tier: "sensitive" },
   { when: { author: "outsider" }, tier: "sensitive" },
   { when: { repo_class: "sandbox" }, tier: "trivial" },

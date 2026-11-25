@@ -405,8 +405,10 @@ export function createMerges(d: {
       if (review && "wait" in review) {
         // Why this PR still waits: the record's own reason is built from every PR still waiting after the poll (publishWait), so
         // one PR leaving its wait never clears another's.
-        if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
-        p.note = review.wait;
+        // The card is read by the owner and agents: it carries how to unblock; ship's decision (merge-gate.ts) carries the wait alone.
+        const note = review.unblock ? `${review.wait} (${review.unblock})` : review.wait;
+        if (p.note !== note) log("merge waits for code review", { pr: p.url, why: note.slice(0, 500) });
+        p.note = note;
         return wait("review");
       }
       // A Tier 0 product merge rests on its eligibility at this head now, by the same rule the plan used (after a wait: code review

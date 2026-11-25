@@ -13,7 +13,7 @@ export type Queued = { head: string; base: string; attempt: number; record: stri
 export interface QueueFacts { groupFailing?: string[]; onBase?: string[] }
 
 export type QueueNext =
-  | { act: "nothing" }
+  | { act: "nothing"; owner?: true }
   | { act: "enqueue"; attempt: number; retried?: boolean }
   | { act: "fix_ci"; failing: string[] }
   | { act: "wait"; why: string }
@@ -25,7 +25,7 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   if (!q || q.head !== pr.head) return { act: "enqueue", attempt: 1 };
   const r = await kernel.call("GET", `/v1/writes/${q.record}`);
   const text = String(r.outcome?.text ?? r.reason ?? "");
-  if (OPEN.includes(String(r.state))) return { act: "nothing" };
+  if (OPEN.includes(String(r.state))) return r.state === "owner" ? { act: "nothing", owner: true } : { act: "nothing" };
   // A veto is final for this head; a head that moved meanwhile is the next round's.
   if (r.state === "rejected") return { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})` };
   if (/^ship-head-moved/.test(text)) return { act: "nothing" };
