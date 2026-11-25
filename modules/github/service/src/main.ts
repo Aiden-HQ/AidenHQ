@@ -7,7 +7,6 @@
 //   GITHUB_FLEET_ORG        github_fleet_org: where the fleet's repos live on GitHub ("" while unset)
 //   INSTANCE_REPO, PRODUCT_REPO
 //   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there
-//   GITHUB_MIGRATE_FROM_APP  the retired App's id, for the one release that moves the repos' rules off it (migrate.ts)
 //   GITHUB_RELEASE_WINDOW_MINUTES release_window_minutes: the release train's batch window (minutes)
 //   GITHUB_REVIEW_GATED     the repos code review gates (comma-separated; compile derives it): their merges wait for its verdict,
 //                           asked with the module's own token
@@ -27,7 +26,6 @@ import { gitHubApp } from "../../connections/github-mcp/dist/src/github-app.js";
 import { join } from "node:path";
 import { createReviewGate } from "./review-gate.ts";
 import { serveOps } from "./ops.ts";
-import { startAppMigration } from "./migrate.ts";
 import { shipRoutes } from "./ship-routes.ts";
 import { isModule } from "../../connections/github-mcp/dist/src/module-caller.js";
 import { startTidy } from "./tidy.ts";
@@ -44,12 +42,6 @@ const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
 // A list the parser refuses (an old key after an upgrade) leaves no repo maintained and says why, rather than taking the code host down.
 const maintained = (() => { try { return parseRepos(env.GITHUB_MAINTAINER_REPOS ?? ""); } catch (e) { log("maintainer_repos refused: no repo is maintained until it is fixed", { err: String((e as Error).message).slice(0, 300) }); return []; } })();
-// DELETE in the release after #1065: compile sets GITHUB_MIGRATE_FROM_APP to the retired App's id; the first sign-in with the
-// new scopes rewrites the repos' rules that name that App (migrate.ts), and merges hold until then.
-const retiredAppId = Number(env.GITHUB_MIGRATE_FROM_APP ?? "");
-const migration = retiredAppId > 0
-  ? startAppMigration({ access, appId: retiredAppId, cacheDir: env.CACHE_DIR ?? "/cache", fleetOrg, productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), instanceRepo: env.INSTANCE_REPO || undefined, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, log })
-  : undefined;
 // compile always sets it (module.yaml's default, 5-1440): anything else is a broken deploy, so fail loudly.
 const releaseWindowMinutes = Number(env.GITHUB_RELEASE_WINDOW_MINUTES);
 if (!Number.isInteger(releaseWindowMinutes) || releaseWindowMinutes < 1) throw new Error(`github: GITHUB_RELEASE_WINDOW_MINUTES is not a positive number of minutes: ${env.GITHUB_RELEASE_WINDOW_MINUTES}`);
@@ -58,7 +50,7 @@ const reviewGate = createReviewGate({ gated: (env.GITHUB_REVIEW_GATED ?? "").spl
 const githubApp = gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "github-app") });
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
-  access, reportNeed, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
+  access, reportNeed, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), releaseWindowMinutes,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   reviewGate,
