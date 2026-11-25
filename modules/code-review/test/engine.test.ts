@@ -2038,6 +2038,13 @@ test("a normal review posts no acknowledgement of its own: the review carries th
   assert.equal(w.acks.length, 0);
 });
 
+test("a design note (a docs-only PR's finding, stored pre_existing) never gates: the verdict passes", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0, { findings: [{ id: "d1", severity: "pre_existing", path: "docs/a.md", line: 3, title: "t", why: "[design note] w", evidence: "e", fix_brief: "b" }] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+});
+
 test("one answer per thread: a reason that repeats its word is not doubled, and no mirror is posted where the agent answered on the thread itself", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));

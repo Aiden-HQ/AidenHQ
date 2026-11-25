@@ -39,7 +39,7 @@ import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, r
 import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
-import { answer, brief, cap, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
+import { answer, brief, cap, DESIGN_NOTE, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
 import type { Cleaned, Excluded, Placed, Severity } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
 import { changed, generatedRules, guidePaths, place, scope } from "./scope.ts";
@@ -553,8 +553,13 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     }
   }
   // A pull request that is only documents (its docs folder's plans, specs, designs: the whole PR, whatever this run's diff) never has an important
-  // finding: a non-blocking design note at most, so a nit. Guidance files and skills are behaviour, not prose.
-  if (!tree && !addressed && mine.reviewed.length && mine.reviewed.every((p) => matches(p, PROSE) && !matches(p, INSTRUCTIONS))) candidates = candidates.map((f) => (f.severity === "important" ? { ...f, severity: "nit" as const } : f));
+  // finding: at most 3 become design notes (a pre_existing finding, which never gates, marked in its why: the summary shows them
+  // under their own heading), the rest nits. Guidance files and skills are behaviour, not prose.
+  if (!tree && !addressed && mine.reviewed.length && mine.reviewed.every((p) => matches(p, PROSE) && !matches(p, INSTRUCTIONS))) {
+    let notes = 0;
+    // (A note already reported on this PR is not made again.)
+    candidates = candidates.filter((f) => f.severity !== "important" || !reported.has(f.id)).map((f) => (f.severity !== "important" ? f : notes++ < 3 ? { ...f, severity: "pre_existing" as const, why: `${DESIGN_NOTE}${f.why}` } : { ...f, severity: "nit" as const }));
+  }
   // A tree review reports only on its own files (an area's: the rest of the checkout is there to follow calls).
   if (tree) candidates = candidates.filter((f) => reviewedSet.has(f.path));
   const { kept, withheld } = withhold(candidates, Number.isInteger(combo.max_nits) ? combo.max_nits! : 5);

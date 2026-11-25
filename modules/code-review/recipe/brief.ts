@@ -5,6 +5,8 @@ import type { EngineResult } from "./engines.ts";
 
 export interface Excluded { path: string; why: string; gap: boolean }
 /** What the finder must give an important finding (the review schema's failure_scenario), folded into `why` once read. */
+/** A design note's why starts with this (a docs-only PR's qualifying finding: shown, never gating). */
+export const DESIGN_NOTE = "[design note] ";
 export const SCENARIO = "Failure scenario: ";
 export interface BriefInput { root?: string; guides: { path: string; text: string }[]; checks: string; focus: string; intent?: string; threads?: string; excluded: Excluded[]; incremental: boolean; addressed: boolean; reported?: Reported[];
   /** A repo review's area (its name, from the repo's paths: data) and the plan's areas a whole-repo review is given (JSON, data). */
@@ -99,7 +101,8 @@ export function clean(raw: unknown, root: string) {
     const path = f.path.startsWith(`${root}/`) ? f.path.slice(root.length + 1) : f.path.replace(/^\.\//, "");
     if (!path || path.startsWith("/") || path.split("/").some((p: string) => p === ".." || p === "")) continue;
     const scenario = typeof f.failure_scenario === "string" ? scenarioOf(f) : "";
-    const why = scenario ? `${SCENARIO}${scenario}\n\n${String(f.why ?? "")}` : f.why;
+    const why0 = scenario ? `${SCENARIO}${scenario}\n\n${String(f.why ?? "")}` : f.why;
+    const why = typeof why0 === "string" ? why0.replace(/^\s*\[design note\]\s*/i, "") : why0; // only the docs-only step marks a design note
     out.push({ severity: f.severity, path, line: f.line, ...(Number.isInteger(f.end_line) && f.end_line >= f.line ? { end_line: f.end_line } : {}), title: cap(f.title, 120).trim(), why: cap(why, 2500), evidence: cap(f.evidence, 1500), fix_brief: cap(f.fix_brief, 1000), ...(typeof f.same_as === "string" && /^[0-9a-f]{16}$/.test(f.same_as) ? { same_as: f.same_as } : {}) });
   }
   return out;

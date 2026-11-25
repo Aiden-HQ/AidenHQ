@@ -333,7 +333,9 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const threaded = (f: Finding) => ids.has(f.id) || earlier.has(f.id);
   const listed = ranked.filter((f) => f.severity === "important" && !threaded(f));
   const c = counts(r.findings);
-  const smaller = c.nit + c.pre_existing;
+  // A docs-only PR's qualifying findings (recipe/brief.ts DESIGN_NOTE): shown, never blocking, never counted as important.
+  const notes = ranked.filter((f) => f.severity === "pre_existing" && f.why.startsWith("[design note] ")).slice(0, 3);
+  const smaller = c.nit + c.pre_existing - notes.length;
   const incomplete = r.coverage.incomplete;
   // Fixed command words, named on the AI reviewer's card instead (they read like instructions to it); model text is never touched.
   const cmd = (words: string) => (opts.card ? "[AidenHQ's fixed command for another review]" : `\`${words}\``);
@@ -356,6 +358,7 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
     ...(r.withheld.important ? ["", `${plural(r.withheld.important, "important finding")} withheld to keep this short. ${cmd("aiden review full")} shows more.`] : []),
   ];
   if (important.length) lines.push("", table(important));
+  if (notes.length) lines.push("", "**Design notes (not blocking)**", "", ...notes.map((f) => `- ${fileLine(f)} **${plain(f.title, 160)}**: ${plain(f.why.slice("[design note] ".length), 400)}`));
   // Without a thread (in no changed file): the first few with their reasoning, the rest named, so the post stays within GitHub's
   // and the card's size.
   for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);

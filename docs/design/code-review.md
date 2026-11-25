@@ -236,7 +236,7 @@ changed; the acknowledgement is left to the newer head), while a run whose PR mo
   failed or refused review, and the answers to `aiden review` commands; an existing one is kept current.
 - **What makes a finding important** is the brief's one definition (`recipe/brief.ts`; the verifier's prompt points at it): a concrete failure scenario, reachable in normal use, checked against the head, and not already covered by the PR's
   description, comments in the code, the guidance files or a thread already on the PR (the check is given those threads as one
-  line each). A pull request that is only documents (its docs folder's plans, specs and designs, over the whole PR) never has an important finding: code makes it a nit, a non-blocking design note that stays on the board.
+  line each). A pull request that is only documents (its docs folder's plans, specs and designs, over the whole PR) never has an important finding: code turns up to 3 qualifying findings into design notes, shown under "Design notes (not blocking)" and never gating, and the rest into nits.
 - **Left out of the review**: lockfiles, generated and built files, files the repo's `ignore` globs name, and files its root
   `.gitattributes` (at the merge base) marks `linguist-generated` (declared by the repo: no coverage gap).
 - The severity line `<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`.

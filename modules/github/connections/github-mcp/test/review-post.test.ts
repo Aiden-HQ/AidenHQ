@@ -56,6 +56,16 @@ describe("rendering model text", () => {
     expect(renderReview(none, "r").summary).not.toMatch(/No findings|No important findings|codex|\$0/);
   });
 
+  it("a docs-only PR's design notes are shown under their own heading, never counted as important or blocking", () => {
+    const r = review([finding("f_dn_1", "docs/plan.md", 2, { severity: "pre_existing", title: "ON CONFLICT misses the new index", why: "[design note] Failure scenario: the second event raises." })]);
+    const { summary, comments } = renderReview(r, "run1", { gated: true });
+    expect(comments).toEqual([]);
+    expect(summary).toContain("**Design notes (not blocking)**");
+    expect(summary).toContain("ON CONFLICT misses the new index");
+    expect(summary).toContain("No important findings");
+    expect(summary).not.toMatch(/smaller note|blocks the merge/);
+  });
+
   it("scans at a glance: a short title, the counts, important findings in a table linked to their threads, the rest collapsed, each finding once", () => {
     expect([modelName("anthropic/claude-haiku-5.5"), modelName("~openai/gpt-6.2-sol"), modelName("~deepseek/deepseek-flash-latest")]).toEqual(["Haiku 5.5", "GPT 6.2 Sol", "DeepSeek Flash"]);
     const r = review([finding("f_imp_1", "src/deep/pay.ts", 2, { title: "Amount | unchecked" }), finding("f_nit_1", "src/pay.ts", 3, { severity: "pre_existing" }), finding("f_none_1", "docs/x.md", 7)]);
