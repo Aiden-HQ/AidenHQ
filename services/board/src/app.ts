@@ -23,7 +23,7 @@ import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, i
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, OpenChatSchema, Refused, holdsRole, requireAgentCaller, setRoutinePaused, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, OpenChatSchema, Refused, holdsRole, agentIdByKey, requireAgentCaller, setRoutinePaused, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
@@ -908,7 +908,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       return { identifier: `lane:${lane.key}`, message };
     }
     const label = await labelNamed(ctx, "chat", "#0ea5e9");
-    const title = text.split("\n")[0]!.replace(/^@\S+\s*/, "").slice(0, 80) || "New chat";
+    const title = text.split("\n")[0]!.replace(/^(?:@\S+|\[(?:telegram|slack)[^\]]*\])\s*/, "").slice(0, 80) || "New chat";
     const description = `${note ? `${text}\n\n${note}` : text}\n\n${chatAgentMarker(agent.id)}`;
     const issue = await pc.createIssue({ title, description, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
     // The owner's own opening message (a request: the setup wizard's welcome chat has none), so Aiden can pass it on like his
@@ -916,7 +916,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     // as created, never the text: an agent's edit to the description no longer matches, so it is never passed on.
     if (owned && req) store.setMeta(`${CHAT_OPENING}${issue.id}`, JSON.stringify({ sha: sha256(description), length: text.length, createdAt: new Date().toISOString() }));
     log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
-    return { identifier: issue.identifier, message: `${issue.id}:opening` };
+    return { identifier: issue.identifier, id: issue.id, message: `${issue.id}:opening` };
   }
   /** A board chat's opening message, as the board recorded it when the owner started the chat: a comment of his, id = the chat's id. */
   const openingOf = (chat: Issue, me: string): Comment | undefined => {
@@ -1232,13 +1232,19 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const ctx = await context();
           const source = await chiefChatMessage(cos.id, comment_id, ctx.me);
           const words = relayableWords(source.comment, ctx.me);
-          const to = ctx.agents.find((a) => a.id === agent || a.metadata?.setupKey === `aidenhq:${agent}`);
+          // By the grants table's key, never Paperclip metadata, which agents edit: a lookalike can't take the owner's message.
+          const id = agentIdByKey(agent);
+          const to = id ? ctx.agents.find((a) => a.id === id) : undefined;
           if (!to || to.id === cos.id) throw new Refused("refused: agent must be another agent's key");
           if (agentPaused(to)) throw new Refused("refused: that agent is paused");
           if (store.meta(`relayed:${comment_id}`) || store.hasMetaPrefix(`relayed:${comment_id}:`)) throw new Refused("refused: that message was already passed on");
           store.setMeta(`relayed:${comment_id}`, new Date().toISOString());
           try {
-            const started = await startChat(words, to.id, req, false);
+            // The channel the owner wrote from stays on the opening, so the agent's first form goes back to it; the board's byline too.
+            const via = /^\s*(\[(?:telegram|slack)[^\]]*\])/i.exec(source.comment.body)?.[1];
+            const started = await startChat(via ? `${via} ${words}` : words, to.id, req, false);
+            const by = store.authoredBy(source.comment.id);
+            if (by && "id" in started && started.id) store.setAuthored(started.id, by);
             log.info({ chat: source.chat.identifier, opened: started.identifier }, "chat opened for the owner's message");
             return { opened: true, chat: started.identifier, to: to.name };
           } catch (err) {

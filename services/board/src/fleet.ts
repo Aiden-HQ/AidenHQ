@@ -15,6 +15,8 @@ export class Refused extends Error {}
 const DAY = 864e5;
 const QUOTE_MAX_AGE_MS = 2 * 3600_000;
 /** Whether the agent holds the role, by the grants table setup writes (never metadata, which agents edit). */
+/** The agent id whose grants-table key is `key` (never Paperclip metadata, which agents edit). */
+export const agentIdByKey = (key: string) => Object.entries(grantsTable(process.env.AIDENHQ_GRANTS_FILE)()).find(([, g]) => g.key === key)?.[0];
 export const holdsRole = (id: string, role: string) => (grantsTable(process.env.AIDENHQ_GRANTS_FILE)()[id]?.roles ?? []).includes(role);
 const keyOf = (a: Agent) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "");
 

@@ -25,7 +25,7 @@ const agents: Agent[] = [
 const [COS, FLEET, RESEARCHER, SCOUT, IMPOSTOR, ARCHITECT, FLEET_OPS] = agents.map((a) => a.id) as [string, string, string, string, string, string, string];
 // The grants table setup writes: only the Chief of Staff holds fleet-admin.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-writeFileSync(grantsFile, JSON.stringify({ agents: { [COS]: { key: "chief-of-staff", roles: ["fleet-admin"] }, [SCOUT]: { key: "scout", roles: [] }, [IMPOSTOR]: { key: "impostor", roles: [] }, [FLEET_OPS]: { key: "fleet-ops", roles: ["fleet-read"] } } }));
+writeFileSync(grantsFile, JSON.stringify({ agents: { [COS]: { key: "chief-of-staff", roles: ["fleet-admin"] }, [SCOUT]: { key: "scout", roles: [] }, [ARCHITECT]: { key: "architect", roles: [] }, [IMPOSTOR]: { key: "impostor", roles: [] }, [FLEET_OPS]: { key: "fleet-ops", roles: ["fleet-read"] } } }));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 const UUID = /^[0-9a-f-]{36}$/;
 
@@ -123,10 +123,10 @@ describe("/internal/relay", () => {
     expect(res.json).toMatchObject({ opened: true, to: "Agent Architect" });
     const opened = issues.find((i) => i.identifier === res.json.chat)!;
     // The shape the kernel reads as the owner writing there (escalate.ts ownerWroteAt): the owner's key made it, no agent did, and it
-    // carries the chat marker, so the Architect's forms reach him directly.
+    // carries the chat marker (and the Telegram prefix he wrote with), so the Architect's forms reach him directly, on that channel.
     expect(opened).toMatchObject({ assigneeAgentId: ARCHITECT, createdByUserId: ME });
     expect(opened.createdByAgentId ?? null).toBeNull();
-    expect(opened.description).toBe(`I need an agent that chases PR reviews\n\n<!-- aidenhq-chat-agent:${ARCHITECT} -->`);
+    expect(opened.description).toBe(`[telegram] I need an agent that chases PR reviews\n\n<!-- aidenhq-chat-agent:${ARCHITECT} -->`);
     expect((await relay({ comment_id: c.id, agent: "architect" }, COS, "/internal/chat")).status).toBe(403);
     expect((await relay({ comment_id: say(chat, "hi").id, agent: "chief-of-staff" }, COS, "/internal/chat")).status).toBe(403);
     expect((await relay({ comment_id: say(chat, "hi").id, agent: "architect" }, IMPOSTOR, "/internal/chat")).status).toBe(403);
