@@ -7,7 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-export interface Suite { name: string; paths: string[]; ignore?: string[]; main?: boolean; secs?: number; run?: string; job?: string }
+export interface Suite { name: string; dir?: string; paths: string[]; ignore?: string[]; main?: boolean; secs?: number; run?: string; job?: string }
 export interface AreaMap { markdown: string[]; everything: string[]; suites: Suite[] }
 export interface Selection { all: boolean; why?: string; names: string[] }
 
@@ -64,7 +64,7 @@ function main() {
   // A slow suite (`main: true`) runs only on a push to main (MAIN): a flake there never holds a PR or a merge train.
   const tests = map.suites
     .filter((s: Suite) => names.includes(s.name) && (!s.main || env.MAIN))
-    .map((s: Suite) => ({ name: s.name, dir: s.name, run: s.run, secs: s.secs ?? 5, ...(s.job ? { job: s.job } : {}) }));
+    .map((s: Suite) => ({ name: s.name, dir: s.dir ?? s.name, run: s.run, secs: s.secs ?? 5, ...(s.job ? { job: s.job } : {}) }));
   // The test jobs' shards; heavy: the jobs that may run on our own runners (ci.yml's `runner` step), the packages shards and board.
   const pk = shard(tests.filter((t) => t.job == null), 1), md = shard(tests.filter((t) => t.job === "modules"), 2);
   const plan = { packages: pk, modules: md, heavy: pk.length + (tests.some((t) => t.job === "board") ? 1 : 0) };
