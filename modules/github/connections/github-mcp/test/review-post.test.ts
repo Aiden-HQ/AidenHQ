@@ -566,13 +566,12 @@ describe("posting", () => {
     expect(w.calls.filter((c) => c.method !== "GET" && c.path.includes("/issues/"))).toHaveLength(1);
   });
 
-  it("an important finding where someone else has an open thread opens no second comment: it stays in the summary's table, linking that thread", async () => {
+  it("an important finding where someone else has an open thread still gets its own thread: that is where it is answered and closed", async () => {
     const w = world();
     w.state.threads = [thread("T_human", null, "bob", 700)];
-    await poster(w).execute("post", postArgs(review([finding("f_imp_9", "src/pay.ts", 3)])));
+    await poster(w).execute("post", postArgs(review([finding("f_imp_9", "src/pay.ts", 2)])));
     const post = w.calls.find((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))!;
-    expect(post.body.comments ?? []).toEqual([]);
-    expect(post.body.body).toMatch(/\| \u{1F534} \| \[Unchecked amount\]\(u\)/u);
+    expect(post.body.comments).toEqual([expect.objectContaining({ path: "src/pay.ts", line: 2 })]);
   });
 
   it("a clean review is one write: no summary update when no finding has a thread to link", async () => {
