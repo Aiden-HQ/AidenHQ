@@ -48,6 +48,8 @@ export type LoopOptions = {
  * GraphQL list (4 points a page of 50 PRs), so a minute costs at most 240 of the 5,000 points an hour per active repo.
  */
 export const RECHECK_MS = 60_000;
+/** How long a CI re-run that came due still keeps its repo read again: a slow pass may reach it after its due time. */
+const RETRY_GRACE_MS = 5 * 60_000;
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json, which: "off" | "failing" | "all") {
@@ -150,7 +152,7 @@ export function startLoop(o: LoopOptions) {
     await o.adopted.gone(repo, main.name, numbers).catch((e) => log("landed check failed", { repo, err: String((e as Error).message).slice(0, 300) }));
     // A CI recovery that backs off (a refused or unanswered re-run, ci-recover.ts) is asked again once its time comes.
     const heads = new Set(open.map((p) => String(p.headRefOid)));
-    if (o.busy?.(repo, numbers) || Object.entries<string>(state.reran ?? {}).some(([k, v]) => v.startsWith("retry:") && Date.parse(v.slice(6)) > Date.now() - RECHECK_MS && k.split(":").some((x) => heads.has(x)))) after(RECHECK_MS);
+    if (o.busy?.(repo, numbers) || Object.entries<string>(state.reran ?? {}).some(([k, v]) => v.startsWith("retry:") && Date.parse(v.slice(6)) > Date.now() - RETRY_GRACE_MS && k.split(":").some((x) => heads.has(x)))) after(RECHECK_MS);
     return { open: open.length, ...(next !== undefined ? { next } : {}) };
   }
 
