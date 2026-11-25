@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { followFeed, RETRY_MS, SETTLE_MS, startLoop } from "../service/src/loop.ts";
+import { followFeed, RETRY_MS, startLoop } from "../service/src/loop.ts";
 import { adoptedPass } from "../service/src/adopted.ts";
 import { ciRecover } from "../service/src/ci-recover.ts";
 import { PRESETS } from "../service/src/settings.ts";
@@ -1240,7 +1240,8 @@ test("a stack GitHub retargeted itself (the parent's branch deleted) still bring
 test("the change feed drives the passes: every repo once at the start, then a repo an event names; a pass that asks is read again when due; paused, nothing is read", async () => {
   let t = 1_000_000, paused = false;
   const passed = [], log = [];
-  const next = { "acme/app": SETTLE_MS };
+  const due = 3 * RETRY_MS;
+  const next = { "acme/app": due };
   const loop = { repos: ["acme/app", "other/lib"], pass: async (r) => { passed.push(r); if (r === "other/lib" && log.length === 0) { log.push(1); throw new Error("GitHub 502"); } return next[r]; } };
   const queue = [];
   let seq = 0;
@@ -1255,7 +1256,7 @@ test("the change feed drives the passes: every repo once at the start, then a re
   assert.deepEqual(passed.splice(0), ["other/lib"], "one pass for the repo the events name");
   t += RETRY_MS; await feed.pump();
   assert.deepEqual(passed.splice(0), [], "a repo read fine waits for its next event");
-  t += SETTLE_MS - RETRY_MS; await feed.pump();
+  t += due - RETRY_MS; await feed.pump();
   assert.deepEqual(passed.splice(0), ["acme/app"], "a pass that asked to be read again is, when due");
   paused = true;
   queue.push({ resource: "acme/app", kind: "pull_request.closed" });
@@ -1264,4 +1265,33 @@ test("the change feed drives the passes: every repo once at the start, then a re
   paused = false;
   await feed.pump();
   assert.deepEqual(passed.splice(0), ["acme/app", "other/lib"], "a resume reads every repo");
+});
+
+test("a head's checks are probed at most every five minutes however often the loop reads; a changed head or a failed read is probed again", async () => {
+  const calls = [];
+  let listFails = false;
+  const gh = async (method, path) => {
+    calls.push(path);
+    if (path.includes("/check-runs")) return listFails ? { status: 500, body: {} } : { status: 200, body: { total_count: 1, check_runs: [{ id: 1, node_id: "CR_1", name: "a", status: "queued", app: { slug: "github-actions" }, details_url: "https://github.com/acme/app/actions/runs/5/job/9", check_suite: { id: 3 } }] } };
+    return { status: 200, body: { status: "queued", head_sha: "h1", check_run_url: "https://api.github.com/repos/acme/app/check-runs/1" } };
+  };
+  const recover = ciRecover({ gh, log() {} });
+  const state = {};
+  const queued = (head) => ({ url: "https://github.com/acme/app/pull/1", isCrossRepository: false, mergeable: "MERGEABLE", headRefOid: head, commits: { nodes: [{ commit: { statusCheckRollup: { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: "CR_1", name: "a", status: "QUEUED", conclusion: null }] } } } }] } });
+  await recover("acme/app", queued("h1"), state, () => {});
+  const first = calls.length;
+  assert.ok(first >= 2, "the first pass lists the checks and reads the queued job");
+  await recover("acme/app", queued("h1"), state, () => {});
+  assert.equal(calls.length, first, "a second pass within five minutes reads nothing");
+  await recover("acme/app", queued("h2"), state, () => {});
+  assert.ok(calls.length > first, "a new head is probed at once");
+  const n = calls.length;
+  state.probed["https://github.com/acme/app/pull/1"].at -= 6 * 60_000;
+  listFails = true;
+  await recover("acme/app", queued("h2"), state, () => {});
+  assert.ok(calls.length > n, "five minutes on it is probed again");
+  const m = calls.length;
+  await recover("acme/app", queued("h2"), state, () => {});
+  assert.ok(calls.length > m, "a failed read is not stamped: the next pass reads again");
+  assert.equal((await recover("acme/app", queued("h2"), state, () => {})).again, true, "and the loop is told to read the repo again");
 });
