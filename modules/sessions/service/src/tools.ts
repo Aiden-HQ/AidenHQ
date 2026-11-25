@@ -17,7 +17,7 @@ export function watchTools({ watches, kernel }: { watches: Watches; kernel: Kern
   return [
     {
       name: "watch_arm", roles: ["session"],
-      description: "Wake this session when a pull request closes: the first slice of event watches. It answers `armed`, or `fired` when the PR has already closed (act at once). The note is the text you are woken with. A repo the code host does not manage is refused.",
+      description: "Wake this session when a pull request closes: the first slice of event watches. It answers `armed`, or `fired` when the PR has already closed; either way the wake notice that follows is the one trigger to act on. The note is the text you are woken with. A repo the code host does not manage is refused.",
       inputSchema: {
         type: "object", additionalProperties: false, required: ["connection", "kind", "resource", "match", "note"],
         properties: {
