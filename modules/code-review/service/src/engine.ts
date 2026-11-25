@@ -314,6 +314,11 @@ export function createEngine(d: EngineDeps) {
   const current = (repo: string, n: number, head: string) => { const t = tierState(repo, n, head); return t.state === "classified" ? t : undefined; };
   const runRow = (id: string) => one<RunRow>("SELECT * FROM runs WHERE id = ?", id);
   const subject = (repo: string, n: number) => `pr:${repo}#${n}`;
+  /** The head's classification on its notice: every phase of the one comment carries the tier line (none while the head is pending). */
+  const withTier = (a: Ack): Ack => {
+    const p = prRow(a.repo, a.number);
+    return p?.tier && p.head === a.head ? { ...a, tier: { tier: p.tier, why: p.why ?? "" } } : a;
+  };
   /** The acknowledgement comment each PR has (recorded from an outcome, never found by its marker), and notices still settling. */
   const ackOf = (repo: string, n: number) => one<{ ack: number | null }>("SELECT ack FROM prs WHERE repo = ? AND number = ?", repo, n)?.ack ?? undefined;
   /** Records an acknowledgement's outcome; false when its comment's id could not be recorded (the notice stays pending). */
@@ -377,7 +382,7 @@ export function createEngine(d: EngineDeps) {
     // The PR's slot is taken now, before the call returns: a second notice meanwhile waits behind it.
     const slot = `slot:${randomBytes(6).toString("hex")}`;
     acking.set(slot, { repo: a.repo, number: a.number });
-    return d.poster.ack({ ...a, ack: ackOf(a.repo, a.number) }).then((o) => (acking.delete(slot), acked(a.repo, a.number, o, o?.write)), (e) => {
+    return d.poster.ack({ ...withTier(a), ack: ackOf(a.repo, a.number) }).then((o) => (acking.delete(slot), acked(a.repo, a.number, o, o?.write)), (e) => {
       acking.delete(slot);
       log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) });
       acked(a.repo, a.number, undefined);
@@ -1327,7 +1332,7 @@ export function createEngine(d: EngineDeps) {
       const slot = `slot:${r.id}`;
       acking.set(slot, { repo: r.repo, number: r.number });
       try {
-        o = await d.poster.ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: r.why ?? "not posted: refused", ...(ack ? { ack } : {}) });
+        o = await d.poster.ack(withTier({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: r.why ?? "not posted: refused", ...(ack ? { ack } : {}) }));
       } catch (e) {
         acking.delete(slot);
         // A notice queued behind this one must not wait for an answer that never comes: the delivery gave up its slot.
@@ -1691,6 +1696,8 @@ export function createEngine(d: EngineDeps) {
     run("UPDATE prs SET tier = ?, rule = ?, why = ?, facts = ?, cls = ? WHERE repo = ? AND number = ?", c.tier, c.rule, c.why.slice(0, 500),
       JSON.stringify({ ...facts, paths: facts.paths.slice(0, 50), paths_total: facts.paths.length }), JSON.stringify(i), p.repo, p.number);
     mirrorDue = true;
+    // The comment says the tier on every PR, edited in place; a reclassification of the same head to the same tier (a settings change) leaves it be.
+    if (!(row?.cls && (JSON.parse(row.cls) as Inputs).head === p.head && row.tier === c.tier && row.why === c.why.slice(0, 500))) void ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" });
   }
 
   /** One watched repo: its PRs' heads (each classified first) and its new comments. The first look reviews what is open like a new PR. */

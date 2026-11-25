@@ -98,7 +98,10 @@ export const NoticeArgsSchema = z.object({
   repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
   pr: z.number().int().min(1),
   head: z.string().regex(SHA),
-  phase: z.enum(["queued", "running", "done", "skipped", "failed", "answered"]),
+  phase: z.enum(["queued", "running", "done", "skipped", "failed", "answered", "classified"]),
+  /** The head's risk tier and the one-line why of the rule that named it (a path or count from the PR: no backtick or line break). */
+  tier: z.enum(["skip", "trivial", "standard", "sensitive"]).optional(),
+  tier_why: z.string().regex(/^[^`\r\n]{1,500}$/).optional(),
   engine: ENGINE.optional(), model: MODEL.optional(), effort: EFFORT.optional(),
   reason: z.enum(Object.keys(NOTICE_REASONS) as [NoticeReason, ...NoticeReason[]]).optional(),
   answer: z.enum(Object.keys(ANSWERS) as [keyof typeof ANSWERS, ...(keyof typeof ANSWERS)[]]).optional(),
@@ -364,7 +367,13 @@ export function renderNotice(n: NoticeArgs): string {
   const c: Counts = { important: n.important ?? 0, nit: n.nit ?? 0, pre_existing: n.pre_existing ?? 0 };
   const head = `${ACK_MARK}\n**Aiden review**`;
   const help = "`aiden review help` lists the commands.";
+  // The tier line rides every phase of the one comment, so the risk shows whatever the review is doing.
+  const tier = n.tier ? `\nRisk tier **${n.tier}**${n.tier_why ? `: ${code(n.tier_why)}` : ""}` : "";
+  return noticeText(n, { who, sha, c, head, help }) + tier;
+}
+function noticeText(n: NoticeArgs, { who, sha, c, head, help }: { who: string; sha: string; c: Counts; head: string; help: string }): string {
   switch (n.phase) {
+    case "classified": return `${head}: classified ${sha}. ${help}`;
     case "queued": return `${head}: queued${who} for ${sha}. ${help}`;
     case "running": return `${head}: reviewing ${sha}${who}…`;
     case "done": return `${head}: reviewed ${sha}${who}: ${countLine(c)}${usd(n.cost_usd)}. ${help}`;

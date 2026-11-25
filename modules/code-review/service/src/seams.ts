@@ -133,7 +133,9 @@ export interface ReviewRunner {
 /** The one acknowledgement per PR, updated in place. */
 export type Ack = {
   repo: string; number: number; head: string;
-  state: "queued" | "running" | "done" | "skipped" | "failed" | "answered";
+  state: "queued" | "running" | "done" | "skipped" | "failed" | "answered" | "classified";
+  /** The head's risk tier and why, shown on the comment whatever its phase (the engine fills it from the PR's classification). */
+  tier?: { tier: "skip" | "trivial" | "standard" | "sensitive"; why: string };
   /** An answered command's fixed words (review-render.ts ANSWERS). */
   answer?: "help" | "always" | "focus" | "focus_cleared" | "no_review";
   run?: string; combo?: ComboRef; why?: string;

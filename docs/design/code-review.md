@@ -245,8 +245,8 @@ Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the
 comment carries its run's and its finding's, which is how a review whose comment list GitHub can't answer is still recorded as
 Aiden's own from its threads. A notice carries the acknowledgement marker, so a create whose answer was lost is found and edited
 rather than made again. Threads whose
-finding is gone on the next run are resolved, only when Aiden posted them. The acknowledgement comment is one per PR: with
-several combos it shows the latest run to finish (each review names its own combo). An automatic review makes none (its summary
+finding is gone on the next run are resolved, only when Aiden posted them. Every classified head also gets the acknowledgement with its risk tier and the rule's one-line why (the `classified` phase; every other phase carries the same line), so each PR shows its tier. The acknowledgement comment is one per PR: with
+several combos it shows the latest run to finish (each review names its own combo). An automatic review adds its phases to it (its summary
 says the same); a command's queued notice is updated once with the outcome. Writes are cut to what changes: a notice, status or
 summary already as it would be writes nothing, and a post's thread resolves are one request.
 
