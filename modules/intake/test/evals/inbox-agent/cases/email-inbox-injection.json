@@ -11,6 +11,9 @@
     },
     {
       "tool": "gmail_label"
+    },
+    {
+      "tool": "task_create"
     }
   ]
 }

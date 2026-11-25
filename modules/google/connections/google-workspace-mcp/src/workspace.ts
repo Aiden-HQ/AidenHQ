@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { GoogleClient } from "./google.js";
-import { automated, ccOnly, INBOX_QUERY, MAX_IDS } from "./inbox.js";
+import { automated, ccOnly, INBOX_QUERY, MAX_READS } from "./inbox.js";
 
 const CAL = "https://www.googleapis.com/calendar/v3";
 const DRIVE = "https://www.googleapis.com/drive/v3";
@@ -331,27 +331,34 @@ export class Workspace {
    * threads are decided); `more` says threads past the limit wait for the next call.
    */
   async gmailInbox(me: string, after: number, limit: number) {
+    // Every id since the cursor (cheap: 500 a page; the cursor is at most four days back), so the walk below starts at the oldest.
     const ids: string[] = [];
     let pageToken: string | undefined;
     do {
       const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q: `${INBOX_QUERY} after:${Math.floor(after / 1000)}`, maxResults: 500, pageToken });
       ids.push(...(page.messages ?? []).map((m) => m.id));
       pageToken = page.nextPageToken;
-    } while (pageToken && ids.length < MAX_IDS);
-    const truncated = !!pageToken;
+    } while (pageToken);
     const threads = new Map<string, Record<string, unknown>>();
     const dropped: Record<string, number> = {};
-    let cursor = after, more = false;
-    // Gmail lists newest first: walk oldest first, so a capped call hands exactly the rest to the next one.
-    for (const id of ids.slice(0, MAX_IDS).reverse()) {
-      const m = await this.g.get<GmailMessage>(`${GMAIL}/messages/${encodeURIComponent(id)}`, { format: "metadata" });
+    let cursor = after, more = false, reads = 0;
+    // Gmail lists newest first: walk oldest first, so a call that stops early hands exactly the rest to the next one.
+    for (const id of ids.reverse()) {
+      let m: GmailMessage;
+      try {
+        m = await this.g.get<GmailMessage>(`${GMAIL}/messages/${encodeURIComponent(id)}`, { format: "metadata" });
+      } catch (err) {
+        if (/Google API 404/.test(String(err))) continue; // deleted since the listing
+        throw err;
+      }
       const at = Number(m.internalDate ?? 0);
       if (at <= after) continue; // `after:` is in whole seconds
-      // Over the limit, a new thread waits unless it arrived in the same millisecond as the last one read (the cursor can't split those).
-      if (threads.size >= limit && !threads.has(m.threadId) && at > cursor) {
+      // A call stops at `limit` threads or MAX_READS messages, never inside one millisecond (the cursor can't split those).
+      if (at > cursor && ((threads.size >= limit && !threads.has(m.threadId)) || reads >= MAX_READS)) {
         more = true;
         break;
       }
+      reads++;
       cursor = Math.max(cursor, at);
       const h = (name: string) => header(m, name);
       const why = automated(h);
@@ -362,7 +369,7 @@ export class Workspace {
       threads.delete(m.threadId); // re-inserted: the map stays in arrival order of each thread's newest message
       threads.set(m.threadId, { thread_id: m.threadId, id: m.id, from: h("From"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: new Date(at).toISOString(), cc_only: ccOnly(me, h("To"), h("Cc")), snippet: m.snippet });
     }
-    return { threads: [...threads.values()], dropped, cursor, more, truncated };
+    return { threads: [...threads.values()], dropped, cursor, more };
   }
 
   /** A whole thread as text, oldest first; message bodies truncated. */

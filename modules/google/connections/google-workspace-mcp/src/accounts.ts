@@ -324,7 +324,7 @@ export class MultiWorkspace {
       try {
         const r = await this.in(name, (w) => w.gmailInbox(name, startOf(cursor[name]), limit)) as Awaited<ReturnType<Workspace["gmailInbox"]>>;
         threads.push(...r.threads.map((t) => ({ account: name, ...t, link: gmailLink(String(t.thread_id), name) })));
-        accounts.push({ account: name, threads: r.threads.length, dropped: r.dropped, more: r.more, ...(r.truncated ? { truncated: true } : {}) });
+        accounts.push({ account: name, threads: r.threads.length, dropped: r.dropped, more: r.more });
         next[name] = r.cursor;
         served.push(name);
       } catch (err) {

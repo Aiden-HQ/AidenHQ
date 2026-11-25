@@ -23,7 +23,7 @@ function google(msgs: Msg[]) {
       const from = Number(url.searchParams.get("pageToken") ?? 0);
       return Response.json({ messages: all.slice(from, from + 2).map(({ id }) => ({ id })), ...(from + 2 < all.length ? { nextPageToken: String(from + 2) } : {}) });
     }
-    const m = msgs.find((x) => url.pathname === `${GM}/${x.id}`);
+    const m = msgs.find((x) => url.pathname === `${GM}/${x.id}` && x.id !== "gone");
     if (!m) return new Response("not found", { status: 404 });
     return Response.json({ id: m.id, threadId: m.threadId, internalDate: String(m.at), snippet: `about ${m.id}`, payload: { headers: Object.entries(m.headers).map(([name, value]) => ({ name, value })) } });
   }) as typeof fetch;
@@ -44,8 +44,10 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     { id: "n1", threadId: "tn", at: T0 + 2_000, headers: { ...person("Weekly <news@acme.com>"), "List-Unsubscribe": "<mailto:u@acme.com>" } },
     { id: "r1", threadId: "tr", at: T0 + 3_000, headers: person("GitHub <noreply@github.com>") },
     { id: "b1", threadId: "tb", at: T0 + 4_000, headers: { ...person("Ops <ops@acme.com>"), "Auto-Submitted": "auto-generated" } },
-    { id: "c1", threadId: "tc", at: T0 + 5_000, headers: person("Raj <raj@acme.com>", "lee@acme.com", "Me <me@work.com>") },
+    { id: "c1", threadId: "tc", at: T0 + 5_000, headers: person("Raj <raj@acme.com>", "lee@acme.com, some.me@work.com", "Me <me@work.com>") },
     { id: "a2", threadId: "ta", at: T0 + 6_000, headers: person("Dana <dana@acme.com>") },
+    // Deleted between the listing and its read: skipped.
+    { id: "gone", threadId: "tg", at: T0 + 6_500, headers: person("Pat <pat@acme.com>") },
     { id: "d1", threadId: "td", at: T0 + 7_000, headers: person("Kim <kim@acme.com>") },
     // Same millisecond as d1: a capped call can't split the two, so both come together.
     { id: "e1", threadId: "te", at: T0 + 7_000, headers: person("Lee <lee@acme.com>") },
