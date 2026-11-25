@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUTHOR_PUSHED, intake, generationOf, type PrView } from "../service/src/handoff.ts";
+import { AUTHOR_PUSHED, HEAD_UNSEEN, intake, generationOf, type PrView } from "../service/src/handoff.ts";
 import { retryReport, round as roundWith } from "../service/src/rounds.ts";
 import { RISK } from "./risk.ts";
 // Every round here sees a classified head whose tier approves and merges (risk.ts).
@@ -227,7 +227,7 @@ test("a fork's new commit from its author stops ship until a member hands it off
   // A hand-off made before ship first saw the fork's current head (it may have moved after the click) starts held.
   const late = world();
   const first = await intake(late.deps, late.pr({ ...fork, events: [on], headSeen: "2026-11-24T01:05:00Z" }));
-  assert.deepEqual([first?.generation, first?.hold?.reason, late.of("ask").length], [1, AUTHOR_PUSHED, 0]);
+  assert.deepEqual([first?.generation, first?.hold?.reason, late.of("ask").length], [1, HEAD_UNSEEN, 0]);
   // A PR in the base repo is never bound to its hand-off's head.
   const m = world();
   await intake(m.deps, m.pr({ events: [on] }));

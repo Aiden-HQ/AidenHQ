@@ -100,6 +100,8 @@ export interface HandoffDeps {
 
 /** The hold on a fork whose author pushed after the hand-off, as the PR's report shows it. */
 export const AUTHOR_PUSHED = "New commits from the author: a member needs to hand this off again";
+/** The hold on a fork handed off before ship saw its current head (it may have moved after the click, or ship restarted since). */
+export const HEAD_UNSEEN = "Ship can't tell this head was the one handed off (it first saw it after the hand-off): a member needs to hand this off again";
 
 /**
  * The newest trusted trigger after the adoption's own (or any, when there is none): a `ship` label added, or a `/ship` comment, by
@@ -198,7 +200,7 @@ async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger:
   if (was?.assigned?.length) await d.unassign(pr.repo, pr.number, was.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
   const a: Kept = { repo: pr.repo, number: pr.number, generation, trigger, owner: { kind: "member", login: trigger.actor }, hold: null, ...(was?.report ? { report: was.report } : {}), ...(was?.approve && !was.approve.why ? { approve: was.approve } : {}), did: [] };
   if (late) {
-    const held: Kept = { ...a, hold: { kind: "stopped", reason: AUTHOR_PUSHED, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { state: "on hold", stopLabel: d.settings(pr.repo)?.stop_label } } };
+    const held: Kept = { ...a, hold: { kind: "stopped", reason: HEAD_UNSEEN, at: new Date().toISOString() }, reportStale: { head: pr.head, facts: { state: "on hold", stopLabel: d.settings(pr.repo)?.stop_label } } };
     d.state.put(held);
     d.log("fork handed off before its head moved: held", { pr: pr.url, generation, actor: trigger.actor });
     return held;
