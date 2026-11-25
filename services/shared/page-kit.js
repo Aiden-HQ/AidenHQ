@@ -110,14 +110,19 @@ const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
 const editor = (k) => {
   const fire = (el, ev, get) => el.addEventListener(ev, () => { const v = get(); if (v !== undefined) k.set(v); });
   if (k.kind === "checks") return h("div", { className: "checks" }, ...k.values.map((v) => { const c = h("input", { type: "checkbox", checked: (k.value ?? []).includes(v), title: k.titles?.[v] }); c.dataset.f = `${k.f}:${v}`; c.addEventListener("change", () => k.set(k.values.filter((x) => x === v ? c.checked : (k.value ?? []).includes(x)))); return h("label", {}, c, v); }));
-  if (k.kind === "seg") return h("div", { className: "seg", role: "radiogroup", ariaLabel: k.label }, ...k.values.map((v) => { const b = h("button", { type: "button", role: "radio", textContent: v, title: k.titles?.[v] }); b.setAttribute("aria-checked", String(v === k.value)); b.dataset.v = v; b.dataset.f = `${k.f}:${v}`; b.addEventListener("click", () => { if (v !== k.value) k.set(v); }); return b; }));
+  if (k.kind === "seg") return h("div", { className: "seg", role: "radiogroup", ariaLabel: k.label }, ...k.values.map((v, i) => { const b = h("button", { type: "button", role: "radio", textContent: v, title: k.titles?.[v] }); b.setAttribute("aria-checked", String(v === k.value)); b.tabIndex = v === k.value ? 0 : -1; b.dataset.v = v; b.dataset.f = `${k.f}:${v}`; b.addEventListener("click", () => { if (v !== k.value) k.set(v); });
+    b.addEventListener("keydown", (e) => { const d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]; if (d) { e.preventDefault(); k.set(k.values[(i + d + k.values.length) % k.values.length]); } }); return b; }));
   if (k.kind === "chips") {
-    const items = k.value ?? [], inp = h("input", { type: "text", ariaLabel: k.label, placeholder: k.placeholder ?? "Add one, press Enter", autocomplete: "off", spellcheck: false });
+    // One entry per chip; Enter (or leaving the box) adds what is typed, a multi-line paste adds one chip per line. k.dups allows a repeated entry (an ordered list).
+    let items = k.value ?? [];
+    const inp = h("input", { type: "text", ariaLabel: k.label, placeholder: k.placeholder ?? "Add one, press Enter", autocomplete: "off", spellcheck: false });
     inp.dataset.f = k.f;
-    const add = () => { const v = inp.value.trim(); inp.value = ""; if (v && !items.includes(v)) k.set([...items, v]); };
-    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } else if (e.key === "Backspace" && !inp.value && items.length) k.set(items.slice(0, -1)); });
-    inp.addEventListener("blur", add);
-    return h("div", { className: "chips" }, ...items.map((x) => { const b = h("button", { type: "button", className: "x", ariaLabel: `Remove ${x}`, textContent: "\u00d7" }); b.addEventListener("click", () => k.set(items.filter((y) => y !== x))); return h("span", { className: "chip", title: x }, h("span", { textContent: x }), b); }), inp);
+    const put = (list) => { items = list; k.set(list); };
+    const add = (vs) => { inp.value = ""; const more = vs.map((x) => x.trim()).filter((x) => x && (k.dups || !items.includes(x))); if (more.length) put([...items, ...more]); };
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add([inp.value]); } else if (e.key === "Backspace" && !inp.value && items.length) put(items.slice(0, -1)); });
+    inp.addEventListener("paste", (e) => { const t = e.clipboardData?.getData("text") ?? ""; if (t.includes("\n")) { e.preventDefault(); add(t.split("\n")); } });
+    inp.addEventListener("blur", () => add([inp.value]));
+    return h("div", { className: "chips" }, ...items.map((x, i) => { const b = h("button", { type: "button", className: "x", ariaLabel: `Remove ${x}`, textContent: "\u00d7" }); b.addEventListener("click", () => put(items.filter((_, j) => j !== i))); return h("span", { className: "chip", title: x }, h("span", { textContent: x }), b); }), inp);
   }
   const el = k.kind === "select" ? h("select", { ariaLabel: k.label }, ...k.values.map((v) => h("option", { value: v, textContent: v, title: k.titles?.[v], selected: v === k.value })))
     : k.kind === "list" ? h("textarea", { rows: Math.min(6, Math.max(2, (k.value ?? []).length)), value: (k.value ?? []).join("\n"), ariaLabel: k.label, spellcheck: false })

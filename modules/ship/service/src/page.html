@@ -45,6 +45,7 @@
   .mx .cell { position: relative; display: flex; min-width: 0; }
   .mx .cell .rs { position: absolute; top: -7px; right: -5px; width: 14px; height: 14px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--color-text-inverse, #fff); font-size: 10px; line-height: 1; }
   .mx .cell.chg .seg { border-color: var(--accent); }
+  @media (max-width: 420px) { .mx { grid-template-columns: 1fr 1fr; } .mx > :first-child { display: none; } .mx .tn { grid-column: 1 / -1; } }
   .mx .na { color: var(--soft); padding-left: 6px; }
   .pause { display: flex; align-items: center; gap: 8px; }
   .pause .sw { flex: none; }
@@ -197,7 +198,6 @@
   const MATRIX_HELP = { ...TIER_HELP, unwatched: "A repo code review doesn't watch has no risk tier, only a merge setting.", Approve: Object.entries(APPROVE_OPTS).map(([v, m]) => `${v}: ${m}`).join(" "), Merge: Object.entries(MERGE_OPTS).map(([v, m]) => `${v}: ${m}`).join(" ") };
   function drawer(key) {
     const s = view(key), base = target(key).settings ?? {}, defaults = key === "defaults";
-    const norm = (kind, x) => (kind === "list" || kind === "chips" ? x ?? [] : kind === "text" ? x ?? "" : x ?? null);
     const resetTo = (path) => (defaults || !target(key).inherits ? "preset" : "default");
     // One field: its label (hover for the meaning), the editor, and, only when the entry changed it from the preset or default, a Changed mark with its reset.
     const info = (path) => {
@@ -209,14 +209,14 @@
     };
     const show = (path, x) => (path === "enabled" ? (x ? "on" : "off") : x);
     const state = (path) => {
-      const { stage, kind } = info(path), v = get(s, path), d = dflt(key, path);
-      return { v, d, changed: owns(key, path) && !eq(norm(kind, v), norm(kind, d)) };
+      const v = get(s, path), d = dflt(key, path);
+      return { v, d, changed: owns(key, path) };
     };
     const control = (path, extra = {}) => {
       const { stage, kind, label, options, head } = info(path), { v } = state(path);
       const values = path === "enabled" ? ["on", "off"] : path === "preset" ? controls.preset.values : head ? controls[path].values : /^(by_tier|unwatched)\./.test(path) ? Object.keys(path.endsWith(".approve") ? APPROVE_OPTS : MERGE_OPTS) : path === "rebase" ? ["conflict", "behind"] : ["conflicts", "ci", "review"];
       const cur = path === "preset" ? presetFor(key) : show(path, v);
-      return editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : cur, values, titles: options, placeholder: kind === "num" ? "no limit" : stage ? "comment: text, or workflow: file.yml" : kind === "chips" ? "glob, then Enter" : undefined, ...extra,
+      return editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : cur, values, titles: options, placeholder: kind === "num" ? "no limit" : stage ? "comment: text, or workflow: file.yml" : kind === "chips" ? "glob, then Enter" : undefined, dups: !!stage, ...extra,
         set: (x, live) => edit(key, path, stage ? x.map(readAction) : path === "enabled" ? x === "on" : x, live) });
     };
     const rs = (path) => { const { d } = state(path), b = h("button", { type: "button", className: "rs", textContent: "Reset", title: `Back to the ${resetTo(path)}: ${fmt(path, show(path, d))}` }); b.addEventListener("click", () => reset(key, path)); return b; };
