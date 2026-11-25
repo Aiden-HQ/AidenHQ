@@ -145,5 +145,11 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     }) as typeof fetch;
     const err = await new MultiWorkspace(p, "primary", dead).gmailInbox({ "me@work.com": T0 + 7_500 }, 5).catch((e) => e);
     expect(readNeed(toolFailure(err))).toMatchObject({ cause: "expired", account: "me@side.io" });
+
+    // A sign-in whose recorded scopes allow no Gmail read is the owner's reconnect too, before any read is tried.
+    const q = join(mkdtempSync(join(tmpdir(), "gw-")), "creds.json");
+    writeFileSync(q, JSON.stringify({ client_id: "cid", primary: "me@work.com", accounts: { "me@work.com": { refresh_token: "r1", scopes: ["https://www.googleapis.com/auth/calendar.events"] } } }));
+    const noScope = await new MultiWorkspace(q, "primary", ok).gmailInbox({}, 5).catch((e) => e);
+    expect(readNeed(toolFailure(noScope))).toMatchObject({ cause: "scope", account: "me@work.com" });
   });
 });

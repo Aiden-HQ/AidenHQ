@@ -44,10 +44,13 @@ export function readCredentials(path: string, forWrite = false): CredentialsFile
   return { ...raw, client_id: id, client_secret: fileText(process.env.GOOGLE_CLIENT_SECRET_FILE) || undefined };
 }
 
-/** The account's sign-in lacks the scope a write needs (connected before Google writes, or unticked at consent): a reconnect grants it. */
+/** The scope that lets an account's inbox be read (gmail.modify, the current consent, covers it too). */
+const GMAIL_READ = "gmail.readonly";
+
+/** The account's sign-in lacks the scope a write (or the inbox feed's read) needs (connected before Google writes, or unticked at consent): a reconnect grants it. */
 export class ScopeMissing extends Error {
   constructor(readonly scope: string, readonly account: string) {
-    super(`Google (${account}) hasn't allowed ${scope === WRITE_SCOPE.calendar ? "calendar changes" : "Gmail drafts, sends and labels"} yet: the owner reconnects Google once to grant it`);
+    super(`Google (${account}) hasn't allowed ${scope === WRITE_SCOPE.calendar ? "calendar changes" : scope === GMAIL_READ ? "reading Gmail" : "Gmail drafts, sends and labels"} yet: the owner reconnects Google once to grant it`);
   }
 }
 
@@ -323,6 +326,8 @@ export class MultiWorkspace {
     const threads: Record<string, unknown>[] = [], accounts: Record<string, unknown>[] = [], next: Cursor = {}, served: string[] = [];
     for (const name of this.accounts()) {
       try {
+        // A sign-in that records its scopes and allows no Gmail read is the owner's reconnect, not a per-account error.
+        if ((this.scopes.get(name) ?? []).length && !this.granted(name, WRITE_SCOPE.gmail) && !this.granted(name, GMAIL_READ)) throw new ScopeMissing(GMAIL_READ, name);
         const r = await this.in(name, (w) => w.gmailInbox(name, startOf(cursor[name]), limit)) as Awaited<ReturnType<Workspace["gmailInbox"]>>;
         threads.push(...r.threads.map((t) => ({ account: name, ...t, link: gmailLink(String(t.thread_id), name) })));
         accounts.push({ account: name, threads: r.threads.length, dropped: r.dropped, more: r.more });
