@@ -62,8 +62,8 @@ const startPath = (req: CanaryRequest) => (req.path && req.path.startsWith("/") 
  * `dialog` or `form` (or under a feedback-named heading inside one), so a prompt label such as "What should change?" is
  * enough. A page's lone textbox is never: a profile page's display-name box, or a header search box, must not be filled, and
  * a "Feedback" control elsewhere on the page is not context for it. The entry walk follows the page's own feedback `link` or
- * `button` (the starter's is a button that opens the dialog), never a send-named one, so it opens the form instead of
- * submitting it.
+ * `button` (the starter's is a button that opens the dialog), never one that sends or destroys, so it opens the form instead
+ * of submitting it. The submit is then the send-named control in the form that owns the filled field (canarySubmit below).
  */
 export const CANARY_DISCOVERY = String.raw`
 // Feedback-specific wording only: "message" or bare "comment" also name a chat composer or a discussion box, and a canary must
