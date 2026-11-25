@@ -84,7 +84,9 @@ let socketState: "connected" | "disconnected" = "disconnected";
  * "it is set up" (the board and the kernel read that boolean); `socket` and `paired` say whether it can actually carry a DM. `ok`
  * stays true for a token with a transient disconnect: an apply must not fail on a blip. */
 const health = async () => {
-  const ownerNow = await owner().catch(() => null);
+  // Only a missing bot has to ask slack-mcp whether Slack is signed in at all: for a configured bot the answer cannot change
+  // `ok`, so a stalled relay must not hold this health check past Docker's timeout.
+  const ownerNow = bot ? undefined : await owner().catch(() => null);
   const paired = pairing.paired();
   const pairedAt = pairing.pairedAt();
   const socket = appToken ? socketState : "off";

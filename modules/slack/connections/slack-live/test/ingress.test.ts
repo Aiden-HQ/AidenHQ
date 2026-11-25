@@ -3,8 +3,8 @@
 import { expect, it, vi } from "vitest";
 
 const handlers: ((msg: unknown) => Promise<void>)[] = [];
-const states: ((s: string) => void)[] = [];
-vi.mock("@slack/socket-mode", () => ({ default: { SocketModeClient: class { on(ev: string, fn: (msg: unknown) => Promise<void>) { if (ev === "slack_event") handlers.push(fn); else if (ev === "connected" || ev === "disconnected") states.push(fn as unknown as (s: string) => void); } async start() {} } } }));
+const states = { connected: [] as (() => void)[], disconnected: [] as (() => void)[], close: [] as (() => void)[] };
+vi.mock("@slack/socket-mode", () => ({ default: { SocketModeClient: class { on(ev: string, fn: (msg: unknown) => Promise<void>) { if (ev === "slack_event") handlers.push(fn); else (states as Record<string, (() => void)[]>)[ev]?.push(fn as unknown as () => void); } async start() {} } } }));
 const { startSocket } = await import("../src/socket.js");
 const { openStore } = await import("../src/store.js");
 
@@ -28,10 +28,14 @@ it("logs an inbound events_api message before the pairing filter, and never its 
   expect(JSON.stringify(info.mock.calls)).not.toContain("U1");
   expect(ack).toHaveBeenCalledOnce();
 
-  // Connects and disconnects reach /healthz's state.
-  (states[0] as () => void)();
+  // Connects, disconnects and a silent close (auto-reconnect never emits "disconnected") all reach /healthz's state.
+  (states.connected[0] as () => void)();
   expect(onState).toHaveBeenLastCalledWith("connected");
-  (states[1] as () => void)();
+  (states.close[0] as () => void)();
+  expect(onState).toHaveBeenLastCalledWith("disconnected");
+  (states.connected[0] as () => void)();
+  expect(onState).toHaveBeenLastCalledWith("connected");
+  (states.disconnected[0] as () => void)();
   expect(onState).toHaveBeenLastCalledWith("disconnected");
 });
 

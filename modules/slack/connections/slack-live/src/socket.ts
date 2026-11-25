@@ -86,7 +86,11 @@ export async function startSocket({ appToken, store, chat, pair, bind, tee, forw
     await msg.ack().catch((err: unknown) => log.warn({ err: String(err) }, "socket ack failed"));
   });
   client.on("connected", () => { onState?.("connected"); log.info("socket mode connected"); });
-  client.on("disconnected", () => { onState?.("disconnected"); log.warn("socket mode disconnected"); });
+  // A routine refresh closes the socket and reconnects without ever emitting "disconnected": the state must drop on "close"
+  // too, or /healthz would report a live listener that is not listening.
+  const down = (why: string) => { onState?.("disconnected"); log.warn(why); };
+  client.on("disconnected", () => down("socket mode disconnected"));
+  client.on("close", () => down("socket mode closed; reconnecting"));
   // Initial start only: 30 s doubling to 5 min. After that the client reconnects itself.
   for (let backoff = 30_000; ; backoff = Math.min(backoff * 2, 300_000)) {
     try {

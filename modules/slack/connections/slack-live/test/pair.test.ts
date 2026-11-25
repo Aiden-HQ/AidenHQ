@@ -81,14 +81,39 @@ it("a code in a DM the bot cannot see pairs nobody, and the code is not redeemed
 it("a lookup that itself fails falls back to the event naming a bot install", async () => {
   const { pairing } = setup();
   const down = (async () => new Response("down", { status: 503 })) as typeof fetch;
-  const attempt = (authz: { is_bot?: boolean }[] | undefined, channel: string) => {
+  const attempt = (authz: { is_bot?: boolean }[] | undefined, channel: string, said: [string, string][]) => {
     const body = { ...(authz ? { authorizations: authz } : {}), event: { type: "message", channel_type: "im", user: "U6", channel, text: pairing.mint() } };
-    return handlePairingDm(pairing, body, async () => undefined, () => undefined, { botToken: "xoxb-test", fetch: down });
+    return handlePairingDm(pairing, body, async (c, text) => void said.push([c, text]), () => undefined, { botToken: "xoxb-test", fetch: down });
   };
-  expect(await attempt([{ is_bot: true }], "D6")).toBe(true);
-  expect(await attempt([{ is_bot: false }], "D7")).toBe(false);
-  expect(await attempt(undefined, "D8")).toBe(false);
+  const botSaid: [string, string][] = [];
+  expect(await attempt([{ is_bot: true }], "D6", botSaid)).toBe(true);
   expect(pairing.owner()).toEqual({ user: "U6", channel: "D6" });
+
+  // Slack gave no bot install to fall back on: unanswered and unconsumed, so the still-valid code never reaches ingestion.
+  const otherSaid: [string, string][] = [];
+  expect(await attempt([{ is_bot: false }], "D7", otherSaid)).toBe(true);
+  const noneSaid: [string, string][] = [];
+  expect(await attempt(undefined, "D8", noneSaid)).toBe(true);
+  expect(otherSaid).toEqual([["D7", "I couldn't check that DM with the bot. Try again in a moment."]]);
+  expect(noneSaid).toEqual([["D8", "I couldn't check that DM with the bot. Try again in a moment."]]);
+  expect(pairing.owner()).toEqual({ user: "U6", channel: "D6" });
+});
+
+it("a redelivered DM whose first delivery paired it does not say the code failed", async () => {
+  const { pairing } = setup();
+  const code = pairing.mint();
+  const said: [string, string][] = [];
+  const once = () =>
+    handlePairingDm(
+      pairing,
+      { event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text: code } },
+      async (c, text) => void said.push([c, text]),
+      () => undefined,
+      { botToken: "xoxb-test", fetch: botSees("D1") as typeof fetch },
+    );
+  expect(await once()).toBe(true);
+  expect(await once()).toBe(true);
+  expect(said).toEqual([["D1", "Paired. Say hi to Aiden."]]);
 });
 
 it("a code posted in a channel pairs nobody, and neither does one in a DM with someone else", async () => {

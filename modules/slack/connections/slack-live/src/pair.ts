@@ -67,26 +67,30 @@ type Body = { event?: Record<string, string>; authorizations?: { is_bot?: boolea
 /** Does the event name a bot install at all? Slack truncates `authorizations` to one arbitrary entry, so it is a hint, not the gate. */
 const namesBot = (b: Body): boolean => Boolean(b?.authorizations?.some((a) => a?.is_bot === true));
 
+/** "bot": this DM is with the bot. "other": the bot cannot see it (a DM between two people). "unknown": the lookup itself failed. */
+type BotDm = "bot" | "other" | "unknown";
+
 /**
  * Is this DM one with this bot, rather than the owner's DM with another person? The bot token answers it: the bot sees its own
  * DMs (`conversations.info` -> `is_im`), while a DM between two people answers `channel_not_found`/`missing_scope`. A lookup that
- * itself failed (network, 5xx, rate limit) falls back to the event's `authorizations` naming a bot.
+ * itself failed (network, 5xx, rate limit) is "unknown", and the event's `authorizations` naming a bot makes it a "bot" DM.
  */
-async function isBotDm(b: Body, channel: string, botToken: string, doFetch: typeof fetch): Promise<boolean> {
-  if (!botToken) return namesBot(b);
+async function botDm(b: Body, channel: string, botToken: string, doFetch: typeof fetch): Promise<BotDm> {
+  const fallback = (): BotDm => (namesBot(b) ? "bot" : "unknown");
+  if (!botToken) return fallback();
   let res: Response;
   try {
-    res = await doFetch(`https://slack.com/api/conversations.info?channel=${encodeURIComponent(channel)}`, { headers: { authorization: `Bearer ${botToken}` }, signal: AbortSignal.timeout(10_000) });
+    res = await doFetch(`https://slack.com/api/conversations.info?channel=${encodeURIComponent(channel)}`, { headers: { authorization: `Bearer ${botToken}` }, signal: AbortSignal.timeout(2_500) });
   } catch {
-    return namesBot(b);
+    return fallback();
   }
-  if (res.status >= 500 || res.status === 429) return namesBot(b);
+  if (res.status >= 500 || res.status === 429) return fallback();
   const j = (await res.json().catch(() => undefined)) as { ok?: boolean; channel?: { is_im?: boolean }; error?: string } | undefined;
-  if (!j) return namesBot(b);
-  if (j.ok) return j.channel?.is_im === true;
+  if (!j) return fallback();
+  if (j.ok) return j.channel?.is_im === true ? "bot" : "other";
   // The bot token could not see the channel: a DM between other people, never a pairing DM.
-  if (j.error === "channel_not_found" || j.error === "missing_scope" || j.error === "not_in_channel") return false;
-  return namesBot(b);
+  if (j.error === "channel_not_found" || j.error === "missing_scope" || j.error === "not_in_channel") return "other";
+  return fallback();
 }
 
 export interface PairingDeps {
@@ -114,9 +118,19 @@ export async function handlePairingDm(
   const code = ev.text?.trim() ?? "";
   if (!CODE.test(code)) return false;
   // The code is checked before the lookup, so ordinary chat in the DM costs no Slack API call.
-  if (!(await isBotDm(b, ev.channel, deps.botToken ?? "", deps.fetch ?? fetch))) return false;
+  const dm = await botDm(b, ev.channel, deps.botToken ?? "", deps.fetch ?? fetch);
+  // A DM between two people is not ours to answer, and pairing it must fail before the code is even looked at.
+  if (dm === "other") return false;
+  // The lookup could not say whether the bot sees this DM: a code that may be a pairing credential never goes on to ingestion.
+  if (dm === "unknown") {
+    await say(ev.channel, "I couldn't check that DM with the bot. Try again in a moment.").catch(() => undefined);
+    return true;
+  }
   const r = pairing.redeem(code, ev.user, ev.channel);
   if (!r.ok) {
+    // Slack redelivers an event whose slow lookup outran its 3 s ack; the first delivery already paired this very DM.
+    const already = pairing.owner();
+    if (already && already.user === ev.user && already.channel === ev.channel) return true;
     await say(ev.channel, "That code didn't work. Make a new one on the AidenHQ board.");
     return true;
   }
