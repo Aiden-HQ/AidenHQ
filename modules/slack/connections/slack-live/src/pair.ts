@@ -18,7 +18,8 @@ export function createPairing(db: Database.Database, now: () => number = Date.no
   db.exec(`
     CREATE TABLE IF NOT EXISTS pair_codes (hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS pair_wrong (user_id TEXT NOT NULL, at INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS pair_owner (id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL, channel TEXT NOT NULL, paired_at INTEGER);`);
+    CREATE TABLE IF NOT EXISTS pair_owner (id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL, channel TEXT NOT NULL, paired_at INTEGER);
+    CREATE TABLE IF NOT EXISTS pair_events (event TEXT PRIMARY KEY, at INTEGER NOT NULL);`);
   // A store made before paired_at existed.
   if (!(db.prepare(`PRAGMA table_info(pair_owner)`).all() as { name: string }[]).some((c) => c.name === "paired_at")) db.exec(`ALTER TABLE pair_owner ADD COLUMN paired_at INTEGER`);
   const getOwner = db.prepare(`SELECT user_id, channel FROM pair_owner WHERE id = 1`);
@@ -45,6 +46,13 @@ export function createPairing(db: Database.Database, now: () => number = Date.no
 
   return {
     owner,
+    /** Was this Slack event the one that paired? Its redelivery (a slow ack) must not report the code as wrong. */
+    eventPaired: (event: string): boolean => db.prepare(`SELECT 1 AS ok FROM pair_events WHERE event = ?`).get(event) !== undefined,
+    /** Records the event a code was redeemed for, keeping only the last hour: redelivery comes within seconds. */
+    noteEventPaired(event: string): void {
+      db.prepare(`DELETE FROM pair_events WHERE at < ?`).run(now() - 3_600_000);
+      db.prepare(`INSERT OR REPLACE INTO pair_events (event, at) VALUES (?, ?)`).run(event, now());
+    },
     paired: (): boolean => owner() !== undefined,
     /** When the owner last paired (ISO). */
     pairedAt(): string | undefined {
@@ -112,9 +120,10 @@ export async function handlePairingDm(
   onPaired: (owner: Owner) => void,
   deps: PairingDeps = {},
 ): Promise<boolean> {
-  const b = body as Body;
+  const b = body as Body & { event_id?: string };
   const ev = b?.event;
   if (!ev || ev.type !== "message" || ev.channel_type !== "im" || ev.subtype || ev.bot_id || !ev.user || !ev.channel) return false;
+  const events = { event: b?.event_id || ev.ts };
   const code = ev.text?.trim() ?? "";
   if (!CODE.test(code)) return false;
   // The code is checked before the lookup, so ordinary chat in the DM costs no Slack API call.
@@ -128,12 +137,12 @@ export async function handlePairingDm(
   }
   const r = pairing.redeem(code, ev.user, ev.channel);
   if (!r.ok) {
-    // Slack redelivers an event whose slow lookup outran its 3 s ack; the first delivery already paired this very DM.
-    const already = pairing.owner();
-    if (already && already.user === ev.user && already.channel === ev.channel) return true;
+    // Slack redelivers an event whose lookup outran its 3 s ack: this exact event already paired, so it is not a wrong code.
+    if (events.event && pairing.eventPaired(events.event)) return true;
     await say(ev.channel, "That code didn't work. Make a new one on the AidenHQ board.");
     return true;
   }
+  if (events.event) pairing.noteEventPaired(events.event);
   onPaired({ user: ev.user, channel: ev.channel });
   await say(ev.channel, "Paired. Say hi to Aiden.");
   if (r.previous) await say(r.previous.channel || r.previous.user, "This Slack account is no longer paired with AidenHQ.");

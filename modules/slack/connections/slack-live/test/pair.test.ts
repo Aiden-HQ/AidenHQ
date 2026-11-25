@@ -99,21 +99,33 @@ it("a lookup that itself fails falls back to the event naming a bot install", as
   expect(pairing.owner()).toEqual({ user: "U6", channel: "D6" });
 });
 
-it("a redelivered DM whose first delivery paired it does not say the code failed", async () => {
+it("a redelivered event whose first delivery paired it does not say the code failed", async () => {
   const { pairing } = setup();
   const code = pairing.mint();
   const said: [string, string][] = [];
   const once = () =>
     handlePairingDm(
       pairing,
-      { event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text: code } },
+      { event_id: "Ev7", event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text: code } },
       async (c, text) => void said.push([c, text]),
       () => undefined,
       { botToken: "xoxb-test", fetch: botSees("D1") as typeof fetch },
     );
   expect(await once()).toBe(true);
   expect(await once()).toBe(true);
+  expect(await once()).toBe(true);
   expect(said).toEqual([["D1", "Paired. Say hi to Aiden."]]);
+
+  // A genuinely wrong code from the same, already-paired DM still says so.
+  const bad = await handlePairingDm(
+    pairing,
+    { event_id: "Ev8", event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text: "x".repeat(22) } },
+    async (c, text) => void said.push([c, text]),
+    () => undefined,
+    { botToken: "xoxb-test", fetch: botSees("D1") as typeof fetch },
+  );
+  expect(bad).toBe(true);
+  expect(said.at(-1)).toEqual(["D1", "That code didn't work. Make a new one on the AidenHQ board."]);
 });
 
 it("a code posted in a channel pairs nobody, and neither does one in a DM with someone else", async () => {
