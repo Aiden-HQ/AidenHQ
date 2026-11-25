@@ -449,7 +449,24 @@ set_env AIDENHQ_STATE_DIR "$H/.local/state/aidenhq"
 set_env AIDENHQ_INSTANCE_DIR "$INST"
 set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.yaml)
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub
-set_env VAULT_FOLDERS ""
+# Meetings' vault: keep the folders a host already lists (.env.example seeds Meetings on a new install), else the module
+# has no /vault mount. The module runs as the owner (uid 1000), so its folders are made as the owner, before it starts.
+grep -q '^VAULT_FOLDERS=.' "$ENVF" 2>/dev/null || set_env VAULT_FOLDERS Meetings
+# Read them back: a dry run has no .env yet (only the line above is printed), so it reads the example a new install copies.
+vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"
+vault_dir="$(sed -n 's/^VAULT_DIR=//p' "$vault_env" 2>/dev/null | tail -1 | sed "s#/home/USER#$H#g" || true)"
+vault_folders="$(sed -n 's/^VAULT_FOLDERS=//p' "$vault_env" 2>/dev/null | tail -1 || true)"
+if [ -n "$vault_dir" ] && [ -n "$vault_folders" ]; then
+  vault_paths=("$vault_dir")
+  IFS=, read -r -a vault_names <<< "$vault_folders"
+  for vf in "${vault_names[@]}"; do
+    vf="${vf#"${vf%%[![:space:]]*}"}"; vf="${vf%"${vf##*[![:space:]]}"}"   # trim
+    vf="${vf#/}"; vf="${vf%/}"                                          # vault-relative, as modules.ts reads it
+    [[ "$vf" == *..* || "$vf" == .* ]] && die "invalid vault folder: $vf (VAULT_FOLDERS in .env must be vault-relative)"
+    [ -z "$vf" ] || vault_paths+=("$vault_dir/$vf")
+  done
+  as_user mkdir -p "${vault_paths[@]}"
+fi
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
 set_env BOARD_LAN_HOSTS "${BOARD_HOST:-${PUBLIC_IP:+$PUBLIC_IP,}127.0.0.1:3121,localhost:3121}"
 # The kernel reads these at start: a running one restarts below when they change (its jobs keep running).

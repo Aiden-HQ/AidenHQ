@@ -92,6 +92,15 @@ test("a config-based --link on a local install says the link is loopback-only ra
   assert.ok(out.split("\n").some((l) => CAVEAT.test(l)), `no loopback caveat\n${out}`);
 });
 
+// The vault folders are seeded, never blanked: an empty VAULT_FOLDERS leaves meetings' ops-mcp without a /vault mount.
+// The folders are made at setup as the owner (the module's uid 1000), so they exist before the module's health check runs.
+test("the plan keeps the vault folder default and creates the vault folders as the owner", () => {
+  const out = dry(conf(person));
+  assert.ok(!out.split("\n").some((l) => l.trim() === "+ .env: VAULT_FOLDERS="), `blanked VAULT_FOLDERS\n${out}`);
+  assert.ok(out.includes("+ .env: VAULT_FOLDERS=Meetings"), out);
+  assert.ok(out.includes("(as alice) mkdir -p /home/alice/obsidian/vault /home/alice/obsidian/vault/Meetings"), out);
+});
+
 test("is_loopback_url knows every loopback form and no real one", () => {
   const fn = `source <(sed -n '/^is_loopback_url()/,/^}/p' ${JSON.stringify(setup)}); `;
   const check = (u) => { try { execFileSync("bash", ["-c", `${fn} is_loopback_url "$1"`, "_", u]); return true; } catch { return false; } };
