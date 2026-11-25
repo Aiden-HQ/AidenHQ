@@ -42,8 +42,10 @@ function git(args: string[], cwd?: string, extra: NodeJS.ProcessEnv = {}): Promi
 // GitHub repos in the fleet org or the owner's listed orgs (github_orgs; private ones too) are read through the code host's ops.
 const viaOps = (env: GitEnv, app: App): CodeHostOps | undefined => (env.ops && (inAgentsOrg(env, app.repo) || inOrgs(env, app.repo)) && !isLocal(env.localRoot, app.repo) ? env.ops : undefined);
 
+/** The org allow-list (github_orgs, the fleet org, `local/*`) applies to apps built from GitHub. A module app's source is the host's own product checkout at the instance's pin (fetchAll), never a repo an agent or app chose: only the compiler sets `module`. */
 export function checkOrg(env: GitEnv, app: App): void {
-  if (!app.untrusted && !inOrgs(env, app.repo) && !inAgentsOrg(env, app.repo) && !isLocal(env.localRoot, app.repo)) throw new Error(`repo ${app.repo} is outside the allowed orgs; only untrusted apps may use it`);
+  if (app.module) return;
+  if (!app.untrusted && !inOrgs(env, app.repo) && !inAgentsOrg(env, app.repo) && !isLocal(env.localRoot, app.repo)) throw new Error(`repo ${app.repo} is outside the allowed orgs; only untrusted apps may use it (add the org to github_orgs, or use the fleet org)`);
 }
 
 /**
