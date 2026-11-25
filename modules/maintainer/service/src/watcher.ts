@@ -11,8 +11,8 @@
  *   no run. A read that fails throws, so the batch is redelivered.
  * - `issues.labeled` with `feature-request` (duty `features`): the same trust read, and a trusted one joins the repo's `featured` set,
  *   the valid reports the per-author triage cap leaves uncounted.
- * - `issues.opened` with none of the three labels, by someone other than the fleet, on a repo whose `triage` isn't off: one triage task
- *   (its repo and number only: the title is a stranger's text), through the repo's per-author cap on invalid issues a day (`triage_cap_per_author_day`). Past it the issue is `held` and
+ * - `issues.opened` with none of the three labels, on a repo whose `triage` isn't off (the fleet's own issues and the owner's included): one triage task
+ *   (its repo and number only: the title is a stranger's text). An outside author goes through the repo's per-author cap on invalid issues a day (`triage_cap_per_author_day`, anti-spam: the fleet and the owner are never capped). Past it the issue is `held` and
  *   filed once a slot frees (oldest first); a day on, the daily run has it (with `triage: new+backlog`; with `new` it waits for a slot). An issue is valid once it carries the fix label (trusted,
  *   in `fired`) or feature-request (`featured`), labels only a trusted collaborator adds.
  * - `issues.reopened`: the issue's labels are read afresh (a closed issue that already carried a label has no task yet), as for a label event.
@@ -82,7 +82,7 @@ interface RepoState {
   /** The triage runs fired in the last day, with their issue and its author: what the daily limits count (an issue that proves valid stops counting for its author). */
   recent?: { at: number; author: string; issue?: number }[];
   /** Issues over their author's cap, kept until a slot frees (oldest first), dropped once labelled valid, closed or a day old (the daily run has them). */
-  held?: { number: number; author: string; created_at: string }[];
+  held?: { number: number; author: string; created_at: string; /** Always `outside` (only an outside author's issue is held); an entry without it is let go uncapped. */ kind?: string }[];
 }
 interface State {
   repos?: Record<string, RepoState>;
@@ -250,25 +250,26 @@ async function handle(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoSta
   }
 }
 
-/** A new issue: one triage task unless it is labelled, the fleet's own, or its author is over the cap (then it is held). */
+/** A new issue: one triage task unless it is labelled, or its outside author is over the cap (then it is held). */
 async function opened(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoState): Promise<number> {
   const number = Number(ev.data?.number);
   const labels = ev.labels ?? [];
-  if (r.triage === "off" || ev.data?.author_kind === "agent") return 0;
+  if (r.triage === "off") return 0;
   if (labels.some((l) => same(l, r.fix_label) || l === FEATURE_LABEL || l === BUILD_LABEL)) return 0;
   if ((st.triaged ?? []).includes(number) || (st.held ?? []).some((h) => h.number === number)) return 0;
   const author = String(ev.author ?? "").toLowerCase();
+  const outside = ev.data?.author_kind === "outside";
   const recent = (st.recent = (st.recent ?? []).filter((x) => Date.now() - x.at < DAY));
   const valid = new Set([...(st.fired ?? []), ...(st.featured ?? [])]);
   const byAuthor = recent.filter((x) => x.author === author && !valid.has(x.issue!)).length;
   // An author with an issue already held queues behind it: a freed slot goes to the older one first.
-  if (byAuthor >= r.triage_cap_per_author_day || (st.held ?? []).some((h) => h.author === author)) {
+  if (outside && (byAuthor >= r.triage_cap_per_author_day || (st.held ?? []).some((h) => h.author === author))) {
     d.log.info({ repo: r.repo, issue: number, author, invalid_today: byAuthor }, "triage limit reached (invalid issues per author): held until a slot frees");
-    st.held = [...(st.held ?? []), { number, author, created_at: String(ev.data?.created_at ?? new Date().toISOString()) }].slice(-KEEP);
+    st.held = [...(st.held ?? []), { number, author, created_at: String(ev.data?.created_at ?? new Date().toISOString()), kind: "outside" }].slice(-KEEP);
     return 0;
   }
   if (!(await d.triage(r.repo, number).catch(() => false))) throw new Error(`the triage task for ${r.repo}#${number} was not filed`);
-  recent.push({ at: Date.now(), author, issue: number });
+  if (outside) recent.push({ at: Date.now(), author, issue: number });
   st.triaged = keep([...(st.triaged ?? []), number]);
   return 1;
 }
@@ -282,12 +283,12 @@ async function releaseHeld(d: PumpDeps, r: MaintainedRepo, st: RepoState): Promi
   let count = 0;
   // With the backlog on, a held issue is the daily run's after a day; with `new` alone nothing else takes it, so it waits for a slot (or its close).
   for (const h of st.held.filter((x) => !valid.has(x.number) && (r.triage === "new" || Date.now() - Date.parse(x.created_at) < DAY))) {
-    if (recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= r.triage_cap_per_author_day) held.push(h);
+    if (h.kind === "outside" && recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= r.triage_cap_per_author_day) held.push(h);
     else if (!(await d.triage(r.repo, h.number).catch(() => false))) {
       d.log.warn({ repo: r.repo, issue: h.number }, "maintainer triage task not filed; the next look retries it");
       held.push(h);
     } else {
-      recent.push({ at: Date.now(), author: h.author, issue: h.number });
+      if (h.kind === "outside") recent.push({ at: Date.now(), author: h.author, issue: h.number });
       st.triaged = keep([...(st.triaged ?? []), h.number]);
       count++;
     }

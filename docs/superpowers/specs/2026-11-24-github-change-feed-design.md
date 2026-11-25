@@ -427,8 +427,8 @@ These run in the same process as the reader, so they take its events in-process,
   `maintainer-issue:<repo>#<n>`, so the kernel keeps one task per issue. If the read answers `error` (GitHub failed), the
   handler throws and the batch is redelivered; only a definite answer of untrusted commits the event with no task.
 - **`feature-request` on `issues.labeled`.** The same trust read, then the issue joins the `featured` set.
-- **`issues.opened`** whose `author_kind` isn't `agent` and that carries none of the three labels. It goes through
-  `triageRepo`'s per-author limit, then the triage task is filed (`maintainer-triage:<repo>#<n>`).
+- **`issues.opened`** that carries none of the three labels (the fleet's own issues included). An `outside` author goes through
+  `triageRepo`'s per-author limit (the fleet and the owner never do), then the triage task is filed (`maintainer-triage:<repo>#<n>`).
 - **Held triage issues.** They are re-checked when a slot frees: a filing, or the oldest `recent` entry turning a day old.
   That is a deadline, not a sweep.
 
