@@ -53,10 +53,10 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
 /** The loop's one GraphQL read: a repo's open PRs (a page of them) with their checks, and its default branch's. Ship names only the
  * variables, so no other query runs on the owner's sign-in. */
 const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { id databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
-export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
+export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String, $first: Int!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
-    pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
+    pullRequests(states: OPEN, first: $first, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
       nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision isInMergeQueue latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } reviewRequests(first: 10) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } } isCrossRepository headRepository { nameWithOwner } headRefName headRefOid baseRefName authorAssociation author { __typename login } maintainerCanModify labels(first: 30) { nodes { name } } assignees(first: 10) { nodes { login } } timelineItems(last: 30, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { __typename login } label { name } } ... on UnlabeledEvent { id createdAt actor { __typename login } label { name } } ... on IssueComment { id createdAt author { __typename login } body } } } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
@@ -107,7 +107,7 @@ export function shipRoutes(o: {
         const dotted = bare.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(bare) || /%(2e|5c)/i.test(String(path).slice(bare.length));
         const call = dotted ? undefined : CALLS.find(([m, re]) => m === method && re.test(String(path)));
         const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
-        if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
+        if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && ((v.after != null && typeof v.after !== "string") || !Number.isInteger(v.first) || (v.first as number) < 1 || (v.first as number) > 50))) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
         // A branch is deleted only as an abandoned PR's: one pr-tasks.json names as an opener's head branch on this repo, never the default.
         if (method === "DELETE" && String(path).includes("/git/refs/heads/")) {
           // The path is exactly an opener's branch on this repo, compared whole (never a prefix or a normalised form).
@@ -117,7 +117,7 @@ export function shipRoutes(o: {
         }
         // `expectTask` is the route's own re-check of ownership, never GitHub's: it is stripped before the call goes out.
         const { expectTask, ...sent } = read ? {} : (b.body ?? {});
-        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body === undefined ? undefined : sent;
+        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null, first: v.first } } : b.body === undefined ? undefined : sent;
         // A close or a branch delete runs under this service's per-branch lock (branch-lock.ts), the one the publish holds around its
         // push and its ownership write. A cleanup in the gap between them would otherwise close or delete what a successor just pushed.
         const branch = String(path).match(/\/git\/refs\/heads\/(.+)$/)?.[1] ?? (method === "PATCH" && b.body?.state === "closed" ? await prBranch(repo, Number(String(path).split("/").at(-1))) : undefined);

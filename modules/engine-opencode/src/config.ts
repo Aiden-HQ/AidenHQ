@@ -10,7 +10,7 @@ export interface OpencodeConfig {
   share: "disabled";
   enabled_providers: string[];
   model: string;
-  permission: { edit: "allow"; bash: "allow"; webfetch: "allow" | "deny" };
+  permission: { edit: "allow"; bash: "allow"; external_directory: "allow"; doom_loop: "deny"; question: "deny"; read: { "*": "allow"; "*.env": "deny"; "*.env.*": "deny"; "*.env.example": "allow" }; webfetch: "allow" | "deny" };
   provider: { aidenhq: { npm: string; name: string; options: { baseURL: string; apiKey: string }; models: Record<string, { name: string; tool_call: true; reasoning: true; limit: { context: number; input: number; output: number }; options?: { reasoningEffort: string } }> } };
   compaction: { auto: true; reserved: 0 };
   instructions: string[];
@@ -61,7 +61,10 @@ export function opencodeConfig(spec: JobSpec, { plugins, stateDir, limits }: { p
     // Only our gateway: opencode's own hosted models stay unlisted.
     enabled_providers: ["aidenhq"],
     model: `aidenhq/${def}`,
-    permission: { edit: "allow", bash: "allow", webfetch: spec.web ? "allow" : "deny" },
+    // Nothing asks: no one answers a prompt in a headless box, so a default "ask" (a path outside the workspace, such as the
+    // tool files in the state folder, a repeated call, or a .env read) would hang the run. The box is the boundary; a loop is
+    // refused, and the question tool is hidden; secret files are denied without a prompt.
+    permission: { edit: "allow", bash: "allow", external_directory: "allow", doom_loop: "deny", question: "deny", read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" }, webfetch: spec.web ? "allow" : "deny" },
     // The key is the box's run token, read from the environment: never written to disk. @ai-sdk/openai-compatible is bundled.
     provider: { aidenhq: { npm: "@ai-sdk/openai-compatible", name: "AidenHQ", options: { baseURL: spec.model.base_url, apiKey: `{env:${spec.model.token_env}}` }, models } },
     // Automatic, at COMPACT_AT of each window: `reserved: 0` leaves the threshold at limit.input alone (the default would take a further 20k off).

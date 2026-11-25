@@ -72,15 +72,23 @@ export async function healthChecks(app: App): Promise<{ ok: boolean; state?: "mi
     }
   });
   checks.transcripts_readable = { ok: roots.every(Boolean), detail: roots.every(Boolean) ? undefined : "one or more transcript roots unreadable" };
-  checks.vault_available = { ok: app.vault.available() };
-  const unwritable = app.cfg.vault.write_roots.filter((dir) => {
+  // A configured write root is what makes the vault real: the image creates an empty /vault itself (Dockerfile), so
+  // the root existing says nothing. vault_available is the first write root taking writes; vault_writable is every
+  // write root taking writes. `mounted` tells an unmounted vault (no write root there at all) from a mounted one.
+  const writePath = (dir: string) => join(app.cfg.vault.root, dir);
+  const writable = (dir: string) => {
     try {
-      accessSync(join(app.cfg.vault.root, dir), constants.W_OK);
-      return false;
-    } catch {
+      accessSync(writePath(dir), constants.W_OK);
       return true;
+    } catch {
+      return false;
     }
-  });
+  };
+  const unwritable = app.cfg.vault.write_roots.filter((dir) => !writable(dir));
+  const mounted = app.cfg.vault.write_roots.some((dir) => existsSync(writePath(dir)));
+  const first = app.cfg.vault.write_roots[0]!;
+  const firstUsable = writable(first);
+  checks.vault_available = { ok: firstUsable, detail: firstUsable ? undefined : `not usable: ${first}` };
   checks.vault_writable = { ok: unwritable.length === 0, detail: unwritable.length ? `not writable: ${unwritable.join(", ")}` : undefined };
   // Optional: reported, never required.
   const bases = app.knowledge.names();
@@ -92,8 +100,12 @@ export async function healthChecks(app: App): Promise<{ ok: boolean; state?: "mi
   }
   const required = ["sqlite_writable", "transcripts_readable", "vault_available", "vault_writable"];
   const ok = required.every((k) => checks[k]?.ok);
+  // A 503 names which required check failed and why; the board and the kernel read only this top-level detail.
+  const failed = required.filter((k) => !checks[k]?.ok);
+  const failures = failed.map((k) => `${k}: ${checks[k]?.detail ?? "failed"}`).join("; ");
   // No vault mounted at all (VAULT_FOLDERS empty in the host's .env) while the rest works: not set up yet (state "missing"),
   // which the apply's live agent check notes rather than fails. A mounted vault that is unwritable stays a failure.
-  const unset = !ok && !checks.vault_available.ok && checks.sqlite_writable.ok && checks.transcripts_readable.ok;
-  return { ok, ...(unset ? { state: "missing" as const, detail: "vault not configured (set VAULT_DIR and VAULT_FOLDERS in .env)" } : {}), checks };
+  const unset = !ok && !mounted && checks.sqlite_writable.ok && checks.transcripts_readable.ok;
+  const detail = ok ? undefined : unset ? `vault not configured (set VAULT_DIR and VAULT_FOLDERS in .env); ${failures}` : failures;
+  return { ok, ...(unset ? { state: "missing" as const } : {}), ...(detail ? { detail } : {}), checks };
 }
