@@ -36,7 +36,7 @@ import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
 import type { Feed } from "./feed.ts";
-import { LOCAL_ORG, namespaced, plan as planRules, type Ship } from "./plan.ts";
+import { LOCAL_ORG, holdAdmits, namespaced, plan as planRules, type Ship, type ShipHold } from "./plan.ts";
 import { fileContext, numstat } from "./review-files.ts";
 /** One changed file as git counts it (review-files.ts numstat; a binary file has no line counts). */
 type Changed = { path: string; add?: number; del?: number };
@@ -121,14 +121,20 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
     return { login: `${slug}[bot]`, rest, token: () => app.token(installation) };
   };
 }
-/** A hold ship reports on an adoption: `stalled` (a repair or a check stopped it), `handed_back` or `stopped` (a pause reads as
- * `stopped`), with the reason it gives.
- */
-export type ShipHold = { kind: string; reason?: string };
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
  * now, and the hold it sits on when it is. A `stalled` hold leaves the adoption in place: the push that resumes it may land, and
  * nothing else. */
 export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean }> };
+/**
+ * The hold off ship's answer, when it carries one: a `stalled` one still admits the push that resumes it, so it is the plan's to
+ * judge with its kind. A hold it can't read (not an object, or no kind) is still a hold: it reads as `unknown`, which no write
+ * admits, so a malformed field can never leave a write open that ship meant to refuse.
+ */
+const holdOf = (v: unknown): { hold: ShipHold } | undefined => {
+  if (v === null || v === undefined) return undefined;
+  const { kind, reason } = (typeof v === "object" ? v : {}) as { kind?: unknown; reason?: unknown };
+  return { hold: { kind: typeof kind === "string" && kind ? kind : "unknown", ...(typeof reason === "string" ? { reason: reason.slice(0, 300) } : {}) } };
+};
 /** Ship's final tier check before a write (risk tiers §7): what is about to happen and the PR as GitHub has it right now (head, base branch, author association). */
 export type ShipCheck = { do: "approve" | "merge"; head: string; base: string; association: string; /** The policy an approval was filed under. */ policy?: string };
 /** Ship's adoptions read from its service with this module's own token (`url`: compiled only when the ship module is on). */
@@ -141,11 +147,7 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
       const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown };
       const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 ? (j.generation as number) : null;
-      // The hold rides along with its kind: a stalled one still admits the push that resumes it, so it is the plan's to judge.
-      const hold = j.hold && typeof j.hold === "object" && typeof (j.hold as { kind?: unknown }).kind === "string"
-        ? { kind: (j.hold as { kind: string }).kind, ...(typeof (j.hold as { reason?: unknown }).reason === "string" ? { reason: String((j.hold as { reason: string }).reason).slice(0, 300) } : {}) }
-        : undefined;
-      return { generation, ...(hold ? { hold } : {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
+      return { generation, ...(holdOf(j.hold) ?? {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
     },
   };
 }
@@ -261,7 +263,8 @@ export function createService(o: Options) {
     // restriction or SSO, a stale sign-in) as a typed need, and tells the owner.
     await git(dir, ["fetch", "--quiet", "--no-tags", remote(s.slug), `+${/^[0-9a-f]{40}$/.test(name) ? name : `refs/heads/${name}`}:${ref}`], await token())
       .catch(async (e) => {
-        await gh("GET", `/repos/${s.slug}`);
+        // As the owner (never the App): the probe is of the owner's own access, which the App's answer would hide.
+        await gh("GET", `/repos/${s.slug}`, undefined, { owner: true });
         // The repo answers, so the ref is what is missing (a deleted branch): a 404 the caller can tell from a failed fetch.
         if (/couldn't find remote ref/i.test(String((e as Error)?.message))) throw fail(404, `${s.slug} has no ${name}`);
         throw e;
@@ -908,13 +911,14 @@ export function createService(o: Options) {
   /**
    * Why this write may not go on, or undefined. `push`: this is the push onto the PR's branch, the one write a `stalled` hold admits
    * (ship clears such a hold on a new head, so the push is what resumes the adoption). Approve, enqueue, a repair and a retarget keep
-   * `push` false: any hold refuses them, and a hand-back, a stop or a pause refuses the push too.
+   * `push` false: any hold refuses them, and a hand-back, a stop or a pause refuses the push too. Whether a hold admits the write is
+   * the plan's own rule (`holdAdmits`), with the adoption's task as ship reports it, so the two never disagree.
    */
   async function adoptionEnded(repo: string, n: number, generation: number, head: string, check?: ShipCheck, push = false): Promise<string | undefined> {
     const at = o.ship ? await o.ship.generation(repo, n, head, check).catch(() => undefined) : undefined;
     if (at?.generation === generation && at.refused) return `${at.retry ? "ship-tier-pending" : "ship-tier"}: https://github.com/${repo}/pull/${n}: ${at.refused}: nothing was done.`;
     if (at?.generation !== generation) return `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
-    if (at.hold && !(push && at.hold.kind === "stalled")) return `ship-generation: https://github.com/${repo}/pull/${n} is on hold by ship (${at.hold.kind}${at.hold.kind === "stalled" ? ": only the push that resumes it may land" : ""})${at.hold.reason ? `: ${at.hold.reason}` : ""}: nothing was done.`;
+    if (at.hold && !holdAdmits(at.hold, { push, task: push ? at.task : undefined })) return `ship-generation: https://github.com/${repo}/pull/${n} is on hold by ship (${at.hold.kind}${at.hold.kind === "stalled" ? ": only the push that resumes it may land" : ""})${at.hold.reason ? `: ${at.hold.reason}` : ""}: nothing was done.`;
     return undefined;
   }
 

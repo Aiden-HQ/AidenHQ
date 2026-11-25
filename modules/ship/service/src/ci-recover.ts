@@ -6,8 +6,9 @@
 import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, GATE_CHECK } from "./aidenhq-sdk/checks.ts";
 
 type Json = any;
-/** GitHub as the owner, through github's /internal/ship/gh; `deadline` bounds a rate-limit wait. */
-type Gh = (method: string, path: string, body?: unknown, o?: { deadline?: number }) => Promise<{ status: number; body: any }>;
+/** GitHub through github's /internal/ship/gh; `deadline` bounds a rate-limit wait; `covers`: the check runs (node ids) a check-run
+ * list must hold for the change feed's snapshot to answer it instead of GitHub (ship-routes.ts). */
+type Gh = (method: string, path: string, body?: unknown, o?: { deadline?: number; covers?: string[] }) => Promise<{ status: number; body: any }>;
 /** A GitHub status the credential can never get past (no permission, the resource is gone): retrying cannot help. */
 const permanentRefusal = (status: number) => [401, 403, 404].includes(status);
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
@@ -48,7 +49,11 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
     state.reran ??= {}; state.wedged ??= {}; state.wedgedAt ??= {}; state.neverStartedJudged ??= {};
     /** The head's latest check runs from REST, every page: `runs` and whether GitHub's own `total_count` was all read (a
      * partly read list never stands in for the head's). Null when the read itself failed. */
-    async function latestRuns(head: string): Promise<{ runs: Json[]; complete: boolean } | null | "permanent"> {
+    async function latestRuns(pr: Json): Promise<{ runs: Json[]; complete: boolean } | null | "permanent"> {
+      const head = pr.headRefOid;
+      // The rollup's check runs: a snapshot the feed read before one of them appeared can't answer for this head (a whole rollup only).
+      const rollup = rollupOf(pr);
+      const covers = rollup?.contexts?.pageInfo?.hasNextPage ? undefined : (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" && n.id).map((n: Json) => String(n.id));
       read = true;
       const runs: Json[] = [];
       let total = 0;
@@ -56,7 +61,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
         for (let page = 1; page <= 5; page++) {
           // The listing is the recovery paths' first read, so it carries the same read deadline as a job probe: waiting out the
           // owner's quota here would hold this serial scan (every later PR's merge) just as a probe would.
-          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${head}/check-runs?filter=latest&per_page=100&page=${page}`, undefined, { deadline: Date.now() + PROBE_DEADLINE_MS });
+          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${head}/check-runs?filter=latest&per_page=100&page=${page}`, undefined, { deadline: Date.now() + PROBE_DEADLINE_MS, ...(covers ? { covers } : {}) });
           // A permanent refusal (no Checks permission, the head is gone) can never clear: not this rule's, so the red-head rules
           // decide. A transient refusal (a 5xx, a quota) is unjudged: the next tick reads it again.
           if (permanentRefusal(listed.status)) return "permanent";
@@ -110,7 +115,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
       const red = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" ? n.status === "COMPLETED" && n.conclusion === "FAILURE" && n.name !== DESIGN_REVIEW_CHECK : ["FAILURE", "ERROR"].includes(n.state) && n.context !== CODE_REVIEW_STATUS);
       if (!red.length || rollup?.contexts?.pageInfo?.hasNextPage) return false;
       const own = red.filter((n: Json) => n.name !== GATE_CHECK); // the aggregate only rolls the others up
-      const listed = await latestRuns(pr.headRefOid);
+      const listed = await latestRuns(pr);
       if (listed === "permanent") return false; // the credential can never list them: not this rule's, so the red-head rules report
       if (!listed || !listed.complete) return "unknown"; // an unread list cannot say a job never started: the next tick judges it
       const unstarted: Json[] = [];
@@ -218,7 +223,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
       // A head whose rollup is wholly finished costs no request: there is nothing to recover. Only when every context is here.
       const rollup = rollupOf(pr);
       if (!rollup?.contexts?.pageInfo?.hasNextPage && (rollup?.contexts?.nodes ?? []).every((n: Json) => n.__typename !== "CheckRun" || n.status === "COMPLETED")) return [];
-      const listed = await latestRuns(head);
+      const listed = await latestRuns(pr);
       if (!listed || listed === "permanent") { log("wedged check runs' read failed", { pr: pr.url, head }); deferred = !listed; return []; }
       const { runs } = listed;
       if (!listed.complete) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length });

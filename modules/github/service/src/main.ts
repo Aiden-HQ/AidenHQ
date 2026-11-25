@@ -22,8 +22,6 @@ import { mergeable } from "./git-auth.ts";
 import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { createService, reviewerOf, shipAdoptions } from "./service.ts";
-import { gitHubApp } from "../../connections/github-mcp/dist/src/github-app.js";
-import { join } from "node:path";
 import { createReviewGate } from "./review-gate.ts";
 import { serveOps } from "./ops.ts";
 import { shipRoutes } from "./ship-routes.ts";
@@ -37,7 +35,7 @@ const read = (f?: string) => (f && existsSync(f) ? readFileSync(f, "utf8").trim(
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(JSON.stringify({ svc: "github", msg, ...f }));
 const key = read(env.CODEHOST_KEY_FILE);
 if (!key) throw new Error("github: CODEHOST_KEY_FILE is empty");
-const { access, reportNeed, sync, sources } = await startGithubMcp();
+const { access, app: githubApp, reportNeed, sync, sources, useFeed } = await startGithubMcp();
 const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
 // A list the parser refuses (an old key after an upgrade) leaves no repo maintained and says why, rather than taking the code host down.
@@ -47,7 +45,6 @@ const releaseWindowMinutes = Number(env.GITHUB_RELEASE_WINDOW_MINUTES);
 if (!Number.isInteger(releaseWindowMinutes) || releaseWindowMinutes < 1) throw new Error(`github: GITHUB_RELEASE_WINDOW_MINUTES is not a positive number of minutes: ${env.GITHUB_RELEASE_WINDOW_MINUTES}`);
 // Code review's verdict for the merge queue and for ship's watch loop (/internal/ship/verdict) alike.
 const reviewGate = createReviewGate({ gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => key });
-const githubApp = gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "github-app") });
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   access, reportNeed, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
@@ -62,10 +59,11 @@ const handle = createService({
 });
 log("starting", { connected: access.connected(), tasks: Boolean(env.TASKS_DIR), fleetOrg });
 const cacheDir = env.CACHE_DIR ?? "/cache";
-handle.startMerges();
-handle.startHeld();
-handle.startReleases();
-handle.startDesignReviews();
+// Each loop's GitHub calls are counted under its name in the hourly count (client.ts withCaller).
+access.withCaller("merges", () => handle.startMerges());
+access.withCaller("held", () => handle.startHeld());
+access.withCaller("train", () => handle.startReleases());
+access.withCaller("design-review", () => handle.startDesignReviews());
 const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const feed = createFeed({
   gh: access.rest, cacheDir, kernel: kernelClient(kernelUrl, key), log,
@@ -86,20 +84,29 @@ const feed = createFeed({
   ],
   ...(sources ? { record: (scope: string, fn: () => Promise<number>) => sources.run("github_feed", scope, fn) } : {}),
   background: [
-    ...(sync ? [{ name: "src_github sync", first: 30_000, run: sync }] : []),
-    { name: "churn", first: 60_000, run: () => handle.flow.churnPass() },
+    ...(sync ? [{ name: "src_github sync", first: 30_000, run: () => access.withCaller("sync", sync) }] : []),
+    { name: "churn", first: 60_000, run: () => access.withCaller("churn", () => handle.flow.churnPass()) },
   ],
 });
 handle.useFeed(feed);
+// Code review's open list comes from the feed's snapshot while it is fresh (code-review-read.ts open).
+useFeed((repo) => feed.openPrs(repo));
 // A write this process makes (a status, a re-run, an update-branch, a merge) reads that repo again within 15 s.
 access.onWrite((_method, path) => { const m = /^\/repos\/([^/]+\/[^/?]+)(\/[^?]*)?/.exec(path); if (m) feed.touch(m[1]!, /\/(statuses|rerun|rerequest|update-branch|merge)\b/.test(m[2] ?? "")); });
-feed.start();
+access.withCaller("feed", () => feed.start());
 startTidy({ cacheDir, log });
 const ship = shipRoutes({
   gh: access.rest, decision: handle.shipDecision, gate: reviewGate, cacheDir,
+  // A head's check runs from the feed's snapshot while it is fresh, instead of a second read of the same list.
+  checkRuns: (repo, sha) => feed.checkRuns(repo, sha),
   allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),
   isShip: (auth) => isModule(kernelUrl, auth, "ship"),
 });
-const server = createServer((req, res) => void ship(req, res).then((done) => done || handle(req, res)));
+/** Who a request's GitHub calls are for, in the hourly count: ship, an op (`ops:<op>`), an apply step, or the code host's writes. */
+const routeCaller = (url = "") => {
+  const op = /^\/ops\/(\w+)/.exec(url)?.[1];
+  return url.startsWith("/internal/ship/") ? "ship" : op ? `ops:${op}` : url.startsWith("/aidenhq/v1/apply/") ? "apply" : "codehost";
+};
+const server = createServer((req, res) => void access.withCaller(routeCaller(req.url), () => ship(req, res).then((done) => done || handle(req, res))));
 server.listen(Number(env.PORT ?? 8100), "0.0.0.0");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => server.close(() => process.exit(0)));

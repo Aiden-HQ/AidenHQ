@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createAccess, GitHubNeed, needResult, withWriteBudget } from "../src/client.js";
+import { createAccess, GitHubNeed, needResult, withOwnerTrace, withWriteBudget } from "../src/client.js";
 import { readNeed } from "../src/vendor/needs.js";
 import type { Auth } from "../src/vendor/oauth.js";
 
@@ -807,4 +807,87 @@ it("a background write's caller deadline still leaves room for a whole attempt, 
   const err = await access.rest("POST", "/repos/acme/api/actions/jobs/1/rerun", {}, { background: true, deadline: clock + 5_000 }).catch((e) => e);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(sent).toEqual(["/repos/acme/api/actions/jobs/1/rerun"]);
+});
+
+it("a GET answered 304 returns the kept body, is free, and is counted as a 304", async () => {
+  let clock = 1_000_000;
+  const seen: (string | null)[] = [];
+  const logs: { msg: string; f: Record<string, unknown> }[] = [];
+  const access = createAccess({
+    auth: auth(), now: () => clock, log: (msg, f) => void logs.push({ msg, f }),
+    fetchImpl: async (_u, init) => {
+      const tag = new Headers(init?.headers).get("if-none-match");
+      seen.push(tag);
+      return tag === '"v1"' ? new Response(null, { status: 304, headers: { etag: '"v1"', "x-ratelimit-remaining": "4999", "x-ratelimit-limit": "5000", "x-ratelimit-reset": "2000" } }) : answer(200, { title: "first" }, { etag: '"v1"' });
+    },
+  });
+  const a = await access.withCaller("code-review", () => access.rest("GET", "/repos/acme/api/pulls/1"));
+  const b = await access.withCaller("code-review", () => access.rest("GET", "/repos/acme/api/pulls/1"));
+  expect(seen).toEqual([null, '"v1"']);
+  expect(a.body).toEqual({ title: "first" });
+  expect(b).toMatchObject({ status: 200, body: { title: "first" } });
+  expect(b.body).not.toBe(a.body); // parsed afresh: no caller shares an object
+  // The feed's own ETag bypasses the cache and gets GitHub's 304 itself.
+  expect((await access.rest("GET", "/repos/acme/api/pulls/1", undefined, { etag: '"v1"', caller: "feed" })).status).toBe(304);
+  clock += 3_600_000;
+  await access.rest("GET", "/repos/acme/api/pulls/1");
+  expect(logs.find((l) => l.msg === "github calls this hour")?.f.calls).toEqual({ "code-review owner 200": 1, "code-review owner 304": 1, "feed owner 304": 1 });
+});
+
+it("repo reads go as the App where its installation holds the permission; writes stay the owner's", async () => {
+  const sent: string[] = [];
+  const app = {
+    installed: async (repo: string) => (repo === "acme/api" ? { id: 7, permissions: { metadata: "read", pull_requests: "write", issues: "read" } } : null),
+    token: async () => "ghs_app",
+  };
+  const access = createAccess({
+    auth: auth(), app,
+    fetchImpl: async (u, init) => {
+      sent.push(`${init?.method} ${new URL(String(u)).pathname} ${new Headers(init?.headers).get("authorization")}`);
+      return answer(200, {});
+    },
+  });
+  await access.rest("GET", "/repos/acme/api/pulls/1");
+  await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "hi" });
+  await access.rest("GET", "/repos/acme/api/actions/runs/5"); // the installation lacks actions
+  await access.rest("GET", "/repos/other/repo/pulls/1"); // not installed there
+  await access.rest("GET", "/orgs/acme/repos"); // not a repo read
+  expect(sent).toEqual([
+    "GET /repos/acme/api/pulls/1 Bearer ghs_app",
+    "POST /repos/acme/api/issues/1/comments Bearer gho_owner",
+    "GET /repos/acme/api/actions/runs/5 Bearer gho_owner",
+    "GET /repos/other/repo/pulls/1 Bearer gho_owner",
+    "GET /orgs/acme/repos Bearer gho_owner",
+  ]);
+});
+
+it("an App read refused for a permission falls back to the owner, and that repo and permission stay the owner's", async () => {
+  const sent: string[] = [];
+  const logs: string[] = [];
+  const app = { installed: async () => ({ id: 7, permissions: { checks: "read" } }), token: async () => "ghs_app" };
+  const access = createAccess({
+    auth: auth(), app, log: (msg) => void logs.push(msg),
+    fetchImpl: async (_u, init) => {
+      const who = new Headers(init?.headers).get("authorization");
+      sent.push(String(who));
+      return who === "Bearer ghs_app" ? answer(403, { message: "Resource not accessible by integration" }) : answer(200, { check_runs: [] });
+    },
+  });
+  const r = await access.rest("GET", "/repos/acme/api/commits/abc/check-runs");
+  expect(r).toMatchObject({ status: 200, body: { check_runs: [] } });
+  await access.rest("GET", "/repos/acme/api/commits/abc/check-runs");
+  expect(sent).toEqual(["Bearer ghs_app", "Bearer gho_owner", "Bearer gho_owner"]);
+  expect(logs.filter((m) => m === "github reads as the owner: the App's installation refused the permission")).toHaveLength(1);
+});
+
+it("a tool call whose reads the App served doesn't count as the owner's sign-in answering; one the owner served does", async () => {
+  const app = { installed: async () => ({ id: 7, permissions: { pull_requests: "read" } }), token: async () => "ghs_app" };
+  const access = createAccess({ auth: auth(), app, fetchImpl: async () => answer(200, {}) });
+  expect((await withOwnerTrace(() => access.rest("GET", "/repos/acme/api/pulls/1"))).owner).toBe(false);
+  expect((await withOwnerTrace(() => access.rest("GET", "/repos/acme/api/issues/1"))).owner).toBe(true);
+  // GraphQL never goes as the App.
+  const sent: string[] = [];
+  const g = createAccess({ auth: auth(), app, fetchImpl: async (_u, init) => (sent.push(String(new Headers(init?.headers).get("authorization"))), answer(200, { data: {} })) });
+  await g.rest("POST", "/graphql", { query: "query { viewer { login } }", variables: {} });
+  expect(sent).toEqual(["Bearer gho_owner"]);
 });

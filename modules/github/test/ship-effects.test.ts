@@ -151,9 +151,16 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
     graphql: async () => ({}),
   };
-  const adoption = { generation, refused: undefined, hold: undefined };
-  // Ship's answer, and its final tier check where github passes the write and the live head, base and author.
-  const ship = { generation: async (_r, _n, _at, check) => ({ generation: adoption.generation, ...(("task" in adoption) ? (adoption.task === null ? {} : { task: adoption.task }) : { task: "t1" }), ...(adoption.hold ? { hold: adoption.hold } : {}), ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
+  const adoption = { generation, refused: undefined, hold: undefined, task: "t1" };
+  // Ship's answer, and its final tier check where github passes the write and the live head, base and author. A fork's head binding
+  // lives in ship's own answer: an `at` other than the handed-off head reads as a stop, even while the adoption is stalled.
+  const handoffHead = { head: undefined };
+  const ship = { generation: async (_r, _n, at, check) => ({
+    generation: adoption.generation,
+    ...(adoption.task ? { task: adoption.task } : {}),
+    ...(handoffHead.head !== undefined && at !== handoffHead.head ? { hold: { kind: "stopped", reason: "the write isn't on the head handed off" } } : adoption.hold ? { hold: adoption.hold } : {}),
+    ...(adoption.refused && check ? { refused: adoption.refused } : {}),
+  }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg, productRepo: "acme/aidenhq", maintained,
@@ -180,7 +187,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, c1, fix, main, H, F, pr, queue, calls, call, run, adoption, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; } };
+  return { root, ws, origin, c1, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, checks, repairResult, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; } };
 }
 
 test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
@@ -296,7 +303,7 @@ test("a push whose box commit is a merge made on the base is refused, never repl
 });
 
 test("a stalled adoption's push is the one write that resumes it: the plan and the effect let it land, every other write stays refused", async (t) => {
-  const { origin, c1, fix, pr, run, call, adoption } = await setup(t);
+  const { origin, c1, fix, pr, run, call, adoption, handoffHead } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
   const plan = (kind, a, task = "t1") => call("/aidenhq/v1/executor/plan", { kind, args: a, requester: SHIP, task });
   adoption.hold = { kind: "stalled", reason: "the repair didn't finish" };
@@ -333,6 +340,20 @@ test("a stalled adoption's push is the one write that resumes it: the plan and t
   // Cleared, the adoption takes a push at the head its write names again (the ordinary path: here the head moved, so it is refused).
   adoption.hold = undefined;
   assert.equal((await plan("github.push", args)).status, 422, "the head moved past the write once the fix landed");
+  // A stall whose adoption reports no task admits no push: there is no task it may be filed on.
+  adoption.hold = { kind: "stalled", reason: "a conflict, and conflicts are excluded from repair" };
+  adoption.task = undefined;
+  const orphan = await plan("github.push", { ...args, expected: c1 });
+  assert.equal(orphan.status, 422, JSON.stringify(orphan.json));
+  assert.match(orphan.json.error, /on hold by ship \(stalled/, "a stall with no adoption task admits nothing");
+  adoption.task = "t1";
+  // A fork's head the hand-off doesn't cover outranks the stall: ship reports a stop for it, whatever the adoptio's own hold.
+  handoffHead.head = "f".repeat(40);
+  const uncovered = await plan("github.push", { ...args, expected: pr.head });
+  assert.equal(uncovered.status, 422, JSON.stringify(uncovered.json));
+  assert.match(uncovered.json.error, /on hold by ship \(stopped/, "an uncovered fork head is refused however stalled");
+  handoffHead.head = undefined;
+  adoption.hold = undefined;
 });
 
 test("a push onto an adopted PR's branch that GitHub's own rules refuse keeps GitHub's reason, not ship-head-moved", async (t) => {
@@ -493,6 +514,10 @@ test("ship's generation answer keeps a stalled adoption's generation and the hol
   assert.deepEqual([stopped.generation, stopped.hold?.kind], [2, "stopped"]);
   assert.deepEqual(await answer({ generation: 2, hold: null }), { generation: 2 });
   assert.deepEqual(await answer({ generation: null, hold: null }), { generation: null }, "no adoption record at all");
+  // A hold the code host can't read is never dropped open: it reads as `unknown`, which admits no write.
+  assert.equal((await answer({ generation: 2, hold: true })).hold?.kind, "unknown");
+  assert.equal((await answer({ generation: 2, hold: { reason: "no kind" } })).hold?.kind, "unknown");
+  assert.equal((await answer({ generation: 2, hold: "stalled" })).hold?.kind, "unknown");
 });
 
 test("plan: an adopted PR's merge is refused when the generation is stale or ship isn't installed", () => {

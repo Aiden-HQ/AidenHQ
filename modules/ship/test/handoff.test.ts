@@ -151,11 +151,40 @@ test("a stalled hold reports its generation and kind to the code host, and a rou
   const at = generationOf(w.state, false, "a/b", 7, H1);
   assert.deepEqual([at.generation, at.hold?.kind], [1, "stalled"]);
   assert.equal(generationOf(w.state, true, "a/b", 7, H1).hold?.kind, "stopped", "a pause still reads as a stop, whatever the stalled hold");
+  // A fork's uncovered head outranks the stall: the author's own commit at H2 is never writable, even while stalled.
+  w.state.put({ ...(w.state.get("a/b", 7) as any), fork: true, trigger: { ...(w.state.get("a/b", 7) as any).trigger, head: H1 } });
+  assert.equal(generationOf(w.state, false, "a/b", 7, H2).hold?.kind, "stopped", "an uncovered fork head refuses however stalled");
+  assert.equal(generationOf(w.state, false, "a/b", 7, H1).hold?.kind, "stalled", "the handed-off head is still only stalled");
+  w.state.put({ ...(w.state.get("a/b", 7) as any), hold: { kind: "stalled", reason: "the repair didn't finish", at: new Date().toISOString() } });
+  // A member's hand-back outranks the stall too: the hold becomes a hand-back instead of staying resumable.
+  await intake(w.deps, w.pr({ labels: [], events: [on, w.ev("e9", "unlabeled", "admin1", "2026-11-24T02:00:00Z")] }));
+  assert.equal((w.state.get("a/b", 7) as any).hold.kind, "handed_back");
   // The Engineer's push (a new head) is what clears it, and the next write check is clean.
+  w.state.put({ ...(w.state.get("a/b", 7) as any), fork: undefined, hold: { kind: "stalled", reason: "the repair didn't finish", at: new Date().toISOString() }, counters: { head: H1, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} } });
   // Whatever the round decides, the new head is what clears the hold (rounds.ts clears a stalled hold before it acts).
   await round(w.deps, w.pr({ head: H2 }), { do: "wait", why: "checks running" });
   assert.equal(w.state.get("a/b", 7)?.hold, null);
   assert.deepEqual([generationOf(w.state, false, "a/b", 7, H2).generation, generationOf(w.state, false, "a/b", 7, H2).hold], [1, null]);
+});
+
+test("a hand-back over a stall closes its task, and a close the kernel refuses is tried again next pass", async () => {
+  const w = world();
+  const on = w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z");
+  await intake(w.deps, w.pr({ events: [on] }));
+  w.state.put({ ...(w.state.get("a/b", 7) as any), task: "T7", hold: { kind: "stalled", reason: "the repair didn't finish", at: new Date().toISOString() } });
+  const back = w.pr({ labels: [], events: [on, w.ev("e9", "unlabeled", "admin1", "2026-11-24T02:00:00Z")] });
+  const call = w.deps.kernel.call;
+  let refuse = true;
+  w.deps.kernel.call = async (m: string, path: string, b?: any) => { if (path === "/v1/tasks/T7/close" && refuse) { refuse = false; throw new Error("kernel 503"); } return call(m, path, b); };
+  const held = (await intake(w.deps, back))!;
+  assert.deepEqual([held.hold?.kind, held.closing], ["handed_back", ["T7"]]);
+  // The next pass closes it, with the hand-back's own words, and stops retrying.
+  assert.equal((await intake(w.deps, back))?.closing, undefined, "closed on the next pass");
+  const closes = w.of("POST /v1/tasks/T7/close");
+  assert.equal(closes.length, 1);
+  assert.match(String(closes[0]!.body.body), /was handed back: ship stopped working on it/);
+  assert.equal((await intake(w.deps, back))?.closing, undefined, "nothing left to close");
+  assert.equal(w.of("POST /v1/tasks/T7/close").length, 1);
 });
 
 test("a conflict runs ship's repair job first and wakes the Engineer only for what it leaves; a ready PR merges directly at its head", async () => {
@@ -204,6 +233,14 @@ test("a conflict runs ship's repair job first and wakes the Engineer only for wh
   await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
   assert.equal(w.of("POST /v1/writes").filter((c) => (c.body as any).kind === "github.merge").length, 1, "not filed again");
   assert.match(String((w.state.get("a/b", 7) as any).hold?.reason), /merge at .* ended failed; its outcome is on record rec-2/);
+  // A merge ended by a hold (a pause, a stall) is retried, not held: the same head files a new attempt once ship works it again.
+  const r = world();
+  await intake(r.deps, r.pr({ events: [on] }));
+  await round(r.deps, r.pr({ head: H3 }), { do: "merge", why: "ready" });
+  r.records["rec-1"] = { state: "failed", outcome: { text: "its adoption ended or moved on: it is on hold by ship (stopped), and ship files a new merge when it resumes" } };
+  await round(r.deps, r.pr({ head: H3 }), { do: "merge", why: "ready" });
+  assert.equal(r.of("POST /v1/writes").filter((c) => (c.body as any).kind === "github.merge").length, 2, "a hold is retried, never a PR failure");
+  assert.equal(r.state.get("a/b", 7)?.hold, null);
   // Landed: the hand-off's task closes once.
   await round(w.deps, w.pr({ head: H3, state: "merged" }), { do: "done", why: "already merged" });
   await round(w.deps, w.pr({ head: H3, state: "merged" }), { do: "done", why: "already merged" });
