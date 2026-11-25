@@ -1057,6 +1057,10 @@ export function createService(o: Options) {
             }
             tree.push({ path, mode: mode!, type: mode === "160000" ? "commit" : "blob", sha: sha! });
           }
+          // An empty entry list is a head the merge leaves as it is (a base already merged, or a conflict the kept set resolves
+          // to the head's own side): there is nothing to record, so it is a clean "nothing was changed", never an empty tree
+          // (GitHub refuses one with 422 Invalid tree info).
+          if (!tree.length) return refuse("changed nothing: the merge and the kept files leave every path at the head's");
           const t = await post("trees", { base_tree: await g(["rev-parse", `${a.head}^{tree}`]), tree });
           if (t.sha !== final) return refuse(`built a tree on GitHub (${String(t.sha).slice(0, 12)}) that isn't the merge's (${final.slice(0, 12)})`);
           made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000), tree: final, parents: [a.head, baseSha] })).sha);
@@ -1121,9 +1125,15 @@ export function createService(o: Options) {
       return r.body;
     };
     let parent = from;
+    // The replay builds each commit on the one before it, so each commit's first parent must be that one (the head for the
+    // first): a merge made the other way round (the PR branch merged into a base checkout) has the base tip as its first parent,
+    // and replaying it would drop the head's content and leave the PR behind its base. Its parents can't be kept here.
+    let expected = from;
     try {
       for (const c of list) {
         const [, first, ...others] = (await git(dir, ["rev-list", "--parents", "-n", "1", c])).split(" ");
+        if (first !== expected) return { refused: `ship-scope: \`${c.slice(0, 12)}\` builds on \`${String(first).slice(0, 12)}\`, not the head's own chain \`${expected.slice(0, 12)}\`: not replayed` };
+        expected = c;
         // Entries changed against the first parent; a path another parent has unchanged is already on GitHub (a base merge's files).
         const diff = (p: string) => git(dir, ["diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", p!, c]).then((out) => {
           const f = out.split("\0"), m = new Map<string, { mode: string; sha: string }>();
@@ -1147,8 +1157,12 @@ export function createService(o: Options) {
           tree.push({ path, mode: e.mode, type, sha: e.sha });
         }
         const want = await git(dir, ["rev-parse", `${c}^{tree}`]);
-        const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
-        if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        // An empty changed set is a commit whose tree is its first parent's (an "ours" merge): the commit carries that tree as it
+        // is, with no tree written (GitHub refuses an empty tree array).
+        if (tree.length) {
+          const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
+          if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        }
         const message = await git(dir, ["log", "-1", "--format=%B", c]);
         const made = await post("commits", { message, tree: want, parents: [parent, ...others] });
         parent = String(made.sha);
