@@ -236,8 +236,15 @@ jobs:
           rv=.github; ref="$BASE_SHA"
           if ! have "$BASE_SHA"; then
             if ! have "origin/$DEFAULT_BRANCH"; then
-              echo "::notice::The default branch has no reviewer with risk tiers yet: this PR brings it in, so it is not reviewed."
               printf 'REVIEW_STOP=1\nCODE_REVIEW_SKIPPED=1\n' >> "$GITHUB_ENV"
+              # A repo that already has a reviewer is being upgraded to risk tiers: no trusted tier scripts exist to review this PR,
+              # so the check fails loudly and a human reviews it (it edits .github/, which needs one anyway). A repo with none is
+              # getting CI for the first time: nothing to fail.
+              if git cat-file -e "$BASE_SHA:.github/code-review.ts" 2>/dev/null || git cat-file -e "origin/$DEFAULT_BRANCH:.github/code-review.ts" 2>/dev/null; then
+                echo "::error::This PR upgrades the code review to risk tiers, so no trusted reviewer can review it: a human reviews it, then it merges past this check."
+                exit 1
+              fi
+              echo "::notice::The default branch has no reviewer yet: this PR brings it in, so it is not reviewed."
               exit 0
             fi
             rv="$RUNNER_TEMP/reviewer"; ref="origin/$DEFAULT_BRANCH"; mkdir -p "$rv"
@@ -272,13 +279,13 @@ jobs:
             tiers="$RUNNER_TEMP/tiers.json"
             printf '%s' "$answer" | jq -c '.tiers // {}' > "$tiers" || gave_up "The model gateway's answer has no readable tier rules."
           fi
-          [ -n "$key" ] || gave_up "No model key: neither AidenHQ's model gateway nor the OPENROUTER_API_KEY secret."
-          (umask 077; printf '%s' "$key" > "$RUNNER_TEMP/ci-key")
           # The tier: the whole PR (merge base to head) by the rules, the same function and facts code review uses.
           r=$(EFFORT="$effort" TIERS="$tiers" node "$rv/codegenie-tier.ts" 2> "$RUNNER_TEMP/tier.err") || gave_up "Couldn't classify the PR: $(head -c 300 "$RUNNER_TEMP/tier.err" | tr -d '\r\n')"
           tier=$(jq -r '.tier' <<< "$r"); why=$(jq -r '.why' <<< "$r" | tr -d '\r\n'); rule=$(jq -r '.rule' <<< "$r"); effort=$(jq -r '.effort' <<< "$r"); lines=$(jq -r '.lines' <<< "$r")
           [[ "$tier" =~ ^(skip|trivial|standard|sensitive)$ && "$rule" =~ ^-?[0-9]+$ && "$lines" =~ ^[0-9]+$ ]] || gave_up "Couldn't classify the PR: no tier."
           echo "Risk tier: $tier ($why); effort: $effort"
+          # The key is needed only by a review: a PR the tier skips never asks for one.
+          (umask 077; printf '%s' "$key" > "$RUNNER_TEMP/ci-key")
           printf 'RV=%s\nREVIEW_TIER=%s\nREVIEW_TIER_RULE=%s\nREVIEW_WHY=%s\nREVIEW_EFFORT=%s\nREVIEW_MODEL=%s\nREVIEW_URL=%s\nREVIEW_COUNTED_LINES=%s\n' \
             "$rv" "$tier" "$rule" "$why" "$effort" "$(printf '%s' "$model" | tr -d '\r\n')" "$url" "$lines" >> "$GITHUB_ENV"
       # Review only what changed since this PR's last green code review (codegenie-prior.ts, from the base commit; full
@@ -334,6 +341,7 @@ jobs:
           # The job's OIDC request credentials were spent in the Tier step: nothing after this point gets them. The packages run no
           # install scripts (none of these three has one; --ignore-scripts keeps it so).
           unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          [ -n "$key" ] || gave_up "No model key: neither AidenHQ's model gateway nor the OPENROUTER_API_KEY secret."
           npm i -g --ignore-scripts --no-audit --no-fund --loglevel=error @openai/codex@0.167.0 typescript-language-server@6.0.3 typescript@6.0.3 || gave_up "Couldn't install the reviewer (npm)."
           review() { # $1: minutes. Sets $code.
             CI_REVIEW_KEY="$key" CI_REVIEW_URL="$REVIEW_URL" MODEL="$REVIEW_MODEL" EFFORT="$REVIEW_EFFORT" TIER="$REVIEW_TIER" TIER_RULE="$REVIEW_TIER_RULE" \

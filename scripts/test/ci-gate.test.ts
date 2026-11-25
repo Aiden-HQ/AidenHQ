@@ -201,6 +201,7 @@ test("a green review carries to a later head only at the same tier and model and
   assert.equal((await ran({ head: sha("a") })).mode, "reuse", "the same head after an edit of the PR's text");
   assert.equal((await ran({ effort: "xhigh" })).mode, "full", "a higher effort than the green review's");
   assert.equal((await ran({ tier: "sensitive", effort: "xhigh" })).mode, "full");
+  assert.equal((await ran({ effort: "max" })).mode, "full", "max outranks everything");
   assert.equal((await ran({ model: "other" })).mode, "full");
   assert.equal((await decide({ ...{ api: state(`full n=0 lines=0 mb=${sha("b")}`), git, repo: "o/r", headRef: "br", baseRef: "main", base: sha("c"), head: sha("d"), defaultRef: "origin/main" }, tier: "standard", model: "m", effort: "high" })).mode, "full", "a status without a tier");
 });

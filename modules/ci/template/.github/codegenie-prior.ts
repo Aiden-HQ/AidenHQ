@@ -38,7 +38,7 @@ export interface Decision { mode: string; from: string; n: number; lines: number
 /** What a review ran at: the PR's risk tier, the model (a status records its hash: the status description is short) and its effort. */
 export interface Ran { tier: string; model: string; effort: string }
 interface DecideInput extends Ran { api: Api; git: (...args: string[]) => string; repo: string; headRef: string; baseRef: string; base: string; head: string; defaultRef: string; fetchCommit?: (sha: string) => void }
-const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
+const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** The PR's last green head before `head`, with the state its run recorded: { sha, n, lines, mb }, or undefined. */
 async function lastGreen(api: Api, { repo, headRef, baseRef, head }: { repo: string; headRef: string; baseRef: string; head: string }): Promise<({ sha: string; n: number; lines: number; mb: string } & Ran) | undefined> {
@@ -99,7 +99,8 @@ export async function decide({ api, git, repo, headRef, baseRef, base, head, def
   };
   // Reuse only when the base moved forward (the last head's merge-base is an ancestor of this one's, or the same).
   const was = ok("merge-base", "--is-ancestor", last.mb, mb) ? patch(last.sha) : undefined;
-  if (was !== undefined && was === patch(head)) return { mode: "reuse", from: last.sha, n: last.n, lines: last.lines, mb };
+  // The same head (a description edit) is the same patch, a binary change included.
+  if (last.sha === head || (was !== undefined && was === patch(head))) return { mode: "reuse", from: last.sha, n: last.n, lines: last.lines, mb };
   // A delta needs the same merge-base; a rebase that also adds commits is reviewed whole.
   if (last.mb === mb && mergeBase(last.sha) === mb && ok("merge-base", "--is-ancestor", last.sha, head)) {
     const lines = git("diff", "--numstat", `${last.sha}..${head}`, "--", ".", ...NOLOCK).split("\n").filter(Boolean)
