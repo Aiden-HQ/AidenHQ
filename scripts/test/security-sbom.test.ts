@@ -1467,25 +1467,31 @@ test("security-sbom: an app checkout that is a symlink to another tree is a line
     `a symlinked checkout was handed to syft:\n${calls.join("\n")}`);
 });
 
-test("security-sbom: a platform directory that is a symlink to another tree does not re-key its apps", { skip: NOT_LINUX }, async () => {
-  // The checkout resolves inside the redirected tree, so a comparison that resolved `.platform` on both sides would see
-  // the two paths as equal and publish another tree's apps under their own names. The expected path is anchored at the
-  // data dir, so the redirect is a line for each app it appears to hold.
-  const { root, scriptPath } = isolatedCheckout();
-  const old = join(root, "shared/old-platform");
-  const cell = join(old, "roadmap-keeper/src");
-  mkdirSync(cell, { recursive: true });
-  writeFileSync(join(cell, "package-lock.json"), "{}\n");
-  mkdirSync(join(root, "data/apps"), { recursive: true });
-  symlinkSync(old, join(root, "data/apps/.platform"));
-  const { status, out, targets, calls } = await run({}, { scriptPath });
-  assert.equal(status, 0, out);
-  const line = targets.find((t) => t[0] === "app:roadmap-keeper");
-  assert.ok(line, `no line for the redirected platform tree:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.equal(line[1], "-", "the redirected tree was not scanned");
-  assert.ok(line[2].includes(cell), `the line names what the checkout resolved to: ${line[2]}`);
-  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name app:roadmap-keeper")),
-    `a redirected checkout was handed to syft:\n${calls.join("\n")}`);
+test("security-sbom: a redirected .platform or data/apps directory does not re-key its apps", { skip: NOT_LINUX }, async () => {
+  // The checkout resolves inside the redirected tree, so a comparison that resolved the apps paths on both sides would
+  // see the two paths as equal and publish another tree's apps under their own names. The expected path is lexical below
+  // this checkout, so the redirect is a line for each app it appears to hold — at either level.
+  const redirects = [
+    // old is linked over data/apps/.platform; the app lives at old/<name>/src.
+    (root, old) => { mkdirSync(join(root, "data/apps"), { recursive: true }); symlinkSync(old, join(root, "data/apps/.platform")); return join(old, "roadmap-keeper/src"); },
+    // old is linked over data/apps; the app lives at old/.platform/<name>/src.
+    (root, old) => { mkdirSync(join(root, "data"), { recursive: true }); symlinkSync(old, join(root, "data/apps")); return join(old, ".platform/roadmap-keeper/src"); },
+  ];
+  for (const redirect of redirects) {
+    const { root, scriptPath } = isolatedCheckout();
+    const old = join(root, "shared/old-apps");
+    const cell = redirect(root, old);
+    mkdirSync(cell, { recursive: true });
+    writeFileSync(join(cell, "package-lock.json"), "{}\n");
+    const { status, out, targets, calls } = await run({}, { scriptPath });
+    assert.equal(status, 0, out);
+    const line = targets.find((t) => t[0] === "app:roadmap-keeper");
+    assert.ok(line, `no line for the redirected tree ${cell}:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+    assert.equal(line[1], "-", "the redirected tree was not scanned");
+    assert.ok(line[2].includes(cell), `the line names what the checkout resolved to: ${line[2]}`);
+    assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name app:roadmap-keeper")),
+      `a redirected checkout was handed to syft ${cell}:\n${calls.join("\n")}`);
+  }
 });
 
 test("security-sbom: an ordinary app checkout is scanned and its row carries the checkout's HEAD", { skip: NOT_LINUX }, async () => {

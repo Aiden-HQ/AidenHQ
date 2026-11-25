@@ -15,8 +15,9 @@
 # It runs here, not in the scanner, because these need the Docker socket and the host's root filesystem, which the
 # long-running scanner never gets. Output: <data>/modules/security/sbom/current/targets.tsv (target, file, error, commit)
 # and one syft-json per target; the scanner (read-only mount) matches a new batch within the hour. commit is the checkout's
-# git HEAD for repo:product and repo:instance, so a pass says which tree it read. One target failing is a line with its
-# error, never the batch.
+# git HEAD for repo:product, repo:instance and an app: checkout that is a repo of its own (empty otherwise, because an app
+# checkout sits inside this one and git would answer with the product's HEAD), so a pass says which tree it read. One
+# target failing is a line with its error, never the batch.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 set -a; [ -f .env ] && . ./.env; set +a
@@ -888,7 +889,10 @@ rm -rf "$archives"
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
 if [ -n "$inst" ]; then scan repo:instance "$(git -C "$inst" rev-parse HEAD 2>/dev/null || true)" -v "$inst:/src:ro" -- dir:/src --exclude './.git/**' --exclude '**/node_modules/**'; fi
 apps="$PWD/data/apps/.platform"
-apps_real="$(realpath -e "$PWD/data/apps" 2>/dev/null || printf '%s' "$PWD/data/apps")"
+# The expected checkout is anchored above data/apps, at this checkout: resolving data/apps too would make a redirected
+# apps tree compare equal to itself, and its apps would be scanned under their own names exactly as before.
+checkout_real="$(realpath -e "$PWD" 2>/dev/null || printf '%s' "$PWD")"
+apps_expected="$checkout_real/data/apps/.platform"
 for src in "$apps"/*/src; do
   # A checkout that is gone is nothing to report; a link whose target is gone is a checkout this pass cannot scan, and
   # realpath below is what says so.
@@ -898,13 +902,13 @@ for src in "$apps"/*/src; do
   # tree while its rows still name this app, and the findings would read as the app's. The scan root has to be the app's
   # own checkout: one that resolves anywhere else is a line naming both paths, and no syft run that could misread it.
   if ! real="$(realpath -e "$src" 2>/dev/null)"; then
-    fail "app:$app" "checkout $src does not resolve (a broken link?); it should be the app's own checkout $apps_real/.platform/$app/src"
+    fail "app:$app" "checkout $src does not resolve (a broken link?); it should be the app's own checkout $apps_expected/$app/src"
     continue
   fi
-  # The expected path is built from the data dir alone, never from `.platform`: resolving that level too would make a
-  # redirected platform tree compare equal to itself, and its apps would still be published under their own names.
-  if [ "$real" != "$apps_real/.platform/$app/src" ]; then
-    fail "app:$app" "checkout $src resolves to $real; it should be the app's own checkout $apps_real/.platform/$app/src"
+  # The expected path is lexical below this checkout, so a redirected `data/apps` or `.platform` cannot compare equal to
+  # itself: its apps are refused, not published under their own names.
+  if [ "$real" != "$apps_expected/$app/src" ]; then
+    fail "app:$app" "checkout $src resolves to $real; it should be the app's own checkout $apps_expected/$app/src"
     continue
   fi
   # The commit names the tree the rows came from, as for repo: targets. An app checkout that is not a git repo of its
