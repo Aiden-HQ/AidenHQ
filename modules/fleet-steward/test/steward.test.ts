@@ -126,17 +126,20 @@ test("an owner message on a chat task unanswered for 15 minutes is a critical in
   const own = (m, body = "hello") => ({ authorType: "user", body, createdAt: minsAgo(m) });
   const w = world({
     chatLabel: true,
-    tasks: { c1: chat("c1"), c2: chat("c2"), c3: chat("c3"), c4: chat("c4"), c5: chat("c5") },
+    tasks: { c1: chat("c1"), c2: chat("c2"), c3: chat("c3"), c4: chat("c4"), c5: chat("c5"), c6: chat("c6"), c7: chat("c7"), c8: chat("c8") },
     comments: {
       c1: [own(20)], // unanswered
       c2: [{ authorType: "agent", body: "on it", createdAt: minsAgo(18) }, own(20)], // answered (newest first)
       c3: [own(5)], // too recent
+      c8: [own(20, "Not right: not like that\n\n<!-- aidenhq-correction -->")], // a correction is the owner's message, not a marker to skip
       c4: [own(30, "x\n<!-- aidenhq-wake -->"), own(40, "hi")].slice(0, 1), // only a relayed notice: no owner words
       c5: [own(30, "parked\n\n<!-- aidenhq:job=kernel kind=wait-park -->"), own(40, "hi")], // the kernel's park note is no reply
+      c6: [own(30, "Unblocked\n\n<!-- aidenhq:job=kernel kind=unblocked -->"), own(40, "hi")], // nor its unblock note
+      c7: [{ authorType: "agent", body: "on it", createdAt: minsAgo(20) }, own(40, "hi")], // an agent's reply answers it
     },
   });
   const found = await detect(w).front();
-  assert.deepEqual(found.map((i) => [i.key, i.critical]), [["c1", true], ["c5", true]]);
+  assert.deepEqual(found.map((i) => [i.key, i.critical]), [["c1", true], ["c5", true], ["c6", true], ["c8", true]]);
 });
 
 test("an alert's label text is fenced in its incident, its closing marker neutralised; a critical one files a Steward check in a fixed line", async () => {
