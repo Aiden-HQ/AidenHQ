@@ -86,7 +86,9 @@ A repo's rules are an ordered list. The first rule whose conditions all hold nam
 ```yaml
 rules:
   - { when: { repo_class: critical }, tier: sensitive }
-  - { when: { author: bot, only_paths: [<manifests>, <lockfiles>] }, tier: standard }
+  - { when: { author: bot, only_paths: [<manifests>, <lockfiles>] }, tier: skip }
+  - { when: { paths: [<instruction files>] }, tier: sensitive }
+  - { when: { author: member, only_paths: [<prose>] }, tier: standard }
   - { when: { paths: [<sensitive>] }, tier: sensitive }
   - { when: { author: outsider }, tier: sensitive }
   - { when: { repo_class: sandbox }, tier: trivial }
@@ -128,7 +130,10 @@ rule lacks one. An invalid list refuses the repo's entry whole with the message.
   sensitive path or an outsider still makes a PR sensitive.
 - Lockfiles have one rule: any changed lockfile is a sensitive path (it is in `<sensitive>`), so a PR touching one is
   `sensitive` whatever else it changes. The only exception is the rule above it: a bot's PR that touches only manifests and
-  lockfiles (Dependabot) is `standard`.
+  lockfiles (Dependabot) is `skip`: no review unless someone asks (owner, 2026-11-25).
+- A member's change that is only prose (docs, plans, specs: `PROSE`) is `standard`, not `sensitive` for a keyword such as
+  `token` or `session` in a path; a change to an instruction file (`AGENTS.md`, `CLAUDE.md`, `REVIEW.md`: `INSTRUCTIONS`) stays
+  `sensitive` (owner, 2026-11-25: 30 of 41 PRs on one repo were sensitive on path keywords alone).
 - `lines_max: 0` is a PR with no substantive line: only generated files, lockfiles, binaries or renames. That is ship's
   "generated files without their source" (decision 29) and most of CI's "a binary file is critical", in one fact.
 
@@ -437,7 +442,7 @@ Each is deliberate; the owner accepted them all (2026-11-24).
 | CI skipped a PR under 20 lines with no critical path | CI skips `trivial`: 10 lines or fewer and 20 files or fewer, by a member. PRs of 11 to 19 lines are now reviewed. |
 | CI: a critical path got a normal-effort review | A `sensitive` PR gets the higher effort. More spend on those PRs (cents each at the default model). |
 | CI: any binary file made a PR critical | Only a PR with no substantive line (binary-only, generated-only) is `sensitive` by default. A binary next to code is judged by the code. |
-| CI: a package-lock.json change that adds or changes a package was critical | Any lockfile change is `sensitive` (a superset), except a bot's manifest-and-lockfile-only PR, which is `standard`. |
+| CI: a package-lock.json change that adds or changes a package was critical | Any lockfile change is `sensitive` (a superset), except a bot's manifest-and-lockfile-only PR, which is `skip`. |
 | CI: an app's `.github/code-review-critical` file | The repo's `rules` in its code review entry. One app has the file (roadmap-keeper), migrated above. |
 | Ship: `safe` was up to 1,200 substantive lines and 50 files, tests and docs not counted | Trivial is up to 10 lines and 20 files; 600+ lines is sensitive; tests and docs count. |
 | Ship: a lockfile changed without its manifest was out of the safe class | Any lockfile change is `sensitive`, with or without its manifest or other code (the same rule as CI's row above); only a bot's manifest-and-lockfile-only PR is `standard`. |

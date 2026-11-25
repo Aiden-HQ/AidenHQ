@@ -17,6 +17,24 @@ export interface Changed { path: string; added: number; removed: number; binary:
 // Lockfiles: no findings asked for, never a coverage gap (they carry no code). Generated and bundled code: a gap when
 // the change adds it (a place to hide code). Both lists are the risk tiers' (tiers.ts), their one definition.
 
+/**
+ * The globs a repo's own `.gitattributes` marks `linguist-generated` (its root file, as the merge base has it: the PR's own copy is
+ * its author's to write). Declared by the repo, so like its ignore globs: left out of the review, no coverage gap. A line is
+ * `pattern attr…`; a pattern with no slash matches at any depth, a leading slash anchors it, a trailing slash is a folder.
+ */
+export function generatedGlobs(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    const [pattern, ...attrs] = line.trim().split(/\s+/);
+    if (!pattern || pattern.startsWith("#") || pattern.startsWith('"')) continue;
+    const last = attrs.filter((a) => /^-?linguist-generated(=|$)/.test(a)).pop();
+    if (last !== "linguist-generated" && last !== "linguist-generated=true") continue;
+    const p = pattern.replace(/^\//, "");
+    out.push(pattern.endsWith("/") ? `${p}**` : pattern.startsWith("/") || p.includes("/") ? p : `**/${p}`);
+  }
+  return out;
+}
+
 /** The changed files from `from` to `to` (the head) with their line counts: [{ path, added, removed, binary }]. */
 export function changed(git: Git, from: string, to = "HEAD"): Changed[] {
   const out = git(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none", "--numstat", "-z", from, to]);
@@ -32,13 +50,13 @@ export function changed(git: Git, from: string, to = "HEAD"): Changed[] {
  * path), so the review is incomplete and never reads as a clean pass. Size never leaves a file out. The repo's own ignore globs
  * (its config) and binary files are no gap. `added`: the paths this change adds.
  */
-export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new Set<string>()) {
-  const mine = [...ignore].map(String).map(globRe), gen = GENERATED.map(globRe), locks = LOCKS.map(globRe);
+export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new Set<string>(), declared: string[] = []) {
+  const mine = [...ignore].map(String).map(globRe), gen = GENERATED.map(globRe), locks = LOCKS.map(globRe), marked = declared.map(globRe);
   const reviewed: string[] = [], excluded: Excluded[] = [];
   for (const f of files) {
     // A change to how git reads files is always reviewed, whatever the globs say.
     const attrs = posix.basename(f.path) === ".gitattributes";
-    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : undefined;
+    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : marked.some((re) => re.test(f.path)) ? "generated (.gitattributes)" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : undefined;
     ((why ? excluded : reviewed) as (Excluded | string)[]).push(why ? { path: f.path, why, gap: why === "generated, changed by this PR" } : f.path);
   }
   return { reviewed, excluded };

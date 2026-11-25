@@ -43,7 +43,7 @@ code_review:
       drafts: false
       forks: manual              # manual: only when someone with write access asks; auto: like any PR
       ignore: ["**/generated/**"]
-      max_nits: 5
+      max_nits: 5            # nits a run keeps on the board; none are posted to GitHub
 ```
 
 **Risk tiers** (`docs/superpowers/specs/2026-11-24-risk-tiers-design.md`): every open PR head gets one tier (`skip`, `trivial`,
@@ -216,18 +216,30 @@ a `notice` (Tier 0, fixed words) per run and a `status` (Tier 0, fixed words) pe
 commit it reviewed: a review that finished before the PR moved on still posts (its comments show as outdated where lines
 changed; the acknowledgement is left to the newer head), while a run whose PR moved on while it ran is superseded (Triggers):
 
-- **Every important (and pre-existing) finding gets one thread; a nit gets none** (every inline comment is a GitHub write, and the
-  secondary rate limit on those blocked the fleet; owner, 2026-11-22): a nit is one line of the summary, `file:line` and its title.
+- **Only an important finding is posted: one thread each; nits and pre-existing findings never post** (every inline comment is a
+  GitHub write, and the secondary rate limit on those blocked the fleet; owner, 2026-11-22; nits off GitHub entirely, owner,
+  2026-11-25). They stay on the board's Reviews page and in the run's record; the summary counts them in one line
+  (`N smaller notes on the board`). `max_nits` is a board-only setting now: how many nits a run keeps.
   A thread sits on its lines when they are on the reviewed diff, else on the nearest diff line of its file
   (saying where it really is), else a file comment (a file GitHub shows no patch for). Only a finding in no changed file has no
   thread; it is a collapsed block in the summary instead. A finding an earlier review already opened a thread for isn't posted
   again. Each comment has a severity marker, a collapsed "why flagged" and "Copy as fix brief".
 - **The summary scans at a glance**: the title `Aiden review · Haiku 5.5 (medium)` (the model's short name and effort), one line
   of counts (on a gated repo's mandatory review, whether it blocks the merge), the important findings as a table (severity,
-  title linking to its thread, `file:line`), pre-existing ones in a collapsed table, nits as a short list of `file:line` and title, the commands as one
-  collapsed line, and one muted line with the commit, the scope (whole PR or changes since a commit), the engine and the cost. A
-  clean review is one line. Each finding appears once. Partial coverage says so (`coverage_note`, codex-native's "which parts
-  it read isn't tracked", is never shown: it isn't a gap).
+  title linking to its thread, `file:line`), the smaller-notes line, the Commands block (a collapsed line) on a PR's first review only,
+  and one muted line with the commit and the scope (whole PR or changes since a commit); the engine and cost are on the board. The
+  risk tier and the rule's one-line why sit under the title. A clean review is one line. A run that did not finish never
+  reads as clean (`Incomplete review`). Each finding appears once. Partial coverage says so (`coverage_note`, codex-native's
+  "which parts it read isn't tracked", is never shown: it isn't a gap).
+- **A comment is for what no review says.** A review posts no acknowledgement of its own (the `aidenhq/review` commit status
+  already shows queued and running). The acknowledgement comment exists for a PR no review will speak on (tier skip), a skipped,
+  failed or refused review, and the answers to `aiden review` commands; an existing one is kept current.
+- **What makes a finding important** is the brief's one definition (`recipe/brief.ts`, the verifier's and the recheck's prompts
+  point at it): a concrete failure scenario, reachable in normal use, checked against the head, and not already covered by the PR's
+  description, comments in the code, the guidance files or a thread already on the PR (the check is given those threads as one
+  line each). A prose-only change (docs, plans, specs) never has an important finding: code makes it a nit.
+- **Left out of the review**: lockfiles, generated and built files, files the repo's `ignore` globs name, and files its root
+  `.gitattributes` (at the merge base) marks `linguist-generated` (declared by the repo: no coverage gap).
 - The severity line `<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`.
 - **A post that fails for anything but a decision** (stale: a restart between its approval and its run; a failed GitHub call,
   such as a secondary rate limit) is filed once more two minutes later; a rejection stands.
@@ -245,9 +257,8 @@ Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the
 comment carries its run's and its finding's, which is how a review whose comment list GitHub can't answer is still recorded as
 Aiden's own from its threads. A notice carries the acknowledgement marker, so a create whose answer was lost is found and edited
 rather than made again. Threads whose
-finding is gone on the next run are resolved, only when Aiden posted them. Every classified head also gets the acknowledgement with its risk tier and the rule's one-line why (the `classified` phase; every other phase carries the same line), so each PR shows its tier. The acknowledgement comment is one per PR: with
-several combos it shows the latest run to finish (each review names its own combo). An automatic review adds its phases to it (its summary
-says the same); a command's queued notice is updated once with the outcome. Writes are cut to what changes: a notice, status or
+finding is gone on the next run are resolved, only when Aiden posted them. A reviewed head says its risk tier in its review's header; a head no review will speak on (tier skip) gets the acknowledgement with the tier and the rule's one-line why (the `classified` phase). The acknowledgement comment is one per PR: with
+several combos it shows the latest run to finish. A command's queued notice is updated once with the outcome. Writes are cut to what changes: a notice, status or
 summary already as it would be writes nothing, and a post's thread resolves are one request.
 
 Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, file comment and notice ending with the

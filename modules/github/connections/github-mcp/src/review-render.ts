@@ -60,6 +60,11 @@ export const PostArgsSchema = z.object({
   /** The comment ids the code-review service recorded as its own posts on this PR (its database, never a marker read back):
    * only their threads are ever resolved. */
   own: z.array(z.number().int().min(1)).max(1000).default([]),
+  /** The head's risk tier and the one-line why of the rule that named it: the review's header says it (a path or count from the PR: no backtick or line break). */
+  tier: z.enum(["skip", "trivial", "standard", "sensitive"]).optional(),
+  tier_why: z.string().regex(/^[^`\r\n]{1,500}$/).optional(),
+  /** The pull request's first review: the only one that carries the Commands block. */
+  first: z.boolean().default(false),
 });
 export type PostArgs = z.infer<typeof PostArgsSchema>;
 
@@ -188,11 +193,7 @@ export const ACK_HEAD = new RegExp(`^\\s*${ACK_MARK.replace(/[.*+?^${}()|[\]\\]/
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
 const ORDER = ["important", "nit", "pre_existing"] as const;
-// Sized so a whole review fits the card the AI reviewer reads (80,000 characters): 15 inline comments of at most ~3,200 plus a
-// summary of about 30,000.
-export const INLINE_MAX = 15;
 const LISTED_MAX = 4;
-const NITS_MAX = 40;
 const EVIDENCE_MAX = 500;
 
 const ASSIGNMENT = /\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential)s?)(["']?\s*[:=]\s*["']?)[^\s"',;]{4,}/gi;
@@ -247,8 +248,6 @@ export const counts = (findings: readonly { severity: Finding["severity"] }[]) =
   nit: findings.filter((f) => f.severity === "nit").length,
   pre_existing: findings.filter((f) => f.severity === "pre_existing").length,
 });
-type Counts = { important: number; nit: number; pre_existing: number };
-const countLine = (c: Counts) => `${ICON.important} ${c.important} important · ${ICON.nit} ${c.nit} ${c.nit === 1 ? "nit" : "nits"} · ${ICON.pre_existing} ${c.pre_existing} pre-existing`;
 
 /** The one-line, collapsed command list every review summary ends with (fixed words, never the review's own). */
 export const commandsBlock = () => `<details><summary>Commands</summary>\n\n${COMMANDS}\n\n</details>`;
@@ -318,25 +317,24 @@ const fileLine = (f: Finding) => code(`${f.path.split("/").pop()}:${f.line}`);
  * merges wait on code review. Each finding appears once: a table row (its title linking to its thread) or, with no thread, a
  * collapsed block with its reasoning.
  */
-export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap<string, Anchor>; earlier?: ReadonlyMap<string, string>; links?: ReadonlyMap<string, string>; gated?: boolean; card?: boolean; scale?: number } = {}): { summary: string; comments: Placed[]; listed: Finding[] } {
+export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap<string, Anchor>; earlier?: ReadonlyMap<string, string>; links?: ReadonlyMap<string, string>; gated?: boolean; card?: boolean; scale?: number; tier?: NoticeArgs["tier"]; tier_why?: string; first?: boolean } = {}): { summary: string; comments: Placed[]; listed: Finding[] } {
   const { earlier = new Map<string, string>(), links = new Map<string, string>() } = opts;
   const ranked = [...r.findings].sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity));
   const place = opts.place ?? new Map(ranked.map((f): [string, Anchor] => [f.id, f.end_line && f.end_line > f.line ? { line: f.end_line, start_line: f.line } : { line: f.line }]));
-  // Every important finding gets a thread (answering it there is how it closes); pre-existing ones up to INLINE_MAX. A nit gets
-  // none: it is one line of the summary (every inline comment is a GitHub write, and the limit on those is what blocks the fleet).
-  const open = ranked.filter((f) => !earlier.has(f.id) && place.has(f.id));
-  const chosen = [...open.filter((f) => f.severity === "important"), ...open.filter((f) => f.severity === "pre_existing").slice(0, INLINE_MAX)];
+  // Only an important finding is posted, and each gets a thread (answering it there is how it closes). A nit or a pre-existing
+  // finding stays on the board's Reviews page and in the run's record: the summary counts them (every inline comment is a GitHub
+  // write, and the limit on those is what blocks the fleet).
+  const chosen = ranked.filter((f) => f.severity === "important" && !earlier.has(f.id) && place.has(f.id));
   const ids = new Set(chosen.map((f) => f.id));
   const comments = chosen.map((f): Placed => {
     const a = place.get(f.id)!;
     return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file", opts.scale, run) } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line, opts.scale, run) };
   });
   const threaded = (f: Finding) => ids.has(f.id) || earlier.has(f.id);
-  const listed = ranked.filter((f) => f.severity !== "nit" && !threaded(f));
-  const nits = ranked.filter((f) => f.severity === "nit");
+  const listed = ranked.filter((f) => f.severity === "important" && !threaded(f));
   const c = counts(r.findings);
+  const smaller = c.nit + c.pre_existing;
   const incomplete = r.coverage.incomplete;
-  const withheld = r.withheld.important + r.withheld.nit + r.withheld.pre_existing;
   // Fixed command words, named on the AI reviewer's card instead (they read like instructions to it); model text is never touched.
   const cmd = (words: string) => (opts.card ? "[AidenHQ's fixed command for another review]" : `\`${words}\``);
   const partial = !!incomplete || r.withheld.important > 0;
@@ -344,30 +342,35 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const row = (f: Finding) => { const url = links.get(f.id) || earlier.get(f.id); const t = cell(plain(f.title, 160)); return `| ${ICON[f.severity]} | ${url ? `[${t}](${url})` : t} | ${fileLine(f)} |`; };
   const table = (fs: Finding[]) => ["| | Finding | Where |", "|---|---|---|", ...fs.map(row)].join("\n");
   const important = ranked.filter((f) => f.severity === "important" && threaded(f));
-  const minor = ranked.filter((f) => f.severity === "pre_existing" && threaded(f));
+  // A run that did not finish never reads as clean: with nothing important found, the headline says it is incomplete.
+  const headline = c.important ? `${ICON.important} ${c.important} important` : incomplete ? "\u26A0\uFE0F Incomplete review" : "\u2705 No important findings";
   const lines = [
     `<!-- ${MARK.review}: ${JSON.stringify(c)} -->`,
     RUN_MARK(run),
     `### Aiden review · ${modelName(r.model)} (${r.effort})`,
+    ...(opts.tier ? ["", riskLine(opts.tier, opts.tier_why)] : []),
     "",
-    r.findings.length ? `${countLine(c)}${blocks}` : `${incomplete ? "No findings in what it read" : "✅ No findings"}${blocks}`,
+    `${headline}${blocks}`,
+    ...(smaller ? ["", `${plural(smaller, "smaller note")} on the board's Reviews page, not posted here.`] : []),
     ...(incomplete ? ["", `> **Partial review:** ${plain(incomplete, 300)}. ${cmd("aiden review full")} reviews the whole pull request again.`] : []),
-    ...(withheld ? ["", `Withheld to keep this short: ${countLine(r.withheld)}. ${cmd("aiden review full")} shows more.`] : []),
+    ...(r.withheld.important ? ["", `${plural(r.withheld.important, "important finding")} withheld to keep this short. ${cmd("aiden review full")} shows more.`] : []),
   ];
   if (important.length) lines.push("", table(important));
-  if (minor.length) lines.push("", `<details><summary>${minor.length} pre-existing</summary>\n\n${table(minor)}\n\n</details>`);
-  if (nits.length) lines.push("", `**${nits.length === 1 ? "Nit" : "Nits"}** (no thread)`, "", ...nits.slice(0, NITS_MAX).map((f) => `- ${fileLine(f)} ${plain(f.title, 160)}`), ...(nits.length > NITS_MAX ? [`- … ${nits.length - NITS_MAX} more`] : []));
   // Without a thread (in no changed file): the first few with their reasoning, the rest named, so the post stays within GitHub's
   // and the card's size.
   for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
   if (listed.length > LISTED_MAX) lines.push("", `<details><summary>${listed.length - LISTED_MAX} more without a thread</summary>\n\n${listed.slice(LISTED_MAX, LISTED_MAX + 40).map((f) => `- ${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}`).join("\n")}${listed.length > LISTED_MAX + 40 ? "\n- \u2026" : ""}\n\n</details>`);
   if (r.stale_guidance.length) lines.push("", `<details><summary>Guidance this change may make stale</summary>\n\n${r.stale_guidance.map((s) => `- ${plain(s, 300)}`).join("\n")}\n\n</details>`);
-  lines.push("", opts.card ? "[AidenHQ's fixed Commands help: the comments people on the pull request may write to ask for another review]" : commandsBlock(), "", `<sub>${code(short(r.head))} · ${r.full || !r.incremental_from ? "whole PR" : `changes since ${code(short(r.incremental_from))}`} · ${r.engine} · $${r.cost_usd.toFixed(2)}</sub>`);
+  // The Commands block is on a pull request's first review only; the engine and cost are on the board, not in the comment.
+  if (opts.first) lines.push("", opts.card ? "[AidenHQ's fixed Commands help: the comments people on the pull request may write to ask for another review]" : commandsBlock());
+  lines.push("", `<sub>${code(short(r.head))} · ${r.full || !r.incremental_from ? "whole PR" : `changes since ${code(short(r.incremental_from))}`}</sub>`);
   return { summary: lines.join("\n"), comments, listed };
 }
 
 const TIER = { skip: ["\u26AA", "Skip"], trivial: ["\u{1F7E2}", "Trivial"], standard: ["\u{1F535}", "Standard"], sensitive: ["\u{1F7E0}", "Sensitive"] } as const;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** The risk tier with its plain-words reason: from the PR's own paths and counts, so inert text: Markdown's marks escaped and no URL left to autolink. */
+const riskLine = (tier: keyof typeof TIER, why?: string) => `Risk: ${TIER[tier][0]} **${TIER[tier][1]}**${why ? ` · ${plain(why, 500).replace(/[\\*_~[\]]/g, "\\$&").replace(/:\/\//g, ":\u200B//").replace(/\bwww\./gi, "www\u200B.")}` : ""}`;
 /** A model's name and effort as a person reads them: `GPT 6.2 Sol (medium)`. */
 const reviewer = (n: NoticeArgs) => (n.model && n.effort ? `${modelName(n.model)} (${n.effort})` : "");
 /**
@@ -393,9 +396,8 @@ export function renderNotice(n: NoticeArgs): string {
       ? `**Review finished but was not posted** · ${REFUSED_REASONS[n.reason as keyof typeof REFUSED_REASONS]} · \`aiden review\` runs it again`
       : `**Review failed** · comment \`aiden review\` to try again`; break;
   }
-  // The tier's why comes from the PR's own paths and counts: inert text: Markdown's marks escaped and no URL left to autolink.
-  const risk = n.tier ? `\nRisk: ${TIER[n.tier][0]} **${TIER[n.tier][1]}**${n.tier_why ? ` · ${plain(n.tier_why, 500).replace(/[\\*_~[\]]/g, "\\$&").replace(/:\/\//g, ":\u200B//").replace(/\bwww\./gi, "www\u200B.")}` : ""}` : "";
-  const footer = [short(n.head), ...(n.run ? [`run ${n.run}`] : []), ...(help ? ["`aiden review help` for commands"] : [])].join(" · ");
+  const risk = n.tier ? `\n${riskLine(n.tier, n.tier_why)}` : "";
+  const footer = [short(n.head), ...(help ? ["`aiden review help` for commands"] : [])].join(" · ");
   return `${ACK_MARK}\n${status}${risk}\n\n<sub>${footer}</sub>`;
 }
 

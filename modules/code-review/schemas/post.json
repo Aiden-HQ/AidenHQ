@@ -328,6 +328,21 @@
     "type": "integer",
     "minimum": 1
    }
+  },
+  "tier": {
+   "enum": [
+    "skip",
+    "trivial",
+    "standard",
+    "sensitive"
+   ]
+  },
+  "tier_why": {
+   "type": "string",
+   "pattern": "^[^`\\r\\n]{1,500}$"
+  },
+  "first": {
+   "type": "boolean"
   }
  }
 }

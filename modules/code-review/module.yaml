@@ -51,7 +51,7 @@ check_jobs:
     # ({ id, name, files }: the review sees only those files), {} for a whole repo; area_map the plan's areas a whole-repo option
     # is given as data ({ areas: [{ name, folders, tags }] }), {} for none; unseen the due area's files to read first, in order (an
     # incremental rerun: { files, changed, more }: the changed ones, then the never-reviewed ones; {} for none).
-    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, previous_b: json, previous_c: json, previous_d: json, previous_e: json, previous_f: json, intent: text, deepsec_data: input, area: json, area_map: json, unseen: json }
+    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, previous_b: json, previous_c: json, previous_d: json, previous_e: json, previous_f: json, intent: text, threads: text, deepsec_data: input, area: json, area_map: json, unseen: json }
     model: true
     result: true
     keep: true
@@ -93,7 +93,7 @@ stages:
 settings:
   # repos: [{ repo: owner/name, preset: light|standard|thorough, repo_class: critical|standard|sandbox, rules: [{ when?, tier }]
   # (omitted: the default rules), by_tier: { <skip|trivial|standard|sensitive>: { on_open: [combo], on_push: [combo], push_rounds } },
-  # drafts: false, forks: manual|auto, ignore: [globs], max_nits: 5 }]. Each PR head gets a risk tier from the rules (the first whose
+  # drafts: false, forks: manual|auto, ignore: [globs], max_nits: 5 (nits a run keeps on the board; none post to GitHub) }]. Each PR head gets a risk tier from the rules (the first whose
   # conditions all hold: lines, files, paths, only_paths, author, base, repo_class); its tier's combos review it (the preset's, with
   # by_tier over them per field). A combo is { engine: codex|claude-code|codegenie|codex-native, model (an OpenRouter
   # id), effort (the engine's: codex and codex-native minimal-xhigh, the others low-max), mandatory (default false) }; each moment runs every combo it lists (at most 4, each its
