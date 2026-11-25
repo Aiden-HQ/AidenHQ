@@ -54,6 +54,77 @@ export const canaryOrigin = (app: string) => `http://${app}.${CANARY_BASE}:${CAN
 const startPath = (req: CanaryRequest) => (req.path && req.path.startsWith("/") ? req.path : "/");
 
 /**
+ * How the feedback form is found: one source, run both by the renderer and by the tests, so these rules are what the canary
+ * actually does. It reads agent-browser's accessibility snapshot (an indented outline, `- role "name" [ref=eN]`), so the
+ * page's own wording and real form controls decide, never a CSS guess.
+ *
+ * The field is a `textbox` (a textarea is one in the tree) that is feedback-worded itself, or sits in a feedback-named
+ * `dialog` or `form` (or under a feedback-named heading inside one), so a prompt label such as "What should change?" is
+ * enough. A page's lone textbox is never: a profile page's display-name box, or a header search box, must not be filled, and
+ * a "Feedback" control elsewhere on the page is not context for it. The entry walk follows the page's own feedback `link` or
+ * `button` (the starter's is a button that opens the dialog), never a send-named one, so it opens the form instead of
+ * submitting it.
+ */
+export const CANARY_DISCOVERY = String.raw`
+// Feedback-specific wording only: "message" or bare "comment" also name a chat composer or a discussion box, and a canary must
+// never send its text as a chat message.
+const FEEDBACK = /feedback|intake|suggest|what would you|tell us/i;
+// The containers a feedback form is made of: a dialog (or alertdialog) that opens the form, and the form itself.
+const CONTAINER = /^(dialog|alertdialog|form)$/i;
+const named = (n) => String((n && n.name) || "");
+const feedbackNamed = (n) => FEEDBACK.test(named(n));
+// The page's accessibility snapshot as nodes: role, name, ref, its depth in the outline, and its ancestors (the same nodes).
+const canaryTree = (text, refs) => {
+  const nodes = [], stack = [];
+  for (const raw of String(text || "").split("\n")) {
+    const m = /^(\s*)- (\S+)(?:\s+"((?:[^"\\]|\\.)*)")?/.exec(raw);
+    if (!m) continue;
+    const depth = m[1].length;
+    while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
+    const name = (m[3] || "").replace(/\\(.)/g, "$1");
+    // A ref is what a click needs: the one the snapshot carries, else the refs entry with this role and name.
+    const inline = (/\bref=(e\d+)/.exec(raw) || [])[1];
+    const node = { i: nodes.length, role: m[2], name, depth, ref: inline || ((Object.entries(refs || {}).find(([, v]) => v && v.role === m[2] && v.name === name) || [])[0]) || "", ancestors: stack.slice() };
+    nodes.push(node);
+    stack.push(node);
+  }
+  return nodes;
+};
+// A feedback-named heading over the field, inside the same dialog or form: an unnamed form still names its own subject.
+const headingOver = (nodes, container, field) => nodes.some((n) => n.i > container.i && n.i < field.i && n.depth > container.depth && /^heading$/i.test(n.role) && feedbackNamed(n));
+// The feedback field: its own wording is feedback, or the dialog/form around it is (its own wording, or a heading inside it),
+// so a prompt label such as "What should change?" is enough. A lone textbox, with no feedback context, never is.
+const canaryField = (nodes) => nodes.find((n) => /^textbox$/i.test(n.role) && (feedbackNamed(n) || n.ancestors.some((c) => CONTAINER.test(c.role) && (feedbackNamed(c) || headingOver(nodes, c, n))))) || null;
+// The walk's entry: the page's own feedback link or button (the starter's opens the dialog), never one that sends.
+const canaryEntry = (nodes) => nodes.find((n) => /^(link|button)$/i.test(n.role) && feedbackNamed(n) && !/send|submit|share|post|publish|draft|preview|discard|cancel/i.test(named(n))) || null;
+// The field, opening the page's own feedback control when the form isn't on the page yet. Only a field with feedback context
+// ends the walk: another page's lone textbox stops it rather than being filled.
+const canaryFindField = async (snap, click) => {
+  let nodes = (await snap()).tree, field = canaryField(nodes);
+  for (let i = 0; i < 3 && !field; i++) {
+    const entry = canaryEntry(nodes);
+    if (!entry || !entry.ref) break;
+    await click(entry);
+    const next = (await snap()).tree;
+    // A control that changes nothing (a dead button, or the dialog it opens rendering nothing) is not clicked again.
+    if (JSON.stringify(next) === JSON.stringify(nodes)) break;
+    nodes = next;
+    field = canaryField(nodes);
+  }
+  return field;
+};
+// The feedback form's submit, from the controls in the form that owns the filled field: a send-named submit, never a
+// "Preview feedback" or "Save draft", and never a guess between several. "feedback" is the form's subject, not its send.
+const canarySubmit = (controls) => {
+  const sendish = /send|submit|share|post|publish/i;
+  const draftish = (w) => /draft|preview|discard|cancel/i.test(w) || /(^|[^a-z])back([^a-z]|$)/i.test(w);
+  const explicit = (controls || []).filter((c) => /^(submit|image)$/i.test(String((c && c.type) || ""))).map((c) => ({ ...c, word: String(c.text || "") }));
+  const sends = explicit.filter((c) => sendish.test(c.word) && !draftish(c.word));
+  return sends.length === 1 ? sends[0] : null;
+};
+`;
+
+/**
  * The renderer, run as `node -e` in the browser image on the canary network. Chrome maps every *.canary.localhost name to the
  * listener's bridge address (the network has no DNS of its own), follows the handoff to set the host-only cookie, opens the
  * page, fills the feedback form and clicks its submit button, then reads what the page itself did: its same-origin
@@ -63,6 +134,7 @@ const startPath = (req: CanaryRequest) => (req.path && req.path.startsWith("/") 
  */
 export const CANARY_SCRIPT =
   browserKit(20_000) +
+  CANARY_DISCOVERY +
   String.raw`
 const NET = [];
 // The handoff URL carries the one-time code and state: nothing the renderer reports may quote them, even a diagnostic URL.
@@ -111,56 +183,33 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const landed = (await within(ab("get", "url"), 3000, {})).url || "";
     if (!landed.startsWith(listener)) return out({ error: "the handoff didn't land on the test listener", finalUrl: scrub(landed) });
     const title = (await within(ab("get", "title"), 3000, {})).title || "";
-    // The form: a textbox (or textarea) and the button that sends it. Roles from the accessibility tree, so an app's own
-    // wording works as long as the control is a real form control. The page may open on a landing page and link to its
-    // feedback form (the starter's does): follow its own link, exactly as a person would, and let its JavaScript render.
-    const tree = async () => (await within(ab("snapshot", "-i"), 6000, {})).refs || {};
-    // The feedback form, unambiguously: a field whose own wording is about feedback. A settings page's display-name box, or a
-    // header search box, is not one. The page may instead link to its form: follow its own feedback link (never any textbox),
-    // and only stop once a feedback field is actually on the page.
-    // Feedback-specific wording only: "message" or bare "comment" also name a chat composer or a discussion box, and a
-    // canary must never send its text as a chat message. A field's own wording wins; the fallback is a page with exactly one
-    // textbox under a feedback-named control (the link walk below finds a feedback page first).
-    const FEEDBACK = /feedback|intake|suggest|what would you|tell us/i;
-    // Only a field whose own wording is about feedback. A page's lone textbox is not enough: a profile page with one
-    // display-name box and a "Feedback" button that opens a dialog elsewhere would otherwise have the test text typed into the
-    // profile and its Save clicked, changing real data before the canary ever reaches the intake.
-    const feedbackField = (refs) => Object.entries(refs).find(([, v]) => v.role === "textbox" && FEEDBACK.test([v.name, v.description].filter(Boolean).join(" ")))?.[0];
-    let refs = await tree(), box = feedbackField(refs);
-    for (let i = 0; i < 3 && !box; i++) {
-      const link = Object.entries(refs).find(([, v]) => v.role === "link" && FEEDBACK.test(v.name || ""))?.[0];
-      if (!link) break;
-      await within(ab("click", "@" + link), 8000, null);
+    // The form: a textbox (or textarea) and the button that sends it. Roles and names from the accessibility tree, so an
+    // app's own wording works as long as the control is a real form control; the tree's nesting is what says a field belongs
+    // to a feedback dialog. The page may open on a landing page with a feedback control (a link, or the starter's button)
+    // that opens the form: follow it, exactly as a person would, and let its JavaScript render.
+    const snap = async () => {
+      const s = (await within(ab("snapshot"), 6000, {})) || {};
+      return { tree: canaryTree(s.snapshot, s.refs) };
+    };
+    const field = await canaryFindField(snap, async (entry) => {
+      await within(ab("click", "@" + entry.ref), 8000, null);
       await new Promise((ok) => setTimeout(ok, 1200));
-      refs = await tree();
-      box = feedbackField(refs);
-    }
-    if (!box) return out({ error: "no feedback field on the page", finalUrl: scrub(landed), pageTitle: title });
+    });
+    if (!field) return out({ error: "no feedback field on the page", finalUrl: scrub(landed), pageTitle: title });
+    const box = field.ref;
     await ab("fill", "@" + box, r.text);
     // The button is the one in the form that owns the filled field, never "the first submit-like button on the page" (a header
     // search form or a "Send message" button would otherwise be sent instead). The filled field is focused, so its own form is
-    // the one to send. A real submit control only: one worded like sending, or the form's only button when it is. A "Discard draft" type=button beside an implicit submit is never clicked, and when
-    // nothing in the field's own form can be identified the canary stops rather than guessing.
+    // the one to send, and only a send-named submit control in it is clicked; when none is identifiable the canary stops.
     const formSubmit = await within(ab("eval", "(() => {" +
       "const a = document.activeElement, f = a && a.closest && a.closest('form');" +
       "if (!f) return '';" +
       "const els = [...f.querySelectorAll('button, input[type=submit], input[type=image]')];" +
-      "const explicit = els.filter((b) => (b.tagName === 'INPUT' ? /^(submit|image)$/i.test(b.type) : (b.type || 'submit') === 'submit'));" +
-      "const word = (b) => (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '';" +
-      // "feedback" is the form's own subject, not its send: a "Preview feedback" button must not be taken for "Save feedback".
-      // A draft action ("Save draft") is never the send, even though it saves; "save" alone does not name a send either.
-      "const sendish = /send|submit|share|post|publish/i;" +
-      // A whole word, so "feedback" is not read as a "back" action. Never guess between several explicit controls, and never
-      // click a type=button "Save draft": only a send-named submit control sends, or the form's one explicit submit when it is
-      // worded as sending. Otherwise the canary stops.
-      "const draftish = (w) => /draft|preview|discard|cancel/i.test(w) || /(^|[^a-z])back([^a-z]|$)/i.test(w);" +
-      "const named = explicit.filter((x) => sendish.test(word(x)) && !draftish(word(x)));" +
-      // One send-named control, or the form's only button when it is worded as sending. A lone "Preview feedback" is not
-      // that: a two-step form's real send is on the next screen, and clicking Preview would send nothing.
-      "const b = named.length === 1 ? named[0] : named.length === 0 && explicit.length === 1 && sendish.test(word(explicit[0])) && !draftish(word(explicit[0])) ? explicit[0] : null;" +
+      "const controls = els.filter((b) => b.tagName === 'INPUT' ? /^(submit|image)$/i.test(b.type) : (b.type || 'submit') === 'submit').map((b) => ({ ref: b, tag: b.tagName, type: b.tagName === 'INPUT' ? b.type : 'submit', text: (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '' }));" +
+      "const b = canarySubmit(controls);" +
       "if (!b) return '';" +
-      "b.setAttribute('data-aidenhq-canary-submit', '1');" +
-      "return b.tagName + ':' + word(b).trim().slice(0, 60);" +
+      "b.ref.setAttribute('data-aidenhq-canary-submit', '1');" +
+      "return b.tag + ':' + b.word.trim().slice(0, 60);" +
       "})()"), 4000, {});
     const own = String(formSubmit.result ?? "");
     if (!own) return out({ error: "no submit control in the feedback form (not sending anything else)", finalUrl: scrub(landed), pageTitle: title });
