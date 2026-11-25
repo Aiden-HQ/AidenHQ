@@ -26,6 +26,9 @@ test("builds the config from the job", () => {
   // a small window leaves room for the output opencode asks for (32k) below the threshold
   const small = opencodeConfig(spec, { plugins: [], stateDir: "/s", limits: { ...limits, "moonshotai/kimi-k3.1-pro": { context: 65_536, output: 65_536 } } });
   assert.equal(small.provider.aidenhq.models["moonshotai/kimi-k3.1-pro"]!.limit.input, 33_536);
+  // A window no bigger than the output it allows still compacts at half its size, never at zero.
+  const tiny = opencodeConfig(spec, { plugins: [], stateDir: "/s", limits: { ...limits, "moonshotai/kimi-k3.1-pro": { context: 32_000, output: 32_000 } } });
+  assert.equal(tiny.provider.aidenhq.models["moonshotai/kimi-k3.1-pro"]!.limit.input, 16_000);
   assert.deepEqual(c.compaction, { auto: true, reserved: 0 });
   assert.equal(c.provider.aidenhq.options.baseURL, "http://gw:8200/api/v1");
   assert.equal(c.mcp.github!.headers["X-Agent-Key"], "{env:AIDENHQ_RUN_TOKEN}");

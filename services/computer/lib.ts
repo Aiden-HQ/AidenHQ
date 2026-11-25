@@ -518,10 +518,11 @@ export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse
  * on with the job token. An unreachable gateway is a 502 the engine fails on, loudly.
  */
 export async function forwardModelList(res: http.ServerResponse, url: string, token: string, { waitMs = 25_000, retryMs = 1000 }: { waitMs?: number; retryMs?: number } = {}) {
-  // A gateway that isn't listening (a kernel restart) is tried again every `retryMs`, inside the engine's 30 s deadline.
+  // A gateway that isn't listening (a kernel restart) is tried again every `retryMs`; a request it accepts gets the rest of the
+  // window (a cold catalog can take a while), all inside the engine's 30 s deadline.
   for (const until = Date.now() + waitMs; ; await new Promise((r) => setTimeout(r, retryMs))) {
     try {
-      const up = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
+      const up = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(Math.max(1_000, until - Date.now())) });
       const body = Buffer.from(await up.arrayBuffer());
       return void res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" }).end(body);
     } catch (e) {

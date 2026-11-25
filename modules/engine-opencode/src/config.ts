@@ -52,7 +52,7 @@ export function opencodeConfig(spec: JobSpec, { plugins, stateDir, limits }: { p
   const models: OpencodeConfig["provider"]["aidenhq"]["models"] = {};
   for (const id of [def, ...(spec.model.models ?? []).map(modelId)]) {
     const l = limits[id] ?? (() => { throw new Error(`no context window for model ${id}`); })();
-    models[id] ??= { name: id, tool_call: true, reasoning: true, limit: { context: l.context, input: Math.min(Math.floor(l.context * COMPACT_AT), l.context - Math.min(l.output, OUTPUT_ASK)), output: l.output }, ...(id === def && spec.model.effort ? { options: { reasoningEffort: spec.model.effort } } : {}) };
+    models[id] ??= { name: id, tool_call: true, reasoning: true, limit: { context: l.context, input: Math.max(Math.floor(l.context / 2), Math.min(Math.floor(l.context * COMPACT_AT), l.context - Math.min(l.output, OUTPUT_ASK))), output: l.output }, ...(id === def && spec.model.effort ? { options: { reasoningEffort: spec.model.effort } } : {}) };
   }
   return {
     $schema: "https://opencode.ai/config.json",
