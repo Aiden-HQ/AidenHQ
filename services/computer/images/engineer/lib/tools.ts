@@ -60,9 +60,9 @@ export interface Answer { message: Message; pending?: string }
 
 const PROTOCOL = "2025-06-18";
 
-/** The JSON-RPC messages of an answer: one JSON object, or SSE whose data lines carry them. */
+/** The JSON-RPC messages of an answer: one JSON object, or SSE events, each one's data lines joined (a message may span several). */
 function messages(text: string, sse: boolean): Message[] {
-  const raw = sse ? text.split(/\r\n|\r|\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()) : [text];
+  const raw = sse ? text.split(/\r\n\r\n|\n\n|\r\r/).map((ev) => ev.split(/\r\n|\r|\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(l.startsWith("data: ") ? 6 : 5)).join("\n")).filter((d) => d.trim()) : [text];
   return raw.flatMap((m) => { try { const v = JSON.parse(m); return v && typeof v === "object" && !Array.isArray(v) ? [v as Message] : []; } catch { return []; } });
 }
 
@@ -95,6 +95,8 @@ export function mcp({ url, headers }: { url: (connection: string) => string; hea
       throw failed(connection, tool, e);
     }
     if (res.status === 401) throw new ToolError(connection, tool, "job-ended", "the job's token was refused: the job has ended");
+    // A session the connection no longer knows (404 on its id) goes: the next call starts a new one. This call is not sent again.
+    if (res.status === 404 && session?.id) sessions.delete(connection);
     if (!res.ok && res.status !== 202) throw new ToolError(connection, tool, "transport", `the gateway answered ${res.status}: ${text.slice(0, 500)}`);
     return { res, text };
   }
