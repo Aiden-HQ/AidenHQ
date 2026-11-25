@@ -449,14 +449,20 @@ set_env AIDENHQ_STATE_DIR "$H/.local/state/aidenhq"
 set_env AIDENHQ_INSTANCE_DIR "$INST"
 set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.yaml)
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub
-# Meetings' vault: keep the folders a host already lists (.env.example seeds Meetings on a new install), else the module
-# has no /vault mount. The module runs as the owner (uid 1000), so its folders are made as the owner, before it starts.
-grep -q '^VAULT_FOLDERS=.' "$ENVF" 2>/dev/null || set_env VAULT_FOLDERS Meetings
-# Read them back: a dry run has no .env yet (only the line above is printed), so it reads the example a new install copies.
+# Meetings' vault: a host that lists folders keeps them (an empty list would leave the module no /vault mount), and only
+# a host with a vault path gets the default. The module runs as the owner (uid 1000), so its folders are made as the owner.
+# A dry run has no .env yet (only the write above is printed): read the .env.example a new install copies instead.
 vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"
-vault_dir="$(sed -n 's/^VAULT_DIR=//p' "$vault_env" 2>/dev/null | tail -1 | sed "s#/home/USER#$H#g" || true)"
-vault_folders="$(sed -n 's/^VAULT_FOLDERS=//p' "$vault_env" 2>/dev/null | tail -1 || true)"
-if [ -n "$vault_dir" ] && [ -n "$vault_folders" ]; then
+vault_val() { # KEY: its value (quotes stripped as scripts/compiler/inputs.ts does), /home/USER taken from the example
+  local v; v="$(sed -n "s/^$1=//p" "$vault_env" 2>/dev/null | tail -1 || true)"
+  v="${v#\"}"; v="${v%\"}"; v="${v#\'}"; v="${v%\'}"
+  [ "$vault_env" = "$ENVF" ] || v="${v//\/home\/USER/$H}"
+  printf '%s' "$v"
+}
+vault_dir="$(vault_val VAULT_DIR)"
+if [ -n "$vault_dir" ]; then
+  grep -q '^VAULT_FOLDERS=.' "$ENVF" 2>/dev/null || set_env VAULT_FOLDERS Meetings
+  vault_folders="$(vault_val VAULT_FOLDERS)"; vault_folders="${vault_folders:-Meetings}"   # a dry run's .env: the default above
   vault_paths=("$vault_dir")
   IFS=, read -r -a vault_names <<< "$vault_folders"
   for vf in "${vault_names[@]}"; do
