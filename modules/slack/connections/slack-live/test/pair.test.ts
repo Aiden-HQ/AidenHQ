@@ -73,9 +73,15 @@ it("a code in a DM the bot cannot see pairs nobody, and the code is not redeemed
   expect(r).toBe(false);
   expect(pairing.paired()).toBe(false);
   expect(fetchSpy).toHaveBeenCalledOnce();
-  // Still good: the person whose DM is with the bot pairs with it.
-  const { dm } = setup();
-  expect(await dm(code)).toBe(true);
+  // Still good, in the same store: the person whose DM is with the bot pairs with it.
+  expect(await handlePairingDm(
+    pairing,
+    { event_id: "EvRetry", event: { type: "message", channel_type: "im", user: "U2", channel: "D1", text: code } },
+    async () => undefined,
+    () => undefined,
+    { botToken: "xoxb-test", fetch: botSees("D1") as typeof fetch },
+  )).toBe(true);
+  expect(pairing.owner()).toEqual({ user: "U2", channel: "D1" });
 });
 
 it("a lookup that itself fails falls back to the event naming a bot install", async () => {

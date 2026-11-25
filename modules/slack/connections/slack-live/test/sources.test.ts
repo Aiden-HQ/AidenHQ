@@ -32,6 +32,8 @@ describe("src_slack", () => {
     expect(eventWrite({ event: { type: "reaction_added", channel: "C1" } })).toBeNull();
   // A pairing code read by the gap sync is a live credential: its row keeps its metadata and loses its text.
   expect(eventWrite({ event: { type: "message", channel: "D1", channel_type: "im", ts: "6.6", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: null, user_id: "U1", ts: "6.6" });
+  // In a channel the same shape is ordinary text and is kept.
+  expect(eventWrite({ event: { type: "message", channel: "C1", channel_type: "channel", ts: "7.7", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: "A".repeat(22) });
     expect(eventWrite({ event: { type: "message", channel: "C1", ts: "4.4", text: "x".repeat(5000) } })?.row).toMatchObject({ text_truncated: true });
   });
 

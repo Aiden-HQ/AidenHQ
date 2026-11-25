@@ -140,11 +140,15 @@ export async function handlePairingDm(
     await say(ev.channel, "I couldn't check that DM with the bot. Try again in a moment.").catch(() => undefined);
     return true;
   }
-  // From here the event is decided: ack before any reply, so a slow post never makes Slack redeliver a decided pairing.
-  await deps.ack?.().catch(() => undefined);
-  if (events.event && pairing.eventHandled(events.event)) return true;
+  if (events.event && pairing.eventHandled(events.event)) {
+    await deps.ack?.().catch(() => undefined);
+    return true;
+  }
+  // Redeem (and record the event) before acking: a crash after the ack must not leave the owner unpaired with no redelivery.
   const r = pairing.redeem(code, ev.user, ev.channel);
   if (events.event) pairing.noteEventHandled(events.event);
+  // The decision is durable now; ack before posting, so a slow reply never makes Slack redeliver it.
+  await deps.ack?.().catch(() => undefined);
   if (!r.ok) {
     await say(ev.channel, "That code didn't work. Make a new one on the AidenHQ board.").catch(() => undefined);
     return true;

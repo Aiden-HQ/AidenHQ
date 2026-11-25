@@ -50,6 +50,10 @@ it("a code-shaped message that pairs nobody is not teed or forwarded", async () 
   expect(tee).not.toHaveBeenCalled();
   expect(forward).not.toHaveBeenCalled();
   expect(ack).toHaveBeenCalledOnce();
+
+  // The same shape in a channel is ordinary text: ingested as usual.
+  await handle({ type: "events_api", body: { event_id: "Ev10", event: { type: "message", channel_type: "channel", user: "U1", channel: "C1", ts: "3.3", text: "B".repeat(22) } }, ack });
+  expect(tee).toHaveBeenCalledOnce();
 });
 
 it("a non-events_api message is not logged as an inbound event", async () => {

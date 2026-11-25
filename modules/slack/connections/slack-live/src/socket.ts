@@ -61,9 +61,9 @@ export async function startSocket({ appToken, store, chat, pair, bind, tee, forw
       if (msg.type === "events_api" && pair && (await pair(msg.body, () => msg.ack()))) return;
       // Owner's messages in the command channel are chat with the CoS, not triage events.
       const ev = (msg.body as { event?: Record<string, string> } | null)?.event;
-      // A pairing code that did not pair (a DM the bot can't see, a channel) is still a live credential: never stored or
-      // forwarded as chat. The event is handled here, so it does not reach src_slack or the event router either.
-      if (msg.type === "events_api" && isCodeShaped(ev?.text)) {
+      // A pairing code that did not pair (a DM the bot can't see) is still a live credential: never stored or forwarded as
+      // chat. Only a DM: the same shape in a channel is ordinary text, and the board only ever shows the code in the DM.
+      if (msg.type === "events_api" && ev?.channel_type === "im" && isCodeShaped(ev?.text)) {
         await msg.ack().catch(() => undefined);
         return;
       }

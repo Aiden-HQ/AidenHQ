@@ -90,7 +90,7 @@ export function messageWrite(channel: string, m: Record<string, any>, type: stri
   if (m.subtype === "tombstone") return { table: TOMBSTONE, row: tombstone(channel, m.ts, type) };
   // A pairing code is a live credential: a history read (the gap sync) can see it through the owner's own sign-in, and it must
   // never land in src_slack, which agents read. Its metadata is kept, its text blanked.
-  if (isCodeShaped(m.text)) return { table: MESSAGE, row: { ...messageRow(channel, { ...m, text: "" }, type), text: null } };
+  if (type === "im" && isCodeShaped(m.text)) return { table: MESSAGE, row: { ...messageRow(channel, { ...m, text: "" }, type), text: null } };
   return { table: MESSAGE, row: messageRow(channel, m, type) };
 }
 
