@@ -147,6 +147,9 @@ function retitlePart(p: Pr, s: State): Part {
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
   if (!same(p.repo, s.productRepo) && !inAgentsOrg(p.repo, s) && !inMaintained(p.repo, s)) return REJECT("outside-merge", `${ref} is outside the agents org, the product repo and maintainer_repos`);
   if (!p.ship) return REJECT("ship-generation", `${ref}: a retitle names an adoption`);
+  // A job files a retitle on the adoption's own task (the Engineer ship woke): an adoption with no task yet belongs to nobody,
+  // and no job may write a PR it wasn't handed.
+  if (!p.ship.task) return REJECT("ship-scope", `${ref}: no task owns the adoption yet, so no job may retitle it`);
   const refused = shipRefusal(p.ship, ref);
   if (refused) return refused;
   return T(0, "ship-retitle", `${ref}: adopted at generation ${p.ship.generation}, at its head \`${p.ship.expected.slice(0, 12)}\``);

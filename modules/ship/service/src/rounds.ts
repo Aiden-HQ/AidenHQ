@@ -63,6 +63,10 @@ export interface RoundDeps {
   log(msg: string, f?: Record<string, unknown>): void;
   /** GitHub as the owner (github's /internal/ship/gh): the repo's own actions and discovery (actions.ts). Without it, neither runs. */
   gh?: Gh;
+  /** The `policy` job's own verdict at the head: whether the PR title step is the step that failed it. `"other"` when another of
+   * the job's steps (the age and pin checks) failed too, so no title edit clears the check; unset or `"unknown"` when it can't be
+   * read, and the wake then names the title with that caveat. */
+  policyStep?: (repo: string, head: string) => Promise<"title" | "other" | "unknown">;
 }
 
 const OPEN = ["review", "owner", "approved", "claimed", "done"];
@@ -311,10 +315,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "fix_ci": {
         if (!s.fix.includes("ci")) return hold("a required check is red, and this repo's `fix` setting excludes CI");
-        if (pr.fork && !pr.canModify) return hold(noEdits);
+        // A metadata-only failure is a title edit: it needs neither the fork's branch (the title is the base repo's) nor a branch
+        // update. Both are judged after the failure's own kind is known, below.
+        const titleStep = titleOnly && d.policyStep ? await d.policyStep(pr.repo, pr.head).catch(() => "unknown" as const) : undefined;
+        const titleFix = titleOnly && titleStep !== "other";
+        if (!titleFix && pr.fork && !pr.canModify) return hold(noEdits);
         // Red while behind a green base: perhaps only the base moved. GitHub updates the branch once at this head before any wake;
         // a refusal has spent its round and the fix follows.
-        if (f.behindGreen && c.updated !== pr.head) {
+        if (!titleFix && f.behindGreen && c.updated !== pr.head) {
           c.updated = pr.head;
           try {
             await d.updateBranch(pr.repo, pr.number, pr.head);
@@ -327,8 +335,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         const failing = f.failing ?? [];
         const onBase = new Set(f.onBase ?? []);
         const own = failing.filter((n) => !onBase.has(n));
-        // Failing on the target branch too: likely pre-existing. The Engineer judges it with evidence; it spends no CI round.
-        if (own.length) {
+        // Failing on the target branch too: likely pre-existing. The Engineer judges it with evidence; it spends no CI round. A
+        // title-only wake spends no CI round either: it asks for no code, so a real code failure at the same head after it still
+        // has the head's rounds to fix (titleFix was computed above).
+        if (own.length && !titleFix) {
           for (const n of own) c.red[n] = [...new Set([...(c.red[n] ?? []), pr.head])];
           const repeat = own.find((n) => over(c.red[n]!.length, caps.same_check_heads));
           if (repeat) return hold(`required check \`${repeat}\` failed on ${c.red[repeat]!.length} heads (same_check_heads)`);
@@ -339,8 +349,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           `${pr.url}: required checks are red at head ${pr.head}: ${(titleOnly ? [...new Set([...failing, ...(f.redChecks ?? [])])] : failing).map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
           viaQueue ? "They passed on the PR's head but failed on the merge queue's run for it (the `merge_group` run): read that run's logs, the failure is in the PR merged onto the base." : "",
           onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
-          ...(titleOnly ? [
+          ...(titleFix ? [
             "The red check is the PR's Conventional Commit title (the `policy` job's title step), which no commit can fix: a title edit re-runs `policy` in place.",
+            ...(titleStep === "unknown" ? ["(The job's steps couldn't be read to confirm which one failed: if the title is already Conventional Commit, read the `policy` run's log.)"] : []),
             `Fix the title with \`aidenhq ship title ${pr.url} ${pr.head} ${a!.generation} "<type>(<scope>): <summary>"\` (types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert), giving the title that describes this PR. Change nothing in the code for it: a check, test or lint rule stays as strict as you found it.`,
           ] : [
             "Fix what this PR broke as the `ship` skill says: one commit, never weaken a check.",

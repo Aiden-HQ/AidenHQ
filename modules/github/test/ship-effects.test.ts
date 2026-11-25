@@ -151,7 +151,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   };
   const adoption = { generation, refused: undefined };
   // Ship's answer, and its final tier check where github passes the write and the live head, base and author.
-  const ship = { generation: async (_r, _n, _at, check) => ({ generation: adoption.generation, task: "t1", ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
+  const ship = { generation: async (_r, _n, _at, check) => ({ generation: adoption.generation, ...(("task" in adoption) ? (adoption.task === null ? {} : { task: adoption.task }) : { task: "t1" }), ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg, productRepo: "acme/aidenhq", maintained,
@@ -730,19 +730,31 @@ test("retitle is ship's alone, Tier 0 at the head, and refuses a moved head, a s
   adoption.generation = 2;
   assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: { ...a, head: "f".repeat(40) }, requester: SHIP, task: "t1" })).json.error, /head moved|moved to/);
 
+  // An adoption with no task yet belongs to no job: no job may retitle it.
+  adoption.task = null;
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" })).json.error, /no task owns the adoption/);
+  adoption.task = "t1";
   // At the plan's own head the write is Tier 0 (no raise), and it PATCHes the title alone.
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
   assert.equal(plan.json.raise, undefined);
-  const out = await run("k-00000000000000ea", "github.retitle", a);
+  assert.equal(plan.json.args.from, pr.title ?? "wip", "the title the plan read rides in the record");
+  const out = await run("k-00000000000000ea", "github.retitle", plan.json.args, plan);
   assert.equal(out.ok, true, out.text);
   assert.equal(pr.title, title);
   const patches = calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`);
   assert.deepEqual(patches.map((c) => c.body), [{ title }], "only the title is sent: never the body, base or state");
 
+  // The author corrected the title while the record waited: that edit is theirs, and nothing is sent.
+  pr.title = "fix(widget): the author's own wording";
+  const retitled = await run("k-00000000000000ec", "github.retitle", plan.json.args, plan);
+  assert.match(retitled.text, /^ship-scope: .*title changed since the write was filed/);
+  assert.equal(pr.title, "fix(widget): the author's own wording", "the author's edit stands");
+  pr.title = title;
+
   // Read again off its head after filing: the write is refused, and nothing is sent.
   pr.head = "e".repeat(40);
-  const moved = await run("k-00000000000000eb", "github.retitle", a);
+  const moved = await run("k-00000000000000eb", "github.retitle", plan.json.args, plan);
   assert.match(moved.text, /^ship-head-moved/);
   assert.equal(calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length, 1, "no PATCH on a moved head");
 });

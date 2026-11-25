@@ -363,6 +363,24 @@ test("a metadata-only wake does not spend the head's CI round: a real red check 
   assert.match(c.woke[1].text, /one commit, never weaken a check\./);
 });
 
+test("the policy job's own failing step decides the wake: another of its steps keeps the commit instruction", async (t) => {
+  // `policy` runs the lockfile age and pin checks beside the title step: when one of those failed, a title edit clears nothing.
+  const other = await rig(t, { job: { steps: [{ name: "Age check (lockfiles) and pins (images, actions, apt, global installs)", conclusion: "failure" }, { name: "Conventional Commit title", conclusion: "failure" }] } });
+  other.set([other.agentPr(20, titleOnlyPr(20))]);
+  await other.watch.tick(); await other.watch.tick();
+  assert.equal(other.woke.length, 1);
+  assert.match(other.woke[0].text, /one commit, never weaken a check\./);
+  assert.doesNotMatch(other.woke[0].text, /aidenhq ship title/);
+
+  // The title step is the only failing one: the title wake, confirmed by the job's steps.
+  const only = await rig(t, { job: { steps: [{ name: "Age check (lockfiles) and pins (images, actions, apt, global installs)", conclusion: "success" }, { name: "Conventional Commit title", conclusion: "failure" }] } });
+  only.set([only.agentPr(21, titleOnlyPr(21))]);
+  await only.watch.tick(); await only.watch.tick();
+  assert.equal(only.woke.length, 1);
+  assert.match(only.woke[0].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/21 h21 1 /);
+  assert.doesNotMatch(only.woke[0].text, /one commit|aidenhq ship push/);
+});
+
 test("red checks whose job never started are re-run once at the head, with no wake", async (t) => {
   const c = await rig(t, { steps: [] });
   c.set([c.agentPr(4, redPr(4))]);

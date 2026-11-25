@@ -132,6 +132,19 @@ export function adoptedPass(o: AdoptedOptions) {
   };
   const rounds: RoundDeps = {
     state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, comment: o.effects.comment, askFresh: o.effects.askFresh, log: o.log, gh: o.gh,
+    policyStep: async (repo, head) => {
+      // The `policy` job's newest run at the head, and its steps: the title step's own failure is the one a title edit clears.
+      const runs = await o.gh("GET", `/repos/${repo}/commits/${head}/check-runs?per_page=100`);
+      const run = (Array.isArray(runs.body?.check_runs) ? runs.body.check_runs : []).find((c: Json) => c.name === "policy" && /actions\/runs\/\d+\/job\/\d+/.test(String(c.details_url ?? "")));
+      if (!run) return "unknown";
+      const jobId = String(run.details_url).match(/\/job\/(\d+)/)?.[1];
+      if (!jobId) return "unknown";
+      const job = await o.gh("GET", `/repos/${repo}/actions/jobs/${jobId}`);
+      if (job.status >= 300 || !Array.isArray(job.body?.steps)) return "unknown";
+      const failed = job.body.steps.filter((s: Json) => s.conclusion === "failure");
+      if (!failed.length) return "unknown";
+      return failed.length === 1 && /conventional commit title/i.test(String(failed[0].name ?? "")) ? "title" : "other";
+    },
     updateBranch: async (repo, n, head) => void (await must("PUT", `/repos/${repo}/pulls/${n}/update-branch`, { expected_head_sha: head })),
     assign: async (repo, n, logins) => void (await must("POST", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
   };
@@ -315,11 +328,16 @@ export function adoptedPass(o: AdoptedOptions) {
       // Red on the base too: the same required check names (on the head or the merge_group run) red on the default branch's head.
       // The base head's newest judgement per name, as the gate reads a head: a run an edit superseded is not red.
       const onBase = new Set(latestChecks(namedChecks(main.rollup)).filter((c) => !c.ok && !c.pending).map((c) => c.name));
-      const red = [...new Set([...(v.failing ?? []), ...(v.groupFailing ?? [])])];
+      // Every name red on the head, the aggregate's own roll-up included, so a red non-required check is compared with the base
+      // too (a repo requiring only `ci-required` would otherwise hand an advisory base-red name to the title-only test unmatched).
+      const red = [...new Set([...(v.failing ?? []), ...(v.redChecks ?? []), ...(v.groupFailing ?? [])])];
+      // Every name red on this head: the required ones the gate named and every other named check (a code check red beside
+      // `ci-required` keeps the commit instruction, so the title-only test must see it, base-red or not).
+      const redAtHead = [...new Set([...(v.failing ?? []), ...(v.redChecks ?? [])])];
       // Red while behind a green base: round() has GitHub update the branch once at this head before asking for a fix.
       const behindGreen = v.do === "fix_ci" && main.rollup?.state === "SUCCESS" && main.oid && a.counters?.updated !== view.head
         ? Number((await o.gh("GET", `/repos/${repo}/compare/${main.oid}...${view.head}`)).body?.behind_by) > 0 : false;
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], ...(v.redChecks ? { redChecks: v.redChecks } : {}), groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], ...(redAtHead.length ? { redChecks: redAtHead } : {}), groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
     },
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {
