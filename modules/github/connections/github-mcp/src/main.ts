@@ -22,7 +22,7 @@ import { graduate } from "./graduate.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
 import { isModule, needQueue, reportOrgOk } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute, type OpenPrs } from "./code-review-read.js";
-import { createAccess, GitHubNeed, needResult, withWriteBudget, type GitHubAccess } from "./client.js";
+import { createAccess, GitHubNeed, needResult, withOwnerTrace, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
 import { signedIn } from "./vendor/needs.js";
 import { ReviewPoster } from "./review-post.js";
@@ -171,11 +171,13 @@ function buildServer(caller?: Caller): McpServer {
         // A write's GitHub objects go to the kernel with its outcome (structuredContent._aidenhq.objects), not to the agent.
         // One invocation, one write budget: every write the tool makes shares the deadline its first write fixes.
         // Counted under the tool's name in the hourly count of GitHub calls.
-        const out = (await access.withCaller(`tool:${name}`, () => withWriteBudget(() => Promise.resolve(fn(a))))) as { objects?: unknown } | undefined;
+        const traced = await access.withCaller(`tool:${name}`, () => withOwnerTrace(() => Promise.resolve(fn(a))));
+        const out = traced.value as { objects?: unknown } | undefined;
         const objects = out && typeof out === "object" && Array.isArray(out.objects) ? (out.objects as string[]) : undefined;
         const shown = objects ? Object.fromEntries(Object.entries(out!).filter(([k]) => k !== "objects")) : out;
         const result = { content: [{ type: "text" as const, text: JSON.stringify(shown, null, 2) }], ...(objects ? { structuredContent: { _aidenhq: { objects } } } : {}) };
-        return usesSignIn ? signedIn(result) : result;
+        // Only when the owner's sign-in answered one of its calls: a tool whose every read the App served proves nothing about it.
+        return usesSignIn && traced.owner ? signedIn(result) : result;
       } catch (err) {
         // A typed need names the cause and the fix; an owner-fixable one is needs_owner, which the kernel routes (client.ts).
         if (err instanceof GitHubNeed) {

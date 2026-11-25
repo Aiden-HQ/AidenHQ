@@ -101,8 +101,6 @@ type CallOpts = {
    * starts at the deadline still gets its own attempt timeout. A write that cannot see its attempt through inside it fails
    * (a write must never land after its caller was told it failed). */
   deadline?: number;
-  /** The repo a GraphQL read is about (its variables'): only such a read may go as the App (`readerFor`). */
-  repo?: string;
   /** The owner's own sign-in, never the App: a read that probes what the owner's credential reaches (a failed git fetch's cause). */
   owner?: true;
 };
@@ -161,8 +159,6 @@ const PERMISSIONS: [RegExp, string][] = [
   [/^\/(?:contents|git|commits|compare|branches|readme|tags|releases)\b/, "contents"],
 ];
 const permissionOf = (rest: string) => PERMISSIONS.find(([re]) => re.test(rest))?.[1];
-/** What ship's one GraphQL read (its open PRs with their checks and timeline) reads: every one of these, or the owner reads it. */
-const GRAPHQL_PERMISSIONS = ["pull_requests", "checks", "statuses", "issues", "contents"];
 /** An App read refused for a permission its installation hasn't accepted: the owner reads that repo and permission this long. */
 const DENIED_MS = 60 * 60_000;
 /** The shared ETag cache's bounds: its whole size, and the largest answer it keeps. */
@@ -206,14 +202,21 @@ const ATTEMPT_TIMEOUT_MS = 30_000;
 const WRITE_BUDGET_MS = 240_000;
 const SECONDARY = /secondary rate limit|abuse detection|submitted too quickly/i;
 /** One tool invocation's writes share one budget: the store holds the deadline, fixed at the invocation's entry. */
-const invocation = new AsyncLocalStorage<{ deadline: number }>();
+const invocation = new AsyncLocalStorage<{ deadline: number; owner: boolean }>();
 /** Who the calls in this async context are for (the hourly count's caller): a tool, a route, a loop. */
 const callers = new AsyncLocalStorage<string>();
 
 /** Runs `fn` as one tool invocation (main.ts's tool wrapper): every write it makes shares one 240 s budget, fixed when the
  * invocation starts, so a preflight read and a second write both spend that same budget and no write is sent after it. */
 export function withWriteBudget<T>(fn: () => Promise<T>, at: () => number = Date.now): Promise<T> {
-  return invocation.run({ deadline: at() + WRITE_BUDGET_MS }, fn);
+  return invocation.run({ deadline: at() + WRITE_BUDGET_MS, owner: false }, fn);
+}
+/** Runs `fn` as one tool invocation (withWriteBudget) and says whether the owner's sign-in answered any of its calls: a tool
+ * whose every read the App served proves nothing about the sign-in, so it must not mark it working. */
+export async function withOwnerTrace<T>(fn: () => Promise<T>, at: () => number = Date.now): Promise<{ value: T; owner: boolean }> {
+  const store = { deadline: at() + WRITE_BUDGET_MS, owner: false };
+  const value = await invocation.run(store, fn);
+  return { value, owner: store.owner };
 }
 /** The deadline of the tool invocation this call belongs to, or undefined outside a tool call. */
 export function writeBudgetDeadline(): number | undefined {
@@ -374,9 +377,9 @@ export function createAccess(o: {
     fail({ cause: "write_busy" });
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number, caller?: string, repo?: string, ownerOnly = false) {
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number, caller?: string, ownerOnly = false) {
     const p = paceOf(as);
-    if (!createsContent(method, path, body)) return read(method, path, body, resource, background, accept, as, etag, readDeadline, caller, repo, ownerOnly);
+    if (!createsContent(method, path, body)) return read(method, path, body, resource, background, accept, as, etag, readDeadline, caller, ownerOnly);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
@@ -390,44 +393,37 @@ export function createAccess(o: {
   const denied = new Map<string, number>();
   /**
    * Who reads a repo when the caller named nobody: the App's installation where the App is installed on the repo and its
-   * installation holds the permission the read needs (PERMISSIONS; a GraphQL read names its repo and needs GRAPHQL_PERMISSIONS),
-   * else the owner (undefined). A broken App (its key, a suspension) throws here, as it does for code review's writes: the GitHub
+   * installation holds the permission the read needs (PERMISSIONS), else the owner (undefined). REST only: GraphQL stays the
+   * owner's (its own budget sat near idle, and ship's merge decisions read viewer-relative fields such as mergeStateStatus). A broken App (its key, a suspension) throws here, as it does for code review's writes: the GitHub
    * card already shows it, and a read never quietly moves between identities because the App broke.
    */
-  async function readerFor(method: string, path: string, repo?: string): Promise<{ key: string; repo: string; permission: string; as: Identity } | undefined> {
-    if (!o.app) return undefined;
-    let r: string, permission: string, needs: string[];
-    if (method === "GET") {
-      const m = inRepo(path);
-      const perm = m && permissionOf(m[3] ?? "");
-      if (!m || !perm || [m[1], m[2]].some((x) => /^\.+$/.test(x!))) return undefined;
-      r = `${m[1]}/${m[2]}`.toLowerCase(); permission = perm; needs = [perm];
-    } else if (method === "POST" && path === "/graphql" && repo && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
-      r = repo.toLowerCase(); permission = "graphql"; needs = GRAPHQL_PERMISSIONS;
-    } else return undefined;
+  async function readerFor(method: string, path: string): Promise<{ key: string; repo: string; permission: string; as: Identity } | undefined> {
+    if (!o.app || method !== "GET") return undefined;
+    const m = inRepo(path);
+    const permission = m && permissionOf(m[3] ?? "");
+    if (!m || !permission || [m[1], m[2]].some((x) => /^\.+$/.test(x!))) return undefined;
+    const r = `${m[1]}/${m[2]}`.toLowerCase();
     const key = `${r} ${permission}`;
     if ((denied.get(key) ?? 0) > now()) return undefined;
     const inst = await o.app.installed(r);
-    if (!inst || !needs.every((n) => inst.permissions[n] === "read" || inst.permissions[n] === "write")) return undefined;
+    if (!inst || !["read", "write"].includes(inst.permissions[permission] ?? "")) return undefined;
     const app = o.app;
     return { key, repo: r, permission, as: { key: `app:${inst.id}`, token: (fresh) => app.token(inst.id, fresh) } };
   }
 
   /**
    * A read, as the App where it can (readerFor), else as the caller's identity (the owner, or `as`). An App read GitHub refuses for
-   * a permission the installation hasn't accepted yet (403 "Resource not accessible by integration", or any GraphQL `errors`: a
-   * partial answer is never used) is read again as the owner, and that repo and permission stay the owner's for DENIED_MS, logged
+   * a permission the installation hasn't accepted yet (403 "Resource not accessible by integration") is read again as the owner, and that repo and permission stay the owner's for DENIED_MS, logged
    * once: the one fallback, because the App is optional and its new permissions wait for each install's approval.
    */
-  async function read(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, deadline?: number, caller?: string, repo?: string, ownerOnly = false) {
+  async function read(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, deadline?: number, caller?: string, ownerOnly = false) {
     const go = (who?: Identity) => cached(method, path, body, resource, background, accept, who, etag, deadline, caller);
-    const app = as || ownerOnly ? undefined : await readerFor(method, path, repo);
+    const app = as || ownerOnly ? undefined : await readerFor(method, path);
     if (!app) return go(as);
     const r = await go(app.as);
-    const refused = path === "/graphql" ? Array.isArray(r.body?.errors) && r.body.errors.length > 0 : r.status === 403 && /not accessible by integration/i.test(String(r.body?.message ?? ""));
-    if (!refused) return r;
+    if (!(r.status === 403 && /not accessible by integration/i.test(String(r.body?.message ?? "")))) return r;
     denied.set(app.key, now() + DENIED_MS);
-    o.log?.("github reads as the owner: the App's installation refused the permission", { repo: app.repo, permission: app.permission, until: new Date(now() + DENIED_MS).toISOString(), said: String(r.body?.message ?? r.body?.errors?.[0]?.message ?? "").slice(0, 200) });
+    o.log?.("github reads as the owner: the App's installation refused the permission", { repo: app.repo, permission: app.permission, until: new Date(now() + DENIED_MS).toISOString(), said: String(r.body?.message ?? "").slice(0, 200) });
     return go(undefined);
   }
 
@@ -619,6 +615,9 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
+    // This tool invocation's own sign-in answered (withOwnerTrace): what lets the tool say the sign-in works.
+    const inv = invocation.getStore();
+    if (inv && (res.ok || res.status === 304)) inv.owner = true;
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -641,7 +640,7 @@ export function createAccess(o: {
     withCaller: (caller, fn) => callers.run(caller, fn),
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : path.startsWith("/search/") ? "search" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline, opts.caller, opts.repo, opts.owner === true),
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : path.startsWith("/search/") ? "search" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline, opts.caller, opts.owner === true),
     graphql: async (query, variables, opts = {}) => {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
       const body = res.body;

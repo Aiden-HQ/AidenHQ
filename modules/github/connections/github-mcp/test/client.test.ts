@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createAccess, GitHubNeed, needResult, withWriteBudget } from "../src/client.js";
+import { createAccess, GitHubNeed, needResult, withOwnerTrace, withWriteBudget } from "../src/client.js";
 import { readNeed } from "../src/vendor/needs.js";
 import type { Auth } from "../src/vendor/oauth.js";
 
@@ -878,4 +878,16 @@ it("an App read refused for a permission falls back to the owner, and that repo 
   await access.rest("GET", "/repos/acme/api/commits/abc/check-runs");
   expect(sent).toEqual(["Bearer ghs_app", "Bearer gho_owner", "Bearer gho_owner"]);
   expect(logs.filter((m) => m === "github reads as the owner: the App's installation refused the permission")).toHaveLength(1);
+});
+
+it("a tool call whose reads the App served doesn't count as the owner's sign-in answering; one the owner served does", async () => {
+  const app = { installed: async () => ({ id: 7, permissions: { pull_requests: "read" } }), token: async () => "ghs_app" };
+  const access = createAccess({ auth: auth(), app, fetchImpl: async () => answer(200, {}) });
+  expect((await withOwnerTrace(() => access.rest("GET", "/repos/acme/api/pulls/1"))).owner).toBe(false);
+  expect((await withOwnerTrace(() => access.rest("GET", "/repos/acme/api/issues/1"))).owner).toBe(true);
+  // GraphQL never goes as the App.
+  const sent: string[] = [];
+  const g = createAccess({ auth: auth(), app, fetchImpl: async (_u, init) => (sent.push(String(new Headers(init?.headers).get("authorization"))), answer(200, { data: {} })) });
+  await g.rest("POST", "/graphql", { query: "query { viewer { login } }", variables: {} });
+  expect(sent).toEqual(["Bearer gho_owner"]);
 });

@@ -74,11 +74,14 @@ When the limit is hit, GitHub answers "submitted too quickly" and every writer s
      pull_requests, `issues`, `labels` and `milestones` to issues, `contents`, `git`, `commits`, `compare`, `branches` and the
      like to contents, the repo itself and `collaborators` to metadata). Any other path, every org or user listing and search
      stay the owner's: an installation's list of an org would be only its repos.
-   - Ship's one GraphQL read (its open PRs) names its repo and goes as the App when the installation holds pull_requests,
-     checks, statuses, issues and contents.
+   - **GraphQL stays the owner's**, Ship's open-PR list included. GraphQL has its own budget, which sat near idle in the bad
+     hour (224 of 5,000 points), so moving it saves nothing; and Ship's merge and repair decisions read `mergeStateStatus` and
+     code-owner review requests, which may read differently to the App.
+   - A tool call marks the owner's sign-in working only when the sign-in answered one of its calls; a read the App served
+     says nothing about it.
    - **Writes never move.** Every write stays on the owner's sign-in, except code review's own App writes above.
    - **The one fallback.** An App read refused for a permission its installation hasn't accepted (403 "Resource not
-     accessible by integration", or any GraphQL `errors`) is read again as the owner, and that repo and permission stay the
+     accessible by integration") is read again as the owner, and that repo and permission stay the
      owner's for an hour, logged once (`github reads as the owner`). A broken App (its key, a suspension) fails the read, as it
      fails code review's writes: the card shows it.
    - The App's manifest asks for `checks`, `actions` and `issues` read for this. An install made before must accept them on
@@ -107,8 +110,8 @@ When the limit is hit, GitHub answers "submitted too quickly" and every writer s
   `actions: read`, `issues: read` and `metadata: read`. PR conversation comments (the ack) take `pull_requests: write`.
   Changing permissions later needs every installation to accept them. A list read without its permission can answer 200 with
   a filtered list (an issue list holding only PRs), which is why reads route on the installation's permissions, not on a 403.
-- **Team review requests.** Ship's GraphQL read lists requested reviewers, teams included; a team's slug needs the org's
-  members permission, which the App doesn't hold. If the App's answer carries an error for it, the read goes back to the owner.
+- **Viewer-relative GraphQL.** A team's slug in review requests needs the org's members permission, and `mergeStateStatus`
+  can depend on who asks: one reason GraphQL stays on the owner's sign-in.
 - **Secondary limits.** GitHub documents a separate primary budget per installation. It does not promise separate secondary
   limits, so the App's queue keeps its own backoff and `Retry-After`.
 

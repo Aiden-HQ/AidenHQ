@@ -3,10 +3,12 @@
 //   POST /internal/ship/gh       {method, path, body?, deadline?} -> {status, body} | {thrown: {message, cause}}: one GitHub call,
 //                                background, from a fixed list (the loop's reads, check re-runs, update-branch, closing an abandoned
 //                                PR and deleting its branch, its comment), on a repo the fleet merges in. No merge. Its writes go as
-//                                the owner; its reads as the App where the App can read the repo (client.ts readerFor), and a head's
+//                                the owner; its REST reads as the App where the App can read the repo (client.ts readerFor), and a head's
 //                                check-run list (filter=latest) from the change feed's snapshot while it is fresh (feed.ts checkRuns)
 //                                and holds every check run the request's `covers` names (the PR's rollup, which ship read live).
-//                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's.
+//                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's, always as
+//                                the owner (its merge and repair decisions read mergeStateStatus and code-owner reviewers as GitHub
+//                                shows them to the owner; GraphQL's own budget sits near idle).
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
 //   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
 //                                context); `pr` and `main` are the list read's node and default branch (OPEN_PRS_QUERY), so the
@@ -17,7 +19,7 @@ import { withBranch } from "./branch-lock.ts";
 import { readPrTasks } from "./pr-tasks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
-type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number; repo?: string }) => Promise<{ status: number; body: any }>;
+type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number }) => Promise<{ status: number; body: any }>;
 type Json = any;
 const REPO = "([\\w.-]+/[\\w.-]+)";
 /** The GitHub calls the loop makes, and nothing else: [method, path, body check]. The repo is the path's first group. */
@@ -132,7 +134,7 @@ export function shipRoutes(o: {
         const covers: unknown = b.covers;
         const snap = listed && Array.isArray(covers) && covers.length <= 500 && covers.every((c) => typeof c === "string") ? o.checkRuns?.(repo, listed[1]!) : undefined;
         if (snap && (covers as string[]).every((id) => snap.some((r) => r.node_id === id))) return send(res, 200, { status: 200, body: { total_count: snap.length, check_runs: snap } }), true;
-        const run = () => o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}), ...(read ? { repo } : {}) });
+        const run = () => o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) });
         if (branch && (method === "DELETE" || (method === "PATCH" && b.body?.state === "closed"))) {
           /** Ownership as pr-tasks.json has it once the lock is ours: a successor that published and was recorded while this cleanup
            *  waited is the PR's task now, and its PR is not the earlier task's to close (the head is unchanged, so no tip read can say so). */
