@@ -2,6 +2,7 @@
 
 Status: draft (2026-11-25). Brainstormed with the owner 2026-11-24/25; architecture from Codex (Sol), reshaped by a Fable review.
 Spike and Paperclip 1117 audit folded in; ready for the owner's approval.
+Sessions reach their connections as code, not an MCP tool list: see [code mode](2026-11-25-session-code-mode-design.md).
 
 ## Why
 

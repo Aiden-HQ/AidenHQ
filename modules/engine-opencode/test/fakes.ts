@@ -29,25 +29,3 @@ export async function fakeGateway(port: number) {
   }), port);
   return { seen, close: () => s.close() };
 }
-
-/** A stateless Streamable-HTTP MCP server that needs the X-Agent-Key header; `keys` records the header of each request. */
-export async function fakeMcp(port: number, key: string) {
-  const keys: (string | undefined)[] = [];
-  const s = await listen(createServer((req, res) => {
-    let b = "";
-    req.on("data", (d) => (b += d));
-    req.on("end", () => {
-      const k = req.headers["x-agent-key"] as string | undefined;
-      keys.push(k);
-      if (k !== key) { res.writeHead(401); return res.end("{}"); }
-      let m: any;
-      try { m = JSON.parse(b); } catch { res.writeHead(405); return res.end(); }
-      const reply = (result: unknown) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: m.id, result })); };
-      if (m.method === "initialize") return reply({ protocolVersion: m.params?.protocolVersion ?? "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } });
-      if (m.id === undefined) { res.writeHead(202); return res.end(); }
-      if (m.method === "tools/list") return reply({ tools: [{ name: "ping", description: "ping", inputSchema: { type: "object", properties: {} } }] });
-      reply({});
-    });
-  }), port);
-  return { keys, close: () => s.close() };
-}

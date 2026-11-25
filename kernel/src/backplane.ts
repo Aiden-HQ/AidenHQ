@@ -1260,7 +1260,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             const exec = w.kind === "module" && w.module === r.executor.module && r.kind !== CONN_TOOL && (w.connection === undefined || (r.executor.url !== undefined && new URL(r.executor.url).hostname === w.connection));
             if (!own && exec) return send(res, 200, { id: r.id, state: r.state });
             if (!own) throw fail(404, "not_found", `no record ${id}`);
-            return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: r.outcome, ...(r.owner_reason ? { reason: r.owner_reason } : {}) });
+            // A module requester reads its own outcome as filed; a job reads it as its live answer would have come (fenced and capped).
+            return send(res, 200, { id: r.id, kind: r.kind, tier: r.tier, state: r.state, outcome: w.kind === "module" ? r.outcome : writes.shownOutcome(r), ...(r.owner_reason ? { reason: r.owner_reason } : {}) });
           }
           case "GET /v1/writes/:id/chain": {
             // What was asked, as the AI reviewer reads it (review-loop.ts requestChain), from the task as it reads now: the

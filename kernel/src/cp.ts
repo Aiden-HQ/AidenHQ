@@ -326,7 +326,7 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
     });
     });
     if (!d) return;
-    if (d.comment) fact({ type: "task.commented", subject: `task:${t.id}`, version: String(d.comment), at: iso(Date.now()), actor: `agent:${c.key}`, task: t.id, data: { kind: "cp", job: c.run } });
+    if (d.comment) fact({ type: "task.commented", subject: `task:${t.id}`, version: String(d.comment), at: iso(Date.now()), actor: `agent:${c.key}`, task: t.id, data: { kind: "cp", job: live.flight.job ?? c.run } });
     if (method === "POST") return answer(201, Buffer.from(JSON.stringify({ id: d.comment, issueId: t.id })));
     return issueAnswer(t.id, 200);
   }

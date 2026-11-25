@@ -20,7 +20,7 @@ function setup(session?: string, known = session ?? "", pending?: string[], extr
   for (const d of [job, state, work, join(plug, "node_modules")]) mkdirSync(d, { recursive: true });
   if (pending) writeFileSync(join(state, "pending.json"), JSON.stringify(pending));
   writeFileSync(join(plug, "plugins.json"), JSON.stringify({ plugins: ["opencode-pty@0.4.0"] }));
-  const spec = { contract: "engine@1", job: "j1", agent: "a", task: "t1", prompt: "first prompt", ...(session ? { session } : {}), model: { base_url: `http://127.0.0.1:${gwPort}/api/v1`, token_env: "AIDENHQ_RUN_TOKEN", id: "m1", effort: "" }, mcp: [], env: [], limits: { timeout_s: 0 }, web: true, state, sandbox: { kind: "box", writable: [], network: true } };
+  const spec = { contract: "engine@1", job: "j1", agent: "a", task: "t1", prompt: "first prompt", ...(session ? { session } : {}), model: { base_url: `http://127.0.0.1:${gwPort}/api/v1`, token_env: "AIDENHQ_RUN_TOKEN", id: "m1", effort: "" }, mcp: [], tools: { dir: join(state, "aidenhq-tools"), index: join(state, "aidenhq-tools/README.md") }, env: [], limits: { timeout_s: 0 }, web: true, state, sandbox: { kind: "box", writable: [], network: true } };
   writeFileSync(join(job, "job.json"), JSON.stringify(spec));
   const log = join(root, "fake.log");
   writeFileSync(log, "");
@@ -44,7 +44,7 @@ test("first turn: session, progress and usage; one prompt; no final", async () =
     assert.ok(ev.some((x) => x.t === "progress" && x.steps?.some((s: any) => s.text.startsWith("bash: echo first prompt"))));
     assert.deepEqual(ev.find((x) => x.t === "usage"), { t: "usage", input: 10, cached: 4, output: 3, model: "m1" });
     assert.ok(!ev.some((x) => x.t === "final"));
-    assert.deepEqual(ev.filter((x) => x.t === "reply"), [{ t: "reply", id: "tfirst prompt", text: "done first prompt" }]);   // the turn's last words, once
+    assert.deepEqual(ev.filter((x) => x.t === "reply").map(({ start, end, ...r }) => (assert.ok(start <= end), r)), [{ t: "reply", id: "tfirst prompt", text: "done first prompt" }]);   // the turn's last words, once, with its bounds
     const prompts = e.calls().filter((c: any) => c.prompt);
     assert.equal(prompts.length, 1);
     assert.equal(prompts[0].text, "first prompt");

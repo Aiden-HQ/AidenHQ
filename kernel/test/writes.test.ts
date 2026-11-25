@@ -81,8 +81,11 @@ async function twin(t, { satisfied, settings, onControl, issues, agents: who = a
 
 test("the executor sees nothing before approval; approved, it runs once and the task hears the outcome", async (t) => {
   const { k, fx, tool, pending, review, moduleCalls } = await twin(t);
-  const p = await pending(await tool("post_note", { note: "hi" }));
+  const answer = await tool("post_note", { note: "hi" });
+  const p = await pending(answer);
   assert.deepEqual({ tier: p.tier, state: p.state }, { tier: 1, state: "review" });
+  // The answer marks the pending record on its header (the kernel's alone), not only in its text.
+  assert.equal(answer.headers.get("x-aidenhq-pending"), p.approval);
   assert.match(p.approval, /^k-[0-9a-f]{16}$/);
   // Plan only: nothing executed, and the tool never reached the module.
   assert.equal(fx.plans.length, 1);
@@ -111,7 +114,12 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/outcome`, { ok: false, text: "again" }, "twin-key")).status, 409);
   assert.equal(fx.executes.length, 1);
   // Its requester reads its own record; another agent can't, nor can another module report its outcome.
-  assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, ADA)).json.state, "done");
+  // Read later, its outcome is fenced as the live answer of its untrusted connection would have been.
+  const later = (await k.v1("GET", `/v1/writes/${p.approval}`, undefined, ADA)).json;
+  assert.equal(later.state, "done");
+  assert.match(later.outcome.text, /^UNTRUSTED CONTENT from twin\.post_note[\s\S]*\nposted hi\n<\/untrusted-data>$/);
+  // The board reads it as filed.
+  assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`)).json.outcome.text, "posted hi");
   assert.equal((await k.v1("GET", `/v1/writes/${p.approval}`, undefined, BO)).status, 404);
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/outcome`, { ok: true, text: "x" }, "other-key")).status, 403);
   // The kind's executor reads only {id, state}, never the outcome; another module's key reads nothing.

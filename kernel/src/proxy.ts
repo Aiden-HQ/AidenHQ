@@ -16,23 +16,22 @@ import type { Asserter } from "./assert.ts";
 import { laneCaller, NoGrants, type Connection, type Grant, type Identity, type Whoami } from "./identity.ts";
 import type { Resolver } from "./net.ts";
 import type { Rec, Requester } from "./records.ts";
-import { CONN_TOOL, type Writes } from "./writes.ts";
+import { CONN_TOOL, MAX_RESULT, oversized, type Writes } from "./writes.ts";
 
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
 // A 10 MB task file as base64 (~13.4 MB), inside its tools/call JSON (tasks-mcp task_file_upload).
 const MAX_BODY = 14 * 1024 * 1024 + 64 * 1024;
 const MAX_ANSWER = 16 * 1024 * 1024;
-// What an agent may be handed back from one tools/call (a result with an image block, a screenshot, is exempt).
-const MAX_RESULT = 1024 * 1024;
 // A module's session-setup answers (initialize, tools/list) are kept this long per deployment.
 const SETUP_TTL_MS = 5 * 60_000;
 const SETUP_MAX = 500;
 const FORWARDED = new Set(["initialize", "notifications/initialized", "ping", "tools/list", "tools/call"]);
 // Request headers passed on: the MCP transport's own. Nothing else (the caller's bearer above all) leaves.
 const PASS = ["accept", "content-type", "mcp-session-id", "mcp-protocol-version", "last-event-id"];
-const HOP = new Set(["connection", "keep-alive", "transfer-encoding", "content-length", "content-encoding"]);
-/** What an agent is told in place of a result over MAX_RESULT: the call ran. */
-const oversized = (connection: string, tool: string | undefined, n: number) => `oversized-result: ${connection}.${tool} answered ${n} bytes, over the ${MAX_RESULT}-byte limit an agent is handed. The call ran; ask for less (a narrower query, a page, a field list), and don't repeat a write.`;
+// Response headers never passed back: hop-by-hop ones, and the kernel's own pending mark (a module can't claim one).
+const HOP = new Set(["connection", "keep-alive", "transfer-encoding", "content-length", "content-encoding", "x-aidenhq-pending"]);
+/** The header that marks a write tool call's answer as a record still pending (its id): only the kernel sets it, never a module's text. */
+export const PENDING_HEADER = "x-aidenhq-pending";
 export const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
 
 async function readAll(stream: IncomingMessage, max: number): Promise<Buffer> {
@@ -219,7 +218,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     // ms: the kernel's own time before the call goes on (identity, checks, signing); total: with the module's answer.
     let forwarded: number | undefined;
     let bytes = 0, hasId = false, proto = "", cursor = "";
-    const outcome = (o: string) => log("proxy", { connection, ...(tool ? { tool } : {}), method, agent: who.key || who.module || null, ms: (forwarded ?? Date.now()) - t0, total: Date.now() - t0, bytes, outcome: o });
+    const outcome = (o: string) => log("proxy", { connection, ...(tool ? { tool } : {}), method, agent: who.key || who.module || null, ...(who.job ? { job: who.job } : {}), ms: (forwarded ?? Date.now()) - t0, total: Date.now() - t0, bytes, outcome: o });
     if (req.method === "POST") {
       let msg: { method?: unknown; id?: unknown; params?: Record<string, unknown> };
       try { msg = JSON.parse(raw.toString("utf8")); } catch { throw fail(400, "bad_request", "the body must be one JSON-RPC message"); }
@@ -244,18 +243,21 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
         // with the outcome); any other write or destructive tool is conn.tool, forwarded below at Tier 0.
         const routed = writes ? writes.kindOf(connection, tool) : undefined;
         if (routed) {
-          const reply = (text: string, isError = false) => {
-            outcome(isError ? "write-refused" : "ok");
-            if (!("id" in msg)) return void res.writeHead(isError ? 422 : 202).end();
-            res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) } }));
+          // `pending`: the record this answer leaves pending (its id on PENDING_HEADER), so a client never reads pending from text.
+          const reply = (text: string, isError = false, pending?: Rec) => {
+            outcome(isError ? "write-refused" : pending ? "pending" : "ok");
+            const mark = pending ? { [PENDING_HEADER]: pending.id } : {};
+            if (!("id" in msg)) return void res.writeHead(isError ? 422 : 202, mark).end();
+            res.writeHead(200, { "content-type": "application/json", ...mark }).end(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) } }));
           };
           const own = (text: string) => (untrusted ? fence(text, source(tool)) : text);
           try {
             if (routed !== CONN_TOOL) {
               let r = await writes!.request(who, { kind: routed, args: params?.arguments ?? {} });
               if (r.state === "claimed") r = await writes!.wait(r.id, timeout * 1000);
-              if (r.tier === 0) return reply(r.outcome ? own(r.outcome.text) : `${pendingText(r)}\n(still running past the tool timeout)`, r.outcome ? !r.outcome.ok : false);
-              return reply(pendingText(r));
+              if (r.tier === 0 && r.outcome) return reply(own(r.outcome.text), !r.outcome.ok);
+              if (r.tier === 0) return reply(`${pendingText(r)}\n(still running past the tool timeout)`, false, r);
+              return reply(pendingText(r), false, r);
             }
             // The task the call says it is for, if any (MCP `_meta.task`): writes.ts binds the record to it only when this job
             // may write there anyway, and refuses it otherwise. Absent, the record is on the job's own task, as before. A
@@ -265,7 +267,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             rec = await writes!.fileTool(who, connection, tool, params?.arguments ?? {}, who.task ?? "", named as string | undefined);
             // A carded record (a repeat of an earlier call) is never forwarded here: the kernel replays it once, approved.
             if (rec.outcome) return reply(own(rec.outcome.text), !rec.outcome.ok);
-            if (rec.state !== "claimed" || rec.tier > 0) return reply(pendingText(rec));
+            if (rec.state !== "claimed" || rec.tier > 0) return reply(pendingText(rec), false, rec);
           } catch (e) {
             const err = e as Error & { status?: number };
             if (!err.status || err.status >= 500) throw e;

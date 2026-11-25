@@ -25,6 +25,8 @@ export interface JobSpec {     // <job dir>/job.json, written by the runner
   limits: { timeout_s: number };
   web: boolean;                // minor: false when the job holds private data (no web search or fetch)
   state?: string;              // minor: the engine's own state folder (its sessions), read-write, as the box sees it
+  // minor: a code-mode engine's (`tools: code`) connections as files: their folder and the index its instructions name; `mcp` is then empty
+  tools?: { dir: string; index: string };
   sandbox: { kind: "box"; writable: string[]; network: boolean };   // minor: the boundary the engine runs in
 }
 export type EngineEvent =      // <job dir>/events.jsonl, appended by the engine
@@ -32,7 +34,7 @@ export type EngineEvent =      // <job dir>/events.jsonl, appended by the engine
   | { t: "usage"; input: number; output: number; cached?: number; model: string }
   | { t: "session"; id: string }
   | { t: "final"; text: string }
-  | { t: "reply"; id: string; text: string };   // a long-lived session's finished turn: its last words, posted on the task (id: that text's own, once per turn)
+  | { t: "reply"; id: string; text: string; start?: number; end?: number };   // a long-lived session's finished turn: its last words, posted on the task (id: that text's own, once per turn), unless the job commented on its task between start and end (epoch ms)
 // <job dir>/inbox.jsonl, appended by the runner: { t: "comment"; from: string; text: string }   (only if live_input)
 export interface InboxLine { t: "comment"; from: string; text: string }
 // exit code: 0 = turn done; non-zero = failed (the runner reports, the requesting module decides retries)

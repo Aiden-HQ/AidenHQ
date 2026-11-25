@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createAdmission } from "../src/admission.ts";
-import { createBoxes, jobMcp, launcherClient } from "../src/boxes.ts";
+import { createBoxes, launcherClient } from "../src/boxes.ts";
+import { jobServers } from "../../services/computer/lib.ts";
 import { buildJob } from "../src/sandbox.ts";
 import { createOnce } from "../src/once.ts";
 import { createIdentity } from "../src/identity.ts";
@@ -44,10 +45,25 @@ async function host(t) {
   chmodSync(staleAlways, 0o755);
   const engine = { module: "test", dir: join(dir, "engines"), bin, kind: "wait", box: true, state: "task" };
   const staleEngine = (kind, bin) => ({ module: "test", dir: join(dir, "engines"), bin, kind, box: true, state: "task" });
-  writeFileSync(join(dir, "engines.json"), JSON.stringify({ wait: engine, wait2: engine, stale: staleEngine("stale", stale), "stale-always": staleEngine("stale-always", staleAlways) }));
+  writeFileSync(join(dir, "engines.json"), JSON.stringify({ wait: engine, wait2: engine, code: { ...engine, kind: "code", tools: "code" }, stale: staleEngine("stale", stale), "stale-always": staleEngine("stale-always", staleAlways) }));
   const cfg = { workDir: join(dir, "work"), stateDir: join(dir, "state"), logsDir: join(dir, "state/logs"), secretsDir: join(dir, "secrets"), enginesFile: join(dir, "engines.json"), boxGatewayUrl: "http://10.231.2.1:8200", boxDir: join(dir, "boxes"), timeout_minutes: 2 };
   writeFileSync(join(dir, "config/handbooks/agent-1.md"), "# Acme crew handbook\n");
   writeFileSync(join(dir, "config/handbooks/agent-9.md"), "# Session handbook\n");
+  writeFileSync(join(dir, "config/handbooks/agent-8.md"), "# Code-mode session handbook\n");
+  // The kernel's own proxy as a code-mode launch lists a job's tools there: one tool on every connection, any job token.
+  const kernelSeen = [];
+  const kernelProxy = http.createServer((req, res) => {
+    let b = "";
+    req.on("data", (d) => (b += d));
+    req.on("end", () => {
+      const msg = JSON.parse(b || "{}");
+      kernelSeen.push({ url: req.url, auth: req.headers.authorization, method: msg.method });
+      if (!("id" in msg)) return res.writeHead(202).end();
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: msg.method === "tools/list" ? { tools: [{ name: "search", inputSchema: { type: "object", properties: { q: { type: "string" } } } }] } : {} }));
+    });
+  });
+  await new Promise((r) => kernelProxy.listen(0, "127.0.0.1", r));
+  t.after(() => kernelProxy.close());
   const calls = [];
   const launcher = { fail: 0 }; // a status the next /job answers with (0: a box)
   let n = 0;
@@ -64,15 +80,15 @@ async function host(t) {
       writeFileSync(envFile, `AIDENHQ_RUN_TOKEN=${body.token}\n`);
       writeFileSync(join(cfg.boxDir, `${container}.box.json`), JSON.stringify({ workspace: body.workspace, outDir, engineDir: join(dir, "engines") }));
       // A session's standing box answers with the lease this job holds in it (Lane B's launcher).
-      res.writeHead(200).end(JSON.stringify({ container, envFile, outDir, gen: 1, ...(body.standing ? { lease: `l-${String(n).padStart(8, "0")}` } : {}) }));
+      res.writeHead(200).end(JSON.stringify({ container, envFile, outDir, gen: 1, ...(body.standing ? { lease: `l-${String(n).padStart(8, "0")}` } : {}), ...(body.engine === "code" ? { stateIn: "/engine-state/agent-8_code-1" } : {}) }));
     });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
-  const grants = { "agent-1": { key: "acme-crew", roles: ["notes"], max_parallel: 2, engine: "wait", engines: ["wait", "wait2"], model: "acme/m1", models: ["acme/m1", "acme/m2"], tools: { slack: ["search"], tasks: ["create"] } }, "agent-9": { key: "session", profile: "session", roles: ["session"], max_parallel: 2, engine: "wait", model: "acme/m1", tools: { slack: ["search"] } } };
+  const grants = { "agent-1": { key: "acme-crew", roles: ["notes"], max_parallel: 2, engine: "wait", engines: ["wait", "wait2"], model: "acme/m1", models: ["acme/m1", "acme/m2"], tools: { slack: ["search"], tasks: ["create"] } }, "agent-9": { key: "session", profile: "session", roles: ["session"], max_parallel: 2, engine: "wait", model: "acme/m1", tools: { slack: ["search"] } }, "agent-8": { key: "coder", profile: "session", roles: ["session"], max_parallel: 2, engine: "code", model: "acme/m1", tools: { slack: ["search"] } } };
   // The compiled declaration (config/paperclip.yaml) and the connections the box may use, both mutable per test.
-  const declared = { "agent-1": ["slack", "tasks"], "agent-9": ["slack"] };
+  const declared = { "agent-1": ["slack", "tasks"], "agent-9": ["slack"], "agent-8": ["slack"] };
   const conns = { slack: {}, tasks: {} };
   const db = new DatabaseSync(":memory:");
   // The wakes table admission's facts read (a real kernel's inbox; this host's wakes are fakes).
@@ -103,20 +119,20 @@ async function host(t) {
   const attachments = { list: async () => attached.map((a) => ({ originalFilename: a.name, byteSize: a.data.length })), add: async (task, name, type, data) => void attached.push({ task, name, type, data }) };
   const once = createOnce(db);
   const draining = { on: false };
-  const make = (now) => createBoxes({ stopping: () => draining.on, db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, boxExec, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => conns, declaredServers: (id) => declared[id], identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
+  const make = (now) => createBoxes({ kernelUrl: `http://127.0.0.1:${kernelProxy.address().port}`, stopping: () => draining.on, db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, boxExec, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => conns, declaredServers: (id) => declared[id], identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
     pool: { mayAgent: () => true },
     nextTurn: jobTools,
     db, grants: () => grants, kinds: () => ({}), capacity: () => 12, spend: () => [], mayDispatch: () => true, log: () => {},
-    cp: { task: async (id) => ({ id, identifier: `PEN-${id.split("-")[1]}`, assigneeAgentId: id.startsWith("session-") ? "agent-9" : "agent-1", status: "todo" }) },
+    cp: { task: async (id) => ({ id, identifier: `PEN-${id.split("-")[1]}`, assigneeAgentId: id.startsWith("session-") ? "agent-9" : id.startsWith("code-") ? "agent-8" : "agent-1", status: "todo" }) },
     wakes: { claimed: (_m, k) => wakes.get(k), bind: () => {}, endWaits: () => [], unclaim: () => {} },
     launch: (job) => boxes.launch(job), release: (id) => boxes.release(id),
   });
-  const admit = (task, { full } = {}) => { wakes.set(task, { task, agent: task.startsWith("session-") ? "agent-9" : "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello", ...(full ? { full_prompt: full } : {}) }); };
+  const admit = (task, { full } = {}) => { wakes.set(task, { task, agent: task.startsWith("session-") ? "agent-9" : task.startsWith("code-") ? "agent-8" : "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello", ...(full ? { full_prompt: full } : {}) }); };
   const release = () => writeFileSync(join(cfg.logsDir, "release"), "");
-  return { attached, dir, cfg, db, grants, conns, declared, calls, whoami, admit, release, make, jobTools, cloned, codehostDown, launcher, draining };
+  return { kernelSeen, attached, dir, cfg, db, grants, conns, declared, calls, whoami, admit, release, make, jobTools, cloned, codehostDown, launcher, draining };
 }
 
 test("admit → box → run: the kernel's key, the job token as the box's credential, the frozen tools in its config, the handbook home", async (t) => {
@@ -280,7 +296,7 @@ test("buildJob writes the job's connections, its models, and a standing box's ow
   const h = await host(t);
   const jobDir = join(h.dir, "boxes", "job-x");
   mkdirSync(jobDir);
-  const servers = jobMcp({ github: ["github_issue_read"] }, { github: { tool_timeout_sec: 60 } }, "http://gw");
+  const servers = jobServers({ github: ["github_issue_read"] }, { github: { tool_timeout_sec: 60 } }, "http://gw");
   const box = { container: "c1", envFile: "/e", outDir: join(h.dir, "boxes"), boxOut: "/aidenhq-out/l1", workdir: "/sessions/PEN-1", stateIn: "/engine-state/agent-9_session-1", servers };
   const { argv, spec } = buildJob({ cfg: h.cfg, engine: { kind: "wait", model: "acme/m1" }, worktree: "/w", jobDir, box, boxWrap: "", models: ["acme/m1", "acme/m2"] });
   assert.deepEqual(spec.mcp, [{ name: "github", url: "http://gw/c/github/mcp", token_env: "AIDENHQ_RUN_TOKEN", tools: ["github_issue_read"], tool_timeout_s: 60 }]);
@@ -305,4 +321,19 @@ test("a session job: the standing box, its sessions workspace, a long token, and
   const { container, ...rest } = h.calls.find((c) => c.route === "/job/release").body;
   assert.match(container, /^aidenhq-computer-k/);
   assert.deepEqual(rest, { gen: 1, lease: "l-00000001", destroy: false }, "only its lease ends: the standing box stays");
+});
+
+test("a code-mode engine's launch: no MCP config, its tools listed through the kernel's proxy as the job and published in its home", async (t) => {
+  const h = await host(t);
+  await h.admit("code-1");
+  const acquire = h.calls.find((c) => c.route === "/job");
+  assert.equal(acquire.body.mcp, "", "no Codex MCP block");
+  const box = JSON.parse(h.db.prepare("SELECT box FROM jobs WHERE task = 'code-1'").get().box);
+  assert.deepEqual(box.servers, [], "no engine@1 mcp list");
+  assert.deepEqual(box.tools, { dir: "/engine-state/agent-8_code-1/aidenhq-tools", index: "/engine-state/agent-8_code-1/aidenhq-tools/README.md" });
+  assert.ok(h.kernelSeen.some((s) => s.url === "/c/slack/mcp" && s.method === "tools/list" && s.auth === `Bearer ${acquire.body.token}`), "listed as the job");
+  const home = join(h.cfg.stateDir, "code", "agent-8_code-1", "aidenhq-tools");
+  assert.match(readFileSync(join(home, "README.md"), "utf8"), /`slack\/`: 1 tool, available/);
+  assert.match(readFileSync(join(home, "slack", "search.ts"), "utf8"), /call\("slack", "search", args, \{ timeoutS: 330 \}\)/);
+  h.release();
 });

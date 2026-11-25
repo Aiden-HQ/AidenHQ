@@ -48,6 +48,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// The box's one MCP client (kernel/sdk/src/tools-client.ts, copied beside this folder by scripts/sync-shared.ts).
+import { call as callTool, ToolError } from "../lib/tools.ts";
 
 const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup | ship checkout <PR link> <head> | ship push <PR link> <head> <generation>`;
 const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup", "ship"];
@@ -237,26 +239,13 @@ const firstSubject = (repo, branch) => {
   const dir = cloneOf(repo).have;
   return execFileSync("git", ["-C", dir, "log", "--reverse", "--format=%s", `refs/heads/${branch}`, "--not", `--exclude=origin/${branch}`, "--remotes"], { encoding: "utf8" }).split("\n")[0];
 };
-/** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
+/** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), with the box's one MCP client. */
 async function tool(name, args) {
-  const path = "/c/paperclip_tasks/mcp";
-  const first = await call(path, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "aidenhq", version: "1" } } }, { "x-agent-key": token });
-  const answer = await fetch(new URL(path, gateway), {
-    method: "POST",
-    headers: { "x-agent-key": token, "content-type": "application/json", accept: "application/json, text/event-stream", ...(first.session ? { "mcp-session-id": first.session } : {}) },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } }),
-    signal: AbortSignal.timeout(10 * 60_000),
-  }).catch((e) => fail(`the gateway didn't answer (${e.message})`));
-  const text = await answer.text();
-  if (!answer.ok) fail(text);
-  // JSON, or SSE whose data lines carry the answer.
-  const msgs = text.trimStart().startsWith("{") ? [text] : text.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6));
-  const r = msgs.map((m) => { try { return JSON.parse(m); } catch { return undefined; } }).find((m) => m?.id === 2);
-  if (!r) fail("the tool sent no answer");
-  if (r.error) fail(r.error.message ?? JSON.stringify(r.error));
-  const out = (r.result?.content ?? []).filter((c) => c?.type === "text").map((c) => c.text).join("\n");
-  if (r.result?.isError) fail(out || "the tool refused");
-  return out;
+  try {
+    return (await callTool("paperclip_tasks", name, args, { timeoutS: 600 })).text;
+  } catch (e) {
+    fail(e instanceof ToolError ? e.detail : e.message);
+  }
 }
 
 // GitHub closes an issue on merge only through a closing keyword in the PR body: each --fixes issue gets a `Fixes <issue>` line

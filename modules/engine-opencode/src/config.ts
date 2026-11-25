@@ -1,5 +1,6 @@
-// The one place opencode's config is built (nothing hand-maintained): gateway provider and models, every granted connection
-// through the kernel proxy, the curated plugins and the agent's own instructions and skills, all from the job spec.
+// The one place opencode's config is built (nothing hand-maintained): gateway provider and models, the curated plugins and the
+// agent's own instructions and skills, all from the job spec. Its connections are code (`tools: code`): typed files the kernel
+// generated in the state folder, whose index is one of the instructions; no MCP server is configured.
 import { join } from "node:path";
 import type { JobSpec } from "../sdk/types.ts";
 
@@ -12,7 +13,6 @@ export interface OpencodeConfig {
   permission: { edit: "allow"; bash: "allow"; webfetch: "allow" | "deny" };
   provider: { aidenhq: { npm: string; name: string; options: { baseURL: string; apiKey: string }; models: Record<string, { name: string; tool_call: true; reasoning: true; limit: { context: number; input: number; output: number }; options?: { reasoningEffort: string } }> } };
   compaction: { auto: true; reserved: 0 };
-  mcp: Record<string, { type: "remote"; url: string; headers: { "X-Agent-Key": string }; enabled: true; timeout?: number }>;
   instructions: string[];
   plugin: string[];
 }
@@ -66,9 +66,8 @@ export function opencodeConfig(spec: JobSpec, { plugins, stateDir, limits }: { p
     provider: { aidenhq: { npm: "@ai-sdk/openai-compatible", name: "AidenHQ", options: { baseURL: spec.model.base_url, apiKey: `{env:${spec.model.token_env}}` }, models } },
     // Automatic, at COMPACT_AT of each window: `reserved: 0` leaves the threshold at limit.input alone (the default would take a further 20k off).
     compaction: { auto: true, reserved: 0 },
-    // Tool-level narrowing is the kernel proxy's: grants are enforced there, per agent key.
-    mcp: Object.fromEntries((spec.mcp ?? []).map((m) => [m.name, { type: "remote", url: m.url, headers: { "X-Agent-Key": `{env:${m.token_env}}` }, enabled: true, ...(m.tool_timeout_s ? { timeout: m.tool_timeout_s * 1000 } : {}) }])),
-    instructions: [join(stateDir, "AGENTS.md")],
+    // The handbook, then the index of the job's tool files (the kernel's proxy decides every call the scripts make).
+    instructions: [join(stateDir, "AGENTS.md"), spec.tools?.index ?? (() => { throw new Error("job.json names no tool index: this engine reaches its tools as code"); })()],
     plugin: plugins,
   };
 }

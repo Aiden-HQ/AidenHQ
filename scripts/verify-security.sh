@@ -890,8 +890,8 @@ rreview="modules/ai-reviewer/service/src/review.ts"
 # Primer publish is a primer.publish record at floor 1, and a thread reply a primer.reply record at floor 1.
 [ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]\n floor: 1\n tools: [ primer_reply_to_thread, primer_resolve_thread ]')" ] \
   && grep -qF 'mcp: box.servers ?? [], env: [],' kernel/src/sandbox.ts \
-  && grep -qF 'name, url: `${gatewayUrl}/c/${name}/mcp`, token_env: "AIDENHQ_RUN_TOKEN", tools: [...list],' kernel/src/boxes.ts \
-  && grep -qF 'const servers = jobMcp(tools, conns, cfg.boxGatewayUrl);' kernel/src/boxes.ts \
+  && grep -qF 'name, url: `${gatewayUrl}/c/${name}/mcp`, token_env: "AIDENHQ_RUN_TOKEN", tools: [...list],' services/computer/lib.ts \
+  && grep -qF 'const servers = jobServers(tools, connections(), cfg.boxGatewayUrl);' kernel/src/boxes.ts \
   && grep -qF 'web: !observes(engine),' kernel/src/sandbox.ts \
   && grep -qF 'for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c) tools[c.connection]' kernel/src/identity.ts \
   && grep -q 'export const observes = (engine?: Engine) => engine?.reads === true;' kernel/src/sandbox.ts \
