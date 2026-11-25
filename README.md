@@ -1,16 +1,13 @@
 # AidenHQ
 
-**Your work life, on autopilot.** Website: **[aidenhq.ai](https://aidenhq.ai)**.
+**Powerful agents, made easy.** Website: **[aidenhq.ai](https://aidenhq.ai)**.
 
-AidenHQ is an open-source AI chief of staff and agent team that runs on your own server. Aiden, the chief of staff,
-reads your Slack, the email you hand it and your meeting notes, turns what needs you into action items and follows up
-until they're done. That intake and follow-up is the `open-loops` module, which you add to `modules:` in
-`instance.yaml`: it needs Slack and Google connected, and triaging new Slack messages needs **Slack with Aiden's bot**
-(the bot and its live events), not only the read-only Slack sign-in agents use to read Slack. A new install
-[starts quiet](docs/design/quiet-start.md), so those routines stay paused until you resume them
-([docs/setup.md](docs/setup.md#slack)). For anything else, describe an agent in a sentence and Aiden builds it; agents
-also build internal apps and keep them running. You talk to Aiden on Telegram, Slack or the web, and every write an
-agent makes (a push, a deploy, a message, a config change) passes an approval gate enforced in code.
+AidenHQ is the open-source Agent OS for building the most powerful agents. Describe who you need in a sentence and the
+Agent Architect builds an AI teammate that works 24/7, or install agents someone else built, just like apps. Start with
+Aiden, your chief of staff, who cuts the noise in your Slack, email and meetings and hands work to the rest of the team
+(connect your accounts first; a new install [starts quiet](docs/design/quiet-start.md), so routines wait until you resume them, see [docs/setup.md](docs/setup.md#slack)). The OS gives every agent its own computer, memory, only the
+tools you grant, and a team to hand work to; every write an agent makes (a push, a deploy, a message, a config change)
+passes an approval gate enforced in code.
 
 Install it on a fresh Ubuntu or Debian server or a Mac: see [aidenhq.ai/install](https://aidenhq.ai/install/) and
 [SETUP.md](SETUP.md). Releases and the installer live in
