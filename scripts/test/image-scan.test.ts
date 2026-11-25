@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "yaml";
-import { bases, plan } from "../supply-chain/image-scan.ts";
+import { bases, ignored, plan } from "../supply-chain/image-scan.ts";
 
 const root = join(import.meta.dirname, "../..");
 // The product's CI: its `find` step selects the service images a module.yaml-only change re-pins (an app repo's template has
@@ -31,7 +31,8 @@ test("image-changes selects a module.yaml-only service image re-pin, and never a
   const { dir, git, put, env } = scratch(t);
   const d = (c: string) => `@sha256:${c.repeat(64)}`;
   const manifest = (ref: string, agent = "agent-base") => `name: primer\nagents:\n  ui-designer:\n    image: ${agent}\nservices:\n  run:\n    primer-db:\n      image: ${ref}\n    primer-server:\n      build: ./server\n`;
-  put("modules/primer/module.yaml", manifest(`postgres:17.12${d("a")}`));
+  // A quoted service key (`"primer-db":`) is the same service to the compiler, so the selector must read it too.
+  put("modules/primer/module.yaml", manifest(`postgres:17.12${d("a")}`).replace("    primer-db:", '    "primer-db":'));
   put("modules/design/module.yaml", manifest(`postgres:17.12${d("a")}`, "agent-base"));
   put("README.md", "x\n");
   git("add", "-A");
@@ -52,7 +53,7 @@ test("image-changes selects a module.yaml-only service image re-pin, and never a
   git("commit", "-qam", "agent image");
   assert.equal(select(), "dockerfiles=\nservices=");
   // A module.yaml-only re-pin of the service image selects that registry image (and no Dockerfile).
-  put("modules/primer/module.yaml", manifest(`postgres:17.12${d("b")}`));
+  put("modules/primer/module.yaml", manifest(`postgres:17.12${d("b")}`).replace("    primer-db:", '    "primer-db":'));
   git("commit", "-qam", "re-pin");
   assert.equal(select(), `dockerfiles=\nservices=postgres:17.12${d("b")}`);
 });
@@ -64,10 +65,14 @@ test("plan scans a selected service image from the registry, never as a build", 
   const p = plan([], { root, services: [ref] });
   assert.deepEqual(p.dirs, []);
   assert.deepEqual(p.images, [{ ref, uses: [], service: true }]);
-  // A Dockerfile that names the same image keeps its uses, so its exceptions still apply to it.
+  // A Dockerfile that also names the image keeps its uses, but the image stays a service target: its direct use is kept so a
+  // Dockerfile-only path exception can never hide a finding in the registry image the service actually runs.
   const { dir, put } = scratch(t);
   put("db/Dockerfile", `FROM ${ref}\n`);
-  assert.deepEqual(plan(["db/Dockerfile"], { root: dir, services: [ref] }).images, [{ ref, uses: [{ final: true, finalRuns: [], copies: [], mounted: false, df: "db/Dockerfile" }] }]);
+  const both = plan(["db/Dockerfile"], { root: dir, services: [ref] });
+  assert.deepEqual(both.images, [{ ref, uses: [{ final: true, finalRuns: [], copies: [], mounted: false, df: "db/Dockerfile" }], service: true }]);
+  // And such an image ignores no path: its registry copy ships as published, whatever a Dockerfile does to its own.
+  assert.deepEqual(ignored(both.images[0]!, [{ image: "postgres", path: "/var/lib/dpkg/status", when: "RUN true", reason: "a Dockerfile fix" }]).ignore, []);
 });
 
 test("the image-scan reader passes grype digest-pinned references only, and refuses injected or odd ones", () => {

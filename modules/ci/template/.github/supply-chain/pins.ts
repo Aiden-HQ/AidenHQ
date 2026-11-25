@@ -846,10 +846,11 @@ function modulePins(path: string, text: string): { pins: Pin[]; problems: string
   text.split("\n").forEach((raw, i) => {
     const line = raw.replace(/\r$/, "");
     if (/^\s*(#.*)?$/.test(line)) return;
-    // A key line only: a list item, a directive or anything else is not part of a service declaration's keys.
-    const m = /^(\s*)([A-Za-z0-9_.-]+):(?:\s+(.*))?$/.exec(line);
+    // A key line only: a list item, a directive or anything else is not part of a service declaration's keys. A key may be
+    // quoted (`"primer-db":`, as YAML allows and the compiler reads): the quotes are dropped, never the key.
+    const m = /^(\s*)(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_.-]+)):(?:\s+(.*))?$/.exec(line);
     if (!m) return;
-    const indent = m[1]!.length, key = m[2]!, value = m[3];
+    const indent = m[1]!.length, key = m[2] ?? m[3] ?? m[4]!, value = m[5];
     while (stack.length && stack.at(-1)!.indent >= indent) stack.pop();
     stack.push({ indent, key });
     const keys = stack.map((s) => s.key);

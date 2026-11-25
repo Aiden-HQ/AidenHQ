@@ -289,9 +289,10 @@ export function plan(dockerfiles: string[], { root, local = new Map(), services 
     done.add(df);
   };
   for (const df of dockerfiles) visit(df, []);
-  for (const ref of services) if (!images.has(ref)) images.set(ref, []);
-  // Only a service ref has no uses: every Dockerfile ref carries at least one.
-  return { dirs, images: [...images].map(([ref, uses]) => ({ ref, uses, ...(uses.length ? {} : { service: true }) })), notes };
+  // A service ref stays a registry target even when a Dockerfile also names it: its own use is direct, so no Dockerfile
+  // path exception (which needs a use of the image) may hide a finding in it.
+  for (const ref of services) images.set(ref, images.get(ref) ?? []);
+  return { dirs, images: [...images].map(([ref, uses]) => ({ ref, uses, ...(services.includes(ref) ? { service: true } : {}) })), notes };
 }
 
 /**

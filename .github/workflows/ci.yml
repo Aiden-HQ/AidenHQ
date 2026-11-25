@@ -503,9 +503,10 @@ jobs:
               for (const raw of text.split("\n")) {
                 const line = raw.replace(/\r$/, "");
                 if (/^\s*(#.*)?$/.test(line)) continue;
-                const m = /^(\s*)([A-Za-z0-9_.-]+):(?:\s+(.*))?$/.exec(line);
+                // A key may be quoted (`"primer-db":`), as YAML allows and the compiler reads: the quotes are dropped.
+                const m = /^(\s*)(?:\x22([^\x22]*)\x22|\x27([^\x27]*)\x27|([A-Za-z0-9_.-]+)):(?:\s+(.*))?$/.exec(line);
                 if (!m) continue;
-                const indent = m[1].length, key = m[2], value = m[3];
+                const indent = m[1].length, key = m[2] ?? m[3] ?? m[4], value = m[5];
                 while (stack.length && stack.at(-1).indent >= indent) stack.pop();
                 stack.push({ indent, key });
                 const keys = stack.map((s) => s.key);
