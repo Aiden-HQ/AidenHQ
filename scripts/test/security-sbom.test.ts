@@ -691,6 +691,34 @@ test("security-sbom: a configured computer image no container runs is inventorie
   assert.equal(both.calls.filter((c) => c.startsWith("save ")).length, 1, both.calls.join("\n"));
 });
 
+test("security-sbom: the batch marks a complete image inventory, and a batch short of its units does not", { skip: NOT_LINUX }, async () => {
+  // The scanner only retires an absent image target from a batch that says it listed every running and configured image.
+  // A batch missing one of its own units must not carry the marker, or absence would settle findings for an image the
+  // inventory simply failed to list.
+  const full = await run({}, {
+    computers: { images: { browser: "aidenhq/computer-browser:h1" } },
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "aidenhq/board:local": "sha256:1111", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    sizes: { "sha256:bbbb": 1024 },
+  });
+  assert.equal(full.status, 0, full.out);
+  assert.ok(existsSync(join(full.dir, "data/modules/security/sbom/current/images.complete")), `a complete batch carries the marker:\n${full.targets.map((t) => t.join("\t")).join("\n")}`);
+
+  // 25 GB free, under the 30 GB floor: the configured image cannot be exported, but it still has a line, so the batch is
+  // complete (the scanner sees a target with its error, not a target missing from the inventory).
+  const short = await run({ FAKE_FREE_KB: "25000000" }, {
+    computers: { images: { browser: "aidenhq/computer-browser:h1" } },
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "aidenhq/board:local": "sha256:1111", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+  });
+  assert.equal(short.status, 0, short.out);
+  const line = short.targets.find((t) => t[0] === "image:aidenhq/computer-browser:h1");
+  assert.ok(line && line[1] === "-" && /does not fit/.test(line[2]!), `the configured image is a line, not a gap:\n${short.targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.ok(existsSync(join(short.dir, "data/modules/security/sbom/current/images.complete")), "an error line is still a row");
+});
+
 test("security-sbom: without config/computers.json the previous batch stays, so an incomplete inventory never reads as a pass", { skip: NOT_LINUX }, async () => {
   // The file names the fleet's computer images. Missing, the pass cannot know the image an idle engineer box would run,
   // so publishing what it saw would carry those findings as unverified with nothing telling them apart from a real pass.
@@ -702,16 +730,19 @@ test("security-sbom: without config/computers.json the previous batch stays, so 
   };
   const missing = await run({}, { computers: null, seed });
   assert.equal(missing.status, 0, missing.out);
-  assert.match(missing.out, /config\/computers\.json is missing or unreadable/);
+  assert.match(missing.out, /config\/computers\.json is missing, unreadable or names an image that is not a tag/);
   assert.equal(missing.batchRaw, sentinel, "the previous batch is left exactly as it was");
   assert.ok(!missing.calls.some((c) => c.startsWith("run ") || c.startsWith("save ")), `nothing was scanned or saved:\n${missing.calls.join("\n")}`);
 
-  // A file that names no image is the same incomplete inventory.
-  const empty = await run({}, { computers: { images: {} }, seed });
-  assert.equal(empty.status, 0, empty.out);
-  assert.match(empty.out, /names no image/);
-  assert.equal(empty.batchRaw, sentinel, "the previous batch is left exactly as it was");
-  assert.ok(!empty.calls.some((c) => c.startsWith("run ") || c.startsWith("save ")), `nothing was scanned or saved:\n${empty.calls.join("\n")}`);
+  // A file that names no image, or names one entry that is not a tag, is the same incomplete inventory: the entries must
+  // not be silently skipped, since the image a skipped one names would then look retired.
+  for (const config of [{ images: {} }, { images: { browser: "aidenhq/computer-browser:h1", engineer: null } }, { images: { session: "" } }]) {
+    const bad = await run({}, { computers: config, seed });
+    assert.equal(bad.status, 0, bad.out);
+    assert.match(bad.out, /names no image|names an image that is not a tag/, bad.out);
+    assert.equal(bad.batchRaw, sentinel, `the previous batch is left exactly as it was:\n${JSON.stringify(config)}`);
+    assert.ok(!bad.calls.some((c) => c.startsWith("run ") || c.startsWith("save ")), `nothing was scanned or saved:\n${bad.calls.join("\n")}`);
+  }
 });
 
 test("security-sbom: a container whose own id is exportable is scanned from that id, not dropped", { skip: NOT_LINUX }, async () => {

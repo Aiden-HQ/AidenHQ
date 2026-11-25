@@ -96,7 +96,7 @@ it("src_security: one row per finding key across passes and paths, gone findings
     "app:broken\tbroken.json\t\t", // grype chokes on it
     "host\t-\tsyft exited 1\t", // the host couldn't inventory it
   ].join("\n");
-  const batch = (): Batch => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(), "/sbom") });
+  const batch = (): Batch => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(), "/sbom"), imagesComplete: true });
   const deps = {
     dbUpdate: async () => undefined,
     readBatch: async () => batch(),
@@ -152,7 +152,7 @@ it("src_security: a mapped target absent from a fresh batch is retired against i
   const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === retired ? "retired" : t === replacement ? "replacement" : "unmapped"}.json\t\t`).join("\n");
   const deps = (targets: string[]) => ({
     dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom") }),
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom"), imagesComplete: true }),
     grype: async (f: string) => sboms[f.split("/").pop()!],
     now: () => now,
   });
@@ -204,7 +204,7 @@ it("src_security: an absent image target retires against the one clean target of
   const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === oldTag ? "old" : t === newTag ? "new" : "other"}.json\t\t`).join("\n");
   const deps = (targets: string[]) => ({
     dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom") }),
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom"), imagesComplete: true }),
     grype: async (f: string) => sboms[f.split("/").pop()!],
     now: () => now,
   });
@@ -244,7 +244,7 @@ it("src_security: an absent image target with no same-repository target in the b
   const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === gone ? "gone" : t === mapped ? "mapped" : "unrelated"}.json\t\t`).join("\n");
   const deps = (targets: string[]) => ({
     dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom") }),
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom"), imagesComplete: true }),
     grype: async (f: string) => sboms[f.split("/").pop()!],
     now: () => now,
   });
@@ -266,6 +266,52 @@ it("src_security: an absent image target with no same-repository target in the b
   expect(rows.get(`${mapped}|curl|7.88.1|CVE-2023-0001`)).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
 });
 
+it("src_security: an image target absent from a batch that does not claim a complete inventory keeps the absent error", async () => {
+  // A batch written before the writer listed configured images, or one whose writer could not list all of them, has a
+  // freshness stamp like any other. Its absence is not proof: an image it would have listed must not settle its findings.
+  const { store, rows, runs } = fakeStore();
+  const target = "image:aidenhq/computer-engineer:4a2fffc5559e";
+  const sboms: Record<string, unknown> = { "engineer.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
+  let now = Date.parse("2026-11-25T00:00:00Z");
+  const index = (targets: string[]): string => targets.map((t) => `${t}\tengineer.json\t\t`).join("\n");
+  const deps = (targets: string[], imagesComplete?: boolean) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom"), ...(imagesComplete ? { imagesComplete } : {}) }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps([target], true))).toBe(1);
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps([]))).toBe(0);
+  expect(runs.find((x) => x.scope === target)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(`${target}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
+});
+
+it("src_security: an absent image whose repository is in the batch but did not scan cleanly keeps the absent error", async () => {
+  // A render may run the same image under an alias (`computer-browser:current`) the survey deduplicated away: the alias
+  // is in the batch, the hash tag is not, and the alias's scan failed. That is not proof the hash tag's image is gone.
+  const { store, rows, runs } = fakeStore();
+  const hashTag = "image:aidenhq/computer-browser:h1";
+  const alias = "image:aidenhq/computer-browser:current";
+  const sboms: Record<string, unknown> = { "hash.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
+  let now = Date.parse("2026-11-25T00:00:00Z");
+  const deps = (index: string) => ({
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  });
+
+  expect(await scanPass(store, deps(`${hashTag}\thash.json\t\t`))).toBe(1);
+  now += 86_400_000;
+  runs.length = 0;
+  expect(await scanPass(store, deps(`${alias}\t-\tdocker save: no room\t`))).toBe(0);
+  expect(runs.find((x) => x.scope === hashTag)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
+  expect(rows.get(`${hashTag}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
+});
+
 it("src_security: a non-image target absent from a fresh batch keeps the absent error, since the batch does not enumerate it", async () => {
   const { store, rows, runs } = fakeStore();
   const sboms: Record<string, unknown> = {
@@ -276,7 +322,7 @@ it("src_security: a non-image target absent from a fresh batch keeps the absent 
   const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === "repo:product" ? "product" : "host"}.json\t\t`).join("\n");
   const deps = (targets: string[]) => ({
     dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom") }),
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom"), imagesComplete: true }),
     grype: async (f: string) => sboms[f.split("/").pop()!],
     now: () => now,
   });
@@ -349,7 +395,7 @@ it("src_security: KEV and EPSS from grype land on the finding (GHSA match: on th
   let epss = 0.4;
   const deps = {
     dbUpdate: async () => undefined,
-    readBatch: async () => ({ finishedAt: new Date(Date.now() - 1000), targets: parseTargets("image:x\tx.json\t\t", "/sbom") }),
+    readBatch: async () => ({ finishedAt: new Date(Date.now() - 1000), targets: parseTargets("image:x\tx.json\t\t", "/sbom"), imagesComplete: true }),
     grype: async () => grypeJson(epss),
   };
   expect(await scanPass(store, deps)).toBe(3);

@@ -232,7 +232,15 @@ fi
 # snapshot time and only this file says it is in scope. Read through jq, which rejects an unreadable file, a document that
 # is not JSON and a value that is not a string: any of those leaves the pass without a complete inventory, so it publishes
 # no batch rather than a short one. The browser image is always built (ops/computer-images.sh) and always part of the fleet.
-if ! jq -r '.images | objects | to_entries[] | select(.value | type == "string" and . != "") | .value' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" > "$work/configured" 2>"$work/configured.err"; then
+# Every entry must be a non-empty string: an invalid one is refused here rather than skipped, because the inventory would
+# then be missing an image it cannot show is out of scope, and an absent target would read as retired.
+if ! jq -e '(.images | type) == "object" and ([.images[] | type == "string" and . != ""] | all)' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" >/dev/null 2>"$work/configured.err"; then
+  echo "security-sbom: config/computers.json is missing, unreadable or names an image that is not a tag ($(tr '\t\n' '  ' < "$work/configured.err" | tail -c 200)); keeping the previous batch" >&2
+  exec 8>&-
+  rm -rf "$next" "$work" "$archives"
+  exit 0
+fi
+if ! jq -r '.images | to_entries[] | .value' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" > "$work/configured" 2>"$work/configured.err"; then
   echo "security-sbom: config/computers.json is missing or unreadable ($(tr '\t\n' '  ' < "$work/configured.err" | tail -c 200)); keeping the previous batch" >&2
   exec 8>&-
   rm -rf "$next" "$work" "$archives"
@@ -602,6 +610,8 @@ snapshot() {
   # unit, and container units come first, so a configured tag naming an image a container runs keeps that container's
   # target key (findings reconcile by exact target name, and the container's key is what they were written under).
   local -A unit_pin=() unit_done=()
+  # Units that get a row this pass: every one admitted to the plan, whether it scans or records its own error line.
+  images_planned=0
   for unit in "${units[@]}"; do
     if [ -z "${u_pinned[$unit]:-}" ]; then
       pin_now="$(pin_of "${u_tag[$unit]:-${u_label[$unit]:-${u_image[$unit]}}}" "${u_plat[$unit]}")"
@@ -615,6 +625,7 @@ snapshot() {
     # container's unit, and two configured tags for one image are one unit, whichever of their keys came first.
     if [ -n "${unit_pin[$unit]}" ] && [ -n "${unit_done["$plat|${unit_pin[$unit]}"]:-}" ]; then continue; fi
     if [ -n "${unit_pin[$unit]}" ]; then unit_done["$plat|${unit_pin[$unit]}"]=1; fi
+    images_planned=$((images_planned + 1))
     # The image the container runs: its tag while the tag still names what runs, else the platform manifest compose
     # recorded, else the container's own top-level id. The target stays `image:<container id>` when the tag has moved: the
     # store reconciles findings by target name, so keying the same image by its manifest id would leave the findings
@@ -955,6 +966,15 @@ done
 # Swap the finished batch in (the scanner reads current/; a scan mid-swap skips a target until next time).
 rm -rf "$out/prev"
 [ -d "$out/current" ] && mv "$out/current" "$out/prev"
+# The marker the scanner needs before it may retire an image target absent from this batch: every image the survey made a
+# unit (running or configured) has a row, so nothing was silently dropped. A unit the inventory could not size or export
+# still has its own error line. Written into the batch before it is swapped in, so the marker and the targets it describes
+# land together; without it the scanner treats the batch as incomplete and keeps absent targets unverified.
+# One row per planned unit, so a count is the check: two units that happened to share a key (two containers on one image
+# index) leave it short, and the batch then simply claims no completeness rather than the wrong one.
+if [ "${images_planned:-0}" -gt 0 ] && [ "$(grep -c $'^image:[^\t]*\t' "$next/targets.tsv" || true)" -eq "$images_planned" ]; then
+  : > "$next/images.complete"
+fi
 mv "$next" "$out/current"
 rm -rf "$out/prev" "$work"
 echo "security-sbom: $(wc -l < "$out/current/targets.tsv") targets, $(grep -c $'\t-\t' "$out/current/targets.tsv" || true) failed"

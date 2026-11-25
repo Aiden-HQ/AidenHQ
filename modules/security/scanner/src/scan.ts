@@ -174,6 +174,10 @@ export const RETIRED_TARGETS: Readonly<Record<string, string>> = {
 export interface Batch {
   finishedAt: Date | null; // null: no batch yet
   targets: { target: string; file?: string; error?: string; commit?: string }[]; // commit: the checkout's git HEAD
+  // True only for a batch whose writer listed every configured image as well as every running one (the marker
+  // ops/security-sbom.sh writes when every image it surveyed has a row). Absence is proof an image retired only then:
+  // an older or short batch may simply not have listed it, so it must not settle findings.
+  imagesComplete?: boolean;
 }
 
 /** targets.tsv as written by ops/security-sbom.sh: (target, file, error, commit), one line per target. */
@@ -210,7 +214,7 @@ export function imageRepository(target: string): string | null {
   if (!m) return null;
   let ref = m[1]!;
   ref = ref.replace(/@.*$/, ""); // the batch's platform suffix, then a digest
-  if (!ref.includes("/") || /^sha256:[0-9a-f]+$/.test(ref)) return null;
+  if (/^sha256:[0-9a-f]+$/.test(ref)) return null; // a bare image id names no repository
   const colon = ref.lastIndexOf(":");
   if (colon > ref.lastIndexOf("/")) ref = ref.slice(0, colon);
   return ref || null;
@@ -301,10 +305,14 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
   // A present target this batch did not enumerate was not scanned clean. The set of targets the batch covers is complete
   // for `image:` (every running image plus every image config/computers.json names) but not for `host`, `repo:*` and
   // `app:*`, so the two are settled differently:
-  //   image:  its image is no longer running and no configured image names it, so the target is retired rather than
-  //           reported as a failing one. It retires against the one `image:` target of its own repository that was scanned
+  //   image:  only in a batch that lists every configured image (imagesComplete) is absence proof its image is no
+  //           longer running and no configured image names it, so the target is retired rather than reported as a failing
+  //           one. In any other batch it keeps the absent/unverified row: an image it might have listed must not settle. It retires against the one `image:` target of its own repository that was scanned
   //           cleanly in this pass (a tag renamed in place); with none, or with more than one to choose from, it claims no
   //           replacement. Either way status is "retired", error is null, and its findings settle present = false.
+  //           One exception: when its repository is in the batch but nothing of it scanned cleanly, the image may be
+  //           running under another name whose scan failed (an alias, say), so absence is not proof it is gone: the
+  //           target keeps the absent/unverified row until a pass scans its repository again.
   //   other:  the batch does not enumerate these completely, so absence is not proof of retirement: the findings stay
   //           present and unverified, and the absence is an ingest_run error row so readers can see it.
   // A replacement from the shipped map (a cross-repository rename) is used when it was scanned cleanly in this pass.
@@ -315,10 +323,20 @@ export async function scanPass(store: SourceStore, d: PassDeps): Promise<number>
       if (listed.has(target)) continue;
       const mapped = RETIRED_TARGETS[target];
       let replacement: string | null = mapped && clean.has(mapped) ? mapped : null;
+      if (!replacement && target.startsWith("image:") && batch.imagesComplete !== true) {
+        await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
+        continue;
+      }
       if (!replacement && target.startsWith("image:")) {
         const repo = imageRepository(target);
         const same = repo ? [...clean.keys()].filter((t) => t.startsWith("image:") && imageRepository(t) === repo) : [];
         if (same.length === 1) replacement = same[0]!;
+        // A same-repository target the batch attempted but did not scan clean: this image may be the one that ran under
+        // that name, so its absence this pass does not prove it retired.
+        else if (same.length === 0 && repo && batch.targets.some((t) => t.target.startsWith("image:") && imageRepository(t.target) === repo)) {
+          await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
+          continue;
+        }
       }
       // A failed retirement rolls back as a whole and is recorded as absent, so it stays visible and the next pass retries.
       const retired = target.startsWith("image:") || replacement

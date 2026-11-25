@@ -5,7 +5,7 @@
 // After a pass that wrote anything, it fires the Security Watch routine's signed webhook (coalesced by Paperclip).
 import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import YAML from "yaml";
@@ -38,7 +38,9 @@ async function readBatch(): Promise<Batch> {
   } catch {
     return { finishedAt: null, targets: [] };
   }
-  return { finishedAt: statSync(index).mtime, targets: parseTargets(text, SBOM) };
+  // The writer marks a batch that listed every configured image as well as every running one; only such a batch may
+  // retire an absent image target (a short one may simply not have listed the image).
+  return { finishedAt: statSync(index).mtime, targets: parseTargets(text, SBOM), imagesComplete: existsSync(join(SBOM, "images.complete")) };
 }
 
 async function grype(sbomFile: string): Promise<unknown> {
