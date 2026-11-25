@@ -70,8 +70,8 @@ const liveNotice = (cause: string) => {
   return RESUME[cause] ?? (waited !== undefined ? `Your wait is up: ${waited || "the time you set"}` : undefined) ?? /^scheduled: (.+)$/s.exec(cause)?.[1]
     ?? (cause === "idle" ? "This task has been idle: carry on, or finish it" : `Woken: ${cause}`);
 };
-/** A session's run its machinery ended (a signal: its box replaced; lost; a machinery stop): never counted against its retries. */
-const interrupted = (j: JobView) => j.profile === "session" && (j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128) || machineryStop(j));
+/** A session's run its machinery ended (SIGTERM, exit 143: its box replaced; lost; a machinery stop): never counted against its retries. Any other signal is its own crash and counts. */
+const interrupted = (j: JobView) => j.profile === "session" && (j.state === "lost" || (j.state === "failed" && j.exit === 143) || machineryStop(j));
 export const machineryStop = (j: { state: string; stoppedBy?: string | null }) => j.state === "cancelled" && j.stoppedBy === null;
 export const unfinished = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean; stoppedBy?: string | null }) => neverStarted(j) || j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128) || silent(j) || machineryStop(j);
 
@@ -245,7 +245,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           if (!cur || CLOSED.has(String(cur.status))) { await kernel.stop(v.id); log(`task ${cur ? "closed" : "deleted"} while running: run stopped`, { job: v.id, task: v.task }); continue; }
           // A task moved to another agent while its run goes on (re-routed): the new assignee has its own wake, and this run's
           // reply would be refused, so it is stopped rather than left to run out its time.
-          if ((cur.assigneeAgentId || v.profile === "session") && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log("task moved while running: run stopped", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
+          if ((cur.assigneeAgentId || v.profile === "session") && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log(cur.assigneeAgentId ? "task moved while running: run stopped" : "session stopped: its task was handed back (no agent assignee)", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
           // A session waits for days with no steps by design: never judged on progress.
           if (v.profile === "session") continue;
           // A run that stops making progress is stopped here (progress.ts); the kernel keeps only the hard deadline.

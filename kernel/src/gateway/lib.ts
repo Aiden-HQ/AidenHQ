@@ -444,9 +444,11 @@ const NO_OUTPUT = { reason: "ended before any output", transient: true };
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, appLogin = () => undefined, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, appLogin = () => undefined, jobLive = () => false, jobProfile = () => undefined, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
+  /** A job's profile as frozen at its admission (its row's), never its agent's current grants. */
+  jobProfile?: (id: string) => string | null | undefined;
   /** This instance's own GitHub App's bot login (`<slug>[bot]`), whose PRs the CI tier rules count as a member's. */
   appLogin?: () => string | undefined;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
@@ -685,8 +687,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         let row = q.run.get(runKey) as RunRow | undefined;
         if (!row) {
           const t = await taskOf(p.i);
-          // A session's task lives for days (its agent's profile): its cap is per UTC day, as a chat task's.
-          row = settle(runKey, { agentId: p.a, runId: String(p.id), issueId: t.issueId, perpetual: t.perpetual || Boolean(p.a && grants()[p.a]?.profile === "session") });
+          // A session's task lives for days (the job's frozen profile): its cap is per UTC day, as a chat task's.
+          row = settle(runKey, { agentId: p.a, runId: String(p.id), issueId: t.issueId, perpetual: t.perpetual || jobProfile(String(p.id)) === "session" });
         }
         return as(row, routeKind, "agent");
       }

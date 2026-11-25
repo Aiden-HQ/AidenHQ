@@ -69,6 +69,13 @@ test("a session whose box keeps being replaced is resumed every time, never stop
   assert.deepEqual(k.scheduled.map((s) => s.id), ["retry.j0"]);
 });
 
+test("a session that keeps crashing on a signal other than its box's SIGTERM meets the retry limit", async () => {
+  const ended = (i) => ({ id: `j${i}`, task: "t1", agent: "ses", profile: "session", state: "failed", exit: 139, final: "", at: 10 - i, ended: 10 - i, acked: i > 0 });
+  const k = fake({ jobs: [0, 1, 2, 3, 4, 5, 6].map(ended) });
+  await k.dispatch.tick();
+  assert.deepEqual(k.scheduled, []);
+});
+
 test("a session that keeps exiting on its own still meets the retry limit", async () => {
   // Seven runs that exited 0 with no reply (silent): its own doing, not the machinery's.
   const ended = (i) => ({ id: `j${i}`, task: "t1", agent: "ses", profile: "session", state: "done", exit: 0, final: "", at: 10 - i, ended: 10 - i, acked: i > 0 });

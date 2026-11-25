@@ -865,6 +865,7 @@ const gw = createGateway({
     toOwner("alert")(`${issue?.identifier ?? task}: ${text}`);
   },
   jobLive: (id) => ["admitted", "running"].includes(String(admittedJob(records.db, id)?.state)),
+  jobProfile: (id) => admittedJob(records.db, id)?.authority?.profile,
   log,
 });
 // The previous kernel's check runs are its own until it has exited (it hands their box runs on as it drains); then this one

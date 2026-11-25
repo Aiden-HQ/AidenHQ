@@ -28,11 +28,13 @@ async function rig(t, { dayUsd = 30, taskUsd, answer, dir = mkdtempSync(join(tmp
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { const body = JSON.parse(b); seen.push(body); answer(body, res, seen.length); });
   });
-  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, modelsUrl, jobLive: () => true, now: () => clock.t });
+  const jobAgent = {}; // a job's agent, as its row's frozen profile would say
+  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, modelsUrl, jobLive: () => true, jobProfile: (id) => agents?.[jobAgent[id]]?.profile, now: () => clock.t });
   const gw = open();
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); try { gw.close(); } catch {} });
   const call = async (body, issueId = "WOR-1", { agentId = "ag", job = `j-${issueId}` } = {}) => {
+    jobAgent[job] = agentId;
     const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { kind: "job", job, agentId, issueId }, clock.t)}` }, body: JSON.stringify(body) });
     return { status: res.status, json: await res.json().catch(() => null) };
   };
