@@ -2,7 +2,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MultiWorkspace } from "../src/accounts.js";
+import { MultiWorkspace, toolFailure } from "../src/accounts.js";
+import { readNeed } from "../src/aidenhq-sdk/needs.js";
 import { InboxCursors } from "../src/inbox.js";
 
 const GM = "/gmail/v1/users/me/messages";
@@ -92,7 +93,7 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     // Never back, never past now; another agent has its own cursor.
     cursors.ack("agent-1", { "me@work.com": T0 });
     expect(cursors.get("agent-1")).toEqual(second.cursor);
-    expect(() => cursors.ack("agent-1", { "me@work.com": Date.now() + 60_000 })).toThrow(/not a time/);
+    expect(() => cursors.ack("agent-1", { "me@work.com": Date.now() + 3_600_000 })).toThrow(/not a time/);
     expect(cursors.get("agent-2")).toEqual({});
   });
 
@@ -132,5 +133,14 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     expect(r.threads.map((t) => t.thread_id)).toEqual(["tf"]);
     expect(Object.keys(r.cursor)).toEqual(["me@work.com"]);
     expect(r.accounts.find((a) => a.account === "me@side.io")).toHaveProperty("error");
+
+    // A sign-in Google refused for good is the owner's to fix: the call answers needs_owner naming that account.
+    const dead = (async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.hostname === "oauth2.googleapis.com" && String(init?.body ?? "").includes("r2")) return Response.json({ error: "invalid_grant" }, { status: 400 });
+      return ok(input, init);
+    }) as typeof fetch;
+    const err = await new MultiWorkspace(p, "primary", dead).gmailInbox({ "me@work.com": T0 + 7_500 }, 5).catch((e) => e);
+    expect(readNeed(toolFailure(err))).toMatchObject({ cause: "expired", account: "me@side.io" });
   });
 });

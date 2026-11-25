@@ -36,6 +36,8 @@ export function ccOnly(me: string, to: string | undefined, cc: string | undefine
 }
 
 export type Cursor = Record<string, number>;
+/** Gmail stamps receipt times on its own clock, which may run a little ahead of the host's. */
+const CLOCK_SKEW_MS = 300_000;
 
 /** Each agent's inbox cursor, one small JSON file in the service's state dir. */
 export class InboxCursors {
@@ -49,12 +51,12 @@ export class InboxCursors {
     return this.load()[agent] ?? {};
   }
 
-  /** Moves the agent's cursor forward to `cursor` (never back; never past now). */
+  /** Moves the agent's cursor forward to `cursor` (never back; never past now, give or take Gmail's clock against ours). */
   ack(agent: string, cursor: Cursor, now = Date.now()): Cursor {
     const all = this.load();
     const mine = { ...(all[agent] ?? {}) };
     for (const [account, ms] of Object.entries(cursor)) {
-      if (!Number.isFinite(ms) || ms > now) throw new Error(`cursor for ${account} is not a time gmail_inbox_new gave`);
+      if (!Number.isFinite(ms) || ms > now + CLOCK_SKEW_MS) throw new Error(`cursor for ${account} is not a time gmail_inbox_new gave`);
       mine[account] = Math.max(mine[account] ?? 0, ms);
     }
     all[agent] = mine;

@@ -316,7 +316,8 @@ export class MultiWorkspace {
 
   /**
    * Every account's inbox since `cursor` (inbox.ts): threads tagged with their account and link, each account's drop counts,
-   * and the cursor to ack. An account that fails keeps its place (absent from the cursor) and shows its error.
+   * and the cursor to ack. An account that fails keeps its place (absent from the cursor) and shows its error; an expired or
+   * scope-less sign-in fails the call as the owner's to fix.
    */
   async gmailInbox(cursor: Cursor, limit: number) {
     const threads: Record<string, unknown>[] = [], accounts: Record<string, unknown>[] = [], next: Cursor = {}, served: string[] = [];
@@ -328,6 +329,9 @@ export class MultiWorkspace {
         next[name] = r.cursor;
         served.push(name);
       } catch (err) {
+        // A sign-in only the owner can fix answers the call as needs_owner (toolFailure, the account named), like every other
+        // tool, so the kernel tells the owner; the other accounts keep their cursors and resume after the reconnect.
+        if (err instanceof ScopeMissing || (err instanceof GoogleAuthError && err.expired)) throw err;
         accounts.push({ account: name, error: String((err as Error).message).slice(0, 200) });
       }
     }
