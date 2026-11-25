@@ -1715,9 +1715,9 @@ export function createEngine(d: EngineDeps) {
     const row = prRow(p.repo, p.number);
     const key = `${p.head}:${row?.tier}`;
     if (!row?.tier || row.head !== p.head || row.noted === key || acking_(p.repo, p.number)) return;
-    // A head a run already reported on says that run's phase again, now with the tier line: the notice never loses the review's outcome.
-    const last = lastRunAck(p.repo, p.number);
-    if (await ack(last?.head === p.head ? last : { repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
+    // A head a run already reported on keeps that run's notice (its phase, counts and review link): the run's own notices carry the tier line.
+    const reported = lastRunAck(p.repo, p.number)?.head === p.head;
+    if (reported || await ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
   }
 
   /** One watched repo: its PRs' heads (each classified first) and its new comments. The first look reviews what is open like a new PR. */
