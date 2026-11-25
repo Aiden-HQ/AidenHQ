@@ -17,7 +17,7 @@ Files derived from it, wholly or in part, include:
   slack/connections/slack-mcp/, github/connections/github-mcp/, and parts of jira/connections/jira-mcp/
 - code moved out of the product's runner (Pennyworth's): engine-codex/,
   codehost-github/, ai-reviewer/, grading/, platform/ and engineering/
-- the inbox-agent handbook, the open-loops skill triage-email, and the meetings skill meeting-notes
+- the inbox-agent handbook, the intake skill triage-email, and the meetings skill meeting-notes
 Modifications to these files are Copyright (c) 2026 Mudit Gupta and the AidenHQ contributors.
 
 The app starter (apps-platform/starter/) includes code and designs from shadcn/ui, Origin UI, Radix Colors, cmdk,

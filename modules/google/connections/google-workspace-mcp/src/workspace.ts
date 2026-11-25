@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { GoogleClient } from "./google.js";
+import { automated, ccOnly, INBOX_QUERY, MAX_IDS } from "./inbox.js";
 
 const CAL = "https://www.googleapis.com/calendar/v3";
 const DRIVE = "https://www.googleapis.com/drive/v3";
@@ -322,6 +323,46 @@ export class Workspace {
       });
     }
     return out;
+  }
+
+  /**
+   * The inbox after `after` (ms), oldest first, automated mail dropped (inbox.ts): the newest kept message of each thread, at
+   * most `limit` threads. `cursor` is the receipt time everything up to which was read (pass it to the next call once the
+   * threads are decided); `more` says threads past the limit wait for the next call.
+   */
+  async gmailInbox(me: string, after: number, limit: number) {
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q: `${INBOX_QUERY} after:${Math.floor(after / 1000)}`, maxResults: 500, pageToken });
+      ids.push(...(page.messages ?? []).map((m) => m.id));
+      pageToken = page.nextPageToken;
+    } while (pageToken && ids.length < MAX_IDS);
+    const truncated = !!pageToken;
+    const threads = new Map<string, Record<string, unknown>>();
+    const dropped: Record<string, number> = {};
+    let cursor = after, more = false;
+    // Gmail lists newest first: walk oldest first, so a capped call hands exactly the rest to the next one.
+    for (const id of ids.slice(0, MAX_IDS).reverse()) {
+      const m = await this.g.get<GmailMessage>(`${GMAIL}/messages/${encodeURIComponent(id)}`, { format: "metadata" });
+      const at = Number(m.internalDate ?? 0);
+      if (at <= after) continue; // `after:` is in whole seconds
+      // Over the limit, a new thread waits unless it arrived in the same millisecond as the last one read (the cursor can't split those).
+      if (threads.size >= limit && !threads.has(m.threadId) && at > cursor) {
+        more = true;
+        break;
+      }
+      cursor = Math.max(cursor, at);
+      const h = (name: string) => header(m, name);
+      const why = automated(h);
+      if (why) {
+        dropped[why] = (dropped[why] ?? 0) + 1;
+        continue;
+      }
+      threads.delete(m.threadId); // re-inserted: the map stays in arrival order of each thread's newest message
+      threads.set(m.threadId, { thread_id: m.threadId, id: m.id, from: h("From"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: new Date(at).toISOString(), cc_only: ccOnly(me, h("To"), h("Cc")), snippet: m.snippet });
+    }
+    return { threads: [...threads.values()], dropped, cursor, more, truncated };
   }
 
   /** A whole thread as text, oldest first; message bodies truncated. */

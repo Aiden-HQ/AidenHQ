@@ -90,6 +90,10 @@
       "source": "./grading"
     },
     {
+      "name": "intake",
+      "source": "./intake"
+    },
+    {
       "name": "grafana",
       "source": "./grafana"
     },
@@ -190,6 +194,7 @@
     "github",
     "google",
     "grading",
+    "intake",
     "jira",
     "meetings",
     "memory",

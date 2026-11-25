@@ -15,9 +15,10 @@ settings:
 Compile (`scripts/modules.ts`), for product modules only (a local module's routines are the owner's and the agents' own
 request, and start active):
 
-- **Scheduled routines start paused.** A product module's routine with `schedules:` compiles with `status: paused`, the
-  status setup gives it when it creates it; after that Paperclip owns pause and resume (setup never writes a status
-  again). Routines without schedules (webhooks, or started by the board on the owner's own actions) are untouched.
+- **Scheduled and event routines start paused.** A product module's routine with `schedules:` or `event:` compiles with
+  `status: paused`, the status setup gives it when it creates it; after that Paperclip owns pause and resume (setup never
+  writes a status again). A paused event routine's batches are dropped, so Intake's Slack triage reads nothing until it is
+  resumed. Other routines (webhooks, or started by the board on the owner's own actions) are untouched.
 - **Heartbeats are off.** An agent's `heartbeat:` counts only when `overrides.agents.<key>.heartbeat` sets it. The
   compiled agent says `heartbeat: false`, so the board shows it off and offers the module's value as its default.
 

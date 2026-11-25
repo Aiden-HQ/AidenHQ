@@ -9,17 +9,17 @@ import { fileURLToPath } from "node:url";
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const FILES = [
-  "agents/inbox-agent/AGENTS.md",
-  "agents/open-loops/AGENTS.md",
-  "skills/triage-email/SKILL.md",
-  "skills/triage-slack/SKILL.md",
+  "intake/agents/inbox-agent/AGENTS.md",
+  "open-loops/agents/open-loops/AGENTS.md",
+  "intake/skills/triage-email/SKILL.md",
+  "intake/skills/triage-slack/SKILL.md",
 ];
 
 function text(file: string) {
-  return readFileSync(join(product, "modules/open-loops", file), "utf8");
+  return readFileSync(join(product, "modules", file), "utf8");
 }
 
-test("no open-loops skill or handbook finishes another task", () => {
+test("no Intake or open-loops skill or handbook finishes another task", () => {
   for (const file of FILES) {
     assert.doesNotMatch(
       text(file),
@@ -30,7 +30,7 @@ test("no open-loops skill or handbook finishes another task", () => {
 });
 
 test("the tracker's own description and rules no longer say it closes delivered items", () => {
-  const handbook = text("agents/open-loops/AGENTS.md");
+  const handbook = text("open-loops/agents/open-loops/AGENTS.md");
   assert.doesNotMatch(handbook, /closes delivered ones/i, "the frontmatter says mark delivered, not close");
   assert.doesNotMatch(handbook, /closed when delivered/i, "the intro says mark delivered, not close");
   assert.doesNotMatch(handbook, /\*\*Close on evidence only/i, "the evidence rule marks delivered, it does not close");
@@ -38,7 +38,7 @@ test("the tracker's own description and rules no longer say it closes delivered 
 });
 
 test("triage-slack marks an answered task and leaves it open", () => {
-  const skill = text("skills/triage-slack/SKILL.md");
+  const skill = text("intake/skills/triage-slack/SKILL.md");
   assert.match(skill, /task_comment/, "the answered task gets a comment");
   assert.match(skill, /Answered in Slack/, "the comment says it was answered in Slack");
   assert.match(skill, /left open for the owner/, "the task stays open for the owner");

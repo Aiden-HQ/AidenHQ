@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { needsOwner } from "./aidenhq-sdk/needs.js";
 import { type AuthStatus, GoogleAuthError, GoogleClient, type StoredCredentials, WRITE_SCOPE } from "./google.js";
 import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace } from "./workspace.js";
+import { type Cursor, startOf } from "./inbox.js";
 
 /**
  * Credentials file, multi-account:
@@ -311,6 +312,26 @@ export class MultiWorkspace {
 
   gmailLabel(threadId: string, add: string[], remove: string[], account?: string) {
     return this.write(account, WRITE_SCOPE.gmail, (w) => w.gmailLabel(threadId, add, remove));
+  }
+
+  /**
+   * Every account's inbox since `cursor` (inbox.ts): threads tagged with their account and link, each account's drop counts,
+   * and the cursor to ack. An account that fails keeps its place (absent from the cursor) and shows its error.
+   */
+  async gmailInbox(cursor: Cursor, limit: number) {
+    const threads: Record<string, unknown>[] = [], accounts: Record<string, unknown>[] = [], next: Cursor = {}, served: string[] = [];
+    for (const name of this.accounts()) {
+      try {
+        const r = await this.in(name, (w) => w.gmailInbox(name, startOf(cursor[name]), limit)) as Awaited<ReturnType<Workspace["gmailInbox"]>>;
+        threads.push(...r.threads.map((t) => ({ account: name, ...t, link: gmailLink(String(t.thread_id), name) })));
+        accounts.push({ account: name, threads: r.threads.length, dropped: r.dropped, more: r.more, ...(r.truncated ? { truncated: true } : {}) });
+        next[name] = r.cursor;
+        served.push(name);
+      } catch (err) {
+        accounts.push({ account: name, error: String((err as Error).message).slice(0, 200) });
+      }
+    }
+    return { threads, accounts, cursor: next, served };
   }
 
   async gmailThread(id: string, maxChars?: number, account?: string) {
