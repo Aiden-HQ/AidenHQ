@@ -194,7 +194,10 @@ export function createReleaseTrain(o: TrainOptions) {
       if (!compiled.ok) {
         log(`release bump not filed: the target product ${to.slice(0, 12)} doesn't compile the instance`, { to, err: compiled.error });
         s.lastTried = to;
-        s.refused = { to, text, base: compiled.base, instance: (await o.github.tip(o.instanceRepo))?.tip, at: now().toISOString() };
+        // Keyed to the revision that was *compiled*, never to the feed's tip: the feed may already show a newer commit (the
+        // owner's fix) while this refusal is about the older one, and recording the newer would make the next poll see no change
+        // and wait for the backstop instead of rechecking the fix.
+        s.refused = { to, text, base: compiled.base, instance: compiled.base, at: now().toISOString() };
         delete s.open;
         // The task filed for this bump (an earlier process's, or one this process restored) is settled here, with or without a saved
         // commit: it has no card and never gets one (the target is refused), so leaving it open would strand it. Not lasting-refused

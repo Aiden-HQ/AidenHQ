@@ -14,7 +14,7 @@ const [OLD, NEW] = ["a", "b"].map((c) => c.repeat(40));
 const INSTANCE = `product: ${OLD}\nmodules: [core]\n`;
 /** The train's own state file, written as a previous process would have left it (a restored or migrated filing). */
 const writeState = (dir, state) => writeFileSync(join(dir, "release-instance.json"), JSON.stringify(state));
-/** The instance revision the fake preflight compiles: what a commit is built on. */
+/** The instance revision the fake preflight compiles by default: what a commit is built on. */
 const BASE = "c".repeat(40);
 /** The bump's instance.yaml, as the train's commit makes it (the file with its one `product:` line moved). */
 const bumpText = (to) => `product: ${to}\nmodules: [core]\n`;
@@ -64,6 +64,7 @@ function fakes() {
     throw new Error(`no route ${path}`);
   };
   // `instanceText`: the instance.yaml this fake answers with, so a test can move the instance (a settings push) without a commit.
+  // The instance's own main: what the kernel's compile check reads and returns as `base`, and what a refusal is keyed to.
   const state = { instanceText: undefined, instanceTip: "1".repeat(40) };
   const github = {
     // The product tip is NEW; the instance's own tip (`instanceTip`) is what a refusal is keyed to.
@@ -75,7 +76,10 @@ function fakes() {
 }
 const train = (dir, f, clock, extra = {}) => createReleaseTrain({
   dir, productRepo: "acme/aidenhq", instanceRepo: "acme/aidenhq-instance", windowMinutes: 15,
-  kernel: f.kernel, github: f.github, now: () => clock.t, compile: f.compile ?? (async () => ({ ok: true, base: BASE })),
+  kernel: f.kernel, github: f.github, now: () => clock.t,
+  // The real route compiles the instance at its main and returns that commit as `base`. A test that moves the instance's main
+  // sets `f.base` too, so the two stay in step; the default is BASE.
+  compile: f.compile ?? (async () => ({ ok: true, base: f.base ?? BASE })),
   // The preflight's `base` is the instance revision it compiled: a commit is built on it (the service's trainCommit refuses
   // any other head), and this fake records the base it was handed.
   commit: async (repo, path, edit, message, base) => {
@@ -230,7 +234,8 @@ test("a refused target is checked again once the instance changes, not only on a
   await train(dir, f, clock).step();
   clock.t = new Date("2026-11-18T10:20:00Z");
   const asked = [];
-  f.compile = async (to) => (asked.push(to), { ok: false, error: "compile: settings.code_review: per tier now", base: BASE });
+  // The refusal is about the instance's main as the real route reads it, so the base tracks the instance tip.
+  f.compile = async (to) => (asked.push(to), { ok: false, error: "compile: settings.code_review: per tier now", base: f.state.instanceTip });
   const t = train(dir, f, clock, { compile: f.compile });
   await t.step();
   assert.deepEqual(asked, [NEW], "the target is refused once");
@@ -247,6 +252,7 @@ test("a refused target is checked again once the instance changes, not only on a
   assert.deepEqual(asked, [NEW, NEW], "and is not checked again in a loop");
   // A push that moves the instance without editing instance.yaml (apps.yaml, a local module) is still an instance change.
   f.state.instanceTip = "2".repeat(40);
+  f.compile = async (to) => (asked.push(to), { ok: false, error: "compile: settings.code_review: per tier now", base: f.state.instanceTip });
   clock.t = new Date("2026-11-18T11:20:00Z");
   await t.step();
   assert.deepEqual(asked, [NEW, NEW], "the new instance commit opens a fresh batch window, not an immediate recheck");
@@ -283,7 +289,8 @@ test("an instance that moves after the compile check holds the bump instead of c
   // Main moved after the check: the commit is refused on the stale base.
   f.base = moved;
   const logs = [];
-  await train(dir, f, clock, { log: (m) => logs.push(m) }).step();
+  // The check read main at BASE; main then moved to `moved` before the commit (the fake's `commit` refuses a stale base).
+  await train(dir, f, clock, { compile: async () => ({ ok: true, base: BASE }), log: (m) => logs.push(m) }).step();
   assert.equal(f.committed, undefined, "nothing is committed on a main the check didn't see");
   assert.equal(f.k.writes.length, 0, "and no card is filed");
   assert.ok(logs.some((m) => /held: the instance moved/.test(m)), "the hold is logged");
@@ -369,8 +376,9 @@ test("a 409 keeps the filed task, so the next poll rechecks and files rather tha
   const clock = { t: new Date("2026-11-18T10:00:00Z") };
   await train(dir, f, clock).step();
   clock.t = new Date("2026-11-18T10:20:00Z");
+  // Main moved to `d` after the check read it at BASE: the commit is refused on the stale base.
   f.base = "d".repeat(40);
-  await train(dir, f, clock).step();
+  await train(dir, f, clock, { compile: async () => ({ ok: true, base: BASE }) }).step();
   assert.equal(f.committed, undefined, "the bump is held");
   const asked = [];
   f.base = BASE;

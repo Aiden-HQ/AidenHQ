@@ -63,7 +63,7 @@ export type CompileDeps = {
 const BASE_ENV = new Set(["PATH", "LANG", "LC_ALL", "TMPDIR", "USER", "SHELL", "TERM", "NODE_PATH", "NODE_OPTIONS", "NODE_VERSION"]);
 
 /** The host `.env` names the staged compile reads (scripts/compiler/inputs.ts hostEnv, scripts/compile.ts's env() calls). */
-const ENV_KEYS = new Set(["AIDENHQ_DIR", "AIDENHQ_STATE_DIR", "AIDENHQ_INSTANCE_REPO", "TRANSCRIPTS_DIR", "AIDENHQ_SOURCES_DIR",
+const ENV_KEYS = new Set(["AIDENHQ_INSTANCE_REPO", "TRANSCRIPTS_DIR",
   "AIDENHQ_PUBLIC_IP", "AIDENHQ_ADMIN_URL", "BOARD_LAN_URL", "AIDENHQ_EXPOSURE", "AIDENHQ_GITHUB_AGENTS_ORG",
   "VAULT_DIR", "VAULT_FOLDERS", "KNOWLEDGE_BASES"]);
 
@@ -71,6 +71,9 @@ const ENV_KEYS = new Set(["AIDENHQ_DIR", "AIDENHQ_STATE_DIR", "AIDENHQ_INSTANCE_
  * The host's `.env`, filtered to ENV_KEYS. A host `.env` holds tokens and channel secrets beside the paths the compile reads
  * (AIDENHQ_PRODUCT_REPO's sibling keys, `paperclip_board_key`, model keys); only the names above are carried, so a target's
  * compiler — a commit nobody has applied — never sees the rest. Blanked, not copied: nothing is written into the target tree.
+ * `AIDENHQ_DIR`/`AIDENHQ_STATE_DIR`/`AIDENHQ_SOURCES_DIR` are deliberately absent: the compiler reads none of them as an input, and
+ * each hands the target a host path — the checkout whose `.env` holds what this filter just dropped, or the source cache it could
+ * write into. The source cache follows `HOME`, which is this check's temp dir, so a fetch lands there and nowhere else.
  */
 export function dotenvOf(repo: string, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const out: Record<string, string> = {};
@@ -133,6 +136,23 @@ function snapshotInputs(i: Inputs, to: string, host: NodeJS.ProcessEnv = process
     // VAULT_DIR is validated whenever VAULT_FOLDERS is set (`must be an absolute path without ':'`), and its value becomes a
     // compose mount source; handing the snapshot dir keeps the staged compose ours while the validation still runs.
     vaultSet: String(setting("VAULT_DIR")) !== "" };
+}
+
+/**
+ * The previous product's default bundle, as the apply derives it (ops/apply-config-work.sh:145): `git show <before>:modules/
+ * marketplace.json`'s `bundle`, `before` being the product this host applied last (data/applied-product, else HEAD). compile()
+ * uses it to tell a module the target *gained* from one already seen (scripts/modules.ts); without it the preflight treats the
+ * target's own bundle as already seen and can pass a bump the apply then refuses. `undefined` when there is nothing to read,
+ * as the apply's own fallback leaves it.
+ */
+async function oldBundleOf(repo: string, until: number): Promise<string | undefined> {
+  let before = "";
+  try { before = readFileSync(join(repo, "data", "applied-product"), "utf8").trim(); } catch { /* no marker yet: the checkout's HEAD */ }
+  try {
+    const sha = (await git(repo, ["rev-parse", "--verify", "--quiet", before || "HEAD"], until)).toString().trim();
+    const b = (JSON.parse((await git(repo, ["show", `${sha}:modules/marketplace.json`], until)).toString()) as { bundle?: unknown }).bundle;
+    return b === undefined ? undefined : JSON.stringify(b);
+  } catch { return undefined; }
 }
 
 /**
@@ -369,6 +389,9 @@ export function createCompileCheck(d: CompileDeps) {
       // an unapplied commit, so whatever path it is handed it can open.
       const snap = snapshotInputs(d.inputs, join(dir, "inputs"), process.env, dotenvOf(d.repo));
       const env = stagedEnv(productDir, instanceDir, snap, dotenvOf(d.repo), join(dir, "home"));
+      // The one env input that is not a path: the previous product's bundle (the apply's AIDENHQ_OLD_BUNDLE, :145).
+      const old = await oldBundleOf(d.repo, until);
+      if (old !== undefined) env.AIDENHQ_OLD_BUNDLE = old;
       mkdirSync(join(dir, "home"), { recursive: true });
       const o = { productDir, instanceDir, repo: d.repo, env, until };
       const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.cache)), d.cache);
