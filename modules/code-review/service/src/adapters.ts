@@ -43,6 +43,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
   return {
     open: async (repo) => ((await get("prs", { repo })) as { prs: PullRequest[] }).prs,
     get: async (repo, number) => ((await get("pr", { repo, number })) as { pr: PullRequest }).pr,
+    snapshot: async (repo, number) => (await get("snapshot", { repo, number })) as Awaited<ReturnType<PrSource["snapshot"]>>,
     comments: async (repo, since) => (await get("comments", { repo, since })) as { comments: PrComment[]; cursor: string },
     permission: async (repo, login) => ((await get("permission", { repo, login })) as { permission: Permission }).permission,
     compare: async (repo, base, head) => (await get("compare", { repo, base, head })) as { merge_base: string; status: "ahead" },

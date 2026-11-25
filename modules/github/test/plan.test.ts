@@ -48,6 +48,7 @@ describe("plan: product merges", () => {
     const tier = (extra) => planParts("merge", { ...s, prs: [pr(s.productRepo, { checks: ci, ...extra })] })[0].map((p) => [p.rule, p.tier]);
     assert.deepEqual(tier({ verdict: { pass: true } }), [["product-merge-reviewed", 0]], "pass with ci-required green");
     assert.deepEqual(tier({ verdict: { bypass: "down" } }), [["product-merge", 1]], "a bypass");
+    assert.deepEqual(tier({ verdict: { pass: true, unreviewed: true } }), [["product-merge", 1]], "a pass whose risk tier needs no review");
     assert.deepEqual(tier({ verdict: undefined }), [["product-merge", 1]], "an ungated repo");
     assert.deepEqual(tier({ verdict: { pass: true }, checks: green }), [["product-merge", 1]], "ci-required missing");
     assert.deepEqual(tier({ verdict: { pass: true }, checks: [...green, { name: "ci-required", ok: true, success: false }] }), [["product-merge", 1]], "ci-required neutral");

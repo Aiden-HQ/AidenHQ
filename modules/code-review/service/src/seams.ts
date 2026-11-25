@@ -40,7 +40,11 @@ export type PullRequest = {
   merged?: boolean;
   /** A stranger's words: shown as plain text, never in a task title; title and body reach a review only fenced as data (intent). */
   title?: string; body?: string;
+  /** GitHub's author_association, and whether the author is the instance's own App: the risk tier's author kind. */
+  association?: string; own?: boolean;
 };
+/** One file of a PR's own change (merge base to head), for its risk tier. */
+export type PrFile = { path: string; previous?: string; additions: number; deletions: number };
 /** A comment on a PR's conversation. Its body is a stranger's text. */
 export type PrComment = { id: string; number: number; author: string; body: string; created_at: string };
 export type Permission = "admin" | "maintain" | "write" | "triage" | "read" | "none";
@@ -50,6 +54,9 @@ export interface PrSource {
   open(repo: string): Promise<PullRequest[]>;
   /** One PR; throws when it can't be read (missing, private to the instance, revoked access). */
   get(repo: string, number: number): Promise<PullRequest>;
+  /** One consistent read of a PR and its files (its risk tier's facts): `moved` when the head or base moved during the read. Over 3,000
+   * files the list is empty (`changed_files` says how many). */
+  snapshot(repo: string, number: number): Promise<{ moved: true } | { pr: PullRequest; changed_files: number; files: PrFile[] }>;
   /** PR conversation comments created after `since` (ISO), oldest first, and the cursor to ask from next. */
   comments(repo: string, since: string): Promise<{ comments: PrComment[]; cursor: string }>;
   /** The login's permission on the repo now (never cached: a revoked one counts at once). */

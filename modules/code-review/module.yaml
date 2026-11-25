@@ -84,14 +84,19 @@ facts:
 stages:
   - { name: review, label: Code review, from: review.started, to: review.ended }
 settings:
-  # repos: [{ repo: owner/name, on_open: [combo], on_push: [combo], push_rounds: 1, drafts: false, forks: manual|auto,
-  # ignore: [globs], max_nits: 5 }]. A combo is { engine: codex|claude-code|codegenie|codex-native, model (an OpenRouter
+  # repos: [{ repo: owner/name, preset: light|standard|thorough, repo_class: critical|standard|sandbox, rules: [{ when?, tier }]
+  # (omitted: the default rules), by_tier: { <skip|trivial|standard|sensitive>: { on_open: [combo], on_push: [combo], push_rounds } },
+  # drafts: false, forks: manual|auto, ignore: [globs], max_nits: 5 }]. Each PR head gets a risk tier from the rules (the first whose
+  # conditions all hold: lines, files, paths, only_paths, author, base, repo_class); its tier's combos review it (the preset's, with
+  # by_tier over them per field). A combo is { engine: codex|claude-code|codegenie|codex-native, model (an OpenRouter
   # id), effort (the engine's: codex and codex-native minimal-xhigh, the others low-max), mandatory (default false) }; each moment runs every combo it lists (at most 4, each its
   # own review), [] none. A mandatory combo's review gates the repo's merges: the github module's merge queue merges a PR only
   # once the mandatory combos reviewed its head and none of their important findings is open (fixed, answered on its thread by the
   # PR's author or a writer, or by an agent's code_review_resolve call: fixed, disputed, by design or won't fix with a reason, each closing it at once, or dismissed by the owner on the board); a gated repo has one in on_open, and on_push's is optional (without one, the PR's opening review stands for every later head: the findings still open decide); its mandatory runs are never
-  # skipped and review forks by themselves. push_rounds (default 1; null: every push) is how many pushes of a PR get an on_push
-  # review; once a PR has had them, later heads get none and are gated as without a mandatory on_push. ai_review_code's unless_code_review_mandatory reads the same repos. on_push reviews only the new changes. Read by the service
+  # skipped and review forks by themselves. push_rounds (null: every push) is how many pushes of a PR in a tier get an on_push
+  # review; once a PR has had them, later heads get none and are gated as without a mandatory on_push. Every watched repo's merges ask
+  # the verdict; a tier with no mandatory combo needs no review. ai_review_code's unless_code_review_mandatory skips the repos where
+  # every tier the rules can select has a mandatory combo. on_push reviews only the new changes. Read by the service
   # (service/src/config.ts).
   code_review:
     type: object
