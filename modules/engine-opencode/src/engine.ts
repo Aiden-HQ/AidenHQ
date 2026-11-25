@@ -1,6 +1,6 @@
 // engine@1 for opencode: a long-lived session over `opencode serve`. job.json → opencode.json (src/config.ts), one server, one
 // opencode session (resumed by spec.session), the prompt and every comment sent as turns one at a time, its events → events.jsonl.
-// It never emits `final` and never exits by itself: the session lives until the kernel stops the job (SIGTERM: the turn is
+// It never emits `final` (each finished turn's last words are a `reply` event instead) and never exits by itself: the session lives until the kernel stops the job (SIGTERM: the turn is
 // aborted and the exit is 143, which the kernel reads as machinery, so a box replacement resumes the same session).
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -96,6 +96,8 @@ async function run() {
       for (let i = 0; i < 20 && !(await busy()); i++) await sleep(150);
       while (await busy()) await sleep(300);
       if (stopping) return;
+      await sleep(300);   // the turn's last text event can trail the status that says idle
+      sse.endTurn();
     }
   })().catch(fail);
 

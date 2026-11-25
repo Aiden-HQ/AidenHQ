@@ -22,7 +22,8 @@ export interface ControlPlane {
   task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string } | undefined>;
 }
 /** `stepCount` and `expired`: a finished job's progress after retention (retention.ts) keeps the last words and how many steps there were. */
-type Progress = { said?: string; saidAt?: string; plan?: unknown[]; steps?: unknown[]; stepCount?: number; expired?: boolean };
+/** `replies`: a session's finished turns not yet dropped (the last REPLIES_KEPT), each posted on the task by its dispatcher once. */
+type Progress = { replies?: { id: string; text: string }[]; said?: string; saidAt?: string; plan?: unknown[]; steps?: unknown[]; stepCount?: number; expired?: boolean };
 export interface JobView {
   id: string; module: string; agent: string; task: string; state: string; pid: number; log: string; dir: string; at: number;
   jobcaps: string[]; observing: boolean; live_input: boolean; exit: number | null; final: string; session: string | null; /** Its profile, frozen at admission (null: a row from before admission kept one). */ profile: string | null;
@@ -55,6 +56,8 @@ export class JobError extends Error {
 // Nothing of the kernel's own environment reaches a box: the docker client gets BOX_ENV only.
 const BOX_ENV = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"];
 const ID = /^[\w.-]{1,100}$/;
+const TURN = /^[\w-]{1,100}$/;
+const REPLY_MAX = 20_000, REPLIES_KEPT = 10;
 
 // The run (its `docker exec` client) under a `sh` of builtins only that records its exit status and outlives a stop's SIGTERM
 // to record it. Stopping the client stops nothing in the box: the dispatcher releases the box (the launcher restarts or destroys
@@ -275,7 +278,7 @@ export function readEvents(jobDir: string, offset = 0) {
   const { values, used } = lines(buf);
   // A line longer than one read is skipped whole, not waited on forever.
   const next = offset + (used || (buf.length === 4 << 20 ? buf.length : 0));
-  const events = values.filter((e: any) => e && typeof e === "object" && ["progress", "usage", "session", "final"].includes(e.t)) as any[];
+  const events = values.filter((e: any) => e && typeof e === "object" && ["progress", "usage", "session", "final", "reply"].includes(e.t)) as any[];
   return { events, offset: next, skipped: values.length - events.length };
 }
 
@@ -480,6 +483,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       for (const e of got.events) {
         if (e.t === "session" && typeof e.id === "string" && SESSION.test(e.id)) session = e.id;
         if (e.t === "final" && typeof e.text === "string") final = e.text;
+        if (e.t === "reply" && typeof e.text === "string" && typeof e.id === "string" && TURN.test(e.id) && !progress.replies?.some((x) => x.id === e.id)) progress.replies = [...(progress.replies ?? []), { id: e.id, text: e.text.slice(0, REPLY_MAX) }].slice(-REPLIES_KEPT);
         if (e.t === "usage") {
           for (const k of ["input", "cached", "output"] as const) usage[k] += Number.isFinite(e[k]) && e[k] > 0 ? e[k] : 0;
           usage.seen = true;

@@ -34,12 +34,13 @@ function setup(session?: string, known = session ?? "", pending?: string[], extr
 test("first turn: session, progress and usage; one prompt; no final", async () => {
   const e = setup();
   try {
-    await e.until(() => e.events().some((x: any) => x.t === "usage"));
+    await e.until(() => e.events().some((x: any) => x.t === "reply"));
     const ev = e.events() as any[];
     assert.equal(ev[0].t, "session");
     assert.ok(ev.some((x) => x.t === "progress" && x.steps?.some((s: any) => s.text.startsWith("bash: echo first prompt"))));
     assert.deepEqual(ev.find((x) => x.t === "usage"), { t: "usage", input: 10, cached: 4, output: 3, model: "m1" });
     assert.ok(!ev.some((x) => x.t === "final"));
+    assert.deepEqual(ev.filter((x) => x.t === "reply"), [{ t: "reply", id: "tfirst prompt", text: "done first prompt" }]);   // the turn's last words, once
     const prompts = e.calls().filter((c: any) => c.prompt);
     assert.equal(prompts.length, 1);
     assert.equal(prompts[0].text, "first prompt");
