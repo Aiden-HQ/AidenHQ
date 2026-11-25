@@ -380,7 +380,9 @@ export class Workspace {
         if (/^Google API 404:/.test((err as Error).message)) continue; // deleted since the listing
         throw err;
       }
-      const newest = (t.messages ?? []).reduce<GmailMessage | undefined>((last, x) => (!last || Number(x.internalDate ?? 0) >= Number(last.internalDate ?? 0) ? x : last), undefined);
+      // Automated mail stays set aside here too: the row is the newest message a person sent (the owner's own included).
+      const person = (x: GmailMessage) => (x.labelIds ?? []).includes("SENT") || !automated((name) => header(x, name));
+      const newest = (t.messages ?? []).filter(person).reduce<GmailMessage | undefined>((last, x) => (!last || Number(x.internalDate ?? 0) >= Number(last.internalDate ?? 0) ? x : last), undefined);
       if (!newest) continue;
       const h = (name: string) => header(newest, name);
       const at = Number(newest.internalDate ?? 0);

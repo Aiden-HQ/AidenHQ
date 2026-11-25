@@ -106,12 +106,16 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
       { id: "k2", threadId: "tk", at: T0 + 4_000, headers: own("kim@acme.com"), labels: ["SENT"] },
       // Kim wrote again after that reply, so this thread needs the owner again.
       { id: "k3", threadId: "tk", at: T0 + 5_000, headers: person("Kim <kim@acme.com>") },
+      // A notification lands in Pat's thread after Pat's ask: the row stays Pat's.
+      { id: "p1", threadId: "tp", at: T0 + 6_000, headers: person("Pat <pat@acme.com>") },
+      { id: "p2", threadId: "tp", at: T0 + 7_000, headers: person("Docs <comments-noreply@docs.google.com>") },
     ];
     const ws = new MultiWorkspace(creds(), "primary", google(answered).impl);
     const r = await ws.gmailInbox({ "me@work.com": T0 }, 20);
     expect(r.threads.map((t) => [t.thread_id, t.id, t.from, t.replied])).toEqual([
       ["td", "d2", "Me <me@work.com>", true],
       ["tk", "k3", "Kim <kim@acme.com>", false],
+      ["tp", "p1", "Pat <pat@acme.com>", false],
     ]);
   });
 
