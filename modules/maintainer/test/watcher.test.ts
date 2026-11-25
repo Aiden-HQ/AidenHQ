@@ -169,7 +169,7 @@ test("triage runs are capped a day per author, the rest held until a slot frees 
   const w = world();
   await w.look();
   const opened = (seq, number, author, o = {}) => ev(seq, "issues.opened", { number, author_kind: "outside", created_at: new Date().toISOString(), ...o }, { author, labels: [] });
-  w.log.push(opened(1, 1, "spam"), opened(2, 2, "Spam"), opened(3, 3, "ada"), opened(4, 4, "bob", { author_kind: "agent" }), opened(6, 6, "bob", { author_kind: "agent" }), opened(7, 7, "mudit", { author_kind: "owner" }), opened(8, 8, "mudit", { author_kind: "owner" }), { ...opened(5, 5, "eve"), labels: ["agent-fix"] });
+  w.log.push(opened(1, 1, "spam"), opened(2, 2, "Spam"), opened(3, 3, "ada"), opened(4, 4, "bob", { author_kind: "agent" }), opened(6, 6, "bob", { author_kind: "agent" }), opened(7, 7, "repo-owner", { author_kind: "owner" }), opened(8, 8, "repo-owner", { author_kind: "owner" }), { ...opened(5, 5, "eve"), labels: ["agent-fix"] });
   await w.look();
   assert.deepEqual(w.triaged, [1, 3, 4, 6, 7, 8], "the fleet's and the owner's issues are triaged past the cap");
   assert.deepEqual(w.logs.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [2]);

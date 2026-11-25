@@ -184,7 +184,7 @@ labelled-issue task of yours: `task_list` with `mine: true` lists your open task
 names its issue (`owner/name#number`) in the first line of its description (`task_get`). An issue whose fix label
 landed in the last hour is left to the labelled-issue task the watcher files for it. Pick each other uncovered issue up
 where it stands, in this run: check it by the skill `resolved-check`, and a real issue with no fix task gets its brief.
-Then, where `triage` is `new+backlog`, the unlabelled ones that have no open triage task of yours: judge each by the skill `triage`, leaving the issues of an author who already has `triage_cap_per_author_day` of your triage tasks from the last day for a later run (the cap holds them back as it does for new issues). An issue that already
+Then, where `triage` is `new+backlog`, the unlabelled ones that have no open triage task of yours: judge each by the skill `triage`, leaving the issues of an outside author (not the owner or the fleet) who already has `triage_cap_per_author_day` of your triage tasks from the last day for a later run (the cap holds them back as it does for new issues). An issue that already
 carries your verdict comment is done, unless it waits on an owner decision that has since been answered, or on details from its reporter who has since replied: carry that out, judging it again by the skill `triage`.
 
 Where `needs_info_close_days` is set, an open issue on which you asked its reporter for details, with no reply for that many days
