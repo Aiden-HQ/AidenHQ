@@ -106,6 +106,9 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
         return { sentence: `Restart service ${target} (recreated under the apply lock).`, name: target };
       case "rollback": {
         if (target !== "last_good") throw refuse("a rollback's target is last_good: the kernel picks the generation");
+        // A refused apply switched nothing: the generation before it still runs, and a rollback would take that one away too.
+        const newest = generations()[0];
+        if (newest?.health === "refused") return { sentence: "", name: `generation ${newest.n}`, satisfied: `generation ${newest.n} was refused and switched nothing; the generation before it still runs. Fix what its log names (often an instance setting the new product refuses), then the next apply moves forward` };
         const to = lastGood();
         return { sentence: `Roll this host back to apply generation ${to.n} (product ${String(to.product).slice(0, 12)}), its last good one.`, name: `generation ${to.n}`, generation: to.n! };
       }
