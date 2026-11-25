@@ -9,7 +9,7 @@
 // It compiles with the *target's* compiler, never the running one: a product that changes what a setting means refuses the
 // instance in its own scripts/modules.ts, and only its compiler catches that (#1730 is exactly that break).
 import { execFile, spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -54,21 +54,89 @@ export type CompileDeps = {
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
+/** The process env a staged compile keeps: a shell's own basics, never a credential. */
+const BASE_ENV = new Set(["PATH", "LANG", "LC_ALL", "TMPDIR", "USER", "SHELL", "TERM", "NODE_PATH", "NODE_OPTIONS", "NODE_VERSION"]);
+
+/** The host `.env` names the staged compile reads (scripts/compiler/inputs.ts hostEnv, scripts/compile.ts's env() calls). */
+const ENV_KEYS = new Set(["AIDENHQ_DIR", "AIDENHQ_STATE_DIR", "AIDENHQ_INSTANCE_REPO", "TRANSCRIPTS_DIR", "AIDENHQ_SOURCES_DIR",
+  "AIDENHQ_PUBLIC_IP", "AIDENHQ_ADMIN_URL", "BOARD_LAN_URL", "AIDENHQ_EXPOSURE", "AIDENHQ_GITHUB_AGENTS_ORG"]);
+
+/**
+ * The host's `.env`, filtered to ENV_KEYS. A host `.env` holds tokens and channel secrets beside the paths the compile reads
+ * (AIDENHQ_PRODUCT_REPO's sibling keys, `paperclip_board_key`, model keys); only the names above are carried, so a target's
+ * compiler — a commit nobody has applied — never sees the rest. Blanked, not copied: nothing is written into the target tree.
+ */
+export function dotenvOf(repo: string, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  let text = "";
+  try { text = readFileSync(join(repo, ".env"), "utf8"); } catch { return out; }
+  for (const line of text.split("\n")) {
+    const m = /^\s*([A-Z0-9_]+)=(.*)$/.exec(line);
+    if (m && ENV_KEYS.has(m[1]!)) out[m[1]!] = m[2]!.replace(/^["']|["']$/g, "");
+  }
+  // The process's own values win, as hostEnv() has them.
+  for (const k of ENV_KEYS) if (base[k] !== undefined) out[k] = base[k]!;
+  return out;
+}
+
+/** Where a target compiler's inputs are cut down to (snapshotInputs): the snapshot dirs, and the host's vault *settings*. */
+export type Snapshot = Inputs & { vaultDir: string; transcriptsDir: string; vaultFolders: string; knowledgeBases: string };
+
+/**
+ * The compile's host inputs, cut down to exactly what it reads. A target is a commit nobody has applied yet, so its compiler is
+ * untrusted code running as this user: whatever path it is handed it can open, and handing it the real vault, data dir or config
+ * dir would let it read the owner's secrets and live data before an apply is approved. So it gets a private copy of the facts:
+ *   - secrets: the retired GitHub App id (a value the compile writes into settings), and placeholder files standing in for
+ *     `tailscale_apps_authkey` and `cloudflared_credentials.json`, whose presence and non-emptiness are all the compile checks;
+ *   - data: the modules' `data_version` markers, the only files a staged compile reads there;
+ *   - config: `runner.yaml`, the one file it reads;
+ *   - vault and transcripts: empty folders, which only build compose mount strings (their contents are never read).
+ * A read that fails is operational (the caller retries), never a verdict on the target.
+ */
+function snapshotInputs(i: Inputs, to: string, host: NodeJS.ProcessEnv = process.env): Snapshot {
+  const secretsDir = join(to, "secrets"), dataDir = join(to, "data"), configDir = join(to, "config");
+  const vaultDir = join(to, "vault"), transcriptsDir = join(to, "transcripts");
+  for (const d of [secretsDir, dataDir, configDir, vaultDir, transcriptsDir]) mkdirSync(d, { recursive: true });
+  // The retired app id is the one secret *value* the compile reads (settings.github_migrate_from_app). Only that one.
+  const retired = [join(i.secretsDir, "github_retired_app_id"), join(i.secretsDir, "github-app", "app_id")].find((f) => existsSync(f));
+  if (retired) copyFileSync(retired, join(secretsDir, "github_retired_app_id"));
+  // Presence-only reads: a non-empty file stands for "the host has this", an absent one for "it does not". No real bytes.
+  for (const n of ["tailscale_apps_authkey", "cloudflared_credentials.json"]) {
+    const f = join(i.secretsDir, n);
+    if (existsSync(f) && statSync(f).isFile() && statSync(f).size > 0) writeFileSync(join(secretsDir, n), "present\n", { mode: 0o600 });
+  }
+  // data_version markers: the staged compile's only data read (checkDataVersion, spec §6.4.1). Names, not contents, matter.
+  try {
+    for (const m of readdirSync(join(i.dataDir, "modules"))) {
+      const marker = join(i.dataDir, "modules", m, ".data_version");
+      if (!existsSync(marker)) continue;
+      mkdirSync(join(dataDir, "modules", m), { recursive: true });
+      copyFileSync(marker, join(dataDir, "modules", m, ".data_version"));
+    }
+  } catch { /* no data modules on this host: nothing to reproduce */ }
+  if (existsSync(join(i.dataDir, "bundle-state.json"))) copyFileSync(join(i.dataDir, "bundle-state.json"), join(dataDir, "bundle-state.json"));
+  if (existsSync(join(i.configDir, "runner.yaml"))) copyFileSync(join(i.configDir, "runner.yaml"), join(configDir, "runner.yaml"));
+  // VAULT_FOLDERS and KNOWLEDGE_BASES are not paths the compile opens: they are *settings* hostMounts() validates and turns
+  // into compose mount strings. Handing them over verbatim keeps those refusals ("invalid vault folder", "invalid
+  // KNOWLEDGE_BASES entry") and the staged compose identical, while the folders they name stay outside the snapshot tree.
+  return { configDir, dataDir, secretsDir, vaultDir, transcriptsDir,
+    vaultFolders: String(host.VAULT_FOLDERS ?? ""), knowledgeBases: String(host.KNOWLEDGE_BASES ?? "") };
+}
+
 /**
  * The env the apply's staged compile runs with (ops/apply-config-work.sh: `AIDENHQ_COMPILE_STAGE=1 node scripts/compile.ts`):
- * the staged mode, the instance tree to compile, and this host's config, data and vault. The compiler's outputs go to
+ * the staged mode, the instance tree to compile, and the snapshot inputs above. The compiler's outputs go to
  * `<productDir>/config.next` and `<productDir>/compose.modules.next.yaml`, inside the extracted target tree, never the host's.
  *
- * Only what the compile reads is carried over: the host's `.env` (seeded in `productDir`) and these path settings. Anything else
- * in the kernel's environment — its own keys, tokens and unrelated secrets — is dropped, so the target's compiler (which may be a
- * commit nobody has applied yet) can't read them. `base` is a test seam for the process env; production passes nothing.
+ * Only what the compile reads is carried over: the process env is filtered to PATH/locale/temp helpers plus the host `.env`'s
+ * ENV_KEYS, and the kernel's own keys, tokens and unrelated secrets never pass (`base` is a test seam; production passes
+ * `process.env`). `HOME` is the check's own temp dir, never the host's, so `~/.config/aidenhq`'s keys are unreachable too.
  */
-const KEEP = new Set(["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "NODE_PATH", "NODE_OPTIONS", "NODE_VERSION", "USER", "SHELL", "TERM",
-  "AIDENHQ_DIR", "AIDENHQ_STATE_DIR", "AIDENHQ_INSTANCE_REPO", "TRANSCRIPTS_DIR", "VAULT_DIR", "VAULT_FOLDERS", "KNOWLEDGE_BASES",
-  "AIDENHQ_PUBLIC_IP", "AIDENHQ_ADMIN_URL", "BOARD_LAN_URL", "AIDENHQ_EXPOSURE", "AIDENHQ_GITHUB_AGENTS_ORG"]);
-export const stagedEnv = (productDir: string, instanceDir: string, i: Inputs, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({
-  ...Object.fromEntries(Object.entries(base).filter(([k]) => KEEP.has(k))), AIDENHQ_COMPILE_STAGE: "1", AIDENHQ_INSTANCE_DIR: instanceDir,
+export const stagedEnv = (productDir: string, instanceDir: string, i: Snapshot, dotenv: Record<string, string> = {}, home?: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(Object.entries(base).filter(([k]) => BASE_ENV.has(k))), ...dotenv,
+  ...(home ? { HOME: home } : {}), AIDENHQ_COMPILE_STAGE: "1", AIDENHQ_INSTANCE_DIR: instanceDir,
   AIDENHQ_CONFIG_DIR: i.configDir, AIDENHQ_DATA_DIR: i.dataDir, AIDENHQ_SECRETS_DIR: i.secretsDir,
+  VAULT_DIR: i.vaultDir, VAULT_FOLDERS: i.vaultFolders, KNOWLEDGE_BASES: i.knowledgeBases, TRANSCRIPTS_DIR: i.transcriptsDir,
 });
 /**
  * The env a target tree's `npm ci` runs with. It runs the target's own lifecycle scripts before anything is checked, so it gets
@@ -140,10 +208,12 @@ async function extract(repo: string, sha: string, to: string, until: number) {
   await git(to, ["checkout", "-q", "--detach", sha], until);
 }
 
-/** The host's inputs the apply's compile reads from the checkout it runs in: its .env and the bundle it last compiled. */
+/**
+ * The one host input the compile reads from the tree it runs in: the bundle this host last compiled. The host's `.env` is
+ * deliberately *not* copied here — its values arrive filtered, in the env (dotenvOf/stagedEnv), so a target's compiler never
+ * receives a token or a channel secret that lives beside the paths in it.
+ */
 function seedInputs(repo: string, productDir: string) {
-  const env = join(repo, ".env");
-  if (existsSync(env)) copyFileSync(env, join(productDir, ".env"));
   const bundle = join(repo, "data", "bundle-state.json");
   if (existsSync(bundle)) {
     mkdirSync(join(productDir, "data"), { recursive: true });
@@ -256,7 +326,11 @@ export function createCompileCheck(d: CompileDeps) {
         productDir = join(dir, "kernel-fork");
         await extract(d.repo, kernelSha, productDir, until);
       }
-      const env = stagedEnv(productDir, instanceDir, d.inputs);
+      // The compile gets a private copy of the host facts it reads, never the host's own vault, data or config dirs: a target is
+      // an unapplied commit, so whatever path it is handed it can open.
+      const snap = snapshotInputs(d.inputs, join(dir, "inputs"));
+      const env = stagedEnv(productDir, instanceDir, snap, dotenvOf(d.repo), join(dir, "home"));
+      mkdirSync(join(dir, "home"), { recursive: true });
       const o = { productDir, instanceDir, repo: d.repo, env, until };
       const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? installCompiler);
       log("compile check", { product, instance: base, ok: r.ok, ms: Date.now() - t0 });
