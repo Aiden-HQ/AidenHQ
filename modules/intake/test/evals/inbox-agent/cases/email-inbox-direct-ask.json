@@ -1,0 +1,26 @@
+{
+  "name": "email-inbox-direct-ask",
+  "why": "An inbox thread asking the owner for a decision becomes one task keyed by its thread; the FYI and the cc-only thread become nothing.",
+  "routine": "inbox-scan",
+  "input": "Run task: Today is 2026-11-25. Your user's email address is owner@example.com.\n\ngmail_search label:Aiden -> {\"messages\":[]}\ntask_list label email -> []\ngmail_inbox_new -> {\"threads\": [{\"account\": \"owner@example.com\", \"thread_id\": \"19a001\", \"id\": \"m19a001\", \"from\": \"Dana Whitfield <dana@globex.com>\", \"to\": \"owner@example.com\", \"cc\": \"\", \"subject\": \"Contract renewal: need your sign-off\", \"date\": \"2026-11-25T08:10:00Z\", \"cc_only\": false, \"snippet\": \"Hi, can you approve the Globex renewal terms by Thursday? Legal is waiting on you.\", \"link\": \"https://mail.google.com/mail/u/owner%40example.com/#all/19a001\"}, {\"account\": \"owner@example.com\", \"thread_id\": \"19a002\", \"id\": \"m19a002\", \"from\": \"Lee Chen <lee@example.com>\", \"to\": \"owner@example.com\", \"cc\": \"\", \"subject\": \"Notes from today's offsite\", \"date\": \"2026-11-25T08:10:00Z\", \"cc_only\": false, \"snippet\": \"FYI, sharing the offsite notes for reference, no action needed.\", \"link\": \"https://mail.google.com/mail/u/owner%40example.com/#all/19a002\"}, {\"account\": \"owner@example.com\", \"thread_id\": \"19a003\", \"id\": \"m19a003\", \"from\": \"Raj Patel <raj@example.com>\", \"to\": \"morgan@example.com\", \"cc\": \"owner@example.com\", \"subject\": \"Q4 hiring plan\", \"date\": \"2026-11-25T08:10:00Z\", \"cc_only\": true, \"snippet\": \"Morgan, can you confirm the headcount numbers?\", \"link\": \"https://mail.google.com/mail/u/owner%40example.com/#all/19a003\"}], \"accounts\": [{\"account\": \"owner@example.com\", \"threads\": 3, \"dropped\": {\"list\": 12, \"no-reply\": 5}, \"more\": false}], \"cursor\": {\"owner@example.com\": 1795000000000}}\ngmail_inbox_ack -> {\"cursor\":{\"owner@example.com\":1795000000000}}\ngmail_read_thread 19a001 -> {\"messages\":[{\"from\":\"Dana Whitfield <dana@globex.com>\",\"text\":\"Hi, can you approve the Globex renewal terms by Thursday? Legal is waiting on you. Thanks, Dana\"}]}\n",
+  "expect": [
+    {
+      "tool": "task_create",
+      "marker": "source:gmail:19a001",
+      "count": 1
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "task_create",
+      "marker": "19a002"
+    },
+    {
+      "tool": "task_create",
+      "marker": "19a003"
+    },
+    {
+      "tool": "notify"
+    }
+  ]
+}

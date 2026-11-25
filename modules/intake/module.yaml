@@ -1,0 +1,74 @@
+name: intake
+description: "Intake: turns what needs you in your inbox, Slack, Primer comments and meeting action items into deduplicated tasks."
+requires:
+  - slack
+  - google
+agents:
+  inbox-agent:
+    skills: [ meetings.meeting-actions, intake.triage-email, intake.triage-slack, primer.primer-digest, tasks.delegate-work ]
+    # Intake: everything that comes in for the owner (live Slack, the inbox, the Primer digest, meeting action items), one routine and one skill each (design §4.5).
+    department: intake
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    timeout_sec: 1200
+    # A live triage batch never waits behind an inbox scan.
+    max_parallel: 3
+    web_search: disabled
+    connections:
+      # No web: it reads untrusted email/Slack, so no outbound fetch (owner, 2026-11-11). app_view only.
+      apps: [ app_view, source_new, source_ack ]
+      # The digest of what others did on the owner's Primer documents (the primer-digest routine).
+      primer?: [ primer_get_digest ]
+      # Reads only.
+      slack: read
+      # The owner's Slack user id, for the live events it triages (the slack-triage routine) and the Slack DM page for an urgent one (slack, when installed).
+      slack_live?: [ slack_owner ]
+      # gmail_inbox_new/ack: the inbox since its cursor, automated mail set aside in code (skill triage-email). gmail_label: clears
+      # `Aiden` from a thread whose task is closed; the owner's own labels only, checked in code.
+      google_workspace: [ gmail_inbox_new, gmail_inbox_ack, gmail_search, gmail_read_thread, gmail_label ]
+      owner_channel: [ notify ]
+      paperclip_tasks: [ task_current, task_get, task_search, task_list, task_comments, task_create, task_update, task_comment, task_block, task_cancel, task_finish ]
+routines:
+  inbox-scan:
+    title: Inbox scan
+    agent: inbox-agent
+    description: |
+      Today is {{date}}. Your user's email address is ${settings.owner_email}. Follow your triage-email skill: one task per
+      thread labelled Aiden in Gmail and per new inbox thread that genuinely needs the owner (deduplicated), mark tasks whose
+      label was removed as answered (a comment, left open for them), then finish this task with a count summary.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "*/30 8-19 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
+  slack-triage:
+    title: Slack triage
+    agent: inbox-agent
+    description: |
+      Today is {{date}}. The user's Slack user ID is what slack_owner returns. Your task emoji is :pushpin:.
+      Follow your triage-slack skill: triage each event into nothing, a task (task_create) or, rarely, an alert (notify, kind alert); you never post
+      to Slack. Then close this task with one line saying what you did.
+    event: { connection: slack, resource: "*", filter: { kind: [message, app_mention, reaction_added, reaction_removed], bot: false } } # the kernel's event router fires it once a minute at most
+  # Intake's routines for the source modules it consumes: each exists only while its module is enabled.
+  primer-digest:
+    title: Primer digest
+    agent: inbox-agent
+    description: |
+      Today is {{date}}. Follow your primer-digest skill: read Primer's digest of the last day and, when there is
+      something in it, send the owner one notify (kind digest). Then close this task with one line.
+    concurrency: skip_if_active
+    when: { module: primer }
+    schedules:
+      - { cron: "0 8 * * *", timezone: "${settings.timezone}", label: "every morning" }
+  meeting-actions:
+    title: Meeting action items
+    agent: inbox-agent
+    description: |
+      Today is {{date}}. The owner is ${settings.owner_name}. Follow your meeting-actions skill: file the owner's action items from newly published
+      meetings, then close this task with a count summary.
+    concurrency: skip_if_active
+    when: { module: meetings }
+    schedules:
+      - { cron: "*/30 8-20 * * *", timezone: "${settings.timezone}", label: "every day" }
+labels:
+  # Intake's tasks: `waiting-on` (a promise made to the owner, which open-loops chases) and `email` (a thread labelled Aiden).
+  - { name: waiting-on, color: "#7c3aed" }
+  - { name: email, color: "#ea580c" }

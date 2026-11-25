@@ -27,7 +27,7 @@ applies it idempotently; edits made in Paperclip's UI are overwritten by the nex
 
 **Modules.** Product features ship as `modules/<name>/`: a `module.yaml` (settings, agents, routines), agent
 handbooks, connection services, apps and a `compose.yaml`. `core`, `channel-telegram` and `chat-lane` are always installed; the rest
-(`open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-steward`, `maintainer`, `ci`, `warehouse`, and the
+(`intake`, `open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-steward`, `maintainer`, `ci`, `warehouse`, and the
 connection modules) are switched on per instance.
 
 **Instance repo.** Your private repo holding everything specific to your deployment: `instance.yaml` (the pinned

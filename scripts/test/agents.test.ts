@@ -66,6 +66,8 @@ test("a local agent compiles like today's instance agent, with no trial", () => 
   assert.equal(r.paperclip.routines["x-sweep"].status, "active", "a local routine is active under quiet start");
   assert.equal(r.paperclip.routines["x-sweep"].tier, "local");
   assert.equal(r.paperclip.routines["daily-brief"].status, "paused", "a product module's schedule waits under quiet start");
+  const quiet = compile(product, withAgents({}, ["slack", "intake"], { quiet_start: "on" })).paperclip.routines;
+  assert.deepEqual([quiet["slack-triage"].status, quiet["inbox-scan"].status], ["paused", "paused"], "a product module's event routine waits too");
   // A heartbeat the instance turned on runs: quiet start held it off until then.
   const hb = withAgents({}, [], { quiet_start: "on" });
   writeFileSync(join(hb, "instance.yaml"), YAML.stringify({ ...YAML.parse(readFileSync(join(hb, "instance.yaml"), "utf8")), overrides: { agents: { "chief-of-staff": { heartbeat: true } } } }));
@@ -132,7 +134,7 @@ test("event routines compile and the lints hold", () => {
   refuses(ev(slack), /doesn't hold paperclip_tasks\.routine_events/, { connections: { slack: "read", paperclip_tasks: ["task_current"] }, profile: "engineer" });
   refuses(Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`x-w${i}`, { title: `W${i}`, agent: "x", description: "Go.", event: slack }])), /an agent has at most 20 local routines/);
   // The bundle's slack-triage is a product event routine: no webhook, no secrets.
-  const bundle = compile(product, withAgents({}, ["slack", "open-loops"])).paperclip;
+  const bundle = compile(product, withAgents({}, ["slack", "intake"])).paperclip;
   const r = bundle.routines["slack-triage"];
   assert.deepEqual([r.event.resource, r.concurrency, r.webhook, r.secrets_prefix], ["*", "always_enqueue", undefined, undefined]);
   assert.match(r.description, /routine_events\(batch\)/);
@@ -151,8 +153,8 @@ test("the Architect: max effort, only its own role, no fleet tools, reads every 
 });
 
 test("the web for every crew agent: web_view and app_view granted (an agent may opt its search down); Engineers get their own grants and the task reads", () => {
-  const dir = withAgents({ "review-chaser": { yaml: { web_search: "disabled" } } }, ["slack", "github", "open-loops", "meetings", "engineering", "primer"]);
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "slack", "github", "open-loops", "meetings", "engineering", "primer"], settings: { ...owner, owner_email: "e@x", product_repo: "acme/aidenhq" } }));
+  const dir = withAgents({ "review-chaser": { yaml: { web_search: "disabled" } } }, ["slack", "github", "intake", "meetings", "engineering", "primer"]);
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "slack", "github", "intake", "meetings", "engineering", "primer"], settings: { ...owner, owner_email: "e@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
   const codex = Object.entries(r.paperclip.agents).filter(([, a]) => a.profile === "crew");
   assert.ok(codex.length >= 8);
@@ -162,14 +164,14 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
     if (a.web_search !== "disabled") assert.ok(a.enabled_tools.apps?.includes("web_view"), `${key} lacks web_view`);
   }
   // The intake agents (Slack and email): untrusted text in, so no web out.
-  const intake = Object.entries(r.paperclip.agents).filter(([, a]) => a.module === "open-loops" && a.department.id === "intake");
+  const intake = Object.entries(r.paperclip.agents).filter(([, a]) => a.module === "intake" && a.department.id === "intake");
   assert.ok(intake.length);
   for (const [k, a] of intake) {
     assert.equal(a.web_search, "disabled", k);
     assert.ok(!a.enabled_tools.apps?.includes("web_view"), k);
-    // Reads only, plus the owner's page, its own tasks, its own source cursor and the owner's own Gmail labels (gmail_label: no
-    // system label, no new one, nobody else sees it): no tool a connection tags write that reaches anyone else.
-    const own = ["notify", "source_ack", "gmail_label"];
+    // Reads only, plus the owner's page, its own tasks, its own source and inbox cursors and the owner's own Gmail labels
+    // (gmail_label: no system label, no new one, nobody else sees it): no tool a connection tags write that reaches anyone else.
+    const own = ["notify", "source_ack", "gmail_inbox_ack", "gmail_label"];
     const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && !own.includes(t) && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }

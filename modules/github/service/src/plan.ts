@@ -30,6 +30,11 @@ export interface Ship {
   bound?: string; baseRef?: string;
   /** Ship's adoption: its current generation (null: not adopted, undefined: ship isn't installed) and the adoption's task. */
   current?: number | null; task?: string;
+  /**
+   * The adoption's hold, when it has one (`stalled`, `handed_back` or `stopped`; a pause reads as `stopped`), with ship's reason.
+   * A `stalled` hold still lets the push that resumes it land (the new head is what clears it); every other write stays refused.
+   */
+  hold?: { kind: string; reason?: string };
   /** The record's task, its id and identifier: an adoption's write is filed on that adoption's task. */
   filedOn?: string[];
   /** Filed by the ship module itself (its module token; github's `filed_by` lets it). */
@@ -93,13 +98,25 @@ export function planParts(action: string, s: State) {
 
 /**
  * Why a write for an adopted PR is refused, or undefined: ship isn't installed or the adoption is gone or newer
- * (ship-generation), the write isn't for that PR's own branch or task (ship-scope), the PR's head lives in a fork (ship-fork),
- * or its head moved off the one the write names (ship-head-moved). Refusals, never waits: the next round reads the PR again.
+ * (ship-generation), the adoption is on a hold that doesn't admit this write (ship-generation), the write isn't for that PR's own
+ * branch or task (ship-scope), the PR's head lives in a fork (ship-fork), or its head moved off the one the write names
+ * (ship-head-moved). Refusals, never waits: the next round reads the PR again.
+ *
+ * A `stalled` hold is the one exception, and only for the push that resumes it: ship clears a stalled hold on a new head, so a push
+ * at the head the write expects, onto the PR's own branch, filed on the adoption's task, is what lifts it. Approve, enqueue and a
+ * merge stay refused on any hold, a stalled one included, as does every push on a hand-back or a stop (a pause reads as a stop).
  */
 export function shipRefusal(x: Ship, ref: string): Part | undefined {
   if (x.current === undefined) return REJECT("ship-generation", `${ref}: the ship module isn't installed, so no adoption can be checked`);
   if (x.current === null) return REJECT("ship-generation", `${ref} isn't adopted by ship (handed back, stopped or never handed over)`);
   if (x.current !== x.generation) return REJECT("ship-generation", `${ref}: generation ${x.generation} is stale, the adoption is at ${x.current}`);
+  if (x.hold) {
+    // A stalled hold lifts on a new head, so a push is the one write that may go through it: the scope, fork and head checks
+    // below still judge it, and the push itself is what resumes the adoption. Every other write, and every push on another hold,
+    // is refused here.
+    const stalledPush = x.hold.kind === "stalled" && x.branch !== undefined;
+    if (!stalledPush) return REJECT("ship-generation", `${ref} is on hold by ship (${x.hold.kind}${x.hold.kind === "stalled" ? ": only the push that resumes it may land" : ""}): ${x.hold.reason ?? "no reason given"}`);
+  }
   if (x.task && !(x.filedOn ?? []).includes(x.task)) return REJECT("ship-scope", `${ref}: the write isn't on the adoption's task`);
   // A push onto a fork's branch only where its author allows maintainers to modify it; a merge or an approval is the base repo's.
   if (x.branch !== undefined && (x.headRepo === null || (x.headRepo !== undefined && !same(x.headRepo, ref.split("#")[0]) && !x.canModify))) return REJECT("ship-fork", `${ref}: its head is in a fork whose author doesn't allow maintainers to push: hold it with a note`);

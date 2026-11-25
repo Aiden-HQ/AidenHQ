@@ -419,10 +419,13 @@ export function createMerges(d: {
       // An adoption's merge is still that adoption's right before the call: a hand-back, a stop or a pause since ends it.
       // The same call asks ship's final tier check (the tier's merge, no App approval of another policy standing), with the live head, base and author.
       const at = q.ship || (q.byShip && d.ship) ? await d.ship?.generation(p.repo, p.number, p.head, { do: "merge", head: p.head, base: String(pull?.baseRefName ?? ""), association: String(pull?.authorAssociation ?? "") }) : undefined;
+      // A hold ends the merge whatever its kind: a stalled one admits only the push that resumes it, never an approve, an enqueue or a merge.
       if (q.ship && at?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
+      if (q.ship && at?.hold) return fail(`its adoption is on hold by ship (${at.hold.kind}): ship files a new merge when it resumes`);
       if (at?.refused) return fail(`${at.retry ? "ship-tier-pending: " : ""}ship's tier check refused the merge: ${at.refused}`);
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
-      if (q.byShip && !q.ship && d.ship && at?.generation === null) return fail("ship is paused, or this repo is switched off in ship: not merged");
+      // A pause reports the adoption's generation with a `stopped` hold, so the hold ends it, not a null generation.
+      if (q.byShip && !q.ship && d.ship && (at?.generation === null || at?.hold)) return fail("ship is paused, or this repo is switched off in ship: not merged");
       // The kernel files a module's write on any task: a fleet PR's merge ship filed stops when its task is cancelled.
       if (q.byShip && !q.ship && q.task && d.taskStatus) {
         const status = await d.taskStatus(q.task);

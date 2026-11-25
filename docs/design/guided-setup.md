@@ -101,7 +101,7 @@ ideal result.
 - Ask one thing: server (an SSH target, or "get me one": the AI may guide them to create one at a provider) or this
   machine (Linux, or Mac via Lima).
 - Keep the email (the AI fills it in when it knows it). `owner_email` is read by Paperclip setup, the gate, Google
-  sources and open-loops, so it stays an install input.
+  sources and Intake, so it stays an install input.
 - Drop `AIDENHQ_GITHUB_TOKEN` once the first public release is cut. The repos are public since 2026-11-17, and the
   token stays only as an optional variable for private forks.
 - Drop the Tailscale question from the default path; it becomes optional later, through Aiden.
