@@ -469,6 +469,14 @@ test("teams: any module agent becomes a team record over named members (template
   assert.throws(bad({}, { overrides: { agents: { assistant: { max_parallel: 2 } } } }), /assistant is team research's record/);
 });
 
+test("maintainer_repos: an old key or a boolean dependabot fails the compile naming the new one, so the last good generation keeps running", () => {
+  const bad = (entry) => () => compile(product, pinst(["github"], { ...owner, maintainer_repos: [entry] }));
+  assert.throws(bad({ repo: "acme/app", dependabot: true }), /settings.maintainer_repos: .*dependabot must be one of off, failing, all \(true is all\)/);
+  assert.throws(bad({ repo: "acme/app", label: "fix" }), /label \(it is now fix_label\)/);
+  assert.throws(bad({ repo: "acme/app", issues: false }), /issues \(it is now fixes\)/);
+  assert.doesNotThrow(bad({ repo: "acme/app", dependabot: "all", fix_label: "fix", fixes: false }));
+});
+
 test("code review: every watched repo asks its verdict; the kernel skips the AI reviewer only where every selectable tier gates; old shapes fail", () => {
   const c = (mandatory?: boolean) => ({ engine: "codex", model: "~a/b", effort: "low", ...(mandatory ? { mandatory } : {}) });
   const advice = { on_open: [c()], on_push: [] };

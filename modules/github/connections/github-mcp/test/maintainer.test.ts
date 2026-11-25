@@ -1098,6 +1098,11 @@ it("a list that doesn't parse refuses every tool and the watcher's read, naming 
   expect(f.calls).toHaveLength(0);
 });
 
+it("a list that doesn't parse sends no comment on any repo, scrubbed or not", async () => {
+  const m = new Maintainer(accessFor(fake({}).fetchFn), new Error("maintainer_repos[0]: dependabot must be one of off, failing, all"));
+  await expect(m.commentBody("acme/other", 1, "see internal.example-host")).rejects.toThrow(/maintainer_repos is invalid/);
+});
+
 it("trust is per repo: a write collaborator vouches only where the repo trusts write", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("writer-user", "2026-01-01T00:00:00Z")] }, permissions: { "writer-user": "write" } });
   const m = maintainer(f, [], [{ repo: PRODUCT }, { repo: OTHER, trusted: ["maintain", "write"] }]);

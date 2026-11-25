@@ -21,6 +21,7 @@ import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
 import { oldShape } from "../modules/ship/service/src/settings.ts";
+import { parseRepos } from "../kernel/sdk/src/maintained-repos.ts";
 import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
 import { KERNEL_KINDS, KERNEL_ROLES, repoKey } from "../kernel/src/kinds.ts";
 import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
@@ -856,6 +857,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
   settings.ship_enabled = enabled.includes("ship") ? "1" : "";
   // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (risk tiers §11).
+  // maintainer_repos is checked by the parser every service reads it with: an entry it refuses (an old key such as `label`, `issues` or a
+  // boolean `dependabot`) fails the compile, naming the new key, so the last good generation keeps running rather than a service refusing the list.
+  if (Array.isArray(settings.maintainer_repos) && settings.maintainer_repos.length) { try { parseRepos(JSON.stringify(settings.maintainer_repos)); } catch (e) { fail(`settings.maintainer_repos: ${(e as Error).message}`); } }
   if (enabled.includes("ship") && oldShape(settings.ship).length) fail(`settings.ship: ${oldShape(settings.ship).join(", ")}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance

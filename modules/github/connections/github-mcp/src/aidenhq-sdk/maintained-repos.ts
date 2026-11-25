@@ -86,7 +86,8 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     const e = typeof entry === "string" ? { repo: entry } : entry;
     if (!e || typeof e !== "object" || Array.isArray(e)) throw new Error(`${where}: an entry is ${SHAPE}`);
     const unknown = Object.keys(e).filter((k) => !KEYS.includes(k));
-    if (unknown.length) throw new Error(`${where}: unknown key ${unknown.join(", ")}`);
+    const renamed: Record<string, string> = { label: "fix_label", issues: "fixes" };
+    if (unknown.length) throw new Error(`${where}: unknown key ${unknown.map((k) => (renamed[k] ? `${k} (it is now ${renamed[k]})` : k)).join(", ")}`);
     const m = String(e.repo ?? "").trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
     if (!m) throw new Error(`${where}: repo must be owner/name`);
     const key = `${m[1]}/${m[2]}`.toLowerCase();
@@ -104,7 +105,7 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     };
     const one = <T extends string>(k: string, values: readonly T[], dflt: T): T => {
       if (e[k] === undefined) return dflt;
-      if (!values.includes(e[k])) throw new Error(`${where}: ${k} must be one of ${values.join(", ")}`);
+      if (!values.includes(e[k])) throw new Error(`${where}: ${k} must be one of ${values.join(", ")}${typeof e[k] === "boolean" ? ` (${e[k]} is ${e[k] ? "all" : "off"})` : ""}`);
       return e[k] as T;
     };
     const days = (k: string, v: unknown, dflt: number, min = 1) => {

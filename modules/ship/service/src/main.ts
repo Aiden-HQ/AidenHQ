@@ -70,13 +70,15 @@ const flow: Flow = {
 
 // The repos the loop watches: the product repo and every maintained repo ship works (all duties), and the other maintained repos
 // with Dependabot on (that duty only).
-const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { log("maintainer_repos unreadable: only the product repo is watched", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
+let unreadable = false;
+const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { unreadable = true; log("maintainer_repos unreadable: only the product repo is watched, and no Dependabot task is filed", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
 const dataDir = dirname(stateFile);
 /** Whether the loop still tracks a Dependabot task it filed on this repo (its loop.json). */
 const tracked = (repo: string) => { try { return Object.keys(JSON.parse(readFileSync(join(dataDir, "loop.json"), "utf8"))[repo.toLowerCase()]?.dependabot ?? {}).length > 0; } catch { return false; } };
 const repos = new Map<string, { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }>();
 // Which Dependabot bumps get a task comes from the repo's maintainer_repos entry (the product repo, unlisted, takes every one).
-const bumps = (repo: string) => maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot;
+// A list that can't be read files none: a read failure is never the `all` default.
+const bumps = (repo: string) => unreadable ? "off" as const : maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot;
 if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) repos.set(env.SHIP_PRODUCT_REPO, { duties: "all", dependabot: bumps(env.SHIP_PRODUCT_REPO) });
 for (const m of maintained) {
   if (repos.has(m.repo)) continue;

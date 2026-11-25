@@ -468,6 +468,8 @@ export class Maintainer {
    * label is untrusted; on the product repo it is scrubbed; on any other repo it goes as written.
    */
   async commentBody(repo: string, number: number, body: string, product?: string): Promise<string> {
+    // A list that can't be read leaves no repo's policy known: nothing goes out unscrubbed.
+    if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
     const r = this.list().find((x) => same(x.repo, repo));
     if (r) {
       const text = this.scrubbed(r, body);
