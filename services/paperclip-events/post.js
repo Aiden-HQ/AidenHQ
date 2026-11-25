@@ -39,6 +39,18 @@ const MAX = 100_000;
 /** Paperclip's refusals of a task's blockers (services/issues.js: a cycle, itself, another company, unresolved ones). */
 const BLOCKER_REFUSAL = /^(Blocking relations cannot contain cycles|Issue cannot be blocked by itself|Blocked-by issues must belong to the same company|Issue is blocked by unresolved blockers)/;
 const text = (s, max) => String(s).replace(/<!--\s*aidenhq:/gi, "<!-- (quoted) aidenhq:").slice(0, max);
+/**
+ * The task a delegation asked to be filed under, when Paperclip placed it elsewhere (a grandchild becomes a sibling): the
+ * create response's `parentAdjusted.requestedParent`, or the task the write was made from. Recorded in the new task's
+ * description as `<!-- aidenhq:requested-parent:<id> -->` (services/shared/requested-parent.ts reads it), because a later read
+ * carries only the placed `parentId`. The marker's namespace is the one `text` above quotes from agent text, so no agent can
+ * forge one.
+ */
+const REQUESTED = /^[A-Za-z0-9_-]{1,100}$/;
+const askedParent = (issue, issueId) => {
+  const id = issue?.parentAdjusted?.applied ? issue.parentAdjusted.requestedParent?.id ?? issueId : undefined;
+  return typeof id === "string" && REQUESTED.test(id) ? id : undefined;
+};
 const ids = (v) => Array.isArray(v) && v.every((x) => typeof x === "string" && UUID.test(x));
 const obj = (v) => v && typeof v === "object" && !Array.isArray(v);
 const user = (v) => v === null || (typeof v === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(v));
@@ -134,12 +146,26 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
     const had = p.again ? (await ctx.issues.list({ companyId, originId: origin })).find((i) => i.originKind === ORIGIN && i.originId === origin && i.createdByAgentId === agent) : undefined;
     const c = p.child;
     out.found = Boolean(had);
-    out.child = (had ?? await ctx.issues.create({
+    const kid = had ?? await ctx.issues.create({
       companyId, title: text(c.title, 200), originKind: ORIGIN, originId: origin, actor: as,
       ...(p.issueId ? { parentId: p.issueId } : {}),
       ...(c.description !== undefined ? { description: text(c.description, MAX) } : {}),
       ...Object.fromEntries(["priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "projectId"].filter((k) => c[k] !== undefined).map((k) => [k, c[k]])),
-    })).id;
+    });
+    out.child = kid.id;
+    // Paperclip caps agent-created trees at parent → child: a grandchild is created beside its requester and the answer says
+    // so. The task it was asked to be filed under still routes its delegator and notices, so it is recorded on the task. The
+    // text is quoted first and the marker added after, so this one marker survives.
+    //
+    // A retry (`again`) has no create answer to read, and the earlier attempt may have died before the marker landed: the task
+    // it asked for is `p.issueId`, and a task whose placed parent differs from it was adjusted. The marker is only written
+    // when it is missing, so a retried write lands once.
+    const asked = !p.issueId || kid.parentId === p.issueId ? askedParent(kid, p.issueId) : p.issueId;
+    const marker = asked && asked !== kid.parentId ? `<!-- aidenhq:requested-parent:${asked} -->` : "";
+    if (marker && !String(kid.description ?? "").includes(marker)) {
+      const base = text(c.description ?? "", MAX - marker.length - 2).trimEnd();
+      await ctx.issues.update(kid.id, { description: base ? `${base}\n\n${marker}` : marker }, companyId, as);
+    }
   }
   if (p.body !== undefined) {
     const had = p.again ? (await ctx.issues.listComments(p.issueId, companyId)).find((c) => c.authorAgentId === agent && String(c.body).endsWith(`\n\n${p.tag}`)) : undefined;

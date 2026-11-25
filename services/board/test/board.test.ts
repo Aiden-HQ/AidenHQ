@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkRequest } from "../src/app.js";
-import { assignees, buildBoard } from "../src/board.js";
+import { assignees, buildBoard, keepMarkers } from "../src/board.js";
+import { mergedDescription } from "../src/merge.js";
 import type { Agent, Issue } from "../src/paperclip.js";
 
 const agents: Agent[] = [

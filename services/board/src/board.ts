@@ -246,12 +246,19 @@ export function displayText(text: string | null | undefined): string {
 
 /** Hidden source markers: the task's own source, and the sources of tasks merged into it. */
 export const SOURCE_MARKERS = /<!-- (?:merged-)?source:[^>]*-->/g;
+/**
+ * The task a delegation asked for, when Paperclip created it beside that task instead of under it
+ * (services/shared/requested-parent.ts). It routes the task's delegator and notices, so an edit must keep it too.
+ */
+export const REQUESTED_PARENT_MARKER = /<!--\s*aidenhq:requested-parent:[A-Za-z0-9_-]{1,100}\s*-->/;
 
 /** Keep the source markers (merged tasks' too) when the user edits a description: deduplication depends on them. */
 export function keepMarkers(original: string | null | undefined, edited: string): string {
   const markers = String(original ?? "").match(SOURCE_MARKERS) ?? [];
+  const requester = String(original ?? "").match(REQUESTED_PARENT_MARKER) ?? [];
   const text = displayText(edited);
-  return markers.length ? `${text}\n\n${markers.join("\n")}` : text;
+  const kept = [...markers, ...requester];
+  return kept.length ? `${text}\n\n${kept.join("\n")}` : text;
 }
 
 export interface CommentView {

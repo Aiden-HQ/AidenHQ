@@ -13,6 +13,7 @@ import { createGithub } from "./github.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 import { appsEvidence, type AppsCall } from "./apps-evidence.ts";
 import { rubricHash } from "./grades.ts";
+import { requestedParentOf } from "./requested-parent.ts";
 
 type Json = any;
 /** The kernel as the grading loop needs it: its calls with this module's token (kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake). */
@@ -72,7 +73,14 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     // anything on it (its work, its records, its files) is read.
     taskOnly: (ref: string) => read(`/api/issues/${encodeURIComponent(ref)}`),
     comments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/comments`),
-    children: async (parentId: string) => (await read(`/api/companies/${(await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(parentId)}`)).companyId}/issues${q({ parentId, limit: "200" })}`)).filter((i: Json) => i.parentId === parentId),
+    // The tasks filed under it: its children, and a delegation's that the control plane placed beside it (requested-parent.ts).
+    children: async (parentId: string) => {
+      const parent = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(parentId)}`);
+      const placed = [parentId, parent.parentId].filter(Boolean) as string[];
+      const found = new Map<string, Json>();
+      for (const p of placed) for (const i of await read(`/api/companies/${parent.companyId}/issues${q({ parentId: p, limit: "200" })}`)) if (i.id !== parentId && requestedParentOf(i) === parentId) found.set(i.id, i);
+      return [...found.values()];
+    },
     // The task's own agent, whatever its company (work or personal).
     agent: (id: string) => read(`/api/agents/${encodeURIComponent(id)}`).catch((e: { status?: number }) => (e.status === 404 ? undefined : Promise.reject(e))),
     // A verdict's move is the finish check's own resolve: done accepts the work, todo reopens it with the note (which wakes the agent).
@@ -87,9 +95,11 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     // One attachment's bytes, only one listed on the task (the kernel refuses another, and anything over 25 MB).
     attachmentContent: (task: string, id: string) => kernelBytes(`/v1/cp/read/attachments/${encodeURIComponent(id)}/content${q({ task })}`),
   };
+  // The task that asked for this one, not the task the control plane placed it under (requested-parent.ts).
   const tellParent = async (issue: Json, _kind: string, text: string) => {
-    if (!issue.parentId) return false;
-    return (await kernel("POST", "/v1/wakes", { task: issue.parentId, text })).posted === true;
+    const asked = requestedParentOf(issue);
+    if (!asked) return false;
+    return (await kernel("POST", "/v1/wakes", { task: asked, text })).posted === true;
   };
   const recordsOn = async (issue: Json) => ((await work(issue.id)).records ?? []).map((r: Json) => ({
     id: r.id, action: r.kind, state: r.state === "review" || r.state === "owner" ? "pending" : r.state === "done" || r.state === "failed" ? "used" : r.state,

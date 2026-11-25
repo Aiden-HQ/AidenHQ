@@ -24,11 +24,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral } from "./channels.ts";
+import { requestedParentOf } from "../../services/shared/requested-parent.ts";
 import type { Notice } from "./notify.ts";
 import type { StateRow } from "../sdk/src/task-state-types.ts";
 import { MARKER, fenced } from "./writes.ts";
 
-type Issue = { id: string; identifier?: string; status?: string; parentId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null };
+type Issue = { id: string; identifier?: string; status?: string; parentId?: string | null; description?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null };
 const CLOSED = ["done", "cancelled"];
 /** Marks a comment as a wake notice: it wakes the task's agent and is never read as the owner's words (dispatch thread.ts). */
 export const WAKE_NOTICE = "<!-- aidenhq-wake -->";
@@ -89,9 +90,13 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   db.exec("CREATE TABLE IF NOT EXISTS escalations (key TEXT PRIMARY KEY, task TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL)");
   const seen = (key: string) => Boolean(db.prepare("SELECT 1 FROM escalations WHERE key = ?").get(key));
   const mark = (key: string, task: string, kind: string) => db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(key, task, kind, now());
-  /** The task's open delegator task whose agent takes wakes, if any (else the chief of staff hears it). */
+  /**
+   * The task's open delegator task whose agent takes wakes, if any (else the chief of staff hears it): the task that asked
+   * for it, which is its parent unless the control plane placed it beside that task (requestedParentOf).
+   */
   async function delegatorOf(t: Issue) {
-    const d = t.parentId ? await issue(t.parentId) : undefined;
+    const asked = requestedParentOf(t);
+    const d = asked ? await issue(asked) : undefined;
     return d && !CLOSED.includes(String(d.status)) && d.assigneeAgentId && reachable(d.assigneeAgentId) ? d : undefined;
   }
   /** The task's agent, as the owner channel reads it; undefined when it has none or can't be read (never the chief then). */

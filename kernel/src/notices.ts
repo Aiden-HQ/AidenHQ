@@ -11,6 +11,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
+import { requestedParentOf } from "../../services/shared/requested-parent.ts";
 
 export type NoticeOpts = { parent?: boolean; close?: "done" | "cancelled"; /** Distinguishes two notices with the same text (a wait's reason), so neither shadows the other; never shown. */ tag?: string };
 const LEASE_MS = 2 * 60_000;
@@ -44,12 +45,14 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
       const i = await api("GET", `/api/issues/${encodeURIComponent(id)}`);
       if (i.status === 404) return undefined;
       if (i.status !== 200) throw new Error(`reading task ${id}: ${i.status}`);
-      return i.json as { status?: string; parentId?: string | null };
+      return i.json as { id?: string; status?: string; parentId?: string | null; description?: string | null };
     };
     if (r.parent) {
-      const parent = (await read(task))?.parentId;
-      if (!parent) return;
-      task = parent;
+      // The task's delegator: the task that asked for it, which is its parent unless the control plane placed it beside that
+      // task (requestedParentOf). The queue holds the task, so this is read when the notice is sent, as the parent was.
+      const asked = requestedParentOf(await read(task));
+      if (!asked) return;
+      task = asked;
     }
     const i = await read(task);
     if (!i || CLOSED.includes(String(i.status))) return;

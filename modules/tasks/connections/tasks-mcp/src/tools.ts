@@ -6,6 +6,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { uncheckableAbsence } from "./absence.ts";
+import { keepRequestedParent, requestedParentOf } from "./requested-parent.ts";
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
@@ -309,10 +310,9 @@ async function requireHeld(issue: Json) {
 }
 
 /** The other parts of one of the user's tasks, with whom each is, for reading their conversations. */
-async function partsOf(parentId: string, exceptId: string) {
+async function partsOf(parent: Json, exceptId: string) {
   if (!COMPANY()) return [];
-  const q = new URLSearchParams({ parentId, status: `${OPEN_STATUSES},done,cancelled`, limit: "50" });
-  const kids = (await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`)).filter((k: Json) => k.parentId === parentId && k.id !== exceptId);
+  const kids = (await childrenOf(parent, `${OPEN_STATUSES},done,cancelled`)).filter((k: Json) => k.id !== exceptId);
   const states = await stateRows(kids.map((k: Json) => k.id));
   return Promise.all(kids.map(async (k: Json) => ({ identifier: k.identifier, title: k.title, state: states.get(k.id)?.kind, with: k.assigneeAgentId ? (await nameOf(k.assigneeAgentId)) ?? "an agent" : "the user" })));
 }
@@ -729,7 +729,7 @@ async function assignTask(me: Json, target: Json, { title, description, parent, 
     allowDuplicate: true,
     ...(src ? { idempotencyKey: idempotencyKey(src) } : {}),
   };
-  const open = p ? await openSiblings(p.id, target) : [];
+  const open = p ? await openSiblings(p, target) : [];
   const same = open.find((o) => similar(o.title, body.title) >= SAME_TITLE || similar(o.description, body.description) >= SAME_BRIEF);
   if (same && parked(same, me, hold)) return { identifier: same.identifier, created: false, assignee: target.name, ...(await startGraded(same, grade, blockers)) };
   if (same)
@@ -756,22 +756,30 @@ export function similar(a: Json, b: Json) {
   for (const w of x) if (y.has(w)) both++;
   return both / Math.max(1, x.size + y.size - both);
 }
+/**
+ * The tasks filed under `parent`, whoever holds them: its children, plus the ones a delegation asked it for that the control
+ * plane placed beside it (a grandchild request becomes a sibling, and the task records the one that asked for it). A task placed
+ * under `parent` that another task asked for is not one of them.
+ */
+async function childrenOf(parent: Json, statuses = OPEN_STATUSES) {
+  const found = new Map<string, Json>();
+  for (const placed of [parent.id, parent.parentId].filter(Boolean)) {
+    const q = new URLSearchParams({ parentId: placed, status: statuses, limit: "50" });
+    const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
+    for (const k of Array.isArray(kids) ? kids : []) if (k.id !== parent.id && requestedParentOf(k) === parent.id) found.set(k.id, k);
+  }
+  return [...found.values()];
+}
 /** The agent's open tasks under one parent; for a team record, those of any of its members too (the kernel hands a task for the team to one member). */
-async function openSiblings(parentId: string, target: Json) {
-  const ids = [target.id];
+async function openSiblings(parent: Json, target: Json) {
+  const ids = new Set([target.id]);
   const members = target.metadata?.team?.members;
   if (Array.isArray(members) && members.length) {
     const keys = new Set(members.map((m) => m.key));
     const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
-    ids.push(...all.filter((a: Json) => keys.has(keyOf(a))).map((a: Json) => a.id));
+    for (const a of all) if (keys.has(keyOf(a))) ids.add(a.id);
   }
-  const open = [];
-  for (const agentId of ids) {
-    const q = new URLSearchParams({ parentId, assigneeAgentId: agentId, status: OPEN_STATUSES, limit: "50" });
-    const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-    open.push(...(Array.isArray(kids) ? kids : []).filter((k) => k.parentId === parentId && k.assigneeAgentId === agentId));
-  }
-  return open;
+  return (await childrenOf(parent)).filter((k) => ids.has(k.assigneeAgentId));
 }
 const keyOf = (a: Json) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "") || a.name;
 // An Engineer (setup marks it runnerEngine in its metadata): code work goes to it with a brief.
@@ -960,7 +968,7 @@ const TOOLS: Record<string, Tool> = {
       if (!CURRENT()) return { task: null };
       const i = await api("GET", `/api/issues/${issueRef(CURRENT())}`);
       const p = i.parentId ? await api("GET", `/api/issues/${issueRef(i.parentId)}`).catch(() => undefined) : undefined;
-      const parts = p ? await partsOf(p.id, i.id).catch(() => []) : [];
+      const parts = p ? await partsOf(p, i.id).catch(() => []) : [];
       const s = (await stateRows([i.id])).get(i.id);
       const more = "the rest is not available here; ask for the relevant part";
       return { task: { ...(await brief(i, s)), description: clip(i.description, DESC_MAX, more) }, ...(p ? { parent: { identifier: p.identifier, title: p.title, description: clip(p.description, DESC_MAX, more) }, parts } : {}) };
@@ -1610,7 +1618,9 @@ const TOOLS: Record<string, Tool> = {
       if (description !== undefined) {
         current = await api("GET", `/api/issues/${issueRef(issue)}`);
         const markers = String(current.description ?? "").match(/<!-- (?:merged-)?source:[^>]*-->/g) ?? [];
-        body.description = String(description).replace(/<!--|-->/g, "").slice(0, 60_000) + (markers.length ? `\n\n${markers.join("\n")}` : "");
+        // The requester a delegation recorded outlives the edit too (requested-parent.ts): it routes the task's delegator,
+        // notices and siblings, so an edit that dropped it would re-parent the chain.
+        body.description = keepRequestedParent(current.description, String(description).replace(/<!--|-->/g, "").slice(0, 60_000) + (markers.length ? `\n\n${markers.join("\n")}` : ""));
       }
       if (!Object.keys(body).length) throw new Error("nothing to update");
       const i = await brief(await api("PATCH", `/api/issues/${issueRef(issue)}`, body));

@@ -5,6 +5,7 @@
 // The injected collaborators (the kernel's api client, Paperclip's client, the grade store) and the rows they return are loosely typed.
 import { openCard } from "./grader/cards.ts";
 import { graderRetryDelay } from "./grades.ts";
+import { requestedParentOf } from "./requested-parent.ts";
 
 type Json = any;
 export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, presentNow, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, rubricHash, graderMarker, emit = () => {} }: {
@@ -544,7 +545,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       const notice = { who: `${issue.identifier} (${agent?.name ?? "its agent"})`, title: String(issue.title ?? ""), identifier: String(issue.identifier ?? issue.id), ...(ungraded ? { ungraded } : {}) };
       // The notice names the same filing and round as the close it reports: a deferred notice is revalidated against them
       // before it speaks, so a row restarted or amended after the close cannot be described by the grade it replaced.
-      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), closeDeadline, ...(sawPresent ? { sawPresent: true } : {}), ...(gatherError ? { gatherError } : {}), version: ev.version, status: issue.status, round: row.round, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, round: row.round, deliverable: g.deliverable, rubric, filing, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      // The notice's task keeps the requester the task records, so a deferred notice still reaches the task that asked for this
+      // one when the control plane placed it beside that task (requested-parent.ts), not the placed parent.
+      const requester = requestedParentOf(issue);
+      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), closeDeadline, ...(sawPresent ? { sawPresent: true } : {}), ...(gatherError ? { gatherError } : {}), version: ev.version, status: issue.status, round: row.round, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: requester, description: issue.description }, kind: "done", ...notice, round: row.round, deliverable: g.deliverable, rubric, filing, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
