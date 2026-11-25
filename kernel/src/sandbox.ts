@@ -11,6 +11,8 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 export interface EngineEntry {
   module: string; dir: string; bin: string; kind: string; label?: string; live_input?: boolean; gateway?: boolean; box?: boolean;
   state?: "shared" | "task"; reset?: string[]; seed?: { from: string; to: string }[];
+  /** `code`: the engine reaches its connections as generated tool files in its state folder (kernel/src/codemode.ts), not an MCP list. */
+  tools?: "code";
 }
 /** An engine choice: its kind, model and effort, and whether the job runs without web search (`reads`: web_search: disabled). */
 export interface Engine { kind: string; model?: string; effort?: string; reads?: boolean }
@@ -235,9 +237,8 @@ export function engineState(cfg: Pick<SandboxConfig, "enginesFile" | "stateDir">
   const dir = join(root, kind, ...(e.state === "task" ? [String(task ?? "none").replace(/[^\w.-]/g, "_").replace(/^\.*$/, "_")] : []));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const f of e.reset ?? []) removeEntry(join(dir, f));
-  const built = skills.length ? buildSkills(root, skills) : undefined;
-  removeEntry(join(dir, "skills"));
-  if (built) renameSync(built, join(dir, "skills"));
+  if (skills.length) stagedPublish(root, join(dir, "skills"), (to) => buildSkills(to, skills));
+  else removeEntry(join(dir, "skills"));
   for (const { from, to } of e.seed ?? []) {
     const src = from.startsWith("/") ? fromProduct(from.slice(1)) : join(fromProduct(e.dir), from);
     mkdirSync(dirname(join(dir, to)), { recursive: true });
@@ -255,46 +256,56 @@ const swappedAway = (err: unknown) => { const code = (err as NodeJS.ErrnoExcepti
 const pause = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
 /**
- * The skills tree, built in a new folder under the kernel's state root (no job reaches it; same filesystem for the rename).
- * A failed build leaves nothing behind; a copy error names the skill and the folder it came from, so a real missing or
- * mis-pinned skill is not read as a swap.
+ * A tree the kernel writes into a job's engine home (skills/, a code-mode engine's aidenhq-tools/): built by `build` in a new
+ * folder under the kernel's state root (no job reaches it; the same filesystem for the rename), then renamed over `dest`,
+ * whose old entry is removed first and never followed. A failed build leaves nothing behind and `dest` as it was.
  */
-function buildSkills(root: string, skills: Skill[]) {
+export function stagedPublish(root: string, dest: string, build: (to: string) => void) {
+  const to = mkdtempSync(join(root, ".stage-"));
+  try {
+    build(to);
+  } catch (err) {
+    rmSync(to, { recursive: true, force: true });
+    throw err;
+  }
+  removeEntry(dest);
+  renameSync(to, dest);
+}
+
+/**
+ * The skills tree, built into `to` (stagedPublish's folder). A copy error names the skill and the folder it came from, so a
+ * real missing or mis-pinned skill is not read as a swap.
+ */
+function buildSkills(to: string, skills: Skill[]) {
   for (let attempt = 1; ; attempt++) {
     try {
-      return copySkills(root, skills);
+      return copySkills(to, skills);
     } catch (err) {
       if (!swappedAway(err) || attempt >= SKILL_BUILD_ATTEMPTS) throw err;
+      for (const f of readdirSync(to)) rmSync(join(to, f), { recursive: true, force: true });
       pause(SKILL_BUILD_RETRY_MS);
     }
   }
 }
 
-function copySkills(root: string, skills: Skill[]) {
-  const to = mkdtempSync(join(root, ".skills-"));
+function copySkills(to: string, skills: Skill[]) {
   const hash = createHash("sha256");
-  try {
-    for (const s of [...skills].sort((a, b) => a.id.localeCompare(b.id))) {
-      const name = /^[a-z0-9][a-z0-9-]*\.([a-z0-9][a-z0-9-]*)$/.exec(s.id)?.[1];
-      if (!name) throw new Error(`skill ${s.id}: not a skill id (<module>.<name>)`);
-      try {
-        cpSync(s.dir, join(to, name), { recursive: true, errorOnExist: true, filter: (p) => { const st = lstatSync(p); return st.isFile() || st.isDirectory(); } });
-        for (const f of (readdirSync(join(to, name), { recursive: true }) as string[]).sort()) {
-          const file = join(to, name, f);
-          if (!lstatSync(file).isFile()) continue;
-          chmodSync(file, 0o444);
-          hash.update(`${name}/${f}\0`).update(readFileSync(file)).update("\0");
-        }
-      } catch (err) {
-        throw skillCopyFailure(s, err);
+  for (const s of [...skills].sort((a, b) => a.id.localeCompare(b.id))) {
+    const name = /^[a-z0-9][a-z0-9-]*\.([a-z0-9][a-z0-9-]*)$/.exec(s.id)?.[1];
+    if (!name) throw new Error(`skill ${s.id}: not a skill id (<module>.<name>)`);
+    try {
+      cpSync(s.dir, join(to, name), { recursive: true, errorOnExist: true, filter: (p) => { const st = lstatSync(p); return st.isFile() || st.isDirectory(); } });
+      for (const f of (readdirSync(join(to, name), { recursive: true }) as string[]).sort()) {
+        const file = join(to, name, f);
+        if (!lstatSync(file).isFile()) continue;
+        chmodSync(file, 0o444);
+        hash.update(`${name}/${f}\0`).update(readFileSync(file)).update("\0");
       }
+    } catch (err) {
+      throw skillCopyFailure(s, err);
     }
-    writeFileSync(join(to, ".hash"), `${hash.digest("hex")}\n`);
-    return to;
-  } catch (err) {
-    rmSync(to, { recursive: true, force: true });
-    throw err;
   }
+  writeFileSync(join(to, ".hash"), `${hash.digest("hex")}\n`);
 }
 
 function skillCopyFailure(s: Skill, err: unknown) {
@@ -317,7 +328,9 @@ export type McpServer = { name: string; url: string; token_env: "AIDENHQ_RUN_TOK
  * standing box's lease (one session among several in one container) adds its own in-box out root, working directory and engine
  * state folder. `servers`: the job's frozen connections (boxes.ts launch), kept on the row so a restarted run has the same spec.
  */
-export interface Box { container: string; envFile: string; outDir: string; lease?: string; boxOut?: string; workdir?: string; stateIn?: string; servers?: McpServer[] }
+export interface Box { container: string; envFile: string; outDir: string; lease?: string; boxOut?: string; workdir?: string; stateIn?: string; servers?: McpServer[];
+  /** A code-mode engine's tool files (codemode.ts), as the box sees them: their folder and index. */
+  tools?: { dir: string; index: string } }
 
 /**
  * One run of an engine under engine@1, in the job's agent computer: job.json in its out folder (the box's /aidenhq-out/job),
@@ -338,6 +351,7 @@ export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = ""
     model: { base_url: `${cfg.boxGatewayUrl}/api/v1`, token_env: "AIDENHQ_RUN_TOKEN", id: engine.model ?? "", effort: engine.effort ?? "", models: [...models] },
     mcp: box.servers ?? [], env: [], limits: { timeout_s: (cfg.timeout_minutes ?? 60) * 60 }, web: !observes(engine), // no web search when its agent turns it off
     ...(box.stateIn ? { state: box.stateIn } : {}),
+    ...(box.tools ? { tools: box.tools } : {}),
     sandbox: { kind: "box", writable: [worktree], network: true },
   };
   writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });

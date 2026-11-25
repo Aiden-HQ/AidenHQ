@@ -8,7 +8,7 @@
 // nothing: the renewals and releases are driven from the job rows.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { jobServers, mcpBlock, unemittedServers } from "../../services/computer/lib.ts";
 import type { Admitted } from "./admission.ts";
@@ -17,7 +17,8 @@ import type { Whoami } from "./identity.ts";
 import { JobError, insideNoLinks, type Jobs } from "./jobs.ts";
 import type { Once } from "./once.ts";
 import { outFiles } from "./outfiles.ts";
-import { engineState, type Box, type SandboxConfig } from "./sandbox.ts";
+import { publishTools, TOOLS_DIR } from "./codemode.ts";
+import { engineEntry, engineState, type Box, type SandboxConfig } from "./sandbox.ts";
 import { trashAway } from "./trash.ts";
 
 const RENEW_MS = 5 * 60_000; // the launcher's lease is 15 minutes
@@ -82,7 +83,11 @@ export type Attachments = {
 /** A launcher that can't answer now (a 5xx, a timeout, unreachable): the launch is deferred to the next tick, never failed. */
 const unavailable = (e: Error): never => { throw new JobError(503, "launcher-unavailable", `the computer launcher can't answer now (${String(e.message).slice(0, 200)})`); };
 
-export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, declaredServers, handbook, cleanup, clones, identity, attachments, once, log, boxExec = dockerExec, now = Date.now, stopping = () => false, stateNeed }: {
+export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, declaredServers, handbook, cleanup, clones, identity, attachments, once, log, boxExec = dockerExec, now = Date.now, stopping = () => false, stateNeed, kernelUrl, toolsClient }: {
+  /** The kernel's own backplane (its tool proxy at /c/<connection>/mcp): where a code-mode engine's tools are listed at launch. */
+  kernelUrl?: string;
+  /** The box's MCP client as generated wrappers import it (codemode.ts CLIENT_IN_BOX; a test's host path). */
+  toolsClient?: string;
   db: DatabaseSync; attachments: Attachments; once: Once; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
   /** Who the agent's commits are authored as: its name and its own address (never the owner's). */
   identity: (agent: string) => Promise<{ name: string; email: string; agent?: string }>;
@@ -127,7 +132,10 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     // instead, before the launcher is called. A check job's authority deliberately has no tools, so it is exempt.
     const missing = a.profile === "check" ? [] : unemittedServers([...new Set(declaredServers?.(job.agent) ?? [])], servers);
     if (missing.length) throw new JobError(500, "mcp-server-missing", `declares MCP server(s) ${missing.join(", ")} but this job's frozen authority has no tools for them; refusing to start a run without them`);
-    const mcp = mcpBlock(servers);
+    // A code-mode engine (`tools: code`) gets its connections as files in its engine home instead: no MCP config of either kind.
+    const code = engineEntry(cfg, a.engine).tools === "code";
+    if (code && !kernelUrl) throw new JobError(500, "codemode-unavailable", `the ${a.engine} engine reaches its tools as code, and this kernel has no backplane address to list them from`);
+    const mcp = code ? "" : mcpBlock(servers);
     // The task's last job lets its box go first (the launcher keeps one per task and parks it between jobs); while it is still
     // leased, the job waits a tick.
     // A release already in flight (the last job's end) is waited for too, so its cleanup runs before this job touches the workspace.
@@ -141,19 +149,27 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
       if (e.status === undefined || e.status >= 500) unavailable(e);
       throw e;
     })) as unknown as Box;
+    // A code-mode engine's tool folder and index, as the box sees its engine home (only a standing box's lease names it).
+    const toolsAt = code && box.stateIn ? { dir: `${box.stateIn}/${TOOLS_DIR}`, index: `${box.stateIn}/${TOOLS_DIR}/README.md` } : undefined;
+    const spec = { ...box, workspace, servers: code ? [] : servers, ...(toolsAt ? { tools: toolsAt } : {}) };
     // The row's box names its workspace too, for a cleanup at release, and the job's connections, for a run started again.
-    db.prepare("UPDATE jobs SET box = ?, renewed = ? WHERE id = ?").run(JSON.stringify({ ...box, workspace, servers }), now(), job.id);
+    db.prepare("UPDATE jobs SET box = ?, renewed = ? WHERE id = ?").run(JSON.stringify(spec), now(), job.id);
     // A kernel draining for its successor starts nothing it wouldn't follow: the box goes back and the wake to its dispatcher.
     if (stopping()) {
       await release(job.id).catch(() => {});
       throw new JobError(503, "draining", "the kernel is restarting; the job starts on the next one");
     }
     try {
+      // The job's tool files, listed now through the kernel's own proxy with this job's token (the same filter the box hits),
+      // after the task's last lease went: a generator error fails the launch loudly, never a session half-equipped.
+      if (code && !box.stateIn) throw new JobError(500, "codemode-unavailable", `the ${a.engine} engine reaches its tools as code, and its box names no engine home`);
+      if (code) await publishTools({ kernelUrl: kernelUrl!, token, servers, stateRoot: normalize(cfg.stateDir), home: state, inBox: box.stateIn!, ...(toolsClient ? { client: toolsClient } : {}), log: (msg, f) => log(msg, { job: job.id, ...f }) })
+        .catch((e: Error) => { throw new JobError(500, "codemode-failed", `the job's tool files couldn't be generated (${String(e.message).slice(0, 300)})`); });
       const notes = a.profile === "engineer" ? await cloneNamed(job, box) : [];
       const session = job.fresh ? undefined : lastSession(job.agent, job.task, a.engine);
       const withNotes = (text: string) => (notes.length ? `(Kernel note: ${notes.join(" ")})\n\n${text}` : text);
       const prompt = withNotes(session ? job.prompt : job.fullPrompt ?? job.prompt);
-      jobs.runAdmitted(job.id, { box: { ...box, workspace, servers } as Box, worktree: workspace, prompt, session, fullPrompt: withNotes(job.fullPrompt ?? job.prompt), label: job.identifier });
+      jobs.runAdmitted(job.id, { box: spec as Box, worktree: workspace, prompt, session, fullPrompt: withNotes(job.fullPrompt ?? job.prompt), label: job.identifier });
     } catch (e) {
       await release(job.id).catch(() => {});
       throw e;

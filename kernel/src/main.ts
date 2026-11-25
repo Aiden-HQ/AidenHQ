@@ -669,8 +669,10 @@ const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_
 // what an engineer job's dispatcher may clone into its task's workspace.
 const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : []));
 const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, orgs: modulesFile().repos?.orgs, maintained: modulesFile().repos?.maintained });
+// The backplane's one address: modules and boxes reach the kernel there, and a code-mode engine's tools are listed there at launch.
+const backplaneAddr = env("AIDENHQ_KERNEL_BACKPLANE", "10.231.0.1:3130");
 boxes = createBoxes({
-  db: records.db, cfg: sandbox, jobs, stopping: () => draining, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
+  db: records.db, cfg: sandbox, jobs, kernelUrl: `http://${backplaneAddr}`, stopping: () => draining, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, declaredServers, handbook: (agent) => {
     const book = handbookFrom(configDir)(agent), key = String(grantsTable().agents?.[agent]?.key ?? "");
     if (book !== undefined && !key) throw new Error(`agent ${agent} has no key in the grants table`);
@@ -909,7 +911,7 @@ function listen(addr: string, ci = false, handler: http.RequestListener = (req, 
 }
 for (const addr of env("AIDENHQ_GATEWAY_LISTEN", "127.0.0.1:8201,10.231.0.1:8201").split(",").map((s) => s.trim()).filter(Boolean)) listen(addr);
 // The backplane listener: containers on the backplane reach it (Codex in the control plane, modules); jobs never do.
-listen(env("AIDENHQ_KERNEL_BACKPLANE", "10.231.0.1:3130"), false, backplane);
+listen(backplaneAddr, false, backplane);
 
 // The admin listener: loopback only; the front door reaches it there.
 listen(env("AIDENHQ_KERNEL_ADMIN", "127.0.0.1:3120"), false, admin ?? ((_req, res) => void res.writeHead(503, { "content-type": "text/plain" }).end("accounts are off: see the kernel's log")));
