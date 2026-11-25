@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fence } from "../sdk/src/fence.ts";
 import { mcp, ToolError } from "../sdk/src/tools-client.ts";
 import { insideNoLinks } from "./jobs.ts";
 import type { McpServer } from "./sandbox.ts";
@@ -199,7 +200,8 @@ export async function publishTools({ kernelUrl, token, servers, stateRoot, home,
       const files = new Set<string>();
       for (const [i, t] of l.tools.entries()) {
         const file = safePath(t.name, files);
-        const data = JSON.stringify({ connection: l.server.name, tool: t.name, description: t.description, inputSchema: t.inputSchema }, null, 2);
+        // The upstream description, fenced as data: an agent's `rg` over these files reads it marked untrusted.
+        const data = JSON.stringify({ connection: l.server.name, tool: t.name, description: fence(t.description, `${l.server.name}.${t.name}`), inputSchema: t.inputSchema }, null, 2);
         const code = wrapper({ client, connection: l.server.name, tool: t.name, type: schemaType(t.inputSchema), timeoutS: (l.server.tool_timeout_s ?? 300) + 30, file });
         if (bytes + Buffer.byteLength(data) + Buffer.byteLength(code) > MAX_BYTES) { l.state = "incomplete"; l.tools = l.tools.slice(0, i); break; }
         put(join(to, folder, `${file}.json`), data);

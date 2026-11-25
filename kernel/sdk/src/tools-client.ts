@@ -72,22 +72,28 @@ function messages(text: string, sse: boolean): Message[] {
  * ToolError (401: the job ended; a status; a timeout), named by `tool` (the tool called, or the method).
  */
 export function mcp({ url, headers }: { url: (connection: string) => string; headers: Record<string, string> }) {
-  const sessions = new Map<string, Promise<string | undefined>>();
+  type Session = { id?: string; protocol: string };
+  const sessions = new Map<string, Promise<Session>>();
   let ids = 0;
-  async function post(connection: string, tool: string, body: Record<string, unknown>, session: string | undefined, signal: AbortSignal) {
-    let res: Response;
+  const failed = (connection: string, tool: string, e: unknown) => {
+    const err = e as Error;
+    if (err.name === "TimeoutError" || err.name === "AbortError") return new ToolError(connection, tool, "timeout", "no answer in time; the call is never sent again (a write may have happened)");
+    return new ToolError(connection, tool, "transport", `the gateway didn't answer (${err.message})`);
+  };
+  async function post(connection: string, tool: string, body: Record<string, unknown>, session: Session | undefined, signal: AbortSignal) {
+    let res: Response, text: string;
     try {
+      // A redirect is refused, never followed: the credential header stays with the gateway.
       res = await fetch(url(connection), {
-        method: "POST", signal,
-        headers: { ...headers, "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": PROTOCOL, ...(session ? { "mcp-session-id": session } : {}) },
+        method: "POST", signal, redirect: "error",
+        headers: { ...headers, "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": session?.protocol ?? PROTOCOL, ...(session?.id ? { "mcp-session-id": session.id } : {}) },
         body: JSON.stringify({ jsonrpc: "2.0", ...body }),
       });
+      // The deadline holds while the body is read too: a stalled answer is a timeout, never an empty one.
+      text = await res.text();
     } catch (e) {
-      const err = e as Error;
-      if (err.name === "TimeoutError" || err.name === "AbortError") throw new ToolError(connection, tool, "timeout", "no answer in time; the call is never sent again (a write may have happened)");
-      throw new ToolError(connection, tool, "transport", `the gateway didn't answer (${err.message})`);
+      throw failed(connection, tool, e);
     }
-    const text = await res.text().catch(() => "");
     if (res.status === 401) throw new ToolError(connection, tool, "job-ended", "the job's token was refused: the job has ended");
     if (!res.ok && res.status !== 202) throw new ToolError(connection, tool, "transport", `the gateway answered ${res.status}: ${text.slice(0, 500)}`);
     return { res, text };
@@ -96,10 +102,13 @@ export function mcp({ url, headers }: { url: (connection: string) => string; hea
     let s = sessions.get(connection);
     if (!s) {
       s = (async () => {
-        const { res } = await post(connection, "initialize", { id: ++ids, method: "initialize", params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "aidenhq-tools", version: "1" } } }, undefined, signal);
-        const id = res.headers.get("mcp-session-id") ?? undefined;
-        await post(connection, "initialize", { method: "notifications/initialized" }, id, signal);
-        return id;
+        const init = ++ids;
+        const { res, text } = await post(connection, "initialize", { id: init, method: "initialize", params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "aidenhq-tools", version: "1" } } }, undefined, signal);
+        // The version the connection chose is the session's: every later request carries it.
+        const chosen = messages(text, String(res.headers.get("content-type") ?? "").includes("text/event-stream")).find((m) => m.id === init)?.result?.protocolVersion;
+        const s: Session = { protocol: typeof chosen === "string" && chosen ? chosen : PROTOCOL, ...(res.headers.get("mcp-session-id") ? { id: res.headers.get("mcp-session-id")! } : {}) };
+        await post(connection, "initialize", { method: "notifications/initialized" }, s, signal);
+        return s;
       })();
       sessions.set(connection, s);
       s.catch(() => sessions.delete(connection));
@@ -130,7 +139,7 @@ const WRITE_WAIT_MS = 10 * 60_000;
 
 /** A write record as its job reads it (GET /v1/writes/<id>): its outcome fenced by the kernel as the live answer would be. */
 async function record(connection: string, tool: string, id: string) {
-  const res = await fetch(new URL(`/v1/writes/${encodeURIComponent(id)}`, env("AIDENHQ_GATEWAY_URL")), { headers: { authorization: `Bearer ${env("AIDENHQ_RUN_TOKEN")}` }, signal: AbortSignal.timeout(60_000) })
+  const res = await fetch(new URL(`/v1/writes/${encodeURIComponent(id)}`, env("AIDENHQ_GATEWAY_URL")), { redirect: "error", headers: { authorization: `Bearer ${env("AIDENHQ_RUN_TOKEN")}` }, signal: AbortSignal.timeout(60_000) })
     .catch((e: Error) => { throw new ToolError(connection, tool, "transport", `the gateway didn't answer reading write ${id} (${e.message})`, id); });
   if (!res.ok) throw new ToolError(connection, tool, "transport", `reading write ${id} answered ${res.status}`, id);
   return (await res.json()) as { tier: number; state: string; outcome?: { ok: boolean; text: string } | null; reason?: string };
