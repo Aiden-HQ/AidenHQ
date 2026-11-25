@@ -183,11 +183,11 @@
   const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   const target = (key) => (key === "defaults" ? status.defaults : key === DRAFT ? { repo: DRAFT, own: {}, inherits: draft.inherits, preset: "cautious", settings: status.defaults.settings } : status.repos.find((r) => r.repo === key));
   // An entry with no preset of its own follows the defaults' preset, pending change included.
-  const presetFor = (key) => pend(key)?.preset ?? (key !== "defaults" && target(key).inherits ? presetFor("defaults") : target(key).preset);
+  const presetFor = (key) => pend(key)?.preset ?? (key !== "defaults" && target(key).inherits ? (key === DRAFT ? status.defaults.preset : presetFor("defaults")) : target(key).preset);
   // Generated and actions are one setting each (an entry's value replaces the inherited one whole), so a reset takes the whole of it.
   const rootOf = (path) => (/^(generated|actions)\./.test(path) ? path.split(".")[0] : path);
   // What a field returns to: the defaults' settings for an entry with no preset of its own (what effective() applies), else its preset's.
-  const baseOf = (key) => (key !== "defaults" && target(key).inherits && !pend(key)?.preset ? view("defaults") : presets[presetFor(key)] ?? {});
+  const baseOf = (key) => (key !== "defaults" && target(key).inherits && !pend(key)?.preset ? (key === DRAFT ? status.defaults.settings : view("defaults")) : presets[presetFor(key)] ?? {});
   const dflt = (key, path) => get(baseOf(key), path);
   // The settings as the proposal would leave them: the base, then the fields the entry sets (minus the pending resets), then the pending edits.
   // Fields that merge leaf by leaf (a cap, one tier's approve or merge): an edit or a reset names the leaf, the rest keep their values.
@@ -335,17 +335,22 @@
   const FROM = { "Defaults": "defaults", "Cautious": "cautious", "Full": "full", "Copy of…": "copy" };
   const FROM_HELP = { "Defaults": "Follows the Defaults card, including its later changes. Only the fields you set below are the repo's own.", "Cautious": "Starts on the cautious preset: caps on rounds and spend, protected files held for you.", "Full": "Starts on the full preset: no caps and no protected files.", "Copy of…": "Starts as a copy of a listed repo's own settings." };
   function seed(from, src) {
-    const own = from === "copy" ? structuredClone(src.own) : {}, inherits = from === "defaults" || (from === "copy" && src.inherits);
+    // A copy is of the row as the owner sees it: its saved overrides with the proposed edits over them, and its shown preset.
+    const own = {}; if (from === "copy") { Object.assign(own, structuredClone(src.own)); const p = pending.repos[src.repo] ?? {}; mergeInto(own, structuredClone(p), "", new Set(), false); for (const r of p.reset ?? []) drop(own, r); delete own.reset; delete own.preset; }
+    const inherits = from === "defaults" || (from === "copy" && src.inherits && !pending.repos[src.repo]?.preset);
     draft = { ...draft, from, copy: src?.repo, inherits, fields: inherits ? own : { ...own, preset: from === "copy" ? presetFor(src.repo) : from } };
   }
   const nameError = (name) => !name ? "" : !NAME.test(name) ? "Use owner/name, for example acme/api." : status.repos.some((r) => r.repo.toLowerCase() === name.toLowerCase()) ? `${name} is already on Ship: change it in the table.` : "";
   function openDraft() { if (!draft) { draft = { name: "", from: "defaults", inherits: true, fields: {} }; } render(); setTimeout(() => $("draft").querySelector("input")?.focus(), 0); }
   function closeDraft() { draft = null; render(); }
   async function addRepo() {
+    // A limit the number box refused (not a whole number) is not in the draft: say so rather than add without it.
+    const badNum = [...$("draft").querySelectorAll("input[placeholder='no limit']")].find((i) => i.value.trim() && !/^\d+$/.test(i.value.trim()));
+    if (badNum) { say("Use a whole number, or leave the limit blank.", true); badNum.focus(); return; }
     // A chip box's typed-but-not-entered text counts: commit it before reading the fields.
     $("draft").querySelectorAll(".chips input").forEach((i) => i.value.trim() && i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true })));
     const repo = draft.name.trim(), { reset: _r, ...change } = draft.fields;
-    try { proposed(await tool("ship_configure", { repo, add: true, change })); pending = lastGood = { repos: {}, paused: undefined }; draft = null; render(); } catch (err) { say(err.message, true); }
+    await inOrder(async () => { try { proposed(await tool("ship_configure", { repo, add: true, change })); pending = lastGood = { repos: {}, paused: undefined }; draft = null; render(); } catch (err) { say(err.message, true); } });
   }
   function draftPanel() {
     const msg = h("p", { className: "msg", role: "status" }), add = h("button", { type: "button", className: "primary", textContent: "Add repo" });
@@ -368,7 +373,7 @@
 
   // ---- Remove: asks first, in the row's own place.
   async function removeRepo(repo) {
-    try { const x = await tool("ship_configure", { repo, remove: true }); pending = lastGood = { repos: {}, paused: undefined }; confirming = null; proposed(x); render(); } catch (e) { say(e.message, true); }
+    await inOrder(async () => { try { const x = await tool("ship_configure", { repo, remove: true }); pending = lastGood = { repos: {}, paused: undefined }; confirming = null; proposed(x); render(); } catch (e) { say(e.message, true); } });
   }
   const GH = (path) => `https://github.com/${path}`;
 
