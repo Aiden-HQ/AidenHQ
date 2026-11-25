@@ -273,9 +273,9 @@ test("kernel roles are the kernel's: no module declares one or a write kind's na
 const repo = join(here, "../..");
 
 test("the intake agents' Slack read grant has no draft tool", () => {
-  const dir = pinst(["open-loops", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_email: "e@x", product_repo: "acme/aidenhq" });
+  const dir = pinst(["intake", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_email: "e@x", product_repo: "acme/aidenhq" });
   const r = compile(repo, dir);
-  const scanners = Object.values(r.paperclip.agents).filter((a) => a.module === "open-loops" && a.department.id === "intake" && a.enabled_tools.slack?.includes("slack_read_thread"));
+  const scanners = Object.values(r.paperclip.agents).filter((a) => a.module === "intake" && a.department.id === "intake" && a.enabled_tools.slack?.includes("slack_read_thread"));
   assert.ok(scanners.length);
   for (const a of scanners) assert.ok(!a.enabled_tools.slack.includes("slack_send_message_draft"), a.name);
 });

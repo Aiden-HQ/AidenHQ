@@ -15,11 +15,14 @@ export class Refused extends Error {}
 const DAY = 864e5;
 const QUOTE_MAX_AGE_MS = 2 * 3600_000;
 /** Whether the agent holds the role, by the grants table setup writes (never metadata, which agents edit). */
+/** The agent id whose grants-table key is `key` (never Paperclip metadata, which agents edit). */
+export const agentIdByKey = (key: string) => Object.entries(grantsTable(process.env.AIDENHQ_GRANTS_FILE)()).find(([, g]) => g.key === key)?.[0];
 export const holdsRole = (id: string, role: string) => (grantsTable(process.env.AIDENHQ_GRANTS_FILE)()[id]?.roles ?? []).includes(role);
 const keyOf = (a: Agent) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "");
 
 export const ControlSchema = z.object({ action: z.enum(["run_routine", "pause_agent", "resume_agent", "pause_routine", "resume_routine"]), target: z.string().trim().min(4).max(200), quote: z.string().max(2000), task: z.string().max(64) }).strict();
 export const RelaySchema = z.object({ comment_id: z.string().regex(/^[0-9a-f-]{36}$/), target: z.string().trim().min(1).max(64) }).strict();
+export const OpenChatSchema = z.object({ comment_id: z.string().regex(/^[0-9a-f-]{36}$/), agent: z.string().trim().min(1).max(64) }).strict();
 export const CostsSchema = z.object({ days: z.number().optional() }).strict();
 
 /**

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { GoogleClient } from "./google.js";
+import { automated, ccOnly, INBOX_QUERY, MAX_READS } from "./inbox.js";
 
 const CAL = "https://www.googleapis.com/calendar/v3";
 const DRIVE = "https://www.googleapis.com/drive/v3";
@@ -322,6 +323,83 @@ export class Workspace {
       });
     }
     return out;
+  }
+
+  /**
+   * The inbox after `after` (ms), oldest first, automated mail dropped (inbox.ts): the newest message of each thread (the
+   * owner's own reply included, flagged `replied`), at most `limit` threads. `cursor` is the receipt time everything up to
+   * which was read (pass it to the next call once the threads are decided); `more` says threads past the limit wait.
+   */
+  async gmailInbox(me: string, after: number, limit: number) {
+    // Every id since the cursor (cheap: 500 a page; the cursor is at most four days back), so the walk below starts at the oldest.
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q: `${INBOX_QUERY} after:${Math.floor(after / 1000)}`, maxResults: 500, pageToken });
+      ids.push(...(page.messages ?? []).map((m) => m.id));
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    const threads = new Map<string, Record<string, unknown>>();
+    const dropped: Record<string, number> = {};
+    let cursor = after, more = false, reads = 0;
+    // Gmail lists newest first: walk oldest first, so a call that stops early hands exactly the rest to the next one.
+    for (const id of ids.reverse()) {
+      let m: GmailMessage;
+      try {
+        m = await this.g.get<GmailMessage>(`${GMAIL}/messages/${encodeURIComponent(id)}`, { format: "metadata" });
+      } catch (err) {
+        if (/^Google API 404:/.test((err as Error).message)) continue; // deleted since the listing
+        throw err;
+      }
+      const at = Number(m.internalDate ?? 0);
+      if (at <= after) continue; // `after:` is in whole seconds
+      // A call stops at `limit` threads or MAX_READS messages, never inside one millisecond (the cursor can't split those).
+      if (at > cursor && ((threads.size >= limit && !threads.has(m.threadId)) || reads >= MAX_READS)) {
+        more = true;
+        break;
+      }
+      reads++;
+      cursor = Math.max(cursor, at);
+      const h = (name: string) => header(m, name);
+      const why = automated(h);
+      if (why) {
+        dropped[why] = (dropped[why] ?? 0) + 1;
+        continue;
+      }
+      threads.delete(m.threadId); // re-inserted: the map stays in arrival order of each thread's newest message
+      threads.set(m.threadId, { thread_id: m.threadId, id: m.id, from: h("From"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: new Date(at).toISOString(), cc_only: ccOnly(me, h("To"), h("Cc")), snippet: m.snippet, replied: false });
+    }
+    // The listing holds inbox mail only: a reply the owner sent carries SENT, not INBOX, so it never appears and a thread
+    // the owner already answered would still show the other party's message as its newest. Read each kept thread (metadata
+    // only) and let its newest message, whoever sent it, be the row; `replied` marks the owner's own.
+    for (const [threadId, row] of threads) {
+      let t: { messages?: GmailMessage[] };
+      try {
+        t = await this.g.get<{ messages?: GmailMessage[] }>(`${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "metadata" });
+      } catch (err) {
+        if (/^Google API 404:/.test((err as Error).message)) continue; // deleted since the listing
+        throw err;
+      }
+      // Automated mail stays set aside here too: the row is the newest message a person sent (the owner's own included).
+      const person = (x: GmailMessage) => (x.labelIds ?? []).includes("SENT") || !automated((name) => header(x, name));
+      const newest = (t.messages ?? []).filter(person).reduce<GmailMessage | undefined>((last, x) => (!last || Number(x.internalDate ?? 0) >= Number(last.internalDate ?? 0) ? x : last), undefined);
+      if (!newest) continue;
+      const h = (name: string) => header(newest, name);
+      const at = Number(newest.internalDate ?? 0);
+      threads.set(threadId, {
+        ...row,
+        id: newest.id,
+        from: h("From"),
+        to: h("To"),
+        cc: h("Cc"),
+        subject: h("Subject") ?? row.subject,
+        date: at ? new Date(at).toISOString() : row.date,
+        cc_only: ccOnly(me, h("To"), h("Cc")),
+        snippet: newest.snippet,
+        replied: (newest.labelIds ?? []).includes("SENT"),
+      });
+    }
+    return { threads: [...threads.values()], dropped, cursor, more };
   }
 
   /** A whole thread as text, oldest first; message bodies truncated. */

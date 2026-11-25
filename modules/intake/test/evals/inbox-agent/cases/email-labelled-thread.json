@@ -1,0 +1,19 @@
+{
+  "name": "email-labelled-thread",
+  "why": "A labelled thread becomes one email task with its gmail marker.",
+  "routine": "inbox-scan",
+  "input": "Run task: Today is 2026-11-18. Your user's email address is owner@example.com.\n\ngmail_search label:Aiden -> [{\"account\":\"owner@example.com\",\"thread_id\":\"18c0a1\",\"id\":\"m1\",\"from\":\"Dana Whitfield <dana@example.com>\",\"subject\":\"Globex agenda review\",\"date\":\"2026-11-18T09:12:00Z\",\"link\":\"https://mail.google.com/mail/u/0/#all/18c0a1\"}]\ntask_list label email -> []\ngmail_inbox_new -> {\"threads\":[],\"accounts\":[{\"account\":\"owner@example.com\",\"threads\":0,\"dropped\":{\"list\":4},\"more\":false}],\"cursor\":{\"owner@example.com\":1795000000000}}\ngmail_inbox_ack -> {\"cursor\":{\"owner@example.com\":1795000000000}}\ngmail_read_thread 18c0a1 -> \"Hi, could you review the attached agenda for Thursday's Globex sync and send comments by tomorrow? Thanks, Dana\"\n",
+  "expect": [
+    {
+      "tool": "task_create",
+      "marker": "source:gmail:label:18c0a1",
+      "label": "email",
+      "count": 1
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "notify"
+    }
+  ]
+}

@@ -2035,6 +2035,21 @@ Object.assign(TOOLS, {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: ({ comment_id, target }: Args) => boardApi("/internal/relay", { comment_id: String(comment_id), target: String(target) }),
   },
+  chat_open: {
+    description:
+      "Chief of Staff only: open a chat with another agent on the owner's own chat message, word for word (the board's \"+ New agent\" does the same for the Agent Architect). Use it when the owner asks for an agent to be built, designed or changed: agent `architect`, comment_id his message. The message becomes the chat's opening, so the owner is talking with that agent directly and its questions reach him without passing through you. Reply with the returned `chat` as a link, `[chat](#/c/<chat>)`, and say what the agent will ask. The board refuses unless the comment is his own original message (not forwarded or relayed, under 2 hours old). Once per message. It only opens the chat: the agent's work is its own.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        comment_id: { type: "string", description: "id of the owner's comment on your chat task, from task_comments; for the message he opened a board chat with (its description), the chat task's own id" },
+        agent: { type: "string", description: "the agent's key, e.g. architect" },
+      },
+      required: ["comment_id", "agent"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: ({ comment_id, agent }: Args) => boardApi("/internal/chat", { comment_id: String(comment_id), agent: String(agent) }),
+  },
   app_request_from_owner: {
     description:
       "Chief of Staff only: when the owner asks to change who may use a shared app or their role in it (\"make ann@x.com an editor of roadmap\"), file his own chat message as an in-app request on that app. The board refuses unless it is his own original message (not forwarded or relayed, under 2 hours old) that names the app (name or host; if not, ask him which). It returns a request id: delegate to the app's maintainer (the DevOps Engineer) naming only that id and the app; it acts with app_role_set. Never paraphrase his words into the task.",
@@ -2210,7 +2225,20 @@ const SELF_CHANGE = {
     add: { type: "array", items: { type: "string" }, description: "skills: skill ids (<module>.<name>) to enable for you" },
     remove: { type: "array", items: { type: "string" }, description: "skills: skill ids to disable for you" },
     key: { type: "string", description: "routine_def: the routine's key; it is saved as <your key>-<key>" },
-    routine: { type: "object", description: "routine_def: { title, description, schedules: [{ cron, label }] (at most one, at most hourly: the cron minute is one number), concurrency?, model?, event? }" },
+    routine: {
+      type: "object",
+      description: "routine_def: the routine's definition (its agent is the caller, its key the change's `key`)",
+      properties: {
+        title: { type: "string", minLength: 1, description: "its title, required and unique in the instance" },
+        description: { type: "string", description: "the whole prompt its run starts with, ending with how the run finishes" },
+        schedules: { type: "array", maxItems: 1, description: "at most one schedule, at most hourly: its cron minute is one number", items: { type: "object", properties: { cron: { type: "string", description: "five fields (minute hour day month weekday)" }, timezone: { type: "string", description: "IANA timezone, e.g. Europe/London (default: the instance timezone)" }, label: { type: "string" } }, required: ["cron"], additionalProperties: false } },
+        concurrency: { type: "string", enum: ["coalesce_if_active", "always_enqueue", "skip_if_active"], description: "what a run does while an earlier one is open (default: coalesce_if_active)" },
+        model: { type: "string", description: "the model its runs use" },
+        event: { type: "object", description: "start a run for each batch of a connection's events instead of a schedule", properties: { connection: { type: "string" }, resource: { type: "string" }, filter: { type: "object", minProperties: 1, description: "non-empty; keys from the connection's events.filter (kind, author, label, contains, bot)", properties: { kind: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] }, author: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] }, label: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] }, contains: { type: "array", items: { type: "string" } }, bot: { type: "boolean" } }, additionalProperties: false } }, required: ["connection", "resource", "filter"], additionalProperties: false },
+      },
+      required: ["title"],
+      additionalProperties: false,
+    },
     delete: { type: "boolean", description: "routine_def: true removes your routine" },
     decision: { type: "string", description: "profile: one standing decision (one line), added under \"Owner decisions\" in the profile as it is now" },
     replaces: { type: "string", description: "profile, with decision: the decision line it supersedes, replaced in place" },

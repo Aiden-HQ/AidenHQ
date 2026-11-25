@@ -136,6 +136,28 @@ test("a person assigned pauses the loop; past ci_rounds the PR holds with its au
   assert.equal(u.state.get("a/b", 7)?.hold, null);
 });
 
+test("a stalled hold reports its generation and kind to the code host, and a round at the new head clears it", async () => {
+  const w = world();
+  const on = w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z");
+  await intake(w.deps, w.pr({ events: [on] }));
+  // A repair that never finished stalls the adoption on its head.
+  await round(w.deps, w.pr(), { do: "repair" }, { dirty: true, discovered: { globs: ["gen/**"], commands: [], ambiguous: [] } });
+  w.records["rec-1"] = { state: "failed", outcome: { text: "ship-repair: the repair didn't finish" } };
+  await round(w.deps, w.pr(), { do: "repair" }, { dirty: true, discovered: { globs: ["gen/**"], commands: [], ambiguous: [] } });
+  w.records["rec-2"] = { state: "failed", outcome: { text: "ship-repair: the repair didn't finish" } };
+  await round(w.deps, w.pr(), { do: "repair" }, { dirty: true, discovered: { globs: ["gen/**"], commands: [], ambiguous: [] } });
+  assert.deepEqual([(w.state.get("a/b", 7) as any).hold.kind, (w.state.get("a/b", 7) as any).counters.head], ["stalled", H1]);
+  // The code host's write check gets the generation with the hold's kind, not a null: a push may resume it, approve and merge may not.
+  const at = generationOf(w.state, false, "a/b", 7, H1);
+  assert.deepEqual([at.generation, at.hold?.kind], [1, "stalled"]);
+  assert.equal(generationOf(w.state, true, "a/b", 7, H1).hold?.kind, "stopped", "a pause still reads as a stop, whatever the stalled hold");
+  // The Engineer's push (a new head) is what clears it, and the next write check is clean.
+  // Whatever the round decides, the new head is what clears the hold (rounds.ts clears a stalled hold before it acts).
+  await round(w.deps, w.pr({ head: H2 }), { do: "wait", why: "checks running" });
+  assert.equal(w.state.get("a/b", 7)?.hold, null);
+  assert.deepEqual([generationOf(w.state, false, "a/b", 7, H2).generation, generationOf(w.state, false, "a/b", 7, H2).hold], [1, null]);
+});
+
 test("a conflict runs ship's repair job first and wakes the Engineer only for what it leaves; a ready PR merges directly at its head", async () => {
   const w = world();
   const on = w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z");

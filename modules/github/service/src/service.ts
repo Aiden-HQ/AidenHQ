@@ -121,9 +121,14 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
     return { login: `${slug}[bot]`, rest, token: () => app.token(installation) };
   };
 }
+/** A hold ship reports on an adoption: `stalled` (a repair or a check stopped it), `handed_back` or `stopped` (a pause reads as
+ * `stopped`), with the reason it gives.
+ */
+export type ShipHold = { kind: string; reason?: string };
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
- * now or is on hold (stalled, handed back, stopped or paused): nothing is written for it then. */
-export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; task?: string; refused?: string; retry?: boolean }> };
+ * now, and the hold it sits on when it is. A `stalled` hold leaves the adoption in place: the push that resumes it may land, and
+ * nothing else. */
+export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean }> };
 /** Ship's final tier check before a write (risk tiers §7): what is about to happen and the PR as GitHub has it right now (head, base branch, author association). */
 export type ShipCheck = { do: "approve" | "merge"; head: string; base: string; association: string; /** The policy an approval was filed under. */ policy?: string };
 /** Ship's adoptions read from its service with this module's own token (`url`: compiled only when the ship module is on). */
@@ -135,8 +140,12 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
       const r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/generation?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
       const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown };
-      const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 && (j.hold === null || j.hold === undefined) ? (j.generation as number) : null;
-      return { generation, ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
+      const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 ? (j.generation as number) : null;
+      // The hold rides along with its kind: a stalled one still admits the push that resumes it, so it is the plan's to judge.
+      const hold = j.hold && typeof j.hold === "object" && typeof (j.hold as { kind?: unknown }).kind === "string"
+        ? { kind: (j.hold as { kind: string }).kind, ...(typeof (j.hold as { reason?: unknown }).reason === "string" ? { reason: String((j.hold as { reason: string }).reason).slice(0, 300) } : {}) }
+        : undefined;
+      return { generation, ...(hold ? { hold } : {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
     },
   };
 }
@@ -456,7 +465,7 @@ export function createService(o: Options) {
       return {
         number, generation: generation as number, expected, head: pr?.head?.sha, headRepo: pr?.head?.repo ? String(pr.head.repo.full_name) : null, headRef: pr?.head?.ref, canModify: pr?.maintainer_can_modify === true,
         ...(typeof bound === "string" ? { bound, baseRef: String(pr?.base?.ref ?? "") } : {}),
-        current: at ? at.generation : undefined, ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
+        current: at ? at.generation : undefined, ...(at?.hold ? { hold: at.hold } : {}), ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
       };
     };
     if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget") || kind.endsWith(".retitle")) {
@@ -896,10 +905,17 @@ export function createService(o: Options) {
     const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { title: a.title });
     return r.status < 300 ? { ok: true, text: `${url} is now titled \`${a.title}\`.` } : { ok: false, text: `GitHub refused the retitle of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
-  async function adoptionEnded(repo: string, n: number, generation: number, head: string, check?: ShipCheck): Promise<string | undefined> {
+  /**
+   * Why this write may not go on, or undefined. `push`: this is the push onto the PR's branch, the one write a `stalled` hold admits
+   * (ship clears such a hold on a new head, so the push is what resumes the adoption). Approve, enqueue, a repair and a retarget keep
+   * `push` false: any hold refuses them, and a hand-back, a stop or a pause refuses the push too.
+   */
+  async function adoptionEnded(repo: string, n: number, generation: number, head: string, check?: ShipCheck, push = false): Promise<string | undefined> {
     const at = o.ship ? await o.ship.generation(repo, n, head, check).catch(() => undefined) : undefined;
     if (at?.generation === generation && at.refused) return `${at.retry ? "ship-tier-pending" : "ship-tier"}: https://github.com/${repo}/pull/${n}: ${at.refused}: nothing was done.`;
-    return at?.generation === generation ? undefined : `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
+    if (at?.generation !== generation) return `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
+    if (at.hold && !(push && at.hold.kind === "stalled")) return `ship-generation: https://github.com/${repo}/pull/${n} is on hold by ship (${at.hold.kind}${at.hold.kind === "stalled" ? ": only the push that resumes it may land" : ""})${at.hold.reason ? `: ${at.hold.reason}` : ""}: nothing was done.`;
+    return undefined;
   }
 
   /** The code host's own sign-in (the fleet's one write identity), for the content writes ship makes: never the reviewer App. */
@@ -922,7 +938,7 @@ export function createService(o: Options) {
     if (!pr.head?.repo || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainers to push: nothing was pushed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
     if (pr.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${pr.state}: nothing was pushed.` };
-    const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected));
+    const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected), undefined, true);
     if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
     const who = await writer();
@@ -930,7 +946,7 @@ export function createService(o: Options) {
     if (fork) {
       // The lease guards a race; the fix itself must build on the head, never rewrite the contributor's history.
       if (!(await git(dir, ["merge-base", "--is-ancestor", String(a.expected), String(b.sha)]).then(() => true, () => false))) return { ok: false, text: `ship-scope: \`${String(b.sha).slice(0, 12)}\` doesn't build on ${url}'s head \`${String(a.expected).slice(0, 12)}\`: nothing was pushed.` };
-      const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected));
+      const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected), undefined, true);
       if (late) return { ok: false, text: late };
       const pushed = await forkPush(dir, into, String(pr.head.ref), String(a.expected), String(b.sha), who, url);
       if (pushed) return pushed;
@@ -942,7 +958,7 @@ export function createService(o: Options) {
     const made = await apiCommits(who.rest, into, dir, String(a.expected), String(b.sha));
     if ("refused" in made) return { ok: false, text: `${made.refused.startsWith("ship-") ? "" : "GitHub refused the commit: "}${made.refused} (${url}): nothing was pushed.` };
     // The adoption once more, right before the branch moves: a pause or a hand-back during the upload refuses it.
-    const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected));
+    const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected), undefined, true);
     if (late) return { ok: false, text: late };
     // The PR once more, as the repair reads it: a close or a retarget during the upload refuses it rather than move its branch.
     const again = await api("GET", `/repos/${s.slug}/pulls/${Number(a.pr.number)}`);
@@ -1068,6 +1084,10 @@ export function createService(o: Options) {
             }
             tree.push({ path, mode: mode!, type: mode === "160000" ? "commit" : "blob", sha: sha! });
           }
+          // An empty entry list is a head the merge leaves as it is (a base already merged, or a conflict the kept set resolves
+          // to the head's own side): there is nothing to record, so it is a clean "nothing was changed", never an empty tree
+          // (GitHub refuses one with 422 Invalid tree info).
+          if (!tree.length) return refuse("changed nothing: the merge and the kept files leave every path at the head's");
           const t = await post("trees", { base_tree: await g(["rev-parse", `${a.head}^{tree}`]), tree });
           if (t.sha !== final) return refuse(`built a tree on GitHub (${String(t.sha).slice(0, 12)}) that isn't the merge's (${final.slice(0, 12)})`);
           made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000), tree: final, parents: [a.head, baseSha] })).sha);
@@ -1132,9 +1152,15 @@ export function createService(o: Options) {
       return r.body;
     };
     let parent = from;
+    // The replay builds each commit on the one before it, so each commit's first parent must be that one (the head for the
+    // first): a merge made the other way round (the PR branch merged into a base checkout) has the base tip as its first parent,
+    // and replaying it would drop the head's content and leave the PR behind its base. Its parents can't be kept here.
+    let expected = from;
     try {
       for (const c of list) {
         const [, first, ...others] = (await git(dir, ["rev-list", "--parents", "-n", "1", c])).split(" ");
+        if (first !== expected) return { refused: `ship-scope: \`${c.slice(0, 12)}\` builds on \`${String(first).slice(0, 12)}\`, not the head's own chain \`${expected.slice(0, 12)}\`: not replayed` };
+        expected = c;
         // Entries changed against the first parent; a path another parent has unchanged is already on GitHub (a base merge's files).
         const diff = (p: string) => git(dir, ["diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", p!, c]).then((out) => {
           const f = out.split("\0"), m = new Map<string, { mode: string; sha: string }>();
@@ -1158,8 +1184,12 @@ export function createService(o: Options) {
           tree.push({ path, mode: e.mode, type, sha: e.sha });
         }
         const want = await git(dir, ["rev-parse", `${c}^{tree}`]);
-        const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
-        if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        // An empty changed set is a commit whose tree is its first parent's (an "ours" merge): the commit carries that tree as it
+        // is, with no tree written (GitHub refuses an empty tree array).
+        if (tree.length) {
+          const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
+          if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        }
         const message = await git(dir, ["log", "-1", "--format=%B", c]);
         const made = await post("commits", { message, tree: want, parents: [parent, ...others] });
         parent = String(made.sha);

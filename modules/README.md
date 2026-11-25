@@ -22,7 +22,7 @@ modules in its instance repo (`modules/<name>/`, [AGENTS.md](AGENTS.md) "Local m
 | `github`, `ci` | GitHub: one sign-in; agents read and write as you, labelled as AidenHQ (GitHub's own MCP server, read-only, AidenHQ's tools and the code host); self-hosted CI runners. |
 | `channel-telegram`, `chat-lane` | Owner channels and the fast chat lane (`slack` is an owner channel too, in its advanced part). |
 | `models-openrouter`, `model-tools` | The OpenRouter key (the gateway prices every model from OpenRouter's list); advisor and fan-out tools. |
-| `google`, `slack`, `glean`, `jira`, `primer`, `meetings`, `memory`, `open-loops` | Source connections and the agents built on them. |
+| `google`, `slack`, `glean`, `jira`, `primer`, `meetings`, `memory`, `intake`, `open-loops` | Source connections and the agents built on them. |
 | `clickhouse`, `grafana`, `monitoring`, `warehouse` | Data and observability. |
 
 ## Connections

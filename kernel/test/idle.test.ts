@@ -10,7 +10,7 @@ import { createTaskStateRead } from "../src/task-state-read.ts";
 import { KERNEL_STAGES } from "../src/flow-stages.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createIdle } from "../src/idle.ts";
-import { createEscalate, ownerWroteAt } from "../src/escalate.ts";
+import { CONVERSING_MS, createEscalate, ownerWroteAt } from "../src/escalate.ts";
 
 const AGENT = "a-1", MIN = 60_000;
 
@@ -600,6 +600,20 @@ test("the owner wrote on a task: their own comment or the opening of a chat they
   assert.equal(ownerWroteAt(own, [{ body: "[telegram] go on", authorUserId: "o1", createdAt: at("09:00") }, { body: "done", authorAgentId: "a", createdAt: at("10:00") }, { body: "[wake] x <!-- aidenhq-wake -->", authorUserId: "o1", createdAt: at("11:00") }]), Date.parse(at("09:00")));
   assert.equal(ownerWroteAt({ ...own, description: "Heartbeat: eng" }, []), undefined, "no chat marker: a routine's run, a heartbeat, a filed task");
   assert.equal(ownerWroteAt({ ...own, createdByAgentId: "a" }, []), undefined, "an agent's task");
+});
+
+test("a form on a chat the owner's words opened reaches the owner; on a task Aiden delegated it goes to the Steward", async (t) => {
+  // The chat as the board's /internal/chat makes it (the owner's key made it, a chat marker, no agent), and the same request as an agent's task.
+  const chat = { description: "I need an agent that chases PRs\n\n<!-- aidenhq-chat-agent:arch -->", createdAt: new Date().toISOString(), createdByUserId: "o1", createdByAgentId: null };
+  const delegated = { ...chat, description: "Build an agent that chases PRs", createdByUserId: null, createdByAgentId: "aiden" };
+  const talking = (task) => { const at = ownerWroteAt(task, []); return at !== undefined && Date.now() - at < CONVERSING_MS; };
+  const w = world(t);
+  w.who.conversing = talking(delegated);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "architect", task: "t1" }, { reason: "x", for: "owner", question: "Which channels?" })).to, "steward");
+  w.who.conversing = talking(chat);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "architect", task: "t2" }, { reason: "x", for: "owner", question: "Which channels?" })).to, "owner");
+  assert.equal(w.asked.steward.length, 1);
+  assert.equal(w.asked.owner.length, 1);
 });
 
 test("a task whose agent no enabled dispatcher polls reads unpolled, and the sweep leaves it alone (it could not be taken)", async (t) => {

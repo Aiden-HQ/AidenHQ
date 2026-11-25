@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createService } from "../service/src/service.ts";
+import { createService, shipAdoptions } from "../service/src/service.ts";
 import { planParts } from "../service/src/plan.ts";
 import { decide, mergePath, requiredChecks } from "../service/src/merge-gate.ts";
 import { createMerges } from "../service/src/merges.ts";
@@ -109,6 +109,8 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     // The title write: only the title changes; the fake keeps the rest as it read it (a body, base or state sent would show here).
     if (method === "PATCH" && path === `/repos/${REPO}/pulls/7`) { pr.title = body?.title ?? pr.title; return { status: 200, body: { number: 7, title: pr.title, state: "open", head: { sha: pr.head }, base: { ref: pr.base ?? "main" } } }; }
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
+    // A merge's plan lists the PR's files (at most a page): this one changed one file, so the listing is the whole set.
+    if (method === "GET" && path === `/repos/${REPO}/pulls/7/files?per_page=100`) return { status: 200, body: [{ filename: "b.txt" }] };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
     // GitHub's git data API over the bare origin: blobs, trees, commits, and a ref update that refuses a non-fast-forward. The
@@ -149,9 +151,9 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
     graphql: async () => ({}),
   };
-  const adoption = { generation, refused: undefined };
+  const adoption = { generation, refused: undefined, hold: undefined };
   // Ship's answer, and its final tier check where github passes the write and the live head, base and author.
-  const ship = { generation: async (_r, _n, _at, check) => ({ generation: adoption.generation, ...(("task" in adoption) ? (adoption.task === null ? {} : { task: adoption.task }) : { task: "t1" }), ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
+  const ship = { generation: async (_r, _n, _at, check) => ({ generation: adoption.generation, ...(("task" in adoption) ? (adoption.task === null ? {} : { task: adoption.task }) : { task: "t1" }), ...(adoption.hold ? { hold: adoption.hold } : {}), ...(adoption.refused && check ? { refused: adoption.refused } : {}) }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg, productRepo: "acme/aidenhq", maintained,
@@ -239,6 +241,98 @@ test("a push onto an adopted PR's branch is written through the API as the code 
   assert.ok(written.length >= 3, "a blob, a tree and a commit");
   assert.ok(written.every((as) => as === undefined), "every write is the code host's, none the reviewer App's");
   assert.match(ok.text, / as owner1\.$/);
+});
+
+test("a push carrying a commit whose tree is its first parent's lands with the commit's own tree and no tree POST", async (t) => {
+  const { ws, origin, c1, pr, calls, call, run } = await setup(t);
+  // An "ours" merge on top of the head: its tree is the head's own (nothing changes), as a base merge that keeps every path does.
+  const mainMove = join(dirname(ws), "main-move");
+  sh(dirname(ws), "clone", "--quiet", "-b", "main", origin, mainMove);
+  writeFileSync(join(mainMove, "m.txt"), "m\n");
+  sh(mainMove, "add", "m.txt");
+  sh(mainMove, "commit", "--quiet", "-m", "main moves");
+  sh(mainMove, "push", "--quiet", origin, "main");
+  const ours = join(dirname(ws), "ours");
+  sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, ours);
+  // The base merge that keeps every path the head has: its tree is the head's own, so no diff against the first parent.
+  sh(ours, "merge", "--quiet", "-s", "ours", "--no-edit", "origin/main");
+  const oursSha = sh(ours, "rev-parse", "HEAD");
+  assert.equal(sh(ours, "rev-parse", `${oursSha}^{tree}`), sh(ours, "rev-parse", `${c1}^{tree}`), "the merge's tree is the first parent's");
+  // The box bundle the push reads, as ship's own commit is bundled.
+  sh(ours, "update-ref", `refs/aidenhq/publish/${oursSha}`, oursSha);
+  sh(ours, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${oursSha}.bundle`), `refs/aidenhq/publish/${oursSha}`);
+  const before = calls.length;
+  const ok = await run("k-00000000000000aa", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: oursSha }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
+  assert.equal(ok.ok, true, ok.text);
+  const posted = calls.slice(before).filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/trees`);
+  assert.equal(posted.length, 0, "no empty tree is POSTed");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^{tree}"), sh(ours, "rev-parse", `${oursSha}^{tree}`), "the commit lands with its own tree");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^"), c1);
+});
+
+test("a push whose box commit is a merge made on the base is refused, never replayed onto the PR head", async (t) => {
+  const { ws, origin, c1, run, calls } = await setup(t);
+  // The fixer merged the PR branch into a checkout of the updated base: the merge's first parent is the base tip, not the PR
+  // head. Replaying it would build the base's commits on the PR head and land a tree that drops the head's own files.
+  const mainMove = join(dirname(ws), "main-move");
+  sh(dirname(ws), "clone", "--quiet", "-b", "main", origin, mainMove);
+  writeFileSync(join(mainMove, "m.txt"), "m\n");
+  sh(mainMove, "add", "m.txt");
+  sh(mainMove, "commit", "--quiet", "-m", "main moves");
+  sh(mainMove, "push", "--quiet", origin, "main");
+  const reversed = join(dirname(ws), "reversed");
+  sh(dirname(ws), "clone", "--quiet", "-b", "main", origin, reversed);
+  sh(reversed, "merge", "--quiet", "-s", "ours", "--no-edit", "origin/contrib");
+  const reversedSha = sh(reversed, "rev-parse", "HEAD");
+  assert.notEqual(sh(reversed, "rev-parse", `${reversedSha}^1`), c1, "the merge's first parent is the base, not the PR head");
+  sh(reversed, "update-ref", `refs/aidenhq/publish/${reversedSha}`, reversedSha);
+  sh(reversed, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${reversedSha}.bundle`), `refs/aidenhq/publish/${reversedSha}`);
+  const before = sh(origin, "rev-parse", "refs/heads/contrib");
+  const r = await run("k-00000000000000ab", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: reversedSha }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
+  assert.equal(r.ok, false, r.text);
+  assert.match(r.text, /^ship-scope: .*not replayed/);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), before, "the branch is untouched");
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`).length, 0, "nothing is committed");
+});
+
+test("a stalled adoption's push is the one write that resumes it: the plan and the effect let it land, every other write stays refused", async (t) => {
+  const { origin, c1, fix, pr, run, call, adoption } = await setup(t);
+  const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
+  const plan = (kind, a, task = "t1") => call("/aidenhq/v1/executor/plan", { kind, args: a, requester: SHIP, task });
+  adoption.hold = { kind: "stalled", reason: "the repair didn't finish" };
+  // The push at the head the write expects, filed on the adoption's task: it plans as an ordinary agents-org push, and lands.
+  const pushed = await plan("github.push", args);
+  assert.equal(pushed.status, 200, JSON.stringify(pushed.json));
+  assert.equal(pushed.json.raise, undefined, "the stalled push is the task's own push, nothing raised");
+  const landed = await run("k-00000000000000f1", "github.push", args);
+  assert.equal(landed.ok, true, landed.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^"), c1, "the branch moved, from the head the write expected");
+  pr.head = sh(origin, "rev-parse", "refs/heads/contrib");
+  // Approve, enqueue and an adoption's merge stay refused on a stalled hold, as they do on any hold.
+  const write = { repo: REPO, number: 7, head: pr.head, generation: 2, base: "main" };
+  for (const kind of ["github.approve", "github.enqueue", "github.merge"]) {
+    const a = kind === "github.merge" ? { prs: [{ repo: REPO, number: 7, head: pr.head, base: "main" }], generation: 2, attempt: 1 } : { ...write, ...(kind === "github.enqueue" ? { attempt: 1 } : {}) };
+    const r = await plan(kind, a);
+    assert.equal(r.status, 422, `${kind}: ${JSON.stringify(r.json)}`);
+    assert.match(r.json.error, /on hold by ship \(stalled/, `${kind}: ${r.json.error}`);
+  }
+  // The effect reads the adoption again: an approval filed before the hold posts nothing.
+  const approved = await run("k-00000000000000f2", "github.approve", write);
+  assert.match(approved.text, /^ship-generation: .*on hold by ship \(stalled/, approved.text);
+  // A push off the head the write names is head movement, and one filed on another task is out of scope: both still refuse.
+  assert.match((await plan("github.push", { ...args, expected: "f".repeat(40) })).json.error, /moved to/);
+  assert.match((await plan("github.push", args, "t9")).json.error, /adoption's task/);
+  // A hand-back or a stop refuses the push too: only a stalled hold admits it.
+  for (const kind of ["handed_back", "stopped"]) {
+    adoption.hold = { kind };
+    const r = await plan("github.push", args);
+    assert.equal(r.status, 422, `${kind}: ${JSON.stringify(r.json)}`);
+    assert.match(r.json.error, new RegExp(`on hold by ship \\(${kind}`));
+    assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), pr.head, "nothing moved");
+  }
+  // Cleared, the adoption takes a push at the head its write names again (the ordinary path: here the head moved, so it is refused).
+  adoption.hold = undefined;
+  assert.equal((await plan("github.push", args)).status, 422, "the head moved past the write once the fix landed");
 });
 
 test("a push onto an adopted PR's branch that GitHub's own rules refuse keeps GitHub's reason, not ship-head-moved", async (t) => {
@@ -391,6 +485,16 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.deepEqual(requiredChecks([{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "build" }] } }], { contexts: ["ci-required"] }).sort(), ["build", "ci-required"]);
 });
 
+test("ship's generation answer keeps a stalled adoption's generation and the hold's kind; no adoption is still null", async () => {
+  const answer = (body) => shipAdoptions({ url: "http://ship:8101", key: () => "k", fetchFn: async () => new Response(JSON.stringify(body), { status: 200 }) }).generation(REPO, 7, "a".repeat(40));
+  const stalled = await answer({ generation: 2, hold: { kind: "stalled", reason: "the repair didn't finish" }, task: "t1" });
+  assert.deepEqual(stalled, { generation: 2, hold: { kind: "stalled", reason: "the repair didn't finish" }, task: "t1" });
+  const stopped = await answer({ generation: 2, hold: { kind: "stopped", reason: "ship is paused" } });
+  assert.deepEqual([stopped.generation, stopped.hold?.kind], [2, "stopped"]);
+  assert.deepEqual(await answer({ generation: 2, hold: null }), { generation: 2 });
+  assert.deepEqual(await answer({ generation: null, hold: null }), { generation: null }, "no adoption record at all");
+});
+
 test("plan: an adopted PR's merge is refused when the generation is stale or ship isn't installed", () => {
   const ship = { number: 3, generation: 2, expected: "a".repeat(40), head: "a".repeat(40), headRepo: "acme-agents/x", current: 2, filedOn: ["t1"], byShip: true };
   const pr = (s) => ({ repo: "acme-agents/x", number: 3, head: "a".repeat(40), files: ["a.ts"], checks: [{ name: "b", ok: true }], headMatches: true, ownHead: true, ship: s });
@@ -420,7 +524,7 @@ test("an adoption's direct merge: no checks and none required merges at its boun
     };
     const outcomes = [];
     const { createMerges } = await import("../service/src/merges.ts");
-    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) }, taskStatus: async () => taskStatus, ...(o.reviewer ? { reviewer: o.reviewer } : {}) });
+    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null, ...(adopted && o.hold ? { hold: o.hold } : {}) }) }, taskStatus: async () => taskStatus, ...(o.reviewer ? { reviewer: o.reviewer } : {}) });
     if (plain) void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H }] }, "T1", undefined, undefined, true);
     else void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H, base: "main" }], generation: 2, attempt: 1 });
     await m.step();
@@ -437,6 +541,10 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   assert.equal(ended.calls.filter((c) => c.startsWith("PUT")).length, 0);
   assert.equal(ended.outcomes[0]?.ok, false);
   assert.match(ended.outcomes[0].text, /adoption ended/);
+  // A stalled hold ends the merge as any hold does: the push that resumes the adoption is the only write it admits.
+  const stalled = await run(true, false, "in_progress", 404, [], { hold: { kind: "stalled" } });
+  assert.equal(stalled.calls.filter((c) => c.startsWith("PUT")).length, 0, stalled.calls.join("\n"));
+  assert.match(stalled.outcomes[0]?.text ?? "", /on hold by ship \(stalled\)/);
   // A fleet PR's plain merge ship filed stops with ship too: paused (or its repo off), it is never called.
   const paused = await run(false, true);
   assert.equal(paused.calls.filter((c) => c.startsWith("PUT")).length, 0, paused.calls.join("\n"));
@@ -572,6 +680,20 @@ test("ship's repair takes the box's files only on generated paths and conflicted
     assert.match(r.text, why);
     assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "nothing was written");
   }
+});
+
+test("ship's repair whose merge and kept files leave every path at the head's is refused as nothing changed, with no tree POSTed", async (t) => {
+  const { origin, ws, c1, run, calls, repairResult } = await setup(t);
+  // The head already contains the base (main is its parent), so git's merge-tree is the head's own tree, and the kept entry is
+  // that same content: the diff against the head is empty.
+  const bBlob = sh(ws, "rev-parse", `${c1}:b.txt`);
+  repairResult.keep.entries = [{ path: "b.txt", mode: "100644", sha: bBlob }];
+  const r = await run("k-00000000000000a1", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["b.txt"] } });
+  assert.equal(r.ok, false, r.text);
+  assert.match(r.text, /^ship-refused: the repair of .*: nothing was changed/);
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/trees`).length, 0, "no empty tree is POSTed");
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`).length, 0, "no commit is made");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch stays where it was");
 });
 
 test("ship's decision from its list read: no PR or check read, the branch rules read once, code review's pass is the review", async () => {
