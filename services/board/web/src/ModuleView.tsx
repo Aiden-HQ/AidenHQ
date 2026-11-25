@@ -45,7 +45,9 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   // (filed from any page, a refresh ago, or a Save whose answer was lost) would overwrite it. The filed changes are the one truth:
   // Save waits while one touching the proposal's settings is in flight, and when it lands the page starts over from the live settings.
   const [changes, setChanges] = useState<FiledChange[]>([]);
-  const refresh = useCallback(() => api.settingsChanges().then((r) => setChanges(r.changes), () => {}), []);
+  const latest = useRef(0);
+  // Only the newest request's answer counts: an older read must not undo what a newer one showed.
+  const refresh = useCallback(() => { const n = ++latest.current; return api.settingsChanges().then((r) => void (n === latest.current && setChanges(r.changes)), () => {}); }, []);
   useEffect(() => {
     void refresh();
     const t = setInterval(() => document.visibilityState === "visible" && void refresh(), 3_000);
@@ -53,7 +55,8 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   }, [refresh]);
   const keys = new Set(proposal?.changes.map((c) => c.key));
   const blocking = changes.find((c) => IN_FLIGHT.includes(c.stage) && c.items.some((i) => "key" in i && keys.has(i.key)));
-  const watched = useRef("");
+  // Every change this page has had to wait for, or saved: the page starts over once one of them is applied.
+  const watched = useRef(new Set<string>());
   const [attempt, setAttempt] = useState(0);
   const [broken, setBroken] = useState("");
   const loads = useRef(0);
@@ -103,14 +106,15 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   }, [id, sub, onSignIn, attempt]);
 
   useEffect(() => {
-    if (blocking) return void (watched.current = blocking.identifier);
-    const id = watched.current;
-    if (!id) return;
-    watched.current = "";
-    const f = changes.find((c) => c.identifier === id);
-    if (f?.stage === "applied") return setSaid(`${id} is live; the page starts over from it.`), setProposal(null), setAttempt((a) => a + 1);
-    if (f) setSaid(`${id} was not applied (${f.stage})${f.detail ? `: ${f.detail}` : ""}.`);
-  }, [blocking, changes]);
+    for (const c of changes) if (IN_FLIGHT.includes(c.stage) && c.items.some((i) => "key" in i && keys.has(i.key))) watched.current.add(c.identifier);
+    for (const id of [...watched.current]) {
+      const f = changes.find((c) => c.identifier === id);
+      if (!f || IN_FLIGHT.includes(f.stage)) continue;
+      watched.current.delete(id);
+      if (f.stage === "applied") return watched.current.clear(), setSaid(`${id} is live; the page starts over from it.`), setProposal(null), setAttempt((a) => a + 1);
+      setSaid(`${id} was not applied (${f.stage})${f.detail ? `: ${f.detail}` : ""}.`);
+    }
+  }, [changes, proposal]);
 
   if (!page)
     return (
@@ -123,6 +127,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
     setSaving(true);
     try {
       const r = await api.viewSave(page!.id, proposal.changes);
+      watched.current.add(r.identifier);
       setSaid(`Saved as ${r.identifier}: the change applies in a moment.`);
     } catch (e) {
       setSaid(`Not saved: ${(e as Error).message}`);
