@@ -1,7 +1,8 @@
-// The owner's optional GitHub App for code review's writes (spec 2026-11-22-github-app-review-writer): its id and key are in this
-// process's own vault dir (`<state>/github-app/{app_id,key.pem,slug}`, written by the kernel's /setup/github-app), read when needed, so
-// a new App works without a restart. Without them, or on a repo it isn't installed on, code review posts as the owner. The JWT and
-// installation tokens never leave this process (restored from #1134's service/src/github-app.ts, cut to what review writes need).
+// The owner's optional GitHub App (spec 2026-11-22-github-app-review-writer): code review's writes, and the fleet's repo reads where
+// its installation holds the permission (client.ts readerFor). Its id and key are in this process's own vault dir
+// (`<state>/github-app/{app_id,key.pem,slug}`, written by the kernel's /setup/github-app), read when needed, so a new App works without
+// a restart. Without them, or on a repo it isn't installed on, code review posts and the fleet reads as the owner. The JWT and
+// installation tokens never leave this process (restored from #1134's service/src/github-app.ts).
 import { createSign } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -18,7 +19,7 @@ export function appJwt(appId: string, key: string, now = Date.now()): string {
 
 export class AppError extends Error {}
 
-/** How long a repo's installation answer (installed or not) is reused. */
+/** How long a repo's installation answer (installed or not, and the permissions it holds) is reused. */
 const LOOKUP_MS = 10 * 60_000;
 
 export type GitHubApp = ReturnType<typeof gitHubApp>;
@@ -37,7 +38,7 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
     return { id, key, slug };
   };
   const quiet = () => { try { return creds(); } catch { return undefined; } };
-  const lookups = new Map<string, { id: number | null; at: number }>();
+  const lookups = new Map<string, { found: { id: number; permissions: Record<string, string> } | null; at: number }>();
   const tokens = new Map<number, { token: string; expires: number }>();
   /**
    * Why the App last failed (its key, a suspension, a refusal of its token or of a write), until a write as it succeeds; kept
@@ -63,26 +64,32 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
   const jwt = () => { const c = creds()!; return appJwt(c.id, c.key, now()); };
   const refused = (what: string, r: { status: number; body: any }): AppError => new AppError(`the GitHub App: ${what} (GitHub said ${r.status} ${String(r.body?.message ?? "").slice(0, 150)})`.trim());
 
+  /**
+   * The App's installation on `repo` (owner/name): its id and the permissions it has accepted, or null when the App isn't set up
+   * (or its saved files are broken) or GitHub confirms it isn't installed there (404). Any other answer (a bad key, a suspended App,
+   * a rate limit) throws: a review never quietly moves to the owner's account because the App broke.
+   */
+  const installed = (repo: string): Promise<{ id: number; permissions: Record<string, string> } | null> => track(async () => {
+    const c = quiet();
+    if (!c) return null;
+    if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(repo) || repo.split("/").some((p) => /^\.+$/.test(p))) throw new AppError(`not a repository: ${repo.slice(0, 200)}`);
+    const k = `${c.id}:${repo.toLowerCase()}`;
+    const hit = lookups.get(k);
+    if (hit && now() - hit.at < LOOKUP_MS) return hit.found;
+    const r = await api("GET", `/repos/${repo}/installation`, jwt());
+    if (r.status !== 200 && r.status !== 404) throw refused(`couldn't look up its installation on ${repo}`, r);
+    const id = r.status === 200 && Number.isInteger(r.body?.id) ? Number(r.body.id) : null;
+    if (r.status === 200 && id === null) throw refused(`no installation id for ${repo}`, r);
+    const permissions = r.body?.permissions && typeof r.body.permissions === "object" ? Object.fromEntries(Object.entries(r.body.permissions).map(([p, v]) => [p, String(v)])) : {};
+    const found = id === null ? null : { id, permissions };
+    lookups.set(k, { found, at: now() });
+    return found;
+  });
+
   return {
-    /**
-     * The App's installation on `repo` (owner/name): its id, or null when the App isn't set up (or its saved files are broken) or GitHub confirms it isn't
-     * installed there (404). Any other answer (a bad key, a suspended App, a rate limit) throws: a review never quietly moves
-     * to the owner's account because the App broke.
-     */
-    installation: (repo: string): Promise<number | null> => track(async () => {
-      const c = quiet();
-      if (!c) return null;
-      if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(repo) || repo.split("/").some((p) => /^\.+$/.test(p))) throw new AppError(`not a repository: ${repo.slice(0, 200)}`);
-      const k = `${c.id}:${repo.toLowerCase()}`;
-      const hit = lookups.get(k);
-      if (hit && now() - hit.at < LOOKUP_MS) return hit.id;
-      const r = await api("GET", `/repos/${repo}/installation`, jwt());
-      if (r.status !== 200 && r.status !== 404) throw refused(`couldn't look up its installation on ${repo}`, r);
-      const id = r.status === 200 && Number.isInteger(r.body?.id) ? Number(r.body.id) : null;
-      if (r.status === 200 && id === null) throw refused(`no installation id for ${repo}`, r);
-      lookups.set(k, { id, at: now() });
-      return id;
-    }),
+    installed,
+    /** The App's installation id on `repo`, or null (see `installed`). */
+    installation: async (repo: string): Promise<number | null> => (await installed(repo))?.id ?? null,
     /** An installation token, reused until 5 minutes before it expires; `fresh` drops the cached one (GitHub refused it). */
     token: (installation: number, fresh = false): Promise<string> => track(async () => {
       const hit = tokens.get(installation);

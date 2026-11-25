@@ -57,8 +57,8 @@ async function github(method: "GET" | "POST", op: string, body?: unknown, timeou
   if (!r.ok) throw new Error(`github /internal/ship/${op}: ${r.status} ${String(j?.error ?? "").slice(0, 200)}`);
   return j;
 }
-const gh = async (method: string, path: string, body?: unknown, o?: { deadline?: number }) => {
-  const r = await github("POST", "gh", { method, path, body, deadline: o?.deadline });
+const gh = async (method: string, path: string, body?: unknown, o?: { deadline?: number; covers?: string[] }) => {
+  const r = await github("POST", "gh", { method, path, body, deadline: o?.deadline, ...(o?.covers ? { covers: o.covers } : {}) });
   // A refusal the client threw there (a typed need: rate_limited, unreachable, scope) is thrown here the same way.
   if (r.thrown) throw Object.assign(new Error(String(r.thrown.message)), { cause: r.thrown.cause });
   return r as { status: number; body: any };
