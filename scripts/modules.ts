@@ -210,14 +210,15 @@ export function grantEntry(key: string, a: Obj, routines: Obj = {}) {
 /** An agent's profile (kernel/src/admission.ts PROFILES): which tools, writes and computer its kernel jobs get. */
 const JOB_PROFILES = ["crew", "engineer", "check", "session"];
 
-const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "default"];
+const ENGINE_FIELDS = ["kind", "bin", "live_input", "label", "effort_key", "model_prefix", "gateway", "box", "state", "reset", "seed", "default", "tools"];
 const relPath = (p: string) => typeof p === "string" && p && !p.split("/").includes("..") && !/^\/\//.test(p);
 /**
  * A module's `providers.engine` (spec §3.3.1, engine@1): one or more engine kinds, each a `bin` the runner runs in the
  * job's agent computer (only a kind with `box: true` runs at all). The rest is data the runner reads instead of knowing
  * engines: how to pick one (effort_key, model_prefix; `default: true`: the engine an agent without `engine:` takes), where its model calls go (gateway), its state folder (state:
  * task | shared, under the runner's state dir; reset names and seed copies made before each run; seed `from` is the module's,
- * or the product's with a leading /). Returns config/engines.json's entries, by kind.
+ * or the product's with a leading /; `tools: code`: its connections are typed files the kernel generates in its per-task state
+ * folder, not an MCP list: kernel/src/codemode.ts). Returns config/engines.json's entries, by kind.
  */
 export function engineEntries(name: string, def: Obj, root: string, productDir: string) {
   const out: Obj = {};
@@ -230,6 +231,8 @@ export function engineEntries(name: string, def: Obj, root: string, productDir: 
     for (const r of e.reset ?? []) if (!relPath(r) || r.startsWith("/")) fail(`${where}: reset names paths in its state folder`);
     for (const s of e.seed ?? []) if (!relPath(s?.from) || !relPath(s?.to) || s.to.startsWith("/") || !existsSync(s.from.startsWith("/") ? join(productDir, s.from) : join(root, s.from))) fail(`${where}: seed entries are { from, to }: an existing module (or /product) path into the state folder`);
     if ((e.reset || e.seed) && !e.state) fail(`${where}: reset and seed need a state folder`);
+    if (e.tools != null && e.tools !== "code") fail(`${where}: tools is code (or left out: an MCP list)`);
+    if (e.tools === "code" && e.state !== "task") fail(`${where}: tools: code needs a per-task state folder (state: task), where its tool files are generated`);
     const dir = relative(productDir, root);
     out[e.kind] = { ...e, module: name, dir, bin: join(dir, e.bin), live_input: e.live_input === true };
   }
@@ -1383,7 +1386,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // engines: the engines a kernel job may ask its next turn to run on (`aidenhq engine`); absent, only its own.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k: string) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
   // A session's job lives on and hears its wakes as live input: every engine it may run on takes live input.
-  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.profile === "session") for (const k of [a.engine, ...(a.engines ?? [])]) if (!engines[k].live_input || engines[k].box !== true || engines[k].state !== "task") fail(`agent ${key}: a session's engine runs in a computer, takes live input and keeps per-task state (box, live_input, state: task), and ${k} doesn't`);
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.profile === "session") for (const k of [a.engine, ...(a.engines ?? [])]) if (!engines[k].live_input || engines[k].box !== true || engines[k].state !== "task" || engines[k].tools !== "code") fail(`agent ${key}: a session's engine runs in a computer, takes live input, keeps per-task state and reaches its tools as code (box, live_input, state: task, tools: code), and ${k} doesn't`);
   // The one standing box hosts one engine's module and state root: every session agent runs on that same engine, or starting one would replace another's box.
   const sessionEngines = new Set(Object.values<Obj>(paperclip.agents).filter((a) => a.profile === "session").flatMap((a) => [a.engine, ...(a.engines ?? [])]));
   if (sessionEngines.size > 1) fail(`session agents share one standing box, so one engine: got ${[...sessionEngines].sort().join(", ")}`);

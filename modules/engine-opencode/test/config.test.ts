@@ -8,7 +8,7 @@ import { modelLimits, opencodeConfig } from "../src/config.ts";
 const spec: any = {
   contract: "engine@1", job: "j", agent: "a", task: "t", prompt: "P", env: [], limits: { timeout_s: 0 }, web: false,
   model: { base_url: "http://gw:8200/api/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "~deepseek/deepseek-flash-latest", effort: "high", models: ["openrouter/moonshotai/kimi-k3.1-pro"] },
-  mcp: [{ name: "github", url: "http://gw/c/github/mcp", token_env: "AIDENHQ_RUN_TOKEN", tools: ["x"], tool_timeout_s: 60 }],
+  mcp: [], tools: { dir: "/s/aidenhq-tools", index: "/s/aidenhq-tools/README.md" },
   sandbox: { kind: "box", writable: [], network: true },
 };
 
@@ -31,10 +31,11 @@ test("builds the config from the job", () => {
   assert.equal(tiny.provider.aidenhq.models["moonshotai/kimi-k3.1-pro"]!.limit.input, 16_000);
   assert.deepEqual(c.compaction, { auto: true, reserved: 0 });
   assert.equal(c.provider.aidenhq.options.baseURL, "http://gw:8200/api/v1");
-  assert.equal(c.mcp.github!.headers["X-Agent-Key"], "{env:AIDENHQ_RUN_TOKEN}");
-  assert.equal(c.mcp.github!.timeout, 60000);
+  // Connections are code: no MCP server, and the tool index is an instruction beside the handbook.
+  assert.equal((c as Record<string, unknown>).mcp, undefined);
   assert.equal(c.permission.webfetch, "deny");
-  assert.deepEqual(c.instructions, ["/s/AGENTS.md"]);
+  assert.deepEqual(c.instructions, ["/s/AGENTS.md", "/s/aidenhq-tools/README.md"]);
+  assert.throws(() => opencodeConfig({ ...spec, tools: undefined }, { plugins: [], stateDir: "/s", limits }), /no tool index/);
   assert.equal(c.autoupdate, false);
   assert.deepEqual(c.plugin, ["opencode-shell-strategy@1.2.3"]);
   assert.doesNotMatch(JSON.stringify(c), /ahqj_|sk-or/);

@@ -50,7 +50,10 @@ function sandbox() {
   const quoted = engine("quoted.mjs", `emit({ t: "final", text: "The marker is " + String.fromCharCode(96) + "<|im_end|>" + String.fromCharCode(96) + "." });`);
   // An engine that dies at start on stderr, as Codex does resuming a session its home doesn't have.
   const dies = engine("dies.mjs", `console.log(JSON.stringify({ type: "noise" }));\nconsole.error("Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=sk-or-v1-abc123 Bearer sk-or-v1-def456 run ahqj_body.sig");\nprocess.exit(1);`);
+  // A session's three turns, once released: each a reply with its turn's bounds (epoch ms from 1.7e12, a second apart).
+  const turns = engine("turns.mjs", `while (!existsSync(join(dir, "..", "..", "..", "state", "logs", "release"))) await new Promise((r) => setTimeout(r, 50));\nfor (const i of [0, 1, 2]) emit({ t: "reply", id: "prt_" + i, text: "turn " + i, start: 1.7e12 + i * 1000, end: 1.7e12 + (i + 1) * 1000 });\nemit({ t: "final", text: "" });`);
   const engines = {
+    turns: { module: "test", dir: join(dir, "engines"), bin: turns, kind: "turns", box: true },
     dies: { module: "test", dir: join(dir, "engines"), bin: dies, kind: "dies", box: true },
     echo: { module: "engine-echo", dir: "fixtures/engine-echo", bin: "fixtures/engine-echo/bin/engine", kind: "echo", live_input: true, box: true },
     slow: { module: "test", dir: join(dir, "engines"), bin: slow, kind: "slow", box: true },
@@ -356,4 +359,20 @@ test("a warning line is never the failure reason", () => {
   const log = join(mkdtempSync(join(tmpdir(), "first-error-")), "job.log");
   writeFileSync(log, "[2026/11/25 09:30:04:8559] W: WS authentication failed with token:\nError: model not found\n");
   assert.equal(firstError(log), "Error: model not found");
+});
+
+// A session turn's reply is queued unless the job commented on its own task during that turn (the control plane's
+// task.commented fact, by job id): adjacent turns are told apart, a comment on another task doesn't count, nor does one never
+// written (a pending comment records no fact).
+test("a turn's reply is dropped only when its job commented on its own task inside that turn", async () => {
+  const sb = sandbox();
+  const jobs = inProcess(sb.cfg);
+  const j = jobs.run(sb, "turns");
+  const fact = (task, at, job = j.id) => jobs.facts.record({ type: "task.commented", subject: `task:${task}`, version: `c-${task}-${at}`, at: new Date(at).toISOString(), actor: "agent:acme-crew", task, data: { kind: "cp", job } });
+  fact("task-1", 1.7e12 + 500);           // turn 0: its own comment
+  fact("task-2", 1.7e12 + 1500);          // turn 1: on another task
+  fact("task-1", 1.7e12 + 2500, "job-x"); // turn 2: another job's
+  writeFileSync(join(sb.cfg.logsDir, "release"), "");
+  const v = await finished(jobs, j.id);
+  assert.deepEqual(v.progress.replies.map((r) => r.id), ["prt_1", "prt_2"]);
 });

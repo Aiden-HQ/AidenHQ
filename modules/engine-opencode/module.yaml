@@ -7,7 +7,9 @@ providers:
   engine:
     # One `opencode serve` per session (docs/superpowers/specs/2026-11-25-sessions-design.md): the kernel's jobs drive it over
     # opencode's own HTTP API, and its TUI is served on the same session through tmux and ttyd. src/config.ts builds opencode's
-    # whole config from the job (plugins.json is the curated plugin set); nothing is hand-maintained.
+    # whole config from the job (plugins.json is the curated plugin set); nothing is hand-maintained. `tools: code`: its
+    # connections are typed files the kernel generates in its state folder (aidenhq-tools/, docs/superpowers/specs/
+    # 2026-11-25-session-code-mode-design.md), called from scripts, not an MCP tool list.
     - kind: opencode
       bin: bin/engine
       label: opencode
@@ -15,4 +17,5 @@ providers:
       gateway: true
       box: true
       state: task
-      reset: [opencode.json, AGENTS.md, skills, dcp.jsonc]
+      tools: code
+      reset: [opencode.json, AGENTS.md, skills, dcp.jsonc, aidenhq-tools]

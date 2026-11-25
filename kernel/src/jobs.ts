@@ -474,6 +474,16 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const pending: string[] = [];
     let retried = false;
     const save = () => db.prepare("UPDATE jobs SET offset = ?, session = ?, final = ?, progress = ?, usage = ? WHERE id = ?").run(offset, session, final ?? "", JSON.stringify(progress), usage.seen ? JSON.stringify({ input: usage.input, cached: usage.cached, output: usage.output }) : null, id);
+    /**
+     * A turn whose job already commented on its own task (the task.commented fact the control plane records for each comment a
+     * job writes, by job id) between the turn's start and end: its last words were said there, so no reply is queued.
+     */
+    const commentedIn = (e: { start?: unknown; end?: unknown }) => {
+      if (!facts || !Number.isFinite(e.start) || !Number.isFinite(e.end)) return false;
+      try {
+        return Boolean(db.prepare("SELECT 1 FROM facts WHERE type = 'task.commented' AND task = ? AND json_extract(data, '$.job') = ? AND at >= ? AND at <= ? LIMIT 1").get(r.task, id, iso(Number(e.start)), iso(Number(e.end))));
+      } catch { return false; }
+    };
     const read = () => {
       let got;
       try {
@@ -486,7 +496,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       for (const e of got.events) {
         if (e.t === "session" && typeof e.id === "string" && SESSION.test(e.id)) session = e.id;
         if (e.t === "final" && typeof e.text === "string") final = e.text;
-        if (e.t === "reply" && typeof e.text === "string" && typeof e.id === "string" && TURN.test(e.id) && !progress.replies?.some((x) => x.id === e.id)) {
+        if (e.t === "reply" && typeof e.text === "string" && typeof e.id === "string" && TURN.test(e.id) && !progress.replies?.some((x) => x.id === e.id) && !commentedIn(e)) {
           progress.replies = [...(progress.replies ?? []), { id: e.id, text: e.text.slice(0, REPLY_MAX) }];
           // Dispatch drains these every tick; a backlog past the cap (its post failing for that long) loses the oldest, loudly.
           if (progress.replies.length > REPLIES_KEPT) log("session turn reply dropped: dispatch has not posted the backlog", { job: id, task: r.task, dropped: progress.replies.length - REPLIES_KEPT });

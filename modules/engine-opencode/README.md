@@ -13,8 +13,10 @@ state folder on every start:
 - **Models.** One provider, `aidenhq`, pointing at the model gateway (`model.base_url`, the box's run token as the key). Its models
   are the agent's default plus its `models` list, without OpenRouter's `openrouter/` prefix. The agent's effort becomes the
   default model's `reasoningEffort`. opencode's own hosted models are not listed (`enabled_providers`).
-- **Connections.** Every granted MCP connection (`job.json` `mcp`) as a remote server through the kernel proxy with the
-  `X-Agent-Key` header. Tool-level narrowing stays the proxy's.
+- **Connections, as code.** The engine declares `tools: code`: no MCP server is configured. The kernel generates the job's
+  granted tools as typed files in the state folder (`aidenhq-tools/`, `job.json` `tools`), and their index is an instruction
+  beside `AGENTS.md`; the agent calls them from scripts through the kernel proxy
+  ([code mode](../../docs/superpowers/specs/2026-11-25-session-code-mode-design.md)).
 - **Plugins.** `plugins.json` (below), loaded from the image's `/opt/opencode/node_modules`.
 - **Skills and instructions.** The kernel places the agent's `skills/` and `AGENTS.md` in the state folder, which is
   `OPENCODE_CONFIG_DIR`: opencode lists the skills (name and description) and loads `AGENTS.md` through `instructions`.
