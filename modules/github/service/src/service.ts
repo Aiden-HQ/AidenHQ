@@ -261,7 +261,8 @@ export function createService(o: Options) {
     // restriction or SSO, a stale sign-in) as a typed need, and tells the owner.
     await git(dir, ["fetch", "--quiet", "--no-tags", remote(s.slug), `+${/^[0-9a-f]{40}$/.test(name) ? name : `refs/heads/${name}`}:${ref}`], await token())
       .catch(async (e) => {
-        await gh("GET", `/repos/${s.slug}`);
+        // As the owner (never the App): the probe is of the owner's own access, which the App's answer would hide.
+        await gh("GET", `/repos/${s.slug}`, undefined, { owner: true });
         // The repo answers, so the ref is what is missing (a deleted branch): a 404 the caller can tell from a failed fetch.
         if (/couldn't find remote ref/i.test(String((e as Error)?.message))) throw fail(404, `${s.slug} has no ${name}`);
         throw e;

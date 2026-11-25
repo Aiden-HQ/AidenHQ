@@ -4,7 +4,8 @@
 //                                background, from a fixed list (the loop's reads, check re-runs, update-branch, closing an abandoned
 //                                PR and deleting its branch, its comment), on a repo the fleet merges in. No merge. Its writes go as
 //                                the owner; its reads as the App where the App can read the repo (client.ts readerFor), and a head's
-//                                check-run list (filter=latest) from the change feed's snapshot while it is fresh (feed.ts checkRuns).
+//                                check-run list (filter=latest) from the change feed's snapshot while it is fresh (feed.ts checkRuns)
+//                                and holds every check run the request's `covers` names (the PR's rollup, which ship read live).
 //                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's.
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
 //   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
@@ -127,8 +128,9 @@ export function shipRoutes(o: {
         const branch = String(path).match(/\/git\/refs\/heads\/(.+)$/)?.[1] ?? (method === "PATCH" && b.body?.state === "closed" ? await prBranch(repo, Number(String(path).split("/").at(-1))) : undefined);
         // The check-run list the recovery reads (filter=latest, a full head sha): the feed read the same list, so its snapshot answers.
         const listed = method === "GET" ? /^\/repos\/[\w.-]+\/[\w.-]+\/commits\/([0-9a-f]{40})\/check-runs\?filter=latest&per_page=100&page=(\d+)$/.exec(String(path)) : null;
-        const snap = listed ? o.checkRuns?.(repo, listed[1]!) : undefined;
-        if (snap) return send(res, 200, { status: 200, body: { total_count: snap.length, check_runs: snap.slice((Number(listed![2]) - 1) * 100, Number(listed![2]) * 100) } }), true;
+        const covers: unknown = b.covers;
+        const snap = listed && Array.isArray(covers) && covers.length <= 500 && covers.every((c) => typeof c === "string") ? o.checkRuns?.(repo, listed[1]!) : undefined;
+        if (snap && (covers as string[]).every((id) => snap.some((r) => r.node_id === id))) return send(res, 200, { status: 200, body: { total_count: snap.length, check_runs: snap.slice((Number(listed![2]) - 1) * 100, Number(listed![2]) * 100) } }), true;
         const run = () => o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}), ...(read ? { repo } : {}) });
         if (branch && (method === "DELETE" || (method === "PATCH" && b.body?.state === "closed"))) {
           /** Ownership as pr-tasks.json has it once the lock is ours: a successor that published and was recorded while this cleanup

@@ -103,6 +103,8 @@ type CallOpts = {
   deadline?: number;
   /** The repo a GraphQL read is about (its variables'): only such a read may go as the App (`readerFor`). */
   repo?: string;
+  /** The owner's own sign-in, never the App: a read that probes what the owner's credential reaches (a failed git fetch's cause). */
+  owner?: true;
 };
 
 /** The owner's optional GitHub App (github-app.ts), for reads: where it is installed on a repo and holds the permission a read
@@ -372,9 +374,9 @@ export function createAccess(o: {
     fail({ cause: "write_busy" });
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number, caller?: string, repo?: string) {
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number, caller?: string, repo?: string, ownerOnly = false) {
     const p = paceOf(as);
-    if (!createsContent(method, path, body)) return read(method, path, body, resource, background, accept, as, etag, readDeadline, caller, repo);
+    if (!createsContent(method, path, body)) return read(method, path, body, resource, background, accept, as, etag, readDeadline, caller, repo, ownerOnly);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
@@ -417,9 +419,9 @@ export function createAccess(o: {
    * partial answer is never used) is read again as the owner, and that repo and permission stay the owner's for DENIED_MS, logged
    * once: the one fallback, because the App is optional and its new permissions wait for each install's approval.
    */
-  async function read(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, deadline?: number, caller?: string, repo?: string) {
+  async function read(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, deadline?: number, caller?: string, repo?: string, ownerOnly = false) {
     const go = (who?: Identity) => cached(method, path, body, resource, background, accept, who, etag, deadline, caller);
-    const app = as ? undefined : await readerFor(method, path, repo);
+    const app = as || ownerOnly ? undefined : await readerFor(method, path, repo);
     if (!app) return go(as);
     const r = await go(app.as);
     const refused = path === "/graphql" ? Array.isArray(r.body?.errors) && r.body.errors.length > 0 : r.status === 403 && /not accessible by integration/i.test(String(r.body?.message ?? ""));
@@ -444,7 +446,8 @@ export function createAccess(o: {
     const hit = etags.get(key);
     const r = await attempt(p, method, path, body, resource, background, accept, deadline, as, false, hit?.etag, caller);
     if (r.status === 304 && hit) {
-      etags.delete(key); etags.set(key, hit); // most recently used
+      // Most recently used, unless another read replaced or evicted it meanwhile (that one's answer stands).
+      if (etags.get(key) === hit) { etags.delete(key); etags.set(key, hit); }
       return { status: hit.status, body: JSON.parse(hit.text), headers: r.headers };
     }
     forget(key);
@@ -638,7 +641,7 @@ export function createAccess(o: {
     withCaller: (caller, fn) => callers.run(caller, fn),
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : path.startsWith("/search/") ? "search" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline, opts.caller, opts.repo),
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : path.startsWith("/search/") ? "search" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline, opts.caller, opts.repo, opts.owner === true),
     graphql: async (query, variables, opts = {}) => {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
       const body = res.body;
