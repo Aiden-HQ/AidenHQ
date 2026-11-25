@@ -18,7 +18,7 @@ Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them
 - A new app's repository is asked for explicitly: "create the repository `<agents org>/<app-name>` with `aidenhq create-repo`" (a card). Use `local/<name>` for one on this server.
 - The instance repo (`aidenhq-alpha/aidenhq-instance`) changes only through apply: `deliverable: apply` with a rubric on the applied card, never a `pr`. Archived repositories refuse pushes.
 - Name a CI job the repository runs (read its default-branch workflows). The product repo runs `ci-required`; `image-scan` is advisory there and required in app repos built from the CI template. Name a selector and its rule ("pin what `best-version.ts` prints"), not a version.
-- Skill `write-code` is the Engineer's rulebook; name in the brief which of its rules the change touches (a data app's schema, a security fix, `.github/code-review-critical` paths, an app's `AGENTS.md` map) so the rubric can check them.
+- Skill `write-code` is the Engineer's rulebook; name in the brief which of its rules the change touches (a data app's schema, a security fix, sensitive-path rules, an app's `AGENTS.md` map) so the rubric can check them.
 
 ## Choosing the agent
 

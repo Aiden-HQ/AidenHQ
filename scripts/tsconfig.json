@@ -30,6 +30,7 @@
     "../modules/ci/template/.github/code-review.ts",
     "../modules/ci/template/.github/codegenie-gate.ts",
     "../modules/ci/template/.github/codegenie-prior.ts",
+    "../modules/ci/template/.github/codegenie-tier.ts",
     "../modules/ci/template/.github/review-checklist.ts",
     "../modules/ci/template/.github/review-tools.ts",
     "../modules/ci/template/.github/supply-chain/best-version.ts",

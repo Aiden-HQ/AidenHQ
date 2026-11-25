@@ -459,12 +459,16 @@ function spendGone(instance: Obj) {
 /**
  * The gateway's CI code review switches (config/gateway.json `ci`, kernel/src/gateway/ci.ts): only the agents org's app repos;
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped); the review model and
- * effort the code-review job gets with its CI token (always one of the allowed models).
+ * effort the code-review job gets with its CI token (always one of the allowed models); and each code review entry's tier rules and class.
  */
-function ciReview(settings: Obj) {
+function ciReview(settings: Obj, codeReview: unknown) {
   const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m: unknown) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
   const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
-  return { orgs: [settings.agents_org].filter(Boolean), models, review };
+  // Each code review entry's risk tier rules and class, for the CI template's own classification (kernel/src/gateway/lib.ts /ci/token).
+  const entries = readCodeReview(JSON.stringify(codeReview ?? {}));
+  if (entries.errors.length) fail(`settings.code_review: ${entries.errors.join("; ")}`);
+  const tiers = Object.fromEntries(entries.repos.map((e) => [e.repo, { rules: e.rules, repo_class: e.repo_class }]));
+  return { orgs: [settings.agents_org].filter(Boolean), models, review, tiers };
 }
 
 /**
@@ -1374,7 +1378,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // The model gateway's CI review and spend limits (config/gateway.json, re-read per call; prices come from OpenRouter itself):
   // the install's day and month on every model call, and one cap per task.
   for (const k of ["spend_day_usd", "spend_month_usd", "task_usd"]) if (!(typeof settings[k] === "number" && settings[k] > 0 && settings[k] <= 100_000)) fail(`settings.${k}: USD, above 0`);
-  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
+  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings, settings.code_review) } : {}), install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes });

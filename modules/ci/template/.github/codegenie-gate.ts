@@ -5,8 +5,9 @@
 // coverage, unreadable) passes with a note (owner, 2026-11-21: fail open); findings it published still decide.
 // Keeps one PR comment with every finding, updated in place on each push. No dependencies; Node 22+.
 //   node codegenie-gate.ts <review.json> <reviewer exit code>
-// Env: GITHUB_TOKEN (pull-requests: write), GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, REVIEW_COUNTED_LINES (the workflow's
-// counted changed lines: added plus deleted, package-lock.json excluded), GITHUB_API_URL (optional).
+// Env: GITHUB_TOKEN (pull-requests: write), GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, REVIEW_COUNTED_LINES (the PR's counted changed
+// lines: added plus deleted, lockfiles and generated files excluded), REVIEW_TIER, REVIEW_WHY and REVIEW_EFFORT (codegenie-tier.ts),
+// GITHUB_API_URL (optional).
 import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -21,7 +22,7 @@ interface Review {
   coverage?: { unavailable?: unknown; partial?: unknown; reasons?: string[] };
   needsHumanAttention?: { question?: string; files?: string[] }[];
 }
-interface Opts { mode?: string; from?: string; n?: string | number; depth?: string; critical?: string; failure?: string; cause?: string; attempts?: string | number; lines?: string | number }
+interface Opts { mode?: string; from?: string; n?: string | number; tier?: string; why?: string; effort?: string; failure?: string; cause?: string; attempts?: string | number; lines?: string | number }
 interface Verdict { block: boolean; body: string; short?: boolean; partial?: boolean; quiet?: boolean }
 interface Comment { id: number; user?: { login?: string }; body?: string }
 
@@ -41,7 +42,7 @@ const NEXT: Record<string, string> = {
 };
 const FALLBACK = "See the job log for why.";
 // A run without a verdict never blocks (owner, 2026-11-21: fail open rather than stall; this replaces the fail-closed ruling
-// of 2026-11-17). The review target is advisory: past it, in counted changed lines (package-lock.json doesn't count), the
+// of 2026-11-17). The review target is advisory: past it, in counted changed lines (lockfiles and generated files don't count), the
 // comment says the PR is large and suggests stacked PRs. On the 2026-11-16 eval a 1,936-line PR took 17 minutes and a
 // 5,230-line one ended without a verdict after 25.
 const TARGET_LINES = 2000;
@@ -53,17 +54,15 @@ const TARGET_LINES = 2000;
  * review; reuse: `from`'s verdict stands).
  */
 export function verdict(exitCode: number, stdout: string, sha = "", opts: Opts = {}): Verdict {
-  const { mode, from, n, depth, critical } = opts;
+  const { mode, from, n, tier, why, effort } = opts;
   const at = sha ? ` on \`${sha.slice(0, 7)}\`` : "";
   const old = `\`${String(from).slice(0, 7)}\``;
   if (mode === "reuse") return { block: false, quiet: true, body: `${MARKER}\n**Code review reused${at}** from ${old}: the PR's patch is the same as at that green review (a rebase), so it isn't reviewed again.` };
   const v = judge(exitCode, stdout, sha, opts);
   const scope = v.short ? "" : mode === "delta" ? `_Reviewed only the changes since ${old}, this PR's last green review (delta ${n} of at most 3 before a full review)._`
     : mode === "full" ? "_Reviewed the whole PR._" : "";
-  // The depth the workflow picked: light by default, normal on a critical path (the first one it matched), deep on request
-  // (the higher effort). quick: the older template's one-call reviewer.
-  const how = depth === "normal" && critical ? `_Touches a critical path: \`${clip(critical, 200).replace(/`/g, "")}\`._`
-    : depth === "deep" ? "_Reviewed at the higher effort (deep-review)._" : depth === "quick" ? "_Quick review (one model call): it touches no critical path._" : "";
+  // The PR's risk tier (codegenie-tier.ts), why, and the effort it was reviewed at.
+  const how = tier ? `_Risk tier: ${tier}${why ? ` (${clip(why, 200).replace(/`/g, "")})` : ""}${effort ? `, reviewed at ${effort} effort` : ""}._` : "";
   const notes = [scope, how].filter(Boolean).join(" ");
   return notes ? { ...v, body: `${v.body}\n\n${notes}` } : v;
 }
@@ -78,7 +77,7 @@ function judge(exitCode: number, stdout: string, sha: string, { failure, cause, 
   // No verdict passes with its own headline, never "failed"/"incomplete" (the runner re-runs a check whose comment says that:
   // modules/github/service/src/merge-gate.ts codeReviewInfra). partial: it is no baseline for the next push's delta.
   const noVerdict = (why: unknown) => {
-    const size = counted > TARGET_LINES ? `The change is large (${counted.toLocaleString("en-US")} counted changed lines; package-lock.json doesn't count): split it into stacked PRs under ~${TARGET_LINES.toLocaleString("en-US")} each to get a review. ` : "";
+    const size = counted > TARGET_LINES ? `The change is large (${counted.toLocaleString("en-US")} counted changed lines; lockfiles and generated files don't count): split it into stacked PRs under ~${TARGET_LINES.toLocaleString("en-US")} each to get a review. ` : "";
     return { block: false, partial: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (not blocking: review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${NEXT[failure!] ?? FALLBACK} ${size}A re-run or the next push reviews it.` };
   };
   // A policy refusal (the PR changes codex config: a prompt-injection guard, not a review verdict) always blocks.
@@ -149,7 +148,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     failure: process.env.CODEGENIE_FAILURE, cause: process.env.CODEGENIE_CAUSE, attempts: process.env.CODEGENIE_ATTEMPTS,
     lines: process.env.REVIEW_COUNTED_LINES,
     mode: process.env.REVIEW_MODE, from: process.env.REVIEW_FROM, n: process.env.REVIEW_N,
-    depth: process.env.REVIEW_DEPTH, critical: process.env.REVIEW_CRITICAL,
+    tier: process.env.REVIEW_TIER, why: process.env.REVIEW_WHY, effort: process.env.REVIEW_EFFORT,
   });
   console.log(v.body);
   // A partial or no-verdict pass is no baseline for the next push's delta (the workflow's Record step).

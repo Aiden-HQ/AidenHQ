@@ -1,6 +1,6 @@
 # House rules for this repository
 
-The code reviewer reads these from the base commit (`.github/code-review.ts`). Edit them for this repository.
+The code reviewer reads this file from the base commit (`.github/code-review.ts`). Edit it for this repository.
 
 # Purpose
 

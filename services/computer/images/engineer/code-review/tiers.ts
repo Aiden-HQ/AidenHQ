@@ -23,7 +23,7 @@ export const MANIFESTS = ["**/package.json", "**/go.mod", "**/Cargo.toml", "**/p
 const RISKY = ["auth", "secur", "token", "session", "permission"].flatMap((w) => [w, w[0]!.toUpperCase() + w.slice(1)]).flatMap((w) => [`**/*${w}*`, `**/*${w}*/**`]);
 /** The default sensitive paths: what CI's critical-path regex and ship's safe.deny meant, in one list. */
 export const SENSITIVE = [
-  ".github/**", "**/Dockerfile*", "**/package.json", "**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE.md", "**/.codex/**", "**/codex.toml", ...RISKY,
+  ".github/**", "**/Dockerfile*", "**/package.json", "**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE.md", "**/REVIEW.md", "**/.codex/**", "**/codex.toml", ...RISKY,
   ...LOCKS, "**/.eslintrc*", "**/eslint.config.*", "**/vitest.config.*", "**/jest.config.*", "**/tsconfig*.json", "**/CODEOWNERS",
   "**/migrations/**", "**/*.tf", "infra/**", "**/.env*", "**/config/**", "**/docker-compose*",
 ];

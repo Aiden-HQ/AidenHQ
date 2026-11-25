@@ -73,7 +73,7 @@ settings:
   ci_org_runner_group:
     default: ""
   # The model and reasoning effort of the template's code review (codex review), `<OpenRouter id>:<effort>`: the gateway
-  # hands it to the job with its CI token. Critical paths and reviewer-addressed diffs run one effort higher (xhigh).
+  # hands it to the job with its CI token. Sensitive PRs (the repo's code review tier rules) and reviewer-addressed diffs run one effort higher (xhigh).
   ci_review_model:
     default: "~deepseek/deepseek-flash-latest:high"
     pattern: '^(openrouter/)?[~\w./-]+(:(minimal|low|medium|high|xhigh|max))?$'

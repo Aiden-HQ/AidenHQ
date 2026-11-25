@@ -20,7 +20,7 @@
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
 //   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at, review}: an opaque CI
-//                                 token, and the instance's review model and effort (settings.ci_review_model)
+//                                 token, the instance's review model and effort (settings.ci_review_model) and the repo's risk tier rules
 //   POST /api/v1/chat/completions | /api/v1/responses  kind ci-code-review: the allowed models and fields only (ci.ts),
 //                                 attributed to repo and PR; streamed or not, reserved and settled like any call
 //   GET /health
@@ -71,7 +71,7 @@ type GatewayError = Error & { status?: number; type?: string; extra?: Record<str
 /** config/grants/grants.json `agents`, by Paperclip id (setup writes it). */
 type Grants = Record<string, { rev?: string; key?: string }>;
 /** config/gateway.json `ci` (compile writes it from the ci module's settings). */
-type CiConf = { orgs?: unknown; models?: unknown; review?: unknown };
+type CiConf = { orgs?: unknown; models?: unknown; review?: unknown; tiers?: Record<string, unknown> };
 /** A run key's settled identity (the runs table), or the same fields resolved for one call. */
 type RunRow = { run_key: string; agent_id: string | null; run_id: string | null; issue_id: string | null; rev: string | null; perpetual: number; at: string };
 type RunIdentity = Pick<RunRow, "agent_id" | "run_id" | "issue_id" | "rev"> & { perpetual: number | boolean };
@@ -444,9 +444,11 @@ const NO_OUTPUT = { reason: "ended before any output", transient: true };
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, appLogin = () => undefined, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
+  /** This instance's own GitHub App's bot login (`<slug>[bot]`), whose PRs the CI tier rules count as a member's. */
+  appLogin?: () => string | undefined;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
@@ -818,7 +820,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       throw fail(401, "unauthorized", "this run attempt has already traded its GitHub token");
     }
     log("ci token issued", { repo: claims.repo, pr: claims.pr, run: claims.runId });
-    send(res, 200, { token, expires_at: exp, review: c.review ?? null });
+    // The repo's risk tier rules and class (its code review entry; none: the template's default rules) and the instance App's login.
+    const entry = (c.tiers ?? {})[claims.repo.toLowerCase()] as { rules?: unknown; repo_class?: unknown } | undefined;
+    send(res, 200, { token, expires_at: exp, review: c.review ?? null, tiers: { rules: entry?.rules ?? null, repo_class: entry?.repo_class, self: appLogin() } });
   }
 
   /**
