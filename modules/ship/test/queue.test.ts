@@ -87,7 +87,7 @@ test("removed from the queue: a conflict is repaired and queued again; its own r
   x.records["rec-2"] = { state: "done" };
   await round(x.deps as any, x.pr(), ready, baseRed);
   assert.equal(x.of("POST /v1/writes").length, 2, "only one more enqueue");
-  assert.equal(x.of("comment").length, 1, "only the hand-off's acknowledgement: a queue wait needs no one");
+  assert.match(x.of("comment").at(-1)!.body, /Ship won't queue this PR again\. A person queues it again, or pushes a fix\./);
 });
 
 const of = (w: ReturnType<typeof world>, what: string) => w.of(what);

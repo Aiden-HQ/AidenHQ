@@ -16,10 +16,12 @@ const FIXED = {
   review: "Waiting for a required review.",
   approval: "Waiting for an approval on the latest commit.",
   person_merge: "Ready to merge. Merge is off for this PR, so a person merges it.",
+  checks: "A required check never reported on the latest commit. A person reruns it or fixes the workflow.",
+  requeue: "Ship won't queue this PR again. A person queues it again, or pushes a fix.",
   merged: "Merged.",
 };
 /** The kinds a person has to act on. */
-const ACT = new Set<Kind>(["review", "approval", "person_merge", "owner", "hold"]);
+const ACT = new Set<Kind>(["review", "approval", "checks", "requeue", "person_merge", "owner", "hold"]);
 
 export type Kind = keyof typeof FIXED | "owner" | "hold";
 /** What a round says about the PR: its kind, and the sentence for the kinds that carry one (owner, hold, a special merge). */
@@ -50,7 +52,9 @@ export function waitFacts(why = ""): Facts {
   if (owner) return { kind: "owner", text: `Waiting for a review from code owner @${owner}.` };
   if (/^waiting for required review/.test(why)) return { kind: "review" };
   if (/^its approval is on an earlier commit/.test(why)) return { kind: "approval" };
-  if (/^code review/.test(why)) return { kind: "findings" };
+  if (/^required check\(s\) never reported/.test(why)) return { kind: "checks" };
+  // Code review's own wait for findings (not its pending classification or an outage: those need no one).
+  if (/^code review: \d+ important finding/.test(why)) return { kind: "findings" };
   return { kind: "active" };
 }
 

@@ -104,7 +104,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       if (a.owner?.kind === "task") await tell(d, a, pr, `**Merged:** ${pr.url} is merged at \`${pr.head.slice(0, 12)}\`. Finish your task if this was its change.`, `merged.${pr.head.slice(0, 12)}`);
       a = { ...a, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
       d.state.put(a);
-      a = await report(d, a, pr, a.merge?.head === pr.head ? { kind: "merged", text: "Merged by Ship." } : { kind: "merged" });
+      a = await report(d, a, pr, { kind: "merged" });
     }
     return "acted";
   }
@@ -227,7 +227,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const fix = ["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty);
   if (!followed && (c.lastRound === key || (fix && (c.acted ?? []).includes(act)))) return "nothing";
   // Each new action spends a round; past `rounds` the PR holds.
-  const spend = () => (over(c.rounds, caps.rounds) ? hold(`${c.rounds} rounds (rounds)`) : (c.rounds++, undefined));
+  const spend = () => (over(c.rounds, caps.rounds) ? hold(`${c.rounds} rounds (rounds)`, HOLD.cap) : (c.rounds++, undefined));
   let queueWait: string | undefined, updatedOnly = false;
   const step = async (): Promise<"acted" | "nothing"> => {
     if (["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty)) {
@@ -434,8 +434,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   if (did === "nothing" && c.lastRound === marker) return did;
   c.lastRound = marker;
   // What a person is asked for, if anything; the rest is Ship's own work and says so only once a comment exists.
-  const person = risk?.state === "classified" && merge === "off";
-  await save(queueWait ? { kind: "active" } : v.do === "merge" || v.do === "enqueue" ? { kind: person ? "person_merge" : "active" } : v.do === "approve" ? { kind: a!.approve?.why ? "approval" : "active" } : v.do === "wait" ? waitFacts(v.why) : v.do === "fix_review" ? { kind: "findings" } : { kind: "active" });
+  const person = risk?.state !== "pending" && merge === "off";
+  await save(queueWait ? { kind: "requeue" } : v.do === "merge" || v.do === "enqueue" ? { kind: person ? "person_merge" : "active" } : v.do === "approve" ? { kind: a!.approve?.why ? "approval" : "active" } : v.do === "wait" ? waitFacts(v.why) : v.do === "fix_review" ? { kind: "findings" } : { kind: "active" });
   return did;
 }
 
@@ -471,12 +471,13 @@ const wakeKey = (identity: string) => `ship.${createHash("sha256").update(identi
 /**
  * Says what a person must act on, or acknowledges a member's hand-off, in the PR's one comment (edited in place; the code host finds
  * it by its marker before it creates one, so a lost id never makes a second). Answers the adoption with the comment's id in it:
- * callers keep it, so a later save can't drop the id. A task's PR gets none (its task is told), nor does a PR nobody must act on
+ * callers keep it, so a later save can't drop the id. A task's PR gets one only for what a person must do (its task is told the rest), nor does a PR nobody must act on
  * unless its hand-off was explicit. A comment that exists is kept true.
  */
 async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts): Promise<Kept> {
-  if (a.owner?.kind === "task") return a;
   const s = say(f);
+  // A task's PR is its task's to hear about (a wake); a comment only for what a person must do.
+  if (a.owner?.kind === "task" && !s.act) return a;
   const explicit = a.trigger.kind === "label" || a.trigger.kind === "comment";
   // Nothing to say yet: no comment exists, and no person must act or was handed the PR on purpose (a merged one is never news).
   const text = a.report || s.act ? s.text : explicit && f.kind !== "merged" ? ACK : undefined;
@@ -492,7 +493,9 @@ async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts): Promise<Kept
     return next;
   } catch (e) {
     d.log("report failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
-    const next = { ...a, reportStale: { head: pr.head, facts: f } };
+    // What the comment says is unknown now (the write may have landed): the next write is never skipped as already said.
+    const { said: _, ...unsure } = a;
+    const next = { ...unsure, reportStale: { head: pr.head, facts: f } };
     d.state.put(next);
     return next;
   }
