@@ -69,8 +69,10 @@ export const CANARY_DISCOVERY = String.raw`
 // Feedback-specific wording only: "message" or bare "comment" also name a chat composer or a discussion box, and a canary must
 // never send its text as a chat message.
 const FEEDBACK = /feedback|intake|suggest|what would you|tell us/i;
-// A search or filter box is never the feedback form, however it is worded: typing the test text there would search, not send.
-const SEARCH = /search|find|filter|query/i;
+// A search or filter box is never the feedback form: typing the test text there would search, not send. That is structural
+// (a box inside the page's search landmark), plus a box that is itself labelled as one ("Search feedback"); a feedback
+// prompt that merely mentions search ("What would you change about search?") is not a search box.
+const SEARCH_START = /^(search|find|filter|query)\b/i;
 // The containers a feedback form is made of: a dialog (or alertdialog) that opens the form, and the form itself.
 const CONTAINER = /^(dialog|alertdialog|form)$/i;
 // A control that sends, drafts, cancels or destroys is not a way into the form: clicking it either sends nothing or changes
@@ -95,19 +97,19 @@ const canaryTree = (text, refs) => {
     // A ref is what a click needs: the one the snapshot carries, else the refs entry with this role and name.
     const inline = (/\bref=(e\d+)/.exec(raw) || [])[1];
     const key = inline || ((Object.entries(refs || {}).find(([, v]) => v && v.role === m[2] && v.name === name) || [])[0]) || "";
-    const node = { i: nodes.length, role: m[2], name, description: String(((refs || {})[key] || {}).description || ""), depth, ref: key, ancestors: stack.slice() };
+    const parent = stack.length ? stack[stack.length - 1].i : -1;
+    const node = { i: nodes.length, role: m[2], name, description: String(((refs || {})[key] || {}).description || ""), depth, parent, ref: key, ancestors: stack.slice() };
     nodes.push(node);
     stack.push(node);
   }
   return nodes;
 };
-// The heading just above the field inside this dialog or form, if any: a form whose own name is empty still names its
-// subject. Only the nearest heading counts, so a page-level "Feedback" heading over an unrelated "Account" form is not
-// context for that form's fields.
+// The heading that names the container's own section, if any: the last heading that is a direct child of the container and
+// sits above the field. A heading in a nested sibling (a "Tips" sidebar) or outside the dialog/form (a page-level heading)
+// never names its fields, and a nearer "Account" heading wins over an earlier "Feedback" one.
 const headingOver = (nodes, container, field) => {
-  const above = nodes.filter((n) => n.i > container.i && n.i < field.i && n.depth > container.depth && /^heading$/i.test(n.role));
-  const nearest = above[above.length - 1];
-  return !!nearest && feedbackNamed(nearest);
+  const direct = nodes.filter((n) => n.parent === container.i && n.i < field.i && /^heading$/i.test(n.role));
+  return direct.length > 0 && feedbackNamed(direct[direct.length - 1]);
 };
 const inFeedback = (nodes, n) => n.ancestors.some((c) => CONTAINER.test(c.role) && (feedbackNamed(c) || headingOver(nodes, c, n)));
 // The feedback field. A textbox whose own label is feedback wording wins, so a dialog asking for a contact email before the
@@ -116,7 +118,8 @@ const inFeedback = (nodes, n) => n.ancestors.some((c) => CONTAINER.test(c.role) 
 // change?"), and again only when exactly one qualifies. A lone textbox with no feedback context, a search box, or a field
 // the snapshot gives no ref for is never the field.
 const canaryField = (nodes) => {
-  const boxes = nodes.filter((n) => /^textbox$/i.test(n.role) && n.ref && !SEARCH.test(named(n)));
+  const inSearch = (n) => SEARCH_START.test(named(n)) || n.ancestors.some((a) => /^search$/i.test(a.role));
+  const boxes = nodes.filter((n) => /^textbox$/i.test(n.role) && n.ref && !inSearch(n));
   const explicit = boxes.filter((n) => feedbackNamed(n));
   if (explicit.length) return explicit.length === 1 ? explicit[0] : null;
   const contextual = boxes.filter((n) => inFeedback(nodes, n));
@@ -149,10 +152,14 @@ const canaryFindField = async (snap, click) => {
 // not its send. Runs here, in Node, so the browser eval only has to list the controls.
 const canarySubmit = (controls, inForm) => {
   // A real submit control (a submit button or input) sends its form. A dialog that is not a <form> has no such control: there
-  // the app's own "Send feedback" button (type=button) is the send, and it is allowed only because the scope is that dialog.
-  const sendsIt = (c) => /^(submit|image)$/i.test(String((c && c.type) || "")) || (!inForm && c && c.tag === "BUTTON");
-  const explicit = (controls || []).filter(sendsIt).map((c) => ({ ...c, word: String((c && c.text) || "") }));
-  const sends = explicit.filter((c) => /send|submit|share|post|publish/i.test(c.word) && !/draft|preview|discard|cancel/i.test(c.word) && !/(^|[^a-z])back([^a-z]|$)/i.test(c.word));
+  // only a button that names the feedback send ("Send feedback", "Submit feedback") counts, never a generic "Share page" or
+  // "Post update" that happens to sit in the same dialog. Being in the dialog proves nothing about sending the filled field.
+  const explicit = (controls || []).filter((c) => c && (/^(submit|image)$/i.test(String(c.type || "")) || (!inForm && c.tag === "BUTTON")))
+    .map((c) => ({ ...c, word: String(c.text || "") }));
+  const sends = explicit.filter((c) => inForm
+    ? /send|submit|share|post|publish/i.test(c.word) && !/draft|preview|discard|cancel/i.test(c.word)
+    : /feedback|intake|suggest/i.test(c.word) && /send|submit|share|post|publish/i.test(c.word))
+    .filter((c) => !/draft|preview|discard|cancel/i.test(c.word) && !/(^|[^a-z])back([^a-z]|$)/i.test(c.word));
   return sends.length === 1 ? sends[0] : null;
 };
 `;
@@ -237,7 +244,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // not a <form> (a div role=dialog) has no form to own the control, so there the field's own dialog is the scope. The
     // browser lists the controls; the send rule (canarySubmit) runs here, in Node, so a dialog's "Send feedback" is judged by
     // the same code the tests exercise.
-    const SCOPE = "const a = document.activeElement, f = a && a.form, scope = f || (a && a.closest ? a.closest('[role=dialog],[role=alertdialog]') : null);" +
+    const SCOPE = "const a = document.activeElement, f = a && a.form, scope = f || (a && a.closest ? a.closest('[role=dialog],[role=alertdialog],dialog') : null);" +
       "const inScope = (b) => f ? b.form === f : !!scope && scope.contains(b) && !b.form;" +
       "const isSubmit = (b) => b.tagName === 'INPUT' ? /^(submit|image)$/i.test(b.type) : ((b.getAttribute('type') || 'submit').toLowerCase() === 'submit');";
     const controls = await within(ab("eval", "(() => {" + SCOPE +

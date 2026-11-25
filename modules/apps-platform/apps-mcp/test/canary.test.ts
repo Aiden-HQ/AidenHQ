@@ -134,7 +134,7 @@ describe("app_page_canary", () => {
     expect(script).toContain("const isSubmit = (b) =>");
     expect(script).toContain("const submit = canarySubmit(scopeOf && scopeOf.list, scopeOf && scopeOf.form);");
     // A dialog that is not a <form> scopes the submit to the field's own dialog, and only there may a type=button button send.
-    expect(script).toContain("a.closest('[role=dialog],[role=alertdialog]')");
+    expect(script).toContain("a.closest('[role=dialog],[role=alertdialog],dialog')");
     expect(script).toContain("data-aidenhq-canary-submit");
     expect(script).toContain("no submit control in the feedback form");
     // Evidence starts at the click: a POST a fill triggered is never read as the submission's intake.
@@ -356,6 +356,50 @@ describe("app_page_canary", () => {
         { tag: "BUTTON", type: "button", text: "Send feedback" },
         { tag: "BUTTON", type: "submit", text: "Save" },
       ], true)).toBeNull();
+      // In a formless dialog, a generic "Share page" beside "Send feedback" is not a candidate, and "Share page" alone is
+      // never the send: only a feedback-named send counts there.
+      expect(canarySubmit([
+        { tag: "BUTTON", type: "button", text: "Share page" },
+        { tag: "BUTTON", type: "button", text: "Send feedback" },
+      ], false)).toMatchObject({ word: "Send feedback" });
+      expect(canarySubmit([{ tag: "BUTTON", type: "button", text: "Share page" }], false)).toBeNull();
+      expect(canarySubmit([{ tag: "BUTTON", type: "button", text: "Post update" }], false)).toBeNull();
+    });
+
+    it("tells a search box apart from a feedback prompt that mentions search", () => {
+      const { canaryTree, canaryField } = api();
+      // A box inside the page's search landmark is a search box, whatever it is called.
+      expect(canaryField(canaryTree(`
+- search
+  - textbox "Feedback topics" [ref=e1]`))).toBeNull();
+      // A box labelled as a search action is one too.
+      expect(canaryField(canaryTree(`
+- form
+  - textbox "Search feedback" [ref=e1]
+  - button "Send feedback" [ref=e2]`))).toBeNull();
+      // A feedback prompt that merely mentions search is the feedback field, with the dialog and the form naming it.
+      expect(canaryField(canaryTree(`
+- dialog "Provide feedback"
+  - textbox "What would you change about search?" [ref=e1]
+  - button "Send feedback" [ref=e2]`))).toMatchObject({ name: "What would you change about search?", ref: "e1" });
+      expect(canaryField(canaryTree(`
+- form
+  - heading "Provide feedback" [level=2, ref=e1]
+  - textbox "What would you change about search?" [ref=e2]
+  - button "Send feedback" [ref=e3]`))).toMatchObject({ name: "What would you change about search?", ref: "e2" });
+    });
+
+    it("keeps a heading in a sibling section from overriding the form's own heading", () => {
+      const { canaryTree, canaryField } = api();
+      // The "Tips" sidebar is a sibling subtree of the form; the form's own "Feedback" heading still names it.
+      expect(canaryField(canaryTree(`
+- form
+  - heading "Feedback" [level=2, ref=e1]
+  - generic
+    - heading "Tips" [level=3, ref=e2]
+    - text "Keep it short."
+  - textbox "What should change?" [ref=e3]
+  - button "Send feedback" [ref=e4]`))).toMatchObject({ name: "What should change?", ref: "e3" });
     });
 
     it("refuses two fields that both name themselves feedback", () => {
