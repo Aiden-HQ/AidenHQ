@@ -22,6 +22,7 @@ import { openRefusals, markRefusal } from "./refusals.ts";
 import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { gateMode } from "./gates.ts";
+import { identifierRefused } from "./task-identifier.ts";
 import { codeRefusal } from "./review-loop.ts";
 import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type Tier, type Verdict } from "./tier.ts";
 
@@ -760,8 +761,14 @@ export function createWrites({ records, registry, connections, secret, resolver,
       for (const r of claimed) {
         // A record an upgrade found already claimed (a merge queue still running) is never handed execute again, so its task's
         // identifier is filled in here: the queue reads it from the record before it settles, and a pr-tasks.json row is keyed by
-        // it, not by the task's id. A failed read keeps the record as it is, for the next reconcile.
-        if (!r.identifier && !r.identifier_checked && r.task && r.requester?.kind !== "run") await identified(r).catch(() => r);
+        // it, not by the task's id. A read that failed for now keeps the record as it is, for the next reconcile; one the control
+        // plane refused settles the lookup as none, so the queue stops waiting and ends the merge it cannot verify rather than
+        // holding the record claimed for an identifier nothing will ever record (reconcile never reads this claim again).
+        if (!r.identifier && !r.identifier_checked && r.task && r.requester?.kind !== "run") await identified(r).catch((e) => {
+          if (!identifierRefused(e)) return;
+          records.markIdentified(r.id);
+          log("claimed write: its task's identifier was refused, so its queue cannot verify it", { record: r.id, err: String((e as Error).message ?? e).slice(0, 300) });
+        });
         if (!modules && resume.includes(r.kind) && native[r.kind]) { void execute(r, undefined); continue; }
         const k = registry()[r.kind];
         // An executor whose status can't be read now (still starting after the restart): asked again on the next reconcile, for
