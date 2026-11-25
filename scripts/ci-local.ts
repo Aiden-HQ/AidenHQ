@@ -50,7 +50,7 @@ async function main() {
   // `npm ci` once per package (a suite's own `npm ci` is a no-op below): suites share kernel/.
   const installs = new Set(sel.suites.length ? ["scripts"] : []);
   for (const s of sel.suites) {
-    const dir = s.name;
+    const dir = s.dir ?? s.name;
     for (const [, cd] of (s.run ?? "").matchAll(/cd (\S+) && npm ci/g)) installs.add(join(dir, cd!));
     if (/^npm ci|\) && npm ci/.test(s.run ?? "")) installs.add(dir);
     if (s.job === "modules") installs.add("kernel"); // module suites read the kernel's code, as CI's modules job installs it
@@ -77,7 +77,7 @@ async function main() {
     GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "ci", GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "ci@example.com",
   };
 
-  const jobs = sel.suites.map((s: Suite) => ({ name: s.name, cwd: join(root, s.name), cmd: s.run ?? "npm test" }));
+  const jobs = sel.suites.map((s: Suite) => ({ name: s.name, cwd: join(root, s.dir ?? s.name), cmd: s.run ?? "npm test" }));
   jobs.push({ name: "supply-chain", cwd: root, cmd: `s=0; node scripts/supply-chain/npm-age.ts ${mergeBase} HEAD || s=1; node scripts/supply-chain/pins.ts ${mergeBase} HEAD || s=1; exit $s` });
   const run = (j: { name: string; cwd: string; cmd: string }) => new Promise<boolean>((done) => {
     const log = join(tmp, `${j.name.replace(/\W/g, "_")}.log`);
