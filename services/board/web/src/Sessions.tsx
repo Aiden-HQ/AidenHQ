@@ -202,6 +202,8 @@ function SessionPage({ ident, error, fresh, row, loaded, mobile, prefix, go, onS
   const [copied, setCopied] = useState(false);
   // The message being typed lives here: the phone's panel switch unmounts the thread.
   const [draft, setDraft] = useState("");
+  // Kept here with the draft: switching panels remounts the thread, and a send in flight must stay locked.
+  const [sending, setSending] = useState(false);
   const crumb = <><a href="#/sessions">Sessions</a> / {ident}</>;
   // Just started: the kernel admits the job in a moment, so the row isn't there yet.
   const [waited, setWaited] = useState(0);
@@ -227,7 +229,7 @@ function SessionPage({ ident, error, fresh, row, loaded, mobile, prefix, go, onS
   // The page's own address: a phone that isn't signed in signs in first, then lands on this session.
   const phoneLink = () => void navigator.clipboard?.writeText(`${location.origin}${location.pathname}#/sessions/${row.identifier}`).then(() => (setCopied(true), setTimeout(() => setCopied(false), 2000)));
   const console_ = <Console row={row} mode={mode} setMode={setMode} mobile={mobile} />;
-  const thread = <Thread row={row} prefix={prefix} onSignIn={onSignIn} text={draft} setText={setDraft} />;
+  const thread = <Thread row={row} prefix={prefix} onSignIn={onSignIn} text={draft} setText={setDraft} busy={sending} setBusy={setSending} />;
   const details = <Details row={row} go={go} />;
   return (
     <Page className="ses-page">
@@ -277,12 +279,15 @@ function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; 
   /** The signed paths the frame loaded with (they last 10 minutes: a 401 below loads the frame again with new ones). */
   const [frame, setFrame] = useState<{ term: string; web: string } | null>(null);
   const down = useRef(0);
+  /** A renewed set of paths for the probe alone: the loaded frame keeps its page and socket (a reconnect loads the fresh ones). */
+  const probePaths = useRef<{ term: string; web: string } | null>(null);
   const usable = row.mine && live(row) && row.state !== "starting";
   const mint = useCallback(() => api.sessionOpen(row.task), [row.task]);
   useEffect(() => {
     if (!usable) return;
     let off = false;
     setLink("connecting");
+    probePaths.current = null;
     mint().then((p) => !off && setFrame(p), () => !off && (down.current = 3, setLink("lost")));
     return () => {
       off = true;
@@ -290,7 +295,7 @@ function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; 
   }, [usable, nonce, mint]);
   // Probe the proxy (headers only) while the pane is open: is the session's computer answering? A frame can't report its own
   // socket (it runs sandboxed), so a dead terminal is noticed here instead of sitting on a frozen screen. The probe uses the
-  // frame's own path: an expired one (401) reloads the frame with a new one.
+  // frame's own path; once that expires (401) it takes a renewed one, without reloading a working terminal.
   useEffect(() => {
     if (!usable || !frame) return;
     down.current = 0;
@@ -300,7 +305,7 @@ function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; 
       const timer = setTimeout(() => ctl.abort(), 4000);
       let ok = false, expired = false;
       try {
-        const r = await fetch(frame[mode], { cache: "no-store", headers: { range: "bytes=0-0" }, signal: ctl.signal });
+        const r = await fetch((probePaths.current ?? frame)[mode], { cache: "no-store", headers: { range: "bytes=0-0" }, signal: ctl.signal });
         ok = r.ok || r.status === 206;
         expired = r.status === 401;
         ctl.abort();
@@ -309,7 +314,7 @@ function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; 
       }
       clearTimeout(timer);
       if (stopped) return;
-      if (expired) return setNonce((n) => n + 1);
+      if (expired) return void mint().then((p) => { if (!stopped) probePaths.current = p; }, () => undefined);
       if (ok) {
         // Back after a gap: the frame's own socket is dead, so load it again.
         if (down.current > 0) setNonce((n) => n + 1);
@@ -326,7 +331,7 @@ function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; 
       stopped = true;
       clearInterval(t);
     };
-  }, [frame, mode, usable]);
+  }, [frame, mode, usable, mint]);
   const fullScreen = () => {
     const w = window.open("", "_blank");
     if (!w) return;
@@ -396,14 +401,13 @@ const who = (m: ChatMessage) => (m.kind === "owner" ? m.by ?? "You" : m.kind ===
 const words = (m: ChatMessage) => (m.kind === "notes" ? m.notes.map((n) => n.text).join("\n\n") : m.text);
 
 /** The task's thread: what was said to the session and what it answered, and a box to say more (it wakes the session). */
-function Thread({ row, prefix, onSignIn, text, setText }: { row: SessionRow; prefix: string; onSignIn: () => void; text: string; setText: React.Dispatch<React.SetStateAction<string>> }) {
+function Thread({ row, prefix, onSignIn, text, setText, busy, setBusy }: { row: SessionRow; prefix: string; onSignIn: () => void; text: string; setText: React.Dispatch<React.SetStateAction<string>>; busy: boolean; setBusy: (b: boolean) => void }) {
   const q = useMemo(() => chatQuery(row.identifier), [row.identifier]);
   const { data, reload } = useQuery(q, onSignIn);
   useEffect(() => {
     const t = setInterval(() => document.visibilityState === "visible" && void reload(), POLL_MS);
     return () => clearInterval(t);
   }, [reload]);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const messages = (data?.messages ?? []).filter((m) => words(m).trim());
   const send = useCallback(async () => {
@@ -421,7 +425,7 @@ function Thread({ row, prefix, onSignIn, text, setText }: { row: SessionRow; pre
     } finally {
       setBusy(false);
     }
-  }, [text, busy, row.identifier, reload]);
+  }, [text, busy, setBusy, setText, row.identifier, reload]);
   const open = live(row);
   return (
     <Section title="Thread" count={messages.length || undefined} className="ses-thread">

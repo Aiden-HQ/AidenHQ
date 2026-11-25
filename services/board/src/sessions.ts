@@ -229,6 +229,11 @@ export function createTerminals(t: Terminals) {
       const fail = () => { socket.destroy(); up.destroy(); };
       up.on("error", fail);
       socket.on("error", fail);
+      // Either side going away takes the other with it, also while the handshake is pending; a handshake that never answers ends.
+      up.on("close", () => socket.destroy());
+      socket.on("close", () => up.destroy());
+      const shake = setTimeout(fail, 15_000);
+      up.on("close", () => clearTimeout(shake));
       up.on("connect", () => {
         const headers = forward(req, l.key, launcher.host, true);
         up.write([`${req.method} ${target(id, m, url.search)} HTTP/1.1`, ...Object.entries(headers).map(([k, v]) => `${k}: ${[v].flat().join(", ")}`), "", ""].join("\r\n"));
@@ -240,6 +245,7 @@ export function createTerminals(t: Terminals) {
           const end = head101.indexOf("\r\n\r\n");
           if (end < 0) return head101.length > 16_384 ? fail() : undefined;
           up.off("data", onData);
+          clearTimeout(shake);
           const [status, ...lines] = head101.subarray(0, end).toString("latin1").split("\r\n");
           socket.write([status, ...lines.filter((l) => KEEP_UPGRADE.has(l.slice(0, l.indexOf(":")).toLowerCase())), "", ""].join("\r\n"));
           const rest = head101.subarray(end + 4);
