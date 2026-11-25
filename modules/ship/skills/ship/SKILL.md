@@ -30,7 +30,7 @@ side of generated paths and regenerating them. Its wake says what it left.
 
 **Review findings.** Verify each finding against the code.
 - A real finding is fixed, with a test where it fits.
-- Decline anything else with evidence through `code_review_resolve`. Code review's next run on the new head reviews your fix.
+- Decline anything else with evidence through `code_review_resolve`, the reason citing the `file:line` it does not hold at. Record a fixed finding with `code_review_resolve` as `write-code` says; a later review rechecks it where the repo runs one.
 - The PR body describes what merged: when a fix reverses a judgement the body records (a finding it lists as declined or out of scope), update the description before the merge with `aidenhq publish <repo> <branch> --body-file <file>` on the PR's head branch, `--title` carrying the PR's current title, and say on the task that you did. When that publish is refused because the branch isn't yours to push (a ship wake works on `ship-pr-<n>`), leave the body and say on the task that it is stale, with the refusal's text. A body left contradicting the merged code is a defect of the change, not a polish item.
 
 **Every fix:**
