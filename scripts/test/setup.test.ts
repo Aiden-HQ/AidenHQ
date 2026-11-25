@@ -128,6 +128,13 @@ test("a rerun reads .env as the apply does, and keeps a configured list", () => 
   assert.ok(!out.includes("+ .env: VAULT_FOLDERS="), `rewrote a configured list\n${out}`);
 });
 
+// A quoted value keeps a trailing ' #' that merely comments it (the apply does the same), so the comment is not the path:
+// reading the quotes as the outer characters would leave a literal one and setup would refuse the valid absolute path.
+test("a quoted vault path with a trailing comment is read without the quote or the comment", () => {
+  const out = vaultPlan(['VAULT_DIR="$HOME/notes/vault" # meeting notes', 'VAULT_FOLDERS="Meetings"']);
+  assert.ok(out.includes("(as alice) mkdir -p /home/alice/notes/vault /home/alice/notes/vault/Meetings"), out);
+});
+
 // An upgrade from the old installer: it wrote the default path and emptied the folders, but never made the directory.
 // Setup restores Meetings and makes the root, so the apply mounts a directory the owner (uid 1000) can write.
 test("an upgrade from the old installer makes the default vault", () => {

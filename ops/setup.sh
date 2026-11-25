@@ -455,7 +455,8 @@ set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry comm
 vault_val() { # FILE KEY: the value .env gives (last line, quotes, an unquoted ' #' comment, $HOME/~ as the apply expands it)
   local v home_lit='${HOME}'
   v="$(sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -1 || true)"
-  if [ "${#v}" -ge 2 ] && { [[ "$v" == \"*\" ]] || [[ "$v" == \'*\' ]]; }; then v="${v:1:${#v}-2}"   # quoted: any ' #' stays
+  if [[ "$v" == \"* ]]; then v="${v#\"}"; v="${v%%\"*}"                                        # quoted: up to the closing quote, so a ' #' stays
+  elif [[ "$v" == \'* ]]; then v="${v#\'}"; v="${v%%\'*}"                                      # the same form, single-quoted
   else v="${v%%[[:space:]]#*}"; fi                                                             # unquoted: the shell ends it at ' #'
   v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
   [ "$1" = "$ENVF" ] || v="${v//\/home\/USER/$H}"                                              # the example's placeholder
