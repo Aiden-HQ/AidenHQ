@@ -252,7 +252,14 @@ describe("app_page_canary", () => {
       expect(CANARY_SCRIPT).toContain('if (!field) return out({ error: "no feedback field on the page"');
       expect(CANARY_SCRIPT.indexOf('if (!field) return out({ error: "no feedback field on the page"')).toBeLessThan(CANARY_SCRIPT.indexOf('await ab("fill", "@" + box, r.text);'));
       expect(CANARY_SCRIPT).toContain('await ab("click", "[data-aidenhq-canary-submit]")');
-      expect(CANARY_SCRIPT.indexOf('if (!own) return out({ error: "no submit control in the feedback form')).toBeLessThan(CANARY_SCRIPT.indexOf('await ab("click", "[data-aidenhq-canary-submit]")'));
+      // Both real guards exist, and each comes before the click that submits.
+      const clickAt = CANARY_SCRIPT.indexOf('await ab("click", "[data-aidenhq-canary-submit]")');
+      const noSubmit = CANARY_SCRIPT.indexOf('if (!submit) return out({ error: "no submit control in the feedback form');
+      const noMark = CANARY_SCRIPT.indexOf('if (!marked.result) return out({ error: "no submit control in the feedback form');
+      expect(noSubmit).toBeGreaterThan(-1);
+      expect(noMark).toBeGreaterThan(-1);
+      expect(noSubmit).toBeLessThan(clickAt);
+      expect(noMark).toBeLessThan(clickAt);
     });
 
     it("does not take a send-named control for the entry point, nor a feedback-named button that destroys data", () => {
@@ -291,6 +298,16 @@ describe("app_page_canary", () => {
     - textbox "Your feedback" [required, ref=e3]
     - button "Send feedback" [ref=e4]`));
       expect(field).toMatchObject({ name: "Your feedback", ref: "e3" });
+    });
+
+    it("reads a field's accessible description as feedback wording too", () => {
+      const { canaryTree, canaryField } = api();
+      // "Your message" alone is not feedback wording, but its own hint is; the description comes from the snapshot's refs map.
+      const nodes = canaryTree(`
+- form
+  - textbox "Your message" [ref=e1]
+  - button "Send" [ref=e2]`, { e1: { role: "textbox", name: "Your message", description: "Tell us what you think" } as never, e2: { role: "button", name: "Send" } });
+      expect(canaryField(nodes)).toMatchObject({ name: "Your message", ref: "e1" });
     });
 
     it("refuses two anonymous boxes in a feedback dialog rather than guessing which to fill", () => {

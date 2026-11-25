@@ -77,7 +77,10 @@ const CONTAINER = /^(dialog|alertdialog|form)$/i;
 const BUTTON_ACTION = /send|submit|share|post|publish|draft|preview|discard|cancel|delete|remove|archive|reset|clear|save/i;
 const LINK_ACTION = /draft|preview|discard|cancel|delete|remove|archive|reset|clear|save/i;
 const named = (n) => String((n && n.name) || "");
-const feedbackNamed = (n) => FEEDBACK.test(named(n));
+// The accessible description counts too: a textbox labelled "Your message" whose hint says "Tell us what you think" is a
+// feedback field, exactly as the renderer read it before.
+const worded = (n) => [named(n), String((n && n.description) || "")].filter(Boolean).join(" ");
+const feedbackNamed = (n) => FEEDBACK.test(worded(n));
 // The page's accessibility snapshot as nodes: role, name, ref, its depth in the outline, and its ancestors (the same nodes).
 const canaryTree = (text, refs) => {
   const nodes = [], stack = [];
@@ -89,7 +92,8 @@ const canaryTree = (text, refs) => {
     const name = (m[3] || "").replace(/\\(.)/g, "$1");
     // A ref is what a click needs: the one the snapshot carries, else the refs entry with this role and name.
     const inline = (/\bref=(e\d+)/.exec(raw) || [])[1];
-    const node = { i: nodes.length, role: m[2], name, depth, ref: inline || ((Object.entries(refs || {}).find(([, v]) => v && v.role === m[2] && v.name === name) || [])[0]) || "", ancestors: stack.slice() };
+    const key = inline || ((Object.entries(refs || {}).find(([, v]) => v && v.role === m[2] && v.name === name) || [])[0]) || "";
+    const node = { i: nodes.length, role: m[2], name, description: String(((refs || {})[key] || {}).description || ""), depth, ref: key, ancestors: stack.slice() };
     nodes.push(node);
     stack.push(node);
   }
@@ -215,25 +219,28 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     await ab("fill", "@" + box, r.text);
     // The button is the one in the form that owns the filled field, never "the first submit-like button on the page" (a header
     // search form or a "Send message" button would otherwise be sent instead). Ownership is the DOM form property, so a
-    // footer button associated with the form by a form attribute counts and a descendant of another form does not. The browser only
+    // footer button associated with the form by a form attribute counts and a descendant of another form does not. The browser
     // lists the controls; the send rule (canarySubmit) runs here, in Node, so a dialog's "Send feedback" is judged by the same
     // code the tests exercise.
     const listed = await within(ab("eval", "(() => {" +
       "const a = document.activeElement, f = a && a.form;" +
       "if (!f) return '[]';" +
-      "return JSON.stringify([...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((b) => b.form === f).map((b, index) => ({ index, tag: b.tagName, type: b.tagName === 'INPUT' ? b.type : ((b.getAttribute('type') || 'submit').toLowerCase()), text: (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '' })));" +
+      "return JSON.stringify([...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((b) => b.form === f).map((b) => ({ tag: b.tagName, type: b.tagName === 'INPUT' ? b.type : ((b.getAttribute('type') || 'submit').toLowerCase()), text: (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '' })));" +
       "})()"), 4000, {});
     const controls = JSON.parse(String(listed.result ?? "[]"));
     const submit = canarySubmit(controls);
     if (!submit) return out({ error: "no submit control in the feedback form (not sending anything else)", finalUrl: scrub(landed), pageTitle: title });
     const own = String(submit.tag + ":" + submit.word.trim().slice(0, 60));
+    // Marking happens in one evaluation that finds the control by its own label again: a validation step that inserted another
+    // button between the two reads must not make a different control be clicked than the one that was chosen.
     const marked = await within(ab("eval", "(() => {" +
       "const a = document.activeElement, f = a && a.form;" +
       "if (!f) return '';" +
-      "const b = [...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((x) => x.form === f)[" + Number(submit.index) + "];" +
-      "if (!b) return '';" +
-      "b.setAttribute('data-aidenhq-canary-submit', '1');" +
-      "return b.tagName;" +
+      "const word = " + JSON.stringify(submit.word) + ";" +
+      "const same = [...document.querySelectorAll('button, input[type=submit], input[type=image]')].filter((b) => b.form === f).filter((b) => b.tagName === " + JSON.stringify(submit.tag) + " && (/^(submit|image)$/i.test(b.type) || b.tagName === 'BUTTON') && ((b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '').trim() === word.trim());" +
+      "if (same.length !== 1) return '';" +
+      "same[0].setAttribute('data-aidenhq-canary-submit', '1');" +
+      "return same[0].tagName;" +
       "})()"), 4000, {});
     if (!marked.result) return out({ error: "no submit control in the feedback form (not sending anything else)", finalUrl: scrub(landed), pageTitle: title });
     // Nothing was submitted yet: evidence starts at the click, so a validation POST a fill triggered is never read as the
