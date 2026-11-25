@@ -1,6 +1,5 @@
-// A session's terminal (ttyd) and phone UI (opencode serve) behind the launcher's control listener, for the board:
+// A session's terminal (ttyd) behind the launcher's control listener, for the board:
 //   ANY /session/<lease>/term/*  (and its WebSocket upgrade) -> http://<box>:<term port>/*   with ttyd's basic credential
-//   ANY /session/<lease>/web/*   (and its upgrade)           -> http://<box>:<serve port>/*  with opencode's basic auth
 // The bearer is `computer_session_key`, read only by the board; it opens nothing else, and the box-side credentials are added
 // here and never reach the board. An unknown or released lease is a 404.
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -12,14 +11,13 @@ import type { Duplex } from "node:stream";
 /** Where a live lease listens (the standing box's address, the lease's two ports and its two secrets). */
 export interface LeaseTarget { host: string; ports: { serve: number; term: number }; secrets: { serve: string; term: string } }
 
-const ROUTE = /^\/session\/(l-[0-9a-f]{8})\/(term|web)(\/[^?]*)?(\?.*)?$/;
-const isTerm = (req: IncomingMessage) => ROUTE.exec(req.url ?? "")?.[2] === "term";
+const ROUTE = /^\/session\/(l-[0-9a-f]{8})\/(term)(\/[^?]*)?(\?.*)?$/;
 export const isSessionRoute = (url: string | undefined) => ROUTE.test(url ?? "");
 
-/** ttyd's `--credential` (the box's AIDENHQ_TERM_CREDENTIAL, services/computer/lib.ts jobEnvFile) is `aidenhq:<secret>`; opencode's server basic auth is `opencode:<OPENCODE_SERVER_PASSWORD>`. */
+/** ttyd's `--credential` (the box's AIDENHQ_TERM_CREDENTIAL, services/computer/lib.ts jobEnvFile) is `aidenhq:<secret>`. (The web view needs a per-session origin: #1769.) */
 export const termCredential = (secret: string) => `aidenhq:${secret}`;
 const b64 = (v: string) => Buffer.from(v).toString("base64");
-const basic = (which: "term" | "web", secrets: LeaseTarget["secrets"]) => `Basic ${b64(which === "term" ? termCredential(secrets.term) : `opencode:${secrets.serve}`)}`;
+const basic = (secrets: LeaseTarget["secrets"]) => `Basic ${b64(termCredential(secrets.term))}`;
 
 /**
  * ttyd hands its page a `token` (the base64 credential) and wants it back in the first WebSocket frame. The browser never
@@ -52,8 +50,8 @@ export function createSessionProxy({ key, lease }: { key: string; lease: (id: st
     const m = ROUTE.exec(req.url ?? "");
     const t = m && (await lease(m[1]!));
     if (!m || !t) return undefined;
-    const port = m[2] === "term" ? t.ports.term : t.ports.serve;
-    const headers = { ...req.headers, host: `${t.host}:${port}`, authorization: basic(m[2] as "term" | "web", t.secrets) };
+    const port = t.ports.term;
+    const headers = { ...req.headers, host: `${t.host}:${port}`, authorization: basic(t.secrets) };
     return { t, port, path: `${m[3] ?? "/"}${m[4] ?? ""}`, headers };
   };
   const refuse = (res: ServerResponse, status: number, error: string) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error }));
@@ -65,7 +63,7 @@ export function createSessionProxy({ key, lease }: { key: string; lease: (id: st
       const to = await aim(req);
       if (!to) return refuse(res, 404, "no such session"), true;
       // ttyd's token is its credential: the page gets an empty one (see withAuthToken).
-      if (isTerm(req) && to.path.split("?")[0] === "/token") return res.writeHead(200, { "content-type": "application/json" }).end('{"token":""}'), true;
+      if (to.path.split("?")[0] === "/token") return res.writeHead(200, { "content-type": "application/json" }).end('{"token":""}'), true;
       const up = request({ host: to.t.host, port: to.port, method: req.method, path: to.path, headers: to.headers }, (r) => {
         res.writeHead(r.statusCode ?? 502, r.headers);
         r.pipe(res);
@@ -96,7 +94,6 @@ export function createSessionProxy({ key, lease }: { key: string; lease: (id: st
         up.write([`${req.method} ${to.path} HTTP/1.1`, ...Object.entries(to.headers).map(([k, v]) => `${k}: ${[v].flat().join(", ")}`), "", ""].join("\r\n"));
         if (head.length) up.write(head);
         up.pipe(socket);
-        if (!isTerm(req)) return void socket.pipe(up);
         // The terminal's first frame carries the (empty) token: swap in ttyd's. The rest goes through untouched.
         let first = Buffer.alloc(0);
         const onFirst = (chunk: Buffer) => {

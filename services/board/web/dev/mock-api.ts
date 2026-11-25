@@ -517,7 +517,7 @@ function route(method: string, url: URL): [number, unknown] {
   const p = url.pathname;
   if (method === "POST" && /^\/api\/issues\/[^/]+\/answer$/.test(p)) return p.split("/")[3] === "WOR-821" ? [409, { error: "Already answered, or the question changed." }] : [200, { identifier: p.split("/")[3], message: "m-1" }];
   const opened = method === "POST" ? /^\/api\/sessions\/(id-93\d)\/open$/.exec(p) : null;
-  if (opened) { const tok = `${"mock".repeat(6)}.${"sig".repeat(15)}`; return [200, { term: `/sessions/${opened[1]}/${tok}/term/`, web: `/sessions/${opened[1]}/${tok}/web/` }]; }
+  if (opened) { const tok = `${"mock".repeat(6)}.${"sig".repeat(15)}`; return [200, { term: `/sessions/${opened[1]}/${tok}/term/` }]; }
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   if (p.startsWith("/api/models/")) return [200, { default: "openrouter/~deepseek/deepseek-flash-latest", models: ["openrouter/~deepseek/deepseek-flash-latest", "openrouter/~openai/gpt-luna-latest", "openrouter/z-ai/glm-5.3"], efforts: ["low", "medium", "high"] }];
   const m = (re: RegExp) => re.exec(p);
@@ -643,7 +643,7 @@ createServer((req, res) => {
   }
   if (url.pathname === "/api/pages/notes/frame") return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(readFileSync(new URL("./example-view.html", import.meta.url)));
   // A session's terminal and web view: stand-ins for ttyd and opencode's web UI behind the board's proxy (src/sessions.ts).
-  const frame = /^\/sessions\/(id-93\d)\/[\w.-]+\/(term|web)\//.exec(url.pathname);
+  const frame = /^\/sessions\/(id-93\d)\/[\w.-]+\/(term)\//.exec(url.pathname);
   if (frame) {
     if (mock.term === "down" || (mock.term === "flaky" && Math.floor(Date.now() / 12_000) % 2)) return res.writeHead(502, { "content-type": "text/plain" }).end("down");
     return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(fakeScreen(frame[2] as "term" | "web", SESSIONS().find((x) => x.task === frame[1])!.title));

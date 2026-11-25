@@ -271,8 +271,8 @@ export const api = {
   search: (q: string, page?: { after: string; keyword: boolean }) => call<{ ids: string[]; done: WorkCard[]; next: string | null; semantic: boolean }>("GET", `/api/search?q=${encodeURIComponent(q)}${page ? `&after=${encodeURIComponent(page.after)}${page.keyword ? "&keyword=1" : ""}` : ""}`),
   /** Sessions (src/sessions.ts): `enabled` false when the sessions module is off. */
   sessions: () => call<{ enabled: boolean; agent: string | null; sessions: SessionRow[] }>("GET", "/api/sessions"),
-  /** Signed, short-lived paths to a session's terminal and web view (only its creator gets them). */
-  sessionOpen: (task: string) => call<{ term: string; web: string }>("POST", `/api/sessions/${encodeURIComponent(task)}/open`, {}),
+  /** Signed, short-lived path to a session's terminal (only its creator gets them). */
+  sessionOpen: (task: string) => call<{ term: string }>("POST", `/api/sessions/${encodeURIComponent(task)}/open`, {}),
   views: () => call<{ views: SavedView[] }>("GET", "/api/views"),
   addView: (name: string, spec: ViewSpec) => call<SavedView>("POST", "/api/views", { name, spec }),
   /** A 409 (changed or deleted elsewhere) throws ViewConflict with the row as it is now. */

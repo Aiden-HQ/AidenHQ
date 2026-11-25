@@ -101,6 +101,7 @@ identity kind, credential, inbox, control tools or harness interface: each alrea
   WebSocket proxy to ttyd, attached to tmux running the harness TUI on the same session; the terminal is authorised by the
   task's creator account (not "the owner", for a later team version). The harness's web UI on a board-authenticated origin
   for phones.
+- Web view needs a per-session origin: #1769.
 - **Security review** covers the terminal, the phone UI and comment-driven wakes, and says plainly that unrestricted sessions
   read untrusted PR and comment text while holding send and merge power (an accepted owner decision).
 - **Upgrades.** An apply, image change or launcher drain kills tmux and the harness: resume is tested before each harness

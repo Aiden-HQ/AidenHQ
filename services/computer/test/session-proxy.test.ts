@@ -1,4 +1,4 @@
-// The session proxy (session-proxy.ts): the board's key opens a lease's terminal and web UI, with the box-side credential added.
+// The session proxy (session-proxy.ts): the board's key opens a lease's terminal, with the box-side credential added.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -40,11 +40,9 @@ test("proxies HTTP and WS to the lease, adding the box-side credential the clien
   try {
     const bearer = { authorization: `Bearer ${KEY}` };
     assert.equal(await s.call(`/session/${LEASE}/term/page?x=1`, bearer), 200);
-    assert.equal(await s.call(`/session/${LEASE}/web/session`, bearer), 200);
     assert.equal(await s.call(`/session/${LEASE}/term/ws`, bearer, true), 101);
     assert.deepEqual(s.seen, [
       { path: "/page?x=1", auth: basic("aidenhq:term-secret") },
-      { path: "/session", auth: basic("opencode:serve-secret") },
       { path: "/ws", auth: basic("aidenhq:term-secret") },
     ]);
   } finally {
@@ -68,7 +66,7 @@ test("a released or unknown lease is a 404", async () => {
   const s = await setup();
   try {
     assert.equal(await s.call("/session/l-ffffffff/term/", { authorization: `Bearer ${KEY}` }), 404);
-    assert.equal(await s.call("/session/l-ffffffff/web/ws", { authorization: `Bearer ${KEY}` }, true), 404);
+    assert.equal(await s.call("/session/l-ffffffff/term/ws", { authorization: `Bearer ${KEY}` }, true), 404);
   } finally {
     s.close();
   }

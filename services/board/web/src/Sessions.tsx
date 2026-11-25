@@ -11,7 +11,7 @@ import "./sessions.css";
 
 // Sessions (#/sessions, #/sessions/<identifier>): long-lived coding harnesses on the always-on computer, each held by one task.
 // The list shows what each is doing, what it waits for, who started it and what it cost; a session opens as a real terminal
-// (ttyd through the board, only for the account that started it) beside its task thread; phones get the harness's web UI.
+// (ttyd through the board, only for the account that started it) beside its task thread; a phone opens the same terminal.
 
 const STATE: Record<SessionState, { tone: StatusTone; word: string }> = {
   starting: { tone: "busy", word: "Starting" },
@@ -124,7 +124,7 @@ function FirstSession({ onStart }: { onStart: () => void }) {
         <ul>
           <li><b>Waiting is free.</b> It can watch a pull request or a timer and sleeps at zero tokens until it fires.</li>
           <li><b>Yours alone.</b> Only the person who started a session can open its terminal.</li>
-          <li><b>On your phone too.</b> The same session opens in the harness's web view.</li>
+          <li><b>On your phone too.</b> The same terminal opens on a phone.</li>
         </ul>
         <div><Button variant="primary" onClick={onStart}><Icon name="plus" />Start a session</Button></div>
       </div>
@@ -192,11 +192,9 @@ function StartDialog({ open, agent, onClose, onStarted }: { open: boolean; agent
 
 // ------------------------------------------------------------------ one session
 
-type Mode = "term" | "web";
 type Link = "connecting" | "live" | "reconnecting" | "lost";
 
 function SessionPage({ ident, error, fresh, row, loaded, mobile, prefix, go, onSignIn, reload }: { ident: string; error: string; fresh?: boolean; row?: SessionRow; loaded: boolean; mobile: boolean; prefix: string; go: (hash: string) => void; onSignIn: () => void; reload: () => void }) {
-  const [mode, setMode] = useState<Mode>(mobile ? "web" : "term");
   const [panel, setPanel] = useState<"session" | "thread" | "details">("session");
   const [stopping, setStopping] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -228,7 +226,7 @@ function SessionPage({ ident, error, fresh, row, loaded, mobile, prefix, go, onS
   const st = STATE[row.state];
   // The page's own address: a phone that isn't signed in signs in first, then lands on this session.
   const phoneLink = () => void navigator.clipboard?.writeText(`${location.origin}${location.pathname}#/sessions/${row.identifier}`).then(() => (setCopied(true), setTimeout(() => setCopied(false), 2000)));
-  const console_ = <Console row={row} mode={mode} setMode={setMode} mobile={mobile} />;
+  const console_ = <Console row={row} />;
   const thread = <Thread row={row} prefix={prefix} onSignIn={onSignIn} text={draft} setText={setDraft} busy={sending} setBusy={setSending} />;
   const details = <Details row={row} go={go} />;
   return (
@@ -272,15 +270,15 @@ function StopDialog({ open, row, onClose, onStopped }: { open: boolean; row: Ses
   );
 }
 
-/** The terminal (ttyd) or the harness's web view in a frame, with the link's own state: connecting, live, reconnecting, lost. */
-function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; setMode: (m: Mode) => void; mobile: boolean }) {
+/** The terminal (ttyd) in a frame, with the link's own state: connecting, live, reconnecting, lost. */
+function Console({ row }: { row: SessionRow }) {
   const [nonce, setNonce] = useState(0);
   const [link, setLink] = useState<Link>("connecting");
   /** The signed paths the frame loaded with (they last 10 minutes: a 401 below loads the frame again with new ones). */
-  const [frame, setFrame] = useState<{ term: string; web: string } | null>(null);
+  const [frame, setFrame] = useState<{ term: string } | null>(null);
   const down = useRef(0);
   /** A renewed set of paths for the probe alone: the loaded frame keeps its page and socket (a reconnect loads the fresh ones). */
-  const probePaths = useRef<{ term: string; web: string } | null>(null);
+  const probePaths = useRef<{ term: string } | null>(null);
   const usable = row.mine && live(row) && row.state !== "starting";
   const mint = useCallback(() => api.sessionOpen(row.task), [row.task]);
   useEffect(() => {
@@ -305,7 +303,7 @@ function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; 
       const timer = setTimeout(() => ctl.abort(), 4000);
       let ok = false, expired = false;
       try {
-        const r = await fetch((probePaths.current ?? frame)[mode], { cache: "no-store", headers: { range: "bytes=0-0" }, signal: ctl.signal });
+        const r = await fetch((probePaths.current ?? frame).term, { cache: "no-store", headers: { range: "bytes=0-0" }, signal: ctl.signal });
         ok = r.ok || r.status === 206;
         expired = r.status === 401;
         ctl.abort();
@@ -331,32 +329,32 @@ function Console({ row, mode, setMode, mobile }: { row: SessionRow; mode: Mode; 
       stopped = true;
       clearInterval(t);
     };
-  }, [frame, mode, usable, mint]);
+  }, [frame, usable, mint]);
   const fullScreen = () => {
     const w = window.open("", "_blank");
     if (!w) return;
     w.opener = null;
-    mint().then((p) => (w.location.href = p[mode]), () => w.close());
+    mint().then((p) => (w.location.href = p.term), () => w.close());
   };
 
   const word = { connecting: "Checking", live: "Online", reconnecting: "Retrying", lost: "Offline" }[link];
   const tone: StatusTone = link === "live" ? "ok" : link === "lost" ? "failed" : "busy";
-  const src = frame?.[mode];
+  const src = frame?.term;
   return (
     <div className={`ses-console${usable ? "" : " off"}`}>
       <div className="ses-bar">
-        <Segmented label="View" value={mode} onChange={setMode} options={[["term", "Terminal"], ["web", mobile ? "Chat view" : "Web view"]]} />
+        <b className="ses-bar-title">Terminal</b>
         <span className="ses-bar-fill" />
         {usable && <span className={`ses-link ses-link-${link}`} title="Whether the board can reach the session's computer"><StatusDot tone={tone}>{word}</StatusDot></span>}
         {usable && <Button size="sm" variant="quiet" onClick={() => setNonce((n) => n + 1)} title="Load the frame again" aria-label="Reload"><Icon name="refresh" /><span className="ses-lbl">Reload</span></Button>}
         {usable && <Button size="sm" variant="quiet" onClick={fullScreen} title="Open in its own tab" aria-label="Full screen"><span className="ses-lbl">Full screen</span> <Icon name="external" size={14} /></Button>}
       </div>
       <div className="ses-screen">
-        {usable && src && link !== "lost" && <iframe key={`${src}|${nonce}`} title={mode === "term" ? "Session terminal" : "Session web view"} src={src} sandbox="allow-scripts allow-forms allow-popups allow-downloads" allow="clipboard-write" />}
-        {usable && link === "reconnecting" && <div className="ses-veil soft" role="status"><i />Reconnecting to the {mode === "term" ? "terminal" : "web view"}…</div>}
+        {usable && src && link !== "lost" && <iframe key={`${src}|${nonce}`} title="Session terminal" src={src} sandbox="allow-scripts allow-forms allow-popups allow-downloads" allow="clipboard-write" />}
+        {usable && link === "reconnecting" && <div className="ses-veil soft" role="status"><i />Reconnecting to the terminal…</div>}
         {usable && link === "lost" && (
           <div className="ses-veil" role="alert">
-            <b>The {mode === "term" ? "terminal" : "web view"} isn't answering</b>
+            <b>The terminal isn't answering</b>
             <span>The session may be restarting after an update. Its work is kept; the harness resumes the same conversation.</span>
             <Button variant="primary" onClick={() => (down.current = 0, setLink("connecting"), setNonce((n) => n + 1))}>Reconnect</Button>
           </div>

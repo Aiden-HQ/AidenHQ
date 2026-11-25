@@ -13,7 +13,7 @@ const KEY = "s".repeat(48);
 const session = (task: string, over: Partial<KernelSession> = {}): KernelSession => ({ task, state: "waiting", lease: "l-0000000a", error: null, started_at: "2026-11-25T08:00:00Z", ended_at: null, last_activity: null, cost_usd: 0.42, ...over });
 const WS_NONCE = Buffer.from("0123456789abcdef").toString("base64");
 
-describe("a session's terminal and phone UI", () => {
+describe("a session's terminal", () => {
   const store = new Store(":memory:");
   // Task "own" was made by account A; "agent-made" is Aiden's task under it; "ended" has no lease.
   store.setAuthored("own", "A");
@@ -88,7 +88,7 @@ describe("a session's terminal and phone UI", () => {
     expect((await open("own", "B")).status).toBe(403);
     expect((await open("own")).status).toBe(401);
     expect((await open("ended", "A")).status).toBe(404);
-    const got = JSON.parse((await open("own", "A")).text) as { term: string; web: string };
+    const got = JSON.parse((await open("own", "A")).text) as { term: string };
     expect(got.term).toMatch(/^\/sessions\/own\/[\w-]+\.[\w-]{43}\/term\/$/);
     // The harness page needs no board cookie or header: the path is the credential.
     const page = await call(`${got.term}token?x=1`, { headers: { origin: "null" } });
@@ -102,11 +102,11 @@ describe("a session's terminal and phone UI", () => {
     expect(page.headers.etag).toBe("v1");
     expect(loggedPath(got.term)).toBe("/sessions/own/[token]/term/");
     // Another task's path, a forged token and a signed-out browser with no token get nothing.
-    expect((await call(got.web.replace("/own/", "/agent-made/"))).status).toBe(401);
-    expect((await call(got.web.replace(/\.[\w-]{43}/, `.${"A".repeat(43)}`))).status).toBe(401);
+    expect((await call(got.term.replace("/own/", "/agent-made/"))).status).toBe(401);
+    expect((await call(got.term.replace(/\.[\w-]{43}/, `.${"A".repeat(43)}`))).status).toBe(401);
     expect((await call("/sessions/own/web/")).status).toBe(404);
     // CORS for the opaque origin, preflight included.
-    expect((await call(`${got.web}x`, { method: "OPTIONS" })).status).toBe(204);
+    expect((await call(`${got.term}x`, { method: "OPTIONS" })).status).toBe(204);
   });
 
   it("an agent-made session resolves to the person behind its ancestor, and the list says so", async () => {

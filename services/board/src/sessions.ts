@@ -1,11 +1,11 @@
 // Sessions (docs/superpowers/specs/2026-11-25-sessions-design.md): long-lived harness sessions are ordinary tasks held by the
-// `session` agent. The board lists them, opens a session's terminal (ttyd + tmux) and its phone UI (opencode's web UI) through
+// `session` agent. The board lists them, opens a session's terminal (ttyd + tmux) through
 // the computer launcher, and lets only the task's creator account in.
 //   GET  /api/sessions              the session tasks: live state, last activity, creator and spend
-//   POST /api/sessions/:task/open   for the creator: short-lived signed paths to the session's terminal and web view
-//   ANY  /sessions/:task/<token>/term/*, /sessions/:task/<token>/web/*   (and their WebSocket upgrades) the launcher's
+//   POST /api/sessions/:task/open   for the creator: short-lived signed a path to the session's terminal
+//   ANY  /sessions/:task/<token>/term/*   (and its WebSocket upgrades) the launcher's
 //                                   /session/<lease>/…, authorised by that token alone
-// Harness content (ttyd's page, opencode's web UI, whatever a process in the box serves) never runs with the board's origin:
+// Harness content (ttyd's page, whatever a process in the box serves) never runs with the board's origin:
 // responses carry `Content-Security-Policy: sandbox …` without allow-same-origin, which gives the page an opaque origin even when
 // it is opened on its own, and the board frames it in an iframe with the same sandbox. So it holds no board cookie and can't call
 // the board's API; its only authority is the capability in its own URL.
@@ -113,7 +113,7 @@ export interface Terminals {
   ttl?: number;
 }
 
-const PATH = /^\/sessions\/([\w-]{1,64})\/([A-Za-z0-9_-]{20,400}\.[A-Za-z0-9_-]{43})\/(term|web)(\/.*)?$/;
+const PATH = /^\/sessions\/([\w-]{1,64})\/([A-Za-z0-9_-]{20,400}\.[A-Za-z0-9_-]{43})\/(term)(\/.*)?$/;
 export const isSessionPath = (pathname: string) => PATH.test(pathname);
 /** A path for the logs: a session path's token is a credential, so it never reaches one. */
 export const loggedPath = (pathname: string) => pathname.replace(/^(\/sessions\/[\w-]{1,64}\/)[^/]+(\/)/, "$1[token]$2");
@@ -184,12 +184,12 @@ export function createTerminals(t: Terminals) {
     },
 
     /** Signed paths to a session's terminal and web view, for the account that may open it. */
-    async open(account: string, task: string): Promise<{ term: string; web: string }> {
+    async open(account: string, task: string): Promise<{ term: string }> {
       need();
       if (!(await mayOpenTask(account, task))) throw new SessionError(403, "this session belongs to someone else");
       await lease(task);
       const token = mint(task);
-      return { term: `/sessions/${task}/${token}/term/`, web: `/sessions/${task}/${token}/web/` };
+      return { term: `/sessions/${task}/${token}/term/` };
     },
 
     /** An HTTP request for a session path: the token in it is the credential (the board's cookie is never read). */
