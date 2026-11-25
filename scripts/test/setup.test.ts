@@ -92,10 +92,22 @@ test("a config-based --link on a local install says the link is loopback-only ra
   assert.ok(out.split("\n").some((l) => CAVEAT.test(l)), `no loopback caveat\n${out}`);
 });
 
+// The plan of a setup run in a checkout of its own: the repo's own .env never leaks in, and `lines` (when given) become
+// its .env, over .env.example. Without `lines` it is a fresh install, with no .env at all.
+const vaultPlan = (lines?: string[]) => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "../.."), repo = mkdtempSync(join(tmpdir(), "setup-checkout-"));
+  for (const name of readdirSync(root)) if (name !== ".env") symlinkSync(join(root, name), join(repo, name));  // the checkout
+  if (lines) {
+    const base = readFileSync(join(root, ".env.example"), "utf8").split("\n").filter((l) => !/^VAULT_(DIR|FOLDERS)=/.test(l));
+    writeFileSync(join(repo, ".env"), [...base, ...lines].join("\n"));
+  }
+  return execFileSync("bash", [setup, "--dry-run", "--config", conf(person), "--checkout", repo], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+};
+
 // The vault folders are seeded, never blanked: an empty VAULT_FOLDERS leaves meetings' ops-mcp without a /vault mount.
 // The folders are made at setup as the owner (the module's uid 1000), so they exist before the module's health check runs.
 test("the plan keeps the vault folder default and creates the vault folders as the owner", () => {
-  const out = dry(conf(person));
+  const out = vaultPlan();
   assert.ok(!out.split("\n").some((l) => l.trim() === "+ .env: VAULT_FOLDERS="), `blanked VAULT_FOLDERS\n${out}`);
   assert.ok(out.includes("+ .env: VAULT_FOLDERS=Meetings"), out);
   assert.ok(out.includes("(as alice) mkdir -p /home/alice/obsidian/vault /home/alice/obsidian/vault/Meetings"), out);
@@ -103,14 +115,25 @@ test("the plan keeps the vault folder default and creates the vault folders as t
 
 // A rerun after the owner drops the vault: setup clears the folders too, since compile refuses a folder with no VAULT_DIR.
 test("a rerun with no vault path clears VAULT_FOLDERS, so compile accepts .env", () => {
-  const repo = mkdtempSync(join(tmpdir(), "setup-checkout-"));
-  const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
-  const text = readFileSync(join(root, ".env.example"), "utf8").replace(/^VAULT_DIR=.*$/m, "VAULT_DIR=").replace(/^VAULT_FOLDERS=.*$/m, "VAULT_FOLDERS=Meetings");
-  writeFileSync(join(repo, ".env"), text);
-  for (const name of readdirSync(root)) if (name !== ".env") symlinkSync(join(root, name), join(repo, name));  // the checkout
-  const out = execFileSync("bash", [setup, "--dry-run", "--config", conf(person), "--checkout", repo], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const out = vaultPlan(["VAULT_DIR=", "VAULT_FOLDERS=Meetings"]);
   assert.ok(out.split("\n").some((l) => l.trim() === "+ .env: VAULT_FOLDERS="), `kept folders with no vault path\n${out}`);
   assert.ok(!out.includes("/obsidian/vault"), `still made the folders\n${out}`);
+});
+
+// An existing .env is read as scripts/compiler/inputs.ts reads it (any indent, quotes stripped) and as the apply's
+// `set -a; . ./.env` expands it ($HOME), so the folders setup creates are the ones compile mounts, and a configured
+// list is never rewritten.
+test("a rerun creates the folders .env names, expanded like the apply's", () => {
+  const out = vaultPlan(['VAULT_DIR="$HOME/obsidian/vault"', "  VAULT_FOLDERS=Meetings, Ark"]);
+  assert.ok(out.includes("(as alice) mkdir -p /home/alice/obsidian/vault /home/alice/obsidian/vault/Meetings /home/alice/obsidian/vault/Ark"), out);
+  assert.ok(!out.includes("+ .env: VAULT_FOLDERS="), `rewrote a configured list\n${out}`);
+});
+
+// A path compile refuses is named, and the rest of the host is still set up (a rerun must not stop on the vault).
+test("a vault compile would refuse is reported, not created", () => {
+  const out = vaultPlan(["VAULT_DIR=obsidian/vault", "VAULT_FOLDERS=Meetings"]);
+  assert.ok(out.includes("VAULT_DIR isn't an absolute path (obsidian/vault)"), out);
+  assert.ok(out.includes(".env: BOARD_LAN_URL="), `setup stopped\n${out}`);
 });
 
 test("is_loopback_url knows every loopback form and no real one", () => {

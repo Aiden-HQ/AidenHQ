@@ -451,29 +451,41 @@ set_env AIDENHQ_INSTANCE_REMOTE "$REMOTE"        # apps-mcp mounts it (compose.y
 set_env AIDENHQ_INSTANCE_PUSH_URL "$REMOTE"      # apps-mcp pushes registry commits here, not to GitHub
 # Meetings' vault: a host that lists folders keeps them (an empty list would leave the module no /vault mount), and only
 # a host with a vault path gets the default. The module runs as the owner (uid 1000), so its folders are made as the owner.
-# A dry run has no .env yet (only the write above is printed): read the .env.example a new install copies instead.
-vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"
-vault_val() { # KEY: its value (quotes stripped as scripts/compiler/inputs.ts does), /home/USER taken from the example
-  local v; v="$(sed -n "s/^$1=//p" "$vault_env" 2>/dev/null | tail -1 || true)"
+# Nothing here fails setup: compile and the module's health check report a bad or an unreachable vault.
+# A dry run has no .env yet (only the write above is printed): the path comes from the .env.example a new install copies.
+vault_val() { # FILE KEY: the value as scripts/compiler/inputs.ts reads .env (any indent, the last line, quotes stripped),
+  # with $HOME / ${HOME} / a leading ~ expanded as the apply's `set -a; . ./.env` does: it mounts the expanded path.
+  # No command substitution and no other variable: .env is the owner's data, never run here.
+  local v; v="$(sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -1 || true)"
   v="${v#\"}"; v="${v%\"}"; v="${v#\'}"; v="${v%\'}"
-  [ "$vault_env" = "$ENVF" ] || v="${v//\/home\/USER/$H}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  [ "$1" = "$ENVF" ] || v="${v//\/home\/USER/$H}"
+  local home_lit='${HOME}'
+  v="${v//"$home_lit"/$H}"; v="${v//\$HOME/$H}"
+  if [[ "$v" == '~' || "$v" == '~/'* ]]; then v="$H${v:1}"; fi
   printf '%s' "$v"
 }
-vault_dir="$(vault_val VAULT_DIR)"
-if [ -n "$vault_dir" ]; then
-  grep -q '^VAULT_FOLDERS=.' "$ENVF" 2>/dev/null || set_env VAULT_FOLDERS Meetings
-  vault_folders="$(vault_val VAULT_FOLDERS)"; vault_folders="${vault_folders:-Meetings}"   # a dry run's .env: the default above
-  vault_paths=("$vault_dir")
+vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"
+vault_dir="$(vault_val "$vault_env" VAULT_DIR)"; vault_folders="$(vault_val "$ENVF" VAULT_FOLDERS)"
+if [ -z "$vault_dir" ]; then
+  # No vault path: folders left behind make compile refuse .env ("VAULT_DIR must be an absolute path"), so drop them.
+  [ -z "$vault_folders" ] || set_env VAULT_FOLDERS ""
+else
+  [ -n "$vault_folders" ] || { set_env VAULT_FOLDERS Meetings; vault_folders=Meetings; }
+  vault_paths=("$vault_dir"); vault_why=""
+  [[ "$vault_dir" == /* ]] || vault_why="VAULT_DIR isn't an absolute path ($vault_dir)"
   IFS=, read -r -a vault_names <<< "$vault_folders"
   for vf in "${vault_names[@]}"; do
     vf="${vf#"${vf%%[![:space:]]*}"}"; vf="${vf%"${vf##*[![:space:]]}"}"   # trim
     vf="${vf#/}"; vf="${vf%/}"                                          # vault-relative, as modules.ts reads it
-    [[ "$vf" == *..* || "$vf" == .* ]] && die "invalid vault folder: $vf (VAULT_FOLDERS in .env must be vault-relative)"
-    [ -z "$vf" ] || vault_paths+=("$vault_dir/$vf")
+    [ -z "$vf" ] && continue
+    # The same refusals hostMounts() makes, so a bad list is reported here instead of failing the apply.
+    if [[ "$vf" == *..* || "$vf" == .* || "$vf" == *:* ]]; then vault_why="VAULT_FOLDERS lists $vf, which compile refuses"; continue; fi
+    vault_paths+=("$vault_dir/$vf")
   done
-  as_user mkdir -p "${vault_paths[@]}"
-elif grep -q '^VAULT_FOLDERS=.' "$ENVF" 2>/dev/null; then
-  set_env VAULT_FOLDERS ""   # no vault path: a folder left behind makes compile refuse ("VAULT_DIR must be an absolute path")
+  if [ -n "$vault_why" ]; then say "$vault_why: no vault folders are created"
+  # A vault on a disk that isn't mounted is the Meetings module's to report, never a reason the rest of setup fails.
+  else as_user mkdir -p "${vault_paths[@]}" || say "couldn't create ${vault_paths[*]} (a disk that isn't mounted?); the Meetings health check reports it"; fi
 fi
 # The board for this person's devices: signed-in admins only, behind `tailscale serve` (3121).
 set_env BOARD_LAN_HOSTS "${BOARD_HOST:-${PUBLIC_IP:+$PUBLIC_IP,}127.0.0.1:3121,localhost:3121}"
