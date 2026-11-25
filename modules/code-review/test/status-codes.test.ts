@@ -46,3 +46,9 @@ test("the engine's reported error decides over an echoed fixture, and in-stream 
   assert.match(stopped(r(echoed), "error event: 429"), /rate limited/);
   assert.match(stopped(r(echoed)), /spend limit/);
 });
+
+test("a reported HTTP 429 beats an echoed spend fixture in the CI classifier too", async () => {
+  const { why } = await import("../recipe/code-review.ts");
+  const [kind] = why([{ type: "error", message: "unexpected status 429: Too Many Requests" }] as never, '402 {"error":"cap_reached"}');
+  assert.equal(kind, "transient");
+});

@@ -231,7 +231,7 @@ export function why(events: CodexEvent[], stderr: unknown) {
   // before any 402, so a cap refusal can't be mistaken for one the provider would lift.
   // Only the refusal itself counts (as proc.ts's SPEND_REFUSAL): a bare `cap_reached` in the tail is code or a test the reviewer read.
   const cap = /\b402:?\s+(?:\{[^}\n]*)?\bcap_reached\b|"type"\s*:\s*"cap_reached"|spend cap reached: the install's (?:daily|monthly) limit, \$\d|task spend cap reached: this task's \$\d/i;
-  const reported = messages.join("\n"), rateLimited = /\brate_limit_(?:exceeded|error)\b|error event: 429\b/i;
+  const reported = messages.join("\n"), rateLimited = /\brate_limit_(?:exceeded|error)\b|error event: 429\b|\b(?:status|http)[ :]*429\b|\b429 Too Many Requests\b/i;
   // The error events are the reported error; the tail also echoes what the reviewer read, so a cap in it counts only when the events report no rate limit.
   if (cap.test(reported) || (!rateLimited.test(reported) && cap.test(tail))) return ["permanent", `our spend cap was reached, not a provider quota: ${line(cap) ?? "cap_reached"}`];
   // A provider's quota refusal is transient: HTTP 402 whose same line or body names a quota (usage_limit, quota, credits).
@@ -244,6 +244,8 @@ export function why(events: CodexEvent[], stderr: unknown) {
   const quota402 = messages.find((m) => status402.test(m) && quota.test(m))
     ?? tail.split("\n").find((l) => status402.test(l) && quota.test(l));
   if (quota402) return ["transient", `the provider's quota was exhausted (a rate limit): ${quota402.slice(0, 200)}`];
+  // A rate limit the events report is transient whatever the tail echoes (a 402 in code the reviewer read is no refusal).
+  if (rateLimited.test(reported)) return ["transient", reported.match(new RegExp(`[^\\n]*(?:${rateLimited.source})[^\\n]*`, "i"))?.[0]?.slice(0, 200) ?? "a rate limit"];
   const refused = /\b40[123]\b|not_allowed|unauthorized|not_priced/i;
   const provider = /\brate_limit_(?:exceeded|error)\b|error event: 429\b|\b(?:status|http)[ :]*(?:429|5\d\d)\b|\b(?:429 Too Many Requests|500 Internal Server Error|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)\b|stream disconnected|connection (?:reset|refused|closed)|ECONNRESET|ECONNREFUSED|socket hang up/i;
   if (refused.test(said)) return ["permanent", line(refused) ?? "the model gateway refused"];
