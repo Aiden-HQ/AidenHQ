@@ -63,13 +63,13 @@ export class ChangeRefused extends Error {}
 const isPlainMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 /**
  * Why a structured setting's value is refused (kernel/src/settings-change.ts boundedValue is the gate; this is the owner's
- * feedback): at most 6 levels and 2000 values, keys of letters, digits, _ . - / or *, plain strings of at most 500 characters.
+ * feedback): at most 8 levels and 2000 values, keys of letters, digits, _ . - / or *, plain strings of at most 500 characters.
  */
 export function boundedProblem(v: unknown): string | undefined {
   let n = 0;
   const walk = (x: unknown, depth: number): string | undefined => {
     if (++n > 2000) return "too many values";
-    if (depth > 6) return "nested too deep";
+    if (depth > 8) return "nested too deep";
     if (x === null || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x))) return;
     if (typeof x === "string") return x.length > 500 || !plain(x) ? "plain text of at most 500 characters, no control characters or $" : undefined;
     if (Array.isArray(x)) return x.map((y) => walk(y, depth + 1)).find(Boolean);

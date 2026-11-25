@@ -122,6 +122,10 @@ test("a setting its module declares `entry:` takes a list of names or maps carry
   for (const value of [[{ issues: true }], "a/b", [{ repo: 1 }], [{ repo: "a/b", deep: { x: "$no" } }]])
     assert.throws(() => checkTyped({ kind: "setting", key: "maintainer_repos", value }, src), /entry|entries|plain|a name/);
   assert.throws(() => checkTyped({ kind: "setting", key: "ignore", value: [{ repo: "a/b" }] }, src), /plain values only/);
+  // Code review's per-tier reviewers are the deepest setting: repos, a repo, by_tier, a tier, on_open, a reviewer, its fields.
+  const review = { compiled: { settings: {} }, catalog: [{ name: "code-review", enabled: true, settings: { code_review: { entry: "repo" } } }] };
+  const reviewer = { engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "low", mandatory: true };
+  checkTyped({ kind: "setting", key: "code_review", value: [{ repo: "acme/app", by_tier: { standard: { on_open: [reviewer], on_push: [reviewer], push_rounds: 1 } } }] }, review);
 });
 
 test("an agent writes a structured setting its module names its role a writer of, on its own task, and nothing else", async () => {
