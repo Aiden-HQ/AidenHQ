@@ -467,6 +467,9 @@ vault_val() { # FILE KEY: the value .env gives (last line, quotes, an unquoted '
 }
 vault_env="$ENVF"; [ -f "$vault_env" ] || vault_env="$REPO/.env.example"
 vault_dir="$(vault_val "$vault_env" VAULT_DIR)"; vault_folders="$(vault_val "$ENVF" VAULT_FOLDERS)"
+# The installer's own default (the .env.example path, in the owner's home), which is this host's to make even on a rerun:
+# an upgrade from the old installer has it in .env and never made it. Any other path is the owner's disk, possibly offline.
+vault_default="$(sed -n 's#^VAULT_DIR=##p' "$REPO/.env.example" 2>/dev/null | tail -1 | sed "s#/home/USER#$H#")"
 if [ -z "$vault_dir" ]; then
   # No vault path: folders left behind make compile refuse .env ("VAULT_DIR must be an absolute path"), so drop them.
   # Every line, since the last one wins in the apply and the first-match set_env would leave a later override.
@@ -486,10 +489,10 @@ elif [ -n "$vault_folders" ] || { set_env VAULT_FOLDERS Meetings; vault_folders=
     [[ "$vf" == *..* || "$vf" == .* || "$vf" == *:* ]] && die "invalid vault folder: $vf (VAULT_FOLDERS in $ENVF must be vault-relative)"
     vault_paths+=("$vault_dir/$vf")
   done
-  # A rerun never makes the root: with the vault's disk offline, mkdir would leave an empty directory at its mount point
-  # that the module would pass its checks against while the real notes stay elsewhere. A folder added to a vault that is
-  # there (it holds something) is made; the dry run shows which of the two it is.
-  if [ "$vault_new" = 1 ] || { [ -d "$vault_dir" ] && [ -n "$(ls -A "$vault_dir" 2>/dev/null)" ]; }; then
+  # The default root is made on a new install and on an upgrade from a version that never made it. A custom mount point is
+  # made only when it is there (it holds something): with that disk offline, mkdir would leave an empty directory the
+  # module's checks would pass against while the real notes stay elsewhere.
+  if [ "$vault_new" = 1 ] || [ "$vault_dir" = "$vault_default" ] || { [ -d "$vault_dir" ] && [ -n "$(ls -A "$vault_dir" 2>/dev/null)" ]; }; then
     as_user mkdir -p "${vault_paths[@]}" || say "couldn't create ${vault_paths[*]} (a disk that isn't mounted?); the Meetings health check reports it"
   else say "VAULT_DIR ($vault_dir) is missing or empty: not creating it (a disk that isn't mounted?)"
   fi

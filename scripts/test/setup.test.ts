@@ -132,9 +132,17 @@ test("a rerun with no vault path clears VAULT_FOLDERS, so compile accepts .env",
 // An existing .env is read as the compiler reads it (any indent, quotes stripped) and as the apply's `set -a; . ./.env`
 // expands it ($HOME), so setup works on the same directory compile mounts; an indented configured list is never rewritten.
 test("a rerun reads .env as the apply does, and keeps a configured list", () => {
-  const out = vaultPlan(['VAULT_DIR="$HOME/obsidian/vault"', "  VAULT_FOLDERS=Meetings, Ark"]);
-  assert.ok(out.includes("VAULT_DIR (/home/alice/obsidian/vault) is missing or empty"), out);  // $HOME expanded, as the apply's
+  const out = vaultPlan(['VAULT_DIR="$HOME/notes/vault"', "  VAULT_FOLDERS=Meetings, Ark"]);
+  assert.ok(out.includes("VAULT_DIR (/home/alice/notes/vault) is missing or empty"), out);  // $HOME expanded, as the apply's
   assert.ok(!out.includes("+ .env: VAULT_FOLDERS="), `rewrote a configured list\n${out}`);
+});
+
+// An upgrade from the old installer: it wrote the default path and emptied the folders, but never made the directory.
+// Setup restores Meetings and makes the root, so the apply mounts a directory the owner (uid 1000) can write.
+test("an upgrade from the old installer makes the default vault", () => {
+  const out = vaultPlan(["VAULT_DIR=/home/alice/obsidian/vault", "VAULT_FOLDERS="]);
+  assert.ok(out.includes("+ .env: VAULT_FOLDERS=Meetings"), out);
+  assert.ok(out.includes("(as alice) mkdir -p /home/alice/obsidian/vault /home/alice/obsidian/vault/Meetings"), out);
 });
 
 // A path compile refuses stops setup here, naming the value: left in place it would fail the apply after the install.
