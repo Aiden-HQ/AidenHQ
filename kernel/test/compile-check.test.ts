@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { checkoutTree } from "../src/settings-change.ts";
-import { createCompileCheck, firstDiagnostic, stagedEnv } from "../src/compile-check.ts";
+import { createCompileCheck, firstDiagnostic, run, stagedEnv } from "../src/compile-check.ts";
 
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
@@ -79,10 +79,11 @@ test("a target that compiles the instance is ok; one whose compiler refuses it a
   const check = createCompileCheck({ repo: dir, main: async () => ({ base: git(bare, "rev-parse", "main") }), tree: checkoutTree(bare), inputs: { configDir: project, dataDir: join(inst, "data"), secretsDir: join(inst, "secrets") },
   // The real runner: the target's own compiler, staged (AIDENHQ_COMPILE_STAGE=1), as the apply runs it.
   install: async (o) => { execFileSync("ln", ["-s", realModules, join(o.productDir, "scripts", "node_modules")]); } });
+  const base = git(bare, "rev-parse", "main");
   // The old compiler (commit one) accepts the pre-tier shape the instance still has.
-  assert.deepEqual(await check({ product: one }), { ok: true });
-  // The new compiler (commit two) refuses it, and the answer is its own diagnostic line.
-  assert.deepEqual(await check({ product: two }), { ok: false, error: "compile: settings.code_review: repos[0]: on_open, on_push and push_rounds are per tier now: by_tier.<tier>.… (see the Reviews page)" });
+  assert.deepEqual(await check({ product: one }), { ok: true, base });
+  // The new compiler (commit two) refuses it, and the answer is its own diagnostic line, with the commit that was compiled.
+  assert.deepEqual(await check({ product: two }), { ok: false, base, error: "compile: settings.code_review: repos[0]: on_open, on_push and push_rounds are per tier now: by_tier.<tier>.… (see the Reviews page)" });
   // A target this checkout doesn't have is operational: it throws, never a refusal of the target.
   await assert.rejects(() => check({ product: "f".repeat(40) }), /git cat-file|isn't on the product's main/);
 });
@@ -94,4 +95,47 @@ test("the staged env is the apply's own (AIDENHQ_COMPILE_STAGE=1) and the first 
   assert.equal(env.AIDENHQ_CONFIG_DIR, "/c");
   assert.equal(firstDiagnostic("at foo (x.ts:1)\nError: boom\nmore"), "Error: boom");
   assert.equal(firstDiagnostic("noise\ncompile: the setting is gone\nstack"), "compile: the setting is gone");
+});
+
+test("a compiler that never finished (a timeout) is an operational error, not a refusal", async () => {
+  // A real non-zero exit is the target refusing the instance; a killed child is not, so the caller retries rather than
+  // dropping the tip on a slow host.
+  const refused = await run(process.execPath, ["-e", "console.error('compile: nope'); process.exit(3)"], process.cwd(), process.env, 10_000);
+  assert.deepEqual([refused.ok, refused.ran], [false, true]);
+  const killed = await run(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], process.cwd(), process.env, 200);
+  assert.equal(killed.ok, false);
+  assert.equal(killed.ran, false, "a killed child never reached an exit code");
+});
+
+test("an instance with product_fork is compiled from the fork, not the pin it descends from", async () => {
+  // The apply runs the fork's tree (kernelRun, ops/apply-config-work.sh). A preflight that compiled the pin would pass here while
+  // the apply then runs a fork that refuses the instance: the same fails-open class as #1730.
+  const { dir, one, two } = productRepo();
+  // The fork descends from commit one and carries commit two's refusing compiler.
+  git(dir, "checkout", "-q", one);
+  writeFileSync(join(dir, "scripts", "compile.ts"), compiler(true));
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "fork: refuses the pre-tier setting");
+  const fork = git(dir, "rev-parse", "HEAD");
+  git(dir, "checkout", "-q", "-B", "main", two);
+  const inst = mkdtempSync(join(tmpdir(), "compile-check-inst-"));
+  const bare = join(inst, "instance.git");
+  const src = join(inst, "src");
+  mkdirSync(src);
+  writeFileSync(join(src, "instance.yaml"), YAML.stringify({ product: one, product_fork: { source: "url", url: `file://${dir}`, sha: fork }, settings: { code_review: { repos: [{ repo: "acme/x", on_open: [] }] } } }));
+  git(src, "init", "-q");
+  git(src, "add", "-A");
+  git(src, "commit", "-qm", "init");
+  git(inst, "clone", "-q", "--bare", src, bare);
+  const project = join(inst, "config");
+  mkdirSync(project, { recursive: true });
+  const realModules = join(product, "scripts", "node_modules");
+  // The fork is extracted from this checkout: a local path fork's sha is here, so no fetch is needed.
+  const check = createCompileCheck({ repo: dir, main: async () => ({ base: git(bare, "rev-parse", "main") }), tree: checkoutTree(bare), inputs: { configDir: project, dataDir: join(inst, "data"), secretsDir: join(inst, "secrets") },
+    install: async (o) => { execFileSync("ln", ["-s", realModules, join(o.productDir, "scripts", "node_modules")]); } });
+  // The pin (commit one) accepts the instance; the fork refuses it, and the fork is what the apply would run.
+  const r = await check({ product: one });
+  assert.equal(r.ok, false, "the fork's refusal is the verdict, not the pin's acceptance");
+  assert.match((r as { error: string }).error, /^compile: settings\.code_review/);
+  void two;
 });

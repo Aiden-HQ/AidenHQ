@@ -35,20 +35,25 @@ export type TrainOptions = {
     text(repo: string, path: string, at?: string): Promise<string | undefined>;
     commits(repo: string, from: string, to: string): Promise<Commit[]>;
   };
-  /** The bump's commit on the instance's main, in this service's cache: `edit` reads the file at the head it builds on. */
-  commit(repo: string, path: string, edit: (text: string) => string, message: string): Promise<string>;
+  /**
+   * The bump's commit on the instance's main, in this service's cache: `edit` reads the file at the head it builds on. With
+   * `base`, the commit is refused unless that head is exactly the revision the compile preflight passed, so the bump can never
+   * be built on settings the check never saw.
+   */
+  commit(repo: string, path: string, edit: (text: string) => string, message: string, base?: string): Promise<string>;
   /**
    * Compiles the instance as it stands on its main against product commit `to`, the way the apply stages it (the kernel's
-   * /v1/compile/check): `{ok: true}`, or the compiler's first message when the target would refuse it. Throws when the check
-   * itself couldn't run (a transient read), which is retried on the next poll, never read as a refusal.
+   * /v1/compile/check): `{ok: true, base}`, or the compiler's first message when the target would refuse it. `base` is the
+   * instance commit that was compiled, and the bump is committed on it or not at all. Throws when the check itself couldn't run
+   * (a transient read), which is retried on the next poll, never read as a refusal.
    */
-  compile(to: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  compile(to: string): Promise<{ ok: true; base: string } | { ok: false; error: string; base: string }>;
   now?: () => Date; log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 type State = {
   open?: { since: string };
-  /** The bump's task, filed; `sha` once its commit is made. */
-  filing?: { to: string; sha?: string; task: string; identifier: string };
+  /** The bump's task, filed; `sha` once its commit is made, `base` the instance revision the preflight passed. */
+  filing?: { to: string; sha?: string; base?: string; task: string; identifier: string };
   flight?: { to: string; record: string; task: string; identifier: string };
   lastTried?: string;
 };
@@ -170,13 +175,23 @@ export function createReleaseTrain(o: TrainOptions) {
         title: "Pin bump: this instance's product", role: "platform-engineer", source, quiet: true,
         description: trainDescription({ what: `Moves this instance's product pin (\`product:\` in ${o.instanceRepo}'s instance.yaml) to the newest green commit of ${o.productRepo}'s main, as one apply.`, carries, windowMinutes: o.windowMinutes, marker: source }),
       });
-      s.filing = { to, task: task.id, identifier: task.identifier };
+      // `base`: the instance revision this verdict was made on; the commit is refused if main is no longer there.
+      s.filing = { to, base: compiled.base, task: task.id, identifier: task.identifier };
       adopt ||= Boolean(task.deduplicated);
       save(s);
     }
     const f = s.filing;
     if (!f.sha) {
-      f.sha = await o.commit(o.instanceRepo, "instance.yaml", edit, `chore: product ${to.slice(0, 8)} (${f.identifier})\n\nWritten by the code host's release train; no agent wrote it.`);
+      try {
+        f.sha = await o.commit(o.instanceRepo, "instance.yaml", edit, `chore: product ${to.slice(0, 8)} (${f.identifier})\n\nWritten by the code host's release train; no agent wrote it.`, f.base);
+      } catch (e) {
+        // The instance moved since the preflight compiled it: that verdict is for another revision, so this attempt is dropped
+        // and the next poll compiles the new main. The task is the same (its source is the target), so it is reused, not reopened.
+        if ((e as { status?: number }).status !== 409) throw e;
+        log("release bump held: the instance moved since the compile check", { to, base: f.base });
+        delete s.filing;
+        return;
+      }
       save(s);
     }
     // A bump whose task already existed may already have its card: it is followed, never filed a second time. Moving, it is left

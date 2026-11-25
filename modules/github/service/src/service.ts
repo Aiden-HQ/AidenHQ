@@ -1620,8 +1620,10 @@ export function createService(o: Options) {
     return { ok: true, text: `Published the ${a.module} module to ${s.slug} \`${a.ref}\` at ${sha.slice(0, 12)}.`, objects: [`github:${s.slug.toLowerCase()}@${sha}`] };
   }
   /** The release train's pin bump: one file edited as it is at the head. */
-  const trainCommit = (repo: string, path: string, edit: (text: string) => string, message: string) =>
+  const trainCommit = (repo: string, path: string, edit: (text: string) => string, message: string, base?: string) =>
     commitOnHead(repo, "release train", message, async (dir, head, def) => {
+      // The bump is built on exactly the instance revision the compile preflight passed, never a main that moved since.
+      if (base !== undefined && head !== base) throw fail(409, `${repo}'s ${def} moved since the compile check (${base.slice(0, 12)} -> ${head.slice(0, 12)}): checked again on the next poll`);
       const text = await fileAt(dir, head, path);
       if (text === undefined) throw fail(404, `${path} isn't on ${repo}'s ${def}`);
       return { [path]: edit(text) };
@@ -1656,8 +1658,9 @@ export function createService(o: Options) {
     async compile(to) {
       // A staged compile can outlast the kernel's other reads (it installs the target's deps on a lockfile change): its own bound.
       const r = await kernel("POST", "/v1/compile/check", { product: to }, 400_000);
-      if (typeof r?.ok === "boolean") return r.ok ? { ok: true } : { ok: false, error: String(r.error ?? "the staged compile failed").slice(0, 300) };
-      throw new Error("the kernel's compile check answered no verdict");
+      if (typeof r?.ok !== "boolean" || typeof r?.base !== "string") throw new Error("the kernel's compile check answered no verdict");
+      // `base` is the instance commit compiled: the bump is committed on it, so a verdict is never applied to another revision.
+      return r.ok ? { ok: true, base: r.base } : { ok: false, base: r.base, error: String(r.error ?? "the staged compile failed").slice(0, 300) };
     },
     github: {
       async tip(repo) { return feed?.tip(repo); },
