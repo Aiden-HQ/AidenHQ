@@ -326,9 +326,9 @@ export class Workspace {
   }
 
   /**
-   * The inbox after `after` (ms), oldest first, automated mail dropped (inbox.ts): the newest kept message of each thread, at
-   * most `limit` threads. `cursor` is the receipt time everything up to which was read (pass it to the next call once the
-   * threads are decided); `more` says threads past the limit wait for the next call.
+   * The inbox after `after` (ms), oldest first, automated mail dropped (inbox.ts): the newest message of each thread (the
+   * owner's own reply included, flagged `replied`), at most `limit` threads. `cursor` is the receipt time everything up to
+   * which was read (pass it to the next call once the threads are decided); `more` says threads past the limit wait.
    */
   async gmailInbox(me: string, after: number, limit: number) {
     // Every id since the cursor (cheap: 500 a page; the cursor is at most four days back), so the walk below starts at the oldest.
@@ -367,7 +367,35 @@ export class Workspace {
         continue;
       }
       threads.delete(m.threadId); // re-inserted: the map stays in arrival order of each thread's newest message
-      threads.set(m.threadId, { thread_id: m.threadId, id: m.id, from: h("From"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: new Date(at).toISOString(), cc_only: ccOnly(me, h("To"), h("Cc")), snippet: m.snippet });
+      threads.set(m.threadId, { thread_id: m.threadId, id: m.id, from: h("From"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: new Date(at).toISOString(), cc_only: ccOnly(me, h("To"), h("Cc")), snippet: m.snippet, replied: false });
+    }
+    // The listing holds inbox mail only: a reply the owner sent carries SENT, not INBOX, so it never appears and a thread
+    // the owner already answered would still show the other party's message as its newest. Read each kept thread (metadata
+    // only) and let its newest message, whoever sent it, be the row; `replied` marks the owner's own.
+    for (const [threadId, row] of threads) {
+      let t: { messages?: GmailMessage[] };
+      try {
+        t = await this.g.get<{ messages?: GmailMessage[] }>(`${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "metadata" });
+      } catch (err) {
+        if (/^Google API 404:/.test((err as Error).message)) continue; // deleted since the listing
+        throw err;
+      }
+      const newest = (t.messages ?? []).reduce<GmailMessage | undefined>((last, x) => (!last || Number(x.internalDate ?? 0) >= Number(last.internalDate ?? 0) ? x : last), undefined);
+      if (!newest) continue;
+      const h = (name: string) => header(newest, name);
+      const at = Number(newest.internalDate ?? 0);
+      threads.set(threadId, {
+        ...row,
+        id: newest.id,
+        from: h("From"),
+        to: h("To"),
+        cc: h("Cc"),
+        subject: h("Subject") ?? row.subject,
+        date: at ? new Date(at).toISOString() : row.date,
+        cc_only: ccOnly(me, h("To"), h("Cc")),
+        snippet: newest.snippet,
+        replied: (newest.labelIds ?? []).includes("SENT"),
+      });
     }
     return { threads: [...threads.values()], dropped, cursor, more };
   }

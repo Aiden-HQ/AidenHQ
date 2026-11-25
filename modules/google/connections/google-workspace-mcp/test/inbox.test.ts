@@ -8,24 +8,32 @@ import { InboxCursors } from "../src/inbox.js";
 const GM = "/gmail/v1/users/me/messages";
 const T0 = Math.floor(Date.now() / 1000) * 1000 - 3_600_000; // an hour ago, on a whole second
 
-type Msg = { id: string; threadId: string; at: number; headers: Record<string, string> };
-/** Two accounts' inboxes: `side.io` fails. Gmail lists newest first and pages by 2. */
+type Msg = { id: string; threadId: string; at: number; headers: Record<string, string>; labels?: string[] };
+const message = (m: Msg) => ({ id: m.id, threadId: m.threadId, internalDate: String(m.at), labelIds: m.labels ?? [], snippet: `about ${m.id}`, payload: { headers: Object.entries(m.headers).map(([name, value]) => ({ name, value })) } });
+/** Two accounts' inboxes: `side.io` fails. Gmail lists newest first, pages by 2, and leaves the owner's own mail out (`-from:me`). */
 function google(msgs: Msg[]) {
   const listed: string[] = [];
   const impl = (async (input: string | URL) => {
     const url = new URL(String(input));
     if (url.hostname === "oauth2.googleapis.com") return Response.json({ access_token: "at", expires_in: 3600 });
+    const thread = /^\/gmail\/v1\/users\/me\/threads\/([^/]+)$/.exec(url.pathname);
+    if (thread) {
+      const id = decodeURIComponent(thread[1]!);
+      const inThread = msgs.filter((x) => x.threadId === id);
+      if (!inThread.length) return new Response("not found", { status: 404 });
+      return Response.json({ id, messages: inThread.map(message) });
+    }
     if (url.pathname === GM) {
       const q = url.searchParams.get("q")!;
       listed.push(q);
       const after = Number(/after:(\d+)/.exec(q)![1]) * 1000;
-      const all = msgs.filter((m) => m.at >= after).sort((a, b) => b.at - a.at);
+      const all = msgs.filter((m) => m.at >= after && !/me@work\.com/i.test(m.headers.From ?? "")).sort((a, b) => b.at - a.at);
       const from = Number(url.searchParams.get("pageToken") ?? 0);
       return Response.json({ messages: all.slice(from, from + 2).map(({ id }) => ({ id })), ...(from + 2 < all.length ? { nextPageToken: String(from + 2) } : {}) });
     }
     const m = msgs.find((x) => url.pathname === `${GM}/${x.id}` && x.id !== "gone");
     if (!m) return new Response("not found", { status: 404 });
-    return Response.json({ id: m.id, threadId: m.threadId, internalDate: String(m.at), snippet: `about ${m.id}`, payload: { headers: Object.entries(m.headers).map(([name, value]) => ({ name, value })) } });
+    return Response.json(message(m));
   }) as typeof fetch;
   return { impl, listed };
 }
@@ -86,6 +94,25 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     expect(cursors.get("agent-1")).toEqual(second.cursor);
     expect(() => cursors.ack("agent-1", { "me@work.com": Date.now() + 60_000 })).toThrow(/not a time/);
     expect(cursors.get("agent-2")).toEqual({});
+  });
+
+  it("a thread the owner answered shows the owner's newest message, so it is not re-filed", async () => {
+    const own = (to: string): Msg["headers"] => ({ From: "Me <me@work.com>", To: to });
+    const answered: Msg[] = [
+      { id: "d1", threadId: "td", at: T0 + 1_000, headers: person("Dana <dana@acme.com>") },
+      // The owner's reply lives in SENT, not the inbox listing, and is the thread's newest message.
+      { id: "d2", threadId: "td", at: T0 + 2_000, headers: own("dana@acme.com"), labels: ["SENT"] },
+      { id: "k1", threadId: "tk", at: T0 + 3_000, headers: person("Kim <kim@acme.com>") },
+      { id: "k2", threadId: "tk", at: T0 + 4_000, headers: own("kim@acme.com"), labels: ["SENT"] },
+      // Kim wrote again after that reply, so this thread needs the owner again.
+      { id: "k3", threadId: "tk", at: T0 + 5_000, headers: person("Kim <kim@acme.com>") },
+    ];
+    const ws = new MultiWorkspace(creds(), "primary", google(answered).impl);
+    const r = await ws.gmailInbox({ "me@work.com": T0 }, 20);
+    expect(r.threads.map((t) => [t.thread_id, t.id, t.from, t.replied])).toEqual([
+      ["td", "d2", "Me <me@work.com>", true],
+      ["tk", "k3", "Kim <kim@acme.com>", false],
+    ]);
   });
 
   it("a failing account keeps its place and shows its error", async () => {
