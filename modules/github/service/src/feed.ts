@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { namedChecks } from "./aidenhq-sdk/checks.ts";
+import { latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Kind } from "./flow.ts";
 
 type Json = any;
@@ -458,7 +458,9 @@ export function createFeed(o: FeedOptions) {
       // Only a recent read is evidence (the settled head itself is read every 5 minutes).
       const h = rs?.tip ? rs.heads[rs.tip] : undefined;
       if (!rs?.tip || !h || now() - (rs.okAt ?? 0) > SETTLED_MS || now() - h.read > SETTLED_MS + QUIET_MAX_MS) return undefined;
-      const checks = h ? namedChecks(rollup(h)) : [];
+      // Each name's newest judgement, as the merge gate reads a head (checks.ts latestChecks): a run an edit superseded on the
+      // tip is not this tip's verdict.
+      const checks = h ? latestChecks(namedChecks(rollup(h))) : [];
       return { tip: rs.tip, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };
     },
     /** An open PR as the merge gate's GraphQL shape reads it (state, head, its head's rollup), from the snapshot; undefined if not open. */
@@ -496,7 +498,7 @@ function latestStatuses(h: Head): Status[] {
 /** A head as GraphQL's statusCheckRollup (checks.ts reads it): newest runs and statuses. */
 function rollup(h: Head) {
   return { contexts: { nodes: [
-    ...latestRuns(h).map((r) => ({ __typename: "CheckRun", name: r.name, status: r.status.toUpperCase(), conclusion: r.conclusion ? r.conclusion.toUpperCase() : null })),
+    ...latestRuns(h).map((r) => ({ __typename: "CheckRun", databaseId: r.id, name: r.name, status: r.status.toUpperCase(), conclusion: r.conclusion ? r.conclusion.toUpperCase() : null, startedAt: r.started, completedAt: r.completed })),
     ...latestStatuses(h).map((s) => ({ __typename: "StatusContext", context: s.context, state: s.state.toUpperCase(), createdAt: s.at })),
   ] } };
 }
