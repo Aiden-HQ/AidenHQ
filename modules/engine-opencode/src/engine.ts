@@ -53,7 +53,8 @@ async function run() {
   const keepUnread = () => { try { for (const c of io.drain()) queue.push({ text: c.text, comment: true }); save(); } catch {} };
   // A failed loop ends the job loudly (the kernel reads a non-zero exit as a failure and retries), never an unhandled rejection.
   const fail = (e: unknown) => { if (stopping) return; console.error(`engine failed: ${(e as Error)?.message ?? e}`); keepUnread(); process.exit(1); };
-  const server = await serve({ bin: env.AIDENHQ_OPENCODE_BIN, port, password, env: serverEnv });
+  // A server that never comes up fails through fail(), so comments already in the inbox are kept for the next job.
+  const server = await serve({ bin: env.AIDENHQ_OPENCODE_BIN, port, password, env: serverEnv }).catch((e) => { fail(e); throw e; });
 
   process.on("exit", () => server.child.kill("SIGKILL"));   // a failure past this point never leaves the server behind
   let session = spec.session ?? "";
