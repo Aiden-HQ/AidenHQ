@@ -2035,6 +2035,21 @@ Object.assign(TOOLS, {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: ({ comment_id, target }: Args) => boardApi("/internal/relay", { comment_id: String(comment_id), target: String(target) }),
   },
+  chat_open: {
+    description:
+      "Chief of Staff only: open a chat with another agent on the owner's own chat message, word for word (the board's \"+ New agent\" does the same for the Agent Architect). Use it when the owner asks for an agent to be built, designed or changed: agent `architect`, comment_id his message. The message becomes the chat's opening, so the owner is talking with that agent directly and its questions reach him without passing through you. Reply with the returned `chat` as a link, `[chat](#/c/<chat>)`, and say what the agent will ask. The board refuses unless the comment is his own original message (not forwarded or relayed, under 2 hours old). Once per message. It only opens the chat: the agent's work is its own.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        comment_id: { type: "string", description: "id of the owner's comment on your chat task, from task_comments; for the message he opened a board chat with (its description), the chat task's own id" },
+        agent: { type: "string", description: "the agent's key, e.g. architect" },
+      },
+      required: ["comment_id", "agent"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: ({ comment_id, agent }: Args) => boardApi("/internal/chat", { comment_id: String(comment_id), agent: String(agent) }),
+  },
   app_request_from_owner: {
     description:
       "Chief of Staff only: when the owner asks to change who may use a shared app or their role in it (\"make ann@x.com an editor of roadmap\"), file his own chat message as an in-app request on that app. The board refuses unless it is his own original message (not forwarded or relayed, under 2 hours old) that names the app (name or host; if not, ask him which). It returns a request id: delegate to the app's maintainer (the DevOps Engineer) naming only that id and the app; it acts with app_role_set. Never paraphrase his words into the task.",

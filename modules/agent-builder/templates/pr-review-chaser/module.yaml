@@ -1,5 +1,5 @@
 # Role template: a local module (modules/<name>/ in the instance repo) holding one agent, as the Agent Architect designs it
-# and files it with self_change. This one is the worked case "an agent that chases PR reviews".
+# and the Engineer commits it. This one is the worked case "an agent that chases PR reviews".
 name: pr-review-chaser
 description: Chases pull requests waiting on review.
 agents:
