@@ -9,6 +9,19 @@ const MAX_WRONG = 5;
 const CODE = /^[A-Za-z0-9_-]{22}$/; // randomBytes(16) as base64url
 const hash = (code: string): string => createHash("sha256").update(code).digest("hex");
 
+/** A message that is shaped like a pairing code: a live credential, so it is never stored or forwarded as chat. */
+export const isCodeShaped = (text: string | undefined): boolean => CODE.test(text?.trim() ?? "");
+
+/**
+ * Does a Slack message carry a pairing code? An edit (`message_changed`) keeps the new text under `message.text`, so the outer
+ * event's `text` is empty there: both are checked, or an edited DM would store the code in plaintext.
+ */
+export const carriesCode = (m: Record<string, unknown> | undefined): boolean => {
+  if (!m) return false;
+  const inner = m.message && typeof m.message === "object" ? (m.message as Record<string, unknown>) : undefined;
+  return isCodeShaped(typeof m.text === "string" ? m.text : undefined) || isCodeShaped(typeof inner?.text === "string" ? inner.text : undefined);
+};
+
 export interface Owner {
   user: string;
   channel: string; // the DM with the bot
@@ -18,7 +31,8 @@ export function createPairing(db: Database.Database, now: () => number = Date.no
   db.exec(`
     CREATE TABLE IF NOT EXISTS pair_codes (hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS pair_wrong (user_id TEXT NOT NULL, at INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS pair_owner (id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL, channel TEXT NOT NULL, paired_at INTEGER);`);
+    CREATE TABLE IF NOT EXISTS pair_owner (id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL, channel TEXT NOT NULL, paired_at INTEGER);
+    CREATE TABLE IF NOT EXISTS pair_events (event TEXT PRIMARY KEY, at INTEGER NOT NULL);`);
   // A store made before paired_at existed.
   if (!(db.prepare(`PRAGMA table_info(pair_owner)`).all() as { name: string }[]).some((c) => c.name === "paired_at")) db.exec(`ALTER TABLE pair_owner ADD COLUMN paired_at INTEGER`);
   const getOwner = db.prepare(`SELECT user_id, channel FROM pair_owner WHERE id = 1`);
@@ -45,6 +59,14 @@ export function createPairing(db: Database.Database, now: () => number = Date.no
 
   return {
     owner,
+    /** Already decided this event? Slack redelivers a slow ack, and a redelivery must not pair twice, report a used code as
+     * wrong, or spend a second try against the wrong-code limit. */
+    eventHandled: (event: string): boolean => db.prepare(`SELECT 1 AS ok FROM pair_events WHERE event = ?`).get(event) !== undefined,
+    /** Records a decided event, keeping only the last hour: a redelivery comes within seconds. */
+    noteEventHandled(event: string): void {
+      db.prepare(`DELETE FROM pair_events WHERE at < ?`).run(now() - 3_600_000);
+      db.prepare(`INSERT OR REPLACE INTO pair_events (event, at) VALUES (?, ?)`).run(event, now());
+    },
     paired: (): boolean => owner() !== undefined,
     /** When the owner last paired (ISO). */
     pairedAt(): string | undefined {
@@ -62,8 +84,56 @@ export function createPairing(db: Database.Database, now: () => number = Date.no
 }
 export type Pairing = ReturnType<typeof createPairing>;
 
+type Body = { event?: Record<string, string>; authorizations?: { is_bot?: boolean }[] } | null;
+
+/** Does the event name a bot install at all? Slack truncates `authorizations` to one arbitrary entry, so it is a hint, not the gate. */
+const namesBot = (b: Body): boolean => Boolean(b?.authorizations?.some((a) => a?.is_bot === true));
+
+// "bot": this DM is with the bot. "other": the bot cannot see it, or the token lacks the scope to look. "unknown": the lookup
+// itself failed (network, 5xx, 429) — retryable. "refused": the bot credential is missing or Slack rejected it — not retryable.
+type BotDm = "bot" | "other" | "unknown" | "refused";
+
+/** Slack's answers that mean the bot token itself is missing or rejected: retrying cannot fix that. */
+const CREDENTIAL_ERRORS = new Set(["not_authed", "invalid_auth", "token_revoked", "token_expired", "account_inactive", "invalid_token"]);
+
 /**
- * A DM to the bot that is a pairing code. Only a bot-delivered DM counts: the owner's user-token events also carry their DMs with
+ * Is this DM one with this bot, rather than the owner's DM with another person? The bot token answers it: the bot sees its own
+ * DMs (`conversations.info` -> `is_im`), while a DM between two people answers `channel_not_found`. A transient lookup failure
+ * falls back to the event's `authorizations` naming a bot; a rejected credential never does, or pairing would claim success on
+ * a bot that cannot reply.
+ */
+async function botDm(b: Body, channel: string, botToken: string, doFetch: typeof fetch): Promise<BotDm> {
+  const transient = (): BotDm => (namesBot(b) ? "bot" : "unknown");
+  // No bot token at all: this service cannot answer a DM, so pairing would be a lie.
+  if (!botToken) return namesBot(b) ? "refused" : "unknown";
+  let res: Response;
+  try {
+    res = await doFetch(`https://slack.com/api/conversations.info?channel=${encodeURIComponent(channel)}`, { headers: { authorization: `Bearer ${botToken}` }, signal: AbortSignal.timeout(2_500) });
+  } catch {
+    return transient();
+  }
+  if (res.status >= 500 || res.status === 429) return transient();
+  const j = (await res.json().catch(() => undefined)) as { ok?: boolean; channel?: { is_im?: boolean }; error?: string; needed?: string } | undefined;
+  if (!j) return transient();
+  if (j.ok) return j.channel?.is_im === true ? "bot" : "other";
+  // The channel does not exist for this token: a DM between two people, never a pairing DM.
+  if (j.error === "channel_not_found" || j.error === "not_in_channel") return "other";
+  if (j.error && CREDENTIAL_ERRORS.has(j.error)) return "refused";
+  // `missing_scope` is the bot's own token lacking `im:read` when Slack names it (a real setup fault, said so plainly); with no
+  // `needed`, it is the lookup not being allowed to see this DM at all, which is a colleague's DM and not ours to answer.
+  if (j.error === "missing_scope") return j.needed === "im:read" || !j.needed ? "refused" : "other";
+  return transient();
+}
+
+export interface PairingDeps {
+  /** The bot token: the DM channel is looked up with it, so a code pasted into a two-person DM pairs nobody. */
+  botToken?: string;
+  /** The HTTP client (tests replace it). */
+  fetch?: typeof fetch;
+}
+
+/**
+ * A DM to the bot that is a pairing code. Only a DM with this bot counts: the owner's user-token events also carry their DMs with
  * other people, and a code pasted there pairs nobody. Returns true when the event was a code attempt (right or wrong), so it
  * goes no further (not to triage, not to src_slack).
  */
@@ -72,20 +142,47 @@ export async function handlePairingDm(
   body: unknown,
   say: (channel: string, text: string) => Promise<unknown>,
   onPaired: (owner: Owner) => void,
+  deps: PairingDeps & { ack?: () => Promise<unknown> } = {},
 ): Promise<boolean> {
-  const b = body as { event?: Record<string, string>; authorizations?: { is_bot?: boolean }[] } | null;
+  const b = body as Body & { event_id?: string };
   const ev = b?.event;
   if (!ev || ev.type !== "message" || ev.channel_type !== "im" || ev.subtype || ev.bot_id || !ev.user || !ev.channel) return false;
-  if (b?.authorizations?.[0]?.is_bot !== true) return false;
+  // Slack's event id is unique; older envelopes without one fall back to the message's channel and ts, never a bare ts (two
+  // DMs can share a ts). Either way a redelivery of one message maps to one key.
+  const events = { event: b?.event_id || (ev.channel && ev.ts ? `${ev.channel}:${ev.ts}` : "") };
   const code = ev.text?.trim() ?? "";
   if (!CODE.test(code)) return false;
+  // The code is checked before the lookup, so ordinary chat in the DM costs no Slack API call.
+  const dm = await botDm(b, ev.channel, deps.botToken ?? "", deps.fetch ?? fetch);
+  // A DM between two people is not ours to answer, and pairing it must fail before the code is even looked at.
+  if (dm === "other") return false;
+  // The bot token is missing or Slack rejected it: no retry can fix that, so say so and leave it for the owner to set up.
+  if (dm === "refused") {
+    await deps.ack?.().catch(() => undefined);
+    await say(ev.channel, "This bot can't be used yet (its token is missing or was rejected). Fix it on the AidenHQ board's Slack setup page.").catch(() => undefined);
+    return true;
+  }
+  // The lookup could not say whether the bot sees this DM. The code is a pairing credential, so it still must not reach
+  // ingestion, but nothing was decided: leave it unacked so Slack redelivers and the lookup is retried, not swallowed.
+  if (dm === "unknown") {
+    await say(ev.channel, "I couldn't check that DM with the bot. Try again in a moment.").catch(() => undefined);
+    return true;
+  }
+  if (events.event && pairing.eventHandled(events.event)) {
+    await deps.ack?.().catch(() => undefined);
+    return true;
+  }
+  // Redeem (and record the event) before acking: a crash after the ack must not leave the owner unpaired with no redelivery.
   const r = pairing.redeem(code, ev.user, ev.channel);
+  if (events.event) pairing.noteEventHandled(events.event);
+  // The decision is durable now; ack before posting, so a slow reply never makes Slack redeliver it.
+  await deps.ack?.().catch(() => undefined);
   if (!r.ok) {
-    await say(ev.channel, "That code didn't work. Make a new one on the AidenHQ board.");
+    await say(ev.channel, "That code didn't work. Make a new one on the AidenHQ board.").catch(() => undefined);
     return true;
   }
   onPaired({ user: ev.user, channel: ev.channel });
-  await say(ev.channel, "Paired. Say hi to Aiden.");
-  if (r.previous) await say(r.previous.channel || r.previous.user, "This Slack account is no longer paired with AidenHQ.");
+  await say(ev.channel, "Paired. Say hi to Aiden.").catch(() => undefined);
+  if (r.previous) await say(r.previous.channel || r.previous.user, "This Slack account is no longer paired with AidenHQ.").catch(() => undefined);
   return true;
 }

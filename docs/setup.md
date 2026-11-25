@@ -328,6 +328,18 @@ apply moves its listener's data and restarts it under the `slack` module.
 **Check:** `docker compose logs --tail 20 slack-live` shows no token errors, and
 `scripts/healthcheck.sh | grep slack` shows `ok  slack read (own profile)`.
 
+To check pairing without the board, `GET /pair` on the module's local listener with the pair token answers
+`{"paired": false}` or `{"paired": true, "paired_at": "…"}`:
+
+```sh
+docker compose exec slack-live node -e 'const t=require("fs").readFileSync("/run/secrets/slack_pair_token","utf8").trim();fetch("http://127.0.0.1:8089/pair",{headers:{authorization:`Bearer ${t}`}}).then((r)=>r.text()).then(console.log)'
+```
+
+`channels.slack: true` in `/healthz` means only that a bot token exists; it does not say the socket is connected or
+that an owner is paired. Read those from the separate `socket` (`connected` | `disconnected` | `off`) and `paired`
+fields, with `detail` naming what is missing. Every live Slack event logs one `slack event in` line carrying the
+event `type` and `channel_type` (never its text, a user id or the code), so a delivered-but-unhandled DM is visible.
+
 ### Others (optional)
 
 Glean, Jira, Grafana and ClickHouse: press Connect on the board (Settings, Connections). GitHub: open its setup

@@ -77,12 +77,33 @@ const slackApps = appsOf(store);
 // Whether the bot is set up (the board's Connections shows it): booleans only, never a token. Once the owner uses Slack (signed
 // in) but has no bot, the connection needs them: Slack triage and 📌 tasks (Intake) come only from the bot's live events.
 const bot = Boolean(appToken && cfg.botToken);
-const health = async () =>
-  JSON.stringify(
-    bot || !(await owner().catch(() => null))
-      ? { ok: true, channels: { slack: bot } }
-      : { ok: false, detail: "Bot not set up: Slack triage and 📌 tasks need it. Add it on the Slack setup page (Slack with Aiden's bot).", channels: { slack: false } },
-  );
+// The socket's real state (socket.ts reports every connect and disconnect); "off" is no app token to listen with.
+let socketState: "connected" | "disconnected" = "disconnected";
+
+/** The distinct facts a misconfigured or half-working Slack shows: a token, a live socket, a paired owner. Only `channels.slack` is
+ * "it is set up" (the board and the kernel read that boolean); `socket` and `paired` say whether it can actually carry a DM. `ok`
+ * stays true for a token with a transient disconnect: an apply must not fail on a blip. */
+const health = async () => {
+  // Only a missing bot has to ask slack-mcp whether Slack is signed in at all: for a configured bot the answer cannot change
+  // `ok`, so a stalled relay must not hold this health check past Docker's timeout.
+  const ownerNow = bot ? undefined : await owner().catch(() => null);
+  const paired = pairing.paired();
+  const pairedAt = pairing.pairedAt();
+  const socket = appToken ? socketState : "off";
+  const channels = { slack: bot };
+  // Nothing configured at all (no bot, no sign-in): up and idle, as it always answered, and no "add the bot" wording,
+  // because nothing asked for it yet.
+  const idle = !bot && !ownerNow;
+  const missing = idle ? [] : [
+    ...(bot ? [] : ["Bot not set up: Slack triage and 📌 tasks need it. Add it on the Slack setup page (Slack with Aiden's bot)."]),
+    ...(socket === "connected" ? [] : [socket === "off" ? "Socket not running: no app-level token (SLACK_APP_TOKEN)." : "Socket not connected: reconnecting to Slack."]),
+    ...(paired ? [] : ["Not paired: DM the bot the code on the Slack setup page."]),
+  ];
+  const detail = missing.length ? missing.join(" ") : undefined;
+  // A signed-in Slack with no bot is a real misconfiguration (the board should show it); a token with a blip is not.
+  const ok = bot || !ownerNow;
+  return JSON.stringify({ ok, ...(detail ? { detail } : {}), channels, socket, paired, ...(paired && pairedAt ? { paired_at: pairedAt } : {}) });
+};
 
 const http = createServer(async (req, res) => {
   let url: URL;
@@ -175,8 +196,8 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.clo
 
 // The owner's own messages in their command channel: chat with Aiden, posted by the kernel as the owner, stamped [slack].
 const chat = { owner: pairing.owner, deliver: async (text: string) => void (await kernel("/v1/channel/owner-message", { sender: "owner", text }, channelToken)) };
-const pair = (body: unknown) =>
-  handlePairingDm(pairing, body, (channel, text) => postMessage(cfg, { channel, text }), (o) => void (cfg.ownerId = o.user));
+const pair = (body: unknown, ack?: () => Promise<void>) =>
+  handlePairingDm(pairing, body, (channel, text) => postMessage(cfg, { channel, text }), (o) => void (cfg.ownerId = o.user), { botToken: cfg.botToken, ...(ack ? { ack } : {}) });
 
 // src_slack (shared sources): every event teed to the warehouse, and a gap sync read as the owner through slack-mcp's relay.
 // Off until the warehouse password (WAREHOUSE_PASSWORD_FILE) is there.
@@ -207,5 +228,5 @@ const forward = async (e: unknown) => {
   if (!res.ok) log.warn({ status: res.status }, "the kernel refused an event; passed");
 };
 
-if (appToken) void startSocket({ appToken, store, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), log });
+if (appToken) void startSocket({ appToken, store, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), onState: (s) => void (socketState = s), log });
 else log.warn("SLACK_APP_TOKEN not set; not listening to Slack");
