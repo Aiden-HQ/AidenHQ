@@ -91,7 +91,9 @@ export function createSessionProxy({ key, lease }: { key: string; lease: (id: st
       up.on("close", () => socket.destroy());
       socket.on("close", () => up.destroy());
       up.on("connect", () => {
-        up.write([`${req.method} ${to.path} HTTP/1.1`, ...Object.entries(to.headers).map(([k, v]) => `${k}: ${[v].flat().join(", ")}`), "", ""].join("\r\n"));
+        // No permessage-deflate: the first frame is rewritten below, so it must reach the proxy uncompressed.
+        const headers = Object.entries(to.headers).filter(([k]) => k.toLowerCase() !== "sec-websocket-extensions");
+        up.write([`${req.method} ${to.path} HTTP/1.1`, ...headers.map(([k, v]) => `${k}: ${[v].flat().join(", ")}`), "", ""].join("\r\n"));
         if (head.length) up.write(head);
         up.pipe(socket);
         // The terminal's first frame carries the (empty) token: swap in ttyd's. The rest goes through untouched.
