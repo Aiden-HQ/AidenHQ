@@ -15,7 +15,7 @@ function world(settings = {}) {
   const prs = new Map();
   const comments = [];
   const perms = { alice: "write", mallory: "read" };
-  const started = [], replied = [], posted = [], acks = [], facts = [], statuses = [];
+  const started = [], replied = [], posted = [], acks = [], classifieds = [], facts = [], statuses = [];
   const results = new Map();
   const outcomes = new Map();
   const rewritten = new Set(), closed = [], fails = [], notes = [];
@@ -62,7 +62,7 @@ function world(settings = {}) {
       result: async (c) => results.get(c) ?? { state: "running" },
     },
     // A post lands at once unless the test makes it wait (`posts.pending`): only a posted finding gates.
-    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => { if (w.ackErr) throw Object.assign(new Error(w.ackErr), w.ackStatus ? { status: w.ackStatus } : {}); if (w.acksDown) { w.acksDown--; throw new Error("kernel 502"); } acks.push(a); return w.ackPending ? { state: "pending" as const, write: w.ackPending } : undefined; }, reply: async (r) => (replied.push(r), { state: "posted", write: `r-${replied.length}` }), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
+    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => { if (a.state === "classified") return void classifieds.push(a); if (w.ackErr) throw Object.assign(new Error(w.ackErr), w.ackStatus ? { status: w.ackStatus } : {}); if (w.acksDown) { w.acksDown--; throw new Error("kernel 502"); } acks.push(a); return w.ackPending ? { state: "pending" as const, write: w.ackPending } : undefined; }, reply: async (r) => (replied.push(r), { state: "posted", write: `r-${replied.length}` }), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
       notify: async (n) => { if (perms.notifyDown) throw new Error("kernel 502"); notes.push(n); return n.task && perms.taskClosed ? "closed" : "sent"; },
     },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
@@ -75,7 +75,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  const w = { db, engine, posts, snaps, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, tick: (o) => w.engine.tick(o), restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
+  const w = { db, engine, posts, snaps, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, classifieds, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, tick: (o) => w.engine.tick(o), restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
   // `w` is returned after createEngine's deps, so the fake's ack can read acksDown from it.
   return w;
 }
@@ -1965,4 +1965,17 @@ test("push_rounds: an advisory push review that finishes first never uses up the
   w.finish(2, NONE); await w.tick(); // the advisory run at 3 is done; the mandatory one still runs
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.ok(w.started.some((s) => s.head === sha("4") && s.mandatory), "4 still gets the push review");
+});
+
+test("every classified head gets the tier notice once: nothing changed is quiet, a new head speaks again, a failed write is tried again", async () => {
+  const w = world();
+  await opened(w, 3, sha("3"));
+  assert.equal(w.classifieds.length, 1);
+  assert.equal(w.classifieds[0].state, "classified");
+  await w.tick();
+  assert.equal(w.classifieds.length, 1, "no second notice while nothing changed");
+  w.pr(3, sha("4"));
+  await w.tick();
+  assert.equal(w.classifieds.at(-1).head, sha("4"));
+  assert.equal(w.classifieds.length, 2);
 });

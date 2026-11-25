@@ -174,6 +174,14 @@ describe("the refused-post notice", () => {
     // The kernel's or a reviewer's text never reaches the notice: fixed words only.
     expect(text).not.toMatch(/write k-|not posted: /);
   });
+  it("says the head's risk tier and why on every phase, and a classified head with no review has just that", () => {
+    const tier = { tier: "sensitive" as const, tier_why: "touches .github/ci.yml, by a member" };
+    const c = renderNotice({ repo: notice.repo, pr: 12, head: HEAD, phase: "classified", ...tier });
+    expect(c).toContain("Risk tier **sensitive**: `touches .github/ci.yml, by a member`");
+    expect(renderNotice({ ...notice, ...tier })).toContain("Risk tier **sensitive**");
+    expect(renderNotice({ ...notice })).not.toContain("Risk tier");
+    expect(NoticeArgsSchema.safeParse({ repo: notice.repo, pr: 12, head: HEAD, phase: "classified", tier: "skip", tier_why: "a `@x`\nmention" }).success).toBe(false);
+  });
   it("names the post's own fate, never the approval's, when a post fails in the executor", () => {
     const text = renderNotice({ ...notice, reason: "post_refused" });
     expect(text).not.toMatch(/approval|approve/i);

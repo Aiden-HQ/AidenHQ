@@ -34,8 +34,21 @@
     "done",
     "skipped",
     "failed",
-    "answered"
+    "answered",
+    "classified"
    ]
+  },
+  "tier": {
+   "enum": [
+    "skip",
+    "trivial",
+    "standard",
+    "sensitive"
+   ]
+  },
+  "tier_why": {
+   "type": "string",
+   "pattern": "^[^`\\r\\n]{1,500}$"
   },
   "engine": {
    "enum": [
