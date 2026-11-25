@@ -22,9 +22,10 @@ const APPLY_ARGS = obj({
 }, ["repo", "branch", "sha", "files"]);
 
 /** An apply's card, from its validated args and the diff the planner computed (bound by its hash in the record's targets). */
-export function applyCard(a: { repo: string; branch: string; sha: string; files: string[]; authority?: string[] }, diff: string): Card {
+export function applyCard(a: { repo: string; branch: string; sha: string; files: string[]; authority?: string[] }, diff: string, line?: string): Card {
   const authority = a.authority?.length ? `\nModule changes:\n${a.authority.join("\n")}` : "";
-  return { target: `${a.repo} ${a.branch}`, sentence: `Apply a change to the fleet's configuration (commit ${a.sha.slice(0, 12)}).`, changes: `Lands ${a.sha.slice(0, 12)} on ${a.repo}'s main and re-applies the live fleet. Files: ${a.files.join(", ")}${authority}`, reads: "Nothing new.", cost: "No model cost; services restart.", details: diff };
+  const identity = line ? `\n${line}` : "";
+  return { target: `${a.repo} ${a.branch}`, sentence: `Apply a change to the fleet's configuration (commit ${a.sha.slice(0, 12)}).`, changes: `Lands ${a.sha.slice(0, 12)} on ${a.repo}'s main and re-applies the live fleet. Files: ${a.files.join(", ")}${authority}${identity}`, reads: "Nothing new.", cost: "No model cost; services restart.", details: diff };
 }
 
 /**

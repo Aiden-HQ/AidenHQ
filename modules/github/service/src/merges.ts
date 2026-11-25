@@ -77,6 +77,9 @@ export function createMerges(d: {
   flow?: Flow;
   /** The task that opened a PR (pr-tasks.json, pr-tasks.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
   taskOf?: (repo: string, n: number) => string | null;
+  /** A task's id from its identifier (WOR-12), as the kernel's work read resolves it (by its jobs): a module's record (ship's)
+   * names its task by id only, and pr-tasks.json keys a PR's owner by the identifier. */
+  taskIdOf?: (identifier: string) => Promise<string | undefined>;
   /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
   identifierOf?: (record: string) => Promise<string | undefined>;
   /** A task's status (GET /v1/work?task=): a merge ship filed on a task that has since ended is never called. */
@@ -393,6 +396,12 @@ export function createMerges(d: {
         // The PR itself may have changed owners since the card was filed (a done task handed it to a successor): pr-tasks.json's
         // current row is the authority, and a row naming another task ends this card rather than merging the successor's PR.
         const now = d.taskOf?.(p.repo, p.number);
+        // A record a module filed (ship's) names its task by id: the row's identifier is resolved to its task's id once, and kept.
+        if (now && now !== q.task && !q.taskIdentifier && d.taskIdOf) {
+          const id = await d.taskIdOf(now).catch((e: Error) => { log("merge queue: task id not read (retrying)", { pr: p.url, task: now, err: says(e).slice(0, 300) }); return null; });
+          if (id === null) return wait("task-status");
+          if (id === q.task) { q.taskIdentifier = now; save(); }
+        }
         if (now && now !== q.task && now !== q.taskIdentifier) return fail(`${p.url} now belongs to ${now}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
@@ -658,7 +667,7 @@ export function createMerges(d: {
      * the checks from its rollup unless that is cut at 100. Code review's verdict is read once and decided on (`findingsKey`
      * names its findings, so new findings at one head are a new fix_review).
      */
-    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any } }) {
+    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number }) {
       // A skipped image scan is judged on the PR's files, which only the full read has.
       const listed = view && !skippedImageScan(view.pr);
       const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);
@@ -671,7 +680,7 @@ export function createMerges(d: {
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
-      const ctx = { queue, verdict: g, required, checks };
+      const ctx = { queue, verdict: g, required, checks, ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       const v = decide(data, head, { ...ctx, approve: false });
       const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];

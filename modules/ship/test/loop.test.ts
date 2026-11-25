@@ -20,12 +20,12 @@ import { decide } from "../../github/service/src/merge-gate.ts";
 const prTasks = (dir) => join(dir, "pr-tasks.json");
 const notePrTask = (dir, url, v) => writeFileSync(prTasks(dir), JSON.stringify({ ...(existsSync(prTasks(dir)) ? JSON.parse(readFileSync(prTasks(dir), "utf8")) : {}), [url.toLowerCase()]: v }));
 /** github's decision from ship's list node (merges.ts decision), every named check required, code review's verdict as given. */
-const decisionOf = (reviewGate) => async (repo, number, head, { pr, main }) => {
+const decisionOf = (reviewGate) => async (repo, number, head, { pr, main, stackedOn }) => {
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   const checks = namedChecks(rollup);
   const data = { repository: { defaultBranchRef: { name: main.name }, pullRequest: { ...pr, state: "OPEN", baseRefName: pr.baseRefName ?? main.name, reviews: { nodes: [] }, baseRef: { compare: { behindBy: 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } } } } };
   const g = reviewGate ? await reviewGate(repo, number, head) : undefined;
-  const v = decide(data, head, { queue: false, approve: false, verdict: g, required: checks.map((c) => c.name), checks });
+  const v = decide(data, head, { queue: false, approve: false, verdict: g, required: checks.map((c) => c.name), checks, ...(stackedOn ? { stackedOn } : {}) });
   return { ...v, failing: checks.filter((c) => !c.ok && !c.pending).map((c) => c.name), dirty: pr.mergeStateStatus === "DIRTY", ...(g && g.findingsKey ? { findingsKey: g.findingsKey } : {}) };
 };
 /** Task-owned adoptions whose heads were first seen at `at` (a done task's PR closes once its head is half an hour old). */
@@ -153,7 +153,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, refTip, branchUses, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, refTip, branchUses, tasks, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -162,11 +162,30 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
     if (req.url === "/v1/writes") { merges.push(JSON.parse(body)); const [status, answer] = merge(); return res.writeHead(status).end(JSON.stringify(answer)); }
     if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify(record()));
-    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus, records } : {}));
+    // A task close is recorded, and its task's status changes, exactly as the kernel's own close would: an assertion that a task
+    // was not closed must observe the request, never only a readback the fake would answer from its seed.
+    const close = String(req.url).match(/^\/v1\/tasks\/([^/]+)\/close$/);
+    if (close) {
+      closed.push(decodeURIComponent(close[1]));
+      const t = tasks?.[decodeURIComponent(close[1])];
+      if (t) t.status = String(JSON.parse(body)?.status ?? "done");
+      return res.writeHead(200).end(JSON.stringify({}));
+    }
+    // `tasks` is the kernel's task table for the tests that need a second, real task (a successor): one task's own status and
+    // brief, by identifier. A miss under a table answers as the kernel's work read does for no task (a null status), so a test
+    // whose watcher read the wrong identifier cannot pass on the default. Without a table every read is the `taskStatus` under test.
+    const asked = String(req.url).match(/^\/v1\/work\?task=([^&]+)/)?.[1];
+    if (req.url.startsWith("/v1/work")) {
+      const t = tasks && asked ? tasks[decodeURIComponent(asked)] : undefined;
+      if (tasks) return res.writeHead(200).end(JSON.stringify({ status: t?.status ?? null, ...(t?.description ? { description: t.description } : {}), records }));
+      return res.writeHead(200).end(JSON.stringify({ status: taskStatus, records }));
+    }
+    res.writeHead(200).end(JSON.stringify({}));
   });
   t.after(() => kernel.s.close());
   let open = [];
   const sent = []; // every call's body: a close names the task it was decided for, a delete carries no such field
+  const closed = []; // task ids the kernel was asked to close: an assertion about one must see the request, not a readback
   const reran = new Set(); // job ids this head's re-run was asked for: GitHub posts their next attempt
   const jobProbeOpts = []; // the opts of each Actions job read: a probe must carry a deadline
   const headRunsOpts = []; // the opts of each REST check-runs listing: the recovery paths' first read carries one too
@@ -237,7 +256,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate, ...(settings ? { settings } : {}) });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, merges, sent, watch, cacheDir, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
+  return { woke, gh, merges, sent, closed, watch, cacheDir, kernelUrl: kernel.url, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -491,19 +510,30 @@ test("a cancelled task's PR whose note GitHub refused is noted on the next tick 
 });
 
 // The incident: ACME-12 hit its spend cap, ACME-13 was filed naming its PR, and cancelling ACME-12 closed the PR seconds later and
-// deleted the branch. A successor that has not published yet is invisible to the watcher (pr-tasks.json names only the task that
-// published), so ownership cannot be determined here: it must fail safe and destroy nothing.
+// deleted the branch. The kernel really holds that successor here (an open task whose brief names the PR), as it did in the
+// incident; the watcher's only ownership record (pr-tasks.json) still names the cancelled opener, because a successor writes
+// nothing until it publishes. Ownership cannot be determined, so the rule must fail safe and destroy nothing.
 test("a cancelled task's PR with a successor task naming it is neither closed nor branch-deleted, this tick or the next", async (t) => {
-  const c = await rig(t, { taskStatus: "cancelled" });
+  const brief = "Finish https://github.com/acme/app/pull/12 for the user; its branch is agent/WOR-1/topic and the change is half done.";
+  const c = await rig(t, { taskStatus: "cancelled", tasks: {
+    "ACME-12": { status: "cancelled", description: "build the page" },
+    "ACME-13": { status: "in_progress", description: brief },
+  } });
+  // The successor is a real open task the kernel serves, whose brief names the PR: not a comment's claim.
+  const successor = await (await fetch(`${c.kernelUrl}/v1/work?task=ACME-13`)).json();
+  assert.deepEqual([successor.status, successor.description.includes("pull/12")], ["in_progress", true], "ACME-13 is open and names the PR");
   c.set([c.agentPr(12)]);
-  // ACME-13 is an open successor whose brief names https://github.com/acme/app/pull/12. The watcher's only ownership record
-  // (pr-tasks.json) still names the cancelled opener, because a successor writes nothing until it publishes: ownership cannot be
-  // determined, so the rule must fail safe. It never reads the successor, it just destroys nothing.
   await c.watch.tick();
   await c.watch.tick();
-  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/12").length, 0, "no close");
-  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b12"), "no branch delete");
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/12").length, 0, "no close for the successor's PR, this tick or the next");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b12"), "no branch delete for the successor's PR");
   assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/issues/12/comments").length, 1, "left open for the successor, noted once");
+  // And the successor's own task is untouched: no close request named it, it is still open, and it was not woken about a PR
+  // that is no longer there. The close is asserted as the request the kernel received, not only as a readback.
+  assert.deepEqual(c.closed, [], "no task was asked to close");
+  const still = await (await fetch(`${c.kernelUrl}/v1/work?task=ACME-13`)).json();
+  assert.equal(still.status, "in_progress", "the successor is still open");
+  assert.deepEqual(c.woke.filter((w) => w.task === "ACME-13").length, 0, "the successor is not woken about its own open PR");
 });
 
 
@@ -1143,4 +1173,90 @@ test("an accepted re-run is remembered per run, so a refused sibling run's retry
   writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify(db));
   await c.watch.tick();
   assert.deepEqual([posts(500), posts(600)], [1, 2], "the accepted run is never posted again; the refused one is retried");
+});
+
+test("a stack A←B: B waits on #A; once A merges, B is retargeted onto main and then merged", async (t) => {
+  let open = [];
+  const writes = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/writes") { writes.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: `w${writes.length}`, state: "claimed" })); }
+    if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify({ state: "claimed" }));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
+  });
+  t.after(() => kernel.s.close());
+  const updated = [];
+  const gh = async (method, path) => {
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path.endsWith("/update-branch")) { updated.push(path); return { status: 202, body: {} }; }
+    if (path === "/repos/acme/app/pulls/1") return { status: 200, body: { state: "closed", merged_at: "2026-11-25T10:00:00Z", html_url: "https://github.com/acme/app/pull/1", head: { sha: "h1" }, base: { ref: "main" }, user: { login: "aidenhq", type: "Bot" } } };
+    return { status: 200, body: {} };
+  };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
+  t.after(() => watch.stop());
+  const agent = { author: { __typename: "Bot", login: "aidenhq" } };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/1", { task: "ACME-1", branch: "bA" });
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/2", { task: "ACME-2", branch: "bB" });
+  const A = pr(1, { ...agent, headRefName: "bA" }), B = pr(2, { ...agent, headRefName: "bB", baseRefName: "bA" });
+  const of = (kind, n) => writes.filter((w) => w.kind === kind && (w.args.number ?? w.args.prs?.[0]?.number) === n);
+
+  open = [B, A];
+  await watch.tick();
+  assert.equal(of("github.merge", 1).length, 1, "A, on main, merges");
+  assert.equal(writes.filter((w) => (w.args.number ?? w.args.prs?.[0]?.number) === 2).length, 0, "B waits on #1");
+  open = [B]; // A merged
+  await watch.tick();
+  assert.deepEqual(of("github.retarget", 2).map((w) => [w.task, w.args.base, w.args.to, w.args.head]), [["ACME-2", "bA", "main", "h2"]], "B goes onto main once");
+  await watch.tick();
+  assert.equal(of("github.retarget", 2).length, 1, "once per head");
+  open = [{ ...B, baseRefName: "main" }]; // retargeted
+  await watch.tick();
+  assert.deepEqual([updated, of("github.merge", 2).length], [["/repos/acme/app/pulls/2/update-branch"], 0], "main is merged in first: never merged on the old diff");
+  await watch.tick(); // GitHub took the update but the head hasn't moved yet
+  assert.deepEqual([updated.length, of("github.merge", 2).length], [1, 0], "nothing moves on the old head, and the update isn't asked twice");
+  open = [{ ...B, baseRefName: "main", headRefOid: "h2b" }]; // the updated head, reviewed whole
+  await watch.tick();
+  assert.deepEqual(of("github.merge", 2).map((w) => [w.args.prs[0].base, w.args.prs[0].head]), [["main", "h2b"]], "then the normal path: merged into main");
+});
+
+test("a stack GitHub retargeted itself (the parent's branch deleted) still brings main in first; a conflict there goes to the repair", async (t) => {
+  let open = [], update = 202;
+  const writes = [], updated = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/writes") { writes.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: `w${writes.length}`, state: "claimed" })); }
+    if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify({ state: "claimed" }));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
+  });
+  t.after(() => kernel.s.close());
+  const gh = async (method, path) => {
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path.endsWith("/update-branch")) { updated.push(path); return { status: update, body: update === 422 ? { message: "merge conflict between base and head" } : {} }; }
+    if (path.includes("/git/trees/")) return { status: 200, body: { tree: [] } };
+    return { status: 200, body: {} };
+  };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
+  t.after(() => watch.stop());
+  const agent = { author: { __typename: "Bot", login: "aidenhq" } };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/1", { task: "ACME-1", branch: "bA" });
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/2", { task: "ACME-2", branch: "bB" });
+  const A = pr(1, { ...agent, headRefName: "bA", checks: "PENDING" }), B = pr(2, { ...agent, headRefName: "bB", baseRefName: "bA" });
+  open = [B, A];
+  await watch.tick();
+  open = [{ ...B, baseRefName: "main" }]; // A merged, its branch deleted: GitHub moved B itself
+  await watch.tick();
+  assert.deepEqual([updated, writes.filter((w) => w.kind === "github.retarget").length, writes.filter((w) => w.kind === "github.merge").length], [["/repos/acme/app/pulls/2/update-branch"], 0, 0], "main brought in first, never merged on the old head");
+  // The same with a conflict: GitHub refuses the update, and the repair makes the new head.
+  const c = { ...B, number: 3, url: "https://github.com/acme/app/pull/3", headRefName: "bC", headRefOid: "h3" };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/3", { task: "ACME-3", branch: "bC" });
+  open = [c, A];
+  await watch.tick();
+  update = 422;
+  open = [{ ...c, baseRefName: "main", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }];
+  await watch.tick();
+  assert.equal(writes.filter((w) => w.kind === "github.repair" && w.args.number === 3).length, 1, "the conflict goes to ship's repair, not a hold");
 });

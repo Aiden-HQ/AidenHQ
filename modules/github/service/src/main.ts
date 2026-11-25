@@ -54,6 +54,7 @@ const reviewGate = createReviewGate(gateOptions);
 // Ship's own gate (its watch loop asks through /internal/ship/verdict): its outage timer is separate, so a PR the merge queue
 // never sees can't age the queue's bypass.
 const watchGate = createReviewGate(gateOptions);
+const githubApp = gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "github-app") });
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   access, reportNeed, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
@@ -63,7 +64,7 @@ const handle = createService({
   // The ship module's adoptions, only while it is on (compiled): absent, every write naming an adoption is refused.
   ...(env.GITHUB_SHIP === "1" ? { ship: shipAdoptions({ url: "http://ship:8101", key: () => key }) } : {}),
   // The reviewer identity is the owner's one GitHub App (the one code review posts as), where it is installed.
-  reviewer: reviewerOf(gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "github-app") })),
+  reviewer: reviewerOf(githubApp), app: githubApp,
   log,
 });
 log("starting", { connected: access.connected(), tasks: Boolean(env.TASKS_DIR), fleetOrg });

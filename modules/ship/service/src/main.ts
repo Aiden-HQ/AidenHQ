@@ -91,7 +91,7 @@ startLoop({
   adopted: adoptedPass({
     gh, state, settings: settingsOf, paused, kernel, log,
     // The list read's node and default branch go along, so github reads neither again.
-    decision: (repo, number, head, view) => github("POST", "decision", { repo, number, head, pr: view.pr, main: view.main }),
+    decision: (repo, number, head, view) => github("POST", "decision", { repo, number, head, pr: view.pr, main: view.main, ...(view.stackedOn ? { stackedOn: view.stackedOn } : {}) }),
     effects: shipEffects(kernel, { codeReview: "http://code-review:8098", key: token }),
   }),
 });

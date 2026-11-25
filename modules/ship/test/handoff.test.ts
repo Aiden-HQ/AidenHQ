@@ -169,10 +169,12 @@ test("a conflict runs ship's repair job first and wakes the Engineer only for wh
   const merges = w.of("POST /v1/writes").filter((c) => (c.body as any).kind === "github.merge");
   assert.equal(merges.length, 1, "one merge record while it is open");
   assert.deepEqual(merges[0]!.body, { kind: "github.merge", task: "task-ship:a/b/7:1", args: { prs: [{ repo: "a/b", number: 7, head: H3, base: "main" }], generation: 1, attempt: 1 } });
-  // Its record failed: the next round files a new attempt at the same head.
-  w.records["rec-2"] = "failed";
+  // Its record failed: the PR holds with the outcome, and nothing is filed again at this head (no refile loop).
+  w.records["rec-2"] = { state: "failed", outcome: { text: "https://github.com/a/b/pull/7 now belongs to WOR-2, not T-1" } };
   await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
-  assert.equal((w.of("POST /v1/writes").filter((c) => (c.body as any).kind === "github.merge")[1]!.body as any).args.attempt, 2);
+  await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
+  assert.equal(w.of("POST /v1/writes").filter((c) => (c.body as any).kind === "github.merge").length, 1, "not filed again");
+  assert.match(String((w.state.get("a/b", 7) as any).hold?.reason), /merge at .* ended failed; its outcome is on record rec-2/);
   // Landed: the hand-off's task closes once.
   await round(w.deps, w.pr({ head: H3, state: "merged" }), { do: "done", why: "already merged" });
   await round(w.deps, w.pr({ head: H3, state: "merged" }), { do: "done", why: "already merged" });

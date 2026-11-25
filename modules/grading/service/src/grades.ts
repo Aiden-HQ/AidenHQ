@@ -445,7 +445,16 @@ export class Grades {
    * in a row; any real verdict, or a new round, clears that count.
    */
   record(issueId: string, v: VerdictInput, now = Date.now()): Grade {
-    const set = (state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null) => this.set(issueId, state, attempts, verdicts, failures, failedAt, now);
+    return this.recordPass(issueId, v, now).grade;
+  }
+
+  /**
+   * `record`, and whether the store took the verdict. A verdict computed on a filing or a round that moved while the pass ran is
+   * dropped and the row comes back untouched; its caller must not publish it (a `grade.verdict` fact, a note, a task move). The
+   * row alone cannot say which happened: an amendment also advances the round, so a round increase is not proof it landed.
+   */
+  recordPass(issueId: string, v: VerdictInput, now = Date.now()): { grade: Grade; applied: boolean } {
+    const set = (state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null) => ({ grade: this.set(issueId, state, attempts, verdicts, failures, failedAt, now), applied: true });
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
     // A verdict computed on a filing since replaced (its rubric amended, or its deliverable re-bound) is stale: applying it
@@ -455,9 +464,9 @@ export class Grades {
     // and an unnamed wait would park an amended row for work it never looked at.
     // The pass read this round when it began. A re-file, an amendment or a submission that moved the row on since then is a
     // different round, and this verdict graded the one before it: applying it would settle or park work nobody asked about.
-    if (v.round !== undefined && Number(v.round) !== g.round) return g;
+    if (v.round !== undefined && Number(v.round) !== g.round) return { grade: g, applied: false };
     const current = rubricHash(g.rubric, g.deliverable, g.revision);
-    if (v.rubric !== current) return g;
+    if (v.rubric !== current) return { grade: g, applied: false };
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt);
     const unmet = v.criteria.some((c) => c.met === "no");
     const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: unmet ? "needs_revision" : v.outcome === "satisfied" ? "satisfied" : "cannot_judge", criteria: v.criteria, rubric: current };

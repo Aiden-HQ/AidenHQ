@@ -34,6 +34,13 @@ export function signIn({ clientId, mcpUrl, stateDir, ci = false, fetchImpl }: { 
     endpoints: { authorize: "https://github.com/login/oauth/authorize", token: "https://github.com/login/oauth/access_token" },
     scopes: { supported: scopes, recommended: scopes },
     resource: false,
+    // The token's own cheap read: a 401 is GitHub refusing it, a 200 accepting it; anything else (a 5xx, a rate limit) says nothing.
+    accepts: async (token) => {
+      const { status } = await (fetchImpl ?? fetch)("https://api.github.com/user", { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "aidenhq" }, signal: AbortSignal.timeout(10_000) });
+      if (status === 401) return false;
+      if (status !== 200) throw new Error(`GitHub answered ${status}`); // inconclusive: neither a refusal nor proof
+      return true;
+    },
     device: { endpoint: "https://github.com/login/device/code", client_id: clientId, scopes },
     ...(fetchImpl ? { fetchImpl } : {}),
   });

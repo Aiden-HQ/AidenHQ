@@ -203,11 +203,17 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     // Cancelled while the pass was running: no verdict, the cancel settles the row (a reopened task is graded again).
     if (issue.status === "cancelled") return grades.settle(issue.id, "the task was cancelled before the grader settled it");
     // The hold stays while the grade loop still needs it: its grader token, and the resolve that closes, reopens or blocks the task.
-    const g = grades.record(issue.id, v);
+    const { grade: g, applied } = grades.recordPass(issue.id, v);
+    if (!applied) {
+      // The row moved while the pass ran (an amendment, a re-file, a new submission): the verdict graded what it no longer holds,
+      // so it is dropped whole — not recorded as a failure, not cleared. The loop reads `applied` and publishes nothing for it.
+      log("grade verdict dropped: the row moved while the pass ran", { task: issue.identifier, outcome: v.outcome, version: v.version.slice(0, 60), state: g.state });
+      return { ...g, applied: false };
+    }
     if (v.outcome === "grading_failed" && v.reason) grades.noteFailure(issue.id, v.reason);
     else if (v.outcome !== "awaiting_evidence") grades.clearFailure(issue.id);
     log("grade recorded", { task: issue.identifier, outcome: v.outcome, version: v.version.slice(0, 60), state: g.state, attempts: g.attempts, failures: g.failures });
-    return g;
+    return { ...g, applied: true };
   }
 
   async function board(method: string, path: string, body: unknown) {
