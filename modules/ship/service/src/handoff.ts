@@ -72,7 +72,7 @@ export type Kept = Adoption & {
   wedgedTold?: string;
   /** A fork's adoption: every write stands on the head it covers (`trigger.head`), checked at github's effect (generationOf). */
   fork?: true;
-  /** Tasks a fork's author-push hold still has to close (a close the kernel refused is tried again each pass). */
+  /** Tasks a hold still has to close (a close the kernel refused is tried again each pass). */
   closing?: string[];
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
@@ -165,10 +165,9 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
   }
   // A hand-back is a member's decision and outranks a stall (which is resumable): it must be recorded even while the PR is stalled.
   if (was && handback && (!was.hold || was.hold.kind === "stalled")) {
-    const held: Kept = { ...was, hold: { kind: "handed_back", reason: `handed back by @${handback.actor}`, at: handback.at } };
+    const held: Kept = { ...was, hold: { kind: "handed_back", reason: `handed back by @${handback.actor}`, at: handback.at }, closing: tasksOf(was) };
     d.state.put(held);
-    for (const t of tasksOf(was)) await closeTask(d, t, `${pr.url} was handed back: ship stopped working on it.`);
-    return d.state.get(pr.repo, pr.number) as Kept;
+    return closeHeld(d, pr, held);
   }
   // A fork's head the hand-off doesn't cover: taken on when ship made it or it keeps the PR's own change, else held until a member
   // hands it off again (the trigger above). A hand-back or a stop already holds it; a stall would resume on a new head, so it is
@@ -264,11 +263,14 @@ export async function recordTask(kernel: HandoffDeps["kernel"], pr: PrView, a: K
   return String(t.id);
 }
 
-/** Closes the tasks a fork's author-push hold left (`closing`), keeping any the kernel refused for the next pass. */
+/** Closes the tasks a hold left (`closing`), keeping any the kernel refused for the next pass. */
 async function closeHeld(d: HandoffDeps, pr: PrView, a: Kept): Promise<Kept> {
   const left: string[] = [];
+  const body = a.hold?.kind === "handed_back"
+    ? `${pr.url} was handed back: ship stopped working on it.`
+    : `${pr.url} has new commits from its author since it was handed off: ship stopped until a member hands it off again.`;
   for (const t of a.closing ?? []) {
-    try { await d.kernel.call("POST", `/v1/tasks/${t}/close`, { status: "done", body: `${pr.url} has new commits from its author since it was handed off: ship stopped until a member hands it off again.` }); }
+    try { await d.kernel.call("POST", `/v1/tasks/${t}/close`, { status: "done", body }); }
     catch (e) { left.push(t); d.log("task close failed: tried again next pass", { task: t, err: String((e as Error).message).slice(0, 200) }); }
   }
   const { closing: _, ...rest } = a;

@@ -167,6 +167,26 @@ test("a stalled hold reports its generation and kind to the code host, and a rou
   assert.deepEqual([generationOf(w.state, false, "a/b", 7, H2).generation, generationOf(w.state, false, "a/b", 7, H2).hold], [1, null]);
 });
 
+test("a hand-back over a stall closes its task, and a close the kernel refuses is tried again next pass", async () => {
+  const w = world();
+  const on = w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z");
+  await intake(w.deps, w.pr({ events: [on] }));
+  w.state.put({ ...(w.state.get("a/b", 7) as any), task: "T7", hold: { kind: "stalled", reason: "the repair didn't finish", at: new Date().toISOString() } });
+  const back = w.pr({ labels: [], events: [on, w.ev("e9", "unlabeled", "admin1", "2026-11-24T02:00:00Z")] });
+  const call = w.deps.kernel.call;
+  let refuse = true;
+  w.deps.kernel.call = async (m: string, path: string, b?: any) => { if (path === "/v1/tasks/T7/close" && refuse) { refuse = false; throw new Error("kernel 503"); } return call(m, path, b); };
+  const held = (await intake(w.deps, back))!;
+  assert.deepEqual([held.hold?.kind, held.closing], ["handed_back", ["T7"]]);
+  // The next pass closes it, with the hand-back's own words, and stops retrying.
+  assert.equal((await intake(w.deps, back))?.closing, undefined, "closed on the next pass");
+  const closes = w.of("POST /v1/tasks/T7/close");
+  assert.equal(closes.length, 1);
+  assert.match(String(closes[0]!.body.body), /was handed back: ship stopped working on it/);
+  assert.equal((await intake(w.deps, back))?.closing, undefined, "nothing left to close");
+  assert.equal(w.of("POST /v1/tasks/T7/close").length, 1);
+});
+
 test("a conflict runs ship's repair job first and wakes the Engineer only for what it leaves; a ready PR merges directly at its head", async () => {
   const w = world();
   const on = w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z");
