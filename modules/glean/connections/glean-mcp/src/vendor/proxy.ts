@@ -215,6 +215,9 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       if (old) retire(old);
       // A token endpoint failure is the vendor's, not a refusal of the grant: pass it on as it is, with nothing marked expired.
       if (refresh) await auth.refresh().catch((err) => { throw new RefreshFailed(err); });
+      // A refresh is the one reset with work between its start and its connect, so a reset that replaced it meanwhile owns the
+      // session now: connecting here would replace the newer sign-in's session with one opened from this one's grant.
+      if (refresh && resetting !== entry) return;
       // A newer reset took over while this one ran: it owns the session now, so there is nothing left to connect here.
       await connect().catch((err) => {
         // A sign-in that still could not connect is a real failure for the board; a stale one is the newer reset's business.
@@ -240,21 +243,28 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     ]);
     if (timer) clearTimeout(timer);
     if (!stalled) return;
+    // Only the caller that finds this reset still current invalidates it: a later caller waiting on the same stalled entry must not
+    // bump the generation again, or it would invalidate the session the first one opened.
+    if (resetting !== entry) return;
     log.warn(`${o.name}: a ${entry.refresh ? "token refresh" : "reconnect"} stalled; opening a session of its own`);
-    if (resetting === entry) resetting = undefined;
+    resetting = undefined;
     generation += 1;
   }
 
   /** The current session, or a fresh one; a connect a reset invalidated is retried on the session that reset opened. */
   async function acquire(): Promise<Upstream> {
     // A reset in flight is replacing the token (a refresh) or the account (a sign-in): a handshake started now would go out with
-    // the old one and come back 401 after the refresh succeeded, so wait for it and use the session it opened.
+    // the old one and come back 401 after the refresh succeeded, so wait for it and use the session it opened. A connect a reset
+    // superseded while it ran is the same case, so it waits for that reset too rather than opening another handshake at once.
     await settled();
     if (upstream) return upstream;
     try {
       return await connect();
     } catch (err) {
       if (!(err instanceof StaleConnect)) throw err;
+      // A reset started while this connect ran, so the connect is stale. That reset may still be replacing the token (a refresh), so
+      // wait for it again before deciding: opening a handshake here could send the token the refresh is replacing.
+      await settled();
       return upstream ?? (await connect());
     }
   }
@@ -305,7 +315,12 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
     try {
       // A periodic reconnect: only a session that exists can be too old. Without one, `acquire` opens it (bounded by `settled`), so
       // a call never joins a reset another call started and waits on it for as long as that connect hangs.
-      if (upstream && Date.now() - upstream.at > 30 * 60_000) await reset(false);
+      if (upstream && Date.now() - upstream.at > 30 * 60_000) {
+        await reset(false);
+        // The reconnect may have waited on a refresh or a sign-in: dispatch bound to the sign-in this call started under, as every
+        // other retry path does, so one that landed meanwhile never receives it.
+        return await dispatch(under, fn);
+      }
       return await run(fn);
     } catch (err) {
       if (!auth.signedIn() || !isAuthFailure(err)) throw err;
@@ -335,9 +350,11 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
       try {
         return await on(r, fn);
       } catch (again) {
-        // A late 401 from a session another call replaced while this retry ran decides nothing about the sign-in saved now.
-        const refused = r === upstream && isAuthFailure(again) && (await auth.refused?.() ?? true);
-        if (refused && signIn === under) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        // A late 401 from a session another call replaced while this retry ran decides nothing about the sign-in saved now: both are
+        // rechecked after the refusal probe, which may itself have taken long enough for a new session or sign-in to land.
+        if (r === upstream && isAuthFailure(again) && (await auth.refused?.() ?? true) && r === upstream && signIn === under) {
+          auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        }
         throw again;
       }
     }

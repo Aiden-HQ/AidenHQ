@@ -533,6 +533,260 @@ describe("a sign-in that lands during the refusal probe is not marked expired by
   });
 });
 
+describe("two callers that both give up on one stalled reset invalidate it once", () => {
+  // Two calls reach a reset that stalls. Each spends the bound. Only the first invalidates it; the second must use the session the
+  // first opened, not bump the generation again and open a third handshake of its own.
+  let stallRelease: () => void = () => {};
+  let stallStarted: () => void = () => {};
+  const stallIn = new Promise<void>((r) => { stallStarted = r; });
+  const stallGate = new Promise<void>((r) => { stallRelease = r; });
+  let lists = 0;
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/list") {
+      lists += 1;
+      if (lists === 1) { stallStarted(); await stallGate; } // the sign-in's connect stalls
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "ping", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the second call reuses the session the first opened, rather than opening another", async () => {
+    const up = await listen(vendor);
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: "Bearer owner" }),
+      signIn: { start: async () => ({ url: "https://auth.example.com/authorize" }), finish: async () => {}, scopes: async () => ({ supported: [], recommended: [] }) },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth: auth as never, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp(), resetWaitMs: 50 });
+    const url = await listen(p);
+    const callTool = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "ping", arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>);
+    try {
+      const signed = fetch(`${url}/auth/finish`, { method: "POST", headers: { authorization: "Bearer board", "content-type": "application/json" }, body: JSON.stringify({ state: "s", code: "c" }) });
+      await stallIn;
+      const both = await Promise.race([
+        Promise.all([callTool(), callTool()]),
+        new Promise<string>((r) => setTimeout(() => r("timed out"), 3000)),
+      ]);
+      expect(both).not.toBe("timed out");
+      for (const r of both as any[]) expect(r.result.isError).toBeUndefined();
+      // The stalled sign-in handshake, then one session for both calls: a second caller that invalidated again would have opened a
+      // third handshake.
+      expect(lists).toBe(2);
+      stallRelease();
+      await signed.catch(() => undefined);
+    } finally {
+      stallRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a refresh superseded by a sign-in never connects over the new session", () => {
+  // A call's 401 starts a refresh; while the refresh is out the owner signs in as a different account and its session is saved. The
+  // superseded refresh must not then connect with its own grant and replace the sign-in's session.
+  let refreshRelease: () => void = () => {};
+  let refreshStarted: () => void = () => {};
+  const refreshIn = new Promise<void>((r) => { refreshStarted = r; });
+  const refreshGate = new Promise<void>((r) => { refreshRelease = r; });
+  let token = "owner-a";
+  const listed: string[] = [];
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/list") listed.push(String(req.headers.authorization ?? ""));
+    if (body.method === "tools/call") return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "ping", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the superseded refresh never opens a handshake with its own grant", async () => {
+    const up = await listen(vendor);
+    let state: "ok" | "expired" = "ok";
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${token}` }),
+      // The refresh is held; the owner signs in as another account while it is out.
+      refresh: async () => { refreshStarted(); await refreshGate; token = "refreshed-a"; },
+      refused: async () => true,
+      status: () => ({ state, since: "" }),
+      mark: (s: "ok" | "expired") => void (state = s),
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (token = "owner-b"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth: auth as never, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    try {
+      const call = fetch(`${url}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "ping", arguments: {} } }),
+      }).then((r) => r.json() as Promise<any>).catch(() => undefined);
+      await refreshIn;
+      expect((await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } })).status).toBe(200);
+      // Let the sign-in's own reset finish, so the race is decided by the refresh's own check alone.
+      await new Promise((r) => setTimeout(r, 200));
+      refreshRelease();
+      await call;
+      await new Promise((r) => setTimeout(r, 200));
+      // A handshake with the superseded refresh's grant would have replaced the sign-in's session.
+      expect(listed).not.toContain("Bearer refreshed-a");
+      expect(listed).toContain("Bearer owner-b");
+    } finally {
+      refreshRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("the periodic reconnect keeps the sign-in the call started under", () => {
+  // A call arrives when the cached session is over 30 minutes old, so it reconnects. That connect stalls; the owner signs in as a
+  // different account meanwhile, and that session is saved. The call must not then be sent under the new account.
+  let oldRelease: () => void = () => {};
+  let oldStarted: () => void = () => {};
+  const oldIn = new Promise<void>((r) => { oldStarted = r; });
+  const oldGate = new Promise<void>((r) => { oldRelease = r; });
+  let lists = 0;
+  let account = "owner-a";
+  const calls: string[] = [];
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/list") {
+      lists += 1;
+      // The second handshake is the periodic reconnect's, and it stalls.
+      if (lists === 2) { oldStarted(); await oldGate; }
+    }
+    if (body.method === "tools/call") calls.push(String(req.headers.authorization ?? ""));
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "private", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "owner-b private" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the call is not sent through the account that signed in during the reconnect", async () => {
+    const up = await listen(vendor);
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (account = "owner-b"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth: auth as never, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const callTool = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "private", arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>);
+    const realNow = Date.now;
+    try {
+      await callTool(); // caches a session
+      // Age the cached session past the reconnect window without waiting half an hour.
+      Date.now = () => realNow() + 31 * 60_000;
+      const call = callTool(); // its periodic reconnect stalls in tools/list
+      await oldIn;
+      expect((await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } })).status).toBe(200);
+      oldRelease(); // the stalled reconnect returns
+      const r = await call;
+      expect(JSON.stringify(r)).not.toContain("owner-b private");
+      expect(calls.filter((a) => a.endsWith("owner-b"))).toHaveLength(0);
+    } finally {
+      Date.now = realNow;
+      oldRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("the retry's refusal probe rechecks the session it decides about", () => {
+  // The retry after a refresh is refused. Its refusal probe is slow; while it is out another call replaces the session (a
+  // session-only reset). The probe's verdict is on the session that has since been replaced, so the saved sign-in must stay ok.
+  let probeRelease: () => void = () => {};
+  let probeStarted: () => void = () => {};
+  const probeIn = new Promise<void>((r) => { probeStarted = r; });
+  const probeGate = new Promise<void>((r) => { probeRelease = r; });
+  let refreshed = false;
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/call") return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "boom", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("a replaced session's late refusal does not expire the saved sign-in", async () => {
+    const up = await listen(vendor);
+    let state: "ok" | "expired" = "ok";
+    let probes = 0;
+    const auth = {
+      ...staticAuth(),
+      refresh: async () => void (refreshed = true),
+      // The first call's first probe refuses (so it refreshes); its retry's probe (the second) stalls and refuses too. The second
+      // call's probe (the third) says the token still works, so it replaces the session without a refresh.
+      refused: async () => {
+        probes += 1;
+        if (probes === 2) { probeStarted(); await probeGate; return true; }
+        if (probes === 3) return false;
+        return true;
+      },
+      status: () => ({ state, since: "" }),
+      mark: (s: "ok" | "expired") => void (state = s),
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const callTool = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "boom", arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>).catch(() => undefined);
+    try {
+      const call = callTool(); // 401, refresh, retry refused; the retry's probe is held
+      await probeIn;
+      // Another call's refusal probe answers "still works", so it replaces the session without a refresh while the retry's probe is out.
+      await callTool();
+      probeRelease();
+      await call;
+      expect(refreshed).toBe(true);
+      expect(state).toBe("ok");
+    } finally {
+      probeRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
 describe("a failed connect superseded by a sign-in is stale, not an auth failure", () => {
   // A connect is listing tools with the old account's token when the owner signs in again; the old handshake then fails with a 401.
   // That failure belongs to the account just replaced: the waiting call must take the sign-in's session, not refresh against the
