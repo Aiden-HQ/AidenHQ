@@ -1310,5 +1310,10 @@ test("a list page that times out is retried at half the size, the size is kept, 
   assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 6);
   await m.watch.tick();
   assert.deepEqual(sizes.slice(4), [6], "the next read starts at the kept size");
-  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick page doubled it");
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 6, "no growth right after a shrink");
+  const db = JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"));
+  db["acme/app"].shrunkAt = Date.now() - 11 * 60_000;
+  writeFileSync(join(m.cacheDir, "loop.json"), JSON.stringify(db));
+  await m.watch.tick();
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick page doubles it once the cooldown passed");
 });
