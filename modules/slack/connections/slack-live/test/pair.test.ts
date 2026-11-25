@@ -99,33 +99,64 @@ it("a lookup that itself fails falls back to the event naming a bot install", as
   expect(pairing.owner()).toEqual({ user: "U6", channel: "D6" });
 });
 
-it("a redelivered event whose first delivery paired it does not say the code failed", async () => {
+it("a redelivered event is decided once, and a wrong code from an already-paired DM still says so", async () => {
   const { pairing } = setup();
   const code = pairing.mint();
   const said: [string, string][] = [];
-  const once = () =>
+  const dm = (text: string, event = "Ev7") =>
     handlePairingDm(
       pairing,
-      { event_id: "Ev7", event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text: code } },
-      async (c, text) => void said.push([c, text]),
+      { event_id: event, event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text } },
+      async (c, t) => void said.push([c, t]),
       () => undefined,
       { botToken: "xoxb-test", fetch: botSees("D1") as typeof fetch },
     );
-  expect(await once()).toBe(true);
-  expect(await once()).toBe(true);
-  expect(await once()).toBe(true);
+  expect(await dm(code)).toBe(true);
+  expect(await dm(code)).toBe(true); // Slack redelivers the event it already paired
+  expect(await dm(code)).toBe(true);
   expect(said).toEqual([["D1", "Paired. Say hi to Aiden."]]);
 
   // A genuinely wrong code from the same, already-paired DM still says so.
-  const bad = await handlePairingDm(
-    pairing,
-    { event_id: "Ev8", event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text: "x".repeat(22) } },
-    async (c, text) => void said.push([c, text]),
-    () => undefined,
-    { botToken: "xoxb-test", fetch: botSees("D1") as typeof fetch },
-  );
-  expect(bad).toBe(true);
+  expect(await dm("x".repeat(22), "Ev8")).toBe(true);
   expect(said.at(-1)).toEqual(["D1", "That code didn't work. Make a new one on the AidenHQ board."]);
+});
+
+it("a redelivered wrong code charges the limit once", async () => {
+  const { pairing } = setup();
+  const dm = (text: string, event: string) =>
+    handlePairingDm(
+      pairing,
+      { event_id: event, event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text } },
+      async () => undefined,
+      () => undefined,
+      { botToken: "xoxb-test", fetch: botSees("D1") as typeof fetch },
+    );
+  // Three distinct mistakes, each delivered twice, then the right code: the redeliveries must not exhaust the five tries.
+  for (let i = 0; i < 3; i++) {
+    await dm(`w${i}${"z".repeat(20)}`, `EvW${i}`);
+    await dm(`w${i}${"z".repeat(20)}`, `EvW${i}`);
+  }
+  expect(await dm(pairing.mint(), "EvGood")).toBe(true);
+  expect(pairing.paired()).toBe(true);
+  expect(pairing.owner()).toEqual({ user: "U1", channel: "D1" });
+});
+
+it("acknowledges as soon as the decision is durable, before the reply goes out", async () => {
+  const { pairing } = setup();
+  const order: string[] = [];
+  let releaseReply = () => {};
+  const replyGate = new Promise<void>((r) => (releaseReply = r));
+  const call = handlePairingDm(
+    pairing,
+    { event_id: "EvA", event: { type: "message", channel_type: "im", user: "U1", channel: "D1", text: pairing.mint() } },
+    async () => { order.push("reply"); await replyGate; order.push("replied"); },
+    () => undefined,
+    { botToken: "xoxb-test", fetch: botSees("D1") as typeof fetch, ack: async () => { order.push("ack"); } },
+  );
+  await new Promise((r) => setImmediate(r));
+  expect(order).toEqual(["ack", "reply"]); // acked, and the reply is still in flight
+  releaseReply();
+  expect(await call).toBe(true);
 });
 
 it("a code posted in a channel pairs nobody, and neither does one in a DM with someone else", async () => {

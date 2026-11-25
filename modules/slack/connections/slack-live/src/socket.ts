@@ -2,6 +2,7 @@
 import socketMode from "@slack/socket-mode";
 import type { Logger } from "pino";
 import { toSourceEvent, type SourceEvent } from "./map.js";
+import { isCodeShaped } from "./pair.js";
 import type { Store } from "./store.js";
 
 const { SocketModeClient } = socketMode;
@@ -11,8 +12,9 @@ interface Deps {
   store: Store;
   /** The owner's own messages in their command channel (the paired DM): chat with Aiden, posted as the owner by the kernel. */
   chat?: { owner: () => { user: string; channel: string } | undefined; deliver: (text: string) => Promise<void> };
-  /** A pairing DM (pair.ts): true when it was one, and then it goes no further. */
-  pair?: (body: unknown) => Promise<boolean>;
+  /** A pairing DM (pair.ts): true when it was one, and then it goes no further. `ack` lets it acknowledge as soon as the
+   * decision is durable, so posting the reply never holds the ack past Slack's 3 s deadline. */
+  pair?: (body: unknown, ack: () => Promise<void>) => Promise<boolean>;
   /** Channel binding (bind.ts): `/aiden …` answered to the person who typed it, and @mentions in bound channels. */
   bind?: { command: (body: any) => Promise<string>; mention: (ev: any) => Promise<boolean> };
   tee?: (body: unknown) => void; // src_slack (sources.ts): every event that is not a pairing DM; never throws or blocks
@@ -55,13 +57,17 @@ export async function startSocket({ appToken, store, chat, pair, bind, tee, forw
       return;
     }
     try {
-      if (msg.type === "events_api" && pair && (await pair(msg.body))) {
+      // A pairing DM acks itself once its decision is durable (or leaves the event unacked to be retried).
+      if (msg.type === "events_api" && pair && (await pair(msg.body, () => msg.ack()))) return;
+      // Owner's messages in the command channel are chat with the CoS, not triage events.
+      const ev = (msg.body as { event?: Record<string, string> } | null)?.event;
+      // A pairing code that did not pair (a DM the bot can't see, a channel) is still a live credential: never stored or
+      // forwarded as chat. The event is handled here, so it does not reach src_slack or the event router either.
+      if (msg.type === "events_api" && isCodeShaped(ev?.text)) {
         await msg.ack().catch(() => undefined);
         return;
       }
       if (msg.type === "events_api") tee?.(msg.body);
-      // Owner's messages in the command channel are chat with the CoS, not triage events.
-      const ev = (msg.body as { event?: Record<string, string> } | null)?.event;
       const owner = chat?.owner();
       if (chat && owner?.channel && msg.type === "events_api" && ev?.type === "message" && !ev.subtype && !ev.bot_id && ev.user === owner.user && ev.channel === owner.channel && ev.text?.trim()) {
         if (!store.getKv(`slack_chat:${ev.ts}`)) {

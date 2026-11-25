@@ -9,6 +9,9 @@ const MAX_WRONG = 5;
 const CODE = /^[A-Za-z0-9_-]{22}$/; // randomBytes(16) as base64url
 const hash = (code: string): string => createHash("sha256").update(code).digest("hex");
 
+/** A message that is shaped like a pairing code: a live credential, so it is never stored or forwarded as chat. */
+export const isCodeShaped = (text: string | undefined): boolean => CODE.test(text?.trim() ?? "");
+
 export interface Owner {
   user: string;
   channel: string; // the DM with the bot
@@ -46,10 +49,11 @@ export function createPairing(db: Database.Database, now: () => number = Date.no
 
   return {
     owner,
-    /** Was this Slack event the one that paired? Its redelivery (a slow ack) must not report the code as wrong. */
-    eventPaired: (event: string): boolean => db.prepare(`SELECT 1 AS ok FROM pair_events WHERE event = ?`).get(event) !== undefined,
-    /** Records the event a code was redeemed for, keeping only the last hour: redelivery comes within seconds. */
-    noteEventPaired(event: string): void {
+    /** Already decided this event? Slack redelivers a slow ack, and a redelivery must not pair twice, report a used code as
+     * wrong, or spend a second try against the wrong-code limit. */
+    eventHandled: (event: string): boolean => db.prepare(`SELECT 1 AS ok FROM pair_events WHERE event = ?`).get(event) !== undefined,
+    /** Records a decided event, keeping only the last hour: a redelivery comes within seconds. */
+    noteEventHandled(event: string): void {
       db.prepare(`DELETE FROM pair_events WHERE at < ?`).run(now() - 3_600_000);
       db.prepare(`INSERT OR REPLACE INTO pair_events (event, at) VALUES (?, ?)`).run(event, now());
     },
@@ -118,7 +122,7 @@ export async function handlePairingDm(
   body: unknown,
   say: (channel: string, text: string) => Promise<unknown>,
   onPaired: (owner: Owner) => void,
-  deps: PairingDeps = {},
+  deps: PairingDeps & { ack?: () => Promise<unknown> } = {},
 ): Promise<boolean> {
   const b = body as Body & { event_id?: string };
   const ev = b?.event;
@@ -130,21 +134,23 @@ export async function handlePairingDm(
   const dm = await botDm(b, ev.channel, deps.botToken ?? "", deps.fetch ?? fetch);
   // A DM between two people is not ours to answer, and pairing it must fail before the code is even looked at.
   if (dm === "other") return false;
-  // The lookup could not say whether the bot sees this DM: a code that may be a pairing credential never goes on to ingestion.
+  // The lookup could not say whether the bot sees this DM. The code is a pairing credential, so it still must not reach
+  // ingestion, but nothing was decided: leave it unacked so Slack redelivers and the lookup is retried, not swallowed.
   if (dm === "unknown") {
     await say(ev.channel, "I couldn't check that DM with the bot. Try again in a moment.").catch(() => undefined);
     return true;
   }
+  // From here the event is decided: ack before any reply, so a slow post never makes Slack redeliver a decided pairing.
+  await deps.ack?.().catch(() => undefined);
+  if (events.event && pairing.eventHandled(events.event)) return true;
   const r = pairing.redeem(code, ev.user, ev.channel);
+  if (events.event) pairing.noteEventHandled(events.event);
   if (!r.ok) {
-    // Slack redelivers an event whose lookup outran its 3 s ack: this exact event already paired, so it is not a wrong code.
-    if (events.event && pairing.eventPaired(events.event)) return true;
-    await say(ev.channel, "That code didn't work. Make a new one on the AidenHQ board.");
+    await say(ev.channel, "That code didn't work. Make a new one on the AidenHQ board.").catch(() => undefined);
     return true;
   }
-  if (events.event) pairing.noteEventPaired(events.event);
   onPaired({ user: ev.user, channel: ev.channel });
-  await say(ev.channel, "Paired. Say hi to Aiden.");
-  if (r.previous) await say(r.previous.channel || r.previous.user, "This Slack account is no longer paired with AidenHQ.");
+  await say(ev.channel, "Paired. Say hi to Aiden.").catch(() => undefined);
+  if (r.previous) await say(r.previous.channel || r.previous.user, "This Slack account is no longer paired with AidenHQ.").catch(() => undefined);
   return true;
 }

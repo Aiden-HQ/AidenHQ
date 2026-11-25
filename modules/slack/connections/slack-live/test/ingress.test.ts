@@ -39,6 +39,19 @@ it("logs an inbound events_api message before the pairing filter, and never its 
   expect(onState).toHaveBeenLastCalledWith("disconnected");
 });
 
+it("a code-shaped message that pairs nobody is not teed or forwarded", async () => {
+  const tee = vi.fn();
+  const forward = vi.fn(async () => undefined);
+  await startSocket({ appToken: "xapp-test", store: openStore(":memory:"), log: { info() {}, warn() {}, error() {} } as never, pair: async () => false, tee, forward });
+  const handle = handlers.at(-1)!;
+  const ack = vi.fn(async () => {});
+  // A DM between two people (or any DM the bot can't see): still a live pairing credential.
+  await handle({ type: "events_api", body: { event_id: "Ev9", event: { type: "message", channel_type: "im", user: "U1", channel: "D2", text: "A".repeat(22) } }, ack });
+  expect(tee).not.toHaveBeenCalled();
+  expect(forward).not.toHaveBeenCalled();
+  expect(ack).toHaveBeenCalledOnce();
+});
+
 it("a non-events_api message is not logged as an inbound event", async () => {
   const info = vi.fn();
   await startSocket({ appToken: "xapp-test", store: openStore(":memory:"), log: { info, warn() {}, error() {} } as never, pair: async () => false });

@@ -30,6 +30,8 @@ describe("src_slack", () => {
     // A deleted thread parent comes as an edit to subtype "tombstone": still a tombstone, never a text revision.
     expect(eventWrite({ event: { type: "message", subtype: "message_changed", channel: "C1", message: { ts: "5.5", subtype: "tombstone", text: "This message was deleted." } } })?.row).toMatchObject({ ts: "5.5", deleted: true, text: null });
     expect(eventWrite({ event: { type: "reaction_added", channel: "C1" } })).toBeNull();
+  // A pairing code read by the gap sync is a live credential: its row keeps its metadata and loses its text.
+  expect(eventWrite({ event: { type: "message", channel: "D1", channel_type: "im", ts: "6.6", user: "U1", text: "A".repeat(22) } })?.row).toMatchObject({ text: null, user_id: "U1", ts: "6.6" });
     expect(eventWrite({ event: { type: "message", channel: "C1", ts: "4.4", text: "x".repeat(5000) } })?.row).toMatchObject({ text_truncated: true });
   });
 

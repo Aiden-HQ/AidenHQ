@@ -4,6 +4,7 @@
 // conversations.history per channel the owner is in, plus conversations.replies for recently active threads; once a week it
 // re-reads the last week in full and tombstones what Slack no longer returns (Events have no replay). No LLM.
 import { toSourceEvent, type SourceEvent } from "./map.js";
+import { isCodeShaped } from "./pair.js";
 import type { Logger } from "pino";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 import { permalink } from "./map.js";
@@ -86,7 +87,11 @@ const tombstone = (channel: string, ts: string, type?: string): Row => ({ channe
  * subtype "tombstone", "This message was deleted.", while the thread has replies).
  */
 export function messageWrite(channel: string, m: Record<string, any>, type: string | undefined): { table: Table; row: Row } {
-  return m.subtype === "tombstone" ? { table: TOMBSTONE, row: tombstone(channel, m.ts, type) } : { table: MESSAGE, row: messageRow(channel, m, type) };
+  if (m.subtype === "tombstone") return { table: TOMBSTONE, row: tombstone(channel, m.ts, type) };
+  // A pairing code is a live credential: a history read (the gap sync) can see it through the owner's own sign-in, and it must
+  // never land in src_slack, which agents read. Its metadata is kept, its text blanked.
+  if (isCodeShaped(m.text)) return { table: MESSAGE, row: { ...messageRow(channel, { ...m, text: "" }, type), text: null } };
+  return { table: MESSAGE, row: messageRow(channel, m, type) };
 }
 
 /** A Socket Mode events_api body as the write it means: a message row, or a tombstone. Null for everything else. */

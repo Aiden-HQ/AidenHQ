@@ -193,8 +193,8 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.clo
 
 // The owner's own messages in their command channel: chat with Aiden, posted by the kernel as the owner, stamped [slack].
 const chat = { owner: pairing.owner, deliver: async (text: string) => void (await kernel("/v1/channel/owner-message", { sender: "owner", text }, channelToken)) };
-const pair = (body: unknown) =>
-  handlePairingDm(pairing, body, (channel, text) => postMessage(cfg, { channel, text }), (o) => void (cfg.ownerId = o.user), { botToken: cfg.botToken });
+const pair = (body: unknown, ack?: () => Promise<void>) =>
+  handlePairingDm(pairing, body, (channel, text) => postMessage(cfg, { channel, text }), (o) => void (cfg.ownerId = o.user), { botToken: cfg.botToken, ...(ack ? { ack } : {}) });
 
 // src_slack (shared sources): every event teed to the warehouse, and a gap sync read as the owner through slack-mcp's relay.
 // Off until the warehouse password (WAREHOUSE_PASSWORD_FILE) is there.
