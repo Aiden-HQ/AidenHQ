@@ -841,7 +841,8 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/git-auth.ts \
   && grep -qF 'if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);' "$rplan" \
   && grep -qF 'const eligible = productMergeEligible({ repo: p.repo, head: String(p.head ?? ""), checks: p.checks, verdict: p.verdict, productRepo: String(s.productRepo ?? "") });' "$rplan" \
-  && grep -qF 'const ci = p.checks.some((c) => c.name === GATE_CHECK && c.success === true && !c.pending);' "$rm_" \
+  && grep -qF 'const ci = gate.length > 0 && gate.every((c) => c.success === true && !c.pending);' "$rm_" \
+  && grep -qF 'const gate = headChecks(p.checks.filter((c) => c.name === GATE_CHECK));' "$rm_" \
   && grep -qF 'return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true && !p.verdict.unreviewed);' "$rm_" \
   && grep -qF '!productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");' "$rq" \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
