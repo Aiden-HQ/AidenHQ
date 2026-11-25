@@ -81,8 +81,11 @@ async function twin(t, { satisfied, settings, onControl, issues, agents: who = a
 
 test("the executor sees nothing before approval; approved, it runs once and the task hears the outcome", async (t) => {
   const { k, fx, tool, pending, review, moduleCalls } = await twin(t);
-  const p = await pending(await tool("post_note", { note: "hi" }));
+  const answer = await tool("post_note", { note: "hi" });
+  const p = await pending(answer);
   assert.deepEqual({ tier: p.tier, state: p.state }, { tier: 1, state: "review" });
+  // The answer marks the pending record on its header (the kernel's alone), not only in its text.
+  assert.equal(answer.headers.get("x-aidenhq-pending"), p.approval);
   assert.match(p.approval, /^k-[0-9a-f]{16}$/);
   // Plan only: nothing executed, and the tool never reached the module.
   assert.equal(fx.plans.length, 1);
