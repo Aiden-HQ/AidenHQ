@@ -22,7 +22,7 @@ Rules that bind (owner and design):
 | Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token (`check_jobs:` in `module.yaml`, 45 min timeout) |
 | Poster (`modules/github/connections/github-mcp/src/review-post.ts`, `review-render.ts`) | Turns findings into GitHub text; code, never the model |
 | Reviewer Manager agent (`agents/reviewer-manager/`) | Conversation only: sets up and edits config when the owner asks Aiden, starts one-off reviews, answers `aiden` questions on reviews. Holds no code tools and no delegation |
-| Reviews page (`service/src/page.html`, a module view: `board.pages` in `module.yaml`, docs/design/board-ui.md "Modules") | Tabs Reviews, Repos, Insights; reads and acts through the module's own `code_review_*` tools on the owner's calls |
+| Reviews page (`service/src/page.html`, a module view: `board.pages` in `module.yaml`, docs/design/board-ui.md "Modules") | Results first (summary, needs you, one row per PR, rail with Advanced); reads and acts through the module's own `code_review_*` tools on the owner's calls |
 
 ## Config (`settings.code_review`, schema in `module.yaml`, validated in `service/src/config.ts`)
 
@@ -383,8 +383,8 @@ bounded by the Tier 2 rules above and PR text is data, never instructions.
 
 ## Cost and outcomes
 
-Every run is `review.started` / `review.ended` facts on its PR (stage `review`, with its engine, model and effort); the Insights
-tab shows reviews per day, cost per repo, findings by severity, the share of findings later resolved because fixed, and skips.
+Every run is `review.started` / `review.ended` facts on its PR (stage `review`, with its engine, model and effort); the Reviews page's
+summary line shows the week's reviews, bugs caught, first-round passes, median review time and spend.
 Only the install's spend limit bounds reviews (no per-author or per-repo review limits): past it a run's model calls get 402 from the gateway. A run's cost is its billed `cost_usd` (the kernel's `billed_usd` on `GET /v1/checks/:id` while it runs).
 
 The requester of a one-off review hears its outcome. A one-off ask (`code_review_run`, from the Reviewer Manager or the owner's page) records its asker — the agent and task from the kernel's signed caller on the request, never a body field, and
@@ -418,10 +418,10 @@ analytics page.
 ## Setting it up and using it (the Reviews page)
 
 A module view (docs/design/board-ui.md "Modules"), so it sits in the Fleet sidebar from `module.yaml`'s `board.pages` and reaches the
-module only through its own tools. Reviews: open and recent runs per repo (PR, combo, findings by severity, cost, status) and whole-repo
-reviews, each opening its findings with their outcomes, a gated PR's merge gate with the owner's Dismiss, and (for a repo review) its
-report. Repos: each watched repo's combos and settings edited in place, with today's spend; an edit is the owner's own call of
-`code_review_configure`, which only proposes: the board shows the change and files it on his Save. Insights: the numbers above. Review a
+module only through its own tools. Results first: a summary sentence, what needs the owner (a held merge to look at or dismiss, a fork PR to review on his budget), one row per PR over a period (not per reviewer run) that opens in place to its findings, and whole-repo
+reviews in the rail, each opening its findings with their outcomes, a gated PR's merge gate with the owner's Dismiss, and (for a repo review) its
+report. Advanced (rail, collapsed): each watched repo's rules, reviewers per level and limits written as sentences, each editable in place (Edit opens the rule or level's controls), with today's spend; an edit is the owner's own call of
+`code_review_configure`, which only proposes: the board shows the change and files it on his Save. Review a
 PR (paste its link; reviewers default to the repo's `on_open` combos, Review again on a review does the same) and Review a repo (pick the
-checks) start one-off reviews. The frame has no navigation, so GitHub and Primer addresses are shown as text; titles, findings and
+checks) start one-off reviews; Ask opens the owner's chat with the message ready (`ui/message`). The frame has no navigation, so GitHub and Primer addresses are shown as text; titles, findings and
 reports are shown as plain text, never as links or markup.

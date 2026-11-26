@@ -2496,7 +2496,7 @@ export function createEngine(d: EngineDeps) {
       if (q.target === "pr") where.push("target = 'pr'");
       if (q.repo) (where.push("repo = ?"), args.push(q.repo.toLowerCase()));
       if (q.status) (where.push("status = ?"), args.push(q.status));
-      return all<RunRow & { title: string | null }>(`SELECT r.*, p.title FROM runs r LEFT JOIN prs p ON p.repo = r.repo AND p.number = r.number ${where.length ? `WHERE ${where.map((w) => `r.${w}`).join(" AND ")}` : ""} ORDER BY r.created DESC LIMIT ?`, ...args, Math.min(Math.max(1, q.limit ?? 50), 500)).map((r) => view(r, waiting.has(r.id)));
+      return all<RunRow & { title: string | null; pr_open: number | null; pr_merged: number | null; pr_author: string | null }>(`SELECT r.*, p.title, p.open AS pr_open, p.merged AS pr_merged, p.author AS pr_author FROM runs r LEFT JOIN prs p ON p.repo = r.repo AND p.number = r.number ${where.length ? `WHERE ${where.map((w) => `r.${w}`).join(" AND ")}` : ""} ORDER BY r.created DESC LIMIT ?`, ...args, Math.min(Math.max(1, q.limit ?? 50), 500)).map((r) => view(r, waiting.has(r.id)));
     },
     run(id: string) {
       const r = runRow(id);
@@ -2510,6 +2510,20 @@ export function createEngine(d: EngineDeps) {
       const cfg = repoCfg(r.repo), p = prRow(r.repo, r.number);
       const gate = cfg && p?.open ? { ...verdict(r.repo, r.number, p.head), head: p.head, open: openGating(r.repo, r.number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title })) } : null;
       return { run: view({ ...r, title: p?.title ?? null }, waiting.has(r.id)), review: v ? (JSON.parse(v.json) as Review) : null, findings, gate };
+    },
+    /** What waits on the owner, per open PR of a watched repo: a merge held by an open important finding (with it, to keep waiting or dismiss),
+     * and a fork's PR no one has asked to review (a review on his budget). Each with when its latest run ended. */
+    needs() {
+      const out: { kind: "held" | "fork"; repo: string; number: number; title: string | null; since: string | null; run: string | null; findings?: { id: string; path: string; line: number; title: string }[] }[] = [];
+      for (const r of d.config().repos) {
+        for (const p of all<PrRow>("SELECT * FROM prs WHERE repo = ? AND open = 1 ORDER BY number DESC LIMIT 100", r.repo)) {
+          const last = one<{ id: string; ended: string | null; status: string; why: string | null }>("SELECT id, ended, status, why FROM runs WHERE repo = ? AND number = ? AND target = 'pr' ORDER BY created DESC LIMIT 1", r.repo, p.number);
+          const gate = openGating(r.repo, p.number);
+          if (gate.length && verdict(r.repo, p.number, p.head).verdict === "wait") out.push({ kind: "held", repo: r.repo, number: p.number, title: p.title, since: last?.ended ?? null, run: last?.id ?? null, findings: gate.map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 160) })) });
+          else if (last?.status === "skipped" && String(last.why ?? "").toLowerCase().startsWith("fork")) out.push({ kind: "fork", repo: r.repo, number: p.number, title: p.title, since: last.ended, run: last.id });
+        }
+      }
+      return out;
     },
     repos() {
       const c = d.config();
@@ -2627,11 +2641,11 @@ const round = (n: number) => Math.round(n * 10_000) / 10_000;
 /** A run as the API shows it: the contract's fields (its engine, model and effort, billed cost, tokens, duration), the PR's title (a stranger's words:
  * plain text only) and, once posted, the review's link and the threads it resolved. */
 /** `waiting`: the run is started but its check job has no computer yet (the pool is full): shown as "waiting", not "running". */
-function view(r: RunRow & { title?: string | null }, waiting = false) {
+function view(r: RunRow & { title?: string | null; pr_open?: number | null; pr_merged?: number | null; pr_author?: string | null }, waiting = false) {
   return { id: r.id, repo: r.repo, number: r.number, head: r.head, engine: r.engine, model: r.model, effort: r.effort, kind: r.kind, status: waiting ? "waiting" : r.status, why: r.why, cost_usd: round(r.cost_usd),
     tokens_in: r.tokens_in, tokens_cached: r.tokens_cached, tokens_out: r.tokens_out, duration_ms: r.duration_ms,
     important: r.important, nit: r.nit, pre_existing: r.pre_existing, started: r.started, ended: r.ended, box_at: r.box_at, check_job: r.check_job,
     full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, target: r.target, batch: r.batch, ...(r.option ? { option: r.option } : {}), ...(r.area ? { area: r.area } : {}),
     url: r.target === "tree" ? `https://github.com/${r.repo}/tree/${r.head}` : `https://github.com/${r.repo}/pull/${r.number}`,
-    ...(r.title ? { title: r.title } : {}), ...(r.review_url ? { review_url: r.review_url } : {}), ...(r.resolved != null ? { resolved: r.resolved } : {}) };
+    ...(r.title ? { title: r.title } : {}), ...(r.pr_open != null ? { pr_state: r.pr_merged ? "merged" : r.pr_open ? "open" : "closed" } : {}), ...(r.pr_author ? { pr_author: r.pr_author } : {}), ...(r.review_url ? { review_url: r.review_url } : {}), ...(r.resolved != null ? { resolved: r.resolved } : {}) };
 }

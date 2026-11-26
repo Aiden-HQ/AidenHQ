@@ -155,6 +155,7 @@ export function configTools(d: {
   raw: () => Dict;
   /** The service's view: watched repos with today spend. */
   repos: () => unknown;
+  needs: () => unknown[];
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
   /** The service's own one-off review of a PR and repo review, with the calling agent and its task (verified by the service) so a PR review's one summary reaches them; the owner's own call has none, so he hears it. */
@@ -252,9 +253,9 @@ export function configTools(d: {
     },
     {
       name: "code_review_overview",
-      description: "The Reviews page's first read: the recent PR runs, the repo reviews, the watched repos (as run, with today's spend and their open PRs' tiers), the engines a combo may name, the presets and default tier rules, the setting and any problem with it.",
+      description: "The Reviews page's first read: the recent PR runs, the repo reviews, the watched repos (as run, with today's spend and their open PRs' tiers), what waits on the owner (needs: a held merge with its open finding, a fork PR nobody asked to review), the engines a combo may name, the presets and default tier rules, the setting and any problem with it.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
-      run: async () => ({ runs: d.runs({ target: "pr", limit: 300 }), batches: d.batches({ limit: 100 }), repos: d.repos(), engines: ENGINES, presets: PRESETS, default_rules: DEFAULT_RULES, setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors }),
+      run: async () => ({ runs: d.runs({ target: "pr", limit: 300 }), batches: d.batches({ limit: 100 }), repos: d.repos(), needs: d.needs(), engines: ENGINES, presets: PRESETS, default_rules: DEFAULT_RULES, setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors }),
     },
     {
       name: "code_review_run_detail",

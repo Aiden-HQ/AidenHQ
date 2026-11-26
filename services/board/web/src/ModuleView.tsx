@@ -9,6 +9,7 @@ import type { PageRow } from "./types";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
 import { Button, Page, PageHeader } from "./ui";
+import { openAsk } from "./AskAiden";
 import "./modules.css";
 
 const PROTOCOL = "2026-01-26";
@@ -81,6 +82,8 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   const loads = useRef(0);
   const started = useRef(false);
   const id = page?.id;
+  const roster = useRef<Promise<Record<string, string>> | undefined>(undefined);
+  const names = () => (roster.current ??= Promise.race([api.roster().then((r) => Object.fromEntries(r.roster.filter((a) => a.key && a.teammate).map((a) => [a.key!, a.name])), () => ({})), new Promise<Record<string, string>>((ok) => setTimeout(() => ok({}), 1500))]));
   useEffect(() => {
     loads.current = 0;
     started.current = false;
@@ -101,13 +104,30 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       if (!frame.current || e.source !== frame.current.contentWindow || loads.current > 1) return;
       const m = e.data as Msg;
       if (m?.jsonrpc !== "2.0") return;
-      if (m.method === "ui/initialize") return (started.current = true), answer(m, { result: { protocolVersion: PROTOCOL, hostInfo: { name: "AidenHQ board", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { ...hostContext(), route: sub ?? "" } } });
+      if (m.method === "ui/initialize") {
+        started.current = true;
+        // `teammates`: each teammate's key and current name (an owner may rename one), for a view that speaks of its own.
+        const teammates = await names();
+        if (!live || e.source !== frame.current?.contentWindow || loads.current > 1) return;
+        return answer(m, { result: { protocolVersion: PROTOCOL, hostInfo: { name: "AidenHQ board", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { ...hostContext(), teammates, route: sub ?? "" } } });
+      }
       if (m.method === "ui/notifications/size-changed" && typeof m.params?.height === "number") return setHeight(Math.min(4000, Math.max(160, Math.ceil(m.params.height))));
       // A link the view asks to open: http(s) only, in a new tab the page can't reach back from.
       if (m.method === "ui/open-link") {
         const url = typeof m.params?.url === "string" && URL.canParse(m.params.url) ? new URL(m.params.url) : null;
         if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) return answer(m, { error: { code: -32602, message: "only http and https links open" } });
         window.open(url.href, "_blank", "noopener,noreferrer");
+        return answer(m, { result: {} });
+      }
+      // A message the view asks to send (MCP Apps ui/message): Ask Aiden opens with its text ready, the owner sends it.
+      if (m.method === "ui/message") {
+        const content = m.params?.content;
+        const text = Array.isArray(content) ? (content as { type?: string; text?: unknown }[]).find((c) => c?.type === "text")?.text : undefined;
+        if (typeof text !== "string" || !text.trim()) return answer(m, { error: { code: -32602, message: "a message has text" } });
+        // An unsent message already in Ask Aiden stays: the view's text goes after it.
+        let prior = "";
+        try { prior = localStorage.getItem("draft:ask") ?? ""; } catch { /* no storage: nothing to keep */ }
+        openAsk({ text: (prior.trim() ? `${prior.trimEnd()}\n\n${text}` : text).slice(0, 4000) });
         return answer(m, { result: {} });
       }
       if (m.method !== "tools/call") return; // ui/notifications/initialized needs nothing; anything else isn't offered
