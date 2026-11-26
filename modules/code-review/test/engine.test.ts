@@ -1582,9 +1582,14 @@ test("a head classified as a collaborator is pending when the caller's live asso
   assert.equal(w.engine.verdict(REPO, 9, sha("9"), { association: "CONTRIBUTOR" }).tier.state, "pending");
   // A caller that reads the author as a member still is (a case variant) needs no re-read.
   assert.equal(w.engine.verdict(REPO, 9, sha("9"), { association: "collaborator" }).tier.state, "classified");
+  // The loss is real, so the watcher's own read now says the same thing: the deferred re-read classifies the head as an outsider,
+  // and the caller's live NONE agrees with it, so the merge gate is released rather than left pending.
+  w.pr(9, sha("9"), { author: "carol", association: "NONE" });
   w.later(AGAIN_MS + 1);
   await w.tick({ github: false });
-  assert.equal(w.engine.verdict(REPO, 9, sha("9")).tier.state, "classified");
+  const after = w.engine.verdict(REPO, 9, sha("9"), { association: "NONE" });
+  assert.deepEqual([after.tier.state, after.tier.state === "classified" && after.tier.tier], ["classified", "sensitive"]);
+  assert.equal(after.verdict, "pass");
 });
 
 test("a head the instance's own App opened is never pending on the caller's non-member association: its member kind comes from own", async () => {
