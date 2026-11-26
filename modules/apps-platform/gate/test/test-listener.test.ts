@@ -487,6 +487,7 @@ test("the session's live-app mode decides every request, the gate's notify and e
     // test-write: the test account changes its own data, never DELETE or a destructive path (encoded or not).
     kernel.state.mode = "test-write";
     assert.equal((await via("POST", "/api/items")).status, 200);
+    assert.equal((await via("GET", "/assets/payload.js")).status, 200, "a read of a page or asset is never a destructive path");
     for (const [m, p] of [["DELETE", "/api/items/1"], ["POST", "/api/items/1/publish"], ["POST", "/api/invite"], ["POST", "/api/%64elete"]]) assert.equal((await via(m!, p!)).status, 403, `${m} ${p}`);
   } finally {
     kernel.state.mode = "test-write";

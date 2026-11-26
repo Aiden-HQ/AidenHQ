@@ -31,12 +31,14 @@ const IDENTITY_TTL_S = 300;
 const RESERVED = "/.aidenhq";
 const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"];
 const STRIP = /^(x-aidenhq-|tailscale-|cf-access-)/;
-/** Paths a test-write session never calls: a best-effort extra on top of DELETE (an app can hide an action in a body). */
+/** Paths a test-write session never writes to: a best-effort extra on top of DELETE (an app can hide an action in a body). */
 export const DESTRUCTIVE_PATH = /(delete|destroy|remove|purge|archive|cancel|refund|pay|checkout|billing|invite|send|transfer|publish|deploy)/i;
 export type LiveMode = "read" | "test-write";
 /** Whether a session in `mode` may make this request (or, `upgrade`, open this WebSocket). Anything unknown reads. */
 export function allowedIn(mode: LiveMode, method: string, path: string, upgrade = false): boolean {
   if (mode === "test-write") {
+    // Reads (pages, assets) always pass: the list is about writes, and `/assets/payload.js` is not a payment.
+    if (!upgrade && (method === "GET" || method === "HEAD")) return true;
     let decoded = path;
     try { decoded = decodeURIComponent(path); } catch { return false; }
     return method !== "DELETE" && !DESTRUCTIVE_PATH.test(decoded);
