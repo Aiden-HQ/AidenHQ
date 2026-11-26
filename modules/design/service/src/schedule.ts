@@ -42,6 +42,8 @@ export function createScheduler(d: ScheduleDeps) {
   const cursors: Partial<Record<"apps" | "github", number>> = {};
   /** A feed this install doesn't subscribe to (`github?` compiled out): not read again in this process. */
   const off = new Set<string>();
+  /** The apps a feed page already started (or refused for good), so a page read again starts none twice. */
+  const handled: { page: string; names: Set<string> } = { page: "", names: new Set() };
 
   async function reconcile() {
     const runs = d.store.holding();
@@ -65,8 +67,12 @@ export function createScheduler(d: ScheduleDeps) {
             else await d.passes.file(r, true);
             continue;
           }
-          await d.passes.file(r);
-          if (why) await d.kernel.closeTask(made, `Not run: ${why} (design run ${r.id}).`);
+          if (r.stopping || overdue || why) {
+            // Closed first (a failed close is tried again next tick), then bound to the listed task as it is, never filed again:
+            // the bound path frees the app once the kernel saw it closed and no job of it lives.
+            await d.kernel.closeTask(made, r.stopping ? `Stopped before it was bound (design run ${r.id}).` : `Not run: ${why || `past ${PASS_MS / 3_600_000} hours`} (design run ${r.id}).`);
+            d.store.bindPass(r.id, made, r.agent, `${passSource(r.app!)}${r.id}`);
+          } else await d.passes.file(r);
           continue;
         }
         if (openIds.has(task)) {
@@ -106,11 +112,16 @@ export function createScheduler(d: ScheduleDeps) {
   async function deployed(events: FeedEvent[], kind: string, match: (a: App, resource: string) => boolean) {
     const names = new Set<string>();
     for (const e of events) if (e.kind === kind) for (const a of d.apps()) if (a.schedule === "after-deploy" && match(a, e.resource.toLowerCase())) names.add(a.name);
+    // A page read again after a transient failure starts only the apps it hadn't handled yet.
+    const page = `${kind}:${events.at(-1)?.seq ?? ""}`;
+    if (handled.page !== page) Object.assign(handled, { page, names: new Set<string>() });
     for (const name of names) {
+      if (handled.names.has(name)) continue;
       const r = await d.passes.startPass(name, "deploy");
       log("deploy pass", { app: name, ...("refused" in r ? { refused: r.refused } : { run: r.run }) });
       // A transient failure keeps the feed's cursor, so the next tick reads this deploy again (a pass it did start answers "already running").
       if ("retry" in r && r.retry) throw new Error(`${name}'s deploy pass wasn't started: ${r.refused}`);
+      handled.names.add(name);
     }
   }
 

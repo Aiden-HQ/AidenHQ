@@ -146,17 +146,22 @@
   const live = (name) => ov?.apps.find((a) => a.name === name);
 
   /* -------------------------------------------------------------------------------- reads */
-  async function loadOverview() {
-    ov = await tool("design_overview", {});
+  // A poll never redraws under the owner: while he adds an app, edits a field or a recording plays, its answer waits.
+  const busy = () => adding || document.activeElement?.matches?.("input, textarea, select") || [...document.querySelectorAll("video")].some((v) => !v.paused);
+  async function loadOverview(poll) {
+    const o = await tool("design_overview", {});
+    if (poll && busy()) return;
+    ov = o;
     for (const n of [...stopping]) if (!live(n)?.active) stopping.delete(n);
     render();
   }
   // An app's page shows its last run in full and its history.
-  async function loadLast() {
+  async function loadLast(poll) {
     const name = route.app;
     try {
       const [runs, last] = [await tool("design_runs", { app: name, limit: 30 }), live(name)?.last];
       const run = last ? await tool("design_run", { run: last.run }) : null;
+      if (poll && busy()) return;
       if (route.page === "app" && route.app === name) { runData = { runs: runs.runs ?? [], run }; render(); }
     } catch (e) { fail(e); }
   }
@@ -195,9 +200,9 @@
   let polls = 0;
   setInterval(() => {
     polls++;
-    if (!ov || adding || document.activeElement?.matches?.("input, textarea, select") || [...document.querySelectorAll("video")].some((v) => !v.paused)) return;
+    if (!ov || busy()) return;
     if (route.page === "run") { if (runData?.run?.run?.status === "running") loadRun(route.id); return; }
-    if (ov.apps.some((a) => a.active) || polls % 5 === 0) loadOverview().then(() => { if (route.page === "app") loadLast(); }).catch(() => {});
+    if (ov.apps.some((a) => a.active) || polls % 5 === 0) loadOverview(true).then(() => { if (route.page === "app") return loadLast(true); }).catch(() => {});
   }, 8000);
 
   /* -------------------------------------------------------------------------------- the owner's settings proposal */
