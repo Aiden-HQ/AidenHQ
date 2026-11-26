@@ -322,3 +322,31 @@ test("metrics: a running session job is the session gauge's alone, never the old
   assert.deepEqual(work.agent("a3").jobs.map((j) => [j.id, j.profile]), [["s-1", "session"]]);
   assert.equal(work.agent("a1").jobs.every((j) => j.profile === null), true);
 });
+
+test("a day's billed cost on a module's own tasks of a source family: by each charge's day, closed tasks too, never another module's", async (t) => {
+  const { work, records } = setup();
+  // As the gateway writes them: an agent's call is keyed by its task id (issue_id; task_subject is the id too), never by source.
+  records.db.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, agent_id TEXT, issue_id TEXT, task_subject TEXT, cost_usd REAL, component TEXT, status TEXT NOT NULL DEFAULT 'ok', input INTEGER NOT NULL DEFAULT 100, cached INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0)");
+  records.db.exec("CREATE TABLE task_filers (task TEXT PRIMARY KEY, filer TEXT NOT NULL, source TEXT)");
+  const filed = records.db.prepare("INSERT INTO task_filers (task, filer, source) VALUES (?, ?, ?)");
+  filed.run("t-r1", "module:design", "design:pass:acme:r1"); // closed by now: still counted
+  filed.run("t-r2", "module:design", "design:pass:beta:r2");
+  filed.run("t-x", "module:other", "design:pass:acme:rx"); // another module's task under the same prefix
+  const call = records.db.prepare("INSERT INTO calls (key, at, day, agent_id, issue_id, task_subject, cost_usd, status) VALUES (?, ?, ?, 'a1', ?, ?, ?, ?)");
+  call.run("c1", "2026-11-25T23:50:00.000Z", "2026-11-25", "t-r1", "t-r1", 1, "ok"); // before midnight: yesterday's
+  call.run("c2", "2026-11-26T00:10:00.000Z", "2026-11-26", "t-r1", "t-r1", 3, "ok"); // the same pass, after midnight
+  call.run("c3", "2026-11-26T09:00:00.000Z", "2026-11-26", "t-r1", "t-r1", 2.1, "ok");
+  call.run("c4", "2026-11-26T09:00:00.000Z", "2026-11-26", "t-r1", "t-r1", 40, "reserved"); // an estimate: never spend
+  call.run("c5", "2026-11-26T09:00:00.000Z", "2026-11-26", "t-r2", "t-r2", 7, "ok");
+  call.run("c6", "2026-11-26T09:00:00.000Z", "2026-11-26", "t-x", "t-x", 9, "ok");
+  const who = { design: { kind: "module", module: "design", roles: ["kernel.work-read"], tools: [] }, plain: { kind: "module", module: "design", roles: [], tools: [] } };
+  const handle = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work });
+  const server = http.createServer(handle).listen(0);
+  t.after(() => server.close());
+  const get = (path, token = "design") => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  const today = await (await get("/v1/work?spend_tasks=design:pass:acme:&day=2026-11-26")).json();
+  assert.deepEqual(today, { day: "2026-11-26", by_task: [{ task: "t-r1", source: "design:pass:acme:r1", cost_usd: 5.1 }] });
+  assert.deepEqual((await (await get("/v1/work?spend_tasks=design:pass:acme:&day=2026-11-25")).json()).by_task.map((r) => r.cost_usd), [1]);
+  assert.equal((await get("/v1/work?spend_tasks=design:pass:acme:&day=yesterday")).status, 400);
+  assert.equal((await get("/v1/work?spend_tasks=design:pass:acme:&day=2026-11-26", "plain")).status, 403);
+});
