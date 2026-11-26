@@ -17,7 +17,7 @@ import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
 import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type OpenItem } from "./member-comments.ts";
-import { ASYNC_POLL_MS, DIRECT_POLLS, mergeDirect } from "./async-merge.ts";
+import { ASYNC_POLL_MS, DIRECT_POLLS, mergeDirect, requestStore } from "./async-merge.ts";
 import { HOLD_LABEL, PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
@@ -108,6 +108,7 @@ export function createMerges(d: {
   const platform = [d.productRepo].filter(Boolean) as string[];
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "merges.json");
+  const requests = requestStore(join(d.dir, "async-requests.json"), d.log);
   const s: { queues: Record<string, Queue> } = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { queues: {} };
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify({ queues: s.queues })); renameSync(`${file}.tmp`, file); };
   const waiters = new Map<string, { promise: Promise<Outcome>; resolve: (o: Outcome) => void }>();
@@ -285,7 +286,7 @@ export function createMerges(d: {
     if (labels.status < 300 && (labels.body ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) throw Object.assign(new Error(`held: it carries the \`${HOLD_LABEL}\` label`), { status: 409 });
     // GitHub's async merge API, the one merge call (a PR in a native stack is refused by every other): its result is polled for
     // a short while, and a request still pending is the next poll's to read from the PR itself (an unanswered call).
-    return mergeDirect(d.gh, repo, number, { sha, merge_method: method, ...message }, d.asyncPolls ?? DIRECT_POLLS, d.asyncPollMs ?? ASYNC_POLL_MS);
+    return mergeDirect(d.gh, repo, number, { sha, merge_method: method, ...message }, d.asyncPolls ?? DIRECT_POLLS, d.asyncPollMs ?? ASYNC_POLL_MS, requests);
   }
   /**
    * What this poll proves about who merged the PR: its sha only when the merge commit is the one this queue's own merge call made.

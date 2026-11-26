@@ -31,7 +31,7 @@ import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, 
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 import { approvedAt, HOLD_LABEL } from "./merge-gate.ts";
 import { contextRank } from "./aidenhq-sdk/checks.ts";
-import { ASYNC_POLLS, ASYNC_POLL_MS, asyncPath, readAsync } from "./async-merge.ts";
+import { ASYNC_POLLS, ASYNC_POLL_MS, asyncPath, readAsync, requestKey, requestStore } from "./async-merge.ts";
 import { createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
@@ -1424,21 +1424,9 @@ export function createService(o: Options) {
       return undefined;
     };
     const pending = (why: string) => ({ ok: false, text: `${PENDING} ${url}: ${why} not merged.` }) as { ok: boolean; text: string };
-    /**
-     * The request GitHub holds for this PR at this head, across rounds: its id is the only way back to a result whose PUT answer
-     * is spent, and GitHub names it on a repeat (409) only while the request is pending. Kept in the service's own cache beside
-     * held.json, keyed by the head it was bound to, so a request that outlives one execution is read to its end instead of a
-     * fresh one being made.
-     */
-    const store = join(o.cacheDir, "async-requests.json");
-    const key = `${s.slug}#${n}@${String(a.head).toLowerCase()}`;
-    const held = (): { [k: string]: string } => { try { return JSON.parse(readFileSync(store, "utf8")); } catch { return {}; } };
-    const keep = (uuid?: string) => {
-      const all = held();
-      if (uuid) all[key] = uuid; else delete all[key];
-      const kept = Object.fromEntries(Object.entries(all).slice(-500));
-      try { writeFileSync(`${store}.tmp`, JSON.stringify(kept)); renameSync(`${store}.tmp`, store); } catch (e) { log("async request id not kept", { pr: url, err: String((e as Error).message).slice(0, 120) }); }
-    };
+    const store = requestStore(join(o.cacheDir, "async-requests.json"), log);
+    const key = requestKey(s.slug, n, String(a.head));
+    const keep = (uuid?: string) => store.set(key, uuid);
     /** A request's result, read at its own GET; `again` while GitHub has not settled it (a transient read included). */
     const poll = async (uuid: string): Promise<{ out?: { ok: boolean; text: string }; again?: true; gone?: true; transient?: string }> => {
       const got = await readAsync(gh, s.slug, n, uuid);
@@ -1451,7 +1439,7 @@ export function createService(o: Options) {
     const until = o.asyncPolls ?? ASYNC_POLLS;
     const wait = async (i: number) => { if (i) await new Promise((done) => setTimeout(done, o.asyncPollMs ?? ASYNC_POLL_MS)); };
     /** A request already in hand from an earlier round: read it before a new one is made, so its terminal result is never lost. */
-    const known = String(held()[key] ?? "");
+    const known = store.get(key);
     if (known) {
       const first = await poll(known);
       if (first.out) { keep(); return first.out; }
@@ -1463,7 +1451,7 @@ export function createService(o: Options) {
           if (next.out) { keep(); return next.out; }
           if (next.gone) { keep(); break; }
         }
-        if (held()[key] === known) {
+        if (store.get(key) === known) {
           // The PR read back as merged or queued at this head settles it even while the request still polls: the kept id is
           // dropped with it, so a later re-enqueue after a removal never reads this request's stale answer.
           const back = await settle();

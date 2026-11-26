@@ -1083,6 +1083,30 @@ test("a direct merge is GitHub's async merge: a pending 202 is polled to merged 
   assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"]);
 });
 
+test("a direct merge request that outlives the poll window is read to its end on the next passes, never asked for again", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const reports = [];
+  let puts = 0, reads = 0;
+  const gh = async (m, p, b) => {
+    if (m === "PUT" && String(p).endsWith("/merge-async")) { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-slow" } } }; }
+    if (m === "GET" && String(p).endsWith("/merge-async/u-slow")) return { status: 200, body: ++reads < 3 ? { status: "pending", details: {} } : { status: "failed", details: { message: "Merge conflict" } } };
+    return github.gh(m, p, b);
+  };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-slow-")), gh, fleetOrg: "acme-agents", asyncPolls: 1, asyncPollMs: 0,
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000cd", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  await merges.step();
+  assert.equal(puts, 1, "the request outlived the poll window: the next pass reads it, never PUTs again");
+  // Its terminal `failed` is the ordinary refusal: one bounded retry (a new request), then the end, in GitHub's words.
+  for (let i = 0; i < 6 && !reports.length; i++) { await merges.step(); await new Promise((r) => setTimeout(r, 20)); }
+  assert.equal(reports[0]?.ok, false);
+  assert.match(reports[0].text, /Merge conflict/);
+});
+
 test("an unanswered PUT whose merge lands is still credited when the retry is refused while GitHub's read lags", async () => {
   // The first PUT merges on GitHub's side and never answers. The next poll still reads the PR open (a lag), so the queue sends a
   // retry; GitHub refuses it because the PR is in fact merged, and its re-read now shows the merge. The merge commit carries the
