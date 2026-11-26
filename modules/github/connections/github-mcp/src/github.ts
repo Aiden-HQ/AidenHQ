@@ -76,9 +76,9 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
 
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
-/** Body fields each write may carry: an issue edit can only change its state, a review only its verdict and text. */
+/** Body fields each write may carry: an issue edit can only change its state and text, a review only its verdict and text. */
 const BODY_FIELDS: { path: RegExp; method: Method; fields: string[] }[] = [
-  { method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason"] },
+  { method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason", "body"] },
   { method: "POST", path: /\/pulls\/[0-9]+\/reviews$/, fields: ["event", "body", "commit_id", "comments"] },
   { method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },
   { method: "PUT", path: /\/pulls\/[0-9]+\/reviews\/[0-9]+$/, fields: ["body"] },
@@ -439,18 +439,20 @@ export class GitHub {
   }
 
   /**
-   * Changes an issue: close or reopen it, add or remove labels and assignees. Pull requests
-   * take labels and assignees, but closing one isn't done here. Labels must already exist. Checks
-   * everything before the first write, and reports each change it made.
+   * Changes an issue: replace its body (signed by `agent`, as a new issue's is), close or reopen it, add or remove labels and
+   * assignees. Pull requests take labels and assignees, but closing one or replacing its text isn't done here. Labels must
+   * already exist. Checks everything before the first write, and reports each change it made.
    */
-  async updateIssue(ref: Ref, input: { state?: "open" | "closed"; reason?: "completed" | "not_planned"; addLabels?: string[]; removeLabels?: string[]; addAssignees?: string[]; removeAssignees?: string[] }): Promise<unknown> {
+  async updateIssue(ref: Ref, input: { body?: string; state?: "open" | "closed"; reason?: "completed" | "not_planned"; addLabels?: string[]; removeLabels?: string[]; addAssignees?: string[]; removeAssignees?: string[] }, agent = "AidenHQ"): Promise<unknown> {
     const base = `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
     const issue = await this.request<GhIssue>("GET", base);
     if (input.state && issue.pull_request) throw new GitHubRefused("pull requests aren't closed or reopened from here");
+    if (input.body !== undefined && issue.pull_request) throw new GitHubRefused("a pull request's text isn't replaced from here");
     const current = labelNames(issue);
     const add = input.addLabels?.length ? await this.matchLabels(ref.owner, ref.repo, input.addLabels) : [];
     const remove = (input.removeLabels ?? []).map((l) => current.find((c) => c.toLowerCase() === l.trim().toLowerCase())).filter((l): l is string => Boolean(l));
     const done: string[] = [];
+    if (input.body !== undefined) await this.request("PATCH", base, { body: { body: withFooter(input.body, agent) } }), done.push("replaced the body");
     if (add.length) await this.request("POST", `${base}/labels`, { body: { labels: add } }), done.push(`added labels ${add.join(", ")}`);
     for (const l of remove) await this.request("DELETE", `${base}/labels/${encodeURIComponent(l)}`), done.push(`removed label ${l}`);
     if (input.addAssignees?.length) await this.request("POST", `${base}/assignees`, { body: { assignees: input.addAssignees } }), done.push(`assigned ${input.addAssignees.join(", ")}`);

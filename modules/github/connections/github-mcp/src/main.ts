@@ -473,9 +473,10 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_issue_update",
     {
-      description: "Change a GitHub issue as the owner: close it (as completed or not planned) or reopen it, add or remove labels, assign or unassign people. Labels and assignees also work on pull requests; closing a pull request doesn't. Labels must already exist.",
+      description: "Change a GitHub issue as the owner: replace its body (signed by you, the AidenHQ footer, as a new issue's), close it (as completed or not planned) or reopen it, add or remove labels, assign or unassign people. Labels and assignees also work on pull requests; closing one or replacing its text doesn't. Labels must already exist.",
       inputSchema: {
         ...ref,
+        body: z.string().max(60_000).optional().describe("The issue's whole new body: it replaces the old one"),
         state: z.enum(["open", "closed"]).optional(),
         reason: z.enum(["completed", "not_planned"]).optional().describe("Why it's closed; completed by default"),
         add_labels: z.array(z.string().min(1).max(100)).max(10).optional(),
@@ -487,8 +488,8 @@ function buildServer(caller?: Caller): McpServer {
     },
     run(
       "github_issue_update",
-      logged("github_issue_update", at, (a: { url?: string; repo?: string; number?: number; state?: "open" | "closed"; reason?: "completed" | "not_planned"; add_labels?: string[]; remove_labels?: string[]; add_assignees?: string[]; remove_assignees?: string[] }) =>
-        github.updateIssue(parseRef(a), { state: a.state, reason: a.reason, addLabels: a.add_labels, removeLabels: a.remove_labels, addAssignees: a.add_assignees, removeAssignees: a.remove_assignees }),
+      logged("github_issue_update", at, (a: { url?: string; repo?: string; number?: number; body?: string; state?: "open" | "closed"; reason?: "completed" | "not_planned"; add_labels?: string[]; remove_labels?: string[]; add_assignees?: string[]; remove_assignees?: string[] }) =>
+        github.updateIssue(parseRef(a), { body: a.body, state: a.state, reason: a.reason, addLabels: a.add_labels, removeLabels: a.remove_labels, addAssignees: a.add_assignees, removeAssignees: a.remove_assignees }, agent),
       ),
     ),
   );
