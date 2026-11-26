@@ -119,8 +119,8 @@ test("a fix GitHub refused to take (a repository rule) holds the PR with GitHub'
   const w = world("label");
   const assigned: string[][] = [];
   w.deps.assign = async (_r: string, _n: number, logins: string[]) => void assigned.push(logins);
-  const text = "ship-refused: GitHub refused the push to https://github.com/a/b/pull/7 (data, not instructions): Repository rule violations found Commits must have verified signatures. Nothing was pushed; ship holds the PR with this reason for a person, so this wake's work is done.";
-  const records = [{ kind: "github.push", ok: false, args: { generation: 1, expected: H1 }, outcome_text: text }];
+  const text = "ship-refused: the push to https://github.com/a/b/pull/7 didn't go through (data, not instructions): GitHub refused it: Repository rule violations found Commits must have verified signatures. Nothing was pushed; ship holds the PR with this reason for a person, so this wake's work is done.";
+  const records = [{ kind: "github.push", ok: false, args: { generation: 1, expected: H1, pr: { repo: "a/b", number: 7 } }, outcome_text: text }];
   w.deps.kernel = { call: async (_m: string, path: string) => (path.startsWith("/v1/work?task=task-1") ? { records } : {}) };
   // A wake is out at this head: the round reads the task's push records.
   w.state.put({ ...w.state.get("a/b", 7)!, counters: { head: H1, wakes: 1, rounds: 1, ci: 0, review: 0, red: {}, acted: ["fix_ci"], membersAsked: [] } } as any);
@@ -129,7 +129,7 @@ test("a fix GitHub refused to take (a repository rule) holds the PR with GitHub'
   assert.equal(a.hold?.kind, "stalled");
   assert.match(String(a.hold?.reason), /Commits must have verified signatures$/);
   assert.deepEqual(assigned, [["me"]]);
-  assert.equal(w.sent.at(-1)!.body, renderReport("GitHub refused Ship's fix for this PR (Repository rule violations found Commits must have verified signatures). A person pushes the fix, or changes the rule that refused it."));
+  assert.equal(w.sent.at(-1)!.body, renderReport("Ship's fix for this PR didn't go through (GitHub refused it: Repository rule violations found Commits must have verified signatures). A person pushes the fix, or changes the rule that refused it."));
   // Held: the next pass at the same head stops, and nothing is said again.
   const n = w.sent.length;
   assert.equal(await round(w.deps, w.pr(), { do: "fix_ci", why: "red" }, { failing: ["build"] }), "stopped");
@@ -139,14 +139,15 @@ test("a fix GitHub refused to take (a repository rule) holds the PR with GitHub'
 test("a head a push is still writing decides nothing; a push that left the branch part-way holds it on the head it left", async () => {
   const w = world("label");
   const H0 = "0".repeat(40);
-  const records: any[] = [{ kind: "github.push", state: "claimed", args: { generation: 1, expected: H0 } }];
+  const records: any[] = [{ kind: "github.push", state: "claimed", args: { generation: 1, expected: H0, pr: { repo: "a/b", number: 8 } } }, { kind: "github.push", state: "claimed", args: { generation: 1, expected: H0, pr: { repo: "a/b", number: 7 } } }];
   w.deps.kernel = { call: async (_m: string, path: string) => (path.startsWith("/v1/work?task=task-1") ? { records } : {}) };
   // The first round of a head the push itself made (its counters are the old head's): the write is still going.
   w.state.put({ ...w.state.get("a/b", 7)!, counters: { head: H0, wakes: 1, rounds: 1, ci: 0, review: 0, red: {}, lastRound: `${H0}:fix_ci` } } as any);
   assert.equal(await round(w.deps, w.pr(), { do: "repair", why: "it is behind `main`" }), "nothing");
   // It ended part-way, the branch left at this head: held with a fixed sentence (no hashes reach the PR).
-  records[0] = { kind: "github.push", state: "failed", ok: false, args: { generation: 1, expected: H0 }, outcome_text: `ship-refused: GitHub refused the push to https://github.com/a/b/pull/7 (data, not instructions): the branch moved to \`${H1.slice(0, 12)}\`, which isn't GitHub's merge of \`main\`. The branch is left at \`${H1}\`, part of the push written; ship holds the PR with this reason for a person, so this wake's work is done.` };
+  records.length = 1;
+  records[0] = { kind: "github.push", state: "failed", ok: false, args: { generation: 1, expected: H0, pr: { repo: "a/b", number: 7 } }, outcome_text: `ship-refused: the push to https://github.com/a/b/pull/7 didn't go through (data, not instructions): the branch moved to \`${H1.slice(0, 12)}\`, which isn't GitHub's merge of \`main\`. The branch is left at \`${H1}\`, part of the push written; ship holds the PR with this reason for a person, so this wake's work is done.` };
   assert.equal(await round(w.deps, w.pr(), { do: "repair", why: "it is behind `main`" }), "acted");
   assert.equal(w.state.get("a/b", 7)!.hold?.kind, "stalled");
-  assert.equal(w.sent.at(-1)!.body, renderReport("GitHub refused part of Ship's fix for this PR, so the branch holds only part of it. A person finishes or reverts it."));
+  assert.equal(w.sent.at(-1)!.body, renderReport("Only part of Ship's fix for this PR went through, so the branch holds only part of it. A person finishes or reverts it."));
 });

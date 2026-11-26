@@ -89,10 +89,13 @@ export function repairPlan(s: ShipSettings, d?: Discovered) {
  * own reason for refusing its last fix at `head` (a failed write the code host reported as `ship-refused:`: a push filed at this
  * head, or a push or a repair that left the branch at it, `partial`).
  */
-async function branchWrites(kernel: RoundDeps["kernel"], tasks: string[], generation: number, head: string): Promise<{ writing: boolean; refused?: { why: string; partial: boolean } }> {
-  type Row = { kind?: string; state?: string; ok?: boolean | null; args?: { generation?: number; expected?: string } | null; outcome_text?: string | null };
+async function branchWrites(kernel: RoundDeps["kernel"], tasks: string[], generation: number, pr: PrView): Promise<{ writing: boolean; refused?: { why: string; partial: boolean } }> {
+  type Row = { kind?: string; state?: string; ok?: boolean | null; args?: { generation?: number; expected?: string; repo?: string; number?: number; pr?: { repo?: string; number?: number } } | null; outcome_text?: string | null };
+  const head = pr.head;
+  // This PR's writes only (a task may hold several PRs, each from generation 1): a push names it in `pr`, a repair directly.
+  const mine = (r: Row) => { const p = r.args?.pr ?? r.args; return String(p?.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && Number(p?.number) === pr.number; };
   const rows = (await Promise.all(tasks.map((t) => kernel.call("GET", `/v1/work?task=${encodeURIComponent(t)}`)))).flatMap((w) => (w?.records ?? []) as Row[])
-    .filter((r) => (r.kind === "github.push" || r.kind === "github.repair") && r.args?.generation === generation);
+    .filter((r) => (r.kind === "github.push" || r.kind === "github.repair") && r.args?.generation === generation && mine(r));
   if (rows.some((r) => r.state === "approved" || r.state === "claimed")) return { writing: true };
   // A push refused at the head it was filed at, or a push or a repair that left the branch part-way at this head (a repair
   // refused whole is ship's own repair record, followed where it is filed).
@@ -217,7 +220,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const writers = [a.task, a.holder].filter((t): t is string => Boolean(t));
   if (writers.length && (c.wakes > 0 || !String(c.lastRound ?? "").startsWith(pr.head))) {
     let w: { writing: boolean; refused?: { why: string; partial: boolean } };
-    try { w = await branchWrites(d.kernel, writers, a.generation, pr.head); }
+    try { w = await branchWrites(d.kernel, writers, a.generation, pr); }
     catch (e) { d.log("branch writes unread", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }); return "nothing"; }
     if (w.writing) return "nothing";
     if (w.refused) return hold(`GitHub refused the push of ship's fix: ${w.refused.why}`, w.refused.partial ? HOLD.pushPartial : HOLD.pushRefused(w.refused.why));

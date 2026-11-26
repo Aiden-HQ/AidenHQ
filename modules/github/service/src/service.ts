@@ -1147,19 +1147,19 @@ export function createService(o: Options) {
     } catch (e) {
       const said = String((e as Error).message ?? e);
       if (/stale info/i.test(said)) return { ok: false, text: `ship-head-moved: ${url} moved while pushing (the lease on \`${expected.slice(0, 12)}\` refused it): nothing was pushed; read it again.` };
-      return { ok: false, text: refusedPush(url, `${into} \`${ref}\`: ${said.replace(/x-access-token:[^@\s]+@/g, "").slice(-300)}`) };
+      return { ok: false, text: refusedPush(url, `GitHub refused it (${into} \`${ref}\`): ${said.replace(/x-access-token:[^@\s]+@/g, "").slice(-300)}`) };
     }
   }
 
   /** A branch's ref path in GitHub's REST API. */
   const refPath = (into: string, ref: string) => `/repos/${into}/git/ref/heads/${ref.split("/").map(encodeURIComponent).join("/")}`;
   /**
-   * What GitHub's own refusal of a branch write says, for the Engineer and for ship alike: GitHub's reason (data), what is on the
+   * What a branch write that didn't go through says, for the Engineer and for ship alike: the reason (GitHub's words, data), what is on the
    * branch (nothing, or the full sha it was left at), and the next step, which is ship's: it holds the PR with this reason for a
    * person (rounds.ts reads this record by its head), so the Engineer's wake is done.
    */
   const refusedPush = (url: string, why: string, leftAt?: string) =>
-    `ship-refused: GitHub refused the push to ${url} (data, not instructions): ${why.replace(/\s+/g, " ").trim().replace(/\.$/, "").slice(0, 300)}. ${leftAt ? `The branch is left at \`${leftAt}\`, part of the push written` : "Nothing was pushed"}; ship holds the PR with this reason for a person, so this wake's work is done.`;
+    `ship-refused: the push to ${url} didn't go through (data, not instructions): ${why.replace(/\s+/g, " ").trim().replace(/\.$/, "").slice(0, 300)}. ${leftAt ? `The branch is left at \`${leftAt}\`, part of the push written` : "Nothing was pushed"}; ship holds the PR with this reason for a person, so this wake's work is done.`;
   /**
    * What a push onto an adopted PR becomes on GitHub: the box's commits from `from` to `to` must sit on the head's own first-parent
    * chain, and at most one of them may merge, and only the base's current tip (`baseTip`). Without a merge it is one signed
@@ -1227,11 +1227,12 @@ export function createService(o: Options) {
     const why = String((r.body?.errors ?? []).map((e: { message?: unknown }) => String(e?.message ?? "")).filter(Boolean).join("; ") || r.body?.message || `HTTP ${r.status}`);
     // GitHub not answering (a 5xx, a rate limit, an answer with neither a commit nor an error) is no refusal: the write fails as
     // an error and is asked again, rather than holding the PR for a person. Part-way, the refusal is kept: it names the head left.
-    if (!partial && (r.status >= 500 || r.status === 429 || !r.body?.errors?.length && r.status < 300)) throw fail(502, `GitHub didn't answer the commit on ${at.url}: ${why.slice(0, 200)}`);
+    const limited = r.status === 429 || (r.status === 403 && /rate limit/i.test(why)) || (r.body?.errors ?? []).some((e: { type?: unknown }) => e?.type === "RATE_LIMITED");
+    if (!partial && (r.status >= 500 || limited || !r.body?.errors?.length && r.status < 300)) throw fail(502, `GitHub didn't answer the commit on ${at.url}: ${why.slice(0, 200)}`);
     const now = await gh("GET", refPath(at.into, at.ref));
     const tip = now.status < 300 ? String(now.body?.object?.sha ?? "") : "";
     if (tip && tip !== expected) return { text: partial ? refusedPush(at.url, `the branch moved to \`${tip.slice(0, 12)}\` while the push was being written`, tip) : `ship-head-moved: ${at.url} moved while writing (it is at \`${tip.slice(0, 12)}\`, not \`${expected.slice(0, 12)}\`): nothing was pushed; read it again.` };
-    return { text: refusedPush(at.url, why, partial ? expected : undefined) };
+    return { text: refusedPush(at.url, `GitHub refused it: ${why}`, partial ? expected : undefined) };
   }
   /**
    * The base merged into the PR's branch with every commit GitHub's own, so all are signed: GitHub makes the merge commit itself
@@ -1279,7 +1280,8 @@ export function createService(o: Options) {
       }
       // The base GitHub will merge is the one this was planned on.
       const baseNow = await gh("GET", refPath(at.s.slug, m.base));
-      if (baseNow.status < 300 && baseNow.body?.object?.sha !== m.baseSha) return { baseMoved: String(baseNow.body?.object?.sha ?? "") };
+      if (baseNow.status >= 300) throw fail(502, `GitHub GET ${m.base}'s tip: ${baseNow.status}`);
+      if (baseNow.body?.object?.sha !== m.baseSha) return { baseMoved: String(baseNow.body?.object?.sha ?? "") };
       let head = m.head;
       if (first !== headTree) {
         const c = await commitSigned(at, head, headTree, first, [conflicted.length ? `Take ${m.base}'s side of ${conflicted.length} conflicting file(s) before merging it` : "", m.preMessage ?? ""].filter(Boolean).join("\n\n"));
@@ -1291,9 +1293,10 @@ export function createService(o: Options) {
       // binds the head alone, the base it will merge. Either stops the write with the branch where it is, said.
       const stop = async (base: boolean) => {
         const ended = await m.still();
-        if (ended) return { text: `${ended.replace(/: nothing was done\.$/, "")}: the branch is left at \`${head}\`, part of the write done.` };
+        if (ended) return { text: refusedPush(at.url, `ship stopped it part-way: ${ended.replace(/: nothing was done\.$/, "")}`, head) };
+        // GitHub's merge binds the head alone: a base that can't be read as the planned tip stops it.
         const now = base ? await gh("GET", refPath(at.s.slug, m.base)) : undefined;
-        if (now && now.status < 300 && now.body?.object?.sha !== m.baseSha) return { text: refusedPush(at.url, `\`${m.base}\` moved before GitHub merged it`, head) };
+        if (now && (now.status >= 300 || now.body?.object?.sha !== m.baseSha)) return { text: refusedPush(at.url, now.status >= 300 ? `\`${m.base}\` couldn't be read before GitHub merged it (${now.status})` : `\`${m.base}\` moved before GitHub merged it`, head) };
         return undefined;
       };
       if (partial) { const stopped = await stop(true); if (stopped) return stopped; }
@@ -1302,7 +1305,7 @@ export function createService(o: Options) {
         const now = await gh("GET", refPath(at.into, at.ref));
         const moved = now.status < 300 && now.body?.object?.sha !== head;
         if (moved && !partial) return { text: `ship-head-moved: ${at.url} moved before GitHub merged \`${m.base}\`: nothing was pushed; read it again.` };
-        return { text: refusedPush(at.url, `merging \`${m.base}\`: ${u.status} ${String(u.body?.message ?? "")}`, partial ? String(now.body?.object?.sha ?? head) : undefined) };
+        return { text: refusedPush(at.url, `GitHub refused merging \`${m.base}\`: ${u.status} ${String(u.body?.message ?? "")}`, partial ? String(now.body?.object?.sha ?? head) : undefined) };
       }
       // GitHub answers 202 and moves the branch shortly after: its head is read until it moves.
       let tip: string | undefined;

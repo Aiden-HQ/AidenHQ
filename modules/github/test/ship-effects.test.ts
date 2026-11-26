@@ -421,7 +421,7 @@ test("a push GitHub's own rules refuse is ship-refused with GitHub's reason and 
   refuseRef(true);
   const r = await run("k-00000000000000b4", "github.push", args);
   assert.equal(r.ok, false);
-  assert.match(r.text, /^ship-refused: GitHub refused the push to https:\/\/github\.com\/acme-agents\/widget\/pull\/7 \(data, not instructions\): Repository rule violations found Commits must have verified signatures\. Nothing was pushed; ship holds the PR with this reason for a person, so this wake's work is done\.$/, r.text);
+  assert.match(r.text, /^ship-refused: the push to https:\/\/github\.com\/acme-agents\/widget\/pull\/7 didn't go through \(data, not instructions\): GitHub refused it: Repository rule violations found Commits must have verified signatures\. Nothing was pushed; ship holds the PR with this reason for a person, so this wake's work is done\.$/, r.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "nothing was written");
   // With the branch moved instead, the same refusal reads as head movement, as before.
   refuseRef(false);
@@ -1057,7 +1057,7 @@ test("ship's repair GitHub's rules refuse is ship-refused with GitHub's words, a
   refuseRef(true);
   const r = await run("k-00000000000000a2", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
   assert.equal(r.ok, false);
-  assert.match(r.text, /^ship-refused: GitHub refused the push to .*: merging `main`: 422 Repository rule violations found\. Nothing was pushed; ship holds the PR/, r.text);
+  assert.match(r.text, /^ship-refused: the push to .* didn't go through .*: GitHub refused merging `main`: 422 Repository rule violations found\. Nothing was pushed; ship holds the PR/, r.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1);
 });
 
