@@ -48,7 +48,8 @@ export interface Store {
   lastQueue(app: string): { run: string; left: number } | undefined;
   runs(q: { app?: string; limit?: number }): { runs: Omit<Row, "report">[] };
   run(run: string): { run: Omit<Row, "report">; report: unknown; files: string[] };
-  image(run: string, name: string): { data: string; type: string };
+  /** An evidence file as base64, whole or the `length` bytes from `offset` (a box reads a big file in parts: the proxy's answers are 1 MB at most). */
+  image(run: string, name: string, part?: { offset: number; length: number }): { data: string; type: string; size: number };
   /** Remembers the issue number of a marker in a repo (repo names compare without case). */
   noteIssue(i: IssueRow): IssueRow;
   /** The app's known issues, of one repo when given. */
@@ -169,12 +170,13 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
       try { files = readdirSync(evidence(run)).sort(); } catch { /* no evidence yet */ }
       return { run: head(r), report: r.report ? JSON.parse(r.report) : null, files };
     },
-    image(run, name) {
+    image(run, name, part) {
       get(run);
       if (!NAME.test(name)) throw new Error("no such file");
       let data: Buffer;
       try { data = readFileSync(join(evidence(run), name)); } catch { throw new Error(`run ${run} has no ${name}`); }
-      return { data: data.toString("base64"), type: TYPES[name.slice(name.lastIndexOf(".") + 1)]! };
+      const at = Math.max(0, Math.trunc(part?.offset ?? 0)), slice = part ? data.subarray(at, at + Math.max(0, Math.trunc(part.length))) : data;
+      return { data: slice.toString("base64"), type: TYPES[name.slice(name.lastIndexOf(".") + 1)]!, size: data.length };
     },
     noteIssue({ app, repo, marker, number }) {
       const m = MARKER.exec(String(marker));

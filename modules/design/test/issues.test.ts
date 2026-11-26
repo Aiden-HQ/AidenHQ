@@ -31,3 +31,16 @@ test("a noted issue number wins over search, and a changed repo starts afresh", 
   assert.doesNotMatch(k.byId(second.task).description, /#41/);
   assert.match(k.byId(second.task).description, /Issues in acme\/new: none filed yet/);
 });
+
+test("a big evidence file reads back in parts that each fit the proxy's answer", () => {
+  const store = openStore(mkdtempSync(join(tmpdir(), "design-")));
+  const { run } = store.start({ target: "https://acme.example.com", kind: "review", model: "m", agent: "a" });
+  const big = Buffer.alloc(1_500_000, 7);
+  store.put(run, "a", [{ name: "queue.json", data: big.toString("base64") }]);
+  const parts: Buffer[] = [];
+  for (let offset = 0, size = Infinity; offset < size; offset += 600_000) {
+    const p = store.image(run, "queue.json", { offset, length: 600_000 });
+    assert.ok(p.data.length < 900_000); size = p.size; parts.push(Buffer.from(p.data, "base64"));
+  }
+  assert.equal(parts.length, 3); assert.ok(Buffer.concat(parts).equals(big));
+});

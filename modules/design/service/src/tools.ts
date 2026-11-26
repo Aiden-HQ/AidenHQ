@@ -47,6 +47,8 @@ export function designTools(store: Store, p: { passes: Passes; apps: () => App[]
         if ("refused" in r) throw new Error(`Refused: ${r.refused}.`);
         return r;
       } },
-    { name: "design_image", description: "One evidence file of a run as base64 data with its media type.", inputSchema: obj({ run: str, name: str }, ["run", "name"]), run: async (a) => store.image(s(a.run), s(a.name)) },
+    { name: "design_image", description: "One evidence file of a run as base64 data with its media type and size in bytes; with offset and length, only those bytes of it (`ui-review get` reads a big file in parts).",
+      inputSchema: obj({ run: str, name: str, offset: { type: "integer" }, length: { type: "integer" } }, ["run", "name"]),
+      run: async (a) => store.image(s(a.run), s(a.name), a.offset === undefined && a.length === undefined ? undefined : { offset: Number(a.offset ?? 0), length: Number(a.length ?? Infinity) }) },
   ];
 }

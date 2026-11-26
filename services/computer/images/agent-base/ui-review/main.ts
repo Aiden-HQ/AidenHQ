@@ -13,7 +13,7 @@ const COMMANDS: Record<string, string> = {
   repro: "repro <clicks.json> --out <dir> [--url u] [--session state.json] [--mode read|test-write|any] [--model id] [--max-usd n]",
   "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id] [--taste file]",
   login: "login supplied --app <app> --out state.json | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json | aidenhq --app <app> --out state.json",
-  browser: "browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir] [--record dir]   (the signed-in, guarded Chrome the clicking pass attaches to: prints the CDP port; runs until SIGTERM; --record: a webm per flow)",
+  browser: "browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir] [--record dir]   (the signed-in, guarded Chrome the clicking pass attaches to: prints the CDP port; runs until SIGTERM; --record: a webm per flow) | browser flow [--out dir] \"<title>\"   (the next flow starts: a recording cuts its clip)",
   "issue-body": "issue-body <dir> --app <app> --run <id> [--run-url <url>]   (the design issue and one per verified bug, as JSON: marker, title, body)",
   put: "put --run <id> <file>[=<name>]...   (files onto a design run: design_evidence_put, 8 MB per call, a recording alone)",
   get: "get --run <id> --out <dir> <name>...   (a design run's files: design_image)",

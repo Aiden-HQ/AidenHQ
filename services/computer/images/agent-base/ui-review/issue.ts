@@ -20,8 +20,11 @@ export const designMarker = (app: string) => `aidenhq-ui:design:${app}`;
 export const bugMarker = (app: string, b: Pick<Bug, "page" | "kind" | "selector">) =>
   `aidenhq-ui:bug:${app}:${createHash("sha256").update(`${b.page}\n${b.kind ?? "bug"}\n${b.selector ?? ""}`).digest("hex").slice(0, 12)}`;
 
-/** Model or app text on one line: no HTML comment (a second marker), no @mention, no line breaks. */
-const quote = (s: unknown, max = 600) => String(s ?? "").replace(/<!--|-->/g, "").replace(/@(?=[\w-])/g, "@​").replace(/\s+/g, " ").trim().slice(0, max);
+/** Model or app text on one line, inert: no HTML (a second marker, an image), no Markdown image, no @mention, no line breaks. */
+const quote = (s: unknown, max = 600) => String(s ?? "").slice(0, max).replace(/[<>]/g, (c) => (c === "<" ? "&lt;" : "&gt;")).replace(/!\[/g, "!\\[")
+  .replace(/@(?=[\w-])/g, "@\u200b").replace(/\s+/g, " ").trim();
+/** A title is plain text on GitHub: one line, no mention. */
+const plain = (s: unknown, max: number) => String(s ?? "").replace(/@(?=[\w-])/g, "@\u200b").replace(/\s+/g, " ").trim().slice(0, max);
 /** A fenced block that no backtick run inside can close. */
 const fenced = (text: string, lang = "") => {
   const ticks = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
@@ -79,7 +82,7 @@ function bugBody(b: Bug, o: IssueOptions): string {
     `**${quote(b.title, 200)}** on \`${quote(b.page, 200)}\` at ${b.width}px, ${b.theme}. Reproduced twice in fresh browsers by the UI review.`,
     "",
     "Steps:",
-    ...(b.repro ?? []).map((s, i) => `${i + 1}. \`${quote(s, 300).replace(/`/g, "'")}\``),
+    ...(b.repro ?? []).map((s, i) => `${i + 1}. \`${plain(s, 300).replace(/`/g, "'")}\``),
     "",
     ...(expected ? [`Expected: ${quote(expected)}`] : []),
     `Saw: ${quote(saw)}`,
@@ -97,7 +100,7 @@ export function issueBodies(dir: string, o: IssueOptions): { design: Issue; bugs
     const marker = bugMarker(o.app, b);
     if (seen.has(marker)) continue;
     seen.add(marker);
-    bugs.push({ marker, title: `UI bug (${o.app}): ${quote(b.title, 180)}`, body: bugBody(b, o) });
+    bugs.push({ marker, title: `UI bug (${o.app}): ${plain(b.title, 180)}`, body: bugBody(b, o) });
   }
   return { design: { marker: designMarker(o.app), title: `UI design improvements: ${o.app}`, body: designBody(r, o) }, bugs };
 }

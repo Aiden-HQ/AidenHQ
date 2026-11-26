@@ -190,9 +190,9 @@ If an upload fails, say so and describe what the image shows; one try is enough.
 ## A UI testing pass
 
 A pass's task ("UI review pass: <app> (<depth>)") names everything it runs at: the design run (`r-…`, already started for
-you: never call `design_run_start`), the target, the live-app mode, the model, the spend mode (how many fixes and clicking
-passes), per-role models, whether recording is on, where coverage resumes, how to sign in and the app's known issues. Do the
-steps above at that depth, then:
+you), the target, the live-app mode, the model, the spend mode (how many fixes and clicking passes), per-role models,
+whether recording is on, where coverage resumes, how to sign in and the app's known issues. Run the app, capture, review,
+show the fixes and work the clicking pass as above, at that depth; the steps below take the place of "Report":
 
 1. **Resume.** When the task says "resume from <previous run>", restore its queue first:
    `ui-review get --run <previous run> --out review queue.json run.json`. Read `review/run.json`: when its `base` is not this
@@ -206,22 +206,28 @@ steps above at that depth, then:
 3. **Spend mode.** `scan`: capture and review only, no fixes, no clicking. `standard`: the top 3 improvements get a rendered
    fix and one clicking pass runs. `thorough`: the top 5 and two clicking passes. A model the task names for `design` goes
    to `ui-review review --model`, for `fixes` to the fixer, for `clicking` to the clicking pass's `codex exec -m`.
-4. **Recording on:** start the clicking pass's browser with `--record review/recordings`. Stop it with `kill <its pid>` when
-   the clicking pass ends (it writes `recordings.json` as it stops), then put each clip and the list: `ui-review put --run <run> review/recordings/*.webm review/recordings/recordings.json`.
-5. **Issues**, before you finish the run (a finished run takes no more writes). `ui-review issue-body review --app <app>
-   --run <run>` (add `--run-url <the board's UI testing page>` when you know the board's address) prints the design issue and one issue per verified bug, each with its
-   `marker`, `title` and `body`. For each, in the app's repo:
+4. **Recording on:** start each clicking pass's browser with `--record review/recordings` (both passes of a thorough run use
+   the same folder: each adds its own clips). The clicking agent marks each flow's start (flows.md says how). Stop the
+   browser with `kill <its pid>` when the clicking pass ends (it writes `recordings.json` as it stops).
+5. **Evidence:** `ui-review put --run <run>` the report's cited captures, each fix's before|after pair under its own names
+   and its diff, and with recording on `review/recordings/*.webm review/recordings/recordings.json`.
+6. **Issues**, before you finish the run (a finished run takes no more writes). `ui-review issue-body review --app <app>
+   --run <run>` (add `--run-url <the board's UI testing page>` when you know the board's address) prints the design issue
+   and one issue per verified bug, each with its `marker`, `title` and `body`. For each, in the app's repo:
    - The task lists a number for the marker: `github_issue_update` it with the `body` and `state: open`.
    - No number: search once, `github_search_issues` with `repo:<repo> is:issue "<marker>"` (open or closed), and
      `github_issue_read` each hit; adopt the issue whose body holds the exact line `<!-- <marker> -->` and update it as
      above. None: `github_issue_create` with the title and body, with `labels: ["ui-design"]` (a bug: `ui-bug`) only when
      an issue there carries that label (`github_search_issues` with `repo:<repo> label:ui-design`); otherwise no label, and
      say so in the notes.
-   - Then `design_issue_note { app, marker, repo, number }` at once, before the next issue.
+   - Once GitHub confirms the issue (the answer names its number and URL), `design_issue_note { app, marker, repo, number }`
+     at once, before the next issue. An answer that says it was filed for approval hasn't happened yet: its outcome lands on
+     your task and wakes you. File the rest, then end this turn with the run and the task still open; on the wake, read each
+     outcome (`task_comments`), note each number that was created or adopted, and go on from step 7.
    No repo in the task, GitHub not connected, or a write refused: the run's page is the report. Record the outcome in
    `report.json` as `issues: { design: <url>, bugs: [<urls>] }`, or `issues: { unavailable: "<reason>" }`, and go on; one
    try is enough.
-6. **Finish:** `design_run_finish { run, report }`, then one comment on the task with the headline improvements, the bugs,
+7. **Finish:** `design_run_finish { run, report }`, then one comment on the task with the headline improvements, the bugs,
    the issue links (or the reason there are none) and the run id, then `task_finish`.
 
 ## Learning taste

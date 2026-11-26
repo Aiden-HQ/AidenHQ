@@ -134,6 +134,14 @@ export const heightOf = (w: number) => ({ 360: 780, 390: 844, 768: 1024, 1024: 7
 export async function browserCommand(argv: string[]): Promise<number> {
   const { readSession } = await import("./login.ts"); // login.ts signs in through this module
   const [sub, ...rest] = argv;
+  // `ui-review browser flow [--out dir] "<title>"`: the clicking agent starts its next flow; a recording cuts its clip there.
+  if (sub === "flow") {
+    const { values: f, positionals: title } = parseArgs({ args: rest, allowPositionals: true, options: { out: { type: "string", default: "ui-review-browser" } } });
+    if (!title.length) { console.error('usage: ui-review browser flow [--out dir] "<flow title>"'); return 2; }
+    mkdirSync(f.out!, { recursive: true });
+    writeFileSync(join(f.out!, "flow.txt"), title.join(" "));
+    return 0;
+  }
   const { values: v } = parseArgs({ args: rest, options: { url: { type: "string" }, mode: { type: "string" }, session: { type: "string" }, out: { type: "string", default: "ui-review-browser" }, port: { type: "string" }, record: { type: "string" } } });
   const mode = modeOf(v.mode, v.url ?? "http://app.invalid/");
   if (sub !== "start" || !mode) { console.error("usage: ui-review browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir] [--record dir]"); return 2; }
@@ -141,7 +149,7 @@ export async function browserCommand(argv: string[]): Promise<number> {
   try { session = v.session ? readSession(v.session).state : null; } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
   mkdirSync(v.out!, { recursive: true });
   const b = await launch({ mode, out: v.out, session, port: v.port ? Number(v.port) : undefined });
-  const rec = v.record ? await (await import("./record.ts")).recordPages(b.cdp, v.record) : undefined;
+  const rec = v.record ? await (await import("./record.ts")).recordPages(b.cdp, v.record, { marks: join(v.out!, "flow.txt") }) : undefined;
   if (v.url) { const ctx = await b.browser.newContext({ viewport: { width: 1512, height: 900 } }); await (await ctx.newPage()).goto(v.url, { waitUntil: "domcontentloaded" }).catch(() => {}); }
   console.log(`cdp port ${b.port}`);
   await new Promise<void>((ok) => { process.once("SIGTERM", ok); process.once("SIGINT", ok); });

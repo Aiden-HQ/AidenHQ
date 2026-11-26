@@ -1,15 +1,16 @@
 // Recordings of the clicking pass's flows (an app's `recording: true`): every page of the run's Chrome is screencast over CDP
-// (Page.startScreencast) and its frames fed, at a steady FPS, to ffmpeg as VP8 webm at 256 kbps. A flow is what happens between
-// two top-level document loads (each flow starts by opening its page), so a clip starts at a page's first frame after a load
-// and ends at the next load, at 2 minutes, or at the 4 MB file cap, whichever comes first: every clip fits one
-// design_evidence_put on its own. Each clip also carries the layout shifts and long animation frames of its flow (Motion's
-// `shifts` and `longFrames`). recordings.json lists the clips.
+// (Page.startScreencast) and its frames fed, at a steady FPS, to ffmpeg as VP8 webm at 256 kbps. A clip is one flow: it starts
+// at a page's first frame and ends when the clicking agent marks the next flow (`ui-review browser flow "<title>"`, a file the
+// recorder watches), at a top-level document load, at 2 minutes or at the 4 MB file cap, whichever comes first: every clip fits
+// one design_evidence_put on its own. Each clip also carries the layout shifts and long animation frames of its flow (Motion's
+// `shifts` and `longFrames`). recordings.json lists the clips; a second browser recording into the same folder (a thorough
+// pass's second clicking pass) adds its own, under names of its own.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { launch, initScript } from "./browser.ts";
 import { putBytes, PUT_MAX } from "./evidence.ts";
-import { type Mode } from "./guard.ts";
+import { type Mode, pageOf } from "./guard.ts";
 import { runStep } from "./repro.ts";
 import type { Motion, Step } from "./types.ts";
 
@@ -23,7 +24,7 @@ const MAX_CLIPS = 12;
 const MIN_SECONDS = 1;
 const SIZE = { w: 1280, h: 800 };
 
-export type Recording = { file: string; page: string; seconds: number; bytes: number; motion: Pick<Motion, "shifts" | "longFrames"> };
+export type Recording = { file: string; page: string; flow?: string; seconds: number; bytes: number; motion: Pick<Motion, "shifts" | "longFrames"> };
 
 /** What a flow's document reports: its layout shifts and long animation frames since the last read (read once a second). */
 const FLOW_MOTION = `(() => { if (window.__uiReviewFlow) return; const f = (window.__uiReviewFlow = { shifts: [], longFrames: [] });
@@ -36,9 +37,9 @@ type Msg = { id?: number; method?: string; params?: Record<string, any>; session
 
 class Clip {
   ff: ChildProcess; frames = 0; ended: Promise<void>; dead = false; motion = { shifts: [] as number[], longFrames: [] as number[] };
-  readonly file: string; readonly page: string;
-  constructor(file: string, page: string) {
-    this.file = file; this.page = page;
+  readonly file: string; readonly page: string; readonly flow?: string;
+  constructor(file: string, page: string, flow?: string) {
+    this.file = file; this.page = page; this.flow = flow;
     this.ff = spawn("ffmpeg", ["-loglevel", "error", "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "mjpeg", "-i", "-",
       "-vf", `scale=${SIZE.w}:${SIZE.h}:force_original_aspect_ratio=decrease,pad=${SIZE.w}:${SIZE.h}:(ow-iw)/2:(oh-ih)/2`,
       "-c:v", "libvpx", "-b:v", "256k", "-deadline", "realtime", "-cpu-used", "8", "-auto-alt-ref", "0",
@@ -57,10 +58,11 @@ class Clip {
 }
 
 /**
- * Records every page of the Chrome at `cdp` into `dir` until stop(), which ends the open clips (waiting for ffmpeg) and writes
- * <dir>/recordings.json. A clip under a second, or one whose design_evidence_put request would pass 8 MB, is dropped.
+ * Records every page of the Chrome at `cdp` into `dir` until stop(), which ends the open clips (waiting for ffmpeg) and adds them
+ * to <dir>/recordings.json. A clip under a second, or one whose design_evidence_put request would pass 8 MB, is dropped. `marks`:
+ * the file whose every change starts a new flow (its text is the flow's title).
  */
-export async function recordPages(cdp: string, dir: string): Promise<{ stop: () => Promise<Recording[]> }> {
+export async function recordPages(cdp: string, dir: string, o: { marks?: string } = {}): Promise<{ stop: () => Promise<Recording[]> }> {
   mkdirSync(dir, { recursive: true });
   const ws = new WebSocket(cdp);
   await new Promise<void>((ok, no) => { ws.onopen = () => ok(); ws.onerror = () => no(new Error("the recorder could not reach Chrome's CDP")); });
@@ -72,7 +74,11 @@ export async function recordPages(cdp: string, dir: string): Promise<{ stop: () 
   });
   type Tab = { session: string; url: string; frame?: Buffer; clip?: Clip; full: boolean };
   const tabs = new Map<string, Tab>(), done: Recording[] = [], closing: Promise<void>[] = [];
-  let n = 0;
+  // Clip names of their own: a second recorder into the same folder never replaces the first one's.
+  // A mark left by an earlier browser of the same folder is not this one's flow.
+  let n = 0, flow: string | undefined, markAt = 0;
+  try { if (o.marks) markAt = statSync(o.marks).mtimeMs; } catch { /* none yet */ }
+  const stamp = Date.now().toString(36);
   const finish = (t: Tab) => {
     const c = t.clip;
     if (!c) return;
@@ -81,10 +87,9 @@ export async function recordPages(cdp: string, dir: string): Promise<{ stop: () 
       const bytes = existsSync(c.file) ? statSync(c.file).size : 0, seconds = c.frames / FPS;
       const fits = bytes > 0 && bytes <= CLIP_BYTES && putBytes("r-xxxxxxxxxxxx-xxxxxxxx", [{ name: "flow-00.webm", data: "A".repeat(Math.ceil(bytes / 3) * 4) }]) <= PUT_MAX;
       if (seconds < MIN_SECONDS || !fits) { rmSync(c.file, { force: true }); return; }
-      done.push({ file: c.file.split("/").pop()!, page: c.page, seconds, bytes, motion: c.motion });
+      done.push({ file: c.file.split("/").pop()!, page: c.page, ...(c.flow ? { flow: c.flow } : {}), seconds, bytes, motion: c.motion });
     }));
   };
-  const pageOf = (u: string) => { try { const x = new URL(u); return x.pathname + (x.hash.startsWith("#/") ? x.hash.replace(/[?&].*$/, "") : ""); } catch { return ""; } };
   ws.onmessage = (ev) => {
     const m = JSON.parse(String(ev.data)) as Msg;
     if (m.id !== undefined) { waiting.get(m.id)?.(m); waiting.delete(m.id); return; }
@@ -107,6 +112,8 @@ export async function recordPages(cdp: string, dir: string): Promise<{ stop: () 
       // A new document: the flow before it ends; the next frame starts the next clip.
       const t = tabs.get(m.sessionId);
       if (t) { finish(t); t.url = p.frame.url; t.frame = undefined; t.full = false; }
+    } else if (m.method === "Page.navigatedWithinDocument" && m.sessionId) {
+      const t = tabs.get(m.sessionId); if (t && !t.clip) t.url = p.url; // a client-side route: the next clip's page
     } else if (m.method === "Target.detachedFromTarget") {
       const t = tabs.get(p.sessionId); if (t) { finish(t); tabs.delete(p.sessionId); }
     }
@@ -116,11 +123,21 @@ export async function recordPages(cdp: string, dir: string): Promise<{ stop: () 
   let ticks = 0;
   const timer = setInterval(() => {
     ticks++;
+    // A new flow marked: every open clip ends, and each page's next frame starts the flow's clip.
+    if (o.marks && ticks % FPS === 0) {
+      let at = 0;
+      try { at = statSync(o.marks).mtimeMs; } catch { /* not marked yet */ }
+      if (at > markAt) {
+        markAt = at;
+        try { flow = readFileSync(o.marks, "utf8").replace(/\s+/g, " ").trim().slice(0, 200) || undefined; } catch { flow = undefined; }
+        for (const t of tabs.values()) { finish(t); t.full = false; }
+      }
+    }
     for (const t of tabs.values()) {
       if (!t.frame || t.full) continue;
       if (!t.clip) {
         if (n >= MAX_CLIPS || /^(about|chrome|data):/.test(t.url)) continue;
-        t.clip = new Clip(join(dir, `flow-${String(++n).padStart(2, "0")}.webm`), pageOf(t.url));
+        t.clip = new Clip(join(dir, `flow-${stamp}-${String(++n).padStart(2, "0")}.webm`), pageOf(t.url), flow);
       }
       if (!t.clip.write(t.frame) || (existsSync(t.clip.file) && statSync(t.clip.file).size >= FS_LIMIT)) { t.full = true; finish(t); continue; }
       if (ticks % FPS === 0) {
@@ -139,7 +156,10 @@ export async function recordPages(cdp: string, dir: string): Promise<{ stop: () 
       await Promise.all(closing);
       try { ws.close(); } catch { /* gone */ }
       done.sort((a, b) => a.file.localeCompare(b.file));
-      writeFileSync(join(dir, "recordings.json"), JSON.stringify(done, null, 2));
+      const list = join(dir, "recordings.json");
+      let before: Recording[] = [];
+      try { before = JSON.parse(readFileSync(list, "utf8")) as Recording[]; } catch { /* the folder's first recorder */ }
+      writeFileSync(list, JSON.stringify([...before, ...done], null, 2));
       return done;
     },
   };

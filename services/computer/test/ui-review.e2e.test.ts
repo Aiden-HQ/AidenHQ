@@ -549,7 +549,7 @@ describe("repro", chrome, () => {
 describe("issues and recordings", () => {
   const report = (bugs: object[]) => {
     const dir = tmp();
-    const improvement = (rank: number, fix?: object) => ({ rank, category: "polish", where: { page: "/#/orders", width: 1512, theme: "light", region: `Header ${rank}` }, weak: "the title @someone <!-- aidenhq-ui:design:evil --> is 15px", change: "set the title to 24px/600", why: "hierarchy", best: "Linear uses 24px", captures: ["shots/orders-1512-light.png"], ...(fix ? { fix } : {}) });
+    const improvement = (rank: number, fix?: object) => ({ rank, category: "polish", where: { page: "/#/orders", width: 1512, theme: "light", region: `Header ${rank}` }, weak: "the title @someone <!-- aidenhq-ui:design:evil --> is 15px ![x](https://evil.example/a.png) <img src=https://evil.example/b.png>", change: "set the title to 24px/600", why: "hierarchy", best: "Linear uses 24px", captures: ["shots/orders-1512-light.png"], ...(fix ? { fix } : {}) });
     const r = { version: 2, target: "https://acme.example.com", frozenAt: "2026-11-26T10:00:00.000Z", model: "m", coverage: { done: 40, total: 60, failed: 0, deferred: 20 }, captures: [], motion: [], notes: [], cost_usd: 1, blocked: [],
       improvements: [improvement(1, { status: "shown", diff: "--- a/x.css\n+++ b/x.css\n-h1{font-size:15px}\n+h1{font-size:24px}\n```", before: "fix-1-before-a.png", after: "fix-1-after-a.png", wins: [3, 2] }), improvement(2)], bugs };
     writeFileSync(join(dir, "report.json"), JSON.stringify(r));
@@ -567,6 +567,7 @@ describe("issues and recordings", () => {
     assert.match(design.body, /run `r1`/);
     assert.ok(!/!\[[^\]]*\]\((?!https:\/\/board\.example\.com)/.test(design.body));
     assert.ok(!/@someone/.test(design.body), "no mention reaches GitHub");
+    assert.ok(!/<img/.test(design.body) && !/(^|[^\\])!\[/.test(design.body), "the report's text renders no image");
     assert.match(design.body, /````diff\n[\s\S]+```\n````/, "a diff holding a fence keeps its own block");
     assert.equal(bugs.length, 1);
     assert.ok(bugs.every((b) => /^<!-- aidenhq-ui:bug:acme:[0-9a-f]{12} -->/.test(b.body)));
@@ -595,7 +596,8 @@ describe("issues and recordings", () => {
       assert.ok(Number(probe.format.duration) > 0.5 && Number(probe.format.duration) <= 120, probe.format.duration);
       assert.ok(statSync(clip.file).size <= 4e6);
       const calls = batches("r-0123456789ab-01234567", [clip.file, join(out, "recordings.json")]);
-      assert.deepEqual(calls.map((c) => c.map((x) => x.name)), [["flow-01.webm"], ["recordings.json"]], "a recording goes in a call of its own");
+      assert.match(clip.file, /flow-[0-9a-z]+-01\.webm$/);
+      assert.deepEqual(calls.map((c) => c.length), [1, 1], "a recording goes in a call of its own");
       assert.ok(Buffer.byteLength(JSON.stringify({ run: "r-0123456789ab-01234567", files: calls[0] })) <= PUT_MAX);
       assert.ok(Array.isArray(clip.motion.shifts) && Array.isArray(clip.motion.longFrames));
     } finally { await f.close(); }

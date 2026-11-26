@@ -1,6 +1,7 @@
 // A run's evidence between the box and the design module's store, file to tool, never through the model: `ui-review put` sends
 // files with design_evidence_put (at most 8 MB per call, a recording in a call of its own) and `ui-review get` saves a run's
-// files from design_image (a pass restores the previous pass's coverage queue). Both call the design connection as the job, through
+// files from design_image, in parts of PART bytes (a pass restores the previous pass's coverage queue; the kernel's proxy answers
+// at most 1 MB of text). Both call the design connection as the job, through
 // the box's one MCP client (tools-client.ts: the kernel's proxy decides each call by the job's grants).
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -38,6 +39,9 @@ export function batches(run: string, args: string[]): File[][] {
   return out;
 }
 
+/** Bytes per design_image call: their base64 and the fence stay well under the proxy's 1 MB answer. */
+export const PART = 600_000;
+
 /** A design tool's answer: the JSON inside the proxy's untrusted-data fence. */
 export function unfence(text: string): unknown {
   const open = text.indexOf("<untrusted-data"), start = open < 0 ? 0 : text.indexOf(">", open) + 1, end = text.lastIndexOf("</untrusted-data>");
@@ -63,9 +67,14 @@ export async function getCommand(argv: string[]): Promise<number> {
   let failed = 0;
   for (const name of positionals) {
     try {
-      const got = unfence((await call("design", "design_image", { run: v.run, name }, { timeoutS: 120 })).text) as { data?: unknown };
-      if (typeof got.data !== "string") throw new Error("no data in the answer");
-      writeFileSync(join(v.out, name), Buffer.from(got.data, "base64"));
+      const parts: Buffer[] = [];
+      for (let offset = 0, size = Infinity; offset < size; offset += PART) {
+        const got = unfence((await call("design", "design_image", { run: v.run, name, offset, length: PART }, { timeoutS: 120 })).text) as { data?: unknown; size?: unknown };
+        if (typeof got.data !== "string" || typeof got.size !== "number") throw new Error("no data in the answer");
+        size = got.size;
+        parts.push(Buffer.from(got.data, "base64"));
+      }
+      writeFileSync(join(v.out, name), Buffer.concat(parts));
       console.log(`${join(v.out, name)}`);
     } catch (e) { failed++; console.error(`ui-review get ${name}: ${(e as Error).message.split("\n")[0]}`); }
   }
