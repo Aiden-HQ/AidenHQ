@@ -19,6 +19,8 @@ const pages = {
   "socket-write": () => { const ws = new WebSocket(`ws://${location.host}/ws`); ws.onopen = () => ws.send("write"); return `<h1>Socket writer</h1><div class="card">Writes over a WebSocket on load.</div>`; },
   danger: () => `<h1>Danger zone</h1><div class="card"><button id="del" onclick="fetch('/api/delete',{method:'POST'})">Delete</button> <button class="primary" id="pay" onclick="fetch('/api/pay',{method:'POST'})">Pay</button></div>`,
 };
+// /#/clicks (not in ROUTES): a dead Archive button, a filter that is lost on reload, and a Save that works, for the clicking pass's repro.
+pages.clicks = () => `<h1>Orders</h1><div class="card"><input id="filter" placeholder="Filter orders"> <button id="archive">Archive</button> <button id="save" onclick="document.getElementById('saved').textContent='Saved'">Save</button><p id="saved"></p></div>`;
 for (const r of GENERATED) pages[r] = () => `<h1>Section ${r.slice(1)}</h1><div class="card"><div class="skeleton" style="width:0;height:0"></div>Acme report ${r.slice(1)} for example.com.</div><button class="primary">Open</button>`;
 
 window.__bootAt = Date.now() - 2 * 60000; // "2m ago" at boot, from Date.now()

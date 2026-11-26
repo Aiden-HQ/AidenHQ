@@ -8,9 +8,12 @@ const COMMANDS: Record<string, string> = {
   routes: "routes <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--baseline <dir>] [--mode read|test-write|any] [--session state.json]",
   refs: "refs <refs.json> --out <dir> [--measure]",
   review: "review <capture dir> [--model id] [--effort low|medium|high] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n (stops starting calls once reached)]",
+  flows: "flows <capture dir> --out flows.md [--personas file]",
+  bugs: "bugs <capture dir> [--model id]   (candidate bugs into candidates.json: leads, never reported)",
+  repro: "repro <clicks.json> --out <dir> [--url u] [--session state.json] [--mode read|test-write|any] [--model id] [--max-usd n]",
   "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id] [--taste file]",
   login: "login supplied --app <app> --out state.json | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json",
-  browser: "browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir]   (prints the CDP port; runs until SIGTERM)",
+  browser: "browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir]   (the signed-in, guarded Chrome the clicking pass attaches to: prints the CDP port; runs until SIGTERM)",
 };
 
 // Each subcommand is its module's `<name>Command(args)`, returning the exit code (loaded only when run).
@@ -20,6 +23,9 @@ const BUILT: Record<string, () => Promise<(args: string[]) => Promise<number>>> 
   routes: async () => (await import("./routes.ts")).routesCommand,
   refs: async () => (await import("./refs.ts")).refsCommand,
   review: async () => (await import("./review.ts")).reviewCommand,
+  flows: async () => (await import("./flows.ts")).flowsCommand,
+  bugs: async () => (await import("./bugs.ts")).bugsCommand,
+  repro: async () => (await import("./repro.ts")).reproCommand,
   "fix-check": async () => (await import("./pairwise.ts")).fixCheckCommand,
   login: async () => (await import("./login.ts")).loginCommand,
   browser: async () => (await import("./browser.ts")).browserCommand,

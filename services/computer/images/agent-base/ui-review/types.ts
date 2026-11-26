@@ -33,7 +33,14 @@ export type Improvement = {
   fix?: { status: "shown" | "rejected" | "failed"; diff?: string; before?: string; after?: string; wins?: [number, number]; why?: string; collateral?: string[] };
 };
 export type MotionRow = { where: string; before: string; after: string; why: string; css: string };
-export type Bug = { page: string; width: number; theme: Theme; title: string; evidence: string; captures: string[]; verified: boolean; repro?: string[] };
+export type Bug = {
+  page: string; width: number; theme: Theme; title: string; evidence: string; captures: string[]; verified: boolean; repro?: string[];
+  kind?: "friction" | "bug"; selector?: string; // a bug `repro` verified: what the agent filed it as, and its last step's target (the issue marker's inputs)
+};
+/** One step of a clicking-pass finding; selectors are Playwright locators (`role=button[name="Save"]`, `text=...`, CSS). */
+export type Step = { open: string } | { click: string } | { fill: [string, string] } | { press: string } | { wait: string };
+/** A clicking-pass finding, as the agent writes it to clicks.json. */
+export type Click = { kind: "friction" | "bug"; page: string; width: number; title: string; steps?: Step[]; saw: string; expected: string };
 export type Report = {
   version: 2; target: string; commit?: string; frozenAt: string; model: string;
   coverage: { done: number; total: number; failed: number; deferred: number };

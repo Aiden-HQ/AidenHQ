@@ -133,6 +133,13 @@ async function reviewPage(x: Ctx, page: string, caps: Capture[]): Promise<Candid
   return cited(x, validCandidates(a), picked.map((c) => c.shots[0]));
 }
 
+/** friction.json: the clicking pass's friction items as candidates; one whose pictures are not in the folder is left out. */
+function readFriction(dir: string): Candidate[] {
+  const file = join(dir, "friction.json");
+  if (!existsSync(file)) return [];
+  return validCandidates({ improvements: JSON.parse(readFileSync(file, "utf8")) }).filter((c) => c.captures.every((f) => existsSync(join(dir, f))));
+}
+
 /** Candidates whose every cited capture is one the model was shown (and exists in the run); others are dropped. */
 const cited = (x: Ctx, cs: Candidate[], shown: Iterable<string>) => {
   const ok = new Set([...shown].filter((f) => x.known.has(f)));
@@ -204,7 +211,10 @@ export async function runReview(dir: string, opts: ReviewOptions = {}): Promise<
     if (over()) { skipped.push(page); return; }
     try { perPage.set(page, await reviewPage(x, page, caps)); reviewed++; } catch (e) { notes.push(`design review of ${page} failed: ${(e as Error).message}`); }
   });
-  const cands = [...byPage.keys()].flatMap((p) => perPage.get(p) ?? []); // page order, whatever order the calls finished in
+  // The clicking pass's friction (`ui-review repro` writes friction.json beside the report): ease candidates with their own captures.
+  const friction = readFriction(dir);
+  for (const f of friction) for (const c of f.captures) x.known.add(c);
+  const cands = [...[...byPage.keys()].flatMap((p) => perPage.get(p) ?? []), ...friction]; // page order, whatever order the calls finished in; friction last
   let improvements: Improvement[] = [];
   const unconsolidated = (why: string) => {
     improvements = cands.slice(0, top).map((c, i) => ({ ...c, rank: i + 1 }));

@@ -67,6 +67,12 @@ RUN case "$(dpkg --print-architecture)" in \
     && mkdir -p /usr/share/licenses/mailpit && tar -xzf /tmp/mailpit.tgz -C /tmp mailpit LICENSE \
     && mv /tmp/mailpit /usr/local/bin/mailpit && mv /tmp/LICENSE /usr/share/licenses/mailpit/LICENSE && rm /tmp/mailpit.tgz \
     && chmod 755 /usr/local/bin/mailpit && mailpit version | grep -q 'v1\.34\.0'
+# agent-browser's `dogfood` skill (Apache-2.0, licence beside it) for the clicking pass, from the commit of the agent-browser
+# release the browser image pins (v0.41.2, 2026-11-03): fetched by commit hash, so the content is what that commit holds.
+RUN mkdir /tmp/ab && cd /tmp/ab && git init -q && git fetch -q --depth 1 https://github.com/vercel-labs/agent-browser d52a5e90c372ec4710c69adc3837ac14bbd852aa \
+    && git checkout -q FETCH_HEAD && test "$(git rev-parse HEAD)" = d52a5e90c372ec4710c69adc3837ac14bbd852aa \
+    && mkdir -p /opt/aidenhq/skills && cp -r skill-data/dogfood /opt/aidenhq/skills/dogfood && cp LICENSE /opt/aidenhq/skills/dogfood/LICENSE \
+    && cd / && rm -rf /tmp/ab && test -f /opt/aidenhq/skills/dogfood/SKILL.md
 COPY design-system /opt/aidenhq/design-system
 COPY app-starter /opt/aidenhq/app-starter
 # The UI review's regression set (modules/design/eval): `node /opt/aidenhq/design-eval/run.ts <suite>`, on request only. It needs no install.

@@ -352,6 +352,8 @@ export async function routesCommand(argv: string[]): Promise<number> {
   const r: Report = { version: 2, target: base, frozenAt, model: "", coverage: { done, total: checks.length, failed: checks.filter((c) => c.skipped && !c.skipped.startsWith("not checked")).length, deferred: checks.filter((c) => c.skipped?.startsWith("not checked")).length },
     captures: [], improvements: [], motion: [], bugs, notes, cost_usd: 0, blocking: introduced, preexisting, candidates, blocked: b.blocked() };
   writeFileSync(join(out, "report.json"), JSON.stringify(r, null, 2));
+  // The pages' controls and links, for the clicking pass's flow list (`ui-review flows`).
+  writeFileSync(join(out, "checks.json"), JSON.stringify(checks.filter((c) => !c.skipped).map((c) => ({ page: c.from, what: c.what, ...(c.to ? { to: c.to } : {}) }))));
   const md = [`# Route check of ${base}`, "", `${checks.length} checks at ${WIDTH}px light, ${Math.round((Date.now() - t0) / 1000)} s`, "",
     introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found", "", ...introduced.map((x) => `- ${x}`), "",
     ...(preexisting.length ? [`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((x) => `- ${x}`), ""] : []),
