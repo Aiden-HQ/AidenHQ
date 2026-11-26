@@ -40,7 +40,7 @@ describe("primer.publish executor", () => {
     expect([vouched.raise, (vouched.args as any).own]).toEqual([undefined, true]);
     // The agent learns the version Primer made and what became of each change.
     expect(await ex.execute({ id: "k-0000000000000002", kind: "primer.publish", args: v.args, digest: "d", idempotency_key: "k-0000000000000002" })).toEqual({
-      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\n1 of the 3 changed parts became suggestions for a person to decide, because those parts changed since you read the document. Leave them to the person: publishing the same change again adds nothing. 2 changed parts went in as written.',
+      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\n1 of the 3 changed parts became suggestions for a person to decide (for example because people edited them since you read the document). Leave them to the person: publishing the same change again adds nothing. 2 changed parts went in as written.',
     });
     expect(calls.at(-1)).toEqual(["primer_add_version", { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2", baseVersionNumber: 3 }]);
   });

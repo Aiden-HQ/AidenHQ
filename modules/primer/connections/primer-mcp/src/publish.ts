@@ -71,7 +71,7 @@ function reconciled(rec: any, made: boolean): string {
   if (!suggested.length && !conflict.length) return "";
   const lines: string[] = [];
   const total = parts.length;
-  if (suggested.length) lines.push(`${suggested.length} of the ${total} changed parts ${made ? "became suggestions for a person to decide" : "are now suggestions for a person to decide"}, because those parts changed since you read the document. Leave them to the person: publishing the same change again adds nothing.`);
+  if (suggested.length) lines.push(`${suggested.length} of the ${total} changed parts ${made ? "became suggestions for a person to decide" : "are now suggestions for a person to decide"} (for example because people edited them since you read the document). Leave them to the person: publishing the same change again adds nothing.`);
   if (conflict.length) {
     const named = conflict.map((c) => (typeof c?.note === "string" ? c.note : typeof c?.text === "string" ? c.text : "")).filter(Boolean).map((t) => `"${t.slice(0, 80)}"`);
     lines.push(`${conflict.length} changed part${conflict.length > 1 ? "s" : ""} conflicted with people's edits and ${conflict.length > 1 ? "were" : "was"} not applied${named.length ? ` (${named.join("; ")})` : ""}: read the live document and change them from its current text.`);
