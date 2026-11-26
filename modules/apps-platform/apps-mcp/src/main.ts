@@ -78,6 +78,11 @@ const p = createPlatform(
       const res = await fetch(`${kernelUrl}/v1/notify`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serviceKey}` }, body: JSON.stringify({ kind: "decision", text, dedupe_key: key }), signal: AbortSignal.timeout(30_000) });
       if (!res.ok) throw new Error(`kernel notify: ${res.status}`);
     },
+    // role kernel.events: this module's service key speaks as apps-platform, the apps connection's module.
+    event: async (e) => {
+      const res = await fetch(`${kernelUrl}/v1/events`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serviceKey}` }, body: JSON.stringify(e), signal: AbortSignal.timeout(15_000) });
+      if (!res.ok) throw new Error(`kernel events: ${res.status}`);
+    },
   },
   log,
 );

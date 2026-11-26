@@ -53,6 +53,8 @@ export interface PlatformConfig {
   doorsFile?: string; // which apps the gate's doors serve, on which loopback port (doors.ts), beside the previews file
   /** Tells the owner one thing needs them (a `decision` notice, de-duplicated by `key`): the kernel's /v1/notify. */
   notify?: (text: string, key: string) => Promise<void>;
+  /** One source event on the apps connection (the kernel's POST /v1/events): `app.deployed` after a healthy deploy. */
+  event?: (e: { connection: "apps"; kind: "app.deployed"; resource: string; id: string; data: { sha: string } }) => Promise<void>;
   /** The apps node's `tailscale status --json` (tests stub it). */
   nodeStatus?: () => Promise<{ BackendState?: string; AuthURL?: string }>;
   tlsCheck?: TlsCheck; // a public door's certificate check (doors.ts); tests stub it
@@ -152,6 +154,9 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     identity: (app) => identityCheck(app),
     expose: () => syncEdge().catch((err) => log.warn({ err: String(err) }, "apps node sync failed")),
     provisionDb: (app) => provisionDatabase(app, { secretsDir: cfg.secretsDir, sql: superSql }),
+    // One event per deploy row: the kernel's log dedupes on (connection, id), so a retry is one event and a redeploy another.
+    deployed: (app, e) => (cfg.event?.({ connection: "apps", kind: "app.deployed", resource: app.name, id: `deploy:${e.id}`, data: { sha: e.sha } }) ?? Promise.resolve())
+      .catch((err) => log.warn({ app: app.name, err: String(err) }, "app.deployed event not sent")),
   });
 
   /**

@@ -11,7 +11,7 @@ const app = (o: object = {}) => parseApp({ name: "demo", repo: "example-org/x", 
 
 // Fake docker: `config` returns a minimal compose file, `up` marks the checked-out sha as running. Health is true for "good" shas.
 function setup(good: string[], check?: Deps["check"], identity?: Deps["identity"]) {
-  const st = { out: "", running: "", downFails: false, broken: new Set<string>(), exposed: 0 };
+  const st = { out: "", running: "", downFails: false, broken: new Set<string>(), exposed: 0, deployed: [] as { app: string; id: number; sha: string }[] };
   const t = { now: 0 };
   const src = mkdtempSync(`${tmpdir()}/src-`);
   writeFileSync(`${src}/compose.yaml`, "services:\n  web:\n    image: x\n");
@@ -34,6 +34,7 @@ function setup(good: string[], check?: Deps["check"], identity?: Deps["identity"
     check,
     identity,
     expose: async () => void st.exposed++,
+    deployed: async (a, e) => void st.deployed.push({ app: a.name, ...e }),
     now: () => t.now,
     sleep: async (ms) => void (t.now += ms),
   });
@@ -46,6 +47,16 @@ describe("deploy engine", () => {
     await engine.deploy(app(), { sha: "v1", by: "t" });
     expect(await engine.deploy(app(), { sha: "v2", by: "t" })).toMatchObject({ sha: "v2", status: "rolled_back", previous: "v1" });
     expect(st.running).toBe("v1");
+  });
+  it("a healthy deploy says app.deployed once per deploy row; a rolled-back one, a rollback and a redeploy's retry don't double it", async () => {
+    const { engine, st } = setup(["v1", "v3"]);
+    await engine.deploy(app(), { sha: "v1", by: "t" });
+    await engine.deploy(app(), { sha: "v2", by: "t" }); // rolled back: no event, nor for its auto-rollback
+    await engine.deploy(app(), { sha: "v3", by: "t" });
+    await engine.rollback(app(), { by: "t" });
+    await engine.deploy(app(), { sha: "v3", by: "t" }); // the same sha again: its own row, its own event
+    expect(st.deployed.map((e) => e.sha)).toEqual(["v1", "v3", "v3"]);
+    expect(new Set(st.deployed.map((e) => e.id)).size).toBe(3);
   });
   it("a healthy deploy that answers without the platform's sign-in is rolled back, and says so; a probe that can't run fails too", async () => {
     let st!: { running: string };
