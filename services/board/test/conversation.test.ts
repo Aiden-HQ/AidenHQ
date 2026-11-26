@@ -44,7 +44,7 @@ describe("conversation", () => {
     agent("Duplicate wake; no new action", 3),
     owner("[slack] thanks", 5),
     owner("Not right: it's due Thursday\n\n<!-- aidenhq-correction -->", 6),
-    owner("Applied. deployed (approval A1234abcd)\n\n<!-- aidenhq-approval -->", 7),
+    owner("**Done** (approval A1234abcd, deploy). Outcome.\n\n<!-- aidenhq-approval -->", 7),
   ];
   const msgs = conversation(chat, comments, "me", name);
 

@@ -54,6 +54,7 @@ const isReply = (body: string) => body.includes(REPLY_MARKER) || JOB_REPLY.test(
 /** A board notice on a chat (an approval's outcome, a file it couldn't read): shown as a line, never as the owner's words. */
 export { NOTICE_MARKER };
 export const APPROVAL_MARKER = "<!-- aidenhq-approval -->";
+const OUTCOME_LINE = /^\*\*(Done|Failed|Still running)\*\* \(approval /;
 const CORRECTION_MARKER = "<!-- aidenhq-correction -->";
 
 export type Via = "Telegram" | "Slack" | "Telegram voice note";
@@ -162,9 +163,9 @@ export function conversation(issue: { id: string; description: string | null; cr
     // Board and runner markers count only on comments they wrote (an agent could paste one to fake a notice).
     // The board (through the kernel) and runner post as the owner or as no user; another user's comment is never a system message.
     const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
-    // The kernel's approval outcomes wake the agent; the owner sees the card, never this line.
-    if (system && has(c.body, APPROVAL_MARKER)) continue;
-    if (system && isSystemNote(c.body)) out.push({ kind: "notice", id: c.id, text: strip(c.body), at: c.createdAt });
+    // The kernel's outcome lines for a card ("Done (approval …)") wake the agent; the owner sees the card, never this line.
+    if (system && has(c.body, APPROVAL_MARKER) && OUTCOME_LINE.test(strip(c.body))) continue;
+    if (system && (has(c.body, APPROVAL_MARKER) || isSystemNote(c.body))) out.push({ kind: "notice", id: c.id, text: strip(c.body), at: c.createdAt });
     else if (system && relayed(c.body)) note(c, "Someone else");
     else if (c.authorType === "agent") {
       const name = agentName(c.authorAgentId);
