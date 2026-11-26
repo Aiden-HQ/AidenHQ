@@ -347,5 +347,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
     "## Checks (brand, links with Back, Forward and reload, controls)", "", ...checks.map((c) => `- ${c.from} ${c.what}: ${c.skipped ?? (c.problems.join("; ") || (c.to ? "renders" : "acts"))}`), ""];
   writeFileSync(join(out, "report.md"), md.join("\n"));
   console.log(`${join(out, "report.md")}: ${checks.length} checks, ${introduced.length} blocking, ${preexisting.length} already on this base, ${candidates.length} to look at, ${Math.round((Date.now() - t0) / 1000)} s`);
+  // Nothing checked (the budget went on reading the pages, or every check failed) is no pass: the report says why.
+  if (checks.length && !done) { console.error(`ui-review routes: none of the ${checks.length} checks ran; see ${join(out, "report.md")}`); return 2; }
   return introduced.length ? 1 : 0;
 }

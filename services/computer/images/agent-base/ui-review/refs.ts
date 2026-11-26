@@ -4,10 +4,10 @@
 // the app starter's own page for it (refs/fallback.json, served by the caller), and the notes say so.
 //   third-party origins: at most 4 requests/s in total (sub-requests included), at most 2 pages per site, never a form submit.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { chromium, type Page as PwPage } from "playwright-core";
 import type { PageKind } from "./types.ts";
 
@@ -127,17 +127,21 @@ export async function refs(list: RefEntry[], opts: RefsOptions = {}): Promise<{ 
 }
 
 /** Serves the app starter's dev server on a free port (its dependencies are in the image); returns the base URL and a stop function. */
-export async function serveStarter(dir = process.env.AIDENHQ_STARTER ?? "/opt/aidenhq/app-starter"): Promise<{ url: string; stop(): void }> {
-  if (!existsSync(join(dir, "node_modules/vite/bin/vite.js"))) throw new Error(`no app starter in ${dir}`);
+export async function serveStarter(from = process.env.AIDENHQ_STARTER ?? "/opt/aidenhq/app-starter"): Promise<{ url: string; stop(): void }> {
+  if (!existsSync(join(from, "node_modules/vite/bin/vite.js"))) throw new Error(`no app starter in ${from}`);
+  // Vite writes its config bundle and dependency cache beside the app: a copy a job may write to.
+  const dir = join(mkdtempSync(join(tmpdir(), "ui-review-starter-")), "app");
+  cpSync(from, dir, { recursive: true, verbatimSymlinks: true });
   const port = await new Promise<number>((ok, bad) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => ok(p)); }); s.on("error", bad); });
   const child = spawn("node", [join(dir, "node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: dir, stdio: "ignore" });
   const url = `http://127.0.0.1:${port}`;
+  const stop = () => { child.kill(); rmSync(dirname(dir), { recursive: true, force: true }); };
   for (let i = 0; i < 60; i++) {
-    if (await fetch(url).then((r) => r.ok, () => false)) return { url, stop: () => void child.kill() };
+    if (await fetch(url).then((r) => r.ok, () => false)) return { url, stop };
     await sleep(500);
   }
-  child.kill();
-  throw new Error(`the app starter did not start in ${dir}`);
+  stop();
+  throw new Error(`the app starter did not start from ${from}`);
 }
 
 /** `ui-review refs <refs.json> --out <dir> [--measure]`: capture the references, write <dir>/refs.json; --measure writes the measured tokens back into <refs.json>. */

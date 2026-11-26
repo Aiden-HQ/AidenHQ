@@ -4,9 +4,9 @@
 // `aidenhq` text chunk: commit, url, width, mode, takenAt) for the grader. Rule checks and the motion pass come after the shots,
 // so their hovers and clicks never show in a picture.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { crc32 } from "node:zlib";
 import type { BrowserContext, Page as PwPage, Route } from "playwright-core";
@@ -210,15 +210,16 @@ export async function diffShots(dp: PwPage, baseline: string, out: string, shots
 
 // ---- the `capture` command: the page list into the coverage queue, worked by --workers contexts on one Chrome ----
 
-/** What the shots show: --commit, else this folder's git HEAD and the tree of its working files (uncommitted changes in). */
-function source(commit?: string): { commit?: string; tree?: string } {
+/** What the shots show: --commit, else this folder's git HEAD and the tree of its working files (uncommitted changes in, the run's own `out` folder not). */
+function source(commit: string | undefined, out: string): { commit?: string; tree?: string } {
   if (commit) return { commit };
   try {
     const git = (a: string[], env?: Record<string, string>) => execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, ...env } }).trim();
     const head = git(["rev-parse", "HEAD"]);
     const index = join(mkdtempSync(join(tmpdir(), "ui-review-tree-")), "index");
     git(["read-tree", "HEAD"], { GIT_INDEX_FILE: index });
-    git(["add", "-A", "--", git(["rev-parse", "--show-toplevel"])], { GIT_INDEX_FILE: index });
+    const top = git(["rev-parse", "--show-toplevel"]), rel = relative(realpathSync(top), realpathSync(out));
+    git(["add", "-A", "--", top, ...(rel && !rel.startsWith("..") && !isAbsolute(rel) ? [`:(top,exclude)${rel}`] : [])], { GIT_INDEX_FILE: index });
     return { commit: head, tree: git(["write-tree"], { GIT_INDEX_FILE: index }) };
   } catch { return {}; }
 }
@@ -252,7 +253,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
   mkdirSync(out, { recursive: true });
   const runFile = join(out, "run.json");
   const prior = v.resume && existsSync(runFile) ? JSON.parse(readFileSync(runFile, "utf8")) as { base: string; commit?: string; tree?: string; frozenAt: string; pages: Page[]; widths: number[]; themes: Theme[]; states: State[]; baseline?: string } : null;
-  const at = source(v.commit);
+  const at = source(v.commit, out);
   if (prior && (prior.base !== base || prior.commit !== at.commit || prior.tree !== at.tree)) { console.error(`ui-review: --resume of a run of ${prior.base} at ${prior.commit ?? "an unknown commit"}, not ${base} at ${at.commit ?? "an unknown commit"}: start a new --out`); return 2; }
   const widths = prior?.widths ?? list(v.widths, WIDTHS, Number);
   const themes = prior?.themes ?? list(v.themes, ["light", "dark"] as Theme[], (s) => s as Theme);
@@ -264,7 +265,8 @@ export async function captureCommand(argv: string[]): Promise<number> {
       pages = v.paths ? v.paths.split(",").map((path): Page => ({ path, source: "feature-map" })) : await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true });
     } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
     const palettes = list(v.palettes, [] as string[], String);
-    if (palettes.length) pages = pages.flatMap((p) => palettes.map((pal) => { const u = new URL(p.path, "http://x"); u.searchParams.set("palette", pal); return { ...p, path: u.pathname + u.search + u.hash }; }));
+    // "/" is the URL given (a /catalog.html run keeps to the catalog), so its palette pages are that page's.
+    if (palettes.length) pages = pages.flatMap((p) => palettes.map((pal) => { const u = new URL(p.path === "/" ? base : p.path, base); u.searchParams.set("palette", pal); return { ...p, path: u.pathname + u.search + u.hash }; }));
   }
   const frozenAt = (baseline && readReport(baseline)?.frozenAt) || prior?.frozenAt || new Date().toISOString();
   writeFileSync(runFile, JSON.stringify({ base, commit: at.commit, tree: at.tree, frozenAt, pages, widths, themes, states, baseline }, null, 2));

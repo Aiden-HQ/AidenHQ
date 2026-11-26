@@ -8,6 +8,7 @@ import { launch, ready, routeOf, workerContext } from "./browser.ts";
 import type { Page, PageKind } from "./types.ts";
 
 const CRAWL_MAX = 120, CRAWL_DEPTH = 2, DEFAULT_MAP = "feature-map.json";
+const KINDS: PageKind[] = ["dashboard", "list", "detail", "form", "settings", "timeline", "marketing", "other"];
 type Entry = string | { path?: unknown; shows?: unknown; kind?: unknown };
 
 /** A path relative to the app's URL, on the app (a protocol-relative "//host" would take the browser elsewhere). */
@@ -20,7 +21,7 @@ function read(file: string, base: string, source: Page["source"]): Page[] {
   const pages = (Array.isArray(list) ? list : []).map((e) => (typeof e === "string" ? { path: e } : e));
   if (!pages.length || pages.some((p) => !onApp(base, p?.path)))
     throw new Error(`${file} needs {"pages": [{"path": "/…", "shows": "what should be visible"}]} (or a list of them), at least one, each a path on this app`);
-  return pages.map((p) => ({ path: p.path as string, source, ...(typeof p.shows === "string" ? { shows: p.shows } : {}), ...(typeof p.kind === "string" ? { kind: p.kind as PageKind } : {}) }));
+  return pages.map((p) => ({ path: p.path as string, source, ...(typeof p.shows === "string" ? { shows: p.shows } : {}), ...(KINDS.includes(p.kind as PageKind) ? { kind: p.kind as PageKind } : {}) }));
 }
 
 /** The page list: `featureMap` (a file that must exist), else `pagesFile`, else ./feature-map.json when there is one, else the crawl. */
@@ -43,7 +44,7 @@ async function crawl(base: string): Promise<Page[]> {
   const found: Page[] = [], seen = new Set<string>();
   const add = (path: string, source: Page["source"]) => { if (seen.has(path) || found.length >= CRAWL_MAX) return false; seen.add(path); found.push({ path, source }); return true; };
   add(routeOf(new URL(base)), "links");
-  const b = await launch();
+  const b = await launch({ politeness: { origin: new URL(base).origin, rps: 4 } });
   try {
     const page = await (await workerContext(b.browser, new Date().toISOString())).newPage();
     let level = [found[0].path];

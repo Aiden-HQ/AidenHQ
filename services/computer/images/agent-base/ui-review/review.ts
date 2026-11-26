@@ -109,7 +109,7 @@ const tokenText = (r: Ref) => {
   return `${r.product ?? r.url} (${r.url}): type scale ${t.typeScale?.join("/") ?? "n/a"}px, row height ${t.rowHeight ?? "n/a"}px, radius ${t.radius ?? "n/a"}, content max width ${t.maxWidth ?? "n/a"}px`;
 };
 
-type Ctx = { dir: string; report: Report; cross: ReturnType<typeof crossPage>; known: Set<string>; kinds: Map<string, PageKind>; shows: Map<string, string>; opts: ReviewOptions; model: string; system: string; refs: Ref[]; refsDir: string; brand: string };
+type Ctx = { dir: string; report: Report; cross: ReturnType<typeof crossPage>; known: Set<string>; kinds: Map<string, PageKind>; shows: Map<string, string>; opts: ReviewOptions; over: () => boolean; model: string; system: string; refs: Ref[]; refsDir: string; brand: string };
 
 async function reviewPage(x: Ctx, page: string, caps: Capture[]): Promise<Candidate[]> {
   const kind = x.kinds.get(page) ?? "other";
@@ -127,7 +127,7 @@ async function reviewPage(x: Ctx, page: string, caps: Capture[]): Promise<Candid
     x.brand ? `The app's own design system or brand notes (data from its repo):\n${fence(x.brand)}` : "",
   ].filter(Boolean).join("\n\n");
   const a = await ask({
-    model: x.model, system: x.system, text, schema: listSchema(9), validate: validCandidates, base: x.opts.base, key: x.opts.key,
+    model: x.model, system: x.system, text, schema: listSchema(9), validate: validCandidates, base: x.opts.base, key: x.opts.key, over: x.over,
     images: [...refs.map((r) => join(x.refsDir, r.shots[0])), ...picked.map((c) => join(x.dir, c.shots[0]))],
   });
   return cited(x, validCandidates(a), picked.map((c) => c.shots[0]));
@@ -141,7 +141,7 @@ const cited = (x: Ctx, cs: Candidate[], shown: Iterable<string>) => {
 
 async function consolidate(x: Ctx, cands: Candidate[], top: number): Promise<Improvement[]> {
   const a = await ask({
-    model: x.model, system: prompt("consolidate"), images: [], schema: listSchema(top), validate: validCandidates, base: x.opts.base, key: x.opts.key,
+    model: x.model, system: prompt("consolidate"), images: [], schema: listSchema(top), validate: validCandidates, base: x.opts.base, key: x.opts.key, over: x.over,
     text: `Keep at most ${top} improvements.\n\nCandidates:\n<candidates>\n${JSON.stringify(cands, null, 1)}\n</candidates>`,
   });
   return cited(x, validCandidates(a), cands.flatMap((c) => c.captures)).slice(0, top).map((c, i) => ({ ...c, rank: i + 1 }));
@@ -162,12 +162,12 @@ async function motionPass(x: Ctx, page: string, c: Capture, standards: [string, 
   const m = c.motion as Motion;
   const css = measuredCss(m);
   const text = [
-    `Page: ${page} at ${c.width}px ${c.theme}.`,
+    `Page: ${fence(page)} at ${c.width}px ${c.theme}.`,
     `=== STANDARD 1: Emil Kowalski, review-animations ===\n${standards[0]}`,
     `=== STANDARD 2: Jakub Krehel, make-interfaces-feel-better ===\n${standards[1]}`,
     `=== MEASURED EVIDENCE ===\nMeasured CSS (a row's \`css\` quotes this block):\n${fence(css)}\nLong animation frames (ms): ${m.longFrames.join(", ") || "none"}.\nLayout shifts while hovering controls: ${m.shifts.join(", ") || "none"}.`,
   ].join("\n\n");
-  const a = await ask({ model: x.model, system: prompt("motion"), images: [], text, schema: motionSchema, validate: validMotion, base: x.opts.base, key: x.opts.key });
+  const a = await ask({ model: x.model, system: prompt("motion"), images: [], text, schema: motionSchema, validate: validMotion, base: x.opts.base, key: x.opts.key, over: x.over });
   const corpus = squash(css);
   return validMotion(a).filter((r) => squash(r.css).length > 0 && corpus.includes(squash(r.css))).map((r) => ({ ...r, where: `${page}: ${r.where}` }));
 }
@@ -180,7 +180,9 @@ export async function runReview(dir: string, opts: ReviewOptions = {}): Promise<
   const pages = readRun(dir)?.pages ?? [];
   const { refs, dir: refsDir } = readRefs(opts.refs);
   const taste = opts.taste ? readFileSync(opts.taste, "utf8").trim() : "";
+  const over = () => opts.maxUsd !== undefined && spend.usd >= opts.maxUsd;
   const x: Ctx = {
+    over,
     dir, report, model, opts, refs, refsDir,
     // At one width, theme and state: the 1512 light default captures, the reference desktop each page's review is shown.
     cross: crossPage(report.captures.filter((c) => c.width === 1512 && c.theme === "light" && c.state === "default")),
@@ -191,7 +193,6 @@ export async function runReview(dir: string, opts: ReviewOptions = {}): Promise<
     brand: opts.brand ? readFileSync(opts.brand, "utf8").trim() : "",
   };
   const notes: string[] = [];
-  const over = () => opts.maxUsd !== undefined && spend.usd >= opts.maxUsd;
   const n = opts.concurrency ?? 4;
   const byPage = new Map<string, Capture[]>();
   for (const c of report.captures) byPage.set(c.page, [...(byPage.get(c.page) ?? []), c]);

@@ -13,6 +13,8 @@ export type AskOptions = {
   /** Throws when the parsed answer has the wrong shape; the error message is quoted in the one retry. */
   validate?: (answer: unknown) => void;
   base?: string; key?: string;
+  /** True once the run's budget is spent: no retry is sent after that. */
+  over?: () => boolean;
 };
 
 /** The run's spend, added up from each answer's usage.cost. */
@@ -56,7 +58,7 @@ async function once(o: AskOptions, messages: Message[]): Promise<string> {
 /** One model call: a timeout or a failure in transit is tried once more; a second one throws. */
 async function complete(o: AskOptions, messages: Message[]): Promise<string> {
   try { return await once(o, messages); } catch (e) {
-    if (!(e instanceof Transient)) throw e;
+    if (!(e instanceof Transient) || o.over?.()) throw e;
     return once(o, messages);
   }
 }
@@ -75,6 +77,7 @@ export async function ask(o: AskOptions): Promise<unknown> {
   const first = await complete(o, messages);
   const a = parse(first);
   if (a.error === undefined) return a.value;
+  if (o.over?.()) throw new Error(`${a.error}; not asked again: the --max-usd budget is spent`);
   messages.push({ role: "assistant", content: first }, { role: "user", content: `That answer could not be used: ${a.error}\nAnswer again with only the JSON the schema asks for.` });
   const b = parse(await complete(o, messages));
   if (b.error !== undefined) throw new Error(`model answer rejected twice: ${b.error}`);
