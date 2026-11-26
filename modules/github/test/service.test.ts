@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { createService, workflowNeedError, workflowRefusal } from "../service/src/service.ts";
 import { serveOps } from "../service/src/ops.ts";
 import { render, validate } from "../../../kernel/src/writes.ts";
+import { githubWrites } from "./fake-github-writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 /** What the in-box `aidenhq publish` does: the branch's bundle at <task>/.aidenhq/bundles/<sha>.bundle. Returns the sha. */
@@ -23,7 +24,7 @@ const boxBundle = (ws, branch) => {
 };
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"], remoteHooks = "", taskStatus } = {}) {
+async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"], remoteHooks = "", refuse, signed, taskStatus } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -86,11 +87,18 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   });
   const created = [];
   const ghCalls = [];
+  // GitHub's signed commits, refs and branch rules over the bare repos (fake-github-writes.ts): `signed` names the branches whose
+  // rules require signed commits, `refuse` is GitHub refusing a commit in its words.
+  const writes = githubWrites((slug) => join(root, "github", `${slug}.git`), { refuse, signed });
   const gh = async (method, path, body) => {
     ghCalls.push({ method, path, body });
+    const routed = routes(method, path);
+    if (routed) return routed;
+    const wrote = writes(method, path, body);
+    if (wrote) return wrote;
     const m = /^\/orgs\/([^/]+)\/repos$/.exec(path);
     if (method === "POST" && m) return (created.push(`${m[1]}/${body.name}`), { status: 201, body: {} });
-    return routes(method, path) ?? (method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main" } } : { status: 404, body: { message: "fake GitHub: no route" } });
+    return method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main", node_id: "acme-agents/widget" } } : { status: 404, body: { message: "fake GitHub: no route" } };
   };
   const reported = [];
   const reportNeed = async (need, detail) => { reported.push({ need, detail }); };
@@ -856,6 +864,41 @@ test("a workflow that already exists on the branch is pushed without the scope, 
   assert.equal(granted.outcomes[0]?.ok, true, JSON.stringify(granted.outcomes));
   assert.equal(sh(granted.origin, "rev-parse", "refs/heads/workflow"), granted.wfSha);
   assert.equal(granted.reported.length, 0, "nothing missing");
+});
+
+// On a branch whose rules require signed commits the publish is GitHub's own commit: GitHub's workflow-scope refusal of it is the same
+// typed need, and the branch it created for the commit is taken away again.
+test("a signed commit GitHub refuses for the missing workflow scope is the typed scope need, and the need queue hears it", async (t) => {
+  const refuse = (input) => (input.fileChanges.additions.some((f) => f.path.startsWith(".github/workflows/")) ? "refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope" : undefined);
+  const { origin, wfSha, outcomes, reported, call, ghCalls } = await setup(t, { scopes: () => ["repo", "read:org", "workflow", "project"], refuse, signed: () => true });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "workflow", sha: wfSha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e1", kind: "github.push", args, digest: "d", idempotency_key: "wf" })).json, { accepted: true });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /GitHub needs the `workflow` permission: reconnect GitHub on the board \(Settings, Connections\)/);
+  assert.ok(ghCalls.some((c) => c.path === "/graphql" && String(c.body?.query).includes("createCommitOnBranch")), "GitHub was asked");
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/workflow"), "the refused branch is not left on GitHub");
+  // The need goes through github-mcp's queue, which keeps and retries it when the kernel can't take it.
+  assert.deepEqual(reported, [{ need: { cause: "scope", scope: "workflow" }, detail: "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)" }]);
+});
+
+// The branch's rules decide how a publish lands, read before anything is pushed: a read GitHub can't answer refuses the publish with
+// its reason; a private repo on a plan without rulesets has none, so it is the ordinary git push.
+test("a rules read GitHub can't answer is a refused publish; a plan without rulesets is a git push", async (t) => {
+  for (const [rules, ok] of [[{ status: 502, body: { message: "Bad Gateway" } }, false], [{ status: 403, body: { message: "Upgrade to GitHub Pro or make this repository public to enable this feature." } }, true]]) {
+    const { origin, sha, outcomes, call } = await setup(t, { routes: (m, path) => (path.includes("/rules/branches/") ? rules : undefined) });
+    const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+    assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+    await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e9", kind: "github.push", args, digest: "d", idempotency_key: "r" });
+    for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(outcomes[0]?.ok, ok, JSON.stringify(outcomes));
+    if (ok) assert.equal(sh(origin, "rev-parse", "refs/heads/feature"), sha, "the box's own commit, pushed");
+    else {
+      assert.match(outcomes[0].text, /^publish-refused: .*rules read: 502 Bad Gateway/);
+      assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "nothing pushed");
+    }
+  }
 });
 
 test("held write resumes on reconnect", async (t) => {

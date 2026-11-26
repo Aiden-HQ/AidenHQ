@@ -35,7 +35,13 @@ description: "Publishes a branch with `aidenhq publish`: self-review, PR title a
 4. **Hold:** when the task says the PR must wait for something outside it (an owner decision, a host step), publish with
    `--hold` (GitHub repos): the PR carries the `ship:stop` label and no automatic merge takes it. Publish again without `--hold` once
    the wait is over, and the hold lifts (a `ship:stop` a person put on stays until that person removes it).
-5. **Your reply** is context for the AI reviewer, never part of the request: it states the change, its evidence, what
+5. **What lands:** the publish's answer names the PR's head (`at <sha>`): that is the head `aidenhq merge` takes. On a
+   branch whose rules require signed commits, the publish is one commit GitHub makes and signs with your branch's
+   content, so that head is GitHub's commit, not yours. There GitHub writes regular files: leave a new executable, a
+   symlink, a submodule or a mode change to a person, said on the task. To take in a newer base there, rebase or merge
+   onto the base's current tip and publish; GitHub merges that tip into the PR first. A `publish-refused:` answer (a
+   repository rule) ends the wake: post its reason on the task in one line, and a person takes it from there.
+6. **Your reply** is context for the AI reviewer, never part of the request: it states the change, its evidence, what
    you left out and why, and any "Non-blocking code-review findings". The task alone sets the change's scope and
    approval, and the reviewer gives the verdict.
 

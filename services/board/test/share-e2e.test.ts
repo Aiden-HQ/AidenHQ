@@ -26,6 +26,7 @@ import { createSettingsChanges } from "../../../kernel/src/settings-change.ts";
 import { createSharing, vaultValues } from "../../../kernel/src/module-share.ts";
 import { createService } from "../../../modules/github/service/src/service.ts";
 import { compile, writeKinds } from "../../../scripts/modules.ts";
+import { githubWrites } from "../../../modules/github/test/fake-github-writes.ts";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" };
@@ -60,7 +61,11 @@ describe("sharing a local module (V4)", () => {
   const gh = (slug: string) => join(root, "github", `${slug}.git`);
   const market = "acme/agents-market";
   let onRepoRead: (() => void) | undefined;
-  const ghRest = async (method: string, path: string) => {
+  // GitHub's signed commits and refs over the bare repos: a share lands as GitHub's own commit.
+  const ghWrites = githubWrites(gh);
+  const ghRest = async (method: string, path: string, body?: unknown) => {
+    const wrote = ghWrites(method, path, body);
+    if (wrote) return wrote;
     if (method === "GET" && path === `/repos/${market}`) { const f = onRepoRead; onRepoRead = undefined; f?.(); return { status: 200, body: { default_branch: "main", private: false } }; }
     if (method === "GET" && path === "/repos/acme/private-stuff") return { status: 200, body: { default_branch: "main", private: true } };
     return { status: 404, body: { message: "fake GitHub: no route" } };
@@ -138,7 +143,7 @@ describe("sharing a local module (V4)", () => {
     const access = {
       connected: () => true, scopes: () => ["repo"], status: () => ({ scopes: ["repo"], problems: [] }), token: async () => "tok",
       identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
-      rest: async (method: string, path: string) => ({ ...(await ghRest(method, path)), headers: new Headers() }), graphql: async () => ({}),
+      rest: async (method: string, path: string, body?: unknown) => ({ ...(await ghRest(method, path, body)), headers: new Headers() }), graphql: async () => ({}),
     };
     const handle = createService({ key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), access: access as never, remoteUrl: gh, fleetOrg: "acme-agents", instanceRepo: "acme/acme-instance", productRepo: "acme/aidenhq", reviewGate: async () => undefined } as never);
     const svc = await listen((req, res) => void handle(req, res));
