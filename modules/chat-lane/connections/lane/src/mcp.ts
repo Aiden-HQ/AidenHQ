@@ -82,7 +82,7 @@ export function buildServer(lane: LaneTools, caller?: Caller): McpServer {
             wakes: pending.map((w) => ({ task: w.task, chat: Boolean(w.chat), due_local: `${localShort(lane.timezone, w.due_at)} (${lane.timezone})` })),
           });
         const id = lane.store.addWake(owner, due, a.note, Boolean(a.chat), a.task ?? null);
-        if (a.task) await lane.fileWake(id, a.task, a.note, due);
+        if (a.task) await lane.fileWake(id, a.task, a.note, Math.max(due, Date.now())); // a time up to a minute past is filed as now
         return json({ ok: true, id, due_local: `${localShort(lane.timezone, due)} (${lane.timezone})` });
       });
     },
