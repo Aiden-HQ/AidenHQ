@@ -62,8 +62,9 @@ export function shotsFor(caps: Capture[]): string[] {
   const first = (w: number, theme: string) => caps.find((c) => c.width === w && c.theme === theme && (c.state ?? "default") === "default")?.shots?.[0];
   const picked = [first(390, "light"), first(1512, "light"), first(2560, "light"), first(1512, "dark")].filter((s): s is string => !!s);
   if (picked.length) return picked;
+  // As the engine's pick: the narrowest, the widest, then the others by width, at most six.
   const have = caps.filter((c) => (c.state ?? "default") === "default" && c.shots?.length).sort((a, z) => a.width - z.width);
-  return [...new Set([have[0], have.at(-1)].filter((c): c is Capture => !!c).map((c) => c.shots![0]!))];
+  return [...new Set([have[0], have.at(-1), ...have].filter((c): c is Capture => !!c).map((c) => c.shots![0]!))].slice(0, 6);
 }
 
 /**
@@ -86,7 +87,9 @@ export function bundle(ui: string, max = BUNDLE_MAX) {
     size += more; kept.push(p); shots.push(...s);
   }
   const dropped = pages.filter((p) => !kept.includes(p));
-  const trimmed = { ...report, captures: report.captures.filter((c) => kept.includes(c.page)), dropped };
+  // A page left out keeps its captures without their shots or motion (nothing for the model), so its rule hits still reach the
+  // review step's findings.
+  const trimmed = { ...report, captures: report.captures.map((c) => kept.includes(c.page) ? c : { ...c, shots: [], motion: undefined }), dropped };
   const gz = pack([["report.json", Buffer.from(JSON.stringify(trimmed))], ...text.map((f): [string, Buffer] => [f, readFileSync(join(ui, f))]), ...shots.map((f): [string, Buffer] => [f, readFileSync(join(ui, f))])]);
   return { gz, pages: kept, dropped };
 }

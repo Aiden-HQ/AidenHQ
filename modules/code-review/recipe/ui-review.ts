@@ -39,6 +39,8 @@ const cut = (t: unknown, n: number) => String(t ?? "").replace(/[\x00-\x08\x0b-\
 
 // The bundle: a gzipped ustar of regular files, named only as below (a shot is a plain file name, never a path).
 const SHOT = /^[A-Za-z0-9_][\w.-]*\.png$/;
+/** The engine's page kinds (ui-review types.ts PageKind). */
+const KINDS = ["dashboard", "list", "detail", "form", "settings", "timeline", "marketing", "other"];
 const BUNDLED = new Set(["report.json", "run.json", "queue.json", "routes/report.json"]);
 const bundled = (name: string) => BUNDLED.has(name) || SHOT.test(name);
 /** The most the bundle unpacks to (its packed size is at most the kernel's 64 MB input; the text in it compresses). */
@@ -93,9 +95,9 @@ function sourceOf(change: string, page: string, root?: string) {
 export function toReview(report: UiReport, o: { model: string; effort?: string; repo?: string; head?: string; listed?: string[]; routes?: UiReport; root?: string }) {
   // A page the model's review failed on or the spend cap skipped (the engine's notes say which) is not reviewed: a gap.
   const notes = Array.isArray(report.notes) ? report.notes.filter((n): n is string => typeof n === "string") : [];
-  const unreviewed = new Set(notes.flatMap((n) => /^design review of (.+?) failed: /.exec(n)?.[1] ?? /^stopped at the --max-usd budget; not reviewed: (.+)$/.exec(n)?.[1]?.split(", ").filter((p) => !p.endsWith(" (motion)")) ?? []));
+  const unreviewed = new Set([...(report.dropped ?? []), ...notes.flatMap((n) => /^design review of (.+?) failed: /.exec(n)?.[1] ?? /^stopped at the --max-usd budget; not reviewed: (.+)$/.exec(n)?.[1]?.split(", ").filter((p) => !p.endsWith(" (motion)")) ?? [])]);
   const pages = [...new Set(report.captures.map((c) => c.page))];
-  const captured = pages.filter((p) => !unreviewed.has(p)), skipped = pages.filter((p) => unreviewed.has(p));
+  const captured = pages.filter((p) => !unreviewed.has(p)), skipped = pages.filter((p) => unreviewed.has(p) && !(report.dropped ?? []).includes(p));
   const listed = [...new Set([...(o.listed ?? []), ...pages])];
   const excluded = listed.filter((p) => !captured.includes(p));
   const dropped = (report.dropped ?? []).filter((p) => excluded.includes(p)), missed = excluded.filter((p) => !dropped.includes(p) && !skipped.includes(p));
@@ -133,6 +135,7 @@ export function toReview(report: UiReport, o: { model: string; effort?: string; 
     ...(missed.length ? [`${missed.length} of ${listed.length} pages not captured (${some(missed)})`] : []),
     ...(dropped.length ? [`${dropped.length} of ${listed.length} pages captured but left out of the review to fit a check input (${some(dropped)})`] : []),
     ...(cov && (cov.failed || cov.deferred) ? [`${cov.failed} captures failed, ${cov.deferred} deferred`] : []),
+    ...(o.routes?.coverage && (o.routes.coverage.failed || o.routes.coverage.deferred) ? [`route check: ${o.routes.coverage.failed + o.routes.coverage.deferred} of ${o.routes.coverage.total} checks not run`] : []),
     ...(lostRules.some((f) => f.severity === "important") ? [`${lostRules.filter((f) => f.severity === "important").length} blocking findings left out to fit the result`] : []),
   ];
   const result = {
@@ -162,9 +165,21 @@ export async function review({ spec, ui, ws, env = process.env }: { spec: UiRevi
   const captured = readReport(join(dir, "report.json"));
   if (!captured || !Array.isArray(captured.captures)) throw new Error("the capture's bundle has no report.json");
   // `review` opens each capture's shots by name in its folder: a name that is not a plain file name is refused, never opened.
-  if (captured.captures.some((c) => !Array.isArray(c.shots) || c.shots.some((s) => typeof s !== "string" || !SHOT.test(s)))) throw new Error("the capture's report names a shot that isn't a file of its bundle");
+  if (captured.captures.some((c) => (c.shots !== undefined && !Array.isArray(c.shots)) || (c.shots ?? []).some((s) => typeof s !== "string" || !SHOT.test(s)))) throw new Error("the capture's report names a shot that isn't a file of its bundle");
+  // run.json came from the box that ran the repo's code: a page kind outside the engine's list is dropped before a prompt names it.
+  const runFile = join(dir, "run.json");
+  if (existsSync(runFile)) {
+    const runInfo = JSON.parse(readFileSync(runFile, "utf8")) as { pages?: { kind?: unknown }[] };
+    for (const p of Array.isArray(runInfo.pages) ? runInfo.pages : []) if (p && typeof p === "object" && !KINDS.includes(p.kind as string)) delete p.kind;
+    writeFileSync(runFile, JSON.stringify(runInfo));
+  }
   // The engine gets the tool allowlist's environment and the run's model token, and works in the bundle's folder only.
   const modelEnv = { ...toolEnv(env, tmp), OPENROUTER_API_KEY: String(env.OPENROUTER_API_KEY ?? ""), OPENROUTER_BASE_URL: String(env.OPENROUTER_BASE_URL ?? "") };
+  // A capture without its shots list has none (the engine reads every capture's list).
+  for (const c of captured.captures) c.shots ??= [];
+  writeFileSync(join(dir, "report.json"), JSON.stringify(captured));
+  // Nothing to show the model (every page left out to fit): the rule checks' findings still make the Review, every page a gap.
+  if (!captured.captures.some((c) => c.shots!.length)) return toReview({ ...captured, improvements: [], cost_usd: 0 }, { model: spec.model, effort: spec.effort || "low", repo: spec.repo, head: spec.head, listed: listedPages(dir), routes: readReport(join(dir, "routes", "report.json")), root: ws });
   const r = await run("ui-review", ["review", dir, "--model", spec.model, "--effort", spec.effort || "low", "--max-usd", String(MAX_USD)], { cwd: dir, env: modelEnv, minutes: 18 });
   if (r.code !== 0) throw new Error(`ui-review review: ${stopped(r)}${r.stderr.trim() ? `; ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 200)}` : ""}`);
   const report = readReport(join(dir, "report.json"));
