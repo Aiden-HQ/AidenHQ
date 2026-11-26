@@ -279,9 +279,10 @@ const slugOf = (repo: unknown) => {
 };
 
 /** A PR's merge-queue state, for an enqueue and its reconcile. */
-const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation isInMergeQueue mergeQueueEntry { headCommit { oid } } reviewDecision latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
+const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation labels(first: 100) { nodes { name } } isInMergeQueue mergeQueueEntry { headCommit { oid } } reviewDecision latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
 
 /** GitHub's enqueue, bound to the head: it refuses when the PR's head isn't `head`. */
+const DEQUEUE = `mutation($id: ID!) { dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { state } } }`;
 const ENQUEUE = `mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { state } } }`;
 
 export function createService(o: Options) {
@@ -862,6 +863,8 @@ export function createService(o: Options) {
     if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: (a.hold === true && !theirs) || (!a.hold && wasHeld) }); // the PR watch works the PR for the task that published it
     if (a.hold) {
       if (!theirs) await api("POST", `/repos/${s.slug}/issues/${Number(pr.number)}/labels`, { labels: [HOLD_LABEL] });
+      // A PR already in GitHub's native merge queue leaves it: the label alone doesn't stop a queued merge (not queued: GitHub says so, ignored).
+      if (pr.node_id) await gh("POST", "/graphql", { query: DEQUEUE, variables: { id: pr.node_id } }).catch(() => undefined);
     } else if (wasHeld) {
       const r = await gh("DELETE", `/repos/${s.slug}/issues/${Number(pr.number)}/labels/${encodeURIComponent(HOLD_LABEL)}`);
       if (r.status >= 300 && r.status !== 404) throw fail(502, `GitHub could not lift the hold on ${pr.html_url}: ${r.status} ${r.body?.message ?? ""}`.trim());
@@ -1419,6 +1422,7 @@ export function createService(o: Options) {
     if (pr.baseRefName !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed: it now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
     const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head), { do: "merge", head: a.head, base: String(pr.baseRefName ?? ""), association: String(pr.authorAssociation ?? "") });
     if (ended) return { ok: false, text: ended };
+    if ((pr.labels?.nodes ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) return { ok: false, text: `${url} carries the \`${HOLD_LABEL}\` label: not queued; queued once it is removed.` };
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     // Where GitHub's rules ask for a review, an approval on this exact head (merge-gate approvedAt), read right before the enqueue:
     // GitHub may still count an earlier commit's.
