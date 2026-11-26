@@ -1,0 +1,30 @@
+// The fix confirmation: is the page with the change better than before, at the width where the change shows? Six calls: AFTER shown
+// second and AFTER shown first, three samples each. A fix is shown only when AFTER wins at least 2 of 3 in each order, so a model's
+// position bias never passes a fix.
+import { readFileSync } from "node:fs";
+import { ask } from "./model.ts";
+
+const system = readFileSync(new URL("./prompts/pairwise.md", import.meta.url), "utf8").trim();
+const schema = {
+  type: "object", additionalProperties: false, required: ["better", "reasons", "regression"],
+  properties: { better: { type: "string", enum: ["A", "B"] }, reasons: { type: "array", maxItems: 3, items: { type: "string" } }, regression: { type: "string" } },
+};
+
+export type FixCheck = { wins: [number, number]; accepted: boolean };
+
+export async function fixCheck(o: { before: string; after: string; width: number; model: string; samples?: 3; base?: string; key?: string }): Promise<FixCheck> {
+  const k = o.samples ?? 3;
+  const wins: [number, number] = [0, 0];
+  const calls = ([0, 1] as const).flatMap((order) => Array.from({ length: k }, async () => {
+    // order 0: AFTER is image B (second); order 1: AFTER is image A (first)
+    const images = order === 0 ? [o.before, o.after] : [o.after, o.before];
+    const a = await ask({
+      model: o.model, system, images, schema, base: o.base, key: o.key,
+      text: `Two versions of the same page at ${o.width}px wide: image 1 is version A, image 2 is version B.`,
+      validate: (x) => { if (!["A", "B"].includes((x as { better?: string })?.better ?? "")) throw new Error('"better" must be "A" or "B"'); },
+    }) as { better: "A" | "B" };
+    if (a.better === (order === 0 ? "B" : "A")) wins[order]++;
+  }));
+  await Promise.all(calls);
+  return { wins, accepted: wins[0] >= 2 && wins[1] >= 2 };
+}

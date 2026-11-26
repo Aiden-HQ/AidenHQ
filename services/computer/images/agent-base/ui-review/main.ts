@@ -7,8 +7,8 @@ const COMMANDS: Record<string, string> = {
   pages: "pages <url> --out <dir> [--map feature-map.json] [--pages-file f]",
   routes: "routes <url> --out <dir>                      (route check: clicks, a local build only)",
   refs: "refs <refs.json> --out <dir>",
-  review: "review <run dir> [--model id]",
-  "fix-check": "fix-check <run dir> --before <dir> --after <dir>",
+  review: "review <dir> [--model id] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n]",
+  "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id]",
 };
 
 function help(): string {
@@ -18,6 +18,27 @@ function help(): string {
 const [cmd, ...rest] = process.argv.slice(2);
 if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
   process.stdout.write(help());
+} else if (cmd === "review" || cmd === "fix-check") {
+  const { parseArgs } = await import("node:util");
+  const { values, positionals } = parseArgs({
+    args: rest, allowPositionals: true,
+    options: { model: { type: "string" }, taste: { type: "string" }, refs: { type: "string" }, top: { type: "string" }, brand: { type: "string" }, "max-usd": { type: "string" }, width: { type: "string" } },
+  });
+  try {
+    const { DEFAULT_MODEL, runReview } = await import("./review.ts");
+    if (cmd === "review") {
+      if (!positionals[0]) throw new Error(`usage: ui-review ${COMMANDS.review}`);
+      const r = await runReview(positionals[0], { model: values.model, taste: values.taste, refs: values.refs, brand: values.brand, top: values.top ? Number(values.top) : undefined, maxUsd: values["max-usd"] ? Number(values["max-usd"]) : undefined });
+      process.stdout.write(`${r.improvements.length} improvements, ${r.motion.length} motion rows, $${r.cost_usd.toFixed(2)}: ${positionals[0]}/report.md\n`);
+    } else {
+      if (positionals.length !== 2 || !values.width) throw new Error(`usage: ui-review ${COMMANDS["fix-check"]}`);
+      const { fixCheck } = await import("./pairwise.ts");
+      process.stdout.write(JSON.stringify(await fixCheck({ before: positionals[0], after: positionals[1], width: Number(values.width), model: values.model ?? DEFAULT_MODEL })) + "\n");
+    }
+  } catch (e) {
+    process.stderr.write(`ui-review ${cmd}: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
 } else if (cmd in COMMANDS) {
   void rest;
   process.stderr.write(`ui-review ${cmd}: not built yet\n`);
