@@ -574,6 +574,8 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.deepEqual(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, running] }), { do: "wait", why: "checks are still running on its head" });
   // A superseded cancelled twin never counts as pending: the newest run of the name decides.
   assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name: "packages (1)", kind: "run", rank: 1, ok: false, pending: false }, { name: "packages (1)", kind: "run", rank: 2, ok: true, pending: false }] }).do, "stall", "an old cancelled run is not a pending check");
+  // The design review and code review's status are advisory: GitHub holds no merge for them, so one pending never hides a stall.
+  for (const name of ["design-review", "aidenhq/review"]) assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name, ok: false, pending: true }] }).do, "stall", `a pending ${name} is not a running check`);
   // Without ship's context: the merge queue's rule, unchanged.
   assert.deepEqual(decide(data({}), H), { do: "merge" });
   assert.equal(decide(data({ mergeStateStatus: "DIRTY" }), H).do, "fail");

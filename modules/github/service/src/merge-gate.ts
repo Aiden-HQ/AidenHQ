@@ -9,7 +9,7 @@
 // for a new merge at its new head. Missing evidence (no checks, a truncated page of checks, the base's aggregate gate
 // check not yet on the head) never counts as passing.
 
-import { DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 /** A check on a head, by name (service.ts checksAt, checks.ts namedChecks): `kind` and `rank` are what pick the newest of a name. */
@@ -253,7 +253,11 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
       // Any other rule (conversations to resolve, signed commits, a deployment) is one ship doesn't handle: a visible stall.
       if (!ship) return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
       if (pr.reviewDecision === "REVIEW_REQUIRED") return { do: "wait", why: reviewWait(pr) };
-      if (headChecks(ship.checks).some((c) => c.pending)) return { do: "wait", why: "checks are still running on its head" };
+      // The design review and code review's status are advisory (namedChecks leaves them out, merges.ts never counts them red):
+      // GitHub holds no merge for them, and the design review sits pending from the moment the task is filed. Counting one here
+      // would hide a real branch-rule stall behind a verdict that has nothing to do with the merge.
+      const held = headChecks(ship.checks).filter((c) => c.name !== DESIGN_REVIEW_CHECK && c.name !== CODE_REVIEW_STATUS);
+      if (held.some((c) => c.pending)) return { do: "wait", why: "checks are still running on its head" };
       return { do: "stall", why: "blocked by a branch rule ship doesn't handle" };
     }
     default:
