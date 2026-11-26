@@ -78,7 +78,7 @@ routine or memory.
 - **Skills.** Each agent lists every skill it uses in `skills:`; the effective list is
   `(skills ∪ overrides.agents.<key>.skills.add) − overrides.agents.<key>.skills.remove`.
 - **Teammates.** A user-facing agent declares `teammate:` (its job, a sample line, its staff, the modules it controls and its
-  face); no block means hidden staff. Rules: [configuration.md](../docs/configuration.md) "teammate".
+  face): a product agent in its `AGENTS.md` frontmatter, a local agent on its `module.yaml` entry. No block means hidden staff. Rules: [configuration.md](../docs/configuration.md) "teammate".
 - **Moving work between agents** changes both agents' `skills:` lists and grants. The skill text stays where it is.
 - **Routines** run on a schedule or on events: `event: { connection, resource, filter }`. The run reads its batch with
   `routine_events(batch)` (the kernel's `events.ts` queues and fires it). A connection adds an event kind by listing it in
@@ -97,8 +97,8 @@ routine or memory.
 The owner's and the agents' own modules live in the instance repo, `modules/<name>/` (tier `local`), and the same compiler
 loads them. One is always on: its folder enables it. Its `module.yaml` takes only `name`, `description`, `agents` and
 `routines`; skills are `skills/<name>/SKILL.md`, found by folder. Every agent, module or local, lists the skills it uses in
-`skills:`; nothing is selected implicitly. A local agent's identity is in `module.yaml` (its
-`AGENTS.md` has no frontmatter; `teammate:` goes there too), it has no roles, services, connections of its own, apps or privileged entries, and each
+`skills:`; nothing is selected implicitly. A local agent's identity is in `module.yaml`, its
+`teammate:` block included, on the agent's entry (its `AGENTS.md` has no frontmatter), it has no roles, services, connections of its own, apps or privileged entries, and each
 routine names the `agent` it runs as, with at most one schedule whose cron minute is one number. Its routines start active.
 A routine may instead name an `event` (`{ connection, resource, filter }`, a non-empty filter): it runs for each batch of that connection's events, and a module's connection declares what it sends as `events:`. The agents' shared skills and routines go in one local module, `library`. ([configuration.md](../docs/configuration.md))
 

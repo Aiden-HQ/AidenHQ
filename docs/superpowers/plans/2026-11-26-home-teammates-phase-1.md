@@ -331,7 +331,7 @@ are registered in `scripts/sync-shared.ts` next to `url-setting.ts` ~line 143). 
 | Local agent `put` (~979) | Add `teammate` |
 | Override loop (~1221–1240) | Validate `name` |
 | After `delegate_to` (~1210) | Resolve and validate staff, controls and faces |
-| Team template (~1846) | Strip `teammate`; refuse a teammate as a template |
+| Team template (~1846) | Strip `teammate`; a teammate template stays the hidden record, with a warning |
 | Catalog (~1344) | Add `teammates[]` |
 | Return (~1415) | Add `faces` |
 
@@ -383,7 +383,8 @@ function teammateOf(raw: unknown, where: string): { job: string; sample: string;
   - After the overrides, run `teammateNameProblem` for every teammate against all the other compiled agents, so default
     names are checked too and a hand-edited instance.yaml can't break `@name`.
 - [ ] **Teams (~1846).** Strip `teammate` from a member's copy (replacing today's `avatar: __`). A template that has a
-  `teammate` fails: "a teammate can't be a team's template".
+  `teammate` stays the team's hidden record, as before teammates, with a warning (an existing instance's team never fails
+  the upgrade).
 - [ ] **Catalog `teammates[]` (~1344), for every module in `all`, enabled or not.**
   - For a product module, read each agent's `AGENTS.md` frontmatter (`name`, `description`, `teammate`). For a local one,
     read the `module.yaml` entry.

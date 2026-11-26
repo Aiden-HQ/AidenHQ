@@ -474,8 +474,16 @@ test("teams: any module agent becomes a team record over named members (template
   assert.throws(bad({ template: "engineering.nobody" }), /isn't an enabled module agent/);
   assert.throws(bad({ members: { architect: { name: "Arch" } } }), /the key is already an agent's/);
   assert.throws(bad({ members: { kai: { name: "Kai" }, mina: { name: "Kai" } } }), /already called Kai/);
-  // A teammate is the owner's by name: it is never a team's template.
-  assert.throws(bad({ template: "chief-of-staff.assistant" }), /assistant is a teammate; a teammate can't be a team's template/);
+  // A team on a template that became a teammate keeps compiling: the record stays hidden staff, with a warning.
+  const old = compile(product, pinst([], owner, { teams: { research: { ...teams.research, template: "chief-of-staff.assistant" } } }));
+  assert.equal(old.paperclip.agents.assistant.teammate, undefined);
+  assert.match(old.warnings.join("\n"), /assistant is a teammate, so it stays the team's hidden record/);
+  // A member already called by a teammate's new default name keeps it; the teammate goes by its key until renamed.
+  const clash = compile(product, pinst([], owner, { teams: { research: { ...teams.research, members: { kai: { name: "Rhea" }, mina: { name: "Assistant" } } } } }));
+  assert.deepEqual([clash.paperclip.agents.kai.name, clash.paperclip.agents.assistant.name], ["Rhea", "Assistant 2"]);
+  assert.match(clash.warnings.join("\n"), /agent assistant: name "Rhea": .*called Assistant 2 until you rename it/);
+  // The hidden record keeps its name: a member can't take it.
+  assert.throws(bad({ template: "chief-of-staff.assistant", members: { kai: { name: "Rhea" } } }), /already called Rhea/);
   assert.throws(bad({}, { overrides: { agents: { engineer: { max_parallel: 2 } } } }), /engineer is team research's record/);
 });
 

@@ -19,9 +19,12 @@ doing and change its settings when the owner asks.
 
 ## What your task asks
 
-- **A question about a PR or the queue** ("why hasn't #812 merged?", "what is held?"). Read `ship_status` (and
-  `ship_config` for the repo's settings) and answer in plain words: where the PR stands, what it waits on, and who acts
-  next. Finish the task with that answer.
+- **A question about a PR or the queue** ("why hasn't #812 merged?", "what is held?"). Read `ship_status` (the holds, and
+  `ship_config` for the repo's settings) and the PR itself with `github_issue_read` (merged or closed, its checks and
+  reviews): a PR on a repo outside ship's `scope` (`ship_config`) or with `enabled: false` there isn't ship's (say so); one
+  that isn't held is merged, closed, stopped (a draft, the repo's stop label from `ship_config`, a person
+  assigned to it, or ship paused: `ship_status`'s `paused`), or moving through checks and code review. Answer in plain
+  words: where the PR stands, what it waits on, and who acts next.
 - **A settings change** ("hold every PR on acme/payments", "use the cautious preset there"). Read `ship_config`, then make
   the whole change with one `ship_configure` call, exactly what the owner asked for. The tool answers with the change it
   filed: finish with one line naming what changes and that it applies once reviewed (a change that loosens anything is the
@@ -37,4 +40,5 @@ doing and change its settings when the owner asks.
 
 ## Done
 
-Each task is done when its request is answered or its one change is filed, and you have called `task_finish` with one line.
+Each task is done when its request is answered or its one change is filed, in one line: `task_finish` on a task delegated
+to you, and `task_handoff` on your part of a task the owner is responsible for ("Your part of the owner's task").

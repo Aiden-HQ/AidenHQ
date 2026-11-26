@@ -1095,7 +1095,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // One host port, one owner: the product's compose, the modules', the gate, the kernel's sign-in listener and the apps.
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...(edge?.gate?.test_listener ? [[TEST_LISTENER_PORT, "the gate's test listener"] as [number, string]] : []), ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a): [number, string] => [a.port, `app ${a.name}`])]);
 
-  expandTeams(instance, paperclip);
+  expandTeams(instance, paperclip, warnings);
 
   // Departments: where the board's Agents page lists each agent. One registry, the kernel's (kernel/defaults.json) then the instance's
   // own (instance.yaml `departments:`); an agent's `department:` must name one, and without one it is `general`. Setup
@@ -1250,7 +1250,23 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // Every teammate's name (its default or the owner's rename) against every other agent's name and key, hidden ones included:
   // chat's @name and the task tools address agents by either.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
-    const bad = a.teammate && teammateNameProblem(a.name, key, paperclip.agents);
+    if (!a.teammate) continue;
+    // A default name a hidden agent (a local one, a team member) already has: the teammate goes by its key until renamed.
+    // Two teammates' names are the owner's to settle, so that collision fails below.
+    const hidden = Object.fromEntries(Object.entries<Obj>(paperclip.agents).filter(([k, o]) => !o.teammate || k === key));
+    let bad = teammateNameProblem(a.name, key, paperclip.agents);
+    const clash = instance.overrides?.agents?.[key]?.name === undefined && !teammateNameProblem(a.name, key, {}) && teammateNameProblem(a.name, key, hidden);
+    if (clash) {
+      // A valid name from the key (any valid key: empty segments and leading digits dropped, at most 3 words and 20 characters).
+      const words = key.split("-").filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join(" ").replace(/^[^A-Za-z]+/, "");
+      const byKey = words.split(" ").slice(0, 3).join(" ").slice(0, 20).trim() || "Teammate";
+      const free = [byKey, ...[2, 3, 4, 5, 6, 7, 8, 9].map((n) => `${byKey} ${n}`)].find((n) => !teammateNameProblem(n, key, paperclip.agents));
+      if (free) {
+        warnings.push(`agent ${key}: name ${JSON.stringify(a.name)}: ${clash}; it is called ${free} until you rename it (overrides.agents.${key}.name)`);
+        a.name = free;
+        bad = undefined;
+      }
+    }
     if (bad) fail(`agent ${key}: name ${JSON.stringify(a.name)}: ${bad}`);
   }
   const localRoutines = new Map<string, number>();
@@ -1946,8 +1962,15 @@ function catalogTeammates(name: string, root: string, def: Obj, agents: Obj, dep
  * template with the team's `defaults` and then its own fields over it, and no roles of its own (a member's job gets the team
  * record's at admission).
  */
-export function expandTeams(instance: Obj, paperclip: Obj) {
-  const names = new Set(Object.values<Obj>(paperclip.agents).map((a) => a.name));
+export function expandTeams(instance: Obj, paperclip: Obj, warnings: string[]) {
+  // A team made before its template became a teammate keeps working: the record stays hidden staff, as it was.
+  for (const [team, t] of Object.entries<Obj>(instance.teams ?? {})) {
+    const [module, key] = String(t?.template ?? "").split(".");
+    const tpl = paperclip.agents[key ?? ""];
+    if (tpl?.module === module && tpl.teammate) { warnings.push(`teams.${team}.template: ${key} is a teammate, so it stays the team's hidden record and isn't a teammate; base the team on another agent to have both`); delete tpl.teammate; }
+  }
+  // A teammate's name yields to a member's (compile's teammate name check renames a default that collides).
+  const names = new Set(Object.values<Obj>(paperclip.agents).filter((a) => !a.teammate).map((a) => a.name));
   for (const [team, t] of Object.entries<Obj>(instance.teams ?? {})) {
     const problems = teamProblems(team, t);
     if (problems.length) fail(problems.join("; "));
@@ -1955,7 +1978,6 @@ export function expandTeams(instance: Obj, paperclip: Obj) {
     const tpl = paperclip.agents[key];
     if (!tpl || tpl.module !== module) fail(`teams.${team}.template: ${t.template} isn't an enabled module agent`);
     if (tpl.team) fail(`teams.${team}.template: ${key} is already team ${tpl.team.name}'s record`);
-    if (tpl.teammate) fail(`teams.${team}.template: ${key} is a teammate; a teammate can't be a team's template`);
     if (instance.overrides?.agents?.[key]) fail(`overrides.agents.${key}: ${key} is team ${team}'s record; set its members' fields under teams.${team}`);
     for (const [k, m] of Object.entries<Obj>(t.members)) {
       if (paperclip.agents[k]) fail(`teams.${team}.members.${k}: the key is already an agent's`);

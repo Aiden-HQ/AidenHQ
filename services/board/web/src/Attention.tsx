@@ -97,6 +97,8 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
             return (
               <div key={i.identifier} className="attn-row" data-task={i.identifier}>
                 <b className="attn-q">{ask.question || i.title}</b>
+                {/* What the answer authorises (e.g. the draft a "Send" sends), read before the buttons. */}
+                {ask.detail && <div className="attn-detail">{ask.detail}</div>}
                 <div className="attn-meta">
                   <span>{i.agent}</span>
                   <a href={`#/t/${i.identifier}`}>{i.identifier}</a>

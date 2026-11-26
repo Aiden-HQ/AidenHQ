@@ -111,7 +111,8 @@ line in the files this phase touches. Re-find each symbol on main before editing
   before the build and so before the trial, which satisfies "name before trial" with no extra apply. Extend and
   Install name in the page's own name step (D10).
 - **D14. Archie's form options are machine-checked, never trusted.** The page treats an option as a short path only
-  when it matches `^Install ([a-z0-9-]+)@([a-z0-9-]+)$` against a hiring row the board itself listed, or
+  when it matches `^Install ([a-z0-9-]+(?:@[a-z0-9-]+)?)$` with the captured text equal to the `id` of a hiring row the
+  board itself listed (`name` for an official or local module, `name@marketplace` for a third-party one), or
   `^Extend ([a-z0-9-]+)$` against an on-team teammate key. Anything else is sent to Archie as a plain answer. The
   install itself is the owner's click (`TeammateSetup`), filed as his own module change.
 - **D15. One catalog tool.** `fleet_catalog` gains `teammates` and `modules` sections. The phasing line's
@@ -483,7 +484,7 @@ Page, as a `Stepper`: Describe → Look for existing → Set up.
 - [ ] **Look for existing:** poll `api.chat(id)` every 4 s while visible. Until a form arrives: a skeleton shaped like
       the match list, plus "Archie is looking in your team and marketplaces". When `openQuestions(chat.messages)`
       returns the form: render its message text (markdown) above `AnswerForm` (`askedAbove`). `onAnswer(label)`:
-  - `Install <name>@<mkt>` matching a row (D14): the page answers Archie with the label (`api.answer(id, label,
+  - `Install <id>` matching a row's `id` (D14): the page answers Archie with the label (`api.answer(id, label,
     chat.state.wait_since)`), then step 3 = `TeammateSetup` for that row (`nameStep`).
   - `Extend <key>` matching an on-team teammate: answer Archie, then show "<builder> is adding this to <name>; you'll
     see the change for approval." with a link to the chat on `#/team/<builder.key>` (A3).
@@ -495,8 +496,8 @@ Page, as a `Stepper`: Describe → Look for existing → Set up.
 - [ ] `hiring/SKILL.md`: on a hiring description, call `fleet_catalog` (`teammates`, then `modules` with a query) and
       ask at most one clarifying form first if the job is unclear. Then answer with **one form**, at most 4 options,
       best first, using exactly: `Extend <key>` (an on-team teammate whose job covers part of it, via a local-module
-      routine/skill as the existing "Change agent" path), `Install <name>@<marketplace>` (copy `id` exactly; never
-      invent one), `Build new`. The form text gives one plain line per option: what it covers, what it needs
+      routine/skill as the existing "Change agent" path), `Install <id>` (the row's `id` copied exactly: the bare name for an
+      official module, `name@marketplace` for a third-party one; never invent one), `Build new`. The form text gives one plain line per option: what it covers, what it needs
       connected, and for a third-party module "from <marketplace>, reviewed when installed". On an `Install …` answer
       the owner installs from the hiring page: reply once ("Setting it up from the hiring page") and `task_finish`.
       On `Extend …`, continue as "Change agent". On `Build new`, continue the six steps.

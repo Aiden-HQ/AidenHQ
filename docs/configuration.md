@@ -154,7 +154,9 @@ outcomes:
     settings change). Every teammate's name, its default included, is 1–24 ASCII letters, digits, spaces and `-`, at most 4
     words, and differs (case, spaces and punctuation aside) from every other agent's name and key, hidden ones included: chat's
     `@name`, a task comment's `@handle` (the name without spaces) and the task tools address agents by either (`services/shared/teammate-name.ts`, the one rule for compile, the
-    board and the kernel). A teammate is never a team's template.
+    board and the kernel). A default name an existing agent already has (a local agent, a team member) warns, and the teammate
+    goes by its key until renamed. A teammate is never a team's template: a team made on one keeps it as its hidden record,
+    with a warning.
   - The catalog (`config/modules.json`) lists every module's teammates, enabled or not (`teammates: [{key, name, job, sample,
     description, department, face, first}]`); a module that is off and has a broken block is left out with a warning.
 - **`decisions.md`** (optional; template `config/decisions.example.md`): the owner's product decisions, including what not to

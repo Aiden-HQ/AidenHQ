@@ -270,11 +270,14 @@ V2Team, V2AskAiden, V2PhoneHome.
 
 **Interfaces**
 - `GET /api/chats?agent=<key>&offset=<n>&state=active|settled` (default `active`) →
-  `{ chats: ChatRow[]; agents: ChatAgent[]; more: boolean; stale?: true }`.
+  `{ chats: ChatRow[]; agents: ChatAgent[]; more: boolean; next_offset: number; stale?: true }`.
   - Open chats come from `openIssues()` with the chat label and `chatAgent(i) === id`.
-  - Closed chats come from `labelled(chat, "done,cancelled", "100", offset)` filtered the same way.
+  - Closed chats come from `labelled(chat, "done,cancelled", "100", offset)` filtered the same way. With `agent`, the
+    route keeps reading 100-row pages from `offset` until it holds 25 of that agent's chats or a page comes back
+    short, so other teammates' newer chats never hide this one's older ones.
   - `state=active`: open chats that aren't settled. `state=settled`: settled and finished chats, newest first, paged.
-  - `more` is true when the page was full.
+  - `more` is true when the last page read was full; `next_offset` (in the response) is the raw offset after it, which
+    "Show older" sends as the next `offset`.
   - Rows are built by the existing `row()` with preview, unread and settled.
   - An unknown key returns 404.
   - Without `agent` the route is unchanged.
@@ -334,14 +337,17 @@ Promise<RosterAgent[]>, timezone, now? }`. It uses the app's existing helpers (`
 - **since**:
   - Window: `from ?? stored cursor ?? now-24h`, clamped to ≥ now-14d.
   - Reads `views.read("told", {days, limit: 50, state: "delivered"})`, paging with `before` while the last row's `at`
-    ≥ window, capped at 6 pages. It keeps kinds `done`, `fyi` and `digest`.
-  - Also reads `pc.closedSince(window)`, kept only when `completedAt ?? cancelledAt` ≥ window, the task has an
+    ≥ window, until the window is covered (the 14-day clamp bounds it; no page cap, so nothing in the window is left out
+    while the seen cursor moves past it). It keeps kinds `done`, `fyi` and `digest`.
+  - Also reads `pc.closedSince(window)`, paged the same way until the window is covered, kept only when `completedAt ?? cancelledAt` ≥ window, the task has an
     `assigneeAgentId` and it is not a `chat`.
   - Deduped by task identifier, the newest item kept. Rows with no task are never merged.
   - Text: unfence the ledger's fenced text, keep the first line, strip markdown marks, ≤200 chars (one helper,
-    `oneLine`; reuse `chats.ts` 207 by exporting it). Closed tasks read "Done: <title>".
+    `oneLine`; reuse `chats.ts` 207 by exporting it). Closed tasks read "Done: <title>" when completed and
+    "Cancelled: <title>" when cancelled (`cancelledAt` set).
   - Grouped by `teammateFor(source)`, where `source` is the agent key or `kernel` (→ chief-of-staff). Groups are
-    sorted by latest. The response carries `groups` (all), `items` (all, newest first) and `total`.
+    sorted by latest. Groups and `total` count every item in the window; `items` is the newest 200 (the "All N" pane
+    says when it shows fewer than `total`).
   - `null` when there are no items or the read is absent or fails (the failure is logged at warn).
 - **world.waiting_on**: open tasks labelled `waiting-on`; `age_days` from `createdAt`, `quiet_days` from
   `lastActivityAt`. `null` when the label doesn't exist or no tasks.
@@ -596,14 +602,17 @@ Routes:
     <id>."). Closing the pane replaces the hash with `#/`.
 - Since: `SectionCard({title: "Since you last looked", meta, action: "All N →"})` around
   `DigestList({items: groups.map(g => ({id: g.teammate.key, face: <Face …/>, text: g.latest.text, link: g.latest.task && "#/t/" + g.latest.task})), limit: 3})`.
-  "All N" opens the pane with every item grouped by teammate.
+  "All N" opens the pane with the returned items grouped by teammate, and a line "Showing the newest 200 of N" when
+  `items` is shorter than `total`.
 - Idea: `SectionCard` "Idea for you" with the teammate chip, question, its first option as `primary`, then "Not now" →
   `api.answer(identifier, "Not now", waitSince)`.
 - Seen: after a snapshot whose `since` rendered (`useLayoutEffect` on `data.as_of`, then `requestAnimationFrame`, only
   while `document.visibilityState === "visible"`), call `homeSeen(data.as_of)` once per `as_of`. The first response's
   `since_from` goes into `homeFrom.value` (Task 6), so every refetch during this mount keeps the visit's window.
-- Answered rows: the client keeps a per-mount set of answered and decided ids. Their receipts stay, and a refetch
-  that still lists one (the kernel hasn't caught up) keeps showing the receipt, never the live buttons again.
+- Answered rows: the client keeps a per-mount set of answered and decided rows, keyed by the row's id **and** its wait
+  (`<id>:<waitSince>` for an answer row, the card id for an approval). Their receipts stay, and a refetch that still
+  lists the same wait (the kernel hasn't caught up) keeps showing the receipt, never the live buttons again; a new wait
+  on the same task (a follow-up question) is a new key and shows its own buttons.
 - Live: `useLive(["home", "approvals"], reload, 15_000)`.
 - Notify me banner: `notificationsSupported() && Notification.permission === "default"`. It is dismissible, and the
   dismissal is stored in localStorage `aidenhq.notify-ask` inside try/catch.
@@ -660,7 +669,7 @@ Routes:
     route's `chat`, else the newest open chat from `agentChatsQuery(key)` (`Conversation`), else a `Composer`.
     `Composer` placeholder: "Message <Name>: <teammate.sample>", and the send is
     `api.newChat(text, key)` → `go("#/team/<key>/c/<ref>")`. Above the pane, a chat switcher (`Menu`) lists this
-    agent's chats, with an Active / Settled `Segmented` filter (`state=`), "Show older" via `offset`, and "New chat".
+    agent's chats, with an Active / Settled `Segmented` filter (`state=`), "Show older" via the response's `next_offset`, and "New chat".
   - **Side column** (right, `minmax(18rem, 24rem)`; stacked under the pane below 1100px), all generic (spec settled #2):
     - "What <Name> does": the agent's `description` (compiled catalog `teammates[].description` via the profile route).
     - "Recent work": the last 5 from `agentTimelineQuery(key)` (existing), "All work →" `#/team/agents/<key>/activity`.

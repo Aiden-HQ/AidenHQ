@@ -79,6 +79,7 @@ agents:
     timeout_sec: 1200
     connections:
       ship: [ ship_config, ship_status, ship_configure ]
+      github: [ github_issue_read ] # a PR's own state (merged, closed, checks, reviews): ship_status lists only the holds
       apps: [ app_view, web_view ] # every crew agent (scripts/test/agents.test.ts)
       owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_comment, task_handoff, task_finish, task_team ]

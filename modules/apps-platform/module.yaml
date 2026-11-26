@@ -89,6 +89,8 @@ agents:
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1200
+    # Who it hands work to: Engineers (code), the design module's mockups and UI reviews, an app's owning agent, the chief of staff.
+    delegate_to: [ engineer?, ui-designer?, ui-reviewer?, app-owners, chief-of-staff? ]
     connections:
       # write plus app_remove (destructive: granted only by name).
       apps: [ app_list, app_status, app_logs, app_view, app_check, web_view, warehouse_query, source_new, app_requests, app_roles, app_deploy, app_restart, app_rollback, app_create, app_remove, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
