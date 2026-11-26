@@ -679,7 +679,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
         const limit = timeout > 0 ? 2 * timeout : STUCK_DEFAULT_MS;
         const stuck = mine.find((j) => j.state === "running" && age(j.started_at, t) > limit);
         if (stuck) out.push({ key: `${a.id}:stuck`, reason: `${a.name}: a run has been running ${mins(age(stuck.started_at, t))} (limit ${mins(limit)})` });
-        const finished = mine.filter((j) => !["running", "cancelled"].includes(j.state)).slice(0, FAILS);
+        // A SIGTERM stop (exit 143: a stop, restart or box replaced) is no failure (work.ts), so it is not evidence either
+        // way: it leaves the window rather than resetting it, and the agent's last FAILS real outcomes decide.
+        const finished = mine.filter((j) => !["running", "cancelled"].includes(j.state) && !(j.state === "failed" && j.exit === 143)).slice(0, FAILS);
         if (finished.length === FAILS && finished.every((j) => j.state !== "done")) out.push({ key: `${a.id}:failing`, reason: `${a.name}: its last ${FAILS} runs failed (${finished.map((j) => j.state).join(", ")})` });
         // The same ending three times on one task inside half an hour is a loop (what the last-three check can't tell from three tasks).
         for (const r of repeatedFailures(mine, t)) {
