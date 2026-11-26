@@ -163,6 +163,10 @@ if [ "$1" = run ]; then
       for f in usr/lib/libdup.so usr/lib/replica-only.so .replicas/c1/usr/lib/libdup.so .replicas/c2/usr/lib/libdup.so; do
         [ -f "$f" ] && printf 'content %s %s\n' "$f" "$(tr -d '\n' < "$f")" >> "$MODES"
       done
+      for f in etc/os-release bin opt/app/plugins .replicas/c2/opt/app/plugins/installed.txt; do
+        if [ -L "$f" ]; then printf 'link %s %s\n' "$f" "$(readlink "$f")" >> "$MODES"
+        elif [ -f "$f" ]; then printf 'regular %s\n' "$f" >> "$MODES"; fi
+      done
       cd - >/dev/null
       # A file the export dropped must not be in the scanned root: record those the test asks about.
       for f in "$d"/dev/null "$d"/opt/app/dev/node_modules/pkg.json; do [ -e "$f" ] && printf 'present %s\n' "\${f#\${sb%/*}/}" >> "$MODES"; done
@@ -348,6 +352,9 @@ case "$1" in
       tmpl=""
       if [ "$1" = -f ]; then tmpl="$2"; shift 2; fi
       if [ "$#" -eq 0 ]; then cut -f"$col" "$TAGS"; exit 0; fi
+      # A reference the fixture says the daemon cannot answer for (a timeout, a refused socket) fails even when the tag
+      # table names it: the table is what the daemon holds, not a promise it will answer this read.
+      if grep -qxF -- "$1" "$BROKEN"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
       # A per-platform manifest (ref<TAB>platform<TAB>manifest) wins over the tag table's single manifest: a platform read
       # resolves a tag or an index id to the manifest for that platform.
       if [ -n "$plat" ]; then
@@ -411,9 +418,21 @@ case "$1" in
       done
       IFS="$oldifs"
     fi
+    # EXPORT_SYMLINKS "id:link=target;...": symlinks the container has, as a distro keeps /etc/os-release ->
+    # ../usr/lib/os-release and /bin -> usr/bin.
+    if [ -n "\${EXPORT_SYMLINKS:-}" ]; then
+      oldifs="$IFS"; IFS=';'
+      for e in $EXPORT_SYMLINKS; do
+        IFS="$oldifs"
+        [ "\${e%%:*}" = "$cid" ] || continue
+        elink="\${e#*:}"; etarget="\${elink#*=}"; elink="\${elink%%=*}"
+        mkdir -p "$d/$(dirname "$elink")"; rm -f "$d/$elink"; ln -s "$etarget" "$d/$elink"
+      done
+      IFS="$oldifs"
+    fi
     # EXPORT_DIR_MODE <mode>: a directory the container left read-only (a Go module cache), as tar would restore it.
     [ -n "\${EXPORT_DIR_MODE:-}" ] && { mkdir -p "$d/root/.cache/go-mod" && printf 'bin' > "$d/root/.cache/go-mod/mod.zip" && chmod "$EXPORT_DIR_MODE" "$d/root/.cache/go-mod"; }
-    ( cd "$d" && tar -cf "$file" $(find . -type f | sed 's|^\./||') )
+    ( cd "$d" && tar -cf "$file" $(find . -type f -o -type l | sed 's|^\./||') )
     rm -rf "$d"
     # EXPORT_GROW id<TAB>bytes: a container root filesystem much larger than the daemon's size said, as a real container
     # whose runtime data has grown since it was sized. The ulimit -f ceiling stops the write, as a real one would.
@@ -669,6 +688,60 @@ test("security-sbom: two replicas that differ on one file both keep their conten
   assert.ok(contents.some((c) => c.endsWith(" only")), `c2's own file was dropped: ${modes.join("\n")}`);
 });
 
+test("security-sbom: a distro's symlinks survive the replica merge, so syft still sees /etc/os-release", { skip: NOT_LINUX }, async () => {
+  // A Debian/Ubuntu root keeps `/etc/os-release -> ../usr/lib/os-release` and `/bin -> usr/bin`. A merge that carried only
+  // regular files would leave neither, syft would report no distro, and grype would skip the distro-specific advisories
+  // for a container that is in production.
+  const { status, out, targets, modes } = await run({
+    EXPORT_EXTRAS: "c1:usr/lib/os-release=ID=debian",
+    EXPORT_SYMLINKS: "c1:etc/os-release=../usr/lib/os-release;c1:bin=usr/bin",
+    EXPORT_DIR_MODE: "",
+  }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(row, `no row:\n${targets.map((t) => t.join("\t")).join("\n")}\n${out}`);
+  assert.equal(row[2], "", `the unit errored: ${row[2]}`);
+  assert.ok(modes.some((m) => m === "link etc/os-release ../usr/lib/os-release"), `the distro link was dropped: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "link bin usr/bin"), `the /bin link was dropped: ${modes.join("\n")}`);
+});
+
+test("security-sbom: a replica that has a directory where the other has a file keeps its files", { skip: NOT_LINUX }, async () => {
+  // c1 has a regular file at opt/app/plugins; c2 has a directory there with an installed plugin. Merging c2 straight in
+  // would fail --mkdir -p runs into the file ancestor-- and lose the plugin. The entry whose ancestor is a file is kept
+  // beside the other replica's under .replicas/, so the one scan reads both.
+  const { status, out, targets, modes } = await run({
+    EXPORT_EXTRAS: "c1:opt/app/plugins=file;c2:opt/app/plugins/installed.txt=plugin",
+  }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+    computers: { images: { image: "aidenhq/board:local" } },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.equal(row?.[2], "", `the unit errored: ${row?.[2]}`);
+  assert.ok(modes.some((m) => m === "regular opt/app/plugins"), `c1's file was lost: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "regular .replicas/c2/opt/app/plugins/installed.txt"), `c2's plugin was lost: ${modes.join("\n")}`);
+});
+
+test("security-sbom: the host scan excludes the pass's export directory where it is reachable under /", { skip: NOT_LINUX }, async () => {
+  // With AIDENHQ_DATA_DIR on another disk the export directory is a sibling of the mounted sbom directory, not below it,
+  // so excluding the sbom tree alone would leave staged container roots reachable to the host scan.
+  const { status, out, calls } = await run();
+  assert.equal(status, 0, out);
+  const host = syft(calls, "host");
+  assert.ok(host.excludes.some((p) => p.endsWith("sbom-exports/**")), `the export directory is not excluded: ${JSON.stringify(host.excludes)}`);
+});
+
 test("security-sbom: a nested dev directory is kept; only the container root's device nodes are left out", { skip: NOT_LINUX }, async () => {
   // GNU tar matches an unanchored `dev/*` at any depth, so a plain exclusion would also drop `/opt/app/dev/node_modules`
   // (a dependency tree inside a deployed app) and the row would claim a complete scan of a partial filesystem. The
@@ -721,6 +794,45 @@ test("security-sbom: an inspect that fails for another reason is an error line, 
   assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
   assert.equal(line[1], "-", "the target was recorded as scanned");
   assert.match(line[2], /docker image inspect/, line[2]);
+});
+
+test("security-sbom: a reference probe that fails for another reason is an error line, not a container export", { skip: NOT_LINUX }, async () => {
+  // The container's index is still in the store, but the reference probe on it fails for a reason other than absence (a
+  // timeout, a refused socket). The bare platform manifest then answers "No such image" only because it is not an image
+  // record of its own, so the image may still be held: exporting the live container here would publish a filesystem scan
+  // under the image's target, and the absent-tag guards would read that as a clean image. It stays an error line.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local", descriptor: { digest: "sha256:1111", platform: { os: "linux", architecture: "amd64" } } }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    inspectErrors: ["sha256:index"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for an unanswered probe:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /unexpected EOF/, line[2]);
+});
+
+test("security-sbom: a tag whose probe fails is not read as a moved tag, so the container is not exported", { skip: NOT_LINUX }, async () => {
+  // The still-running image may well be the one this tag names, and only the daemon's answer about the tag failed (a
+  // timeout, a refused socket). The bare manifest's "No such image" then proves nothing about the image, so exporting the
+  // container would inventory a live filesystem under an image target whose absent-tag guards would read it as clean.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    inspectErrors: ["aidenhq/board:local"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for an unanswered tag probe:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /unexpected EOF/, line[2]);
 });
 
 test("security-sbom: a container export that fails records its image id and the docker error, and the batch still lands", { skip: NOT_LINUX }, async () => {

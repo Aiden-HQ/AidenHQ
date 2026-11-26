@@ -152,7 +152,11 @@ HOST_EXCLUDES=(
   './proc/**' './sys/**' './dev/**' './run/**' './tmp/**'
   './var/lib/docker/**' './var/lib/containerd/**'
 )
+# The pass's export directory is a sibling of $out, not below it, so excluding $out's own tree does not cover it: when
+# AIDENHQ_DATA_DIR sits on another disk (/srv/aidenhq-data, say) the host scan can reach it, and a staged container root
+# there would be attributed to the host. Both roots are excluded when they are under /.
 host_excludes=("${HOST_EXCLUDES[@]}" "./${PWD#/}/**" "./${out#/}/**" '**/node_modules/**')
+case "$exportdir" in "$PWD"/*) : ;; /*) host_excludes+=("./${exportdir#/}/**") ;; esac
 [ -n "$inst" ] && host_excludes+=("./${inst#/}/**")
 host_args=()
 for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
@@ -308,21 +312,33 @@ platform_refs() { # <platform manifest id> <container .Image>
 # reference runs. A caller that gets the pin back for one of these has an unresolvable image when the size read on it also
 # fails: see the container fallback in snapshot().
 resolve_ref() { # <pin manifest> <container .Image> [platform]
-  local pin="$1" image="$2" plat="${3:-$platform}" candidate
+  local pin="$1" image="$2" plat="${3:-$platform}" candidate out unsure=""
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     # An immutable id (the pin itself, or the container's index) that the daemon holds as an image record is the safest
     # export: it cannot move, and saving from it can't name another image. Only if none is held does a tag come into it.
     case "$candidate" in
       sha256:*)
-        if docker_call 5 image inspect -f '{{.Id}}' "$candidate" >/dev/null 2>&1; then
-          printf '%s' "$candidate"; return 0
+        if out="$(docker_call 5 image inspect -f '{{.Id}}' "$candidate" 2>&1)"; then
+          printf '%s\n' "$candidate"; return 0
         fi
+        image_absent "$out" || unsure="$out"
         continue ;;
     esac
-    if [ "$(pin_of "$candidate" "$plat")" = "$pin" ]; then printf '%s' "$candidate"; return 0; fi
+    # A tag: the id it names on the container's platform. A tag pin_of cannot read is asked once more keeping its error,
+    # so one that did not answer (a timeout, a refused socket) is not mistaken for a tag that has moved off the image.
+    if out="$(pin_of "$candidate" "$plat")" && [ -n "$out" ]; then
+      [ "$out" = "$pin" ] && { printf '%s\n' "$candidate"; return 0; }
+      continue
+    fi
+    if ! out="$(docker_call 5 image inspect -f '{{.Id}}' "$candidate" 2>&1)"; then image_absent "$out" || unsure="$out"; fi
   done < <(platform_refs "$pin" "$image")
-  printf '%s' "$pin"
+  printf '%s\n' "$pin"
+  # A probe that did not answer proves nothing about the image: it may be held, only the read timed out. The caller runs
+  # this in a subshell, so the reason travels as the second line (the first is always the reference to try) instead of
+  # through a variable.
+  [ -n "$unsure" ] && printf '%s\n' "$(printf '%s' "$unsure" | tr '\t\n' '  ')"
+  return 0
 }
 # A plain `docker save` (a daemon without `image save --platform`) writes every platform a tag or an index id holds, so
 # the archive itself has to prove it holds the running variant. An OCI archive's `index.json` is read, and a single
@@ -545,22 +561,74 @@ run_watched() { # <secs> <cmd...>
 # container's own path; a path it holds with different content is linked under `<root>/.replicas/<cid>/<path>`, so one
 # scan reads both replicas' files instead of one overwriting the other. A file identical on both sides is linked once.
 # Returns 1 with export_err if the merge cannot be made.
+# Whether two entries are the same thing: both symlinks with the same target, or both regular files with the same bytes.
+same_entry() { # <a> <b>
+  if [ -L "$1" ] || [ -L "$2" ]; then
+    [ -L "$1" ] && [ -L "$2" ] && [ "$(readlink "$1" 2>/dev/null)" = "$(readlink "$2" 2>/dev/null)" ]
+    return
+  fi
+  [ -f "$1" ] && [ -f "$2" ] && cmp -s "$1" "$2"
+}
+# Whether placing <rel> under <root> would run through something that is not a directory (one replica has a regular file
+# where another has a directory). Then the entry cannot go at its own path and must be kept aside.
+ancestor_blocked() { # <root> <rel>
+  local root="$1" rel="$2" rest part acc="$1"
+  case "$rel" in */*) rest="${rel%/*}" ;; *) return 1 ;; esac
+  local oldifs="$IFS"; IFS='/'
+  for part in $rest; do
+    acc="$acc/$part"
+    if [ -e "$acc" ] || [ -L "$acc" ]; then
+      if [ ! -d "$acc" ]; then IFS="$oldifs"; return 0; fi
+    fi
+  done
+  IFS="$oldifs"
+  return 1
+}
+# Link one entry into place: a symlink stays a symlink (its target is part of what the scan reads), a regular file is a
+# hard link where that works and a copy where it does not (another filesystem, or a file with no link permission).
+place_entry() { # <src> <dst>
+  if [ -L "$1" ]; then ln -P "$1" "$2" 2>/dev/null || cp -a "$1" "$2" 2>/dev/null; return; fi
+  ln "$1" "$2" 2>/dev/null || cp -a "$1" "$2" 2>/dev/null
+}
+# Fold one replica's extracted tree into the unit's merged root, bounded by the snapshot deadline (the apply lock is held
+# while this runs, so it may not outlast the pass's own budget). A path the root does not hold is linked in at the
+# container's own path; one it holds with different content goes under `<root>/.replicas/<cid>/<rel>`; one whose ancestor
+# is a file on the other side goes there too. Symlinks are carried as symlinks, so a distro's `/etc/os-release -> ../usr/lib/
+# os-release` and `/bin -> usr/bin` are where syft looks for them. Returns 1 with export_err.
 merge_replica_root() { # <replica root> <merged root> <container id>
-  local repodir="$1" rootfs="$2" cid="$3" f rel dst
+  local repodir="$1" rootfs="$2" cid="$3" f rel src dst keep n
   export_err=""
-  # `cp -al` links a directory tree with hard links where it creates files; without --no-clobber it would replace an
-  # existing file, which is exactly the loss this avoids, so every file is placed one at a time.
-  if ! ( cd "$repodir" && find . -type f -print0 ) > "$exportdir/merge-$cid.list" 2>/dev/null; then
+  if ! ( cd "$repodir" && find . -mindepth 1 \( -type f -o -type l \) -print0 ) > "$exportdir/merge-$cid.list" 2>/dev/null; then
     export_err="could not list the extracted root"; return 1
   fi
   while IFS= read -r -d '' f; do
-    rel="${f#./}"; src="$repodir/$rel"; dst="$rootfs/$rel"
-    if [ -e "$dst" ] && ! cmp -s "$src" "$dst"; then
-      dst="$rootfs/.replicas/$cid/$rel"
+    # The apply lock is held: one slow merge must not keep a deploy waiting past the pass's budget.
+    if [ -n "${SNAPSHOT_DEADLINE:-}" ] && [ "$SECONDS" -ge "$SNAPSHOT_DEADLINE" ]; then
+      rm -f "$exportdir/merge-$cid.list"
+      export_err="the snapshot deadline reached while merging the replica roots"
+      return 1
     fi
-    [ -e "$dst" ] && continue
-    mkdir -p "$(dirname "$dst")" 2>/dev/null || { export_err="could not create $(dirname "$dst")"; return 1; }
-    ln "$src" "$dst" 2>/dev/null || cp -a "$src" "$dst" 2>/dev/null || { export_err="could not place $rel"; return 1; }
+    rel="${f#./}"; src="$repodir/$rel"; dst="$rootfs/$rel"; keep=""
+    if ancestor_blocked "$rootfs" "$rel"; then
+      keep=1
+    elif [ -e "$dst" ] || [ -L "$dst" ]; then
+      same_entry "$src" "$dst" && continue
+      keep=1
+    fi
+    if [ -n "$keep" ]; then
+      dst="$rootfs/.replicas/$cid/$rel"
+      # A second conflicting version of the same path (two replicas, one already kept aside) gets its own suffix.
+      n=2
+      while [ -e "$dst" ] || [ -L "$dst" ]; do
+        same_entry "$src" "$dst" && break
+        dst="$rootfs/.replicas/$cid.$n/$rel"; n=$((n + 1))
+      done
+      if [ -e "$dst" ] || [ -L "$dst" ]; then
+        rm -f "$exportdir/merge-$cid.list"; export_err="could not place $rel"; return 1
+      fi
+    fi
+    mkdir -p "$(dirname "$dst")" 2>/dev/null || { rm -f "$exportdir/merge-$cid.list"; export_err="could not create $(dirname "$dst")"; return 1; }
+    place_entry "$src" "$dst" || { rm -f "$exportdir/merge-$cid.list"; export_err="could not place $rel"; return 1; }
   done < "$exportdir/merge-$cid.list"
   rm -f "$exportdir/merge-$cid.list"
   # Directories no file lives in (an empty mount point) are not package evidence and are not needed by the scan.
@@ -636,7 +704,7 @@ space_need() { # <admitted GB> <this image GB> <largest archive GB> <room GB> [s
     "$admitted" "$size" "$largest" "$room" "$min_free_gb" "$out" "$short"
 }
 snapshot() {
-  local listing rows cid row image config desc label want key raw size ref saved pin now mode
+  local listing rows cid row image config desc label want key raw size ref resolved saved pin now mode
   local plat man nodesc unit
   local -A variant_count=()
   if ! listing="$(docker_call 10 ps -q 2>&1)"; then
@@ -834,7 +902,10 @@ snapshot() {
     # The reference the save will read, resolved now, while the lock still holds the store still. Discovering it here,
     # not after the size checks, is what lets an image whose own id is gone but whose index another tag holds still be
     # exported instead of dropped as unreadable.
-    ref="$(resolve_ref "$pin" "$image" "$plat")"
+    resolved="$(resolve_ref "$pin" "$image" "$plat")"
+    ref="$(printf '%s\n' "$resolved" | head -1)"
+    # A reference probe that timed out or was refused, as resolve_ref's second line reports it: see the fallback below.
+    ref_unsure="$(printf '%s\n' "$resolved" | sed -n '2,$p' | tr '\t\n' '  ')"
     mode=image; cid=""
     # Size the very variant the save will write, through the very reference it will read: `docker image inspect` on an
     # index reports the index's total, while `docker save --platform` writes one platform manifest. A plain save (no
@@ -856,6 +927,13 @@ snapshot() {
       # mid-restart leaves the image in place, and exporting a live container then would publish a filesystem scan under
       # the image's target — an inventory of the wrong thing that the absent-tag guards would read as a clean image. Those
       # stay the size-read error line, so the next pass retries the image.
+      if [ -n "${ref_unsure:-}" ]; then
+        # One of resolve_ref's probes timed out or was refused. That probe's candidate could be the image's own index still
+        # held by the daemon, and the bare pin's "No such image" then says only that the manifest is not an image record of
+        # its own. The container is exported only when every probe answered that nothing holds the image, so this stays an
+        # error line and the next pass retries it.
+        fail "image:$key" "docker image inspect: ${ref_unsure:-failed}"; continue
+      fi
       if [ "$ref" = "$pin" ] && [ -n "${u_cid[$unit]:-}" ] && image_absent "$raw"; then
         mode=container
         # Every container on this variant is exported when the image is gone: two replicas are one unit and one target
