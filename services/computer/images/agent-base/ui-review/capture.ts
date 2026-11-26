@@ -219,7 +219,7 @@ function source(commit: string | undefined, out: string): { commit?: string; tre
     const index = join(mkdtempSync(join(tmpdir(), "ui-review-tree-")), "index");
     git(["read-tree", "HEAD"], { GIT_INDEX_FILE: index });
     const top = git(["rev-parse", "--show-toplevel"]), rel = relative(realpathSync(top), realpathSync(out));
-    git(["add", "-A", "--", top, ...(rel && !rel.startsWith("..") && !isAbsolute(rel) ? [`:(top,exclude)${rel}`] : [])], { GIT_INDEX_FILE: index });
+    git(["add", "-A", "--", top, ...(rel && !rel.startsWith("..") && !isAbsolute(rel) ? [`:(top,exclude,literal)${rel}`] : [])], { GIT_INDEX_FILE: index });
     return { commit: head, tree: git(["write-tree"], { GIT_INDEX_FILE: index }) };
   } catch { return {}; }
 }

@@ -203,7 +203,8 @@ export async function routesCommand(argv: string[]): Promise<number> {
       await openAt(s, base, path);
       await toFoot(s);
       await prep(s);
-      const found = await s.page.evaluate((h) => { const a = (window as unknown as { __uiRoutes: R }).__uiRoutes.brand(h); (window as unknown as { __uiRoutes: R }).__uiRoutes.mark("data-ui-review-brand", a); return a ? "ok" : document.querySelector("header, [role=banner], [data-slot=sidebar-header]") ? "missing" : "none"; }, home.route);
+      const found = await s.page.evaluate((h) => { const a = (window as unknown as { __uiRoutes: R }).__uiRoutes.brand(h); (window as unknown as { __uiRoutes: R }).__uiRoutes.mark("data-ui-review-brand", a); const head = document.querySelector("header, [role=banner], [data-slot=sidebar-header]"); return a ? "ok" : !head ? "none" : head.closest("[inert], [aria-hidden=true]") || document.querySelector("dialog[open], [aria-modal=true]") ? "covered" : "missing"; }, home.route);
+      if (found === "covered") { c.skipped = "an open dialog covers the header here"; return; }
       if (found === "none") { c.problems.push(`there is no header brand to click on ${path}`); return; }
       if (found !== "ok") { c.problems.push("its header has no brand link to the home page"); return; }
       // A direct DOM click: a pointer click would scroll the brand into view first, and that scroll would pass for an effect.
