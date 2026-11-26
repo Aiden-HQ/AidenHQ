@@ -59,7 +59,7 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
           {!compact && <Bone className="attn-order-load" w={54} h="1.45em" />}
         </div>
         {!compact && (
-          <div className="attn-slot attn-slot-load" aria-hidden>
+          <div className="attn-list attn-list-load" aria-hidden>
             {[0, 1, 2].map((i) => (
               <div key={i} className="attn-row-load">
                 <Bone w="46%" h={13} />
@@ -136,9 +136,7 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
         />
         <span className="attn-order">oldest first</span>
       </div>
-      {/* The list's own area, kept the height the open list takes in every data shape: an all-clear strip keeps it too, so the
-          frame above the board is the same before and after the counts arrive. */}
-      <div className="attn-slot">{list || <p className="attn-none">{EMPTY[which]}</p>}</div>
+      {list || <p className="attn-none">{EMPTY[which]}</p>}
     </section>
   );
 }
