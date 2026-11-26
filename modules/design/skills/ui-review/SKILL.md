@@ -35,8 +35,16 @@ ui-review capture <url> --out review --workers 4          # 390, 768, 1024, 1280
 ui-review routes <url> --out review/routes                 # the route check: local builds only
 ```
 
-The route check's "Blocking" findings are confirmed by a second click from a fresh page; its "To look at" list (controls a
-click didn't visibly change) is a lead to open in `agent-browser`, never a bug until you see it.
+Every automated finding is a lead: confirm it on a picture or in `agent-browser` before you call it a bug (a page that was
+still loading, a toggle already chosen or a hash-routed app can read as broken). The route check's "To look at" list (controls
+a click didn't visibly change, links that show the same page) is never a bug until you see it act wrongly. On a local build,
+also try the main flow once:
+
+```sh
+agent-browser open <url>; agent-browser wait --text "<what the page shows>"
+agent-browser snapshot -i                      # interactive elements with refs @e1...
+agent-browser click @e1; agent-browser screenshot flow-1.png; agent-browser errors
+```
 
 `--widths 360,…` adds a width, `--states empty,error,loading` the states the app can show, `--pages-file <f>` a subset of
 pages, `--resume` continues a run that stopped (a big app queues at most 120 pages per run and records the rest as
@@ -102,8 +110,8 @@ captures, the before|after pairs and each fix's diff (8 MB per call), then `desi
 Then one comment on your task (`task_comment`, then `task_finish`): the improvements ranked, each with where, what is weak,
 the change, why, what the best product does and, for a fixed one, its before|after image attached with `task_file_upload`
 (`base64 -w0 <file>` as `data`, `type: "image/png"`) and the diff in words; then the bugs the checks confirmed (each with its
-capture and the fix); then a short list of cold-page notes for a PR. For a PR ask also post one PR comment with the headline
-findings (`github_issue_comment`; GitHub takes no images from you). A request to land a fix goes to an Engineer with
+capture and the fix); then a short list of cold-page notes for a PR. For a PR on GitHub also post one PR comment with the headline
+findings (`github_issue_comment`; GitHub takes no images from you); a repo on the local code host reports on its task only. A request to land a fix goes to an Engineer with
 `task_delegate`: the repo, the PR, each fix's diff and how you will check it.
 If an upload fails, say so and describe what the image shows; one try is enough.
 
