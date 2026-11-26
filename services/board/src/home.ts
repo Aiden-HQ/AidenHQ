@@ -83,6 +83,18 @@ export function nextEight(now: number, tz: string): string {
   return new Date(now + DAY).toISOString();
 }
 
+/** Every teammate, always (the owner sees his whole team): those with news since he looked first, newest first, with
+ * their latest line; the rest in roster order, "Nothing new" (blank when the
+ * digest read was partial: no news can't be told from an unread ledger). */
+function teamRow(keys: ReturnType<typeof teammateKeys>, since: Home["since"], complete: boolean, face: (key: string) => FaceRef): Home["team"] {
+  const news = since?.groups ?? [];
+  const told = new Set(news.map((g) => g.teammate.key));
+  return [
+    ...news.map((g) => ({ teammate: g.teammate, line: g.latest.text })),
+    ...[...keys.keys()].filter((k) => !told.has(k)).map((k) => ({ teammate: face(k), line: complete ? "Nothing new" : "" })),
+  ];
+}
+
 export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from?: string): Promise<Home> {
   const nowMs = (d.now ?? Date.now)();
   const as_of = new Date(nowMs).toISOString();
@@ -199,7 +211,7 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
     needs,
     since,
     world,
-    team: since ? since.groups.map((g) => ({ teammate: g.teammate, line: g.latest.text })) : [],
+    team: teamRow(keys, since, !partial, face),
     idea,
   };
 }

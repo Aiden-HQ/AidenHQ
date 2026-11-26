@@ -352,6 +352,8 @@ button.ui-dr-top:hover .ui-dr-q { color: var(--accent); }
 .ui-digest-text { flex: 1; min-width: 0; }
 .ui-digest-row > a { flex: none; font-size: var(--text-sm); text-decoration: none; white-space: nowrap; }
 .ui-digest-row > a:hover, .ui-digest-more:hover { text-decoration: underline; }
+.ui-digest-actions { flex: none; display: inline-flex; gap: 4px; }
+@media (hover: hover) { .ui-digest-actions { opacity: 0; transition: opacity var(--fast) var(--ease-out); } .ui-digest-row:hover .ui-digest-actions, .ui-digest-row:focus-within .ui-digest-actions { opacity: 1; } }
 .ui-digest-more { align-self: flex-end; padding: 8px 16px 10px; font-size: var(--text-sm); font-weight: 600; text-decoration: none; }
 
 /* Panes (DetailPane.tsx, SidePanel.tsx): slide in from the right, leave faster. On a phone, the whole screen. */
