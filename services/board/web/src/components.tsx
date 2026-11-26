@@ -29,10 +29,10 @@ export const faceOf = (crew: Assignee[], keyOrName: string) => {
   return { seed: a?.seed ?? keyOrName, face: a?.face };
 };
 
-/** An agent's face (ui/Face), looked up in the crew by its Paperclip id or name. */
-export function AgentFace({ crew, agent, name, size = 28 }: { crew: Assignee[]; agent: string; name: string; size?: number }) {
+/** An agent's face (ui/Face), looked up in the crew by its Paperclip id or name; `state` when the caller knows it (a chat head). */
+export function AgentFace({ crew, agent, name, size = 28, state }: { crew: Assignee[]; agent: string; name: string; size?: number; state?: FaceState }) {
   const f = faceOf(crew, agent);
-  return <Face seed={f.seed} {...faceProps(f.face)} size={size} label={name} />;
+  return <Face seed={f.seed} {...faceProps(f.face)} size={size} label={name} state={state} />;
 }
 
 const FACE_STATE: Record<CrewState, FaceState> = { needs: "needs", failed: "idle", working: "working", queued: "working", waiting: "idle", done: "idle" };

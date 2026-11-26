@@ -673,7 +673,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
               <Icon name="back" size={20} />
             </button>
           )}
-          <AgentFace crew={crew} agent={chat.agent.key} name={chat.agent.name} size={32} />
+          <AgentFace crew={crew} agent={chat.agent.key} name={chat.agent.name} size={32} state={chat.state?.kind === "working" ? "working" : needsOwner(chat.state) ? "needs" : "idle"} />
           <span className="conv-who">
             <span className="conv-name" title={chat.title}>
               {shortTitle(chat.title)}

@@ -111,10 +111,11 @@ When the owner (or the chief of staff for them) asks for an app that doesn't exi
    private repo, never the product repo), start from the app starter, build to the mockup and the app standards
    ("Code changes to apps"), list the app's critical paths (reads of the owner's data, sign-in, public intake, outbound
    sends) as sensitive paths in its code review rules, and publish with `aidenhq publish`; done when it is merged.
-2. **Who builds.** With the design module on (`fleet_catalog`), `task_create` for the UI/UX Designer (`ui-designer`) with
-   what the app is for, who uses it, its screens and the build brief: it makes the mockup and delegates the one build to
-   an Engineer from its own task. Without it, `task_delegate` the build brief to the Engineer.
-3. **Run.** When the Engineer reports the merge, create the app from that repo (`app_create`, below), check it with
+2. **Who builds.** With the design module on (`fleet_catalog`), `task_delegate` to the UI/UX Designer (`ui-designer`)
+   with what the app is for, who uses it, its screens and the build brief: a child of this request, so its finish wakes
+   you here. It makes the mockup and delegates the one build to an Engineer from its own task. Without it,
+   `task_delegate` the build brief to the Engineer.
+3. **Run.** When the build is merged (the designer's task, or the Engineer's, reports it), create the app from that repo (`app_create`, below), check it with
    `app_status`, `app_check` and `app_view`, and answer with its working link.
 
 ## Other app tasks

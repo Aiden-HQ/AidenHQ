@@ -1253,7 +1253,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     if (!a.teammate) continue;
     // A default name a hidden agent (a local one, a team member) already has: the teammate goes by its key until renamed.
     // Two teammates' names are the owner's to settle, so that collision fails below.
-    const hidden = Object.fromEntries(Object.entries<Obj>(paperclip.agents).filter(([k, o]) => !o.teammate || k === key));
+    const hidden = Object.fromEntries(Object.entries<{ name: string; teammate?: unknown }>(paperclip.agents).filter(([k, o]) => !o.teammate || k === key));
     let bad = teammateNameProblem(a.name, key, paperclip.agents);
     const clash = instance.overrides?.agents?.[key]?.name === undefined && !teammateNameProblem(a.name, key, {}) && teammateNameProblem(a.name, key, hidden);
     if (clash) {

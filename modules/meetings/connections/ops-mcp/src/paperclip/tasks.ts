@@ -137,15 +137,15 @@ export class TaskService {
   }
 
   /** Unreported problems, marked reported as they are handed out. */
-  takeProblems(): { issue_id: string; issue_ref?: string; comment: string }[] {
-    const out: { issue_id: string; issue_ref?: string; comment: string }[] = [];
+  takeProblems(): { issue_id: string; issue_ref?: string; comment_id: string; comment: string }[] {
+    const out: { issue_id: string; issue_ref?: string; comment_id: string; comment: string }[] = [];
     const rows = this.db.prepare("SELECT * FROM external_tasks WHERE status = 'open' AND payload_json LIKE '%\"reported\":false%'").all() as unknown as ExternalTaskRow[];
     for (const row of rows) {
       const payload = JSON.parse(row.payload_json) as Record<string, unknown> & { problems?: { comment_id: string; message: string; reported: boolean }[] };
       for (const p of payload.problems ?? []) {
         if (p.reported || !row.issue_id) continue;
         p.reported = true;
-        out.push({ issue_id: row.issue_id, issue_ref: row.issue_ref ?? undefined, comment: p.message });
+        out.push({ issue_id: row.issue_id, issue_ref: row.issue_ref ?? undefined, comment_id: p.comment_id, comment: p.message });
       }
       this.db.prepare("UPDATE external_tasks SET payload_json = ? WHERE marker = ?").run(JSON.stringify(payload), row.marker);
     }

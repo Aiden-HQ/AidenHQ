@@ -98,7 +98,7 @@ line in the files this phase touches. Re-find each symbol on main before editing
   compiled, so the onboarding card's rename field holds its value (component state + sessionStorage) and files it
   once the module change reads `applied`. One extra apply, only when the name differs from the default.
 - **D11. Set up next / Later** are stored per account in the board store's `meta` table under key
-  `teammates:<accountId>`, as JSON `{first?: string, next: string[], later: string[]}` (agent keys). `first` is the
+  `teammates:<accountId>`, as JSON `{first?: string, next: string[], later: string[]}` (teammate refs `<id>:<key>`, Task 6). `first` is the
   teammate the owner chose to set up first, written when they press "Set up <name>", so a reload mid-setup reopens that
   teammate's setup even once it is on the team. The welcome pre-queues one
   suggestion (marked "Suggested for you"): the first catalog teammate that is neither the one being set up nor already
@@ -121,8 +121,8 @@ line in the files this phase touches. Re-find each symbol on main before editing
 ## File structure
 
 **Create**
-- `services/board/src/teammates.ts`: the hiring list (`GET /api/teammates`), start (`POST /api/teammates/<key>/start`),
-  trial status (`GET /api/teammates/<key>/trial`), per-account queue (`GET|PUT /api/teammates/queue`), and the
+- `services/board/src/teammates.ts`: the hiring list (`GET /api/teammates`), start (`POST /api/teammates/<ref>/start`),
+  trial status (`GET /api/teammates/<ref>/trial`), per-account queue (`GET|PUT /api/teammates/queue`), and the
   `start` block for Home.
 - `services/board/web/src/TeammateSetup.tsx`: the one setup sequence (enable → apply → flows → routines → trial → name).
 - `services/board/web/src/Hire.tsx` + `hire.css`: `#/team/hire`, the hiring page, and its describe flow.
@@ -304,6 +304,7 @@ create `modules/intake/skills/look-back/SKILL.md`, modify `modules/intake/README
 export interface HireRow {
   key: string; name: string; job: string; sample: string; description: string; department: string;
   module: string; id: string;            // id: "name" or "name@marketplace" (D1)
+  ref: string;                           // "<id>:<key>": the one handle for a selection (below)
   marketplace: string; browse: boolean; onTeam: boolean;
   face: { src: string } | { kit: FaceKit } | null;  // roster shape; browse rows: a validated kit only, never a file
   requires: string[];                    // modules turned on with it (the Advanced disclosure)
@@ -311,22 +312,30 @@ export interface HireRow {
 }
 export function teammateRoutes(d: { pc: Paperclip; store: Store; sources: () => Sources; flows: SetupFlowPoint[]; facesDir: string }): SetupRoute[];
 ```
+- **A selection is a `ref`, never a bare key.** Two marketplaces may both list an agent `assistant`, so everything that
+  carries a chosen teammate (`first`, the queue, `?setup=`, the start and trial routes, the trial record) carries
+  `ref = "<id>:<key>"` (the qualified module id, D1, then the agent key; `:` is in neither regex). The server parses it
+  back into `{id, key}` and answers 404 for a ref no catalog row has.
 - `GET /api/teammates` → `{ rows: HireRow[]; first: string | null }`. Rows come from catalog `teammates` (A1 contract) across
-  every entry, official first, then marketplaces A→Z. `first` = the key of the available teammate (not on the team; browse rows
+  every entry, official first, then marketplaces A→Z. `first` = the ref of the available teammate (not on the team; browse rows
   included) with the lowest `first`. When none declares one, the first available teammate alphabetically by `job`;
   when everyone is hired, `null`, and the first screen is skipped.
-- `POST /api/teammates/<key>/start` (owner only, after the module is applied): resumes the D9 routines with
+- `POST /api/teammates/<ref>/start` (owner only, after the module is applied): resumes the D9 routines with
   `setRoutinePaused(pc, t, false)` (only `status === "paused"` ones), then runs each D8 trial routine once with
-  `pc.request("POST", "/api/routines/<id>/run", { source: "manual" })`. It records
-  `meta("trial:<key>") = {at, runs: [{routine, issue}]}`. Returns `{ resumed: string[]; trials: string[] }`. Calling it
-  again resumes but doesn't rerun, unless the recorded trial is `failed` (then it reruns), so Retry is idempotent.
+  `pc.request("POST", "/api/routines/<id>/run", { source: "manual" })`. **Before** running, it reserves the trial with an
+  insert-if-absent of `meta("trial:<ref>") = {at, runs: []}` (one SQLite statement: of two concurrent calls only one
+  wins, and the other resumes only); each run's issue is then added to `runs`. Returns `{ resumed: string[]; trials: string[] }`.
+  Calling it again resumes but doesn't rerun while a reservation stands, so a lost response or a board restart never
+  starts the trial twice. Only a `failed` trial reruns (Retry): a run whose task failed, or a reservation still without
+  runs after 10 minutes (the board died between reserving and running). Before any rerun it reconciles: a run of that
+  routine Paperclip accepted since `at` (its routine runs list) is recorded into `runs` instead of being started again.
   Body `{ trial?: boolean }`: `false` resumes only (the client sends it when a required connection was skipped).
-- `GET /api/teammates/<key>/trial` → `{ state: "none" | "running" | "done" | "failed"; found: { identifier: string; title: string; labels: string[] }[] }`.
+- `GET /api/teammates/<ref>/trial` → `{ state: "none" | "running" | "done" | "failed"; found: { identifier: string; title: string; labels: string[] }[] }`.
   State comes from each run's task (kernel task state). `found` = open tasks created by the trial routines' agents
   since `at` (Paperclip issue list filtered by `createdByAgentId` and `createdAt`), at most 10. Confirm in Paperclip's
   `routines/:id/run` answer which field carries the run's issue, and use that one.
-- `GET /api/teammates/queue` → `{ first?: string; next: string[]; later: string[] }`. `PUT` with the same body (each ≤ 20 keys,
-  `AGENT` regex). Stored per account (D11).
+- `GET /api/teammates/queue` → `{ first?: string; next: string[]; later: string[] }`. `PUT` with the same body (each ≤ 20 refs,
+  each `<id>:<key>` with `id` matching `NAME_Q` and `key` the `AGENT` regex). Stored per account (D11).
 - `homeStart(accountId): Home["start"]` (Task 9).
 
 - [ ] Map D9 from compiled routines (`agent`) plus catalog (`agents`, `requires`, `teammates`): the requires-closure
@@ -432,8 +441,8 @@ Screen **reach** (V3NewInstall-reach): heading "Where should your team reach you
       The old dots bar is replaced by `Stepper`.
 
 Home **day one** (V3NewInstall-home): `GettingStarted` sits above Home's sections. It shows the Stepper (`current` 2) "Step 3 of 3 ·
-Your home" only during the welcome session (sessionStorage), then the Next up card ("Set up <name>" → `#/team/hire?setup=<key>`;
-"Later" moves the key to `later`), then the "More your team can do" row of faces with "See everyone →" to
+Your home" only during the welcome session (sessionStorage), then the Next up card ("Set up <name>" → `#/team/hire?setup=<ref>`;
+"Later" moves the ref to `later`), then the "More your team can do" row of faces with "See everyone →" to
 `#/team/hire`. The first result is Home's own world/team blocks; nothing is duplicated.
 
 - [ ] Verify with the mock API at all widths (final section).
@@ -441,7 +450,7 @@ Your home" only during the welcome session (sessionStorage), then the Next up ca
 ### Task 10: Hiring page `#/team/hire`
 
 **Files:** Create `services/board/web/src/Hire.tsx`, `hire.css`. Modify `App.tsx`: phase 2's `#/team/hire` route
-renders `Hire`; query `?setup=<key>` opens that row's setup, and `?install=<id>` that id's.
+renders `Hire`; query `?setup=<ref>` opens that row's setup, and `?install=<id>` that id's.
 
 **Interfaces**
 - Consumes: `GET /api/teammates` (`HireRow[]`), `TeammateSetup`, and kit `Face`, `TeammateChip`, `Disclosure`, `DetailPane`, `SectionCard`, `Segmented`.
@@ -538,7 +547,7 @@ skill). Modify `services/shared/page-kit.css`, `services/board/web/src/ModuleVie
         the owner's own words for `fleet_control` `resume_routine`. Confirm that a board `/answer` comment passes
         `relayableWords` (`services/board/src/fleet.ts`): the owner's account, no `<!-- aidenhq-` marker. If it
         doesn't, that is a defect to fix in `relayableWords` for wait-bound answers, in this PR.
-      - **A teammate:** the option is "Set up <Name>", and the reply links `#/team/hire?setup=<key>`. It never installs
+      - **A teammate:** the option is "Set up <Name>", and the reply links `#/team/hire?setup=<ref>`. It never installs
         anything itself.
       - **Triggers:** the welcome task (D12) and the end of each daily brief.
       - **Sources of ideas:** the owner's Set-up-next queue (from the board's catalog, never guessed), paused routines
@@ -636,7 +645,7 @@ skill). Modify `services/shared/page-kit.css`, `services/board/web/src/ModuleVie
       Also run CI's suites the change touches: `scripts#2`, `kernel`, `services/board`, `modules/tasks/connections/tasks-mcp`,
       telegram, slack-live, owner-channel.
 - [ ] UI with the mock API (`node web/dev/mock-api.ts` + `npm run dev:web`). The mock gets fixtures for `/api/teammates`
-      (official + one `acme` browse row, one on-team), `/api/teammates/<key>/start|trial` (trial goes running → done
+      (official + one `acme` browse row, one on-team), `/api/teammates/<ref>/start|trial` (trial goes running → done
       with 4 found after 3 s; `?empty=1` → none found), `/api/teammates/queue`, `/api/notify/test` (sent; `?slow=`
       delays), `/api/welcome` (no `wizard`), Home `start`, `builder` on `/api/teammates`, and the builder's chat
       answering a description with the form `[Extend assistant, Install twin@acme, Build new]`. Turn the wizard on with

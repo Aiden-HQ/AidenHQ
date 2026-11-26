@@ -70,7 +70,7 @@ export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile
             ‹
           </button>
         )}
-        <AgentFace crew={crew} agent={agent.id} name={agent.name} size={32} />
+        <AgentFace crew={crew} agent={agent.id} name={agent.name} size={32} state={replying ? "working" : "idle"} />
         <span className="conv-who">
           <span className="conv-name">{agent.name}</span>
           <span className="conv-title muted small">{replying ? "working…" : "fast chat"}</span>

@@ -52,8 +52,8 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
    - Call `task_handoff` on your part: the wait now sits on the owner's send/edit. Do not reopen the part or post another sweep comment while that draft is pending, except the one delivery comment step 2 makes.
 
 4. **When the owner replies in your part** (you are woken by their comment):
+   - **Not now**, or any words that drop it ("cancel", "don't send it", "skip", "no"): drop the chase with one comment on your part. Never argue.
    - **Send**, or **any other text** (the owner's edit: that text is the new draft, used exactly): read your part's comments first and drop the draft, without filing it, when one since the draft reports delivery or says the chase was dropped; otherwise check the source and, when it shows delivery, say so on your part, mark it delivered as in step 2 and drop the draft instead. When the read is incomplete or fails, file no draft and report it. Otherwise resolve the person's DM with the Slack read tools and call `slack_send_message_draft` with the draft text (theirs, for an edit), then comment that it's in their Slack drafts. They press send themselves.
-   - **Not now**: drop the chase with one comment on your part. Never argue.
    - If the thread shows the item was delivered, say so on your part and mark it delivered as in step 2.
    - Finish with `task_handoff` on your part.
 

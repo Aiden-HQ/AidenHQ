@@ -215,7 +215,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
         if (sameQuestion && (!detail || open.detail === detail)) return { sent: "same", to: open.to, ...(open.until ? { until: open.until } : {}) };
         // A retry without the draft is the same ask. The same question about a revised draft is a new ask, never a retry: the open one stands with the draft its
         // recipient sees, so the caller is refused (nothing sent) rather than having its answer bound to the old text.
-        if (sameQuestion) return { sent: "open", to: open.to };
+        // A revised draft under reworded text is refused the same way: the owner answers only with the draft their ask shows.
+        if (sameQuestion || (detail && open.detail !== detail)) return { sent: "open", to: open.to };
         // An `asked` replay that may go to the owner directly was already delivered (notify): refusing it would fail a call whose
         // question the owner has, and recording it would replace the live ask. The live ask stands and the caller is told the
         // owner has the newer question too, so the agent can read that reply rather than lose it.
