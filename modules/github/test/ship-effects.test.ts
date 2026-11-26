@@ -657,10 +657,6 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   const unread = await run(true, false, "in_progress", 403);
   assert.equal(unread.calls.filter((c) => c.startsWith("PUT")).length, 0, unread.calls.join("\n"));
   assert.equal(unread.outcomes.length, 0, "waiting, not settled");
-  // The advisory design review alone is no CI: still waiting, never merged on it.
-  const design = await run(true, false, "in_progress", 403, [{ name: "design-review", status: "completed", conclusion: "success" }]);
-  assert.equal(design.calls.filter((c) => c.startsWith("PUT")).length, 0, design.calls.join("\n"));
-  assert.equal(design.outcomes.length, 0, "waiting, not settled");
 });
 
 test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {

@@ -45,7 +45,6 @@ import { candidatesOf, readSiblings } from "./siblings.ts";
 import { withBranch } from "./branch-lock.ts";
 import { notePrTask } from "./pr-tasks.ts";
 
-import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
 import { copyBoxBundle, publishRef } from "./aidenhq-sdk/box-bundle.ts";
 import { APPLY_PATHS } from "./aidenhq-sdk/instance-paths.ts";
@@ -861,8 +860,6 @@ export function createService(o: Options) {
       flow.pushed(s.slug, n, sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
     }
     flow.checksStarted(s.slug, n, sha, undefined, a.workspace);
-    // A fleet-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
-    if (same(s.org, o.fleetOrg)) void designReviews?.fileDesignReview({ repo: s.slug, number: n, head: sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
   }
   /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
   async function run1(rec: { id: string; kind: string; args: any; task?: string; identifier?: string; tier?: number }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
@@ -1541,9 +1538,6 @@ export function createService(o: Options) {
     if (!r.ok) throw Object.assign(new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`), { status: r.status });
     return j;
   }
-  // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
-  // queue waits on for its verdict.
-  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, gh: (m, p, b) => gh(m, p, b, { background: true }), log });
   // The managed repos: the fleet org's, the product repo and the instance repo.
   async function managedRepos(): Promise<string[]> {
     const out = new Set([o.productRepo, o.instanceRepo].filter(Boolean).map((r) => r!.toLowerCase()));
@@ -2003,9 +1997,7 @@ export function createService(o: Options) {
     startMerges: () => merges.start(),
     /** The release train (train.ts): only with the product and instance repos set. */
     startReleases: () => train?.start(),
-    /** The superseded design reviews' sweep (design-review.ts). */
-    startDesignReviews: () => startDesignReviewSweep(designReviews, { log }),
-    designReviews, train, managedRepos: () => (access.connected() ? managedRepos() : Promise.resolve([] as string[])),
+    train, managedRepos: () => (access.connected() ? managedRepos() : Promise.resolve([] as string[])),
     /** The change feed this service's train reads its product tip from. */
     useFeed: (f: Pick<Feed, "tip">) => { feed = f; },
     /** Held writes run once GitHub is connected again: checked every 30 s. */

@@ -374,8 +374,7 @@ without the owner reaches Telegram once a day from 21:00.
   queue that finishes during the run sets the task's status only after the run ends. A fork's or anyone else's head
   goes to the AI reviewer; `.github/` changes, sensitive apps and missing checks are cards and red checks a comment, as
   before, once the run is over. Card-approved merges, and everything in the product and instance repos, merge one at a time per
-  repository (merges.ts), each only at the head its record bound, once every named check has passed there. The `design-review` status is advisory:
-  it never holds a merge (owner, 2026-11-23). In either queue a red check whose Actions job never judged the commit
+  repository (merges.ts), each only at the head its record bound, once every named check has passed there. In either queue a red check whose Actions job never judged the commit
   (cancelled, timed out, failed to start, or `code-review`'s own "failed"/"incomplete" comment on that head) is re-run
   once per check and head before the merge fails; a second failure, or any real failure beside it, is final. The re-run
   runs as the owner's GitHub sign-in (`repo` covers it).

@@ -9,7 +9,7 @@
 // for a new merge at its new head. Missing evidence (no checks, a truncated page of checks, the base's aggregate gate
 // check not yet on the head) never counts as passing.
 
-import { DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 /** A check on a head, by name (service.ts checksAt, checks.ts namedChecks): `kind` and `rank` are what pick the newest of a name. */
@@ -64,46 +64,6 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
 }`;
 
 const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
-
-/**
- * Files that change what people see: styles, markup and component files, the usual UI folders, the vendored design system,
- * and server-rendered page code by its name (render, styles, layout, view, page, template). Conservative: a false match
- * costs a design review (advisory: it never holds a merge), a miss leaves a page unreviewed.
- */
-const UI_EXT = /\.(css|scss|sass|less|html?|tsx|jsx|vue|svelte|astro|hbs|handlebars|ejs|njk|pug|erb|liquid|mustache)$/i;
-const UI_DIR = /(^|\/)(web|public|templates|views|static|pages|components|layouts|design-system)\//i;
-const UI_PAGE_CODE = /(^|\/)([^/]*[-_.])?(render|styles?|layouts?|views?|pages?|templates?)\.(m?[jt]s|cjs)$/i;
-const isUiFile = (f: string) => UI_EXT.test(f) || UI_DIR.test(f) || UI_PAGE_CODE.test(f);
-
-/** Whether the PR changes UI files. A file list cut off at the first page counts as UI; no list at all doesn't. */
-export function prTouchesUi(pr: Json) {
-  const files = pr?.files?.nodes;
-  if (!Array.isArray(files)) return false;
-  if (pr.files.pageInfo?.hasNextPage) return true;
-  return files.some((f: Json) => isUiFile(f.path ?? ""));
-}
-
-/** The design-review check on a rollup: "success", "failure", "pending" or "missing". */
-function designReview(rollup: Json) {
-  const n = (rollup?.contexts?.nodes ?? []).find((n: Json) => (n.name ?? n.context) === DESIGN_REVIEW_CHECK);
-  if (!n) return "missing";
-  const v = contextStatus(n);
-  return v === "SUCCESS" ? "success" : FAILING.has(v as string) ? "failure" : "pending";
-}
-
-/**
- * Why an open design-review task no longer needs its reviewer, from its marker ({ head }) and the PR as GitHub returns it: its
- * head moved on, the PR merged or closed, or a verdict is on that exact head already. Undefined while it is still the one live
- * review (or the PR can't be read: unknown is never a reason to close).
- */
-export function supersededDesignReview(marker: Json, pr: Json) {
-  if (!marker || !pr) return undefined;
-  // A merged PR's review stays open: the verdict is advisory, and a defect on the shipped head becomes a follow-up fix.
-  if (pr.state === "CLOSED") return "its PR was closed";
-  if (pr.headRefOid && pr.headRefOid !== marker.head) return `its PR has moved on to head \`${String(pr.headRefOid).slice(0, 12)}\``;
-  const dr = designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
-  return dr === "success" || dr === "failure" ? "its verdict is on that head already" : undefined;
-}
 
 /**
  * The aggregate gate check a repository's CI may end with (the product's ci.yml `ci-required`): it appears only once the jobs it
@@ -167,7 +127,7 @@ export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict;
  * the record is the review. With `ship` (an adopted PR) it never fails what a round can move: a conflict is a repair, red is a
  * fix, a missing review is a wait; it judges only the required checks, needs code review's pass where code review gates the
  * repo, and an approval on the head only where GitHub asks for one. A PR on a non-default base waits for ship, said each pass and
- * never stored: on the PR whose branch it stands on (a stack, which ship retargets once that PR merges), else as unsupported. The design review is advisory: it never holds a merge.
+ * never stored: on the PR whose branch it stands on (a stack, which ship retargets once that PR merges), else as unsupported.
  */
 export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk = false): { do: Action; why?: string } {
   const pr = data?.repository?.pullRequest;

@@ -3,9 +3,7 @@
 // and its web-vitals). For each path it takes screenshots at phone, tablet and desktop widths in light and dark, runs an
 // accessibility audit (WCAG 2.2 AA) in each mode, measures web vitals, collects page and console errors and failed loads,
 // and checks the layout (horizontal overflow, small tap targets, tiny text). With --baseline <dir of an earlier run> it also writes pixel diffs and
-// before|after pictures, and report.md opens with "Look at these first": the pages that changed, biggest change first. Both runs
-// pin the page's clock to one instant (the baseline's, when there is one) so "2m ago" reads the same in both pictures.
-// Writes <out>/report.md (read this first) and report.json; exits 1 when it finds blocking problems.
+// before|after pictures. Writes <out>/report.md (read this first) and report.json; exits 1 when it finds blocking problems.
 //
 //   ui-review http://127.0.0.1:8080 --out review                  (the app's feature-map.json, or "/" without one)
 //   ui-review http://127.0.0.1:8080 --paths /,/items --out review  (an explicit list wins over the map)
@@ -17,15 +15,13 @@
 // filtered view, an open detail sheet or a deep link is seen without naming it; --paths replaces the list, and an app
 // without a map is reviewed at "/" as before.
 //
-// Options: --widths 390,768,1280  --modes light,dark  --full (the whole page: for an app that scrolls inside a container, viewport-sized shots stepping through it, up to 6)  --palettes a,b (adds ?palette=&mode=,
+// Options: --widths 390,768,1280  --modes light,dark  --full (whole-page screenshots)  --palettes a,b (adds ?palette=&mode=,
 // for pages that read them, like the catalog)  --wait-text "<text>" (wait for it before each screenshot)  --no-routes (skip
 // the route check: by default the header brand on every page must go home to the top, every in-app link must render on
-// click, Back/Forward and reload (never the app's own "not found" view, an empty page or a page error), and every visible
-// button must visibly act, confirmed by a second click after a fresh load)
+// click, Back/Forward and reload, and every visible button must visibly act)
 // --commit <sha> (the commit the app was built from; default: the current folder's git HEAD and working tree).
 //
-// Non-blocking notes, never a failure: headless LCP and CLS (a headless run's timings say little) and text under 12px. Two more
-// report lines per page: "One system" (how many distinct button shapes, border radii,
+// Two non-blocking report lines per page, never a failure: "One system" (how many distinct button shapes, border radii,
 // card styles and heading sizes the page uses, and how many boxes sit more than 2 deep) and "Copy" (filler words, invented
 // figures, exclamation marks and chat residue in the rendered text; the word lists are in ui-review-copy.json).
 //
@@ -86,23 +82,6 @@ function source() {
 }
 const at = source();
 mkdirSync(out, { recursive: true });
-// One instant for the page's clock: the baseline's when it has one, else now. Both runs of a before|after pair then show "2m ago"
-// alike. agent-browser 0.41.2 has no clock command, so an init script (an env var: every session of this run gets it, in
-// every document, before the app's own scripts) pins Date and starts the tracker READY reads: requests in flight and DOM changes.
-const baselineReport = baseline && existsSync(join(baseline, "report.json")) ? JSON.parse(readFileSync(join(baseline, "report.json"), "utf8")) : null;
-const frozenAt = baselineReport?.frozenAt ?? new Date().toISOString();
-const freezeFile = join(out, ".init.js");
-writeFileSync(freezeFile, `(() => {
-  const T = ${Date.parse(frozenAt)};
-  window.Date = new Proxy(Date, { construct: (d, a, nt) => Reflect.construct(d, a.length ? a : [T], nt), apply: (d) => new d(T).toString(), get: (d, k) => k === "now" ? () => T : Reflect.get(d, k) });
-  const u = (window.__uiReview = { pending: 0, started: 0, changed: false }), end = () => { u.pending--; };
-  const f = window.fetch;
-  window.fetch = function (...a) { u.pending++; u.started++; return f.apply(this, a).finally(end); };
-  const send = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function (...a) { u.pending++; u.started++; this.addEventListener("loadend", end, { once: true }); return send.apply(this, a); };
-  new MutationObserver(() => { u.changed = true; }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
-})();`);
-process.env.AGENT_BROWSER_INIT_SCRIPTS = freezeFile;
 
 /** A PNG with an `aidenhq` text chunk after IHDR: the capture's stamp (JSON, ASCII-escaped). */
 function stampPng(file, stamp) {
@@ -151,28 +130,9 @@ const copyFindings = (texts) => {
 const AB = process.env.AGENT_BROWSER || "agent-browser";
 // The image's pinned Chrome, when the shell lost the image's environment (else agent-browser downloads a Chrome of its own).
 if (!process.env.AGENT_BROWSER_EXECUTABLE_PATH && existsSync("/opt/chrome/chrome")) process.env.AGENT_BROWSER_EXECUTABLE_PATH = "/opt/chrome/chrome";
-const ab = (...a) => execFileSync(AB, a, { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"], timeout: 60000 });
+const ab = (...a) => execFileSync(AB, a, { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] });
 const abJson = (...a) => { const r = JSON.parse(ab(...a, "--json")); if (!r.success) throw new Error(r.error || `${a[0]} failed`); return r.data; };
 const run = (expr) => abJson("eval", expr).result;
-const firstLine = (e) => String(e.stderr || e.message).split("\n")[0].slice(0, 160);
-
-// Readiness, never network idle (a page that polls or streams never idles): the page is done when it has loaded, its fonts are
-// in, no fetch or XHR is in flight and no new resource or DOM change has arrived for 200 ms, at most 1.5 s (the init script
-// at the top tracks requests and changes from the page's first line). Every wait in this script is this one.
-const READY = `/*routes:ready*/(() => new Promise((done) => {
-  const t0 = performance.now();
-  let seen = -1, quiet = t0;
-  const tick = () => {
-    const now = performance.now(), n = performance.getEntriesByType("resource").length;
-    if (n !== seen || window.__uiReview.changed || window.__uiReview.pending > 0 || document.readyState !== "complete" || document.fonts.status === "loading") { seen = n; quiet = now; window.__uiReview.changed = false; }
-    if (now - quiet >= 200 || now - t0 >= 1500) done("ready"); else setTimeout(tick, 25);
-  };
-  tick();
-}))()`;
-/** Wait for the page to be ready (see READY); a click that replaced the document gets one more wait. Never throws. */
-function settleMain() {
-  try { run(READY); } catch { try { ab("wait", "--load", "domcontentloaded"); run(READY); } catch {} }
-}
 
 // Layout checks in the page: horizontal page scroll, text under 12px, and how many controls are under our 44px phone rule
 // (axe's target-size covers the WCAG 24px floor, with its spacing exception).
@@ -188,118 +148,65 @@ const LAYOUT = `(() => {
   return JSON.stringify({ overflow: Math.max(0, overflow), wide, small, tinyText: texts, failed });
 })()`;
 
-// The app's main scrolling element: the largest visible element that scrolls inside the page (overflow auto/scroll with more
-// content than room), as a board or dashboard does in its shell. Null when the page itself scrolls.
-const SCROLLER = `/*scroller*/(() => {
-  document.querySelectorAll("[data-ui-review-scroller]").forEach((e) => e.removeAttribute("data-ui-review-scroller"));
-  let best = null, area = 0;
-  for (const e of document.body.querySelectorAll("*")) {
-    const s = getComputedStyle(e), r = e.getBoundingClientRect();
-    if (!/auto|scroll/.test(s.overflowY) || e.scrollHeight <= e.clientHeight + 1 || r.width <= 0 || r.height <= 0 || s.visibility === "hidden") continue;
-    if (r.width * r.height > area) { best = e; area = r.width * r.height; }
-  }
-  if (!best || area < 0.25 * innerWidth * innerHeight) return "null";
-  best.setAttribute("data-ui-review-scroller", "");
-  return JSON.stringify({ height: best.scrollHeight, view: best.clientHeight });
-})()`;
-const SCROLL_TO = (top) => `/*scroll-to*/(() => { const e = document.querySelector("[data-ui-review-scroller]"); if (e) e.scrollTop = ${top}; return "ok"; })()`;
-const MAX_STEPS = 6;
-/** Screenshots of one page state: one shot, or with --full the whole page (an inner scroller: viewport-sized steps through it). Calls each(name, wholePage) right after each, while the page still shows it. */
-function capture(slug, w, mode, url, each) {
-  const stamp = (name) => stampPng(join(out, name), { ...at, url, width: w, mode, takenAt: new Date().toISOString() });
-  const scroller = full ? JSON.parse(run(SCROLLER)) : null;
-  if (!scroller) {
-    const name = `${slug}-${w}-${mode}.png`;
-    ab("screenshot", join(out, name), ...(full ? ["--full"] : []));
-    stamp(name);
-    each(name, full);
-    return;
-  }
-  const steps = Math.min(MAX_STEPS, Math.ceil(scroller.height / scroller.view));
-  for (let i = 0; i < steps; i++) {
-    run(SCROLL_TO(i * scroller.view));
-    ab("wait", "150");
-    const name = `${slug}-${w}-${mode}${i ? `-s${i + 1}` : ""}.png`;
-    ab("screenshot", join(out, name));
-    stamp(name);
-    each(name, false); // the diff takes its own picture of this same scroll position
-  }
-  run(SCROLL_TO(0));
-}
-
-function compare(name, wholePage) {
+function compare(name) {
   const before = join(baseline, name), after = join(out, name);
   if (!existsSync(before)) return null;
   const r = { diff: `diff-${name}`, compare: `compare-${name}` };
-  try {
-    const lines = ab("diff", "screenshot", "--baseline", before, "-o", join(out, r.diff), ...(wholePage ? ["--full"] : [])).trim().split("\n");
-    r.diffResult = lines[0].replace(/^\W+/, "");
-    const px = /(\d+) different \/ (\d+) total/.exec(lines.join("\n"));
-    if (px) r.diffPct = Math.round((1e4 * Number(px[1])) / Number(px[2])) / 100;
-  } catch (e) { r.diffResult = `diff failed: ${String(e.stderr || e.message).split("\n")[0]}`; }
+  try { r.diffResult = ab("diff", "screenshot", "--baseline", before, "-o", join(out, r.diff), ...(full ? ["--full"] : [])).trim().split("\n").pop(); } catch (e) { r.diffResult = `diff failed: ${String(e.stderr || e.message).split("\n")[0]}`; }
   try {
     execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-i", before, "-i", after, "-filter_complex", "[0][1]scale2ref=oh*mdar:ih[a][b];[a]pad=iw+16:ih:0:0:white[a2];[a2][b]hstack", join(out, r.compare)], { stdio: "ignore" });
   } catch { delete r.compare; }
   return r;
 }
 
-// A browser left running by an earlier run would keep that run's pinned clock: start this run's browser afresh.
-try { ab("close"); } catch {}
-const report = { base, at: new Date().toISOString(), frozenAt, featureMap: map, pages: [] };
+const report = { base, at: new Date().toISOString(), featureMap: map, pages: [] };
 const blocking = [];
-const notes = []; // not failures: what a headless run can't judge (LCP, CLS) and what reads small
 const variants = palettes.length ? palettes : [null];
 for (const path of paths) for (const palette of variants) {
   const slug = (path === "/" ? "home" : path.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") || "home").slice(0, 40) + (palette ? `-${palette}` : "");
   const page = { path, palette, slug, shots: [], a11y: {}, layout: {}, vitals: null, errors: [] };
-  const where = `${path}${palette ? ` [${palette}]` : ""}`;
   report.pages.push(page);
   for (const mode of modes) {
     let url = path === "/" ? base : new URL(path, base).href; // "/" is the base URL itself (it may be a page)
     if (palette) { const u = new URL(url); u.searchParams.set("palette", palette); u.searchParams.set("mode", mode); url = u.href; }
     for (const w of [...widths].sort((a, b) => b - a)) {
-      // A page that fails is that page's finding; the run goes on with the next.
-      try {
       ab("set", "viewport", String(w), w < 600 ? "844" : "900");
       ab("set", "media", mode);
-      ab("open", "about:blank");
       ab("open", url);
-      settleMain();
+      ab("wait", "--load", "networkidle");
       if (waitText) ab("wait", "--text", waitText);
-      capture(slug, w, mode, url, (name, wholePage) => {
-        const shot = { name, width: w, mode };
-        if (baseline) shot.compare = compare(name, wholePage);
-        page.shots.push(shot);
-      });
+      const name = `${slug}-${w}-${mode}.png`;
+      ab("screenshot", join(out, name), ...(full ? ["--full"] : []));
+      stampPng(join(out, name), { ...at, url, width: w, mode, takenAt: new Date().toISOString() });
+      const shot = { name, width: w, mode };
+      if (baseline) shot.compare = compare(name);
+      page.shots.push(shot);
       const lay = JSON.parse(run(LAYOUT));
       page.layout[`${w}-${mode}`] = lay;
-      if (lay.overflow > 1) blocking.push(`${where} ${w}px ${mode}: page scrolls sideways by ${lay.overflow}px (${lay.wide.join(", ") || "element not found"})`);
-      if (lay.failed.length && w === Math.max(...widths)) blocking.push(`${where} ${mode}: failed loads: ${lay.failed.join(", ")}`);
-      if (lay.tinyText.length) notes.push(`${where} ${w}px ${mode}: text under 12px: ${lay.tinyText.join(", ")}`);
+      if (lay.overflow > 1) blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${w}px ${mode}: page scrolls sideways by ${lay.overflow}px (${lay.wide.join(", ") || "element not found"})`);
+      if (lay.failed.length && w === Math.max(...widths)) blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${mode}: failed loads: ${lay.failed.join(", ")}`);
+      if (lay.tinyText.length) blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${w}px ${mode}: text under 12px: ${lay.tinyText.join(", ")}`);
       if (w === Math.max(...widths)) {
         const a = abJson("a11y", "--tags", "wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa");
         page.a11y[mode] = { violations: a.violations.map((v) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodeCount, targets: v.nodes.slice(0, 5).map((n) => n.target.join(" ")) })), incomplete: a.incomplete.map((v) => v.id) };
-        for (const v of a.violations) if (v.impact === "serious" || v.impact === "critical") blocking.push(`${where} ${mode}: axe ${v.id} (${v.impact}, ${v.nodeCount}x): ${v.help} at ${v.nodes.slice(0, 3).map((n) => n.target.join(" ")).join("; ")}`);
+        for (const v of a.violations) if (v.impact === "serious" || v.impact === "critical") blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${mode}: axe ${v.id} (${v.impact}, ${v.nodeCount}x): ${v.help} at ${v.nodes.slice(0, 3).map((n) => n.target.join(" ")).join("; ")}`);
         if (mode === modes[0]) {
           try {
             const sys = JSON.parse(run(SYSTEM));
             page.system = { buttonShapes: sys.buttons.length, radii: sys.radii.length, cardStyles: sys.cards.length, headingSizes: sys.headings.length, deepBoxes: sys.nested };
             page.copy = copyFindings(sys.texts);
           } catch (e) { page.system = null; page.copy = [`not checked: ${String(e.message).split("\n")[0]}`]; }
-          try {
-            const vt = abJson("vitals", url);
-            page.vitals = { lcp_ms: vt.lcp?.startTime ?? null, cls: vt.cls?.score ?? null, fcp_ms: vt.fcp ?? null, ttfb_ms: vt.ttfb ?? null, inp_ms: vt.inp ?? null };
-            if ((page.vitals.lcp_ms ?? 0) > 2500) notes.push(`${path}: LCP ${Math.round(page.vitals.lcp_ms)} ms (over 2.5 s; a headless run's timing)`);
-            if ((page.vitals.cls ?? 0) > 0.1) notes.push(`${path}: layout shift CLS ${page.vitals.cls} (over 0.1; look at the page loading)`);
-          } catch (e) { notes.push(`${path}: vitals not measured: ${firstLine(e)}`); }
+          const vt = abJson("vitals", url);
+          page.vitals = { lcp_ms: vt.lcp?.startTime ?? null, cls: vt.cls?.score ?? null, fcp_ms: vt.fcp ?? null, ttfb_ms: vt.ttfb ?? null, inp_ms: vt.inp ?? null };
+          if ((page.vitals.lcp_ms ?? 0) > 2500) blocking.push(`${path}: LCP ${Math.round(page.vitals.lcp_ms)} ms (over 2.5 s)`);
+          if ((page.vitals.cls ?? 0) > 0.1) blocking.push(`${path}: layout shift CLS ${page.vitals.cls} (over 0.1)`);
         }
         const consoleErrors = abJson("console").messages.filter((m) => m.type === "error").map((m) => `console: ${m.text}`);
         ab("console", "--clear");
         const errs = [ab("errors").trim(), ...consoleErrors].filter(Boolean).join("\n");
-        if (errs) { page.errors.push(errs.slice(0, 2000)); blocking.push(`${where} ${mode}: page errors: ${errs.split("\n")[0].slice(0, 200)}`); }
+        if (errs) { page.errors.push(errs.slice(0, 2000)); blocking.push(`${path}${palette ? ` [${palette}]` : ""} ${mode}: page errors: ${errs.split("\n")[0].slice(0, 200)}`); }
         ab("errors", "--clear");
       }
-      } catch (e) { blocking.push(`${where} ${w}px ${mode}: could not be reviewed: ${firstLine(e)}`); }
     }
   }
 }
@@ -329,12 +236,8 @@ const ROUTE_LINKS = `/*routes:links*/(() => JSON.stringify([...document.querySel
 const ROUTE_MARK = (href) => `/*routes:mark*/(() => { document.querySelectorAll("[data-ui-review-link]").forEach((e) => e.removeAttribute("data-ui-review-link"));
   const a = [...document.querySelectorAll("a[href]")].find((e) => e.getAttribute("href") === ${JSON.stringify(href)} && e.getBoundingClientRect().width > 0);
   if (a) a.setAttribute("data-ui-review-link", ""); return a ? "ok" : "missing"; })()`;
-// blank: the app's root or its main region has nothing in it (a route that renders nothing).
-const ROUTE_PAGE = `/*routes:page*/(() => { const empty = (e) => !e.innerText.trim() && !e.querySelector("img, svg, canvas, video, iframe, input, textarea, select");
-  const parts = [document.querySelector("#root, #app, #__next, [data-reactroot]"), document.querySelector("main, [role=main]")].filter(Boolean);
-  return JSON.stringify({ at: location.pathname + location.search + location.hash, status: performance.getEntriesByType("navigation")[0]?.responseStatus ?? 0,
-  blank: parts.length ? parts.some(empty) : !(document.body?.innerText || "").trim(),
-  text: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 20000) }); })()`;
+const ROUTE_PAGE = `/*routes:page*/(() => JSON.stringify({ at: location.pathname + location.search, status: performance.getEntriesByType("navigation")[0]?.responseStatus ?? 0,
+  text: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 20000) }))()`;
 // The header's brand: the first header link to "/" that isn't one of the nav links (a nav "Home" doesn't stand in for a
 // dead logo).
 const ROUTE_BRAND_FIND = `[...document.querySelectorAll("header a[href], [role=banner] a[href], [data-slot=sidebar-header] a[href]")].find((a) => a.origin === location.origin && a.pathname === "/" && !a.search && !a.closest("nav, [role=navigation]") && a.getBoundingClientRect().width > 0 && a.getBoundingClientRect().height > 0)`;
@@ -354,7 +257,7 @@ const ROUTE_STATE = `/*routes:state*/(() => {
   // toggle that ticks a box but leaves the markup to React as a dead click.
   const live = [...document.querySelectorAll("input, select, textarea")]
     .map((e) => [e.type, e.checked, e.selectedIndex, e.value].join(":")).join("|");
-  return JSON.stringify({ origin: location.origin, at: location.pathname + location.search + location.hash, scrollY: Math.round(scrollY), focus: label(document.activeElement), html: h + ":" + html.length, live, reqs: window.__uiReview?.started ?? 0 });
+  return JSON.stringify({ origin: location.origin, at: location.pathname + location.search + location.hash, scrollY: Math.round(scrollY), focus: label(document.activeElement), html: h + ":" + html.length, live });
 })()`;
 // Links to the page they are on: visible, same origin, same path and query, not a download, a new tab or a log-out. The
 // header brand is checked on its own, more strictly (it must land at the top of /), so it is left out here.
@@ -385,25 +288,42 @@ function alike(a, b) {
   return A.size + B.size === 0 ? 1 : both / (A.size + B.size - both);
 }
 report.routes = [];
+// Readiness, not network idle: the page is done when it has loaded, its fonts are in, no fetch or XHR is in flight and
+// no new resource has arrived for 200 ms, at most 1.5 s. (Network idle plus 300 ms cost 1.5 s a step; this is ~0.25 s.)
+const ROUTE_READY = `/*routes:ready*/(() => new Promise((done) => {
+  if (!window.__uiReview) {
+    const u = (window.__uiReview = { pending: 0 }), end = () => { u.pending--; };
+    const f = window.fetch;
+    window.fetch = function (...a) { u.pending++; const p = f.apply(this, a); p.then(end, end); return p; };
+    const send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function (...a) { u.pending++; this.addEventListener("loadend", end, { once: true }); return send.apply(this, a); };
+  }
+  const t0 = performance.now();
+  let seen = -1, quiet = t0;
+  const tick = () => {
+    const now = performance.now(), n = performance.getEntriesByType("resource").length;
+    if (n !== seen || window.__uiReview.pending > 0 || document.readyState !== "complete" || document.fonts.status === "loading") { seen = n; quiet = now; }
+    if (now - quiet >= 200 || now - t0 >= 1500) done("ready"); else setTimeout(tick, 25);
+  };
+  tick();
+}))()`;
 const ROUTE_WORKERS = 4;
+const firstLine = (e) => String(e.stderr || e.message).split("\n")[0].slice(0, 160);
 /** One browser session for route checks (its own Chrome, so checks on different pages run side by side). */
 function browserSession(name, execFileP) {
   const env = { ...process.env, AGENT_BROWSER_SESSION: name };
   const ab = (...a) => execFileP(AB, a, { env, encoding: "utf8", maxBuffer: 64 << 20 }).then((r) => r.stdout);
   const run = async (expr) => JSON.parse(await ab("eval", expr, "--json")).data.result;
   const settle = async () => {
-    try { await run(READY); } catch {
+    try { await run(ROUTE_READY); } catch {
       // The click replaced the document under the wait: wait for the new one, then once more.
-      try { await ab("wait", "--load", "domcontentloaded"); await run(READY); } catch {}
+      try { await ab("wait", "--load", "domcontentloaded"); await run(ROUTE_READY); } catch {}
     }
   };
   const look = async () => JSON.parse(await run(ROUTE_PAGE));
-  // From a blank page, so a hash-only move is a fresh load too: an app that routes by hash would otherwise keep its state (an
-  // open panel, an earlier click's marker) from the check before.
-  const open = async (url) => { await ab("open", "about:blank"); await ab("open", url); };
-  const openAt = async (path) => { await open(path === "/" ? base : new URL(path, base).href); await settle(); };
+  const openAt = async (path) => { await ab("open", path === "/" ? base : new URL(path, base).href); await settle(); };
   const ready = async () => { await ab("set", "viewport", String(Math.max(...widths)), "900"); await ab("set", "media", modes[0]); return s; };
-  const s = { name, ab, run, settle, look, open, openAt, ready };
+  const s = { name, ab, run, settle, look, openAt, ready };
   return s;
 }
 async function routeChecks() {
@@ -411,44 +331,6 @@ async function routeChecks() {
   const execFileP = require("node:util").promisify(execFile);
   const main = browserSession("default", execFileP);
   await main.ready();
-  // The app's own "not found" view, fingerprinted once: what loads at a path and at a hash route that can't exist (kept only
-  // when it differs from the home page, so an app that answers every unknown path with home has none). A link that lands on
-  // it, on an empty page or on a page error is broken, however the address moved.
-  const wordsOf = (t) => new Set(t.toLowerCase().split(/[^\p{L}]+/u).filter(Boolean));
-  const missing = [];
-  try {
-    await main.openAt("/");
-    const home = await main.look(), homeWords = wordsOf(home.text);
-    const hash = new URL(base);
-    hash.hash = "#/__ui_review_missing__";
-    for (const [u, stays] of [[new URL("/__ui_review_missing__", base).href, (at) => at.startsWith("/__ui_review_missing__")], [hash.href, (at) => at.endsWith("#/__ui_review_missing__")]]) {
-      await main.open(u);
-      await main.settle();
-      const v = await main.look();
-      // Redirected elsewhere (to a sign-in page, say), or the home page again: not the app's not-found view.
-      if (!stays(v.at) || alike(v.text, home.text) >= 0.9) continue;
-      missing.push({ text: v.text, only: [...wordsOf(v.text)].filter((w) => !homeWords.has(w) && !/^(ui|review|missing)$/.test(w)) });
-    }
-  } catch (e) { report.routesNote = `the app's not-found view wasn't fingerprinted: ${firstLine(e)}`; }
-  const isNotFound = (text) => missing.some((m) => alike(text, m.text) >= 0.85 || (m.only.length >= 2 && m.only.every((w) => wordsOf(text).has(w))));
-  /** What is wrong with the page a click landed on, if anything. */
-  async function brokenView(s) {
-    const v = await s.look(), err = (await s.ab("errors")).trim();
-    await s.ab("errors", "--clear");
-    if (err) return `the page throws: ${err.split("\n")[0].slice(0, 160)}`;
-    if (v.blank) return "the page is empty";
-    if (isNotFound(v.text)) return "it shows the app's own not-found view";
-    return null;
-  }
-  /** A click that changed nothing is reported only when a second click after a fresh load changes nothing too. */
-  async function confirmed(attempt) {
-    const first = await attempt();
-    return first && !first.acted ? attempt() : first;
-  }
-  // A request counts as an effect of a click only on a page that wasn't already making requests of its own (polling).
-  const same = (a, b, polling) => a.at === b.at && a.scrollY === b.scrollY && a.focus === b.focus && a.html === b.html && a.live === b.live && (polling || a.reqs === b.reqs);
-  const readState = async (s) => { const first = JSON.parse(await s.run(ROUTE_STATE)), start = JSON.parse(await s.run(ROUTE_STATE)); return { start, polling: first.reqs !== start.reqs }; };
-  const DEAD = "clicking it changes nothing, even on a second click after a fresh load: same address, same page, same focus, nothing opens, no request";
   const tasks = []; // {route, check(session), label(problem)}, in report order
   const add = (route, check, label) => { report.routes.push(route); if (check) tasks.push({ route, check, label }); };
   const skip = (route, e, what) => { route.skipped = `couldn't ${what}: ${firstLine(e)}`; };
@@ -485,22 +367,17 @@ async function routeChecks() {
     }
     sameLinks.forEach((l, i) => add({ from: path, link: l.label, to: l.to, samePage: true, problems: [] }, async (s, route) => {
       try {
-        const r = await confirmed(async () => {
-          await s.openAt(path);
-          const foot = Number(await s.run(ROUTE_SCROLL));
-          if (!(foot > 1) && !l.hash) return { skipped: "the page is too short to scroll, so a link to it has nothing to do" };
-          if (await s.run(ROUTE_MARK_SAME(i)) !== "ok") return { skipped: "the link wasn't on the page when it was opened again" };
-          const { start, polling } = await readState(s);
-          await s.ab("errors", "--clear");
-          if (await s.run(ROUTE_CLICK_SAME) !== "ok") return { skipped: "the link went away before it was clicked" };
-          await s.settle();
-          const after = JSON.parse(await s.run(ROUTE_STATE));
-          return { acted: after.origin !== start.origin || !same(after, start, polling), left: after.origin !== start.origin && `${after.origin}${after.at}`, bad: await brokenView(s) };
-        });
-        if (r.skipped) route.skipped = r.skipped;
-        else if (r.left) route.problems.push(`clicking it leaves the app for ${r.left}`);
-        else if (r.bad) route.problems.push(`clicking it: ${r.bad}`);
-        else if (!r.acted) route.problems.push(DEAD);
+        await s.openAt(path);
+        const foot = Number(await s.run(ROUTE_SCROLL));
+        if (!(foot > 1) && !l.hash) { route.skipped = "the page is too short to scroll, so a link to it has nothing to do"; return; }
+        if (await s.run(ROUTE_MARK_SAME(i)) !== "ok") { route.skipped = "the link wasn't on the page when it was opened again"; return; }
+        const start = JSON.parse(await s.run(ROUTE_STATE));
+        if (await s.run(ROUTE_CLICK_SAME) !== "ok") { route.skipped = "the link went away before it was clicked"; return; }
+        await s.settle();
+        const after = JSON.parse(await s.run(ROUTE_STATE));
+        if (after.origin !== start.origin) route.problems.push(`clicking it leaves the app for ${after.origin}${after.at}`);
+        else if (after.at === start.at && after.scrollY === start.scrollY && after.focus === start.focus && after.html === start.html && after.live === start.live)
+          route.problems.push("clicking it changes nothing: same address, same page, same focus, nothing opens");
       } catch (e) { skip(route, e, "check it"); }
     }, (p) => `${path} link "${l.label || l.href}" (${l.to}): ${p}`));
   }
@@ -522,7 +399,6 @@ async function routeChecks() {
     add({ from: l.from, link: l.label, to: l.to, problems: [] }, async (s, route) => {
       try {
         await s.openAt(l.from);
-        await s.ab("errors", "--clear");
         const start = await s.look();
         if (await s.run(ROUTE_MARK(l.href)) !== "ok") { route.skipped = "the link wasn't on the page when it was opened again"; return; }
         try { await s.ab("click", "[data-ui-review-link]"); } catch { await s.run(`document.querySelector("[data-ui-review-link]").click()`); }
@@ -530,8 +406,6 @@ async function routeChecks() {
         const clicked = await s.look();
         if (clicked.at === start.at) route.problems.push(`clicking it leaves the URL at ${start.at}`);
         else if (clicked.text === start.text) route.problems.push(`clicking it changes the URL to ${clicked.at} but the page stays the same`);
-        const bad = await brokenView(s);
-        if (bad) route.problems.push(`clicking it: ${bad}`);
         await s.ab("back");
         await s.settle();
         const back = await s.look();
@@ -545,7 +419,6 @@ async function routeChecks() {
         await s.openAt(clicked.at);
         const fresh = await s.look();
         if (fresh.status >= 400) route.problems.push(`a reload of ${clicked.at} answers ${fresh.status}`);
-        else if (fresh.blank || isNotFound(fresh.text)) route.problems.push(`a reload of ${clicked.at} shows ${fresh.blank ? "an empty page" : "the app's own not-found view"}`);
         else if (alike(fresh.text, clicked.text) < 0.8) route.problems.push(`a reload of ${clicked.at} shows a different page than the click did`);
       } catch (e) { skip(route, e, "check it"); }
     }, (p) => `${l.from} link "${l.label || l.href}" (${l.to}): ${p}`);
@@ -561,18 +434,14 @@ async function routeChecks() {
     }
     controls.forEach((c, i) => add({ from: path, what: `${c.kind} "${c.label}"`, problems: [] }, async (s, route) => {
       try {
-        const r = await confirmed(async () => {
-          await s.openAt(path);
-          if (await s.run(ROUTE_MARK_CLICK(i)) !== "ok") return null;
-          const { start, polling } = await readState(s);
-          await s.ab("errors", "--clear");
-          try { await s.ab("click", "[data-ui-review-click]"); } catch { await s.run(`document.querySelector("[data-ui-review-click]").click()`); }
-          await s.settle();
-          return { acted: !same(JSON.parse(await s.run(ROUTE_STATE)), start, polling), bad: await brokenView(s) };
-        });
-        if (!r) route.skipped = "the control wasn't on the page when it was opened again";
-        else if (r.bad) route.problems.push(`clicking it: ${r.bad}`);
-        else if (!r.acted) route.problems.push(DEAD);
+        await s.openAt(path);
+        if (await s.run(ROUTE_MARK_CLICK(i)) !== "ok") { route.skipped = "the control wasn't on the page when it was opened again"; return; }
+        const start = JSON.parse(await s.run(ROUTE_STATE));
+        try { await s.ab("click", "[data-ui-review-click]"); } catch { await s.run(`document.querySelector("[data-ui-review-click]").click()`); }
+        await s.settle();
+        const after = JSON.parse(await s.run(ROUTE_STATE));
+        if (after.at === start.at && after.scrollY === start.scrollY && after.focus === start.focus && after.html === start.html && after.live === start.live)
+          route.problems.push("clicking it changes nothing: same address, same page, same focus, nothing opens");
       } catch (e) { skip(route, e, "check it"); }
     }, (p) => `${path} ${`${c.kind} "${c.label}"`}: ${p}`));
   }
@@ -580,7 +449,7 @@ async function routeChecks() {
   const sessions = [main, ...Array.from({ length: Math.min(ROUTE_WORKERS, tasks.length) - 1 }, (_, i) => browserSession(`ui-review-${i + 1}`, execFileP))];
   let next = 0;
   await Promise.all(sessions.map(async (s) => {
-    if (s !== main) { await s.ab("close").catch(() => {}); await s.ready(); }
+    if (s !== main) await s.ready();
     while (next < tasks.length) { const t = tasks[next++]; await t.check(s, t.route); }
   }));
   await Promise.all(sessions.filter((s) => s !== main).map((s) => s.ab("close").catch(() => {})));
@@ -603,22 +472,13 @@ function splitPreexisting(found = [], baseFound = []) {
   return { introduced, preexisting };
 }
 
-const CHANGED_PCT = 0.1; // a page counts as changed when this share of a picture's pixels differ
 function finish() {
-  const { introduced, preexisting } = splitPreexisting(blocking, baselineReport?.blocking);
+  const baseReport = baseline && existsSync(join(baseline, "report.json")) ? JSON.parse(readFileSync(join(baseline, "report.json"), "utf8")) : null;
+  const { introduced, preexisting } = splitPreexisting(blocking, baseReport?.blocking);
 
   const lines = [`# UI review of ${base}`, "", `${report.at} · widths ${widths.join("/")} · modes ${modes.join("/")}${palettes.length ? ` · palettes ${palettes.join("/")}` : ""}${baseline ? ` · baseline ${baseline}` : ""}`, ""];
   lines.push(introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found by the automated checks", "", ...introduced.map((b) => `- ${b}`), "");
   if (preexisting.length) lines.push(`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((b) => `- ${b}`), "");
-  if (baseline) {
-    // The pages whose pictures changed, biggest change first: a model's or a reviewer's first look.
-    const changed = report.pages.map((p) => ({ p, shots: p.shots.filter((s) => (s.compare?.diffPct ?? 0) >= CHANGED_PCT).sort((a, b) => b.compare.diffPct - a.compare.diffPct) }))
-      .filter((c) => c.shots.length).sort((a, b) => b.shots[0].compare.diffPct - a.shots[0].compare.diffPct);
-    lines.push("## Look at these first", "", changed.length ? "Pages whose pictures changed, biggest change first (before|after is the comparison picture, diff the pixel diff):" : `No page changed by ${CHANGED_PCT}% or more of its pixels.`, "");
-    for (const { p, shots } of changed) lines.push(`- ${p.path}${p.palette ? ` [${p.palette}]` : ""}`, ...shots.map((s) => `  - ${s.width}px ${s.mode}: ${s.compare.diffPct}% changed · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff}`));
-    lines.push("");
-  }
-  if (notes.length) lines.push(`## Notes (${notes.length}): not failures`, "", ...notes.map((n) => `- ${n}`), "");
   lines.push("## Pages", "");
   for (const p of report.pages) {
     const shows = map?.find((m) => m.path === p.path)?.shows;
@@ -631,12 +491,11 @@ function finish() {
     if (small) lines.push(`Phone: ${small} controls are 24-43px tall (44px is the phone rule; check the main ones).`);
     lines.push("", "Screenshots (open each one):", ...p.shots.map((s) => `- ${s.name}${s.compare ? ` · before|after: ${s.compare.compare ?? "–"} · diff: ${s.compare.diff} (${s.compare.diffResult})` : ""}`), "");
   }
-  if (report.routesNote) lines.push(`Routes: ${report.routesNote}`, "");
   if (report.routes.length) lines.push("## Routes (brand, click, Back, Forward, reload)", "", ...report.routes.map((r) => `- ${r.from} ${r.link ? `link "${r.link}" (${r.to})` : r.what}: ${r.skipped ?? (r.problems.join("; ") || (r.link && !r.samePage ? "renders" : "acts"))}`), ...(report.routesCut ? ["- (more kinds of link than the 12 checked: review the rest with --paths on their pages)"] : []), "");
   lines.push("Automated checks find maybe a third of what matters. Now look at every screenshot against the review checklist.");
   writeFileSync(join(out, "report.md"), lines.join("\n"));
-  writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking: introduced, preexisting, notes }, null, 2));
-  console.log(`${join(out, "report.md")}: ${introduced.length} blocking, ${preexisting.length} already on this base, ${report.pages.reduce((n, p) => n + p.shots.length, 0)} screenshots, ${notes.length} notes`);
+  writeFileSync(join(out, "report.json"), JSON.stringify({ ...report, blocking: introduced, preexisting }, null, 2));
+  console.log(`${join(out, "report.md")}: ${introduced.length} blocking, ${preexisting.length} already on this base, ${report.pages.reduce((n, p) => n + p.shots.length, 0)} screenshots`);
   process.exit(introduced.length ? 1 : 0);
 }
 (!palettes.length && !args.includes("--no-routes") ? routeChecks() : Promise.resolve()).then(finish, (e) => { console.error(`ui-review: ${e.stack || e.message}`); process.exit(2); });

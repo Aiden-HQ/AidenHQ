@@ -409,18 +409,6 @@ test("a Tier 0 product merge fails at merge once its eligibility is lost: file t
   assert.match(outcomes[0].text, /eligibility lost at merge: file the merge again/);
 });
 
-test("a UI PR merges with no design review", async (t) => {
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
-  const tasks = [];
-  const checks = (method, url, b) => method === "POST" && url === "/v1/tasks" ? (tasks.push(b), { id: `t${tasks.length}`, identifier: `T-${tasks.length}` }) : undefined;
-  const { handle, github, merge, settle } = await setup(t, { prs, checks });
-  await merge("k-00000000000000d1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  assert.equal(github.merges().length, 1, "merged on its green checks: the design review is advisory");
-  assert.equal(tasks.length, 0, "the queue asks no design review");
-  await settle();
-});
-
 test("a merge-queue wait and its end become waiting and resumed facts with the reason", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
   const facts = [];

@@ -2,8 +2,6 @@
 // (check runs and commit statuses) become named checks; a skipped image scan on a PR that could change an image is not green.
 type Json = any;
 
-/** The UI Reviewer's design review: advisory in the named checks (the merge gate reads it on its own). */
-export const DESIGN_REVIEW_CHECK = "design-review";
 /** Code review's commit status: a mirror of its merge verdict for people and `gh pr checks`. The merge queue asks code review's
  * verdict itself, so the status never becomes a second gate here. */
 export const CODE_REVIEW_STATUS = "aidenhq/review";
@@ -64,7 +62,7 @@ export function latestChecks<T extends { name?: string; kind?: "run" | "status";
 /** A named check as this module reads it: its status, which judgement it is (`kind`) and where it sits in its name's history (`rank`). */
 export type Check = { name: string; status: string | null | undefined; kind: "run" | "status"; rank?: number; ok: boolean; success: boolean; pending: boolean; skipped?: true };
 
-/** Every context in a rollup as a named check, advisory ones (the design review, code review's status) included: { name, status, kind, rank?, ok, success, pending, skipped? } (`ok` counts neutral and skipped as passed, `success` only success). A name's newest run is picked where it is judged (latestChecks). */
+/** Every context in a rollup as a named check, advisory ones (code review's status) included: { name, status, kind, rank?, ok, success, pending, skipped? } (`ok` counts neutral and skipped as passed, `success` only success). A name's newest run is picked where it is judged (latestChecks). */
 export function contextChecks(rollup: Json): Check[] {
   const pass = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
   return (rollup?.contexts?.nodes ?? [])
@@ -73,9 +71,9 @@ export function contextChecks(rollup: Json): Check[] {
     .map((c: Json) => ({ ...c, ok: pass.has(c.status), success: c.status === "SUCCESS", pending: ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
 }
 
-/** The named checks in a rollup, the design review and code review left out (contextChecks): every context is returned, and a name's newest run is picked where it is judged (latestChecks). */
+/** The named checks in a rollup, code review's status left out (contextChecks): every context is returned, and a name's newest run is picked where it is judged (latestChecks). */
 export function namedChecks(rollup: Json): Check[] {
-  return contextChecks(rollup).filter((c) => c.name !== DESIGN_REVIEW_CHECK && c.name !== CODE_REVIEW_STATUS);
+  return contextChecks(rollup).filter((c) => c.name !== CODE_REVIEW_STATUS);
 }
 
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
