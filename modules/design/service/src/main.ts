@@ -20,4 +20,7 @@ const mcp = serveMcp(createMcp("design", designTools(store)), () => file(env.DES
 const sweep = () => { try { const n = store.sweep(); if (n) log("swept old runs", { n }); } catch (e) { log("WARNING: sweep failed", { err: String((e as Error).message).slice(0, 300) }); } };
 sweep();
 setInterval(sweep, DAY);
-createServer(async (req, res) => { if (!(await mcp(req, res))) res.writeHead(req.url === "/healthz" ? 200 : 404).end(); }).listen(8099, "0.0.0.0", () => log("design listening", { port: 8099 }));
+createServer(async (req, res) => {
+  try { if (!(await mcp(req, res))) res.writeHead(req.url === "/healthz" ? 200 : 404).end(); }
+  catch (e) { log("request failed", { err: String((e as Error).message).slice(0, 200) }); if (!res.headersSent && res.writable) res.writeHead(400).end(); }
+}).listen(8099, "0.0.0.0", () => log("design listening", { port: 8099 }));

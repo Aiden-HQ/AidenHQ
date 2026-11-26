@@ -13,7 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { degradations } from "./degrade.ts";
-import { ENGINE, open, serveStarter, shutdown } from "./shots.ts";
+import { ENGINE, open, serveStarter, shutdown, STARTER } from "./shots.ts";
 
 const here = dirname(new URL(import.meta.url).pathname);
 const { values: o, positionals } = parseArgs({
@@ -78,7 +78,7 @@ async function degraded() {
   let picked = 0, named = 0;
   const misses: string[] = [];
   await pool(jobs, 4, async (j) => {
-    const originalIsA = j.i % 2 === 0; // alternate which position holds the original
+    const originalIsA = (j.i + j.p) % 2 === 0; // alternate which position holds the original, each degradation on both sides
     const [a, b] = originalIsA ? [file(j.p, "orig"), file(j.p, j.kind)] : [file(j.p, j.kind), file(j.p, "orig")];
     const r = await ask({ model, system, images: [a, b], schema, text: "Two versions of the same page at 1512px wide: image 1 is version A, image 2 is version B." }) as { better: string; change: string };
     const original = r.better === (originalIsA ? "A" : "B");
@@ -177,9 +177,10 @@ function capture(url: string, pages: Target[], dir: string, width = 1512, theme 
   cli("capture", url, "--out", dir, "--pages-file", join(dir, "pages-in.json"), "--widths", String(width), "--themes", theme);
 }
 
-/** refs/fallback.json's page per kind as a references list on the served starter, written beside the work. */
+/** refs/fallback.json's page per kind (the catalog is dev-only: the engine serves the starter's dev server, as its refs fallback does) as a references list, written beside the work. */
+let catalog: { url: string; stop(): void } | undefined;
 async function fallbackList(file: string): Promise<string> {
-  const base = await starterUrl();
+  const base = (catalog ??= await (await eng("refs.ts")).serveStarter(STARTER)).url;
   const map = json(file) as Record<string, string>;
   const out = join(work, "references", "fallback-refs.json");
   writeFileSync(out, JSON.stringify(Object.entries(map).filter(([k]) => k !== "_" && k !== "other").map(([kind, path]) => ({ kind, url: new URL(path, base).href, product: "app starter" }))));
@@ -258,5 +259,6 @@ try {
   console.error(`design-eval ${suite}: ${(e as Error).message}`);
   process.exitCode = 1;
 } finally {
+  catalog?.stop();
   await shutdown();
 }

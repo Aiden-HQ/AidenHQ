@@ -8,8 +8,8 @@ import { join } from "node:path";
 export const DAY = 86_400_000;
 export const RETENTION_DAYS = 30;
 const MAX_PUT_BYTES = 8 * 1024 * 1024;
-const NAME = /^[\w-][\w.-]{0,119}\.(png|webp|json|md|diff)$/;
-const TYPES: Record<string, string> = { png: "image/png", webp: "image/webp", json: "application/json", md: "text/markdown", diff: "text/x-diff" };
+const NAME = /^[\w-][\w.-]{0,119}\.(png|jpg|webp|json|md|diff)$/;
+const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", json: "application/json", md: "text/markdown", diff: "text/x-diff" };
 const KINDS = new Set(["review", "scan", "pass"]);
 
 type Row = { id: string; target: string; kind: string; app: string | null; task: string | null; agent: string; model: string; status: string; started: string; ended: string | null; cost_usd: number | null; report: string | null };
