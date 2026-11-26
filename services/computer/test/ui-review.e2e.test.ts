@@ -288,3 +288,61 @@ test("fix-check needs AFTER in 2 of 3 in each order", async () => {
     assert.equal(fake.calls("pairwise").length + biased.calls("pairwise").length, 12);
   } finally { await fake.close(); await biased.close(); }
 });
+
+// ---- clicking pass: flows, candidate bugs and reproduction (lane C) ----
+const clicksWith = (items: object[]) => { const f = join(tmp(), "clicks.json"); writeFileSync(f, JSON.stringify(items)); return f; };
+
+test("flows lists every page's key controls with a persona", async () => {
+  const dir = runDir();
+  const run = JSON.parse(readFileSync(join(dir, "run.json"), "utf8"));
+  run.pages.push({ path: "/#/settings", kind: "settings", shows: "the account settings", source: "router" });
+  writeFileSync(join(dir, "run.json"), JSON.stringify(run));
+  mkdirSync(join(dir, "routes"));
+  writeFileSync(join(dir, "routes", "checks.json"), JSON.stringify([{ page: "/#/settings", what: "Save changes" }, ...Array.from({ length: 8 }, (_, i) => ({ page: "/#/settings", what: `Toggle ${i}` }))]));
+  const { flows } = await import("../images/agent-base/ui-review/flows.ts");
+  const md = flows(dir);
+  assert.match(md, /#\/settings/); assert.match(md, /Persona:/); assert.match(md, /clicks\.json/); assert.match(md, /Save changes/);
+  for (const f of md.split("### Flow ").slice(1)) assert.ok((f.match(/\d+\. /g) ?? []).length <= 6, "a flow has at most 6 steps");
+  assert.ok((md.match(/^### Flow /gm) ?? []).length >= 4); // /#/settings alone needs two flows for its nine controls
+});
+
+describe("repro", chrome, () => {
+  let fixture: Fixture;
+  before(async () => { fixture = await startFixture(); process.env.OPENROUTER_API_KEY = "test"; });
+  after(async () => { await fixture.close(); });
+  const archive = { kind: "bug", page: "/#/clicks", width: 1512, title: "Archive does nothing", saw: "Archive changes nothing", expected: "the order is archived", steps: [{ open: "/#/clicks" }, { click: "role=button[name=\"Archive\"]" }] };
+  const filter = { kind: "bug", page: "/#/clicks", width: 1512, title: "Filter lost on reload", saw: "the filter text is gone after a reload", expected: "the filter stays", steps: [{ open: "/#/clicks" }, { fill: ["#filter", "acme"] }, { open: "/#/clicks" }] };
+  const fine = { kind: "bug", page: "/#/clicks", width: 1512, title: "Save does nothing", saw: "nothing happened", expected: "Saved shows", steps: [{ open: "/#/clicks" }, { click: "#save" }] };
+  const rough = { kind: "friction", page: "/#/clicks", width: 1512, title: "No hint on the filter", saw: "the filter has no hint of what it matches", expected: "a hint names the fields it matches", steps: [{ open: "/#/clicks" }, { click: "#filter" }] };
+
+  test("repro keeps only bugs that happen twice", async () => {
+    const out = runDir();
+    const { repro } = await import("../images/agent-base/ui-review/repro.ts");
+    // The judge says "shows" for the two real bugs, and, as a flaky one, only on its first replay for "Save does nothing".
+    const seen: Record<string, number> = {};
+    const fake = await fakeModel((_n, text) => {
+      const title = ["Archive does nothing", "Filter lost on reload", "Save does nothing"].find((t) => text.includes(t)) as string;
+      seen[title] = (seen[title] ?? 0) + 1;
+      return { shows: title !== "Save does nothing" || seen[title] === 1, why: "decided from the pictures" };
+    });
+    try {
+      const r = await repro(fixture.url, clicksWith([archive, filter, fine, rough]), { out, model: "fake/judge", base: fake.url });
+      assert.deepEqual(r.bugs.map((b) => b.title).sort(), ["Archive does nothing", "Filter lost on reload"]);
+      assert.ok(r.bugs.every((b) => b.verified && b.repro!.length > 0 && b.captures.length >= 2 && b.captures.every((f) => existsSync(join(out, f)))));
+      assert.ok(r.bugs.every((b) => b.kind && b.selector));
+      assert.equal(fake.calls("repro-judge").length, 6); // two replays each; the flaky one's second answer said no
+      const saved = JSON.parse(readFileSync(join(out, "report.json"), "utf8")) as Report;
+      assert.deepEqual(saved.bugs.map((b) => b.title).sort(), ["Archive does nothing", "Filter lost on reload"]);
+      assert.equal(JSON.parse(readFileSync(join(out, "friction.json"), "utf8")).length, 1); // friction is replayed once, never judged, and goes to the review
+    } finally { await fake.close(); }
+  });
+
+  test("repro refuses candidates.json, which has no steps to replay", async () => {
+    const { repro } = await import("../images/agent-base/ui-review/repro.ts");
+    const f = join(tmp(), "candidates.json");
+    writeFileSync(f, JSON.stringify([{ page: "/#/clicks", width: 1512, theme: "light", title: "Archive does nothing", evidence: "x", capture: "shots/a.png" }]));
+    await assert.rejects(repro(fixture.url, f, { out: tmp(), model: "fake/judge" }), /candidates have no steps/);
+    const p = spawnSync("node", [main, "repro", f, "--out", tmp(), "--url", fixture.url], { encoding: "utf8" });
+    assert.equal(p.status, 2);
+  });
+});

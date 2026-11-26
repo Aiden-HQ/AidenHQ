@@ -56,6 +56,12 @@ RUN cd /opt/aidenhq/ui-review && npm ci --ignore-scripts --no-audit --no-fund &&
     && printf '#!/bin/sh\nexec node /opt/aidenhq/ui-review/main.ts "$@"\n' > /usr/local/bin/ui-review && chmod 755 /usr/local/bin/ui-review \
     && node -e 'require("/opt/aidenhq/ui-review/node_modules/playwright-core").chromium.launch({ executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH }).then((b) => b.close())' \
     && ui-review --help >/dev/null
+# agent-browser's `dogfood` skill (Apache-2.0, licence beside it) for the clicking pass, from the commit of the agent-browser
+# release the browser image pins (v0.41.2, 2026-11-03): fetched by commit hash, so the content is what that commit holds.
+RUN mkdir /tmp/ab && cd /tmp/ab && git init -q && git fetch -q --depth 1 https://github.com/vercel-labs/agent-browser d52a5e90c372ec4710c69adc3837ac14bbd852aa \
+    && git checkout -q FETCH_HEAD && test "$(git rev-parse HEAD)" = d52a5e90c372ec4710c69adc3837ac14bbd852aa \
+    && mkdir -p /opt/aidenhq/skills && cp -r skill-data/dogfood /opt/aidenhq/skills/dogfood && cp LICENSE /opt/aidenhq/skills/dogfood/LICENSE \
+    && cd / && rm -rf /tmp/ab && test -f /opt/aidenhq/skills/dogfood/SKILL.md
 COPY design-system /opt/aidenhq/design-system
 COPY app-starter /opt/aidenhq/app-starter
 # The UI review's regression set (modules/design/eval): `node /opt/aidenhq/design-eval/run.ts <suite>`, on request only. It needs no install.
