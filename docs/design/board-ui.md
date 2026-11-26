@@ -61,6 +61,17 @@ and `.ui-split` for the work on the left and a rail of `Card`s with `Facts` on t
 | Nothing to show | `EmptyState`, which says what to do |
 | Loading | a skeleton shaped like the content (`Skeleton.tsx`), never a spinner |
 | A short decision | `Dialog`; extra actions: `Menu`; an icon: `Icon` (`ui/icons.tsx`) |
+| A teammate (an agent the owner talks to) | `TeammateChip` (face, "Name · Job"; `faceStateOf` for its state); a face alone: `Face` |
+| A decision that needs the owner | `DecisionRow` (who, question, the draft as `detail`, inline buttons, a receipt with Undo once answered) |
+| A block of Home | `SectionCard` (title, amber `count` of what needs the owner, `meta`, one `action`; `flush` for rows) |
+| What happened while the owner was away | `DigestList` (top three, "All N →") |
+| One item's detail beside its list | `DetailPane` (non-modal, Escape closes, full screen on a phone) |
+| A conversation beside the page (Ask Aiden) | `SidePanel` (header face and actions, composer in `footer`) |
+| Progress through a short flow | `Stepper` ("Step 1 of 3 · label") |
+| A choice shown as cards | `OptionCard` (`radio` or `checkbox`, a real input) |
+| Detail most people skip | `Disclosure` |
+| A keyboard shortcut | `Kbd` |
+| Cards that add columns as the screen grows | `.ui-grid` (`--grid-min`) |
 
 ## Tokens
 
@@ -74,6 +85,11 @@ and `.ui-split` for the work on the left and a rail of `Card`s with `Facts` on t
 - **Space**: a 4px grid (`--sp-*`); page gutters `--gutter`, `--page-top`, `--stack`.
 - **Radius**: tags 5px, controls 8px, cards 10px, dialogs and columns 14px; never a pill.
 - **Elevation**: `--shadow` at rest, `--shadow-hover` lifted, `--shadow-lg` for overlays.
+- **Layout**: `--page-max` (1920px) caps a page's content; `--pane-w` is a side pane's width.
+- **Faces**: the face palette (`--face-*`: ten background and shirt pairs, ten skins, nine hair and brow colours, one look
+  per accessory) is the only illustration colour, the same in both themes, and lives only in `tokens.css`. A module picks
+  a teammate's face as a kit spec (`teammate.face: {hair, accessory, body, skin, hair_color, palette}`,
+  `services/shared/face-kit.ts`) or ships an image; with neither, `Face` draws one from the agent's key (`kitFromSeed`).
 
 ## Motion
 
@@ -82,6 +98,11 @@ arriving), `--slow` 320ms (meters); `--ease-out` in, `--ease-in` out, `--ease-sp
 cross-fade (View Transitions, `App.tsx` `setView`); counts tick. Working states breathe in a small dot, never a large
 animated area (OLED smear). `prefers-reduced-motion` makes every transition instant (`ui.css`), so a page needs no rule
 of its own.
+
+The motion classes, on tokens: `.enter` arrives rising `--enter-y` over `--medium` (stagger siblings with `style={{"--i": n}}`,
+`--stagger` apart); `.lift` rises `--lift-y` with `--shadow-hover` on hover; `.press` shrinks to `--press-scale` while pressed.
+Panes slide in over `--medium` and leave over `--fast`. A face's own motion (a working bob and glance, a needs-you ring,
+a blink) is CSS too, so reduced motion stills it on its resting frame.
 
 ## Accessibility
 

@@ -644,6 +644,9 @@ createServer((req, res) => {
     const dir = new URL("../../../../modules/code-review/service/src/", import.meta.url), read = (f: string) => readFileSync(new URL(f, dir), "utf8");
     return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(read("page.html").replace("/*kit:css*/", () => read("page-kit.css")).replace("/*kit:js*/", () => read("page-kit.js")));
   }
+  // A module-shipped teammate face (the board's GET /api/faces/<key>): one neutral fixture.
+  if (url.pathname === "/api/faces/acme-bot") return res.writeHead(200, { "content-type": "image/svg+xml", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox" }).end(readFileSync(new URL("./acme-bot.svg", import.meta.url)));
+  if (url.pathname.startsWith("/api/faces/")) return res.writeHead(404).end();
   if (url.pathname === "/api/pages/notes/frame") return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(readFileSync(new URL("./example-view.html", import.meta.url)));
   // A session's terminal and web view: stand-ins for ttyd and opencode's web UI behind the board's proxy (src/sessions.ts).
   const frame = /^\/sessions\/(id-93\d)\/[\w.-]+\/(term)\//.exec(url.pathname);

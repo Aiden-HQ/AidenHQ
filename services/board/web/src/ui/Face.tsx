@@ -7,7 +7,7 @@ import type { RosterFace } from "../types";
 import { ACCESSORY, BODY, EXPRESSION, HAIR, blinkSeconds, kitFromSeed, type FaceKit, type FaceState } from "./face-kit";
 
 const WORDS: Record<FaceState, string> = { idle: "idle", working: "working", needs: "needs you" };
-const DOT: Record<FaceState, string> = { idle: "var(--faint)", working: "var(--working)", needs: "var(--warn)" };
+const DOT: Record<FaceState, string> = { idle: "var(--low)", working: "var(--working)", needs: "var(--warn)" };
 const fill = (c: string): CSSProperties => ({ fill: c });
 
 /** A roster face (`{src}` | `{kit}` | null) as Face's props. */

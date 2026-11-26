@@ -14,3 +14,30 @@
 .dsg-note { font-size: var(--text-xs); color: var(--faint); }
 .dsg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .dsg .ui-card .ui-head { padding: 2px 0; }
+/* The teammate kit (DesignTeam.tsx). */
+.dsg-faces { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 10px; }
+.dsg-face-card { display: grid; gap: 10px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.dsg-face-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; font-size: var(--text-base); color: var(--muted); }
+.dsg-face-name b { color: var(--text); font-weight: 600; }
+.dsg-face-name code { margin-left: auto; font-size: var(--text-2xs); color: var(--faint); }
+.dsg-face-states { display: flex; flex-wrap: wrap; gap: 14px 22px; }
+.dsg-face-state { display: grid; grid-template-columns: auto auto; align-items: center; gap: 6px 8px; }
+.dsg-face-state > span { display: grid; justify-items: center; gap: 8px; }
+.dsg-face-state small { grid-column: 1 / -1; justify-self: center; }
+.dsg-face-state small, .dsg-seed code { font-size: var(--text-2xs); color: var(--faint); }
+.dsg-seed { display: inline-grid; justify-items: center; gap: 4px; }
+.dsg-chips { gap: 10px 22px; }
+.dsg-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; align-items: start; }
+.dsg-p { margin: 0; font-size: var(--text-base); line-height: 1.5; color: var(--muted); }
+.dsg-stage { display: flex; gap: 14px; min-height: 280px; padding: 14px; background: var(--col); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.dsg-stage-tall { height: 380px; padding: 0; }
+.dsg-stage-main { flex: 1; min-width: 0; display: grid; gap: 10px; align-content: start; justify-items: start; padding: 14px; }
+.dsg-stage-tall .ui-side { flex: 0 1 auto; }
+.dsg-pane-who { display: flex; gap: 12px; align-items: flex-start; }
+.dsg-pane-who > div { display: grid; gap: 4px; min-width: 0; }
+.dsg-pane-who small { font-size: var(--text-xs); font-weight: 600; color: var(--accent); }
+.dsg-pane-who h3 { margin: 0; font-size: var(--text-xl); font-weight: 700; letter-spacing: -0.01em; }
+.dsg-bubble { align-self: flex-end; max-width: 82%; margin: 0; padding: 10px 13px; border-radius: var(--radius); background: var(--accent-soft); font-size: var(--text-body); }
+.dsg-enter { display: grid; gap: 6px; }
+.dsg-enter-row { padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.dsg-press { font: inherit; text-align: left; cursor: pointer; color: inherit; }
