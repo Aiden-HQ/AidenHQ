@@ -20,7 +20,7 @@ type Ref = { kind: PageKind; url: string; shots: string[]; tokens?: { typeScale?
 
 const here = (f: string) => new URL(f, import.meta.url);
 const prompt = (name: string) => readFileSync(here(`./prompts/${name}.md`), "utf8").trim();
-const fence = (s: string) => `<untrusted>\n${s}\n</untrusted>`;
+const fence = (s: string) => `<untrusted>\n${s.replace(/<\/?untrusted>/gi, "")}\n</untrusted>`;
 const str = (s: unknown, min = 1): s is string => typeof s === "string" && s.trim().length >= min;
 
 const candidateSchema = {
@@ -73,8 +73,13 @@ const label = (c: Capture) => `${c.width}px ${c.theme}${c.state === "default" ? 
 function pick(caps: Capture[]): Capture[] {
   const at = (w: number, theme: Capture["theme"], state: Capture["state"]) => caps.find((c) => c.width === w && c.theme === theme && c.state === state && c.shots.length > 0);
   const state = (s: Capture["state"]) => at(1512, "light", s) ?? caps.find((c) => c.state === s && c.theme === "light" && c.shots.length > 0);
-  const out = [at(390, "light", "default"), at(1512, "light", "default"), at(2560, "light", "default"), at(1512, "dark", "default"), state("empty"), state("error")];
-  return out.filter((c): c is Capture => !!c);
+  const out = [at(390, "light", "default"), at(1512, "light", "default"), at(2560, "light", "default"), at(1512, "dark", "default"), state("empty"), state("error")].filter((c): c is Capture => !!c);
+  // A run captured at other widths or in one theme only: review what exists, the widest and narrowest first.
+  if (out.length === 0) {
+    const have = caps.filter((c) => c.shots.length > 0).sort((a, b) => a.width - b.width);
+    return [...new Set([have[0], have[have.length - 1], ...have])].filter((c): c is Capture => !!c).slice(0, 4);
+  }
+  return out;
 }
 
 function measuresTable(caps: Capture[]): string {
@@ -121,9 +126,9 @@ async function reviewPage(x: Ctx, page: string, caps: Capture[]): Promise<Candid
   const refs = x.refs.filter((r) => r.kind === kind && r.shots[0] && existsSync(join(x.refsDir, r.shots[0]))).slice(0, 2);
   const cross = inconsistencies(x.report.captures, page);
   const text = [
-    `Page under review: ${page} (kind: ${kind}).`,
+    `Page under review: ${fence(page)} (kind: ${kind}).`,
     x.shows.has(page) ? `What the app says it shows:\n${fence(x.shows.get(page) as string)}` : "",
-    refs.length ? `The first ${refs.length} image${refs.length > 1 ? "s are" : " is"} reference pages of the same kind from well-regarded products (1512px, light), with their measured numbers:\n${refs.map((r, i) => `${i + 1}. ${tokenText(r)}`).join("\n")}` : "No reference pages are available for this kind: judge against the rules and the best products you know in the category.",
+    refs.length ? `The first ${refs.length} image${refs.length > 1 ? "s are" : " is"} reference pages of the same kind from well-regarded products (1512px, light), with their measured numbers:\n${fence(refs.map((r, i) => `${i + 1}. ${tokenText(r)}`).join("\n"))}` : "No reference pages are available for this kind: judge against the rules and the best products you know in the category.",
     `Captures of the page under review, in order after the references:\n${picked.map((c) => `- Capture: ${c.shots[0]} (${label(c)}, ${c.settled ? "settled" : "not settled: content may still be loading"})`).join("\n")}`,
     `Measured on the live page:\n${fence(measuresTable(picked))}`,
     cross.length ? `Inconsistencies with other pages of this app:\n${fence(cross.join("\n"))}` : "",
@@ -133,18 +138,21 @@ async function reviewPage(x: Ctx, page: string, caps: Capture[]): Promise<Candid
     model: x.model, system: x.system, text, schema: listSchema(9), validate: validCandidates, base: x.opts.base, key: x.opts.key,
     images: [...refs.map((r) => join(x.refsDir, r.shots[0])), ...picked.map((c) => join(x.dir, c.shots[0]))],
   });
-  return validCandidates(a);
+  return cited(x, validCandidates(a), picked.map((c) => c.shots[0]));
 }
 
-/** Candidates whose every cited capture exists in the run (listed in the report and on disk); others are dropped. */
-const cited = (x: Ctx, cs: Candidate[]) => cs.filter((c) => c.captures.length > 0 && c.captures.every((f) => x.known.has(f)));
+/** Candidates whose every cited capture is one the model was shown (and exists in the run); others are dropped. */
+const cited = (x: Ctx, cs: Candidate[], shown: Iterable<string>) => {
+  const ok = new Set([...shown].filter((f) => x.known.has(f)));
+  return cs.filter((c) => c.captures.length > 0 && c.captures.every((f) => ok.has(f)));
+};
 
 async function consolidate(x: Ctx, cands: Candidate[], top: number): Promise<Improvement[]> {
   const a = await ask({
     model: x.model, system: prompt("consolidate"), images: [], schema: listSchema(top), validate: validCandidates, base: x.opts.base, key: x.opts.key,
     text: `Keep at most ${top} improvements.\n\nCandidates:\n<candidates>\n${JSON.stringify(cands, null, 1)}\n</candidates>`,
   });
-  return cited(x, validCandidates(a)).slice(0, top).map((c, i) => ({ ...c, rank: i + 1 }));
+  return cited(x, validCandidates(a), cands.flatMap((c) => c.captures)).slice(0, top).map((c, i) => ({ ...c, rank: i + 1 }));
 }
 
 const squash = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/[\s;]+/g, "").toLowerCase();
@@ -196,15 +204,20 @@ export async function runReview(dir: string, opts: ReviewOptions = {}): Promise<
   for (const c of report.captures) byPage.set(c.page, [...(byPage.get(c.page) ?? []), c]);
 
   const cands: Candidate[] = [];
+  let reviewed = 0;
   const skipped: string[] = [];
   await pool([...byPage], n, async ([page, caps]) => {
     if (over()) { skipped.push(page); return; }
-    try { cands.push(...cited(x, await reviewPage(x, page, caps))); } catch (e) { notes.push(`design review of ${page} failed: ${(e as Error).message}`); }
+    try { cands.push(...(await reviewPage(x, page, caps))); reviewed++; } catch (e) { notes.push(`design review of ${page} failed: ${(e as Error).message}`); }
   });
   let improvements: Improvement[] = [];
+  const unconsolidated = (why: string) => {
+    improvements = cands.slice(0, top).map((c, i) => ({ ...c, rank: i + 1 }));
+    notes.push(`${why}: the improvements are the pages' own candidates, in page order, not merged or ranked`);
+  };
   if (cands.length > 0 && !over()) {
-    try { improvements = await consolidate(x, cands, top); } catch (e) { notes.push(`consolidating the design review failed: ${(e as Error).message}`); }
-  } else if (cands.length > 0) notes.push("consolidation skipped: the --max-usd budget was reached");
+    try { improvements = await consolidate(x, cands, top); } catch (e) { unconsolidated(`consolidating the design review failed (${(e as Error).message})`); }
+  } else if (cands.length > 0) unconsolidated("consolidation skipped: the --max-usd budget was reached");
 
   const motion: MotionRow[] = [];
   const withMotion = [...byPage].flatMap(([page, caps]) => {
@@ -219,12 +232,16 @@ export async function runReview(dir: string, opts: ReviewOptions = {}): Promise<
       if (over()) { skipped.push(`${page} (motion)`); return; }
       try { rows.push(await motionPass(x, page, c, standards)); } catch (e) { notes.push(`motion pass of ${page} failed: ${(e as Error).message}`); }
     });
-    const seen = new Set<string>();
-    for (const r of rows.flat()) { const k = squash(r.css); if (!seen.has(k)) { seen.add(k); motion.push(r); } }
+    const seen = new Map<string, MotionRow>(); // the same CSS on several pages is one fix that lists every place
+    for (const r of rows.flat()) {
+      const first = seen.get(squash(r.css));
+      if (!first) { seen.set(squash(r.css), r); motion.push(r); } else if (!first.where.includes(r.where)) first.where += `; ${r.where}`;
+    }
   }
   if (skipped.length > 0) notes.push(`stopped at the --max-usd budget; not reviewed: ${skipped.join(", ")}`);
 
   const out: Report = { ...report, model, improvements, motion, notes: [...report.notes, ...notes], cost_usd: Math.round((report.cost_usd + spend.usd) * 1e4) / 1e4 };
   writeReviewReport(dir, out);
+  if (byPage.size > 0 && reviewed === 0) throw new Error(`no page review completed; the report in ${dir} lists why`);
   return out;
 }
