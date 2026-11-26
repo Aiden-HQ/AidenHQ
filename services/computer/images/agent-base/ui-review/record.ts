@@ -72,12 +72,15 @@ export async function recordPages(cdp: string, dir: string, o: { marks?: string 
     const id = ++next; waiting.set(id, ok);
     try { ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); } catch { waiting.delete(id); ok({ error: { message: "closed" } }); }
   });
-  type Tab = { session: string; url: string; frame?: Buffer; clip?: Clip; full: boolean };
+  type Tab = { session: string; target: string; url: string; frame?: Buffer; clip?: Clip; full: boolean };
   const tabs = new Map<string, Tab>(), done: Recording[] = [], closing: Promise<void>[] = [];
   // Clip names of their own: a second recorder into the same folder never replaces the first one's.
   // A mark left by an earlier browser of the same folder is not this one's flow.
   let n = 0, flow: string | undefined, markAt = 0;
   try { if (o.marks) markAt = statSync(o.marks).mtimeMs; } catch { /* none yet */ }
+  // The acknowledgement `browser flow` waits for: the mark time the recorder has applied.
+  const ack = (at: number) => { if (o.marks) try { writeFileSync(`${o.marks}.ack`, String(at)); } catch { /* the mark still applies */ } };
+  ack(markAt);
   const stamp = Date.now().toString(36);
   const finish = (t: Tab) => {
     const c = t.clip;
@@ -98,7 +101,7 @@ export async function recordPages(cdp: string, dir: string, o: { marks?: string 
       void send("Target.attachToTarget", { targetId: p.targetInfo.targetId, flatten: true }).then(async (r) => {
         const session = r.result?.sessionId as string | undefined;
         if (!session) return;
-        tabs.set(session, { session, url: p.targetInfo.url, full: false });
+        tabs.set(session, { session, target: p.targetInfo.targetId, url: p.targetInfo.url, full: false });
         await send("Page.enable", {}, session);
         await send("Page.addScriptToEvaluateOnNewDocument", { source: FLOW_MOTION }, session);
         await send("Runtime.evaluate", { expression: FLOW_MOTION }, session);
@@ -111,9 +114,9 @@ export async function recordPages(cdp: string, dir: string, o: { marks?: string 
     } else if (m.method === "Page.frameNavigated" && m.sessionId && !p.frame.parentId) {
       // A new document: the flow before it ends; the next frame starts the next clip.
       const t = tabs.get(m.sessionId);
-      if (t) { finish(t); t.url = p.frame.url; t.frame = undefined; t.full = false; }
+      if (t) { finish(t); t.url = p.frame.url + (p.frame.urlFragment ?? ""); t.frame = undefined; t.full = false; }
     } else if (m.method === "Page.navigatedWithinDocument" && m.sessionId) {
-      const t = tabs.get(m.sessionId); if (t && !t.clip) t.url = p.url; // a client-side route: the next clip's page
+      const t = tabs.get(m.sessionId); if (t && p.frameId === t.target) t.url = p.url; // a client-side route: the next clip's page (an open clip keeps its own)
     } else if (m.method === "Target.detachedFromTarget") {
       const t = tabs.get(p.sessionId); if (t) { finish(t); tabs.delete(p.sessionId); }
     }
@@ -124,13 +127,14 @@ export async function recordPages(cdp: string, dir: string, o: { marks?: string 
   const timer = setInterval(() => {
     ticks++;
     // A new flow marked: every open clip ends, and each page's next frame starts the flow's clip.
-    if (o.marks && ticks % FPS === 0) {
+    if (o.marks) {
       let at = 0;
       try { at = statSync(o.marks).mtimeMs; } catch { /* not marked yet */ }
       if (at > markAt) {
         markAt = at;
         try { flow = readFileSync(o.marks, "utf8").replace(/\s+/g, " ").trim().slice(0, 200) || undefined; } catch { flow = undefined; }
         for (const t of tabs.values()) { finish(t); t.full = false; }
+        ack(at);
       }
     }
     for (const t of tabs.values()) {

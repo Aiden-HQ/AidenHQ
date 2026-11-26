@@ -222,8 +222,9 @@ show the fixes and work the clicking pass as above, at that depth; the steps bel
      say so in the notes.
    - Once GitHub confirms the issue (the answer names its number and URL), `design_issue_note { app, marker, repo, number }`
      at once, before the next issue. An answer that says it was filed for approval hasn't happened yet: its outcome lands on
-     your task and wakes you. File the rest, then end this turn with the run and the task still open; on the wake, read each
-     outcome (`task_comments`), note each number that was created or adopted, and go on from step 7.
+     your task and wakes you. File the rest and list the pending approval ids in your memory of the task, then end this turn
+     with the run and the task still open. On each wake read the outcomes (`task_comments`) and note each number created;
+     go on to step 7 only once every pending write has its outcome (done, failed or refused).
    No repo in the task, GitHub not connected, or a write refused: the run's page is the report. Record the outcome in
    `report.json` as `issues: { design: <url>, bugs: [<urls>] }`, or `issues: { unavailable: "<reason>" }`, and go on; one
    try is enough.

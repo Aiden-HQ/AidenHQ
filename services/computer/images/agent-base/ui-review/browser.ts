@@ -1,7 +1,7 @@
 // Chrome for the engine: one Chrome per run, started by playwright-core over the image's Chrome, with a CDP port an agent can
 // attach to (`agent-browser --cdp <port>`), guarded (guard.ts) on every target it ever has. Also the things every page of a run
 // shares: the frozen clock and readiness tracker (an init script), the readiness wait and the politeness throttle for other origins.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -139,7 +139,14 @@ export async function browserCommand(argv: string[]): Promise<number> {
     const { values: f, positionals: title } = parseArgs({ args: rest, allowPositionals: true, options: { out: { type: "string", default: "ui-review-browser" } } });
     if (!title.length) { console.error('usage: ui-review browser flow [--out dir] "<flow title>"'); return 2; }
     mkdirSync(f.out!, { recursive: true });
-    writeFileSync(join(f.out!, "flow.txt"), title.join(" "));
+    const mark = join(f.out!, "flow.txt");
+    writeFileSync(mark, title.join(" "));
+    // A recording browser acknowledges the mark (record.ts) before the flow's first step; without one there is nothing to wait for.
+    const at = statSync(mark).mtimeMs;
+    for (let i = 0; i < 50 && existsSync(`${mark}.ack`); i++) {
+      if (Number(readFileSync(`${mark}.ack`, "utf8")) >= at) return 0;
+      await sleep(100);
+    }
     return 0;
   }
   const { values: v } = parseArgs({ args: rest, options: { url: { type: "string" }, mode: { type: "string" }, session: { type: "string" }, out: { type: "string", default: "ui-review-browser" }, port: { type: "string" }, record: { type: "string" } } });
