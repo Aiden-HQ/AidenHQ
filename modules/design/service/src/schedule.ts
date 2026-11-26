@@ -42,8 +42,8 @@ export function createScheduler(d: ScheduleDeps) {
   const cursors: Partial<Record<"apps" | "github", number>> = {};
   /** A feed this install doesn't subscribe to (`github?` compiled out): not read again in this process. */
   const off = new Set<string>();
-  /** The apps a feed page already started (or refused for good), so a page read again starts none twice. */
-  const handled: { page: string; names: Set<string> } = { page: "", names: new Set() };
+  /** Per feed, the apps its unread events already started (or refused for good): kept until its cursor moves past them. */
+  const handled = { apps: new Set<string>(), github: new Set<string>() };
 
   async function reconcile() {
     const runs = d.store.holding();
@@ -68,10 +68,10 @@ export function createScheduler(d: ScheduleDeps) {
             continue;
           }
           if (r.stopping || overdue || why) {
-            // Closed first (a failed close is tried again next tick), then bound to the listed task as it is, never filed again:
-            // the bound path frees the app once the kernel saw it closed and no job of it lives.
-            await d.kernel.closeTask(made, r.stopping ? `Stopped before it was bound (design run ${r.id}).` : `Not run: ${why || `past ${PASS_MS / 3_600_000} hours`} (design run ${r.id}).`);
+            // Bound to the listed task as it is (never filed again), then closed: the bound path closes a stopped or overdue pass's
+            // task again if this close is lost, and frees the app once the kernel saw it closed and no job of it lives.
             d.store.bindPass(r.id, made, r.agent, `${passSource(r.app!)}${r.id}`);
+            await d.kernel.closeTask(made, r.stopping ? `Stopped before it was bound (design run ${r.id}).` : `Not run: ${why || `past ${PASS_MS / 3_600_000} hours`} (design run ${r.id}).`);
           } else await d.passes.file(r);
           continue;
         }
@@ -94,14 +94,15 @@ export function createScheduler(d: ScheduleDeps) {
    * One feed's events after this process's cursor, each handled before the cursor moves (a failed read or handler leaves it, so
    * the next tick reads them again). The first read takes the watermark; a feed this install lacks is skipped.
    */
-  async function feed(connection: "apps" | "github", handle: (events: FeedEvent[]) => Promise<void>) {
+  async function feed(connection: "apps" | "github", handle: (events: FeedEvent[], done: Set<string>) => Promise<void>) {
     if (off.has(connection)) return;
     try {
       if (cursors[connection] === undefined) { cursors[connection] = (await d.feed(connection)).next; return; }
       const page = await d.feed(connection, cursors[connection]);
       if (page.gap) log("WARNING: the event log has a gap; missed deploys start no pass", { connection });
-      await handle(page.events);
+      await handle(page.events, handled[connection]);
       cursors[connection] = page.next;
+      handled[connection].clear();
     } catch (e) {
       if ((e as { status?: number }).status === 403) { off.add(connection); return log("no event feed on this install", { connection }); }
       log("WARNING: an event feed wasn't read; the next tick tries again", { connection, err: String((e as Error).message).slice(0, 200) });
@@ -109,25 +110,23 @@ export function createScheduler(d: ScheduleDeps) {
   }
 
   /** Starts a pass of each `after-deploy` app an event names (once per app per page). */
-  async function deployed(events: FeedEvent[], kind: string, match: (a: App, resource: string) => boolean) {
+  async function deployed(events: FeedEvent[], done: Set<string>, kind: string, match: (a: App, resource: string) => boolean) {
     const names = new Set<string>();
     for (const e of events) if (e.kind === kind) for (const a of d.apps()) if (a.schedule === "after-deploy" && match(a, e.resource.toLowerCase())) names.add(a.name);
-    // A page read again after a transient failure starts only the apps it hadn't handled yet.
-    const page = `${kind}:${events.at(-1)?.seq ?? ""}`;
-    if (handled.page !== page) Object.assign(handled, { page, names: new Set<string>() });
+    // Events read again after a transient failure (the cursor stays) start only the apps not handled yet.
     for (const name of names) {
-      if (handled.names.has(name)) continue;
+      if (done.has(name)) continue;
       const r = await d.passes.startPass(name, "deploy");
       log("deploy pass", { app: name, ...("refused" in r ? { refused: r.refused } : { run: r.run }) });
       // A transient failure keeps the feed's cursor, so the next tick reads this deploy again (a pass it did start answers "already running").
       if ("retry" in r && r.retry) throw new Error(`${name}'s deploy pass wasn't started: ${r.refused}`);
-      handled.names.add(name);
+      done.add(name);
     }
   }
 
   async function deploys() {
-    await feed("apps", (ev) => deployed(ev, "app.deployed", (a, res) => a.name === res));
-    await feed("github", (ev) => deployed(ev, "push", (a, res) => a.repo?.toLowerCase() === res));
+    await feed("apps", (ev, done) => deployed(ev, done, "app.deployed", (a, res) => a.name === res));
+    await feed("github", (ev, done) => deployed(ev, done, "push", (a, res) => a.repo?.toLowerCase() === res));
   }
 
   async function always() {
