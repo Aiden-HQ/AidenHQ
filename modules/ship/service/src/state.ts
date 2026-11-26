@@ -15,8 +15,8 @@ export interface Adoption {
    * assignment on a hold).
    */
   owner?: { kind: "task"; task: string } | { kind: "member"; login: string };
-  /** The one sticky state: set on a stall, a hand-back or a stop; only a fresh trusted trigger (a new generation) clears it. */
-  hold: { kind: (typeof HOLDS)[number]; reason: string; at?: string } | null;
+  /** The one sticky state: set on a stall, a hand-back or a stop; only a fresh trusted trigger (a new generation) clears it, and a stalled one also a new head (or, from the gate's decision, a change). */
+  hold: { kind: (typeof HOLDS)[number]; reason: string; at?: string; /** A stall from the merge gate's own decision: any pass that no longer decides a stall clears it, not only a new head. */ onChange?: true } | null;
 }
 const key = (repo: string, n: number) => `${repo.toLowerCase()}#${n}`;
 
