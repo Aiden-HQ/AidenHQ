@@ -252,9 +252,9 @@ export async function captureCommand(argv: string[]): Promise<number> {
   const out = v.out!;
   mkdirSync(out, { recursive: true });
   const runFile = join(out, "run.json");
-  const prior = v.resume && existsSync(runFile) ? JSON.parse(readFileSync(runFile, "utf8")) as { base: string; commit?: string; frozenAt: string; pages: Page[]; widths: number[]; themes: Theme[]; states: State[]; baseline?: string } : null;
+  const prior = v.resume && existsSync(runFile) ? JSON.parse(readFileSync(runFile, "utf8")) as { base: string; commit?: string; tree?: string; frozenAt: string; pages: Page[]; widths: number[]; themes: Theme[]; states: State[]; baseline?: string } : null;
   const at = source(v.commit);
-  if (prior && (prior.base !== base || prior.commit !== at.commit)) { console.error(`ui-review: --resume of a run of ${prior.base} at ${prior.commit ?? "an unknown commit"}, not ${base} at ${at.commit ?? "an unknown commit"}: start a new --out`); return 2; }
+  if (prior && (prior.base !== base || prior.commit !== at.commit || prior.tree !== at.tree)) { console.error(`ui-review: --resume of a run of ${prior.base} at ${prior.commit ?? "an unknown commit"}, not ${base} at ${at.commit ?? "an unknown commit"}: start a new --out`); return 2; }
   const widths = prior?.widths ?? list(v.widths, [390, 768, 1024, 1512, 1920, 2560], Number);
   const themes = prior?.themes ?? list(v.themes, ["light", "dark"] as Theme[], (s) => s as Theme);
   const states = prior?.states ?? list(v.states, ["default"] as State[], (s) => s as State);
@@ -268,7 +268,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
     if (palettes.length) pages = pages.flatMap((p) => palettes.map((pal) => { const u = new URL(p.path, "http://x"); u.searchParams.set("palette", pal); return { ...p, path: u.pathname + u.search + u.hash }; }));
   }
   const frozenAt = (baseline && readReport(baseline)?.frozenAt) || prior?.frozenAt || new Date().toISOString();
-  writeFileSync(runFile, JSON.stringify({ base, commit: at.commit, frozenAt, pages, widths, themes, states, baseline }, null, 2));
+  writeFileSync(runFile, JSON.stringify({ base, commit: at.commit, tree: at.tree, frozenAt, pages, widths, themes, states, baseline }, null, 2));
   const q = openQueue(join(out, "queue.json"), pages, { widths, themes, states, max: PAGE_MAX, resume: !!v.resume });
   const slug = slugs(pages);
   const widest = Math.max(...widths), narrowest = Math.min(...widths), motionWidth = widths.includes(1512) ? 1512 : widest;
