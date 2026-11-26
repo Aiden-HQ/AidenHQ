@@ -22,10 +22,10 @@ import { readReport, splitPreexisting } from "./report.ts";
 import type { Bug, Report } from "./types.ts";
 
 const WIDTH = 1512, HEIGHT = 900, WORKERS = 4, BUDGET_MS = 300_000, CHECK_MS = 45_000, LINK_KINDS = 60;
-const MISSING = "__ui_review_missing__";
+const MISSING = "ui-review-missing"; // letters and hyphens: what route params usually accept
 const DEAD = "clicking it changes nothing, even on a second click after a fresh load: same address, same page, same focus, nothing opens, no request";
 
-type View = { route: string; status: number; blank: boolean; text: string };
+type View = { route: string; status: number; blank: boolean; text: string; all: string }; // text: the main region's (else the page's); all: the page's
 type Snap = { origin: string; route: string; scrollY: number; focus: string; html: string; live: string; reqs: number };
 type Check = { from: string; what: string; to?: string; problems: string[]; skipped?: string };
 
@@ -70,9 +70,12 @@ const HELPERS = () => {
   };
   const view = () => {
     const empty = (e: Element) => !(e as HTMLElement).innerText.trim() && !e.querySelector("img, svg, canvas, video, iframe, input, textarea, select");
-    const parts = [document.querySelector("#root, #app, #__next, [data-reactroot]"), document.querySelector("main, [role=main]")].filter(Boolean) as Element[];
+    // A not-found view is told by the main region's text (the app's frame and nav are alike on every page), else the page's.
+    const main = document.querySelector("main, [role=main]") as HTMLElement | null;
+    const parts = [document.querySelector("#root, #app, #__next, [data-reactroot]"), main].filter(Boolean) as Element[];
     return { route: here(), status: (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.responseStatus ?? 0,
-      blank: parts.length ? parts.some(empty) : !(document.body?.innerText || "").trim(), text: (document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 20000) };
+      blank: parts.length ? parts.some(empty) : !(document.body?.innerText || "").trim(), text: (main?.innerText.trim() ? main.innerText : document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 20000),
+      all: (document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 20000) };
   };
   // What a click may change: the address, the scroll (page or inner), the focus, the page, a control's live state, requests.
   const snap = () => {
@@ -147,24 +150,32 @@ export async function routesCommand(argv: string[]): Promise<number> {
   const checks: Check[] = [], notes: string[] = [];
   try {
     const main = await session();
-    // The not-found view's fingerprints.
+    // The not-found view's fingerprints (taken after the pages are read: a probe view that looks like one of them is a page).
     const wordsOf = (t: string) => new Set(t.toLowerCase().split(/[^\p{L}]+/u).filter(Boolean));
     const missing: { text: string; only: string[] }[] = [];
     await openAt(main, base, "/");
-    const home = await look(main), homeWords = wordsOf(home.text);
+    const home = await look(main);
     const hashApp = home.route.includes("#/") || paths.some((p) => p.includes("#/"));
     const sections = [...new Set(paths.map((p) => routeOf(new URL(p, base)).replace(/^\/(#\/)?/, "").split(/[/?]/)[0]).filter(Boolean))];
-    const probes: [string, string | null][] = [[`/${MISSING}`, null], [`/#/${MISSING}`, null], ...sections.map((sec): [string, string] => [hashApp ? `/#/${sec}/${MISSING}` : `/${sec}/${MISSING}`, hashApp ? `/#/${sec}` : `/${sec}`])];
-    for (const [probe, section] of probes) {
-      try {
-        await openAt(main, base, probe);
-        const view = await look(main);
-        if (!view.route.endsWith(MISSING) || alike(view.text, home.text) >= 0.8) continue;
-        if (section) { await openAt(main, base, section); if (alike(view.text, (await look(main)).text) >= 0.8) continue; }
-        if (missing.some((m) => alike(m.text, view.text) >= 0.85)) continue;
-        missing.push({ text: view.text, only: [...wordsOf(view.text)].filter((w) => !homeWords.has(w) && !/^(ui|review|missing)$/.test(w) && !sections.includes(w)) });
-      } catch (e) { notes.push(`not-found probe ${probe}: ${firstLine(e)}`); }
-    }
+    const pageTexts: { path: string; text: string }[] = [{ path: "/", text: home.text }];
+    const fingerprint = async () => {
+      const probes = [`/${MISSING}`, `/#/${MISSING}`, ...sections.map((sec) => hashApp ? `/#/${sec}/${MISSING}` : `/${sec}/${MISSING}`)];
+      for (const probe of probes) {
+        try {
+          await openAt(main, base, probe);
+          const view = await look(main);
+          // A not-found view is short. Like a reviewed page but not the same: a page template filled for an unknown id, not a
+          // not-found view. The same as a reviewed page: that page shows the not-found view too.
+          const like = pageTexts.map((t) => ({ ...t, a: alike(view.text, t.text) }));
+          if (!view.route.endsWith(MISSING) || view.text.split(" ").length > 60 || like.some((t) => t.a >= 0.5 && t.a < 0.95) || missing.some((m) => alike(m.text, view.text) >= 0.85)) continue;
+          for (const t of like) if (t.a >= 0.95) notes.push(`${t.path} shows the app's own not-found view`);
+          // Its own words: on no reviewed page (other than one that shows this view), so a page that has them all shows it.
+          const elsewhere = wordsOf(like.filter((t) => t.a < 0.95).map((t) => t.text).join(" "));
+          missing.push({ text: view.text, only: [...wordsOf(view.text)].filter((w) => !elsewhere.has(w) && !/^(ui|review|missing)$/.test(w)) });
+          notes.push(`the app's not-found view, from ${probe}: "${view.text.slice(0, 100)}"`);
+        } catch (e) { notes.push(`not-found probe ${probe}: ${firstLine(e)}`); }
+      }
+    };
     const isNotFound = (text: string) => missing.some((m) => alike(text, m.text) >= 0.85 || (m.only.length >= 2 && m.only.every((w) => wordsOf(text).has(w))));
     const brokenView = async (s: Session) => {
       const v = await look(s);
@@ -201,7 +212,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
     for (const path of paths) {
       try {
         await openAt(main, base, path);
-        await prep(main);
+        pageTexts.push({ path, text: (await look(main)).text });
         const here = await main.page.evaluate(() => (window as unknown as { __uiRoutes: R }).__uiRoutes.sameLinks().map((a) => ({ href: a.getAttribute("href")!, to: a.href, label: (window as unknown as { __uiRoutes: R }).__uiRoutes.label(a), hash: new URL(a.href).hash })));
         here.forEach((l, i) => add({ from: path, what: `link "${l.label || l.href}" (to this page)`, problems: [] }, async (s, c) => {
           const r = await confirmed(async () => {
@@ -261,25 +272,26 @@ export async function routesCommand(argv: string[]): Promise<number> {
       await settle(s);
       const clicked = await look(s);
       if (clicked.route === start.route) c.problems.push(`clicking it leaves the URL at ${start.route}`);
-      else if (clicked.text === start.text) c.problems.push(`clicking it changes the URL to ${clicked.route} but the page stays the same`);
+      else if (clicked.all === start.all) c.problems.push(`clicking it changes the URL to ${clicked.route} but the page stays the same`);
       const bad = await brokenView(s);
       if (bad) c.problems.push(`clicking it: ${bad}`);
       await s.page.goBack({ timeout: 10_000 }).catch(() => {});
       await settle(s);
       const back = await look(s);
       if (back.route !== start.route) c.problems.push(`Back goes to ${back.route}, not ${start.route}`);
-      else if (alike(back.text, start.text) < 0.8) c.problems.push(`Back to ${start.route} doesn't show that page again`);
+      else if (alike(back.all, start.all) < 0.8) c.problems.push(`Back to ${start.route} doesn't show that page again`);
       await s.page.goForward({ timeout: 10_000 }).catch(() => {});
       await settle(s);
       const fwd = await look(s);
       if (fwd.route !== clicked.route) c.problems.push(`Forward goes to ${fwd.route}, not ${clicked.route}`);
-      else if (alike(fwd.text, clicked.text) < 0.8) c.problems.push(`Forward to ${clicked.route} doesn't show that page again`);
+      else if (alike(fwd.all, clicked.all) < 0.8) c.problems.push(`Forward to ${clicked.route} doesn't show that page again`);
       await openAt(s, base, clicked.route);
       const fresh = await look(s);
       if (fresh.status >= 400) c.problems.push(`a reload of ${clicked.route} answers ${fresh.status}`);
       else if (fresh.blank || isNotFound(fresh.text)) c.problems.push(`a reload of ${clicked.route} shows ${fresh.blank ? "an empty page" : "the app's own not-found view"}`);
-      else if (alike(fresh.text, clicked.text) < 0.8) c.problems.push(`a reload of ${clicked.route} shows a different page than the click did`);
+      else if (alike(fresh.all, clicked.all) < 0.8) c.problems.push(`a reload of ${clicked.route} shows a different page than the click did`);
     });
+    await fingerprint();
     // Links first (the navigation bugs), then brands and controls in page order; the budget cuts what is left.
     tasks.sort((a, b) => Number(!!b.c.to) - Number(!!a.c.to));
     let next = 0, cut = 0;
