@@ -4,7 +4,7 @@ import type { FaceKit } from "../../src/face-kit";
 import type { IconName } from "./ui/icons";
 export type Bucket = "triage" | "today" | "tomorrow" | "later" | "backlog";
 export const BUCKETS: Bucket[] = ["triage", "today", "tomorrow", "later", "backlog"];
-export const BUCKET_NAMES: Record<Bucket, string> = { triage: "Triage", today: "Today", tomorrow: "Tomorrow", later: "Later", backlog: "Backlog" };
+export const BUCKET_NAMES: Record<Bucket, string> = { triage: "Triage", today: "Today", tomorrow: "Tomorrow", later: "This week", backlog: "Backlog" };
 
 export interface Label {
   id: string;

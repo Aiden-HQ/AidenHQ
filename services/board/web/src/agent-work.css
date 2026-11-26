@@ -185,3 +185,4 @@ p.search-note { margin: 0; white-space: normal; }
 .more-done:hover { background: var(--hover); }
 .more-done:focus-visible { outline: none; box-shadow: var(--ring); }
 @media (prefers-reduced-motion: reduce) { .search-busy { animation-duration: 2.4s; } }
+.tt-n { margin-left: 6px; color: var(--faint); font-size: var(--text-2xs); font-weight: 600; font-variant-numeric: tabular-nums; }
