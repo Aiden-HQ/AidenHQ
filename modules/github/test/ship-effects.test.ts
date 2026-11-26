@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -249,7 +249,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { memberPr, root, ws, origin, base, c1, fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, treePosts, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; }, refuseTree: (v) => { refuseTree = v; } };
+  return { memberPr, root, ws, origin, base, c1, cacheDir: join(root, "cache"), fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, treePosts, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; }, refuseTree: (v) => { refuseTree = v; } };
 }
 
 test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
@@ -626,6 +626,77 @@ test("a 200 that names no head is trusted only where the PR itself reads as queu
   assert.equal(out.ok, false, out.text);
   assert.match(out.text, /doesn't read as queued or merged/);
   assert.doesNotMatch(out.text, /in the merge queue/);
+});
+
+test("a request still pending at the wait's end keeps its uuid, and the next round reads it to its terminal result", async (t) => {
+  let puts = 0;
+  const reads = [];
+  let merged = false;
+  const { c1, cacheDir, run } = await setup(t, {
+    enqueueAnswer: () => STACK_REFUSAL,
+    asyncMerge: {
+      put: () => { puts++; return { status: 202, body: { status: "pending", details: { message: "Merge request is in progress.", uuid: "u-keep" } } }; },
+      get: (uuid) => { reads.push(uuid); return merged ? { status: 200, body: { status: "merged", details: { sha: "c".repeat(40) } } } : { status: 200, body: { status: "pending", details: { uuid } } }; },
+    },
+  });
+  const args = { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" };
+  const first = await run("k-00000000000000f1", "github.enqueue", args);
+  assert.equal(first.ok, false, first.text);
+  assert.match(first.text, /^ship-enqueue-pending:/);
+  assert.ok(existsSync(join(cacheDir, "async-requests.json")), "the request's id is kept for the next round");
+  // The next round makes no second request: it reads the kept one, whose result is now terminal.
+  merged = true;
+  const second = await run("k-00000000000000f2", "github.enqueue", { ...args, attempt: 2 });
+  assert.equal(second.ok, true, second.text);
+  assert.match(second.text, /is merged at/);
+  assert.equal(puts, 1, "never a second request");
+  assert.ok(reads.length >= 1 && reads.every((u) => u === "u-keep"), `every read is the kept request: ${reads.join(",")}`);
+  assert.ok(!existsSync(join(cacheDir, "async-requests.json")) || !readFileSync(join(cacheDir, "async-requests.json"), "utf8").includes("u-keep"), "a settled request's id is dropped");
+});
+
+test("a 409 naming another head's request asks this head again once, then waits instead of holding or looping", async (t) => {
+  const { c1, run } = await setup(t, {
+    enqueueAnswer: () => STACK_REFUSAL,
+    asyncMerge: {
+      put: () => ({ status: 409, body: { status: "pending", details: { message: "A merge request is already pending.", uuid: "u-old", merge_action: "merge_queue", expected_head_sha: "f".repeat(40) } } }),
+      get: () => ({ status: 200, body: { status: "pending", details: { uuid: "u-old" } } }),
+    },
+  });
+  const first = await run("k-00000000000000f5", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(first.ok, false, first.text);
+  assert.match(first.text, /^ship-enqueue-pending: .*holds an async merge request for `ffffffffffff`, not/);
+  const again = await run("k-00000000000000f6", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 2, base: "main" });
+  assert.equal(again.ok, false, again.text);
+  assert.doesNotMatch(again.text, /^ship-enqueue-pending:/, "not a second endless ask");
+  assert.match(again.text, /asks once that request clears/);
+  assert.ok(!/is merged|in the merge queue/.test(again.text), "the other head's request is never credited");
+});
+
+test("a transient read error while a request is pending is retried, not reported as a refusal", async (t) => {
+  let n = 0;
+  const { c1, run } = await setup(t, {
+    enqueueAnswer: () => STACK_REFUSAL,
+    asyncMerge: {
+      put: () => ({ status: 202, body: { status: "pending", details: { message: "Merge request is in progress.", uuid: "u-t" } } }),
+      get: () => (++n === 1 ? { status: 503, body: { message: "Service Unavailable" } } : { status: 200, body: { status: "enqueued", details: {} } }),
+    },
+  });
+  const out = await run("k-00000000000000f3", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, true, out.text);
+  assert.match(out.text, /in the merge queue at/);
+  assert.ok(n >= 2, "the read was retried inside the budget");
+});
+
+test("a stack refusal is followed by a fresh read of the PR, and a moved head is never queued", async (t) => {
+  let puts = 0;
+  const { c1, run, pr, origin } = await setup(t, {
+    enqueueAnswer: () => { pr.head = "f".repeat(40); return STACK_REFUSAL; },
+    asyncMerge: { put: () => { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-x" } } }; }, get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) },
+  });
+  const out = await run("k-00000000000000f4", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-head-moved/);
+  assert.equal(puts, 0, "the REST request never goes out for a head the PR no longer has");
 });
 
 test("one readiness rule: ship's actions with its context, the merge queue's without", () => {

@@ -105,16 +105,16 @@ test("an async enqueue GitHub accepted but has not settled asks again next round
   // So a still-pending answer never cycles a PR back into a queue on its own.
 });
 
-// The request was accepted and the PR then queued and removed for a red merge_group check while the request still read pending:
-// that removal is the round's event, not another request at the same head.
-test("a removal seen while an accepted async enqueue still reads pending is handled as the removal, never a blind re-ask", async () => {
+// `groupFailing` names the PR's latest merge_group run, which may be an earlier head's: a pending request is never read as a
+// removal from it, and is asked again instead (its kept id returns the terminal result).
+test("a pending async enqueue is never turned into a removal by another head's merge_group failure", async () => {
   const w = world();
   const ready = { do: "enqueue" as const, why: "ready" };
   await round(w.deps as any, w.pr(), ready, { queue: true });
   w.records["rec-1"] = { state: "failed", outcome: { ok: false, text: "ship-enqueue-pending: https://github.com/a/b/pull/7: GitHub accepted the async merge request u-1 for `111111111111` and is still processing it: not merged." } };
   await round(w.deps as any, w.pr(), ready, { queue: true, failing: ["test"], groupFailing: ["test"], onBase: [] });
-  assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.enqueue").length, 1, "no second request at the same head");
-  assert.equal(w.of("POST /v1/tasks").length, 2, "the records task and the Engineer's fix job: its own red check is a CI fix round");
+  assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.enqueue").length, 2, "asked again, never a CI fix on another head's run");
+  assert.equal(w.of("POST /v1/writes")[1]!.body.kind, "github.enqueue");
 });
 
 const of = (w: ReturnType<typeof world>, what: string) => w.of(what);

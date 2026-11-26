@@ -1409,6 +1409,9 @@ export function createService(o: Options) {
   async function enqueueAsync(s: ReturnType<typeof slugOf>, n: number, a: any, url: string,
     /** The PR read back (a merge or a queue entry at this head), for a request that is still pending: its own words then. */
     settle: () => Promise<{ ok: boolean; text: string } | undefined>,
+    /** Read again right before the request goes out, and empty only while the write still stands: the fallback is a mutation of
+     * its own, and the REST call binds the head alone, never the adoption, the base or the hold label. */
+    precheck: () => Promise<string>,
   ): Promise<{ ok: boolean; text: string; ambiguous?: true }> {
     const path = `/repos/${s.slug}/pulls/${n}/merge-async`;
     const head = `\`${String(a.head).slice(0, 12)}\``;
@@ -1419,18 +1422,69 @@ export function createService(o: Options) {
       if (status === "failed") return { ok: false, text: `GitHub refused to queue ${url}: ${String(details?.message ?? "the asynchronous merge failed").replace(/[\r\n]+/g, " ").slice(0, 300)}` };
       return undefined;
     };
+    const pending = (why: string) => ({ ok: false, text: `${PENDING} ${url}: ${why} not merged.` }) as { ok: boolean; text: string };
+    /**
+     * The request GitHub holds for this PR at this head, across rounds: its id is the only way back to a result whose PUT answer
+     * is spent, and GitHub names it on a repeat (409) only while the request is pending. Kept in the service's own cache beside
+     * held.json, keyed by the head it was bound to, so a request that outlives one execution is read to its end instead of a
+     * fresh one being made.
+     */
+    const store = join(o.cacheDir, "async-requests.json");
+    const key = `${s.slug}#${n}@${String(a.head).toLowerCase()}`;
+    const held = (): { [k: string]: string } => { try { return JSON.parse(readFileSync(store, "utf8")); } catch { return {}; } };
+    const keep = (uuid?: string) => {
+      const all = held();
+      if (uuid) all[key] = uuid; else delete all[key];
+      const kept = Object.fromEntries(Object.entries(all).slice(-500));
+      try { writeFileSync(`${store}.tmp`, JSON.stringify(kept)); renameSync(`${store}.tmp`, store); } catch (e) { log("async request id not kept", { pr: url, err: String((e as Error).message).slice(0, 120) }); }
+    };
+    /** A request's result, read at its own GET; `again` while GitHub has not settled it (a transient read included). */
+    const poll = async (uuid: string): Promise<{ out?: { ok: boolean; text: string }; again?: true; gone?: true; transient?: string }> => {
+      const got = await gh("GET", `${path}/${uuid}`).catch((e: Error) => ({ status: 0, body: { message: String(e.message).slice(0, 200) } }));
+      const status = String(got.body?.status ?? "");
+      // Its result is kept 24 hours: a request GitHub no longer holds is not a merge this record can claim.
+      if (got.status === 404) return { gone: true };
+      if (got.status >= 300 || !status) return { transient: `GitHub answered ${got.status} reading it: ${String(got.body?.message ?? "").slice(0, 160)}` };
+      return said(status, got.body?.details ?? {}) ? { out: said(status, got.body?.details ?? {})! } : { again: true };
+    };
+    const until = o.asyncPolls ?? ASYNC_POLLS;
+    const wait = async (i: number) => { if (i) await new Promise((done) => setTimeout(done, o.asyncPollMs ?? ASYNC_POLL_MS)); };
+    /** A request already in hand from an earlier round: read it before a new one is made, so its terminal result is never lost. */
+    const known = String(held()[key] ?? "");
+    if (known) {
+      const first = await poll(known);
+      if (first.out) { keep(); return first.out; }
+      if (first.gone) keep();
+      else if (first.again || first.transient) {
+        for (let i = 1; i < until; i++) {
+          await wait(i);
+          const next = await poll(known);
+          if (next.out) { keep(); return next.out; }
+          if (next.gone) { keep(); break; }
+        }
+        if (held()[key] === known) return (await settle()) ?? pending(`GitHub is still processing async merge request ${known} for ${head}:`);
+      }
+    }
+    const refused = await precheck();
+    if (refused) return { ok: false, text: refused };
     let r: { status: number; body: any } | undefined;
     try { r = await gh("PUT", path, { sha: a.head, merge_action: "merge_queue" }); } catch (e) { log("async merge request unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
-    // No answer at all (a timeout, a 5xx): the request may have been made and GitHub answers the repeat with the same one (409),
-    // so the caller reads the PR back and, not queued, asks again next round — never a hold on an answer that never came.
+    // No answer at all (a timeout, a 5xx): the request may have been made and GitHub names it on a repeat (409) while it is
+    // pending, so the caller reads the PR back and, not queued, asks again next round — never a hold on an answer that never came.
     if (!r || r.status >= 500) return { ok: false, ambiguous: true, text: `${PENDING} ${url}: GitHub didn't answer the async merge request for ${head}: not merged.` };
     if (r.status >= 300 && r.status !== 409) return { ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.message ?? r.status).slice(0, 300)}` };
-    // A repeat enqueue at this head finds the request an earlier attempt made: read that one, never a second request.
     const details = r.body?.details ?? {};
     if (r.status === 409) {
-      const other = [String(details?.merge_action ?? ""), String(details?.expected_head_sha ?? "")].filter(Boolean).join(" at ");
-      if ((details?.merge_action && details.merge_action !== "merge_queue") || (details?.expected_head_sha && details.expected_head_sha !== a.head))
-        return { ok: false, text: `GitHub already has a merge request for ${url} (${other.slice(0, 80)}), not this enqueue's: not reported as queued.` };
+      // A request for another action is another intent: it is not this enqueue's, and it is not retried behind its back.
+      if (details?.merge_action && details.merge_action !== "merge_queue")
+        return { ok: false, text: `GitHub already has a ${String(details.merge_action).replace(/_/g, " ")} request for ${url}, not a queue request: not reported as queued.` };
+      // A request for another head (a contributor's push while it was pending) leaves this head nothing to credit — but the
+      // request clears on its own, so this head is asked again next round rather than held. Attempts are bounded: a head that
+      // keeps meeting another head's request is a visible wait, never an endless re-ask.
+      if (details?.expected_head_sha && details.expected_head_sha !== a.head) {
+        const why = `GitHub holds an async merge request for \`${String(details.expected_head_sha).slice(0, 12)}\`, not ${head}:`;
+        return Number(a.attempt) > 1 ? { ok: false, text: `${url}: ${why} not queued; the next round asks once that request clears.` } : { ok: false, ambiguous: true, text: `${PENDING} ${url}: ${why} not merged.` };
+      }
     }
     // A bare 200 names no head: it is proof only once the PR itself reads as merged (or queued) at this one. GitHub answers it
     // for a PR already in the queue, which another writer may have queued at another head.
@@ -1439,26 +1493,19 @@ export function createService(o: Options) {
       if (now) return now;
       return { ok: false, text: `${url}: GitHub answered the async merge request with \`${String(r.body?.status ?? "no status")}\`, and the PR doesn't read as queued or merged at ${head}: not queued.` };
     }
-    // A 409 whose body names no request (or none that reads here) still says one is pending for this PR: ask again next round.
     const uuid = String(details?.uuid ?? "");
-    if (!uuid) return { ok: false, text: `${PENDING} ${url}: GitHub has an async merge request for ${head} with no request id to read: not merged.` };
-    // Bounded: a request that outlives it is reported as still pending (its id in the words), never as merged or queued.
-    for (let i = 0; ; i++) {
-      if (i) await new Promise((done) => setTimeout(done, o.asyncPollMs ?? ASYNC_POLL_MS));
-      const got = await gh("GET", `${path}/${uuid}`);
-      const status = String(got.body?.status ?? "");
-      // A request GitHub no longer holds (its result is kept 24 hours) is gone: the next round's request is a fresh one, never
-      // a merge this record claims.
-      if (got.status === 404) return { ok: false, text: `${PENDING} ${url}: GitHub no longer holds async merge request ${uuid} for ${head}: not merged.` };
-      if (got.status >= 300 || !status) throw fail(502, `GitHub couldn't read ${url}'s async merge request ${uuid}: ${String(got.body?.message ?? got.status).slice(0, 200)}`);
-      const out = said(status, got.body?.details ?? {});
-      if (out) return out;
-      if (i + 1 < (o.asyncPolls ?? ASYNC_POLLS)) continue;
-      // Still pending when the wait ends: the PR itself may read as merged (or queued) at this head, the same answer. When it
-      // doesn't, the request stands and the next round asks again (the repeat finds it); it is never reported as merged or as a
-      // hold on a request GitHub accepted.
-      return (await settle()) ?? { ok: false, text: `${PENDING} ${url}: GitHub accepted the async merge request ${uuid} for ${head} and is still processing it: not merged.` };
+    if (!uuid) return pending(`GitHub holds an async merge request for ${head} with no request id to read:`);
+    keep(uuid);
+    // Bounded, and a transient read inside the budget is retried, never turned into a failure: GitHub holds the request either way.
+    for (let i = 0; i < until; i++) {
+      await wait(i);
+      const got = await poll(uuid);
+      if (got.out) { keep(); return got.out; }
+      if (got.gone) { keep(); return pending(`GitHub no longer holds async merge request ${uuid} for ${head}:`); }
     }
+    // Still pending when the wait ends: the PR itself may read as merged (or queued) at this head, the same answer. When it
+    // doesn't, the request stands and its id is kept, so the next round reads it to its end instead of making another.
+    return (await settle()) ?? pending(`GitHub accepted the async merge request ${uuid} for ${head} and is still processing it:`);
   }
 
   /**
@@ -1513,7 +1560,16 @@ export function createService(o: Options) {
     if (r && r.status < 500 && (r.status >= 300 || r.body?.errors?.length)) {
       const why = String(r.body?.errors?.[0]?.message ?? r.body?.message ?? r.status);
       if (STACK_REFUSAL.test(why)) {
-        const out = await enqueueAsync(s, n, a, url, async () => { const back = await read().catch(() => undefined); return back && settled(back); });
+        const out = await enqueueAsync(s, n, a, url, async () => { const back = await read().catch(() => undefined); return back && settled(back); }, async () => {
+          // The refusal came back after this write's own checks: the PR and the adoption are read again now, because the REST
+          // request that follows binds the head alone.
+          const now = await read();
+          if (now.state !== "OPEN") return `${url} is ${String(now.state).toLowerCase()}: not queued.`;
+          if (now.headRefOid !== a.head) return `ship-head-moved: ${url} is at \`${String(now.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.`;
+          if (now.baseRefName !== a.base) return `ship-scope: ${url}'s base changed: it now targets \`${now.baseRefName}\`, not \`${a.base}\`: not queued.`;
+          if ((now.labels?.nodes ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) return `${url} carries the \`${HOLD_LABEL}\` label: not queued; queued once it is removed.`;
+          return (await adoptionEnded(s.slug, n, a.generation, String(a.head), { do: "merge", head: a.head, base: String(now.baseRefName ?? ""), association: String(now.authorAssociation ?? "") })) ?? "";
+        });
         if (!out.ambiguous) return out;
         const back = await read().catch(() => undefined);
         return (back && settled(back)) ?? { ok: false, text: out.text };

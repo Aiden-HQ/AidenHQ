@@ -30,16 +30,15 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   if (r.state === "rejected") return { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})` };
   if (/^ship-head-moved/.test(text)) return { act: "nothing" };
   // `ship-enqueue-pending`: GitHub accepted the async merge request (or one is already pending) and its result is not terminal
-  // yet — neither a refusal nor a hold. It may also have been queued and removed while the request read as pending (ship sees
-  // only `wait` while a PR is in the queue, so the removal is seen here and nowhere else): a removal's own facts decide, as they
-  // do for any settled enqueue below. With no removal behind it, the same head is asked again, and that repeat names the one
-  // request GitHub already holds (a 409 with its uuid), so it never makes a second one.
+  // yet — neither a refusal nor a hold. It is asked again at the same head, and the repeat reads the request that head already
+  // has by its kept id (and names the same one on a 409 while it is pending), so a terminal `failed` or `enqueued` is never
+  // lost and no second request is made. A queue removal is never read from here: `groupFailing` names the PR's latest
+  // merge_group run, which may belong to an earlier head, so it is no evidence about this one.
   const pending = /^ship-enqueue-pending/.test(text);
-  const removed = (f.groupFailing?.length ?? 0) > 0;
   // Not queued (a refusal, an unanswered call that read back as not queued): a new attempt at the same head.
   // Ended by a pause or a stop (the adoption moved on): queued again now that it is worked again. Any other end (a refusal, a veto,
   // a call that read back as not queued) holds, never queued again at this head; the outcome is on the record.
-  if (r.state !== "done" && !(pending && removed)) return pending || /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
+  if (r.state !== "done") return pending || /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
   // Queued, and open and out of the queue again: removed.
   const onBase = new Set(f.onBase ?? []);
   const own = (f.groupFailing ?? []).filter((n) => !onBase.has(n));
