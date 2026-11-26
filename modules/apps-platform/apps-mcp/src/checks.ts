@@ -16,7 +16,7 @@
 // Everything a page says is app-authored: findings carry generated text, and page text only as a short sanitized sample.
 import { apiTarget, checkPath, plainPath } from "./api.js";
 import type { Scope } from "./identity.js";
-import type { App } from "./registry.js";
+import { noHttpSurface, type App } from "./registry.js";
 import { anonymousCallers } from "./tailnet.js";
 import { browserKit } from "./view.js";
 
@@ -42,13 +42,8 @@ export const sample = (s: unknown): string => String(s ?? "").replace(/[\p{Cc}<>
 
 export const isWeb = (app: App) => app.expose && !!app.port && !!app.health.url;
 
-/**
- * The app is not expected to serve HTTP at all: not exposed on the tailnet or through the gate, not shared, no `health.url`
- * and no agent `api` (the registry needs a health.url for an api). A database is the shape this is for: it speaks its own
- * protocol, so its ports answer silence to an HTTP request. Such an app's unprobed ports are recorded as non-hard findings
- * instead of failing the deploy; a port that does answer HTTP is still judged, on this app as on any other (identityPorts).
- */
-export const noHttpSurface = (app: App) => !app.expose && !app.share?.host && !app.health.url && !app.api;
+/** The one predicate for "serves no HTTP at all" (registry.ts), shared with the grader's view and identityPorts. */
+export { noHttpSurface };
 
 /** Which render and agent probes to run, and whether each path was declared (strict) or inferred (lenient). */
 export function plan(app: App, declared: Declared = {}): { render: { path: string; declared: boolean }[]; agent: { path: string; declared: boolean }[] } {

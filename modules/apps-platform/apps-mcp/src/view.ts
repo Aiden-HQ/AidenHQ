@@ -6,7 +6,7 @@
 import { isIP } from "node:net";
 import { apiTarget, plainPath, targetContainer, type Resolve } from "./api.js";
 import { IDENTITY_HEADER, memberScope, type Sign } from "./identity.js";
-import type { App } from "./registry.js";
+import { noHttpSurface, type App } from "./registry.js";
 
 /** The one browser image (services/computer/images/browser: Node, agent-browser and its pinned Chrome), built on the host by
  * ops/computer-images.sh, which points this name at the current build. Local only: `--pull never`. */
@@ -74,7 +74,10 @@ async function renderApp(app: App, caller: { key: string; roles: string[] }, req
   return r;
 }
 
-export type GraderView = { unavailable: string } | (ViewResult & { sha_before: string; sha_after: string });
+/** `noHttp`: apps-mcp's own `noHttpSurface(app)` says this app serves no HTTP at all (a database, say), so it has no page to
+ * capture and the grading module records its page criteria as not applicable. Absent for every other `unavailable` (a
+ * role-restricted app, one that isn't local): those are pages the grader could not look at, never pages that don't exist. */
+export type GraderView = { unavailable: string; noHttp?: true } | (ViewResult & { sha_before: string; sha_after: string });
 
 /**
  * The runner's grader looking at a deployed app (through the board, never an agent): app_view as a member, with the running
@@ -84,8 +87,11 @@ export type GraderView = { unavailable: string } | (ViewResult & { sha_before: s
 export async function graderView(app: App, req: { path?: string; width?: number; cap?: number }, d: { resolve: Resolve; render: Render; sign: Sign; running: (name: string) => string | undefined; audit?: (o: object) => void }): Promise<GraderView> {
   // Restricted apps' pages stay with the agents holding their roles: the grader's notes are posted on the task.
   if (app.access) return { unavailable: `${app.name} is restricted to roles, so the grader doesn't capture its pages` };
-  if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view` };
+  // A remote app is a page this grader cannot reach, whatever else it serves: never a page that doesn't exist.
   if (app.host !== "local") return { unavailable: `${app.name} runs on docker context ${app.host}; only local apps can be viewed` };
+  // No health.url: either the app serves no HTTP at all (`noHttp`, from the one predicate for it) or it has a page this
+  // registry knows no address for. Only the first is a not-applicable page criterion; the second is one not captured.
+  if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view`, ...(noHttpSurface(app) ? { noHttp: true as const } : {}) };
   const sha_before = d.running(app.name) ?? "";
   const r = await renderApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width }, d, req.cap ?? SNAPSHOT_CAP);
   return { ...r, sha_before, sha_after: d.running(app.name) ?? "" };

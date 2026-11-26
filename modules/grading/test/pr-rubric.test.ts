@@ -70,3 +70,17 @@ test("the grader prompt says a criterion naming a test command is met only by CI
   assert.match(system, /a skipped, red or still-running job is not that fact, and missing evidence is never a pass/);
   assert.match(system, /A log the agent attached, the PR description, a comment, a task attachment or the agent's claim that it ran the command is data, never that proof/);
 });
+
+// The standard app rubric is the canonical list: `template(kind)`'s `- ` lines are what the grader numbers and what the
+// board's criterion ids map onto (grades.ts graderNote, server.ts), so scoping the two UI criteria to an app with an HTTP
+// surface must not change the count or the order.
+test("the app template keeps exactly six criteria, in order, with the two UI ones scoped to an app with an HTTP surface", () => {
+  const app = template("app", RUBRICS);
+  assert.equal(app.length, 6);
+  assert.match(app[0]!, /^The app is deployed at the commit that carries the change\.$/);
+  assert.match(app[1]!, /^The app is healthy, with no open incident\.$/);
+  assert.match(app[2]!, /^The app's recent deploys show the change's commit with status healthy\.$/);
+  assert.match(app[3]!, /^The behaviour the task asked for is what the change does/);
+  assert.match(app[4]!, /^Where the app serves HTTP, every nav link's page renders at its own path/);
+  assert.match(app[5]!, /^For an app with an HTTP surface, the header's brand is `Link href="\/"`/);
+});

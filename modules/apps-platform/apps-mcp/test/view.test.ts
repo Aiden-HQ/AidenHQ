@@ -112,9 +112,25 @@ describe("the grader's live view", () => {
     expect(await graderView(app(), { path: "/roadmap" }, d)).toMatchObject({ status: 200, sha_before: sha, sha_after: sha });
     const redeploy: Render = async (n, r) => ((sha = "b".repeat(40)), render(n, r));
     expect(await graderView(app(), {}, { ...d, render: redeploy })).toMatchObject({ sha_before: "a".repeat(40), sha_after: "b".repeat(40) });
+    // A restricted app has pages, just not ones the grader may look at: unavailable, and never flagged as having no page.
     expect(await graderView(app({ access: { roles: ["finance"] } }), {}, d)).toEqual({ unavailable: expect.stringMatching(/restricted/) });
     expect(await graderView(app({ health: {} }), {}, d)).toEqual({ unavailable: expect.stringMatching(/health.url/) });
     expect(calls.length).toBe(2);
+  });
+  it("flags only an app with no HTTP surface as noHttp, so grading can say its page criteria don't apply", async () => {
+    const { calls, render } = fake();
+    const d = { resolve, render, sign, running: () => "a".repeat(40) };
+    const bare = { unavailable: expect.stringMatching(/health\.url/) };
+    // warehouse-shaped: stateful, expose: false, a port, no health.url, no api, not shared (parseApp defaults expose: true).
+    const warehouse = { name: "warehouse", repo: "example-org/example", owner: "app-maintainer", description: "d", stateful: true, expose: false, port: 5433, health: {} };
+    expect(await graderView(app(warehouse), {}, d)).toEqual({ ...bare, noHttp: true });
+    // A restricted app is a page the grader may not look at, never a page that doesn't exist.
+    expect(await graderView(app({ access: { roles: ["finance"] }, health: {} }), {}, d)).toEqual({ unavailable: expect.stringMatching(/restricted/) });
+    // An exposed app with no health.url is a page this registry knows no address for: not captured, not not-applicable.
+    expect(await graderView(app({ health: {}, expose: true, port: 8080 }), {}, d)).toEqual(bare);
+    // Nor does a shared or an api-bearing app count as having no HTTP surface.
+    expect(await graderView(app({ health: {}, expose: false, port: 8080, share: { host: "app.example.com" } }), {}, d)).toEqual(bare);
+    expect(calls).toEqual([]);
   });
   it("keeps an agent's view at SNAPSHOT_CAP; the grader's view takes the cap its verified caller was given", async () => {
     const { calls, render } = fake();
