@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { needsOwner } from "./aidenhq-sdk/needs.js";
 import { type AuthStatus, GoogleAuthError, GoogleClient, type StoredCredentials, WRITE_SCOPE } from "./google.js";
 import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace } from "./workspace.js";
-import { type Cursor, startOf } from "./inbox.js";
+import { type Cursor, INBOX_BUDGET_MS, startOf } from "./inbox.js";
 
 /**
  * Credentials file, multi-account:
@@ -324,11 +324,17 @@ export class MultiWorkspace {
    */
   async gmailInbox(cursor: Cursor, limit: number) {
     const threads: Record<string, unknown>[] = [], accounts: Record<string, unknown>[] = [], next: Cursor = {}, served: string[] = [];
-    for (const name of this.accounts()) {
+    const names = this.accounts();
+    // One wall-clock budget for the whole call (the kernel's tool timeout is 300 s), split evenly across the accounts still to
+    // serve, so a wide window on a first account cannot starve the others and no account runs the call into the timeout. Each
+    // account that runs out answers `more: true` with its cursor, and the next call continues there.
+    const until = Date.now() + INBOX_BUDGET_MS;
+    for (const [i, name] of names.entries()) {
       try {
         // A sign-in that records its scopes and allows no Gmail read is the owner's reconnect, not a per-account error.
         if ((this.scopes.get(name) ?? []).length && !this.granted(name, WRITE_SCOPE.gmail) && !this.granted(name, GMAIL_READ)) throw new ScopeMissing(GMAIL_READ, name);
-        const r = await this.in(name, (w) => w.gmailInbox(name, startOf(cursor[name]), limit)) as Awaited<ReturnType<Workspace["gmailInbox"]>>;
+        const share = Date.now() + Math.max(0, until - Date.now()) / (names.length - i);
+        const r = await this.in(name, (w) => w.gmailInbox(name, startOf(cursor[name]), limit, share)) as Awaited<ReturnType<Workspace["gmailInbox"]>>;
         threads.push(...r.threads.map((t) => ({ account: name, ...t, link: gmailLink(String(t.thread_id), name) })));
         accounts.push({ account: name, threads: r.threads.length, dropped: r.dropped, more: r.more });
         next[name] = r.cursor;

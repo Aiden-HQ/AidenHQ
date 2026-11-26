@@ -1,19 +1,46 @@
 // The owner's inbox as a feed (gmail_inbox_new, gmail_inbox_ack): what arrived since the caller's cursor, with the obvious
-// noise set aside in code before any model reads it. Gmail's own categories (Promotions, Social, Updates, Forums) are left
-// out by the query; mailing-list and automated headers and no-reply senders are dropped here, counted, never shown.
-// The cursor is a per-account receipt time (ms), kept per calling agent and moved only by an ack, so a run that fails
-// before its ack sees the same mail again (task markers make that replay idempotent).
+// noise set aside in code before any model reads it. The feed lists the inbox broadly and drops Gmail's own categories
+// (Promotions, Social, Updates, Forums) from each message's labelIds, with mailing-list and automated headers and no-reply
+// senders, all counted, never shown; a message at or before the window start is counted too, so an empty feed explains
+// itself. The cursor is a per-account receipt time (ms), kept per calling agent and moved only by an ack, so a run that
+// fails before its ack sees the same mail again (task markers make that replay idempotent).
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-export const INBOX_QUERY = "in:inbox -from:me -category:promotions -category:social -category:updates -category:forums";
+/** The whole inbox except the owner's own mail: Gmail's categories are filtered from labelIds in code, not hidden by the
+ *  query, so a message they would exclude still comes back and is counted under `dropped` instead of looking like nothing. */
+export const INBOX_QUERY = "in:inbox -from:me";
 /** A first call looks back a day; a cursor older than four days (paused over a long weekend and more) starts there. */
 export const FIRST_LOOKBACK_MS = 86_400_000;
 export const MAX_LOOKBACK_MS = 4 * 86_400_000;
 /** Messages read per account and call (one metadata request each): past this the rest wait for the next call (`more`). */
 export const MAX_READS = 200;
+/** Metadata reads in flight at once: one request each, so a window full of mail overlaps its reads instead of walking them
+ *  one at a time; the messages themselves are still decided oldest first, in order. */
+export const READS_AT_ONCE = 8;
+/** One inbox call's wall-clock budget (split across the accounts still to serve), covering both the listing and per-message
+ *  walk and the thread enrichment after it, so a wide window answers inside the kernel's 300 s tool timeout instead of dying
+ *  with neither threads nor a cursor. The walk gets `INBOX_WALK_SHARE` of it and enrichment the rest: past either, the rest is
+ *  handed to the next call (`more`, with a cursor that stays honest about what was decided). */
+export const INBOX_BUDGET_MS = 60_000;
+/** The walk's part of that budget: what is left keeps enrichment going, so a walk that used its part cannot starve it. */
+export const INBOX_WALK_SHARE = 0.6;
 
 /** A sender's local part that never reads replies. */
 const NO_REPLY = /^(?:.*[-_.+])?(?:no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounces?|notifications?|notify|alerts?)(?:[-_.+].*)?$/i;
+
+/** Gmail's noise categories, as the label each message carries and the `dropped` key it counts under. */
+const CATEGORIES: Record<string, string> = {
+  CATEGORY_PROMOTIONS: "category:promotions",
+  CATEGORY_SOCIAL: "category:social",
+  CATEGORY_UPDATES: "category:updates",
+  CATEGORY_FORUMS: "category:forums",
+};
+
+/** Why a message belongs to one of Gmail's noise categories (from its own labels), or undefined for the main inbox. */
+export function category(labelIds: readonly string[] | undefined): string | undefined {
+  for (const label of labelIds ?? []) if (CATEGORIES[label]) return CATEGORIES[label];
+  return undefined;
+}
 
 /** Why a message is automated mail (a list, bulk, an auto-reply, a no-reply sender), or undefined for a person's mail. */
 export function automated(h: (name: string) => string | undefined): "list" | "bulk" | "auto" | "no-reply" | undefined {
