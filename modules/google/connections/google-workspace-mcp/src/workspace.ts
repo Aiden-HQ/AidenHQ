@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { GoogleClient } from "./google.js";
-import { automated, category, ccOnly, INBOX_QUERY, MAX_READS } from "./inbox.js";
+import { automated, category, ccOnly, INBOX_BUDGET_MS, INBOX_QUERY, MAX_READS, READS_AT_ONCE } from "./inbox.js";
 
 const CAL = "https://www.googleapis.com/calendar/v3";
 const DRIVE = "https://www.googleapis.com/drive/v3";
@@ -331,7 +331,12 @@ export class Workspace {
    * everything up to which was read (pass it to the next call once the threads are decided); `more` says threads past the
    * limit wait.
    */
-  async gmailInbox(me: string, after: number, limit: number) {
+  async gmailInbox(me: string, after: number, limit: number, until = Number.POSITIVE_INFINITY) {
+    // The call has a wall-clock budget of its own: a wide window can hold hundreds of messages, and running into the kernel's
+    // tool timeout would answer neither threads nor a cursor. Past the budget the rest waits for the next call (`more`).
+    // `until` is the deadline the caller set for this account (MultiWorkspace splits one call's budget across its accounts);
+    // on its own the call budgets INBOX_BUDGET_MS. The enrichment below is bounded by `limit` threads, so it stays inside it.
+    const deadline = Math.min(until, Date.now() + INBOX_BUDGET_MS);
     // Every id since the cursor (cheap: 500 a page; the cursor is at most four days back), so the walk below starts at the oldest.
     const ids: string[] = [];
     let pageToken: string | undefined;
@@ -343,53 +348,87 @@ export class Workspace {
     const threads = new Map<string, Record<string, unknown>>();
     const dropped: Record<string, number> = {};
     let cursor = after, more = false, reads = 0;
-    // Gmail lists newest first: walk oldest first, so a call that stops early hands exactly the rest to the next one.
-    for (const id of ids.reverse()) {
-      let m: GmailMessage;
-      try {
-        m = await this.g.get<GmailMessage>(`${GMAIL}/messages/${encodeURIComponent(id)}`, { format: "metadata" });
-      } catch (err) {
-        if (/^Google API 404:/.test((err as Error).message)) continue; // deleted since the listing
+    // Gmail lists newest first: the order below is oldest first, so a call that stops early hands exactly the rest to the next
+    // one. Metadata reads overlap (one request each, READS_AT_ONCE in flight), but every message is still decided in that order.
+    const order = ids.reverse();
+    type Read = { m?: GmailMessage; err?: Error };
+    const meta = (id: string): Promise<Read> =>
+      this.g.get<GmailMessage>(`${GMAIL}/messages/${encodeURIComponent(id)}`, { format: "metadata" }).then((m) => ({ m }), (err: Error) => ({ err }));
+    const inFlight = new Map<number, Promise<Read>>();
+    let ahead = 0;
+    const fill = (i: number) => {
+      while (ahead < order.length && ahead < i + READS_AT_ONCE && Date.now() < deadline) inFlight.set(ahead, meta(order[ahead++]!));
+    };
+    const read = (i: number) => {
+      let p = inFlight.get(i);
+      if (!p) inFlight.set(i, (p = meta(order[i]!)));
+      return p;
+    };
+    fill(0);
+    for (let i = 0; i < order.length; i++) {
+      // Past the budget nothing new is fetched: the rest waits for the next call.
+      if (!inFlight.has(i) && Date.now() >= deadline) {
+        more = true;
+        break;
+      }
+      const { m, err } = await read(i);
+      inFlight.delete(i);
+      fill(i + 1);
+      if (err) {
+        if (/^Google API 404:/.test(err.message)) continue; // deleted since the listing
         throw err;
       }
-      const at = Number(m.internalDate ?? 0);
+      const at = Number(m!.internalDate ?? 0);
       // `after:` is in whole seconds, so the listing can hold mail at or before the window's start: count it, so a cursor
       // past the mail explains itself instead of looking like an empty inbox.
       if (at <= after) {
         dropped["before-window"] = (dropped["before-window"] ?? 0) + 1;
         continue;
       }
-      // A call stops at `limit` threads or MAX_READS messages, never inside one millisecond (the cursor can't split those).
-      if (at > cursor && ((threads.size >= limit && !threads.has(m.threadId)) || reads >= MAX_READS)) {
+      const h = (name: string) => header(m!, name);
+      // A category comes from this message's own labels: an older promotional message in a thread does not hide the thread.
+      const why = category(m!.labelIds) ?? automated(h);
+      // A call stops at `limit` threads, MAX_READS messages or the budget, never inside one millisecond (the cursor can't
+      // split those). A message that is dropped anyway takes no thread slot, so it is counted instead of ending the call.
+      if (at > cursor && (reads >= MAX_READS || (!why && threads.size >= limit && !threads.has(m!.threadId)))) {
         more = true;
         break;
       }
       reads++;
       cursor = Math.max(cursor, at);
-      const h = (name: string) => header(m, name);
-      const why = category(m.labelIds) ?? automated(h);
       if (why) {
         dropped[why] = (dropped[why] ?? 0) + 1;
         continue;
       }
-      threads.delete(m.threadId); // re-inserted: the map stays in arrival order of each thread's newest message
-      threads.set(m.threadId, { thread_id: m.threadId, id: m.id, from: h("From"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: new Date(at).toISOString(), cc_only: ccOnly(me, h("To"), h("Cc")), snippet: m.snippet, replied: false });
+      threads.delete(m!.threadId); // re-inserted: the map stays in arrival order of each thread's newest message
+      threads.set(m!.threadId, { thread_id: m!.threadId, id: m!.id, from: h("From"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: new Date(at).toISOString(), cc_only: ccOnly(me, h("To"), h("Cc")), snippet: m!.snippet, replied: false });
     }
     // The listing holds inbox mail only: a reply the owner sent carries SENT, not INBOX, so it never appears and a thread
     // the owner already answered would still show the other party's message as its newest. Read each kept thread (metadata
-    // only) and let its newest message, whoever sent it, be the row; `replied` marks the owner's own.
-    for (const [threadId, row] of threads) {
-      let t: { messages?: GmailMessage[] };
-      try {
-        t = await this.g.get<{ messages?: GmailMessage[] }>(`${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "metadata" });
-      } catch (err) {
-        if (/^Google API 404:/.test((err as Error).message)) continue; // deleted since the listing
+    // only) and let its newest message, whoever sent it, be the row; `replied` marks the owner's own. The reads overlap,
+    // READS_AT_ONCE at a time, so a page of kept threads costs a few round trips rather than one each in turn.
+    const rows = [...threads];
+    const fetched = new Map<string, { t?: { messages?: GmailMessage[] }; err?: Error }>();
+    // Enrichment is bounded by `limit` (at most 50 threads, a handful of batches), so it runs to the end even when the walk
+    // used the whole budget: a row must carry its real `replied`, and the cursor has already moved past it.
+    for (let i = 0; i < rows.length; i += READS_AT_ONCE) {
+      await Promise.all(
+        rows.slice(i, i + READS_AT_ONCE).map(async ([threadId]) => {
+          const r = await this.g.get<{ messages?: GmailMessage[] }>(`${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "metadata" }).then((t) => ({ t }), (err: Error) => ({ err }));
+          fetched.set(threadId, r);
+        }),
+      );
+    }
+    for (const [threadId, row] of rows) {
+      const { t, err } = fetched.get(threadId) ?? {};
+      if (err) {
+        if (/^Google API 404:/.test(err.message)) continue; // deleted since the listing
         throw err;
       }
       // Category and automated mail stays set aside here too: the row is the newest message a person sent (the owner's own
       // included). A thread is kept when its listed message was not categorised, even if an older message in it was.
       const person = (x: GmailMessage) => (x.labelIds ?? []).includes("SENT") || (!category(x.labelIds) && !automated((name) => header(x, name)));
-      const newest = (t.messages ?? []).filter(person).reduce<GmailMessage | undefined>((last, x) => (!last || Number(x.internalDate ?? 0) >= Number(last.internalDate ?? 0) ? x : last), undefined);
+      const newest = (t?.messages ?? []).filter(person).reduce<GmailMessage | undefined>((last, x) => (!last || Number(x.internalDate ?? 0) >= Number(last.internalDate ?? 0) ? x : last), undefined);
       if (!newest) continue;
       const h = (name: string) => header(newest, name);
       const at = Number(newest.internalDate ?? 0);

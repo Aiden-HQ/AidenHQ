@@ -17,6 +17,8 @@ const CATEGORY_TERMS: Record<string, string> = { promotions: "CATEGORY_PROMOTION
 /** Two accounts' inboxes: `side.io` fails. Gmail lists newest first, pages by 2, and honours `-from:me` and any `-category:` terms. */
 function google(msgs: Msg[]) {
   const listed: string[] = [];
+  /** Message metadata requests in flight (`reads`) and the most at once (`most`), so a test sees the walk overlap its reads. */
+  const reads = { now: 0, most: 0 };
   const impl = (async (input: string | URL) => {
     const url = new URL(String(input));
     if (url.hostname === "oauth2.googleapis.com") return Response.json({ access_token: "at", expires_in: 3600 });
@@ -40,9 +42,13 @@ function google(msgs: Msg[]) {
     }
     const m = msgs.find((x) => url.pathname === `${GM}/${x.id}` && x.id !== "gone");
     if (!m) return new Response("not found", { status: 404 });
+    reads.now++;
+    reads.most = Math.max(reads.most, reads.now);
+    await new Promise((r) => setTimeout(r, 1));
+    reads.now--;
     return Response.json(message(m));
   }) as typeof fetch;
-  return { impl, listed };
+  return { impl, listed, reads };
 }
 
 function creds() {
@@ -157,6 +163,26 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     expect(r.accounts[0]).toMatchObject({ dropped: { "category:promotions": 1 } });
   });
 
+  it("counts a category message before the thread limit, so it neither blocks nor replays the thread behind it", async () => {
+    // limit: 1. Oldest first: thread A's person, then a promotion in B, then A's newer reply. The promotion must not take the
+    // only thread slot: it is dropped and counted, and the call reaches A's reply instead of serving A's stale first row.
+    const interleaved: Msg[] = [
+      { id: "a1", threadId: "ta", at: T0 + 1_000, headers: person("Dana <dana@acme.com>") },
+      { id: "p1", threadId: "tp", at: T0 + 2_000, headers: person("Shop <deals@shop.com>"), labels: ["CATEGORY_PROMOTIONS"] },
+      { id: "a2", threadId: "ta", at: T0 + 3_000, headers: person("Dana <dana@acme.com>") },
+      { id: "z1", threadId: "tz", at: T0 + 4_000, headers: person("Kim <kim@acme.com>") },
+    ];
+    const ws = new MultiWorkspace(creds(), "primary", google(interleaved).impl);
+    const first = await ws.gmailInbox({ "me@work.com": T0 }, 1);
+    expect(first.threads.map((t) => [t.thread_id, t.id])).toEqual([["ta", "a2"]]);
+    expect(first.accounts[0]).toMatchObject({ threads: 1, dropped: { "category:promotions": 1 }, more: true });
+    expect(first.cursor).toEqual({ "me@work.com": T0 + 3_000 });
+
+    const second = await ws.gmailInbox(first.cursor, 1);
+    expect(second.threads.map((t) => t.thread_id)).toEqual(["tz"]);
+    expect(second.accounts[0]).toMatchObject({ more: false });
+  });
+
   it("counts mail at or before the window start, so a cursor past the mail explains itself", async () => {
     // `after:` is whole seconds: a window starting mid-second still lists mail at the start of that second.
     const early: Msg[] = [
@@ -173,6 +199,15 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     const none = await new MultiWorkspace(creds(), "primary", google(early.slice(0, 2)).impl).gmailInbox({ "me@work.com": T0 + 500 }, 20);
     expect(none.threads).toEqual([]);
     expect(none.accounts[0]).toMatchObject({ threads: 0, dropped: { "before-window": 2 } });
+  });
+
+  it("overlaps the metadata reads, so a wide window costs a few round trips instead of one per message", async () => {
+    // A window of 12 messages would be 12 sequential Gmail round trips: on a wide window that runs into the tool deadline.
+    const wide: Msg[] = Array.from({ length: 12 }, (_, i) => ({ id: `m${i}`, threadId: `t${i}`, at: T0 + (i + 1) * 1_000, headers: person(`P${i} <p${i}@acme.com>`) }));
+    const g = google(wide);
+    const r = await new MultiWorkspace(creds(), "primary", g.impl).gmailInbox({ "me@work.com": T0 }, 50);
+    expect(r.threads).toHaveLength(12);
+    expect(g.reads.most).toBeGreaterThan(1);
   });
 
   it("a failing account keeps its place and shows its error", async () => {

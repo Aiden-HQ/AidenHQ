@@ -14,6 +14,15 @@ export const FIRST_LOOKBACK_MS = 86_400_000;
 export const MAX_LOOKBACK_MS = 4 * 86_400_000;
 /** Messages read per account and call (one metadata request each): past this the rest wait for the next call (`more`). */
 export const MAX_READS = 200;
+/** Metadata reads in flight at once: one request each, so a window full of mail overlaps its reads instead of walking them
+ *  one at a time; the messages themselves are still decided oldest first, in order. */
+export const READS_AT_ONCE = 8;
+/** One inbox call's wall-clock budget for its listing and per-message walk (split across the accounts still to serve). Past
+ *  it the rest is handed to the next call (`more`, cursor up to the last decided message), so a wide window answers inside the
+ *  kernel's 300 s tool timeout instead of dying with neither threads nor a cursor. Thread enrichment follows, bounded by
+ *  `limit` (50 threads = 7 batches of 8, at worst 210 s against the 30 s per-request timeout), and runs past this budget so
+ *  every row it serves carries its real `replied`; the two together stay inside the timeout. */
+export const INBOX_BUDGET_MS = 60_000;
 
 /** A sender's local part that never reads replies. */
 const NO_REPLY = /^(?:.*[-_.+])?(?:no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounces?|notifications?|notify|alerts?)(?:[-_.+].*)?$/i;
