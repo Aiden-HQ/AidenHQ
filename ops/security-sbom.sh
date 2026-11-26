@@ -657,8 +657,11 @@ snapshot() {
       u_image[$unit]="$image"; u_plat[$unit]="$plat"; u_man[$unit]="$man"
       u_label[$unit]="$label"
       u_tag[$unit]=""; u_pinned[$unit]="$man"; u_cid[$unit]="$cid"
-    elif [ -z "${u_label[$unit]:-}" ] && [ -n "$label" ]; then
-      u_label[$unit]="$label"
+    else
+      if [ -z "${u_label[$unit]:-}" ] && [ -n "$label" ]; then u_label[$unit]="$label"; fi
+      # Two containers can run one image variant (two replicas of a service). If the daemon no longer holds the image,
+      # both filesystems are in production and each has to be exported: keep every id, not only the first container's.
+      [[ " ${u_cid[$unit]:-} " == *" $cid "* ]] || u_cid[$unit]="${u_cid[$unit]:-} $cid"
     fi
     # The tag is read once per variant, on that variant's platform: the id the tests below judge, and the identity carried
     # forward as the pin. Reading it again later would pin whatever it names then, not what the container runs.
@@ -796,14 +799,18 @@ snapshot() {
       # nothing else to read, so a running container is inventoried from `docker export` under the same target. The image
       # path above runs unchanged whenever any reference answers, which is every image the daemon still holds.
       if [ "$ref" = "$pin" ] && [ -n "${u_cid[$unit]:-}" ]; then
-        mode=container; cid="${u_cid[$unit]}"
-        # Its root filesystem size, when the daemon reports it: the export and its extracted tree are both charged
-        # against the room above the floor. A daemon that cannot size it leaves the bound to the write's own cap.
-        raw="$(docker_call 15 inspect --size -f '{{.SizeRootFs}}' "$cid" 2>/dev/null || true)"
-        raw="$(printf '%s\n' "$raw" | tail -1)"
-        if [[ "$raw" =~ ^[0-9]+$ ]]; then size="$raw"; else size=0; fi
+        mode=container
+        # Every container on this variant is exported when the image is gone: two replicas are one unit and one target
+        # key, so their roots are scanned together under that row. Their root filesystem sizes, where the daemon reports
+        # them, are the demand the unit makes; one it cannot size leaves that part to the write's own cap.
+        size=0
+        for cid in ${u_cid[$unit]}; do
+          raw="$(docker_call 15 inspect --size -f '{{.SizeRootFs}}' "$cid" 2>/dev/null || true)"
+          raw="$(printf '%s\n' "$raw" | tail -1)"
+          if [[ "$raw" =~ ^[0-9]+$ ]]; then size=$(( size + raw )); fi
+        done
         p_key+=("$key"); p_pin+=("$pin"); p_ref+=(""); p_plat+=("$plat"); p_bytes+=("$size"); p_size+=("$(ceil_gb "$size")")
-        p_mode+=("$mode"); p_cid+=("$cid")
+        p_mode+=("$mode"); p_cid+=("${u_cid[$unit]}")
         continue
       fi
       fail "image:$key" "docker image inspect: ${raw:-failed}"; continue
@@ -878,7 +885,8 @@ declare -A defer_seen=()
 # with it. Every archive is written from the reference the survey resolved, re-checked at save time; each failure is a
 # line, never a gap.
 save_wave() { # <wave>
-  local w="$1" idx sz szb key pin ref plat archive root treeb top top_gb avail_now why cap_bytes written=0 written_big=0
+  local w="$1" idx sz szb key pin ref plat archive root top top_gb avail_now why cap_bytes written=0 written_big=0
+  local unitdir tarsdir cont_err cont_space cont_bytes cid ctarchive ctbytes
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   while IFS=$'\t' read -r szb idx; do
     [ -n "$idx" ] || continue
@@ -914,47 +922,69 @@ save_wave() { # <wave>
     # most nothing: a save that hits the cap is a refused write, and its file is removed below.
     archive_seq=$((archive_seq + 1))
     archive="$archives/$archive_seq.tar"
-    [ "${p_mode[$idx]}" = container ] && archive="$exportdir/$archive_seq.tar"
     cap_bytes=$(( $(free_bytes) - floor_bytes )); [ "$cap_bytes" -lt 0 ] && cap_bytes=0
     if [ "${p_mode[$idx]}" = container ]; then
-      # No image record is left, so the container's own root filesystem is what gets inventoried. The export is a write
-      # like a save: capped at the room above the floor, under this wave's apply-lock hold and the snapshot deadline, and
-      # a container that cannot be exported is a line with its daemon error rather than a gap. Its tar lives in the pass's
-      # private directory beside the archives and is removed by scan_wave once scanned.
-      if export_container "${p_cid[$idx]}" "$archive" "$cap_bytes"; then
-        szb="$(stat -c %s "$archive" 2>/dev/null || echo "$szb")"
-        if [ "$szb" -gt "$cap_bytes" ] || [ "$(free_bytes)" -lt "$floor_bytes" ]; then
-          export_space=1; rm -f "$archive"
-          why="skipped: the ${sz} GB container root filesystem outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor"
-          if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then continue; fi
-          fail "image:$key" "$why"; continue
-        fi
-        # Extracted here, under the same apply-lock hold: the tree is a second write of the container's filesystem and
-        # must not outlive the lock or the snapshot budget. The scan then reads only the extracted directory, after the
-        # lock is released like every other scan.
-        root="$exportdir/root-$archive_seq"
-        if extract_container_root "$archive" "$root"; then
-          plan_add "image:$key" "$root" "$pin" "$ref" "$sz" "$idx" "${p_bytes[$idx]}" "${p_cid[$idx]}"
-          # Both copies are resident until the scan ends: the tar and the tree unpacked from it. Charging only the tar
-          # would let a later save in this wave use room the extraction has already taken.
-          treeb="$(du -sb "$root" 2>/dev/null | awk '{ print $1 }')"; [ -n "$treeb" ] || treeb="$szb"
-          szb=$(( szb + treeb ))
-          written=$(( written + szb )); [ "$szb" -gt "$written_big" ] && written_big="$szb"
-        elif [ "$export_space" = 1 ]; then
-          rm -rf "$root"; rm -f "$archive"
-          why="skipped: the ${sz} GB container root filesystem does not fit above the ${min_free_gb} GB floor"
-          if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then continue; fi
-          fail "image:$key" "$why"
-        else
-          rm -rf "$root"; rm -f "$archive"
-          fail "image:$key" "docker export: ${export_err:-failed to extract the container root}"
-        fi
-      elif [ "$export_space" = 1 ]; then
-        why="skipped: the ${sz} GB container root filesystem's export outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor"
+      # No image record is left, so the containers' own root filesystems are what gets inventoried. One unit can hold
+      # two containers running the same gone image (two replicas); each is exported, and their trees are extracted side
+      # by side under one private unit directory, which is then scanned once under the unit's single target key. Every
+      # write is bounded like a save: capped at the room above the floor, under this wave's apply-lock hold and the
+      # snapshot deadline, with the floor watched while it runs. A container that cannot be exported or extracted leaves
+      # the unit a line with its daemon error rather than a gap, and no half-built tree is ever scanned.
+      unitdir="$exportdir/unit-$archive_seq"; tarsdir="$unitdir.tars"
+      cont_err=""; cont_space=0; cont_bytes=0
+      # The roots go in the unit directory, which is what syft scans; each tar goes beside it in `<unit>.tars`, so the
+      # scan never reads an export's bytes a second time as a file in the tree.
+      if ! mkdir -p -m 700 "$unitdir" "$tarsdir" 2>/dev/null; then
+        cont_err="could not create the private export directory $unitdir"
+      else
+        chmod 700 "$unitdir" "$tarsdir" 2>/dev/null || true
+        for cid in ${p_cid[$idx]}; do
+          ctarchive="$tarsdir/export-$cid.tar"
+          cap_bytes=$(( $(free_bytes) - floor_bytes )); [ "$cap_bytes" -lt 0 ] && cap_bytes=0
+          export_space=0
+          if ! export_container "$cid" "$ctarchive" "$cap_bytes"; then
+            if [ "$export_space" = 1 ]; then
+              cont_space=1
+              cont_err="container $cid's export outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor"
+            else
+              cont_err="container $cid: ${export_err:-failed}"
+            fi
+            break
+          fi
+          ctbytes="$(stat -c %s "$ctarchive" 2>/dev/null || echo 0)"
+          if [ "$ctbytes" -gt "$cap_bytes" ] || [ "$(free_bytes)" -lt "$floor_bytes" ]; then
+            cont_space=1
+            cont_err="container $cid's export outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor"
+            break
+          fi
+          cont_bytes=$(( cont_bytes + ctbytes ))
+          # Extracted here, under the same apply-lock hold: the tree is a second write of the container's filesystem and
+          # must not outlive the lock or the snapshot budget. The scan reads only the extracted trees, after the lock is
+          # released like every other scan.
+          export_space=0
+          if ! extract_container_root "$ctarchive" "$unitdir/rootfs-$cid"; then
+            cont_err="container $cid: ${export_err:-failed to extract the container root}"
+            [ "$export_space" = 1 ] && cont_space=1
+            break
+          fi
+          cont_bytes=$(( cont_bytes + $(du -sb "$unitdir/rootfs-$cid" 2>/dev/null | awk '{ print $1 }' || echo 0) ))
+        done
+      fi
+      if [ -z "$cont_err" ]; then
+        # The tar and the tree stay until the scan ends (the scanned root is the tree); scan_wave removes the whole unit
+        # directory, tars included, so neither outlives its scan.
+        plan_add "image:$key" "$unitdir" "$pin" "$ref" "$sz" "$idx" "${p_bytes[$idx]}" "${p_cid[$idx]}"
+        # Both copies are resident until the scan ends: each tar and the trees unpacked from them. Charging only the tars
+        # would let a later save in this wave use room the extraction has already taken.
+        written=$(( written + cont_bytes )); [ "$cont_bytes" -gt "$written_big" ] && written_big="$cont_bytes"
+      elif [ "$cont_space" = 1 ]; then
+        rm -rf "$unitdir" "$tarsdir"
+        why="skipped: the ${sz} GB container root filesystem does not fit: $cont_err"
         if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then continue; fi
         fail "image:$key" "$why"
       else
-        fail "image:$key" "docker export: ${export_err:-failed}"
+        rm -rf "$unitdir" "$tarsdir"
+        fail "image:$key" "docker export: $cont_err"
       fi
       continue
     fi
@@ -1009,7 +1039,10 @@ save_wave() { # <wave>
 # room and the shortfall.
 # A planned source is an image archive or a container's extracted root: either is removed when its scan ends or it is
 # dropped, so neither outlives the pass.
-discard_plan_source() { # <archive file or extracted root>
+discard_plan_source() { # <archive file, extracted unit directory, or its tar directory>
+  # A container unit's exported tars sit in `<unit>.tars` beside the extracted roots: the scan root must hold the roots
+  # only, and both copies go together when the scan ends (or the unit is dropped), never at the end of the pass.
+  [ -e "$1.tars" ] && rm -rf "$1.tars"
   if [ -d "$1" ]; then rm -rf "$1"; else rm -f "$1"; fi
 }
 scan_wave() { # <first plan index>
@@ -1053,9 +1086,10 @@ scan_wave() { # <first plan index>
       workspace="${space_of[$i]}"
       if [ "$avail_bytes" -lt "$floor_bytes" ] || [ "$workspace" -gt "$room_bytes" ]; then rest+=("$i"); continue; fi
       if [ "${plan_cid[$i]:-}" ]; then
-        # A container export: scan the extracted root as a directory and remove it. The row's commit column carries
-        # `container:<id>`, this scan's provenance: the container's filesystem, not the missing image.
-        scan "$target" "container:${plan_cid[$i]}" -v "$archive:/src:ro" -- dir:/src
+        # A container export: scan the extracted root(s) as a directory and remove the whole private unit directory, the
+        # tars included. The row's commit column carries `container:<id>`, this scan's provenance: the containers'
+        # filesystems, not the missing image. Two containers on one gone image are one target, so both ids are named.
+        scan "$target" "container:$(printf '%s' "${plan_cid[$i]}" | tr ' ' ',')" -v "$archive:/src:ro" -- dir:/src
         discard_plan_source "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] ))
         continue
       fi
