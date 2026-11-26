@@ -13,7 +13,7 @@ const NAME = /^[\w-][\w.-]{0,119}\.(png|jpg|webp|json|md|diff)$/;
 const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", json: "application/json", md: "text/markdown", diff: "text/x-diff" };
 const KINDS = new Set(["review", "scan", "pass"]);
 
-type Row = { id: string; target: string; kind: string; app: string | null; task: string | null; agent: string; model: string; status: string; started: string; ended: string | null; cost_usd: number | null; report: string | null; depth: string | null; mode: string | null; source: string | null; trigger: string | null; why: string | null; stopping: string | null };
+type Row = { id: string; target: string; kind: string; app: string | null; task: string | null; agent: string; model: string; status: string; started: string; ended: string | null; cost_usd: number | null; report: string | null; depth: string | null; mode: string | null; source: string | null; trigger: string | null; why: string | null; stopping: string | null; slot: number | null };
 /** A pass's run as passes.ts and jobtools.ts read it. */
 export type PassRow = Omit<Row, "report">;
 
@@ -22,21 +22,22 @@ export interface Store {
   put(run: string, agent: string, files: { name: string; data: string }[]): { stored: number };
   finish(run: string, agent: string, report: Record<string, unknown>): { url: string };
   /**
-   * A pass's run, filed by the service itself (passes.ts): `agent` and `task` are set once its task is filed (bindPass). One
-   * running pass per app (the unique index runs_active): while one runs, the answer names it instead.
+   * A pass's run, filed by the service itself (passes.ts): `agent` and `task` are set once its task is filed (bindPass). It holds
+   * its app's one slot (the unique index runs_active) from here until its job has ended (release, endPass), past
+   * design_run_finish: while one holds it, the answer names that run instead.
    */
   startPass(a: { app: string; target: string; model: string; depth: string; mode: string; trigger: string }): { run: string } | { running: string };
   bindPass(run: string, task: string, agent: string, source: string): void;
-  /** A running pass ends: `failed` with why, or `stopped` (the owner's Stop, once its job ended). Frees the app. */
+  /** A pass ends: `failed` with why, or `stopped` (the owner's Stop, once its job ended), unless it already finished. Frees the app. */
   endPass(run: string, status: "failed" | "stopped", why: string): void;
   /** The owner asked to stop the pass: it stays running ("stopping") until its job has ended. */
   markStopping(run: string): void;
   pass(run: string): PassRow | undefined;
-  /** The app's running pass, if any. */
+  /** The pass holding the app's slot, if any (running, or finished while its job still ends). */
   active(app: string): PassRow | undefined;
-  /** Every running pass (the scheduler's reconcile). */
-  running(): PassRow[];
-  /** The app's passes started at or after `since` (ISO), newest first. */
+  /** Every pass holding its app's slot (the scheduler's reconcile). */
+  holding(): PassRow[];
+  /** The app's passes started or ended at or after `since` (ISO), newest first. */
   passesSince(app: string, since: string): PassRow[];
   /** The app's newest ended pass that stored a coverage queue (queue.json), with what the queue has left to do. */
   lastQueue(app: string): { run: string; left: number } | undefined;
@@ -56,9 +57,11 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
   // | always), why it failed, when its stop was asked; and one running pass per app (runs_active), the newest kept from before it.
   const cols = new Set((db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["depth", "mode", "source", "trigger", "why", "stopping"]) if (!cols.has(c)) db.exec(`ALTER TABLE runs ADD COLUMN ${c} TEXT`);
-  db.exec(`UPDATE runs SET status = 'superseded', ended = started WHERE kind = 'pass' AND status = 'running' AND id NOT IN (
+  if (!cols.has("slot")) db.exec(`ALTER TABLE runs ADD COLUMN slot INTEGER;
+    UPDATE runs SET status = 'superseded', ended = started WHERE kind = 'pass' AND status = 'running' AND id NOT IN (
       SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY app ORDER BY started DESC, id DESC) AS n FROM runs WHERE kind = 'pass' AND status = 'running') WHERE n = 1);
-    CREATE UNIQUE INDEX IF NOT EXISTS runs_active ON runs(app) WHERE kind = 'pass' AND status = 'running';`);
+    UPDATE runs SET slot = 1 WHERE kind = 'pass' AND status = 'running';`);
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS runs_active ON runs(app) WHERE kind = 'pass' AND slot = 1");
   const evidence = (run: string) => join(dir, "evidence", run);
   const get = (run: string): Row => {
     if (!/^[\w-]{1,40}$/.test(run)) throw new Error(`no run ${run}`);
@@ -86,29 +89,33 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
     startPass({ app, target, model, depth, mode, trigger }) {
       const id = newId(), at = new Date(now()).toISOString();
       try {
-        db.prepare("INSERT INTO runs (id, target, kind, app, agent, model, status, started, depth, mode, trigger) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+        db.prepare("INSERT INTO runs (id, target, kind, app, agent, model, status, started, depth, mode, trigger, slot) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)")
           .run(id, target, "pass", app, "", model, "running", at, depth, mode, trigger);
       } catch (e) {
-        const active = db.prepare("SELECT id FROM runs WHERE kind = 'pass' AND status = 'running' AND app = ?").get(app) as { id: string } | undefined;
+        const active = db.prepare("SELECT id FROM runs WHERE kind = 'pass' AND slot = 1 AND app = ?").get(app) as { id: string } | undefined;
         if (active) return { running: active.id };
         throw e;
       }
       return { run: id };
     },
     bindPass(run, task, agent, source) { db.prepare("UPDATE runs SET task = ?, agent = ?, source = ? WHERE id = ? AND kind = 'pass'").run(task, agent, source, run); },
-    endPass(run, status, why) { db.prepare("UPDATE runs SET status = ?, why = ?, ended = ? WHERE id = ? AND kind = 'pass' AND status = 'running'").run(status, why.slice(0, 300), new Date(now()).toISOString(), run); },
-    markStopping(run) { db.prepare("UPDATE runs SET stopping = COALESCE(stopping, ?) WHERE id = ? AND kind = 'pass' AND status = 'running'").run(new Date(now()).toISOString(), run); },
+    endPass(run, status, why) {
+      const at = new Date(now()).toISOString();
+      db.prepare("UPDATE runs SET status = ?, why = ?, ended = ? WHERE id = ? AND kind = 'pass' AND status = 'running'").run(status, why.slice(0, 300), at, run);
+      db.prepare("UPDATE runs SET slot = NULL WHERE id = ? AND kind = 'pass'").run(run);
+    },
+    markStopping(run) { db.prepare("UPDATE runs SET stopping = COALESCE(stopping, ?) WHERE id = ? AND kind = 'pass' AND slot = 1").run(new Date(now()).toISOString(), run); },
     pass(run) {
       if (!/^[\w-]{1,40}$/.test(run)) return undefined;
       const r = db.prepare("SELECT * FROM runs WHERE id = ? AND kind = 'pass'").get(run) as Row | undefined;
       return r && head(r);
     },
     active(app) {
-      const r = db.prepare("SELECT * FROM runs WHERE kind = 'pass' AND status = 'running' AND app = ?").get(app) as Row | undefined;
+      const r = db.prepare("SELECT * FROM runs WHERE kind = 'pass' AND slot = 1 AND app = ?").get(app) as Row | undefined;
       return r && head(r);
     },
-    running() { return (db.prepare("SELECT * FROM runs WHERE kind = 'pass' AND status = 'running' ORDER BY started").all() as Row[]).map(head); },
-    passesSince(app, since) { return (db.prepare("SELECT * FROM runs WHERE kind = 'pass' AND app = ? AND started >= ? ORDER BY started DESC").all(app, since) as Row[]).map(head); },
+    holding() { return (db.prepare("SELECT * FROM runs WHERE kind = 'pass' AND slot = 1 ORDER BY started").all() as Row[]).map(head); },
+    passesSince(app, since) { return (db.prepare("SELECT * FROM runs WHERE kind = 'pass' AND app = ? AND (started >= ? OR ended >= ?) ORDER BY started DESC").all(app, since, since) as Row[]).map(head); },
     lastQueue(app) {
       for (const { id } of db.prepare("SELECT id FROM runs WHERE kind = 'pass' AND app = ? AND status != 'running' ORDER BY started DESC LIMIT 20").all(app) as { id: string }[]) {
         let items: unknown;

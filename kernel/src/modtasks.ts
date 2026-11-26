@@ -112,17 +112,20 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
   /**
    * The open tasks of this module's own source family, for a sweep that has no id in hand: a source starting `<module>:` (the
    * design module's `design:pass:`), or the release train's `release:instance:` for the code host (its stranded bumps). The
-   * control plane's listing matches the source text; each row's markers are read again here, so a task that merely mentions the
-   * family in prose, carries a second source marker, or carries another module's marker is never returned. No module reads
-   * another's tasks this way.
+   * control plane's listing matches the source text; each row is checked again here (the module's marker, and the kernel's record
+   * that this module filed it under that family), so a task that merely mentions the family, or that another module or an agent
+   * made, is never returned. No module reads another's tasks this way.
    */
   async function list(module: string, source: string) {
     const release = module === RELEASE_MODULE && source === RELEASE_SOURCE;
     if (!release && !(source.startsWith(`${module}:`) && SOURCE.test(source))) throw new TaskError(400, `source: a family of your own (${module}:…)${module === RELEASE_MODULE ? ` or ${RELEASE_SOURCE}` : ""}`);
-    const own = (description: string) => {
+    // A module's own family is the kernel's filing record (task_filers: who filed it, under which source), never the task's
+    // editable text; the release train's tasks predate that record, so their markers decide.
+    const filed = db.prepare("SELECT source FROM task_filers WHERE task = ? AND filer = ?");
+    const own = (id: string, description: string) => {
       if (release) return releaseOnly(description) ? RELEASE_MARK.exec(description)?.[1] : undefined;
-      const marks = [...description.matchAll(SOURCE_TAG)].map((m) => m[1]!);
-      return marks.length === 1 && marks[0]!.startsWith(source) ? marks[0] : undefined;
+      const s = (filed.get(id, `module:${module}`) as { source: string | null } | undefined)?.source;
+      return s?.startsWith(source) ? s : undefined;
     };
     const companies = await owner("GET", "/api/companies");
     if (companies.status !== 200 || !Array.isArray(companies.json)) throw new TaskError(502, `the control plane answered ${companies.status} for its companies`);
@@ -133,7 +136,7 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
       if (r.status !== 200 || !Array.isArray(r.json)) throw new TaskError(502, `the control plane answered ${r.status} for a company's issues`);
       for (const i of r.json as { id?: unknown; identifier?: unknown; status?: unknown; createdAt?: unknown; description?: unknown }[]) {
         const description = String(i.description ?? "");
-        const found = ownTask(module, description) ? own(description) : undefined;
+        const found = ownTask(module, description) ? own(String(i.id ?? ""), description) : undefined;
         if (!found) continue;
         tasks.push({ id: String(i.id ?? ""), identifier: String(i.identifier ?? ""), status: String(i.status ?? ""), createdAt: String(i.createdAt ?? ""), source: found });
       }

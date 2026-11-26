@@ -118,7 +118,7 @@ test("an AidenHQ app's pass gets a read-only test-user session, never a supplied
   } finally { close(); }
 });
 
-test("the validate hook names a bad app or login, never a login's value; a failed filing frees only its own app", async () => {
+test("the validate hook names a bad app or login, never a login's value; a refused filing frees only its own app", async () => {
   assert.deepEqual(validate({ settings: { ui_testing: { apps: [{ name: "acme", url: "https://acme.example.com", live_mode: "write" }] } } }), { ok: false, errors: [{ field: "ui_testing", message: "apps[0]: live_mode is one of read, test-write, any" }] });
   const bad = validate({ secret: { name: "ui_logins" }, value: JSON.stringify({ acme: { username: "u", password: "hunter2" } }) });
   assert.equal(bad.ok, false); assert.ok(!JSON.stringify(bad).includes("hunter2"));
@@ -131,9 +131,9 @@ test("the validate hook names a bad app or login, never a login's value; a faile
   const k = fakeKernel();
   const passes = createPasses({ store, apps: () => apps, logins: () => ({}), kernel: k.passes });
   const first = await passes.startPass("acme", "request", { depth: "scan" });
-  k.refuse(true);
+  k.refuse(409);
   const failed = await passes.startPass("beta", "request", { depth: "scan" });
-  assert.match((failed as { refused: string }).refused, /wasn't filed: kernel down/);
+  assert.match((failed as { refused: string }).refused, /was refused: kernel answered 409/);
   assert.equal(store.pass((first as { run: string }).run)!.status, "running");
   assert.equal(store.active("beta"), undefined, "a failed filing frees its app");
 });

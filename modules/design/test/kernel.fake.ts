@@ -9,11 +9,13 @@ export function fakeKernel() {
   const charges: { source: string; at: string; cost_usd: number }[] = [];
   const logs: Record<"apps" | "github", FeedEvent[]> = { apps: [], github: [] };
   const unsubscribed = new Set<string>();
-  let seq = 0, refuse = false;
+  let seq = 0, refuse: number | undefined;
   const byId = (id: string) => filed.find((t) => t.id === id)!;
   const passes: PassKernel = {
     fileTask: async (t) => {
-      if (refuse) throw new Error("kernel down");
+      if (refuse !== undefined) throw Object.assign(new Error(refuse ? `kernel answered ${refuse}` : "kernel unreachable"), { status: refuse });
+      const had = filed.find((x) => x.source === t.source); // one task per source, as the kernel files them
+      if (had) return { id: had.id, agent: "ui-agent" };
       const task: Filed = { id: `task-${filed.length + 1}`, ...t, status: "todo", live: true };
       filed.push(task);
       return { id: task.id, agent: "ui-agent" };
@@ -40,6 +42,7 @@ export function fakeKernel() {
     charge: (source: string, at: string, cost_usd: number) => void charges.push({ source, at, cost_usd }),
     event: (connection: "apps" | "github", kind: string, resource: string) => void logs[connection].push({ seq: ++seq, kind, resource }),
     unsubscribe: (connection: string) => void unsubscribed.add(connection),
-    refuse: (on: boolean) => { refuse = on; },
+    /** Filing fails: a refusal with that status, 0 for no answer at all, undefined to file again. */
+    refuse: (status: number | undefined) => { refuse = status; },
   };
 }

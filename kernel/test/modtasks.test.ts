@@ -117,13 +117,18 @@ test("a module lists the open tasks of its own source family, and no other's", a
     { id: "a1111111-1111-4111-8111-111111111111", identifier: "ACME-1", status: "todo", createdAt: "x", description: "Pass.\n\n<!-- source:design:pass:acme:r1 -->\n<!-- aidenhq-module:design -->" },
     { id: "a2222222-1111-4111-8111-111111111111", identifier: "ACME-2", status: "todo", createdAt: "x", description: "Mentions design:pass:acme:r9 in prose only.\n<!-- source:github:x -->\n<!-- aidenhq-module:design -->" },
     { id: "a3333333-1111-4111-8111-111111111111", identifier: "ACME-3", status: "todo", createdAt: "x", description: "<!-- source:design:pass:acme:r3 -->\n<!-- aidenhq-module:other -->" },
+    // Markers typed into a task design never filed: the kernel's filing record decides.
+    { id: "a4444444-1111-4111-8111-111111111111", identifier: "ACME-4", status: "todo", createdAt: "x", description: "<!-- source:design:pass:acme:r4 -->\n<!-- aidenhq-module:design -->" },
   ];
   const owner = async (method, path) => {
     if (path === "/api/companies") return { status: 200, json: [{ id: "c-1" }] };
     if (path.startsWith("/api/companies/c-1/issues?")) return { status: 200, json: issues };
     return { status: 404, json: {} };
   };
-  const tasks = createModuleTasks({ db: new DatabaseSync(":memory:"), owner, agents: () => ({ [D]: { roles: ["ui-login"] } }), plugin: () => ({}) });
+  const db = new DatabaseSync(":memory:");
+  const tasks = createModuleTasks({ db, owner, agents: () => ({ [D]: { roles: ["ui-login"] } }), plugin: () => ({}) });
+  db.prepare("INSERT INTO task_filers (task, filer, source) VALUES (?, ?, ?)").run(issues[0].id, "module:design", "design:pass:acme:r1");
+  db.prepare("INSERT INTO task_filers (task, filer, source) VALUES (?, ?, ?)").run(issues[1].id, "module:design", "github:x");
   const who = { design: { kind: "module", module: "design", roles: ["kernel.tasks"] } };
   const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
   const { s, url } = await serve(bp);

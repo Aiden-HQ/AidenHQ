@@ -169,21 +169,35 @@ export function createPasses(d: PassDeps) {
     try { spent = await spentToday(a.name); } catch (e) { return { refused: `today's spend couldn't be read: ${String((e as Error).message).slice(0, 200)}` }; }
     if (spent >= a.day_cap_usd) return { refused: "cap reached today" };
     const mode = o.mode ?? top, model = o.model ?? a.models.design ?? preset.design ?? "the UI Reviewer's own model";
-    const prior = d.store.lastQueue(a.name);
     const started = d.store.startPass({ app: a.name, target: a.url, model, depth, mode, trigger: why });
     if ("running" in started) return { refused: "already running", run: started.running };
-    const { run } = started;
-    const source = `${passSource(a.name)}${run}`;
+    const filed = await file(d.store.pass(started.run)!);
+    if ("task" in filed) return { run: started.run, task: filed.task };
+    return { refused: filed.refused };
+  }
+
+  /**
+   * Files (or files again) a pass's task and binds it to the run. The kernel files one task per source, so filing again after a
+   * lost answer gets the same task back. A refusal (4xx) ends the run and frees the app; any other failure leaves it to the
+   * scheduler, which files it again (schedule.ts reconcile).
+   */
+  async function file(r: PassRow): Promise<{ task: string } | { refused: string }> {
+    const a = app(r.app ?? "");
+    if (!a) { d.store.endPass(r.id, "failed", "its app left settings.ui_testing before its task was filed"); return { refused: "unknown app" }; }
+    const run = r.id, depth = r.depth as Depth, preset = SPEND[a.spend], source = `${passSource(a.name)}${run}`;
+    // The work follows the depth the pass runs at: a scan neither signs in nor clicks; a tester pass clicks at least once.
+    const clicking = depth === "tester" ? Math.max(preset.clicking, 1) : 0;
+    const prior = d.store.lastQueue(a.name);
     const signIn = depth === "scan" ? "Review the pages a visitor sees; don't sign in."
       : a.aidenhq_app ? `Sign in with \`ui-review login aidenhq --app ${a.name} --out state.json\` (a read-only test-user session) and review the address it prints, not the public url.`
       : `Sign in with \`ui-review login\` (the login ladder in the skill${d.logins()[a.name] ? ": a supplied login is set, `ui-review login supplied --app " + a.name + "`" : ""}).`;
-    const models = MODEL_ROLES.filter((r) => a.models[r]).map((r) => `${r} ${a.models[r]}`);
+    const models = MODEL_ROLES.filter((m) => a.models[m]).map((m) => `${m} ${a.models[m]}`);
     const description = [
-      `A ${depth} UI review pass of the app ${a.name} (${why}), design run ${run}.`,
+      `A ${depth} UI review pass of the app ${a.name} (${r.trigger}), design run ${run}.`,
       `Target: ${a.url}${a.repo ? ` (repo ${a.repo}: its default branch only, never a PR head)` : ""}.`,
-      `Live-app mode: ${mode}. Model: ${model}.`,
-      `Spend: ${a.spend} (${preset.fixes ? `rendered fixes for the top ${preset.fixes} improvements` : "no fixes"}, ${preset.clicking ? `${preset.clicking} clicking pass${preset.clicking > 1 ? "es" : ""}` : "no clicking"}). Models: ${models.length ? models.join(", ") : "the defaults"}.`,
-      `Recording: ${a.recording ? "on (the clicking passes' flows)" : "off"}.`,
+      `Live-app mode: ${r.mode}. Model: ${r.model}.`,
+      `Spend: ${a.spend} (${preset.fixes ? `rendered fixes for the top ${preset.fixes} improvements` : "no fixes"}, ${clicking ? `${clicking} clicking pass${clicking > 1 ? "es" : ""}` : "no clicking"}). Models: ${models.length ? models.join(", ") : "the defaults"}.`,
+      `Recording: ${a.recording && clicking ? "on (the clicking passes' flows)" : "off"}.`,
       prior && prior.left > 0 ? `Coverage: resume from ${prior.run} (its queue.json has ${prior.left} captures left).` : "Coverage: a new cycle from the first page.",
       signIn,
       `Follow the design.ui-review skill; put the evidence on run ${run} and finish it with design_run_finish.`,
@@ -191,11 +205,14 @@ export function createPasses(d: PassDeps) {
     try {
       const t = await d.kernel.fileTask({ title: `UI review pass: ${a.name} (${depth})`, description, role: "ui-login", source });
       d.store.bindPass(run, t.id, t.agent, source);
-      return { run, task: t.id };
+      return { task: t.id };
     } catch (e) {
-      const why = `the pass's task wasn't filed: ${String((e as Error).message).slice(0, 200)}`;
-      d.store.endPass(run, "failed", why);
-      return { refused: why };
+      const status = (e as { status?: number }).status ?? 0, words = String((e as Error).message).slice(0, 200);
+      if (status >= 400 && status < 500) {
+        d.store.endPass(run, "failed", `the pass's task was refused: ${words}`);
+        return { refused: `the pass's task was refused: ${words}` };
+      }
+      return { refused: `the pass's task isn't filed yet (${words}); the scheduler files it again` };
     }
   }
 
@@ -223,6 +240,6 @@ export function createPasses(d: PassDeps) {
     return { run, app: a, refused: "" };
   }
 
-  return { startPass, stopPass, spentToday, passFor, app };
+  return { startPass, file, stopPass, spentToday, passFor, app };
 }
 export type Passes = ReturnType<typeof createPasses>;

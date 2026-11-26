@@ -90,13 +90,31 @@ test("a pass whose worker died frees the app, and the next one resumes its cover
   assert.equal(store.active("acme"), undefined, "the removed app's pass ended on its own");
 });
 
-test("a queue with nothing left starts a new cycle", async () => {
-  const { passes, k, queue, finish } = setup([{ name: "acme", url: U }]);
+test("a finished run holds the app until its job ends; a queue with nothing left starts a new cycle", async () => {
+  const { passes, tick, k, queue, finish, runOf } = setup([{ name: "acme", url: U }]);
   await passes.startPass("acme", "request");
-  queue(k.filed[0]!, ["done", "done", "failed"]);
-  finish(k.filed[0]!);
+  const first = k.filed[0]!;
+  queue(first, ["done", "done", "failed"]);
+  finish(first);
+  assert.deepEqual(await passes.startPass("acme", "request"), { refused: "already running", run: runOf(first).id }, "its job still posts and finishes the task");
+  k.close(first.id, "done");
+  await tick();
+  assert.equal(runOf(first).status, "done");
   await passes.startPass("acme", "request");
   assert.match(k.filed[1]!.description, /Coverage: a new cycle/);
+});
+
+test("a filing whose answer was lost is filed again under its source; a refusal frees the app at once", async () => {
+  const { passes, tick, k, clock, store } = setup([{ name: "acme", url: U }]);
+  k.refuse(0);
+  const r = await passes.startPass("acme", "request");
+  assert.match((r as { refused: string }).refused, /isn't filed yet/);
+  assert.ok(store.active("acme"), "the app stays held while its filing is in doubt");
+  k.refuse(undefined);
+  clock.t += 3 * 60_000;
+  await tick();
+  assert.equal(k.filed.length, 1);
+  assert.equal(store.active("acme")!.task, k.filed[0]!.id);
 });
 
 test("Stop holds the app until the job has ended; a Run now meanwhile is refused, and a 24/7 app rests for the day", async () => {
@@ -117,6 +135,19 @@ test("Stop holds the app until the job has ended; a Run now meanwhile is refused
   assert.equal(k.filed.length, 1, "a Stop rests a 24/7 app for the rest of the UTC day");
   assert.ok("run" in (await passes.startPass("acme", "request")), "Run now still works");
   assert.equal(store.active("acme")!.trigger, "request");
+});
+
+test("a Stop asked after midnight rests a 24/7 app for that day, though its pass started the day before", async () => {
+  const { passes, tick, k, settings, runOf, clock } = setup();
+  settings({ apps: [{ name: "acme", url: U, schedule: "always" }] });
+  await tick(); // 23:00
+  const first = k.filed[0]!;
+  clock.t += 2 * 3_600_000; // 01:00 the next UTC day
+  await passes.stopPass("acme");
+  k.jobLive(first.id, false);
+  await tick();
+  assert.equal(runOf(first).status, "stopped");
+  assert.equal(k.filed.length, 1);
 });
 
 test("settings name the field they refuse; defaults are the quiet ones", () => {
