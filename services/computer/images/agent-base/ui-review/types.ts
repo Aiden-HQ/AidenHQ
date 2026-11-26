@@ -9,7 +9,10 @@ export type QueueItem = { page: string; width: number; theme: Theme; state: Stat
 export type Capture = {
   page: string; width: number; theme: Theme; state: State; url: string; shots: string[]; settled: boolean;
   measures: Measures; motion?: Motion; rules: RuleHit[];
+  diffs?: ShotDiff[]; // with --baseline: each shot against the baseline's shot of the same name
 };
+/** A shot against the baseline's (`pct` of its pixels differ); `compare` (before|after) and `diff` images when it changed. */
+export type ShotDiff = { shot: string; pct: number; compare?: string; diff?: string };
 export type Measures = {
   fonts: { size: number; weight: number; n: number }[]; colours: { value: string; n: number }[]; radii: string[]; shadows: string[];
   spacing: { values: number[]; offScale: number[] }; // offScale: values not on the 4px scale
@@ -35,4 +38,5 @@ export type Report = {
   version: 2; target: string; commit?: string; frozenAt: string; model: string;
   coverage: { done: number; total: number; failed: number; deferred: number };
   captures: Capture[]; improvements: Improvement[]; motion: MotionRow[]; bugs: Bug[]; notes: string[]; cost_usd: number;
+  blocking?: string[]; preexisting?: string[]; // the rule checks' blocking findings: this run's own, and those its baseline also had
 };

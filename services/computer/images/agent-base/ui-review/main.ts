@@ -3,12 +3,19 @@
 // taste. Each subcommand is built by its own lane (a stub exits 2 "not built yet" until then). The contract is types.ts.
 
 const COMMANDS: Record<string, string> = {
-  capture: "capture <url> --out <dir> [--pages-file f] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4]",
+  capture: "capture <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4] [--palettes a,b] [--wait-text t]",
   pages: "pages <url> --out <dir> [--map feature-map.json] [--pages-file f]",
-  routes: "routes <url> --out <dir>                      (route check: clicks, a local build only)",
+  routes: "routes <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--baseline <dir>]   (clicks: a local build only)",
   refs: "refs <refs.json> --out <dir>",
   review: "review <run dir> [--model id]",
   "fix-check": "fix-check <run dir> --before <dir> --after <dir>",
+};
+
+// The built subcommands, each its module's `<name>Command(args)` returning the exit code (loaded only when run).
+const BUILT: Record<string, () => Promise<(args: string[]) => Promise<number>>> = {
+  capture: async () => (await import("./capture.ts")).captureCommand,
+  pages: async () => (await import("./pages.ts")).pagesCommand,
+  routes: async () => (await import("./routes.ts")).routesCommand,
 };
 
 function help(): string {
@@ -18,8 +25,9 @@ function help(): string {
 const [cmd, ...rest] = process.argv.slice(2);
 if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
   process.stdout.write(help());
+} else if (cmd in BUILT) {
+  process.exitCode = await (await BUILT[cmd]())(rest);
 } else if (cmd in COMMANDS) {
-  void rest;
   process.stderr.write(`ui-review ${cmd}: not built yet\n`);
   process.exit(2);
 } else {
