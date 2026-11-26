@@ -24,15 +24,20 @@ function krb5Step() {
   return runs[0]!.slice(4);
 }
 
-// The step's assertion loop alone: the apt lines before it, and the cache clean after it, dropped. This fails closed: a tail
-// that is anything but the cleanup (an added `apt-get clean`, say) is an error here, never a command handed to the shell.
-const APT_CLEANUP = /\s*;?\s*&&\s*rm -rf \/var\/lib\/apt\/lists\/\*$/;
+// The step's assertion loop alone: the apt lines before it, and the cache clean after it, dropped. This fails closed: after the
+// closing `done` the only thing allowed is the cleanup, so anything else (an added `apt-get clean`, a second command) is an
+// error here, never a command handed to the shell.
 function assertion(step: string) {
   const from = step.indexOf("for p in");
   assert.ok(from > 0, "the step asserts the four versions in a `for p in` loop");
   const tail = step.slice(from);
-  assert.match(tail, APT_CLEANUP, "the assertion loop is followed only by the apt lists cleanup");
-  return tail.replace(APT_CLEANUP, "").trim();
+  const end = tail.lastIndexOf("done");
+  assert.ok(end > 0, "the assertion loop closes with `done`");
+  const loop = tail.slice(0, end + "done".length).trim();
+  const rest = tail.slice(end + "done".length).trim();
+  // Nothing between the loop and the cleanup, and the cleanup is the only thing after it.
+  assert.match(rest, /^(?:;?\s*&&\s*rm -rf \/var\/lib\/apt\/lists\/\*)?$/, "after the loop, only the apt lists cleanup");
+  return loop;
 }
 
 // PATH with dpkg-query answering from `installed` (a package at null is not installed) and dpkg being the host's own, so the
@@ -51,7 +56,9 @@ test("the browser image installs the four krb5 packages by name and asserts each
   assert.match(install, /^apt-get update\b/);
   assert.match(install, /apt-get install -y --no-install-recommends\b/);
   for (const p of KRB5) assert.match(install, new RegExp(`(^|\\s)${p.replace(/[.+]/g, "\\$&")}(\\s|$)`), `installed by name: ${p}`);
-  // Only a successful install may reach the check: `||` (or `;`) would let a failed or skipped install build a stale image.
+  // The check must run only when the install succeeded. A final `&&` is not enough: `|| true; : && for p in` also ends in
+  // `&&` and runs the loop whatever the install did. Require no `||` or `;` anywhere in the install, so its one chain is `&&`.
+  assert.doesNotMatch(install, /\|\||;/, "the install is one `&&` chain, with no `||` or `;` that could detach the check");
   assert.match(install, /&&\s*$/, "the assertion loop is chained to a successful install with `&&`");
   // The loop asks dpkg about those same four and compares against the fix, exiting non-zero with the reason.
   const loop = assertion(step);
