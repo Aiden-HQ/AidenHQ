@@ -84,8 +84,14 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
               onFocus={() => sec.views.forEach(prefetchView)}
             >
               {sec.name}
-              {first === "approvals" && approvals > 0 && <span className="tn-badge" key={approvals}>{approvals}</span>}
-              {first === "sessions" && !!sessions?.live && <span className="tn-live" title={`${sessions.live} session${sessions.live === 1 ? "" : "s"} working now`}><i />{sessions.live}</span>}
+              {/* A count of zero keeps its space, so the item is the width it will be once the first poll answers. */}
+              {first === "approvals" && <span className="tn-badge" key={approvals} hidden={approvals === 0} aria-hidden={approvals === 0 || undefined}>{approvals || 0}</span>}
+              {first === "sessions" && (
+                <span className="tn-live" hidden={!sessions?.live} aria-hidden={!sessions?.live || undefined} title={`${sessions?.live ?? 0} session${sessions?.live === 1 ? "" : "s"} working now`}>
+                  <i />
+                  {sessions?.live ?? 0}
+                </span>
+              )}
               {sec.name === FLEET && agentsActive > 0 && (
                 <span className="tn-live" title={`${agentsActive} agent job${agentsActive === 1 ? "" : "s"} running now`}>
                   <i />
