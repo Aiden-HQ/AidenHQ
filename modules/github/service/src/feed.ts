@@ -4,7 +4,7 @@
 // write as the new snapshots (cache/feed.json), then sent to the kernel's event router (POST /v1/events) oldest first. A send the
 // kernel didn't answer stays in the outbox for the next pass; one it refused for good (4xx) is dropped and recorded.
 //
-// The same events reach this process's own consumers in-process (`hooks`: Flow's facts, the design reviews' sweep, the release
+// The same events reach this process's own consumers in-process (`hooks`: Flow's facts and the release
 // train), after they are saved.
 //
 // One scheduler runs every job, oldest due first: each repo's pass (15 s after a change, doubling while quiet, at most 60 s), the

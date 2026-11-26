@@ -3,7 +3,7 @@
 // finished is re-run at its job, once per head and check, so GitHub reposts it. What each asked is kept in the loop's state per
 // repo. The answer tells the round: `envRed` (the head's red checks are the environment's, being re-run: no fix wake), and
 // `wedgedDue` (a check run still pending 20 minutes after its re-run was asked: no push fixes it, its owner is told).
-import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, GATE_CHECK } from "./aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, GATE_CHECK } from "./aidenhq-sdk/checks.ts";
 
 type Json = any;
 /** GitHub through github's /internal/ship/gh; `deadline` bounds a rate-limit wait; `covers`: the check runs (node ids) a check-run
@@ -112,7 +112,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
      * than wake a task to fix a failure CI never ran. */
     async function neverStarted(pr: Json): Promise<boolean | "unknown"> {
       const rollup = rollupOf(pr);
-      const red = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" ? n.status === "COMPLETED" && n.conclusion === "FAILURE" && n.name !== DESIGN_REVIEW_CHECK : ["FAILURE", "ERROR"].includes(n.state) && n.context !== CODE_REVIEW_STATUS);
+      const red = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" ? n.status === "COMPLETED" && n.conclusion === "FAILURE" : ["FAILURE", "ERROR"].includes(n.state) && n.context !== CODE_REVIEW_STATUS);
       if (!red.length || rollup?.contexts?.pageInfo?.hasNextPage) return false;
       const own = red.filter((n: Json) => n.name !== GATE_CHECK); // the aggregate only rolls the others up
       const listed = await latestRuns(pr);
@@ -319,7 +319,7 @@ export function ciRecover(o: { gh: Gh; log(msg: string, f?: Record<string, unkno
     }
     const wedged = await wedgedAfterJob(pr);
     const runs = (rollupOf(pr)?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun");
-    const pendingIds = new Set(runs.filter((n: Json) => n.status !== "COMPLETED" && n.name && n.name !== DESIGN_REVIEW_CHECK && n.name !== CODE_REVIEW_STATUS).map((n: Json) => String(n.id)));
+    const pendingIds = new Set(runs.filter((n: Json) => n.status !== "COMPLETED" && n.name && n.name !== CODE_REVIEW_STATUS).map((n: Json) => String(n.id)));
     const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS && !!w.nodeId && pendingIds.has(w.nodeId));
     const wedgedDue = !due.length ? false : due.every((w) => w.accepted) ? "accepted" as const : "refused" as const;
     const envRed = pr.mergeable === "MERGEABLE" ? await neverStarted(pr) : false;

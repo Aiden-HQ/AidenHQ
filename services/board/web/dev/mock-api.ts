@@ -50,7 +50,7 @@ const STATES = {
   blocked: st("waiting", "blocked", { since: ago(40), ref: "task:id-901", refLabel: "WOR-901" }),
   agentWait: st("waiting", "agent_wait", { since: ago(20) }),
   moduleWait: st("waiting", "module_wait", { since: ago(50), ref: "checks", note: "CI is running on the PR" }),
-  stalled: st("waiting", "module_wait", { since: ago(400), ref: "design_review", lane: "blocked", attention: [A("agent", "stalled_wait", "design_review")] }),
+  stalled: st("waiting", "module_wait", { since: ago(400), ref: "code_review", lane: "blocked", attention: [A("agent", "stalled_wait", "code_review")] }),
   scheduled: st("waiting", "scheduled", { since: ago(60) }),
   chatTurn: st("waiting", "chat_turn", { since: ago(700) }),
   backlog: st("waiting", "backlog", { since: ago(2000) }),

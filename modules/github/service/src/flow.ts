@@ -53,7 +53,7 @@ const readJson = (f: string, empty: Json): Json => { try { return existsSync(f) 
 /** A state file written whole: tmp then rename, so a crash never leaves half a file. */
 const writeJson = (f: string, v: Json) => { writeFileSync(`${f}.tmp`, JSON.stringify(v)); renameSync(`${f}.tmp`, f); };
 /** The wait reason (module.yaml `work.waiting` reasons) of a merge queue's wait key (merge-gate.ts `why`, or merges.ts's own). */
-export const waitReason = (key: string): string => (key === "review" ? "code_review" : key === "retry" || key === "error" || key === "put" ? "retry" : /design review/i.test(key) ? "design_review" : "checks");
+export const waitReason = (key: string): string => (key === "review" ? "code_review" : key === "retry" || key === "error" || key === "put" ? "retry" : "checks");
 /** A reverting PR's target, from its title and body (GitHub's and git's own revert texts): { of_pr?, of_sha? } or undefined. */
 export function revertOf(repo: string, title: string, body: string): { of_pr?: string; of_sha?: string } | undefined {
   if (!/^Revert\b/i.test(title)) return undefined;
