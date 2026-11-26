@@ -1002,7 +1002,9 @@ export function createService(o: Options) {
     }
     // The commits from the head to the box's commit, on the head's own first-parent chain: a merge made the other way round (the
     // PR branch merged into a base checkout) has the base tip as its first parent, and writing it would drop the head's content.
-    const plan = await signedPlan(dir, String(a.expected), String(b.sha), String(pr.base?.ref), String(pr.base?.sha));
+    // The base's tip as its branch has it now: a push may merge only that commit (GitHub's merge takes the tip).
+    const baseTip = String((await api("GET", refPath(s.slug, String(pr.base?.ref)))).object?.sha ?? "");
+    const plan = await signedPlan(dir, String(a.expected), String(b.sha), String(pr.base?.ref), baseTip);
     if ("refused" in plan) return { ok: false, text: `${plan.refused} (${url}): nothing was pushed.` };
     // The adoption once more, right before the branch moves: a pause or a hand-back since the first read refuses it.
     const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected), undefined, true);
@@ -1016,6 +1018,7 @@ export function createService(o: Options) {
     const made = plan.merge
       ? await mergeSigned(at, { head: String(a.expected), pre: plan.merge.pre, baseSha: plan.merge.base, base: String(pr.base.ref), want: String(b.sha), message: plan.message, preMessage: plan.merge.message })
       : await commitSigned(at, String(a.expected), await git(dir, ["rev-parse", `${a.expected}^{tree}`]), String(b.sha), plan.message);
+    if ("baseMoved" in made) return { ok: false, text: `ship-scope: \`${pr.base.ref}\` moved to \`${made.baseMoved.slice(0, 12)}\` since the push merged \`${plan.merge!.base.slice(0, 12)}\` (${url}): nothing was pushed; fetch \`${pr.base.ref}\`, merge it again and push.` };
     if ("text" in made) return { ok: false, text: made.text };
     flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, who.login, undefined, a.workspace);
     flow.checksStarted(s.slug, Number(a.pr.number), made.sha, undefined, a.workspace);
@@ -1121,6 +1124,8 @@ export function createService(o: Options) {
       if (refused) return refused;
     } else {
       const signed = await mergeSigned({ s, n, url, into, ref: String(pr.head.ref), dir }, { head: String(a.head), pre: String(a.head), baseSha, base: String(a.base), want: final, message: `Regenerate the generated files after merging ${a.base}` });
+      // The base moved while the box ran: a run that didn't finish, which ship asks for once more (ship-repair).
+      if ("baseMoved" in signed) return { ok: false, text: `ship-repair: \`${a.base}\` moved to \`${signed.baseMoved.slice(0, 12)}\` during the repair of ${url}: nothing was changed.` };
       if ("text" in signed) return { ok: false, text: signed.text };
       made = signed.sha;
     }
@@ -1232,8 +1237,9 @@ export function createService(o: Options) {
    * checked against git's own result before the first write (the merge with the base's side taken must be clean, the base must
    * still be at `baseSha`), and each step after it: the merge must be of `baseSha` onto the commit just written, with git's tree.
    * A failure once the first commit landed leaves the branch mid-way: a refusal ship holds on, never a moved head to read again.
+   * A base that moved before anything was written is `baseMoved` (its new tip), for the caller to say what to do again.
    */
-  async function mergeSigned(at: At, m: { head: string; pre: string; baseSha: string; base: string; want: string; message: string; preMessage?: string }): Promise<{ sha: string } | { text: string }> {
+  async function mergeSigned(at: At, m: { head: string; pre: string; baseSha: string; base: string; want: string; message: string; preMessage?: string }): Promise<{ sha: string } | { text: string } | { baseMoved: string }> {
     const tmp = mkdtempSync(join(o.cacheDir, "merge-"));
     try {
       const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await access.identity()) };
@@ -1269,7 +1275,7 @@ export function createService(o: Options) {
       }
       // The base GitHub will merge is the one this was planned on.
       const baseNow = await gh("GET", refPath(at.s.slug, m.base));
-      if (baseNow.status < 300 && baseNow.body?.object?.sha !== m.baseSha) return { text: `ship-head-moved: \`${m.base}\` moved to \`${String(baseNow.body?.object?.sha).slice(0, 12)}\` since \`${m.baseSha.slice(0, 12)}\` was merged: nothing was pushed; merge it again.` };
+      if (baseNow.status < 300 && baseNow.body?.object?.sha !== m.baseSha) return { baseMoved: String(baseNow.body?.object?.sha ?? "") };
       let head = m.head;
       if (first !== headTree) {
         const c = await commitSigned(at, head, headTree, first, [conflicted.length ? `Take ${m.base}'s side of ${conflicted.length} conflicting file(s) before merging it` : "", m.preMessage ?? ""].filter(Boolean).join("\n\n"));
@@ -1282,7 +1288,7 @@ export function createService(o: Options) {
         const now = await gh("GET", refPath(at.into, at.ref));
         const moved = now.status < 300 && now.body?.object?.sha !== head;
         if (moved && !partial) return { text: `ship-head-moved: ${at.url} moved before GitHub merged \`${m.base}\`: nothing was pushed; read it again.` };
-        return { text: refusedPush(at.url, `merging \`${m.base}\` (update-branch): ${u.status} ${String(u.body?.message ?? "")}`, partial ? String(now.body?.object?.sha ?? head) : undefined) };
+        return { text: refusedPush(at.url, `merging \`${m.base}\`: ${u.status} ${String(u.body?.message ?? "")}`, partial ? String(now.body?.object?.sha ?? head) : undefined) };
       }
       // GitHub answers 202 and moves the branch shortly after: its head is read until it moves.
       let tip: string | undefined;

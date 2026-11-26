@@ -39,6 +39,7 @@ export const HOLD = {
   settings: (what: string) => `Ship can't ${what} here: this repo's Ship settings don't allow it. A person does it, or changes the repo's Ship settings.`,
   noEdits: "Ship can't push to this fork's branch. The contributor can allow edits by maintainers, or rebase and fix it themselves.",
   github: "GitHub refused to update this branch. A person updates or fixes it.",
+  pushPartial: "GitHub refused part of Ship's fix for this PR, so the branch holds only part of it. A person finishes or reverts it.",
   pushRefused: (why: string) => `GitHub refused Ship's fix for this PR (${why.replace(/[\r\n]+/g, " ")}). A person pushes the fix, or changes the rule that refused it.`,
   repair: "Ship couldn't repair this PR on its own. A person needs to resolve it.",
   steps: "A step the repo asks Ship to run before merging didn't pass. A person needs to look at it.",

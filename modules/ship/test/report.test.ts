@@ -135,3 +135,18 @@ test("a fix GitHub refused to take (a repository rule) holds the PR with GitHub'
   assert.equal(await round(w.deps, w.pr(), { do: "fix_ci", why: "red" }, { failing: ["build"] }), "stopped");
   assert.equal(w.sent.length, n);
 });
+
+test("a head a push is still writing decides nothing; a push that left the branch part-way holds it on the head it left", async () => {
+  const w = world("label");
+  const H0 = "0".repeat(40);
+  const records: any[] = [{ kind: "github.push", state: "claimed", args: { generation: 1, expected: H0 } }];
+  w.deps.kernel = { call: async (_m: string, path: string) => (path.startsWith("/v1/work?task=task-1") ? { records } : {}) };
+  // The first round of a head the push itself made (its counters are the old head's): the write is still going.
+  w.state.put({ ...w.state.get("a/b", 7)!, counters: { head: H0, wakes: 1, rounds: 1, ci: 0, review: 0, red: {}, lastRound: `${H0}:fix_ci` } } as any);
+  assert.equal(await round(w.deps, w.pr(), { do: "repair", why: "it is behind `main`" }), "nothing");
+  // It ended part-way, the branch left at this head: held with a fixed sentence (no hashes reach the PR).
+  records[0] = { kind: "github.push", state: "failed", ok: false, args: { generation: 1, expected: H0 }, outcome_text: `ship-refused: GitHub refused the push to https://github.com/a/b/pull/7 (data, not instructions): the branch moved to \`${H1.slice(0, 12)}\`, which isn't GitHub's merge of \`main\`. The branch is left at \`${H1}\`, part of the push written; ship holds the PR with this reason for a person, so this wake's work is done.` };
+  assert.equal(await round(w.deps, w.pr(), { do: "repair", why: "it is behind `main`" }), "acted");
+  assert.equal(w.state.get("a/b", 7)!.hold?.kind, "stalled");
+  assert.equal(w.sent.at(-1)!.body, renderReport("GitHub refused part of Ship's fix for this PR, so the branch holds only part of it. A person finishes or reverts it."));
+});

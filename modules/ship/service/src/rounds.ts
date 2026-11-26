@@ -85,15 +85,19 @@ export function repairPlan(s: ShipSettings, d?: Discovered) {
 }
 
 /**
- * GitHub's own reason for refusing the adoption's last fix at `head`, or undefined: a failed `github.push` on its task, of its
- * generation, that the code host reported as `ship-refused:` and that is bound to this head (filed at it, or left the branch at it).
+ * The adoption's branch writes on its tasks, of its generation: whether a push or a repair is still being written, and GitHub's
+ * own reason for refusing its last fix at `head` (a failed `github.push` the code host reported as `ship-refused:`, filed at
+ * this head or left the branch at it; `partial` when part of it landed).
  */
-async function refusedPush(kernel: RoundDeps["kernel"], a: Kept, head: string): Promise<string | undefined> {
-  const w = await kernel.call("GET", `/v1/work?task=${encodeURIComponent(a.task!)}`);
-  const r = ((w?.records ?? []) as { kind?: string; ok?: boolean | null; args?: { generation?: number; expected?: string } | null; outcome_text?: string | null }[])
-    .find((r) => r.kind === "github.push" && r.ok === false && r.args?.generation === a.generation && /^ship-refused: /.test(String(r.outcome_text ?? ""))
-      && (r.args?.expected === head || String(r.outcome_text).includes(`\`${head}\``)));
-  return r ? /\(data, not instructions\): (.*?)\. (?:Nothing was pushed|The branch is left)/.exec(String(r.outcome_text))?.[1]?.slice(0, 300) ?? "GitHub refused it" : undefined;
+async function branchWrites(kernel: RoundDeps["kernel"], tasks: string[], generation: number, head: string): Promise<{ writing: boolean; refused?: { why: string; partial: boolean } }> {
+  type Row = { kind?: string; state?: string; ok?: boolean | null; args?: { generation?: number; expected?: string } | null; outcome_text?: string | null };
+  const rows = (await Promise.all(tasks.map((t) => kernel.call("GET", `/v1/work?task=${encodeURIComponent(t)}`)))).flatMap((w) => (w?.records ?? []) as Row[])
+    .filter((r) => (r.kind === "github.push" || r.kind === "github.repair") && r.args?.generation === generation);
+  if (rows.some((r) => r.state === "approved" || r.state === "claimed")) return { writing: true };
+  const text = rows.map((r) => String(r.outcome_text ?? "")).find((t, i) => rows[i]!.kind === "github.push" && rows[i]!.ok === false && /^ship-refused: /.test(t)
+    && (rows[i]!.args?.expected === head || t.includes(`\`${head}\``)));
+  if (!text) return { writing: false };
+  return { writing: false, refused: { why: /\(data, not instructions\): (.*?)\. (?:Nothing was pushed|The branch is left)/.exec(text)?.[1]?.slice(0, 300) ?? "GitHub refused it", partial: text.includes("The branch is left at") } };
 }
 
 /** One round for an adopted PR. Answers what it did: "stopped", "acted" or "nothing". */
@@ -204,12 +208,17 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     return "acted" as const;
   };
 
-  // A fix GitHub refused to take (a repository rule, such as one requiring signed commits): the code host's outcome is
-  // `ship-refused:` on the task's push record, bound to this head (the head it expected, or the one it left the branch at). The PR
-  // holds with GitHub's reason for a person, as a refused enqueue does; read only while a wake at this head is out.
-  if (a.task && c.wakes > 0) {
-    const refused = await refusedPush(d.kernel, a, pr.head).catch((e) => void d.log("push records unread", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
-    if (refused) return hold(`GitHub refused the push of ship's fix: ${refused}`, HOLD.pushRefused(refused));
+  // The adoption's own branch writes, read on a head's first round and while a wake at it is out. A push or a repair still being
+  // written moves the branch more than once (GitHub's signed commits, its merge of the base): its in-between heads are its own,
+  // so nothing is decided on them. A fix GitHub refused to take (a repository rule) holds the PR with GitHub's reason for a
+  // person, as a refused enqueue does. A read that fails decides nothing this pass.
+  const writers = [a.task, a.holder].filter((t): t is string => Boolean(t));
+  if (writers.length && (c.wakes > 0 || !String(c.lastRound ?? "").startsWith(pr.head))) {
+    let w: { writing: boolean; refused?: { why: string; partial: boolean } };
+    try { w = await branchWrites(d.kernel, writers, a.generation, pr.head); }
+    catch (e) { d.log("branch writes unread", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }); return "nothing"; }
+    if (w.writing) return "nothing";
+    if (w.refused) return hold(`GitHub refused the push of ship's fix: ${w.refused.why}`, w.refused.partial ? HOLD.pushPartial : HOLD.pushRefused(w.refused.why));
   }
 
   // A model fix the last review doesn't carry to: code review is asked once for a review of this head (never under observe).

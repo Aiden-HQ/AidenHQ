@@ -16,7 +16,8 @@ read it, and wait for ship's wake.
 
 **Conflicts** (ship's repair left some). Ship has already tried the deterministic repair: merging the base, taking the base
 side of generated paths and regenerating them. Its wake says what it left.
-- Check out the PR with the wake's `aidenhq ship checkout …` line, then `git merge origin/<base>`.
+- Check out the PR with the wake's `aidenhq ship checkout …` line, then `git fetch origin <base>` and
+  `git merge origin/<base>` right away: a push merges only the base's current tip.
 - Resolve each real conflict, keeping both sides' intent. For generated paths, take the base side and run the repo's generate
   command (its AGENTS.md or CI says which).
 - If the generator command ship used is wrong for this repo, propose the right one with `ship_configure`

@@ -1057,7 +1057,7 @@ test("ship's repair GitHub's rules refuse is ship-refused with GitHub's words, a
   refuseRef(true);
   const r = await run("k-00000000000000a2", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
   assert.equal(r.ok, false);
-  assert.match(r.text, /^ship-refused: GitHub refused the push to .*: merging `main` \(update-branch\): 422 Repository rule violations found\. Nothing was pushed; ship holds the PR/, r.text);
+  assert.match(r.text, /^ship-refused: GitHub refused the push to .*: merging `main`: 422 Repository rule violations found\. Nothing was pushed; ship holds the PR/, r.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1);
 });
 
