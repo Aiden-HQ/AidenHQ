@@ -44,7 +44,7 @@ export function replier(call: Call, owners: Owners = fileOwners()): Executor {
         ...(document ? {} : { raise: { tier: 2 as const, rule: "primer-reply-not-own", reason: "a reply on a thread the owners map and the document's comments don't show on a document this agent published on this task" } }),
         card: {
           what: args.body ? "a reply on a Primer thread" : "resolving a Primer thread",
-          changes: args.body ? `Posts this reply on the comment thread; everyone who can read the document sees it: “${args.body.length > 300 ? `${args.body.slice(0, 300)}…` : args.body}”` : "Marks the comment thread resolved."`,
+          changes: args.body ? `Posts this reply on the comment thread; everyone who can read the document sees it: “${args.body.length > 300 ? `${args.body.slice(0, 300)}…` : args.body}”` : "Marks the comment thread resolved.",
         },
       };
     },
