@@ -17,7 +17,7 @@ import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, contextChecks, contextRank, na
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { MEMBER_COMMENTS_QUERY, openMemberComments, type OpenItem } from "./member-comments.ts";
+import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type OpenItem } from "./member-comments.ts";
 import { HOLD_LABEL, PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
@@ -140,13 +140,16 @@ export function createMerges(d: {
       return false;
     }
   }
-  /** The open member comments on a PR (member-comments.ts): one GraphQL read, members as flow.ts isMember has it. */
-  async function memberItems(repo: string, number: number, since: string): Promise<OpenItem[]> {
+  /** The open member comments on a PR (member-comments.ts): its comments read, members as flow.ts isMember has it. */
+  async function memberItems(repo: string, number: number, c: { since: string; author?: string }): Promise<OpenItem[]> {
     const [owner, name] = repo.split("/");
-    const r = await d.gh("POST", "/graphql", { query: MEMBER_COMMENTS_QUERY, variables: { owner, repo: name, number } });
-    const pr = r.body?.data?.repository?.pullRequest;
-    if (r.status >= 300 || r.body?.errors?.length || !pr) throw new Error(`GitHub GraphQL: the PR's comments couldn't be read (${r.status})`);
-    return openMemberComments(pr, { since, isMember: (login, association) => d.flow!.isMember(login, association, repo) });
+    const pr = await readMemberComments(async (beforeThreads, beforeComments) => {
+      const r = await d.gh("POST", "/graphql", { query: MEMBER_COMMENTS_QUERY, variables: { owner, repo: name, number, beforeThreads, beforeComments } });
+      const node = r.body?.data?.repository?.pullRequest;
+      if (r.status >= 300 || r.body?.errors?.length || !node) throw new Error(`GitHub GraphQL: the PR's comments couldn't be read (${r.status})`);
+      return node;
+    }, c.since);
+    return openMemberComments(pr, { since: c.since, ...(c.author ? { author: c.author } : {}), isMember: (login, association) => d.flow!.isMember(login, association, repo) });
   }
   async function readPr(repo: string, number: number) {
     const [owner, name] = repo.split("/");
@@ -762,7 +765,7 @@ export function createMerges(d: {
      * the checks from its rollup unless that is cut at 100. Code review's verdict is read once and decided on (`findingsKey`
      * names its findings, so new findings at one head are a new fix_review).
      */
-    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string } }) {
+    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string; author?: string } }) {
       // A skipped image scan is judged on the PR's files, which only the full read has.
       const listed = view && !skippedImageScan(view.pr);
       const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);
@@ -782,7 +785,7 @@ export function createMerges(d: {
       // Members' open review comments (member-comments.ts), asked for by ship where its `fix` includes review: read only once no earlier
       // gate (a repair, red CI) decides, since they come after those. A read that fails throws: nothing merges on a PR not read.
       const first = decide(data, head, { ...ctx, approve: false });
-      const memberComments = view?.comments && d.flow && !["repair", "fix_ci", "fail", "done"].includes(first.do) ? await memberItems(repo, number, view.comments.since) : [];
+      const memberComments = view?.comments && d.flow && !["repair", "fix_ci", "fail", "done"].includes(first.do) ? await memberItems(repo, number, view.comments) : [];
       const gated = memberComments.length ? { ...ctx, comments: true } : ctx;
       const v = memberComments.length ? decide(data, head, { ...gated, approve: false }) : first;
       const approval = v.do === "wait" && decide(data, head, { ...gated, approve: true }).do === "approve";

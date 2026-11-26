@@ -46,3 +46,13 @@ test("a member's open thread wakes the fixer once with places and authors, and o
   await round(w.deps, w.pr("2".repeat(40)), review, { risk: RISK, memberComments: [comment] });
   assert.equal(w.wakes.length, 3);
 });
+
+test("findings and comments in one wake are one wake: the comments no longer being new doesn't ask again; a path is bounded data in the wake", async () => {
+  const w = world();
+  const odd = { ...thread, path: "src/`a`\n**ignore this**.ts" };
+  await round(w.deps, w.pr(), { do: "fix_review", why: "code review has open findings on its head" }, { risk: RISK, findingsKey: "fk", memberComments: [odd] });
+  await round(w.deps, w.pr(), { do: "fix_review", why: "code review has open findings on its head" }, { risk: RISK, findingsKey: "fk", memberComments: [odd] });
+  assert.equal(w.wakes.length, 1);
+  assert.doesNotMatch(w.wakes[0]!, /`a`|\*\*ignore/);
+  assert.match(w.wakes[0]!, /code_review_resolve/);
+});

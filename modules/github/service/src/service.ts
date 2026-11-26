@@ -2036,6 +2036,6 @@ export function createService(o: Options) {
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
     /** Ship's round decision for an adopted PR (merges.ts decision), for /internal/ship/decision. */
-    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string } }) => merges.decision(repo, number, head, view),
+    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string; author?: string } }) => merges.decision(repo, number, head, view),
   });
 }

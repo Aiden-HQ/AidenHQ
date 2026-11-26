@@ -26,7 +26,7 @@ export type AdoptedOptions = {
   /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
    * whether the branch merges through a merge queue, the required checks red on the PR's latest merge_group run, and whether an
    * approval of the head is all it waits on. */
-  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; /** Ask for members' unanswered review comments (member-comments.ts): `since` is the hand-off's time. */ comments?: { since: string } }): Promise<Decision & { memberComments?: { id: string; kind: string; author: string; path?: string; line?: number }[]; failing?: string[]; redChecks?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
+  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; /** Ask for members' unanswered review comments (member-comments.ts): `since` is the hand-off's time, `author` the member whose own comments on their PR ask nothing (not a task's PR: the code host authors those as the owner). */ comments?: { since: string; author?: string } }): Promise<Decision & { memberComments?: { id: string; kind: string; author: string; path?: string; line?: number }[]; failing?: string[]; redChecks?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
   /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
   effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string, live?: { base?: string; association?: string }): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
@@ -326,7 +326,7 @@ export function adoptedPass(o: AdoptedOptions) {
         } else if (a.stack.landed === view.head) return;
         else { const { stack: _, ...rest } = a; a = rest as Kept; o.state.put(a); }
       }
-      const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}), ...(o.settings(repo)?.fix.includes("review") ? { comments: { since: a.trigger.at } } : {}) });
+      const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}), ...(o.settings(repo)?.fix.includes("review") ? { comments: { since: a.trigger.at, ...(a.owner?.kind === "task" || view.authorBot ? {} : { author: view.author }) } } : {}) });
       // Red checks whose jobs never started are being re-run (ci-recover.ts): no fix is asked for a failure CI never ran.
       if (v.do === "fix_ci" && recovery?.envRed) Object.assign(v, { do: "wait", why: "re-running required checks whose jobs never started" });
       // A check run still pending well after its job finished and was re-run: no push fixes it, so its owner is told once per head.

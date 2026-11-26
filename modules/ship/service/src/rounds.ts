@@ -435,13 +435,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           open.length && !f.findingsKey && v.why !== "changes are requested on it"
             ? `${pr.url}: members have open review comments at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence.`
             : `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.`,
-          // Authors and places only: the comments' own text is untrusted and the wake keeps 2,000 characters.
-          threads.length ? `Open review threads (read them with github_pr_threads): ${threads.slice(0, 8).map((t) => `${t.path ?? "?"}:${t.line ?? "?"} by ${t.author}`).join("; ")}${threads.length > 8 ? `; and ${threads.length - 8} more` : ""}.` : "",
-          comments.length ? `Conversation comments from ${[...new Set(comments.map((x) => x.author))].join(", ")} (github_issue_read): act on those that ask for a change.` : "",
+          // Authors and places only (a path is the PR's own text: bounded to plain path characters): the comments' own text is untrusted
+          // and the wake keeps 2,000 characters.
+          threads.length ? `Open review threads (read them with github_pr_threads): ${threads.slice(0, 8).map((t) => `${(t.path ?? "?").replace(/[^\w./@+-]/g, "?").slice(0, 80)}:${t.line ?? "?"} by ${t.author.replace(/[^\w-]/g, "?").slice(0, 40)}`).join("; ")}${threads.length > 8 ? `; and ${threads.length - 8} more` : ""}.` : "",
+          comments.length ? `Conversation comments from ${[...new Set(comments.map((x) => x.author.replace(/[^\w-]/g, "?").slice(0, 40)))].slice(0, 8).join(", ")} (github_issue_read): act on those that ask for a change, and answer them all in one comment.` : "",
           push(),
         ].filter(Boolean).join("\n"));
         // What was asked is recorded unless the wake held the PR: those items wait, blocking, for their answers.
-        if (open.length && !a!.hold) { a = { ...a!, asked: open.map((i) => i.id) }; c.acted = [...(c.acted ?? []), "fix_review:comments"]; }
+        if (open.length && !a!.hold) { a = { ...a!, asked: open.map((i) => i.id) }; c.acted = [...(c.acted ?? []), "fix_review:comments", ...(f.findingsKey ? [`fix_review:${f.findingsKey}`] : [])]; }
         return did;
       }
       case "merge": {
