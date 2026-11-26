@@ -18,7 +18,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), asyncMerge, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true } = {}) {
+async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), asyncMerge, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true, reviewGate = async () => undefined } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -226,7 +226,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg, productRepo: "acme/aidenhq", maintained,
-    reviewGate: async () => undefined, ship, asyncPollMs: 0,
+    reviewGate, ship, asyncPollMs: 0,
     // The App, installed on the repo: its writes are recorded like the owner's (`as` marks whose they are).
     reviewer: async () => (app ? { login: "acme-app[bot]", token: async () => "app-token", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
   });
@@ -602,6 +602,60 @@ test("a stacked PR whose async request is still pending after the bounded wait i
   assert.equal(out.ok, false, out.text);
   assert.match(out.text, /^ship-enqueue-pending:/, "ship asks again next round, never holds an accepted request");
   assert.match(out.text, /not merged/);
+});
+
+test("a queue read-back that settles a pending request drops its uuid, so a later enqueue makes its own request", async (t) => {
+  let puts = 0;
+  const { c1, cacheDir, run, queue } = await setup(t, {
+    enqueueAnswer: () => STACK_REFUSAL,
+    asyncMerge: {
+      put: () => { puts++; queue.head = c1; return { status: 202, body: { status: "pending", details: { message: "Merge request is in progress.", uuid: "u-back" } } }; },
+      get: (uuid) => ({ status: 200, body: { status: "pending", details: { uuid } } }),
+    },
+  });
+  const args = { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" };
+  const out = await run("k-00000000000000f7", "github.enqueue", args);
+  assert.equal(out.ok, true, out.text);
+  assert.match(out.text, /in the merge queue at/);
+  assert.ok(!readFileSync(join(cacheDir, "async-requests.json"), "utf8").includes("u-back"), "a request the PR read-back settled is not kept");
+  // The PR leaves the queue again and ship asks once more: a request of its own, never the settled one's answer.
+  queue.head = undefined;
+  const again = await run("k-00000000000000f8", "github.enqueue", { ...args, attempt: 2 });
+  assert.equal(again.ok, true, again.text);
+  assert.equal(puts, 2, "the settled request's uuid was not read as this round's answer");
+});
+
+test("the async enqueue rechecks the head approval before the PUT and never queues an approval that moved", async (t) => {
+  let puts = 0;
+  const h: { v?: string } = {};
+  const approved = (oid?: string) => ({ reviewDecision: "APPROVED", latestOpinionatedReviews: { nodes: [{ state: "APPROVED", authorCanPushToRepository: true, author: { __typename: "User", login: "maria" }, commit: { oid: oid ?? h.v } }] } });
+  const { c1, run, queue } = await setup(t, {
+    enqueueAnswer: () => {
+      // A reviewer dismisses the head's approval while the GraphQL enqueue is in flight: the approval left is on an older commit.
+      queue.review = approved("e".repeat(40));
+      return STACK_REFUSAL;
+    },
+    asyncMerge: { put: () => { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-a" } } }; }, get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) },
+  });
+  h.v = c1;
+  queue.review = approved();
+  const out = await run("k-00000000000000f9", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: .*no approval on/);
+  assert.equal(puts, 0, "no REST request goes out for a head whose approval is gone");
+});
+
+test("the async enqueue rechecks code review's gate before the PUT", async (t) => {
+  let puts = 0, calls = 0;
+  const { c1, run } = await setup(t, {
+    enqueueAnswer: () => STACK_REFUSAL,
+    reviewGate: async () => (++calls === 1 ? undefined : { wait: "code review: running" }),
+    asyncMerge: { put: () => { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-g" } } }; }, get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) },
+  });
+  const out = await run("k-00000000000000fa", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /not queued: code review: running/);
+  assert.equal(puts, 0, "a review gate that closed while the enqueue was in flight stops the request");
 });
 
 test("a stacked PR's async merge that GitHub reports failed is a refusal in GitHub's words, never a queue entry", async (t) => {

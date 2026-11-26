@@ -1462,7 +1462,13 @@ export function createService(o: Options) {
           if (next.out) { keep(); return next.out; }
           if (next.gone) { keep(); break; }
         }
-        if (held()[key] === known) return (await settle()) ?? pending(`GitHub is still processing async merge request ${known} for ${head}:`);
+        if (held()[key] === known) {
+          // The PR read back as merged or queued at this head settles it even while the request still polls: the kept id is
+          // dropped with it, so a later re-enqueue after a removal never reads this request's stale answer.
+          const back = await settle();
+          if (back) { keep(); return back; }
+          return pending(`GitHub is still processing async merge request ${known} for ${head}:`);
+        }
       }
     }
     const refused = await precheck();
@@ -1503,9 +1509,12 @@ export function createService(o: Options) {
       if (got.out) { keep(); return got.out; }
       if (got.gone) { keep(); return pending(`GitHub no longer holds async merge request ${uuid} for ${head}:`); }
     }
-    // Still pending when the wait ends: the PR itself may read as merged (or queued) at this head, the same answer. When it
-    // doesn't, the request stands and its id is kept, so the next round reads it to its end instead of making another.
-    return (await settle()) ?? pending(`GitHub accepted the async merge request ${uuid} for ${head} and is still processing it:`);
+    // Still pending when the wait ends: the PR itself may read as merged (or queued) at this head, the same answer — and then
+    // the kept id goes with it, so a re-enqueue after a removal makes its own request rather than reading this one's old answer.
+    // When it doesn't, the request stands and its id is kept, so the next round reads it to its end instead of making another.
+    const back = await settle();
+    if (back) { keep(); return back; }
+    return pending(`GitHub accepted the async merge request ${uuid} for ${head} and is still processing it:`);
   }
 
   /**
@@ -1561,13 +1570,16 @@ export function createService(o: Options) {
       const why = String(r.body?.errors?.[0]?.message ?? r.body?.message ?? r.status);
       if (STACK_REFUSAL.test(why)) {
         const out = await enqueueAsync(s, n, a, url, async () => { const back = await read().catch(() => undefined); return back && settled(back); }, async () => {
-          // The refusal came back after this write's own checks: the PR and the adoption are read again now, because the REST
-          // request that follows binds the head alone.
+          // The refusal came back after this write's own checks: every gate that authorized it is read again now, because the
+          // REST request that follows binds the head alone — never the approval, the code-review pass, the base or the hold.
           const now = await read();
           if (now.state !== "OPEN") return `${url} is ${String(now.state).toLowerCase()}: not queued.`;
           if (now.headRefOid !== a.head) return `ship-head-moved: ${url} is at \`${String(now.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.`;
           if (now.baseRefName !== a.base) return `ship-scope: ${url}'s base changed: it now targets \`${now.baseRefName}\`, not \`${a.base}\`: not queued.`;
           if ((now.labels?.nodes ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) return `${url} carries the \`${HOLD_LABEL}\` label: not queued; queued once it is removed.`;
+          if ((now.reviewDecision === "REVIEW_REQUIRED" || now.reviewDecision === "APPROVED") && !approvedAt(now, a.head, app)) return `ship-tier-pending: ${url} has no approval on \`${String(a.head).slice(0, 12)}\` from someone who can push: not queued; queued again once it has one.`;
+          const gate = await o.reviewGate(s.slug, n, a.head, { base: String(now.baseRefName ?? ""), association: String(now.authorAssociation ?? "") });
+          if (gate && "wait" in gate) return `not queued: ${gate.wait}${gate.unblock ? ` (${gate.unblock})` : ""}`;
           return (await adoptionEnded(s.slug, n, a.generation, String(a.head), { do: "merge", head: a.head, base: String(now.baseRefName ?? ""), association: String(now.authorAssociation ?? "") })) ?? "";
         });
         if (!out.ambiguous) return out;
