@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { coachReads, dueList } from "../service/src/coach.ts";
-import { checks, detectorState, failingScopes, gateActivity, reviewStalls, shortScopes, spendSpike, stewardOn, tick, unresumedWaits } from "../service/src/detector.ts";
+import { checks, detectorState, failingScopes, gateActivity, reviewStalls, shortScopes, spendSpike, staleSources, stewardOn, tick, unresumedWaits } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 import { scorecard } from "../service/src/scorecard.ts";
 
@@ -465,6 +465,25 @@ test("a scope failing every pass is one finding naming source, scope and its fen
 
 test("a security target's recorded finding is not a failing scope", () => {
   assert.deepEqual(failingScopes([{ source: "security", scope: "image:x", error: "absent from this pass's SBOM inventory", since: ago(30) }]), []);
+});
+
+const minAgo = (m) => new Date(NOW - m * 60_000).toISOString();
+
+test("a failing slack row 17 minutes after its last good pass is not a source-down", () => {
+  assert.deepEqual(staleSources([{ source: "slack", last_ok: minAgo(17), failing: true }], NOW), []);
+});
+
+test("a failing slack row 61 minutes after its last good pass raises one source incident", () => {
+  const [f, ...rest] = staleSources([{ source: "slack", last_ok: minAgo(61), failing: true }], NOW);
+  assert.equal(rest.length, 0);
+  assert.equal(f.key, "slack");
+  assert.match(f.reason, /src_slack: last good pass 61 min ago; its latest pass failed/);
+});
+
+test("a failing non-slack source with a 16-minute-old good pass still raises an incident", () => {
+  const [f, ...rest] = staleSources([{ source: "hubspot", last_ok: minAgo(16), failing: true }], NOW);
+  assert.equal(rest.length, 0);
+  assert.equal(f.key, "hubspot");
 });
 
 test("spend: today above twice the prior days' average names its top components and subjects; quiet without a baseline or under the floor", () => {
