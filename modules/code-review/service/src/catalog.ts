@@ -2,7 +2,7 @@
 // stack it needs (`when`: path globs on the snapshot; none: always). The service reads it to offer and check a run's options.
 // The canonical is the recipe's (recipe/catalog.ts, lane R1); this file follows its interface until it is that file's sync-shared copy.
 
-export type Lens = "correctness" | "security" | "maintainability" | "performance";
+export type Lens = "correctness" | "security" | "maintainability" | "performance" | "ui";
 export type Mode = "one_off" | "continuous";
 /** `name` and `description`: the board's words for the option (a proper name, and what it finds). `needs`: the stack it applies to,
  * said as "Needs <needs>" when the repo lacks it (required with `when`). `unavailable`: why it can't run at all, in the owner's words. */
@@ -21,7 +21,7 @@ export type Option = {
   stack?: string; scope?: "repo" | "map";
 };
 
-const LENSES = ["correctness", "security", "maintainability", "performance"];
+const LENSES = ["correctness", "security", "maintainability", "performance", "ui"];
 const MODES = ["one_off", "continuous"];
 
 /** The catalog's entries, each checked; throws naming the first bad one. */

@@ -10,6 +10,8 @@ export type Finding = {
   title: string; why: string; evidence: string; fix_brief: string;
   /** The catalog option that found it and its lens (a lens-option run's findings; a combo's have none). */
   option?: string; lens?: string;
+  /** A ui.scan finding's place (page, width, theme, region) and its words: the change asked for and what the best product in the category does. */
+  ui?: { page: string; width: number; theme: "light" | "dark"; region: string; change: string; best: string };
 };
 export type Review = {
   version: 1; repo: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -93,8 +95,9 @@ export type ReviewSpec = {
   /** What it reviews: a PR's change, or a whole tree at `head` (number 0, no merge base). */
   target: "pr" | "tree";
   /** The check job: `code-review` (one model option or combo, metered), `code-review-tools` (the selected tool options,
-   * token-free) or `code-review-plan` (a repo review's area plan, metered: combo.model is the planner's). */
-  profile: "code-review" | "code-review-tools" | "code-review-plan";
+   * token-free), `code-review-plan` (a repo review's area plan, metered: combo.model is the planner's) or `code-review-ui` (the
+   * ui.scan option: its own whole-repo check, metered). */
+  profile: "code-review" | "code-review-tools" | "code-review-plan" | "code-review-ui";
   /** A repo review run's id: part of its check's spec, so two reviews of one commit are two checks. */
   run?: string;
   /** The tools run's selected tool options, as the recipe runs them (catalog.ts toolSpec). */

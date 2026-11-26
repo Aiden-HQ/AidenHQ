@@ -571,13 +571,13 @@ export function nativeFindings(v: NativeReview, roots: string[]) {
 }
 
 /** One codex run's environment: its homes and the model key, never anything else of the caller's. */
-const codexEnv = (home: string) => ({ PATH: String(process.env.PATH), HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: String(process.env.OPENROUTER_API_KEY ?? "") });
+export const codexEnv = (home: string) => ({ PATH: String(process.env.PATH), HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: String(process.env.OPENROUTER_API_KEY ?? "") });
 
 /**
  * The codex config for both codex engines: the model through the gateway, the access policy (a read-only permission profile with
  * the network on, the shell inheriting no credential), nothing of the repo loaded; `repo`: the repo tools as its MCP server.
  */
-export function codexConfig({ model, effort, url, instructions, repo }: { model: string; effort: string; url: string; instructions: string; repo?: { root: string; base: string } }) {
+export function codexConfig({ model, effort, url, instructions, repo, write = [] }: { model: string; effort: string; url: string; instructions: string; repo?: { root: string; base: string }; /** Folders the run may also write in (the ui scan's `.aidenhq-ui`). */ write?: string[] }) {
   const q = (s: unknown) => JSON.stringify(String(s)); // a TOML basic string is a JSON string
   return `model = ${q(model)}
 model_provider = "review"
@@ -591,7 +591,7 @@ project_doc_max_bytes = 0
 developer_instructions = ${q(instructions)}
 
 [permissions.review]
-filesystem = { ":root" = "read" }
+filesystem = { ":root" = "read"${write.map((w) => `, ${q(w)} = "write"`).join("")} }
 network = { enabled = true }
 
 [model_providers.review]

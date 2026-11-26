@@ -7,6 +7,8 @@ import { display, render, verdict, REPORT_MAX } from "../service/src/report.ts";
 import { loadCatalog, toolSpec } from "../service/src/catalog.ts";
 import { primerPublisher } from "../service/src/primer-client.ts";
 import { readFileSync } from "node:fs";
+import { checkSpec } from "../service/src/adapters.ts";
+import { toReview } from "../recipe/ui.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 const sha = (c) => c.repeat(40);
@@ -16,6 +18,7 @@ const CATALOG = [
   { id: "sec.gitleaks", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "gitleaks/gitleaks", version: "8.0.0", licence: "MIT" }, run: { cmd: "gitleaks" }, when: [], output: "sarif", runs_code: false, cost: "free" },
   { id: "sec.cloudflare", model: "openai/gpt-6.2-sol", effort: "medium", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code", skills: [{ skill: "cloudflare/security-audit-skill:security-audit", args: "{base}..HEAD" }] }, when: [], output: "findings", runs_code: false, cost: "low" },
   { id: "sec.deepsec", model: "anthropic/claude-haiku-5.5", effort: "medium", lens: "security", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "vercel-labs/deepsec", version: "1.0.0", licence: "Apache-2.0" }, run: { engine: "deepsec", max_cost_usd: 150 }, when: [], output: "findings", runs_code: true, cost: "high", scope: "repo" },
+  { id: "ui.scan", model: "google/gemini-4-carbon", effort: "low", lens: "ui", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "Aiden-HQ/AidenHQ", version: "ui-review@2", licence: "AGPL-3.0-only" }, run: { engine: "ui-review", max_cost_usd: 10 }, when: ["**/package.json"], output: "findings", runs_code: true, cost: "high", scope: "repo" },
   { id: "maint.vulture", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "jendrikseipp/vulture", version: "2.0", licence: "MIT" }, run: {}, when: ["**/*.py"], output: "vulture", runs_code: false, cost: "free" },
 ];
 
@@ -373,4 +376,34 @@ test("deepsec is handed the repo's records earlier runs left, and what a run cha
   down = false;
   await w.tick();
   assert.deepEqual([Object.keys(records()), status()], [["src/c.ts", "src/d.ts"], "done"]);
+});
+
+// The ui-review report as the engine leaves it (types.ts Report), reduced to what the recipe reads.
+const uiReport = {
+  coverage: { done: 12, total: 12, failed: 0, deferred: 0 }, cost_usd: 0.4,
+  captures: [{ page: "/approvals", width: 1512, theme: "dark", rules: [{ rule: "page-error", blocking: true, text: "TypeError: x is undefined" }, { rule: "overflow", blocking: false, text: "2px" }] }, { page: "/", width: 390, theme: "light", rules: [] }],
+  improvements: [
+    { rank: 2, where: { page: "/", width: 1512, theme: "light", region: "attention rail" }, weak: "Compact the attention rail", change: "Tighten the rail in src/Rail.tsx to 48px rows", why: "Wasted space", best: "Linear's lists", captures: ["home-1512-light.png"] },
+    { rank: 1, where: { page: "/approvals", width: 1512, theme: "dark", region: "grid" }, weak: "Widen the approvals grid", change: "Let the grid use the full width", why: "A narrow column on wide screens", best: "Stripe's tables", captures: ["approvals-1512-dark.png", "approvals-1920-dark.png"] },
+  ],
+  bugs: [],
+};
+
+test("ui.scan runs as its own whole-repo check and reports a UI section", async () => {
+  const w = world();
+  const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["ui.scan"] });
+  await w.tick();
+  const req = w.started[0];
+  assert.equal(req.profile, "code-review-ui");
+  assert.deepEqual(Object.keys(checkSpec(req)).sort(), ["base", "model", "option", "run"]);
+  assert.equal(checkSpec(req).model, "google/gemini-4-carbon");
+  w.finish(0, toReview(uiReport, { model: "google/gemini-4-carbon", listed: ["/", "/approvals"] }), 0.4);
+  await w.tick();
+  assert.equal(w.engine.batches({})[0].status, "done", "the tree validator accepted it");
+  const md = w.engine.report(b.batch);
+  assert.match(md, /### UI/);
+  assert.ok(md.indexOf("Widen the approvals grid") < md.indexOf("Compact the attention rail"), "ranked");
+  assert.ok(md.indexOf("Compact the attention rail") < md.indexOf("page-error"), "blocking rule findings follow the improvements");
+  assert.match(md, /Source: `src\/Rail\.tsx`/);
+  await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["ui.scan"], combo: { effort: "xhigh" } }), /takes an effort of low, medium, high/);
 });

@@ -162,7 +162,7 @@
   const VERDICTS = { blocked: "Blocked", concerns: "Concerns", incomplete: "Incomplete", clean: "Clean" };
   const SEV = [["important", "Important"], ["nit", "Nit"], ["pre_existing", "Pre-existing"]];
   const OUTCOMES = { fixed: "Fixed", dismissed: "Dismissed", open_at_merge: "Open at merge", open_at_close: "Open at close" };
-  const LENSES = { correctness: "Correctness", security: "Security", maintainability: "Maintainability", performance: "Performance" };
+  const LENSES = { correctness: "Correctness", security: "Security", maintainability: "Maintainability", performance: "Performance", ui: "UI" };
   const live = (r) => r.status === "queued" || r.status === "waiting" || r.status === "running";
   const skipWords = (why) => { if (!why) return "Skipped"; const k = why.split(":")[0].trim().toLowerCase(); return SKIPS[k] ?? why.replace(/^./, (c) => c.toUpperCase()); };
   const costText = (u) => (u < 0.005 ? "<$0.01" : u < 10 ? `$${u.toFixed(2)}` : `$${Math.round(u)}`);

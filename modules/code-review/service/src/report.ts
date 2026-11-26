@@ -116,7 +116,10 @@ const flat = (s: unknown, max: number) => plain(s, max).replace(/[\\`*_{}[\]()#+
 /** Text in a code fence longer than any backtick run inside it, so it can't close the fence. */
 const fence = (text: string, info = "") => { const f = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}${info}\n${text}\n${f}`; };
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const LENS_ORDER = ["security", "correctness", "maintainability", "performance"];
+const LENS_ORDER = ["security", "correctness", "maintainability", "performance", "ui"];
+const LENS_TITLE: Record<string, string> = { ui: "UI" };
+/** A ui improvement's rank (its id is `ui-<rank>`); a rule finding (`ui-rule-<n>`) has none and follows the improvements. */
+const uiRank = (g: { items: Shown[] }) => Number(/^ui-(\d+)$/.exec(g.items[0]!.id)?.[1] ?? Infinity);
 
 /**
  * The report's markdown, at most REPORT_MAX characters: the verdict, findings by lens (most severe first), coverage (failed and
@@ -134,6 +137,13 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
   const cost = b.runs.reduce((n, r) => n + r.cost_usd, 0);
   const entry = (g: (typeof groups)[number]) => {
     const f = g.items[0]!;
+    // A ui finding is placed by page, width, theme and region (its path is the source file it names, or the page).
+    if (f.ui) {
+      const u = f.ui;
+      return [`#### ${flat(f.title, 200)}`, `${g.severity} · \`${plain(u.page, 200).replace(/`/g, "'")}\` · ${u.width}px · ${u.theme}${u.region ? ` · ${flat(u.region, 120)}` : ""} · found by ${g.options.map((o) => flat(o, 80)).join(", ")}`, "",
+        ...(f.why ? [flat(f.why, 1500), ""] : []), ...(u.change ? [`Change: ${flat(u.change, 1000)}`, ""] : []), ...(u.best ? [`Best in the category: ${flat(u.best, 600)}`, ""] : []),
+        ...(f.evidence ? [`Captures: ${flat(f.evidence, 600)}`, ""] : []), ...(g.path !== u.page ? [`Source: \`${plain(g.path, 300).replace(/`/g, "'")}\``, ""] : [])].join("\n");
+    }
     const lines = g.end > g.line ? `${g.line}-${g.end}` : `${g.line}`;
     return [`#### ${flat(f.title, 200)}`, `${g.severity} · \`${plain(g.path, 300).replace(/`/g, "'")}:${lines}\` · found by ${g.options.map((o) => flat(o, 80)).join(", ")}${g.carried ? ` · carried over from the review of ${g.carried} (its area is unchanged)` : ""}`, "",
       ...(f.why ? [flat(f.why, 1500), ""] : []), ...(f.evidence ? [fence(String(f.evidence).slice(0, 1500)), ""] : []), ...(f.fix_brief ? [`Fix: ${flat(f.fix_brief, 1000)}`, ""] : [])].join("\n");
@@ -155,8 +165,11 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
     const lenses = [...new Set(groups.map((g) => g.lens))].sort((a, z) => (LENS_ORDER.indexOf(a) + 1 || 99) - (LENS_ORDER.indexOf(z) + 1 || 99));
     if (!groups.length) out.push("No findings.", "");
     for (const lens of lenses) {
-      out.push(`### ${lens[0]!.toUpperCase()}${lens.slice(1)}`, "");
-      groups.forEach((g, i) => { if (g.lens === lens && shown[i]) out.push(texts[i]!); });
+      out.push(`### ${LENS_TITLE[lens] ?? `${lens[0]!.toUpperCase()}${lens.slice(1)}`}`, "");
+      // The UI section: the improvements ranked, then the rule checks' blocking findings.
+      const order = groups.map((_, i) => i).filter((i) => groups[i]!.lens === lens);
+      if (lens === "ui") order.sort((a, z) => uiRank(groups[a]!) - uiRank(groups[z]!) || a - z);
+      for (const i of order) if (shown[i]) out.push(texts[i]!);
     }
     const left = Object.entries(dropped).filter(([, n]) => n).map(([s, n]) => `${n} ${s === "nit" ? "nits" : s === "pre_existing" ? "pre-existing findings" : "important findings"}`);
     if (left.length) out.push(`_Not shown, to keep the report within Primer's size: ${left.join(", ")}. Every finding is on this review's page on the board, under each option._`, "");
