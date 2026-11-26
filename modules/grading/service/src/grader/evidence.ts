@@ -1113,8 +1113,9 @@ export const MAX_IMAGES = 20; // a mockup task attaches ~18 screenshots; the byt
 const IMAGE_SIDE = 2048; // a PNG with a longer side is downscaled (the vision models scale to about this anyway)
 const IMAGE_BYTES = 3 * 1024 * 1024; // one image as sent; a bigger one is downscaled if a PNG, else left out
 const IMAGES_BYTES = 12 * 1024 * 1024; // all images as sent (base64 adds a third; the gateway takes 32 MB)
-const TEXT_FILE = 6_000; // one text file's characters
-export const TEXT_TOTAL = 16_000; // all text files' characters (the prompt fences a block at 20,000)
+const CUT_MARK = `\n[cut: 999999999 of 999999999 characters not shown]`.length; // the longest cut marker a page can carry
+const TEXT_PAGE = 16_000; // one page of a text file's characters; with its heading the block stays well under the prompt's 20,000 fence
+export const TEXT_TOTAL = 60_000; // all text files' characters across their pages (a page is its own fenced block)
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|ya?ml|log|html?|tsx|ts|jsx|js|css)$/i;
 
 /** A PNG made to fit: downscaled until its longest side is at most IMAGE_SIDE and its bytes IMAGE_BYTES, or null. */
@@ -1129,22 +1130,26 @@ function fitPng(buf: Buffer, info: ImageInfo): Buffer | null {
 
 /**
  * The task's attached files' contents, for the grader (`files` as wordsEvidence labels them): images (sniffed from the
- * bytes, at most 20, a large PNG downscaled) as image parts, text files (.txt, .md, .json, .csv, ...) as one fenced FILES
- * block, each cut and all within a budget. Order: files the rubric names by file name, then files the task's recent
- * comments name, then the newest. { awaiting } when a file can't be read yet (missing evidence is never a pass), else
- * { facts, data, images }: the facts say per file label (never its name, the agent's string) what was sent (its size, its
- * pixel size, what was cut or left out), so a file left out reads as not sent, not as missing work. `content(id)` resolves
- * with the file's bytes. `heads` (a pr's): the code under review, each PR's { commits, trees } (prEvidence's `shows`); a
- * screenshot stamped (aidenhq-browse, ui-review) with a commit and tree that are none of them shows other code, so it is
- * not sent, and the facts say so. `deployed` (an app's) is { commits, trees } for the code the app runs: a capture stamped
- * at that commit — or, when the commit's tree is known, at any commit with the same tree (a capture taken before it was
- * committed, or at a PR head since squash-merged) — is this deploy; one stamped at any other code shows an earlier iteration,
- * so it is not sent and the fact says which code it shows. An unstamped image (a mockup, a reference) is sent as before.
+ * bytes, at most 20, a large PNG downscaled) as image parts, text files (.txt, .md, .json, .csv, ...) as sequential fenced
+ * blocks FILES_1, FILES_2, ...: one page each, headed with the file's label, its name and "page k of n", so the whole text
+ * reaches the grader while every block stays under the prompt's 20,000-character fence. All text files share one budget: a
+ * file the budget cannot take whole is cut, and its last page carries the [cut: N of M] marker. Order: files the rubric
+ * names by file name, then files the task's recent comments name, then the newest. { awaiting } when a file can't be read
+ * yet (missing evidence is never a pass), else { facts, data, images }: the facts say per file label (never its name, the
+ * agent's string) what was sent (its size, its pages, its pixel size, what was cut or left out), so a file left out reads
+ * as not sent, not as missing work. `content(id)` resolves with the file's bytes. `heads` (a pr's): the code under review,
+ * each PR's { commits, trees } (prEvidence's `shows`); a screenshot stamped (aidenhq-browse, ui-review) with a commit and
+ * tree that are none of them shows other code, so it is not sent, and the facts say so. `deployed` (an app's) is
+ * { commits, trees } for the code the app runs: a capture stamped at that commit — or, when the commit's tree is known, at
+ * any commit with the same tree (a capture taken before it was committed, or at a PR head since squash-merged) — is this
+ * deploy; one stamped at any other code shows an earlier iteration, so it is not sent and the fact says which code it shows.
+ * An unstamped image (a mockup, a reference) is sent as before.
  */
 export async function fileEvidence(files: any[], content: (id: string) => Promise<Buffer>, { rubric = "", comments = "", heads = [], deployed = { commits: [], trees: [] } }: { rubric?: string; comments?: string; heads?: { commits: string[]; trees: string[] }[]; deployed?: { commits: string[]; trees: string[] } } = {}): Promise<any> {
   const facts: string[] = [];
   const images: { url: string; label: string }[] = [];
-  const texts: string[] = [];
+  const data: Record<string, string> = {};
+  let pages = 0;
   let imageBytes = 0;
   let textLeft = TEXT_TOTAL;
   const names = (f: any, text: string) => {
@@ -1165,10 +1170,11 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       facts.push(`${f.label}: attached, not sent to the grader (only ${MAX_IMAGES} images are sent: those the rubric names, then those the comments name, then the newest)`);
       continue;
     }
-    // Heading and cut marker are paid for out of the budget too, so the block never cuts a file off unmarked.
-    const head = `=== ${f.label}: ${name.slice(0, 200)} ===\n`;
-    const room = isText ? Math.min(TEXT_FILE, textLeft - head.length) : 0;
-    if (isText && room <= 0) {
+    // A page's heading is paid for out of the budget too, so the fence never cuts a block.
+    const label = `${f.label}: ${name.slice(0, 200)}`;
+    const heading = (k: number, n: number) => `=== ${label}, page ${k} of ${n} ===\n`;
+    // 9,999 pages is far past any count TEXT_TOTAL can pay for, so this is the longest heading a page can carry.
+    if (isText && textLeft <= heading(9999, 9999).length + CUT_MARK) {
       facts.push(`${f.label}: text, ${Number(f.byteSize) || 0} bytes, not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on other files)`);
       continue;
     }
@@ -1216,11 +1222,40 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       facts.push(`${f.label}: image ${real} px (its real size), shown as IMAGE_${images.length}${sent !== buf ? ` downscaled to ${s.width}x${s.height} px` : ""}`);
       continue;
     }
+    // The whole text as sequential pages, while the shared budget lasts: each page is its own fenced block, headed with the
+    // file's label, its name and "page k of n", so every block stays under the prompt's 20,000-character fence.
     const text = buf.toString("utf8");
-    const cut = text.length > room ? `\n[cut: ${text.length - room} of ${text.length} characters not shown]` : "";
-    textLeft -= head.length + Math.min(room, text.length) + cut.length;
-    texts.push(`${head}${text.slice(0, room)}${cut}`);
-    facts.push(`${f.label}: text, ${text.length} characters, in FILES${cut ? ` (cut to its first ${room}, the rest marked in FILES)` : ""}`);
+    const marker = (shown: number) => `\n[cut: ${text.length - shown} of ${text.length} characters not shown]`;
+    const headings = (n: number) => Array.from({ length: n }, (_, i) => heading(i + 1, n).length).reduce((a, b) => a + b, 0);
+    // A page count sets every heading's width ("of n"), so each candidate count is priced as a whole, against the budget the
+    // pages before it did not spend: its headings and characters, plus its cut marker only when it cannot take the whole file.
+    // The count that shows the most wins; nothing is reserved that is not spent.
+    let shown = 0;
+    const most = Math.max(1, Math.min(Math.ceil(text.length / TEXT_PAGE), Math.floor(textLeft / TEXT_PAGE) + 1));
+    for (let n = 1; n <= most; n++) {
+      const cap = textLeft - headings(n);
+      if (cap <= 0) break;
+      const limit = Math.min(text.length, n * TEXT_PAGE);
+      let take = Math.min(limit, cap);
+      if (take < text.length) {
+        // A cut page pays its marker too; its real marker is at most CUT_MARK, so each step is bounded.
+        while (take > 0 && take + marker(take).length > cap) take--;
+        while (take < limit && take + 1 + marker(take + 1).length <= cap) take++;
+      }
+      shown = Math.max(shown, take);
+      if (take >= text.length) break; // this count takes the whole file; a larger one only adds headings
+    }
+    const chunks: string[] = [];
+    for (let at = 0; at < shown; at += TEXT_PAGE) chunks.push(text.slice(at, Math.min(at + TEXT_PAGE, shown)));
+    if (!chunks.length) chunks.push(""); // an empty file is still one (empty) page
+    const cut = shown < text.length ? marker(shown) : "";
+    const blocks = chunks.map((_, i) => `FILES_${pages + i + 1}`);
+    blocks.forEach((key, i) => (data[key] = `${heading(i + 1, chunks.length)}${chunks[i]}${i === chunks.length - 1 ? cut : ""}`));
+    // Exactly what the pages cost, so a later file gets every character this one did not use.
+    textLeft -= headings(chunks.length) + shown + cut.length;
+    pages += chunks.length;
+    const pageWord = `${chunks.length} page${chunks.length === 1 ? "" : "s"}`;
+    facts.push(`${f.label}: text, ${text.length} characters, shown in ${pageWord} (${blocks.join(", ")})${cut ? `, cut at the text budget of ${TEXT_TOTAL} characters: the rest marked in ${blocks[blocks.length - 1]}` : ""}`);
   }
-  return { facts, images, data: texts.length ? { FILES: texts.join("\n\n") } : {} };
+  return { facts, images, data };
 }
