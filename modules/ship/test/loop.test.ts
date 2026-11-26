@@ -1354,6 +1354,27 @@ test("a PR into another base is not closed as superseded by the task's newer PR 
   assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b23"), "and its branch stays");
 });
 
+// A `ship-pr-<n>` branch is ship's own scratch checkout of an adopted PR, not a replacement for it: a PR on one must never make
+// the PR it was checked out from look superseded (that closed #1879 as "superseded by #1881" and deleted its branch, unmerged).
+test("an adopted PR is not closed as superseded by a newer PR on ship's own scratch branch", async (t) => {
+  const c = await rig(t);
+  notePrTask(c.cacheDir, "https://github.com/acme/app/pull/93", { task: "ACME-92", branch: "ship-pr-92" });
+  c.set([c.agentPr(92), pr(93, { headRefName: "ship-pr-92", author: { __typename: "Bot", login: "aidenhq" } })]);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/92").length, 0, "the adopted PR is not closed as superseded by a scratch-branch PR");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b92"), "and its branch stays");
+});
+
+// The guard is narrow: the same task's newer PR on an ordinary branch still supersedes the older one, as before.
+test("an adopted PR is still closed as superseded by the same task's newer PR on an ordinary branch", async (t) => {
+  const c = await rig(t);
+  notePrTask(c.cacheDir, "https://github.com/acme/app/pull/93", { task: "ACME-92", branch: "b93" });
+  c.set([c.agentPr(92), pr(93, { headRefName: "b93", author: { __typename: "Bot", login: "aidenhq" } })]);
+  await c.watch.tick();
+  assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/92"), "the older PR is closed as superseded");
+  assert.ok(c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b92"), "and its branch goes with it");
+});
+
 // self-review: a re-run the credential can never be allowed to send is not retried forever: the red-head rules report the head.
 test("a permanent refusal to re-run a never-started job still reports the red head", async (t) => {
   const c = await rig(t, { steps: [], rerun: () => ({ throw: Object.assign(new Error("no Actions write"), { need: { cause: "scope", scope: "repo" } }) }) });

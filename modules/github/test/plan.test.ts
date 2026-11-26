@@ -40,6 +40,30 @@ describe("plan: the product repo", () => {
     assert.deepEqual(rules("pr", engineer, { ...branch(["kernel/src/a.ts"], "main"), adopted: true }), [[2, "product-default-branch"]]);
   });
 
+  // Ship checks an adoption out onto its own `ship-pr-<n>` scratch branch: publishing that branch opens a duplicate PR on a branch
+  // nobody reviews, which then "supersedes" the PR it was a copy of. A name test refuses it before the foreign/namespace/handoff/
+  // adopted widening, for every requester: a platform role, an adoption and a handoff all reach the product-pr part otherwise.
+  it("a publish on ship's own scratch branch is refused by name, whatever the requester or flags", () => {
+    const scratch = branch(["src/a.ts"], "ship-pr-1891");
+    assert.deepEqual(rules("pr", engineer, scratch), [[2, "ship-scratch-branch"]]);
+    assert.deepEqual(rules("push", engineer, scratch), [[2, "ship-scratch-branch"]]);
+    assert.deepEqual(rules("pr", { ...s, requester: { platform: true } }, scratch), [[2, "ship-scratch-branch"]]);
+    assert.deepEqual(rules("pr", engineer, { ...scratch, adopted: true }), [[2, "ship-scratch-branch"]]);
+    assert.deepEqual(rules("pr", engineer, { ...scratch, handoff: true }), [[2, "ship-scratch-branch"]]);
+    const [part] = planParts("pr", { ...engineer, branches: [scratch] })[0];
+    assert.deepEqual([part.tier, part.reject], [2, true], "a refusal, not a reviewer or owner part: no PR, no card");
+    // The guard is not a general widening of `foreign`: an ordinary branch outside the namespace is unchanged.
+    assert.deepEqual(rules("pr", engineer, branch(["src/a.ts"], "agent/ACME-7/fix", "other/lib")), [[1, "outside-pr"]]);
+    // The one path that may land on a `ship-pr-<n>` branch is a ship push that validates against its adoption: the branch is the
+    // PR's own head (a PR opened before this guard), and `pushOnto` moves that PR rather than opening anything. Refusing it by
+    // name would block the very command the refusal above recommends.
+    const head = "a".repeat(40);
+    const adoptedShip = { number: 9, generation: 1, expected: head, head, branch: "ship-pr-9", headRef: "ship-pr-9", current: 1 };
+    assert.deepEqual(rules("push", engineer, { ...branch(["src/a.ts"], "ship-pr-9"), ship: adoptedShip }), [[1, "product-push-branch"]]);
+    // A ship push whose adoption no longer holds is still refused, and never by the name test into a publish part.
+    assert.deepEqual(rules("push", engineer, { ...branch(["src/a.ts"], "ship-pr-9"), ship: { ...adoptedShip, current: null } }), [[2, "ship-generation"]]);
+  });
+
 });
 
 describe("plan: product merges", () => {
