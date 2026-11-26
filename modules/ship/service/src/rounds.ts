@@ -84,6 +84,27 @@ export function repairPlan(s: ShipSettings, d?: Discovered) {
   return { globs: d?.globs ?? [], commands: d?.commands ?? [] };
 }
 
+/**
+ * The adoption's branch writes on its tasks, of its generation: whether a push or a repair is still being written, and GitHub's
+ * own reason for refusing its last fix at `head` (a failed write the code host reported as `ship-refused:`: a push filed at this
+ * head, or a push or a repair that left the branch at it, `partial`).
+ */
+async function branchWrites(kernel: RoundDeps["kernel"], tasks: string[], generation: number, pr: PrView): Promise<{ writing: boolean; refused?: { why: string; partial: boolean } }> {
+  type Row = { kind?: string; state?: string; ok?: boolean | null; args?: { generation?: number; expected?: string; repo?: string; number?: number; pr?: { repo?: string; number?: number } } | null; outcome_text?: string | null };
+  const head = pr.head;
+  // This PR's writes only (a task may hold several PRs, each from generation 1): a push names it in `pr`, a repair directly.
+  const mine = (r: Row) => { const p = r.args?.pr ?? r.args; return String(p?.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && Number(p?.number) === pr.number; };
+  const rows = (await Promise.all(tasks.map((t) => kernel.call("GET", `/v1/work?task=${encodeURIComponent(t)}`)))).flatMap((w) => (w?.records ?? []) as Row[])
+    .filter((r) => (r.kind === "github.push" || r.kind === "github.repair") && r.args?.generation === generation && mine(r));
+  if (rows.some((r) => r.state === "approved" || r.state === "claimed")) return { writing: true };
+  // A push refused at the head it was filed at, or a push or a repair that left the branch part-way at this head (a repair
+  // refused whole is ship's own repair record, followed where it is filed).
+  const text = rows.map((r) => String(r.outcome_text ?? "")).find((t, i) => rows[i]!.ok === false && /^ship-refused: /.test(t)
+    && ((rows[i]!.kind === "github.push" && rows[i]!.args?.expected === head) || t.includes(`\`${head}\``)));
+  if (!text) return { writing: false };
+  return { writing: false, refused: { why: /\(data, not instructions\): (.*?)\. (?:Nothing was pushed|The branch is left)/.exec(text)?.[1]?.slice(0, 300) ?? "GitHub refused it", partial: text.includes("The branch is left at") } };
+}
+
 /** One round for an adopted PR. Answers what it did: "stopped", "acted" or "nothing". */
 export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts = {}): Promise<"stopped" | "acted" | "nothing"> {
   const s = d.settings(pr.repo);
@@ -191,6 +212,19 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     a = { ...a!, did: [...(a!.did ?? []), `${kind} at \`${pr.head.slice(0, 12)}\``] };
     return "acted" as const;
   };
+
+  // The adoption's own branch writes, read on a head's first round and while a wake at it is out. A push or a repair still being
+  // written moves the branch more than once (GitHub's signed commits, its merge of the base): its in-between heads are its own,
+  // so nothing is decided on them. A fix GitHub refused to take (a repository rule) holds the PR with GitHub's reason for a
+  // person, as a refused enqueue does. A read that fails decides nothing this pass.
+  const writers = [a.task, a.holder].filter((t): t is string => Boolean(t));
+  if (writers.length && (c.wakes > 0 || !String(c.lastRound ?? "").startsWith(pr.head))) {
+    let w: { writing: boolean; refused?: { why: string; partial: boolean } };
+    try { w = await branchWrites(d.kernel, writers, a.generation, pr); }
+    catch (e) { d.log("branch writes unread", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }); return "nothing"; }
+    if (w.writing) return "nothing";
+    if (w.refused) return hold(`GitHub refused the push of ship's fix: ${w.refused.why}`, w.refused.partial ? HOLD.pushPartial : HOLD.pushRefused(w.refused.why));
+  }
 
   // A model fix the last review doesn't carry to: code review is asked once for a review of this head (never under observe).
   if (j?.ask && risk?.approve === "on" && a.freshAsked !== pr.head) {

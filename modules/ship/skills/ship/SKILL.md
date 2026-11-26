@@ -16,7 +16,8 @@ read it, and wait for ship's wake.
 
 **Conflicts** (ship's repair left some). Ship has already tried the deterministic repair: merging the base, taking the base
 side of generated paths and regenerating them. Its wake says what it left.
-- Check out the PR with the wake's `aidenhq ship checkout …` line, then `git merge origin/<base>`.
+- Check out the PR with the wake's `aidenhq ship checkout …` line, then `git fetch origin <base>` and
+  `git merge origin/<base>` right away: a push merges only the base's current tip.
 - Resolve each real conflict, keeping both sides' intent. For generated paths, take the base side and run the repo's generate
   command (its AGENTS.md or CI says which).
 - If the generator command ship used is wrong for this repo, propose the right one with `ship_configure`
@@ -60,6 +61,9 @@ read with `github_pr_threads` and `github_issue_read`). Each gets an answer; the
   clone.
 - One commit per wake, pushed with the wake's `aidenhq ship push …` line. If it is refused because the PR moved, stop: ship
   wakes you on the new head if work is left.
+- A push GitHub refuses for its own reason (`ship-refused:`, such as a repository rule) ends the wake: post the refusal's
+  reason on the task in one line and stop. Ship holds the PR with GitHub's reason and assigns a person, who takes it from
+  there.
 - Get green by fixing the code. A check, test or lint rule stays as strict as you found it.
 - A fix that needs a protected path (lockfiles, `.github/**`, test and lint config, CODEOWNERS): stop and say so on the task.
   Ship holds the PR for a person.
