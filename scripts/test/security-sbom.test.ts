@@ -150,8 +150,10 @@ if [ "$1" = run ]; then
     case "$a" in */.export/*:/src:ro)
       d="\${a%:/src:ro}"
       printf 'tree %s %s\n' "\${d#"\${AIDENHQ_DATA_DIR}"/modules/security/sbom/}" "$(stat -c %a "$d")" >> "$MODES"
+      printf 'unitdir %s %s\n' "\${d#\${AIDENHQ_DATA_DIR}/modules/security/sbom/}" "$(stat -c %a "$d")" >> "$MODES"
       printf 'exportdir %s\n' "$(stat -c %a "$(dirname "$d")")" >> "$MODES"
-      printf 'tar %s\n' "$(ls "$(dirname "$d")"/*.tar 2>/dev/null | head -1)" >> "$MODES" ;;
+      for r in "$d"/rootfs-*; do [ -d "$r" ] && printf 'rootfs %s %s\n' "\${r#\${AIDENHQ_DATA_DIR}/modules/security/sbom/}" "$(stat -c %a "$r")" >> "$MODES"; done
+      printf 'tar %s\n' "$(ls "$d.tars"/*.tar 2>/dev/null | head -1)" >> "$MODES" ;;
     esac
   done
   # The work dir the script mounted as /work: what a target leaves must be gone before the next one starts. Junk is made
@@ -571,8 +573,38 @@ test("security-sbom: a running container whose image record is gone is inventori
   const dirMode = modes.find((m) => m.startsWith("exportdir "));
   assert.ok(tree, `the extracted root's mode was not read:\n${modes.join("\n")}`);
   assert.match(tree, / 700$/, tree);
+  const rootfs = modes.find((m) => m.startsWith("rootfs "));
+  assert.ok(rootfs && / 700$/.test(rootfs), `the extracted root is not mode 700: ${modes.join("\n")}`);
   assert.match(dirMode ?? "", / 700$/, `the pass's private directory is not mode 700: ${dirMode}`);
   assert.ok(modes.some((m) => m.startsWith("tar ") && m.endsWith(".tar")), `no tar beside the extracted root: ${modes.join("\n")}`);
+});
+
+test("security-sbom: two containers on one gone image are both exported and scanned under its one row", { skip: NOT_LINUX }, async () => {
+  // Two replicas of a service run the same image variant, and the daemon no longer holds it: keying the unit by image and
+  // platform makes them one target, so a fallback that kept only the first container would leave the second's production
+  // filesystem uninventoried. Both are exported, both roots are scanned by the one syft run, and the row names both ids.
+  const { status, out, targets, calls, modes } = await run({}, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+    computers: { images: { image: "aidenhq/board:local" } },
+  });
+  assert.equal(status, 0, out);
+  const rows = targets.filter((t) => t[0] === "image:sha256:1111");
+  assert.equal(rows.length, 1, `one row per target key:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(rows[0]![2], "", "the container scan has no error");
+  assert.equal(rows[0]![3], "container:c1,c2", "the row names both containers its filesystem came from");
+  const exports = calls.filter((c) => c.startsWith("export "));
+  assert.deepEqual(exports.map((c) => c.split(" ").pop()).sort(), ["c1", "c2"], `both containers were exported:\n${exports.join("\n")}`);
+  const run_ = calls.filter((c) => c.startsWith("run ") && c.includes("--source-name image:sha256:1111"));
+  assert.equal(run_.length, 1, `one scan of the shared target:\n${run_.join("\n")}`);
+  assert.match(run_[0]!, / dir:\/src /);
+  assert.deepEqual(modes.filter((m) => m.startsWith("rootfs ")).map((m) => m.split(" ")[1]).sort(), [".export/unit-1/rootfs-c1", ".export/unit-1/rootfs-c2"].sort(), modes.join("\n"));
+  assert.ok(modes.filter((m) => m.startsWith("rootfs ")).every((m) => / 700$/.test(m)), `an extracted root is not mode 700: ${modes.join("\n")}`);
 });
 
 test("security-sbom: a container export that fails records its image id and the docker error, and the batch still lands", { skip: NOT_LINUX }, async () => {
