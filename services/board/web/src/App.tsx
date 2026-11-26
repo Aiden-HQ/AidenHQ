@@ -19,6 +19,7 @@ import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSo
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { SignInRequired, api, type Session } from "./api";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { SignInScreen, RETURN_KEY } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
 import { AttentionStrip } from "./Attention";
@@ -859,6 +860,7 @@ export function App() {
         </nav>
       )}
 
+      <ErrorBoundary resetKey={`${view}:${JSON.stringify(route)}`}>
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} card={route.kind === "view" && route.view === "approvals" ? route.card : undefined} />}
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} />}
@@ -934,6 +936,7 @@ export function App() {
           </section>
         )}
       </main>
+      </ErrorBoundary>
 
       {route.kind === "task" && (
         <Drawer

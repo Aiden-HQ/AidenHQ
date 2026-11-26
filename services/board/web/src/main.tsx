@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { WelcomeGate } from "./Welcome";
 import { preloadBoot } from "./queries";
 // Tokens, then the components, then the older page styles (which may refine a component in place).
@@ -24,7 +25,9 @@ preloadBoot();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <WelcomeGate>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </WelcomeGate>
   </StrictMode>,
 );

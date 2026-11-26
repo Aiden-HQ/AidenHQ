@@ -71,12 +71,12 @@ function AddMarketplace() {
       setLooking(false);
     }
   };
-  const add = () => pin && void run({ kind: "marketplace", op: "add", name: repo.trim().split("/")[1]!.toLowerCase().replace(/[^a-z0-9-]/g, "-"), source: { source: "github", repo: repo.trim() }, sha: pin.sha }, () => (setRepo(""), setPin(null)));
+  const add = () => pin?.sha && void run({ kind: "marketplace", op: "add", name: repo.trim().split("/")[1]!.toLowerCase().replace(/[^a-z0-9-]/g, "-"), source: { source: "github", repo: repo.trim() }, sha: pin.sha }, () => (setRepo(""), setPin(null)));
   return (
     <form className="br-add" onSubmit={(e) => (e.preventDefault(), ok && (pin ? add() : void look()))}>
       <input className="br-search" placeholder="github owner/repo" aria-label="GitHub repository" value={repo} onChange={(e) => (setRepo(e.target.value), setPin(null))} />
       <button className="btn primary" disabled={!ok || busy || looking}>{pin ? "Add marketplace" : "Check repository"}</button>
-      {pin ? <p className="muted">Pinning {pin.sha.slice(0, 7)} from {shortDate(pin.date)} (the newest commit at least 7 days old). Reviewed by AI, then needs your tap.</p> : <p className="muted">Pinned at its newest commit that is at least 7 days old. Reviewed by AI, then needs your tap.</p>}
+      {pin?.sha ? <p className="muted">Pinning {pin.sha.slice(0, 7)} from {shortDate(pin.date)} (the newest commit at least 7 days old). Reviewed by AI, then needs your tap.</p> : pin ? <p className="muted">No commit found for this repository, so there is nothing to pin.</p> : <p className="muted">Pinned at its newest commit that is at least 7 days old. Reviewed by AI, then needs your tap.</p>}
       {(problem || error) && <p className="st-error" role="alert">{problem || error}</p>}
     </form>
   );
