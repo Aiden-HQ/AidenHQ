@@ -34,9 +34,9 @@ agents:
     department: engineering
     skills: [ apps-platform.design-system, engineering.supply-chain, engineering.write-code, tasks.delegate-work ]
     max_parallel: 2 # design reviews per PR are independent; each run gets its own box
-    # Finds visible defects in screenshots: the owner picked GPT Luna at medium (2026-11-13; it matched Opus on screenshot
-    # bug-finding at a fraction of the cost). Takes images on OpenRouter.
-    model: ~openai/gpt-luna-latest
+    # Judges each changed page's before|after pictures. Default GPT Sol (2026-11-26 spike: 7 of 10 planted UI bugs, Luna 4);
+    # users pick their own per agent (instance.yaml overrides.agents.ui-reviewer.model). Takes images on OpenRouter.
+    model: ~openai/gpt-sol-latest
     reasoning_effort: medium
     timeout_sec: 2400
     image: agent-base

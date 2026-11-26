@@ -61,10 +61,11 @@ Apps are **shadcn/ui + Tailwind** (Vite + React) from the app starter, themed by
   dark, runs axe (WCAG 2.2 AA), measures web vitals, collects page errors and checks layout. Read `<dir>/report.md`
   first, then **open every screenshot**. `--palettes neutral,warm` loops themes on pages that read `?palette=`. It
   also clicks the pages' links and checks each one renders on click, Back/Forward and reload; `--no-routes` skips that
-  for a mockup whose links lead nowhere yet.
+  for a mockup whose links lead nowhere yet. `--full` takes the whole page, stepping through an inner scroll area when the
+  app scrolls inside one.
 - **agent-browser** for states and interactions (the commands below cover the work; its `--help` is huge):
   ```sh
-  agent-browser open <url>; agent-browser wait --load networkidle      # or: wait --text "Hello"
+  agent-browser open <url>; agent-browser wait --load load             # or: wait --text "Hello" (a live page never idles)
   agent-browser set viewport 390 844; agent-browser set media dark     # phone, dark
   agent-browser snapshot -i                                            # interactive elements with refs @e1...
   agent-browser click @e1 | fill @e2 "text" | type "#q" "abc"          # act; then check the URL and the region

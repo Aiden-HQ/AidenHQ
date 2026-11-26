@@ -37,7 +37,10 @@ Usage and migration live in `modules/apps-platform/design-system/README.md`; thi
   doesn't render, a core flow it touches is broken, data missing or wrong, unusable at desktop width, a severe
   accessibility blocker on the primary flow, a structural departure from a mockup the task names); everything else is a
   non-blocking note, and when unsure it passes. A PR gets at most one failing verdict: the re-review checks only the
-  blockers that verdict named (`modules/design/agents/ui-reviewer/AGENTS.md`).
+  blockers that verdict named (`modules/design/agents/ui-reviewer/AGENTS.md`). The reviewer judges a PR by the before|after
+  pictures of each changed page (`ui-review --baseline`), dark mode included: what is broken in the after that was fine
+  in the before. Its model is GPT Sol by default (`modules/design/module.yaml`); set another with
+  `overrides.agents.ui-reviewer.model` in `instance.yaml`.
 
 ## Pieces
 
@@ -45,5 +48,5 @@ Usage and migration live in `modules/apps-platform/design-system/README.md`; thi
 |---|---|
 | `modules/apps-platform/design-system/` | `tokens.css`, `shadcn.css`, `presets/`, `guidelines.md`, `review-checklist.md`, `README.md` (usage and migration); the deprecated kit |
 | `modules/apps-platform/starter/` | The app starter: blocks, `server.mjs`, example dashboard, catalog, e2e tests |
-| `services/computer/images/agent-base/ui-review` | The review command (screenshots, axe, vitals, layout checks, diffs to `report.md`) |
+| `services/computer/images/agent-base/ui-review` | The review command (screenshots with `--full` stepping through an app's inner scroller, axe, layout and route checks, headless vitals and tiny text as notes; with `--baseline`, a frozen page clock, before\|after pictures and a "Look at these first" list of the changed pages to `report.md`) |
 | `modules/design/` | The UI/UX Designer's and the UI Reviewer's handbooks (no scheduled audit: the designer audits an app when it moves to the starter, and on request) |
