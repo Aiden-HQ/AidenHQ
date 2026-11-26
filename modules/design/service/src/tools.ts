@@ -1,12 +1,15 @@
-// The design connection's tools. Reads: design_runs, design_run, design_image, and design_evidence_put and design_run_finish (they
-// write only into this module's own store). Write: design_run_start. A run belongs to the agent that started it (the caller's signed assertion), and only that agent writes to it.
+// The design connection's tools. Reads: design_runs, design_run, design_image, design_apps, and design_evidence_put and
+// design_run_finish (they write only into this module's own store). Writes: design_run_start, design_pass_start (files a task).
+// A run belongs to the agent that started it, or a pass to the agent its task went to (the caller's signed assertion), and only
+// that agent writes to it.
 import type { Tool } from "./mcp.ts";
 import type { Store } from "./store.ts";
+import { ceiling, DEPTHS, MODES, type App, type Depth, type Login, type Mode, type Passes } from "./passes.ts";
 
 const str = { type: "string" };
 const obj = (properties: object, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 
-export function designTools(store: Store): Tool[] {
+export function designTools(store: Store, p: { passes: Passes; apps: () => App[]; logins: () => Record<string, Login> }): Tool[] {
   const s = (v: unknown) => String(v ?? "");
   return [
     { name: "design_run_start", description: "Start a design run of a target (a URL or repo@commit) for the calling task and agent; returns its run id. Put its evidence with design_evidence_put, then finish it.",
@@ -22,6 +25,16 @@ export function designTools(store: Store): Tool[] {
       inputSchema: obj({ app: str, limit: { type: "integer" } }),
       run: async (a) => store.runs({ app: a.app === undefined ? undefined : s(a.app), limit: a.limit === undefined ? undefined : Number(a.limit) }) },
     { name: "design_run", description: "One run: its row, its report and the names of its evidence files.", inputSchema: obj({ run: str }, ["run"]), run: async (a) => store.run(s(a.run)) },
+    { name: "design_apps", description: "The apps set up for UI testing (settings.ui_testing): name, url, repo, whether it is an AidenHQ app, its live-app mode (the most a pass may do; AidenHQ apps are read-only) and whether a supplied login is set.",
+      inputSchema: obj({}),
+      run: async () => { const logins = p.logins(); return { apps: p.apps().map((a) => ({ name: a.name, url: a.url, ...(a.repo ? { repo: a.repo } : {}), aidenhq_app: a.aidenhq_app, live_mode: ceiling(a), login: Boolean(logins[a.name]) })) }; } },
+    { name: "design_pass_start", description: "Start a UI review pass of a configured app: files one task for the UI Reviewer against the app's url (or its repo's default branch, never a PR head) and returns { run, task }. depth: scan (signed out), signed-in or tester (clicking pass). mode may only narrow the app's live_mode.",
+      inputSchema: obj({ app: str, depth: { type: "string", enum: [...DEPTHS] }, mode: { type: "string", enum: [...MODES] }, model: str }, ["app", "depth"]),
+      run: async (a) => {
+        const r = await p.passes.startPass(s(a.app), "request", { depth: s(a.depth) as Depth, ...(a.mode !== undefined ? { mode: s(a.mode) as Mode } : {}), ...(a.model !== undefined ? { model: s(a.model) } : {}) });
+        if ("refused" in r) throw new Error(`Refused: ${r.refused}.`);
+        return r;
+      } },
     { name: "design_image", description: "One evidence file of a run as base64 data with its media type.", inputSchema: obj({ run: str, name: str }, ["run", "name"]), run: async (a) => store.image(s(a.run), s(a.name)) },
   ];
 }

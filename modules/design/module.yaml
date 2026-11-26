@@ -1,7 +1,10 @@
 name: design
 description: "The UI/UX Designer (mockups the Engineer builds from, the design system, design advice, an audit when an app moves to the starter) and the UI Reviewer (a designer's review of a PR or an app, on request: ranked design improvements with rendered fixes, and verified bugs)."
 roles:
-  requests: [ repo-checkout ]
+  # kernel.tasks: one task per UI review pass for the holder of ui-login (passes.ts).
+  requests: [ repo-checkout, kernel.tasks ]
+  declares:
+    - { id: ui-login, description: "Runs the design module's UI review passes: its pass's job tools release the app's supplied login to the box's ui-review process, never to the model." }
 requires:
   # Any code host: UI changes are reviewed on GitHub PRs and on local change requests alike.
   - codehost
@@ -42,14 +45,14 @@ agents:
       owner_channel: [ notify ]
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       # Its runs and their evidence (the design service below); the engine's own model calls are made per call by `ui-review`.
-      design: [ design_run_start, design_evidence_put, design_run_finish, design_runs, design_run ]
+      design: [ design_run_start, design_evidence_put, design_run_finish, design_runs, design_run, design_apps, design_pass_start ]
       # Reads the PR it is asked to review and posts its one comment; it sets no status.
       github?: [ github_whoami, github_issue_read, github_search_issues, github_issue_comment ]
       # fleet_catalog: which agent owns an app, so a redesign or a review brings that agent in.
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_amend_rubric, task_comment, task_handoff, task_block, task_cancel, task_file_upload, task_finish, fleet_catalog ]
     # Woken only by a request, never by a schedule or a PR event.
-    # repo-checkout: a PR's head and base in its computer.
-    roles: [ repo-checkout ]
+    # repo-checkout: a PR's head and base in its computer. ui-login: its passes' job tools (the supplied login).
+    roles: [ repo-checkout, ui-login ]
 # The design service (service/): the UI Reviewer's runs and their evidence (reports and the captures they cite), kept 30 days
 # except each app's latest finished run. Each call's signed assertion names the calling agent; a run takes writes only from the
 # agent that started it.
@@ -62,8 +65,34 @@ connections:
     tools:
       # design_evidence_put and design_run_finish write only into this module's own store (the caller's own run, no outside
       # effect): reads, so the images and the report never enter the kernel's permanent write records or an approval's arguments.
-      read: [ design_runs, design_run, design_image, design_evidence_put, design_run_finish ]
-      write: [ design_run_start ]
+      read: [ design_runs, design_run, design_image, design_evidence_put, design_run_finish, design_apps ]
+      write: [ design_run_start, design_pass_start ]
+# The job tools a pass's box calls (the kernel's POST /v1/jobtools/module/design/<op> forwards { op, body, caller } here with the
+# service key): login releases the app's supplied login to the pass's own ui-review process (service/src/jobtools.ts).
+providers:
+  jobtools:
+    url: http://design:8099/jobtools
+    auth: design_service_key
+    ops: [ login ]
+settings:
+  # The apps the UI Reviewer tests: { apps: [{ name (lowercase, 2-31: a-z 0-9 -), url (where a pass opens it), repo? (owner/name:
+  # a local build uses its default branch, never a PR head), aidenhq_app? (true: an app on this AidenHQ; it signs in through the
+  # test-user session and is always read-only, whatever live_mode says), live_mode: read | test-write | any }] }. live_mode is the
+  # most a pass may do: read (the default) loads pages only, no write of any kind; test-write lets the test account change its own
+  # data (deletes and paths like delete, pay, send, invite or publish are still blocked, a best-effort extra): choose it only for
+  # an app whose test account holds test data alone; any allows everything. A pass may only narrow it. Logins: the secret ui_logins.
+  ui_testing:
+    type: object
+    default:
+      apps: []
+secrets:
+  provided:
+    - name: ui_logins
+      setup:
+        label: UI test logins
+        pattern: '^\{[\s\S]*\}$'
+        help: 'A JSON map of app name to its test account: { "acme": { "login_url": "https://acme.example.com/login", "username": "...", "password": "...", "totp_secret": "optional base32 seed" } }. Used only by UI review passes of that app, never on a PR or a fork; it never reaches the model, a log or a report.'
+
 services:
   data: true
   run:
@@ -76,6 +105,11 @@ services:
       env:
         DESIGN_DATA: /data
         DESIGN_SERVICE_KEY_FILE: ${secrets.design_service_key}
+        DESIGN_TOKEN_FILE: ${secrets.design_token}
+        DESIGN_UI_LOGINS_FILE: ${secrets.ui_logins}
+        DESIGN_UI_TESTING: "${settings.ui_testing}"
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - design_service_key
+  - design_token
+data_version: 1 # its data dir's format: 1 adds a pass's depth, mode, source and login nonce hash to runs (store.ts)
