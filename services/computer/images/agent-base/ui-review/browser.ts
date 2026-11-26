@@ -9,6 +9,11 @@ import { chromium, type Browser, type BrowserContext, type Page as PwPage } from
 import { type Blocked, type Guard, installGuard, type Mode, modeOf, type StorageState } from "./guard.ts";
 
 export const CHROME = process.env.AGENT_BROWSER_EXECUTABLE_PATH || "/opt/chrome/chrome";
+/**
+ * The gate's test listener (docs/design/access.md, Test-user sign-in), host:port: an AidenHQ app's read-only test-user session is
+ * served at http://<app>.canary.localhost:<port>, and every Chrome this module starts maps *.canary.localhost to its host.
+ */
+export const TEST_LISTENER = process.env.AIDENHQ_TEST_LISTENER || "10.231.6.1:3132";
 
 /**
  * Where a URL is in the app: path and query, plus the hash when it is a hash router's route ("#/a/b", a trailing slash
@@ -38,7 +43,7 @@ export async function launch(o: { mode: Mode; port?: number; out?: string; polit
   const port = o.port ?? (await freePort());
   const browser = await chromium.launch({
     executablePath: CHROME, headless: true,
-    args: [`--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1", "--disable-dev-shm-usage", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb", "--font-render-hinting=none"],
+    args: [`--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1", `--host-resolver-rules=MAP *.canary.localhost ${TEST_LISTENER.replace(/:\d+$/, "")}`, "--disable-dev-shm-usage", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb", "--font-render-hinting=none"],
   });
   let cdp = "";
   for (let i = 0; i < 50 && !cdp; i++) {

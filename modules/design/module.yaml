@@ -85,8 +85,8 @@ validate:
   mode: observe
 settings:
   # The apps the UI Reviewer tests: { apps: [{ name (lowercase, 2-31: a-z 0-9 -), url (where a pass opens it), repo? (owner/name:
-  # a local build uses its default branch, never a PR head), aidenhq_app? (true: an app on this AidenHQ; it signs in through the
-  # test-user session and is always read-only, whatever live_mode says), live_mode: read | test-write | any }] }. live_mode is the
+  # a local build uses its default branch, never a PR head), aidenhq_app? (true: an app on this AidenHQ, named as it is there; it signs
+  # in through the test-user session, so settings.edge.test_user.apps must list it, and is always read-only, whatever live_mode says), live_mode: read | test-write | any }] }. live_mode is the
   # most a pass may do: read (the default) loads pages only, no write of any kind; test-write lets the test account change its own
   # data (deletes and paths like delete, pay, send, invite or publish are still blocked, a best-effort extra): choose it only for
   # an app whose test account holds test data alone; any allows everything. A pass may only narrow it. Logins: the secret ui_logins.

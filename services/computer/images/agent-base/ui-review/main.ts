@@ -12,7 +12,7 @@ const COMMANDS: Record<string, string> = {
   bugs: "bugs <capture dir> [--model id]   (candidate bugs into candidates.json: leads, never reported)",
   repro: "repro <clicks.json> --out <dir> [--url u] [--session state.json] [--mode read|test-write|any] [--model id] [--max-usd n]",
   "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id] [--taste file]",
-  login: "login supplied --app <app> --out state.json | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json",
+  login: "login supplied --app <app> --out state.json | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json | aidenhq --app <app> --out state.json",
   browser: "browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir]   (the signed-in, guarded Chrome the clicking pass attaches to: prints the CDP port; runs until SIGTERM)",
 };
 

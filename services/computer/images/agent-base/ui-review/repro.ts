@@ -109,15 +109,14 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
   mkdirSync(join(o.out, "repro", batch), { recursive: true });
   spend.usd = 0; spend.calls = 0;
   const over = () => o.maxUsd !== undefined && spend.usd >= o.maxUsd;
-  const session = o.session ? readSession(o.session).state : null;
-  const l = await launch({ mode: o.mode, session });
+  // The guard signs every fresh context in with the session (guard.ts seed), as it does for capture.
+  const l = await launch({ mode: o.mode, session: o.session ? readSession(o.session).state : null });
   const bugs: Bug[] = [], friction: unknown[] = [];
   let blocked: Blocked[] = [];
   try {
     const frozenAt = new Date().toISOString();
-    const state = session ? { storageState: session } : {};
     const fresh = (c: Click) => async () => {
-      const ctx = await l.browser.newContext({ ...state, viewport: { width: c.width, height: heightOf(c.width) }, deviceScaleFactor: 1 });
+      const ctx = await l.browser.newContext({ viewport: { width: c.width, height: heightOf(c.width) }, deviceScaleFactor: 1 });
       await ctx.addInitScript(initScript(frozenAt));
       return ctx;
     };

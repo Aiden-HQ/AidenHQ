@@ -186,6 +186,56 @@ describe("signed in and guarded", chrome, () => {
     } finally { tool.closeAllConnections(); tool.close(); }
   });
 
+  test("an AidenHQ app signs in through the test listener, read-only, and signs in again when its session dies", async () => {
+    // The design job tool (app-session) and the gate's test listener as the box sees them: a one-time code and state, redeemed
+    // at http://<app>.canary.localhost:<port>/.auth/handoff for the listener's host-only __Host- cookie.
+    const codes = new Map<string, string>(), live = new Set<string>();
+    let minted = 0, served = 0, writes = 0;
+    const tool = createServer((req, res) => {
+      let body = ""; req.on("data", (d) => (body += d)); req.on("end", () => {
+        if (req.url !== "/v1/jobtools/module/design/app-session" || req.headers.authorization !== "Bearer run-token" || body !== JSON.stringify({ app: "roadmap" })) return void res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: "not this app's pass" }));
+        const code = `code-${++minted}-${"x".repeat(40)}`;
+        codes.set(code, `tok-${minted}`);
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ app: "roadmap", code, state: "st4te", mode: "read", expires: new Date(Date.now() + 3_600_000).toISOString() }));
+      });
+    });
+    const COOKIE = "__Host-aidenhq-canary.session";
+    const listener = createServer((req, res) => {
+      const u = new URL(req.url ?? "/", "http://x"), plain = (status: number, msg: string, h = {}) => void res.writeHead(status, { "content-type": "text/plain", ...h }).end(`${msg}\n`);
+      if (!/^roadmap\.canary\.localhost:\d+$/.test(String(req.headers.host))) return plain(404, "not found");
+      if (u.pathname === "/.auth/handoff") {
+        const tok = codes.get(u.searchParams.get("code") ?? "");
+        codes.delete(u.searchParams.get("code") ?? "");
+        if (!tok || u.searchParams.get("state") !== "st4te") return plain(401, "this sign-in is used or expired");
+        live.add(tok);
+        return plain(302, "signed in", { location: u.searchParams.get("next") ?? "/", "set-cookie": `${COOKIE}=${tok}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=3600` });
+      }
+      const tok = /(?:^|; )__Host-aidenhq-canary\.session=([^;]+)/.exec(String(req.headers.cookie ?? ""))?.[1] ?? "";
+      if (!live.has(tok)) return plain(401, "sign in first");
+      if (req.method !== "GET" && req.method !== "HEAD") writes++;
+      // The first session dies after a few pages, as one closed or revoked mid-run would.
+      if (tok === "tok-1" && ++served >= 3) live.delete(tok);
+      res.writeHead(200, { "content-type": "text/html" }).end(`<!doctype html><title>Roadmap</title><h1>Signed in as the test user: ${u.pathname}</h1><script>fetch("/api/seen", { method: "POST" }).catch(() => {})</script>`);
+    });
+    await Promise.all([tool, listener].map((srv) => new Promise<void>((ok) => srv.listen(0, "127.0.0.1", ok))));
+    const port = (listener.address() as { port: number }).port, origin = `http://roadmap.canary.localhost:${port}`;
+    const env = { AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${(tool.address() as { port: number }).port}`, AIDENHQ_RUN_TOKEN: "run-token", AIDENHQ_TEST_LISTENER: `127.0.0.1:${port}` };
+    const saved = { ...process.env };
+    try {
+      const st = join(tmp(), "state.json");
+      const l = await login("aidenhq", { app: "roadmap", out: st }, env);
+      assert.equal(l.code, 0, l.text); assert.equal(l.text.trim(), `signed in (aidenhq, read-only): review ${origin}/`);
+      assert.equal(JSON.parse(readFileSync(st.replace(/\.json$/, ".meta.json"), "utf8")).rung, "aidenhq");
+      assert.equal((await login("aidenhq", { app: "notes", out: join(tmp(), "state.json") }, env)).code, 1);
+      Object.assign(process.env, env); // the capture's own children (re-login) read them
+      const r = await runCapture(origin + "/", { session: st, pages: ["/", "/a", "/b", "/c", "/d"], widths: [1512], themes: ["light"] });
+      assert.equal(r.coverage.done, r.coverage.total, r.notes.join("\n"));
+      assert.equal(r.session?.rung, "aidenhq"); assert.ok(r.session!.relogins >= 1, r.notes.join("\n"));
+      assert.equal(writes, 0); assert.ok(r.blocked.some((b) => b.method === "POST" && b.path === "/api/seen")); // read: the guard, then the listener
+      assert.ok(!files(r.out).some((f) => /code-\d|tok-\d/.test(readFileSync(f, "utf8"))));
+    } finally { process.env = saved; for (const srv of [tool, listener]) { srv.closeAllConnections(); srv.close(); } }
+  });
+
   test("the guard blocks writes in read mode and destructive paths in test-write", async () => {
     const clickAll = async (mode: string, url: string) => {
       const { launch } = await import("../images/agent-base/ui-review/browser.ts");
@@ -452,8 +502,10 @@ describe("repro", chrome, () => {
     const fake = await fakeModel(() => ({ shows: true, why: "decided from the pictures" }));
     try {
       const w0 = fixture.writes();
-      const p = spawnSync("node", [main, "repro", clicksWith([pay]), "--out", out, "--url", fixture.url, "--mode", "read", "--model", "fake/judge"], { encoding: "utf8", env: { ...process.env, OPENROUTER_BASE_URL: fake.url } });
-      assert.equal(p.status, 0, p.stderr);
+      // A child process (the fixture and the fake judge are served by this one, so never spawnSync).
+      const p = spawn("node", [main, "repro", clicksWith([pay]), "--out", out, "--url", fixture.url, "--mode", "read", "--model", "fake/judge"], { env: { ...process.env, OPENROUTER_BASE_URL: fake.url } });
+      let err = ""; p.stderr.on("data", (d) => (err += d));
+      assert.equal(await new Promise((ok) => p.on("exit", ok)), 0, err);
       assert.equal(fixture.writes() - w0, 0); // the POST on mount and Pay's POST, in both replays, never reached the app
       const saved = JSON.parse(readFileSync(join(out, "report.json"), "utf8")) as Report;
       assert.ok(saved.blocked.some((b) => b.method === "POST" && b.path === "/api/pay"), JSON.stringify(saved.blocked));
