@@ -645,6 +645,19 @@ test("the async enqueue rechecks the head approval before the PUT and never queu
   assert.equal(puts, 0, "no REST request goes out for a head whose approval is gone");
 });
 
+test("a code review gate that already waits when the enqueue starts is retryable at that head, never a hold", async (t) => {
+  let puts = 0;
+  const { c1, run } = await setup(t, {
+    enqueueAnswer: () => STACK_REFUSAL,
+    reviewGate: async () => ({ wait: "code review: running" }),
+    asyncMerge: { put: () => { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-w" } } }; }, get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) },
+  });
+  const out = await run("k-00000000000000fb", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "asked again at this head once the gate passes");
+  assert.equal(puts, 0);
+});
+
 test("the async enqueue rechecks code review's gate before the PUT", async (t) => {
   let puts = 0, calls = 0;
   const { c1, run } = await setup(t, {

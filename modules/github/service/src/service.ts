@@ -1544,7 +1544,9 @@ export function createService(o: Options) {
     const live = await read();
     const review = await o.reviewGate(s.slug, n, a.head, { base: String(live.baseRefName ?? ""), association: String(live.authorAssociation ?? "") });
     // A wait blocks a new enqueue, not the confirmation that an earlier attempt already queued (or merged) this head.
-    if (review && "wait" in review) return settled(await read()) ?? { ok: false, text: `not queued: ${review.wait}${review.unblock ? ` (${review.unblock})` : ""}` };
+    // `ship-tier-pending`: a gate that waits (or can't be reached) at the first read is asked again at this head next round. A
+    // plain "not queued" would hold the PR for good, so a gate that closed between ship's decision and this call never recovers.
+    if (review && "wait" in review) return settled(await read()) ?? { ok: false, text: `ship-tier-pending: not queued: ${review.wait}${review.unblock ? ` (${review.unblock})` : ""}` };
     const pr = await read();
     const now = settled(pr);
     if (now) return now;
