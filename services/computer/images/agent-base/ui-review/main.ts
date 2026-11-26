@@ -6,7 +6,7 @@ const COMMANDS: Record<string, string> = {
   capture: "capture <url> --out <dir> [--pages-file f] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4]",
   pages: "pages <url> --out <dir> [--map feature-map.json] [--pages-file f]",
   routes: "routes <url> --out <dir>                      (route check: clicks, a local build only)",
-  refs: "refs <refs.json> --out <dir>",
+  refs: "refs <refs.json> --out <dir> [--measure]",
   review: "review <run dir> [--model id]",
   "fix-check": "fix-check <run dir> --before <dir> --after <dir>",
 };
@@ -18,6 +18,8 @@ function help(): string {
 const [cmd, ...rest] = process.argv.slice(2);
 if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
   process.stdout.write(help());
+} else if (cmd === "refs") {
+  process.exit(await (await import("./refs.ts")).refsCommand(rest));
 } else if (cmd in COMMANDS) {
   void rest;
   process.stderr.write(`ui-review ${cmd}: not built yet\n`);

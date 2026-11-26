@@ -1,0 +1,208 @@
+[
+  {
+    "kind": "dashboard",
+    "url": "https://ui.shadcn.com/examples/dashboard",
+    "product": "shadcn/ui",
+    "tokens": {
+      "typeScale": [
+        12,
+        14,
+        16,
+        24
+      ],
+      "rowHeight": 32,
+      "radius": "8px",
+      "maxWidth": 1464
+    }
+  },
+  {
+    "kind": "dashboard",
+    "url": "https://stripe.com/payments",
+    "product": "Stripe",
+    "tokens": {
+      "typeScale": [
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "rowHeight": 18,
+      "radius": "6px",
+      "maxWidth": 1282
+    }
+  },
+  {
+    "kind": "list",
+    "url": "https://ui.shadcn.com/examples/tasks",
+    "product": "shadcn/ui",
+    "tokens": {
+      "typeScale": [
+        12,
+        14,
+        16
+      ],
+      "rowHeight": 49,
+      "radius": "8px",
+      "maxWidth": 1464
+    }
+  },
+  {
+    "kind": "list",
+    "url": "https://linear.app/changelog",
+    "product": "Linear",
+    "tokens": {
+      "typeScale": [
+        13,
+        13.5,
+        14,
+        15,
+        17,
+        32
+      ],
+      "rowHeight": 54,
+      "radius": "9999px",
+      "maxWidth": 1283
+    }
+  },
+  {
+    "kind": "detail",
+    "url": "https://github.com/shadcn-ui/ui/issues/1",
+    "product": "GitHub",
+    "tokens": {
+      "typeScale": [
+        12,
+        14,
+        20,
+        24,
+        32
+      ],
+      "rowHeight": 70,
+      "radius": "6px",
+      "maxWidth": 1443
+    }
+  },
+  {
+    "kind": "form",
+    "url": "https://ui.shadcn.com/examples/authentication",
+    "product": "shadcn/ui",
+    "tokens": {
+      "typeScale": [
+        12,
+        14,
+        16,
+        18
+      ],
+      "rowHeight": 0,
+      "radius": "8px",
+      "maxWidth": 1464
+    }
+  },
+  {
+    "kind": "form",
+    "url": "https://vercel.com/signup",
+    "product": "Vercel",
+    "tokens": {
+      "typeScale": [
+        13,
+        14,
+        16
+      ],
+      "rowHeight": 0,
+      "radius": "8px",
+      "maxWidth": 889
+    }
+  },
+  {
+    "kind": "settings",
+    "url": "https://vercel.com/docs",
+    "product": "Vercel",
+    "tokens": {
+      "typeScale": [
+        11,
+        13,
+        14,
+        16,
+        18,
+        24
+      ],
+      "rowHeight": 36,
+      "radius": "6px",
+      "maxWidth": 1455
+    }
+  },
+  {
+    "kind": "timeline",
+    "url": "https://vercel.com/changelog",
+    "product": "Vercel",
+    "tokens": {
+      "typeScale": [
+        11,
+        14,
+        16,
+        32
+      ],
+      "rowHeight": 28,
+      "radius": "9999px",
+      "maxWidth": 1402
+    }
+  },
+  {
+    "kind": "marketing",
+    "url": "https://stripe.com",
+    "product": "Stripe",
+    "tokens": {
+      "typeScale": [
+        8,
+        9,
+        10,
+        11,
+        12,
+        14,
+        26,
+        48
+      ],
+      "rowHeight": 0,
+      "radius": "4px",
+      "maxWidth": 1351
+    }
+  },
+  {
+    "kind": "marketing",
+    "url": "https://linear.app",
+    "product": "Linear",
+    "tokens": {
+      "typeScale": [
+        12,
+        13,
+        14,
+        15,
+        48
+      ],
+      "rowHeight": 32,
+      "radius": "9999px",
+      "maxWidth": 1346
+    }
+  },
+  {
+    "kind": "timeline",
+    "url": "https://linear.app/changelog",
+    "product": "Linear",
+    "tokens": {
+      "typeScale": [
+        13,
+        13.5,
+        14,
+        15,
+        17,
+        32
+      ],
+      "rowHeight": 54,
+      "radius": "9999px",
+      "maxWidth": 1283
+    }
+  }
+]
