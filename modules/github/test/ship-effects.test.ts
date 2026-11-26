@@ -663,6 +663,21 @@ test("a code review gate that already waits when the enqueue starts is retryable
   assert.equal(puts, 0);
 });
 
+test("a queue read GitHub can't answer at the start of an enqueue waits, never holds the head", async (t) => {
+  const { c1, run } = await setup(t, { queueRead: () => ({ status: 502, body: {} }) });
+  const out = await run("k-00000000000000fd", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: .*couldn't read it for the enqueue/, "asked again next round, never a hold");
+});
+
+test("a queue read that fails after the review gate passes also waits, never holds", async (t) => {
+  let reads = 0;
+  const { c1, run } = await setup(t, { queueRead: () => (++reads === 2 ? { status: 502, body: {} } : undefined) });
+  const out = await run("k-00000000000000fe", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: .*couldn't read it for the enqueue/);
+});
+
 test("a gate wait whose confirming queue read fails is still retryable, never a thrown hold", async (t) => {
   let reads = 0;
   const { c1, run } = await setup(t, {

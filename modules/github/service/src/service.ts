@@ -1539,9 +1539,13 @@ export function createService(o: Options) {
         : pr.isInMergeQueue && pr.mergeQueueEntry?.headCommit?.oid === a.head ? `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` : undefined;
       return done ? { ok: true, text: done } : undefined;
     };
+    // A read GitHub can't answer is a wait, never a hold: the PR is asked about again next round at this head. Every other
+    // answer below is a judgement about the PR, and one made on a failed read would park it for good.
+    const retry = (why: string) => ({ ok: false, text: `ship-tier-pending: ${url}: ${why}: not queued.` }) as { ok: boolean; text: string };
     // Code review's gate holds a queued merge as it holds a direct one (merges.ts): only its pass queues.
     // Asked first, so the PR read below is the last one before the mutation.
-    const live = await read();
+    const live = await read().catch(() => undefined);
+    if (!live) return retry("GitHub couldn't read it for the enqueue");
     const review = await o.reviewGate(s.slug, n, a.head, { base: String(live.baseRefName ?? ""), association: String(live.authorAssociation ?? "") });
     // A wait blocks a new enqueue, not the confirmation that an earlier attempt already queued (or merged) this head.
     // `ship-tier-pending`: a gate that waits (or can't be reached) at the first read is asked again at this head next round. A
@@ -1552,7 +1556,8 @@ export function createService(o: Options) {
       const back = await read().catch(() => undefined);
       return (back && settled(back)) ?? { ok: false, text: `ship-tier-pending: not queued: ${review.wait}${review.unblock ? ` (${review.unblock})` : ""}` };
     }
-    const pr = await read();
+    const pr = await read().catch(() => undefined);
+    if (!pr) return retry("GitHub couldn't read it for the enqueue");
     const now = settled(pr);
     if (now) return now;
     if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
