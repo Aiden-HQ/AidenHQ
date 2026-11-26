@@ -227,7 +227,10 @@ export type Improvement = {
   fix?: { status: "shown" | "rejected" | "failed"; diff?: string; before?: string; after?: string; wins?: [number, number]; why?: string; collateral?: string[] };
 };
 export type MotionRow = { where: string; before: string; after: string; why: string; css: string };
-export type Bug = { page: string; width: number; theme: Theme; title: string; evidence: string; captures: string[]; verified: boolean; repro?: string[] };
+export type Bug = { page: string; width: number; theme: Theme; title: string; evidence: string; captures: string[]; verified: boolean; repro?: string[];
+  // A bug's stable identity for its issue marker (phase 3 keys on it, never on the model's title): its kind, and its repro's
+  // last step's selector. `repro` (phase 2) fills both when it verifies the bug; a bug without them files no issue.
+  kind?: "friction" | "bug"; selector?: string };
 export type Report = { version: 2; target: string; commit?: string; frozenAt: string; model: string; coverage: { done: number; total: number; failed: number; deferred: number };
   captures: Capture[]; improvements: Improvement[]; motion: MotionRow[]; bugs: Bug[]; notes: string[]; cost_usd: number };
 ```

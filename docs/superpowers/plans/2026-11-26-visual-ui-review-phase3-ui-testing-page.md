@@ -53,11 +53,12 @@ the `login` job tool, the engine's `--resume`, `browser start`, `flows`, `repro`
   deep-linked): each issue names the run (`run r-…`) and points at the UI testing page, where runs are listed and found by
   id, and carries the fix diffs as text.
 - Recordings: opt-in per app (`recording: true`), only of clicking-pass flows, VP8 webm, at most 2 minutes, and **at most
-  6 MB as a file**, so its base64 (×4/3, plus padding) is at most 8 MB, the size `design_evidence_put` takes per call: the
-  encoder targets ~320 kbps (`-b:v 320k`, a 2-minute flow ≈ 4.8 MB) and the recorder stops encoding and cuts the flow's clip
-  when the file passes 6 MB, so `--record`'s output always fits one `design_evidence_put`. A recording put in its own
-  call, never bundled with the other evidence. Test: a 2-minute flow yields a webm whose file is ≤ 6 MB and whose base64
-  length is ≤ 8 MB.
+  4 MB as a file**, so base64 (×4/3 ≈ 5.4 MB) plus the JSON/tool-call envelope (name, run, the MCP wrapper) stays under the
+  8 MB `design_evidence_put` limit: the encoder targets 256 kbps (`-b:v 256k`, a 2-minute flow ≈ 3.8 MB) and the recorder
+  stops encoding and cuts the flow's clip when the file passes 4 MB, measuring the **serialized request** (base64 plus the
+  envelope) against 8 MB before the put, so `--record`'s output always fits one `design_evidence_put`. A recording goes in
+  its own call, never bundled with the other evidence. Test: a 2-minute flow yields a webm whose file is ≤ 4 MB, and the
+  serialized `design_evidence_put` request built from it is ≤ 8 MB.
 
 ## Review Focus
 
@@ -251,7 +252,8 @@ test("a secret map sets one key without reading the others back", async () => {
   `modules/design/skills/ui-review/SKILL.md` (section "A UI testing pass": read the pass task; resume; run at the app's
   spend mode, models, live mode; publish evidence; issues as below; finish the task), `modules/design/README.md`
 - Modify: `services/computer/images/agent-base/ui-review/browser.ts` and `main.ts` (`browser start --record <dir>`: CDP
-  `Page.startScreencast` frames piped to `ffmpeg -f image2pipe … -c:v libvpx -b:v 1M` per flow, cut at 2 minutes; `capture`
+  `Page.startScreencast` frames piped to `ffmpeg -f image2pipe … -c:v libvpx -b:v 256k` per flow, cut at 2 minutes and
+  at the 4 MB file cap; `capture`
   of a flow adds `shifts` and `longFrames` from that flow to `Motion`), `modules/design/service/src/store.ts` (`webm`
   allowed in `design_evidence_put`)
 - Modify: `modules/design/service/src/{store.ts,mcp.ts}` (`issues` table, `design_issue_note`); test `modules/design/test/issues.test.ts`
@@ -289,7 +291,8 @@ test("a recorded flow is a short VP8 webm", async () => {
   const f = await recordFlow(fx("/"), [{ click: "text=Settings" }, { wait: "1000" }], { out });
   const probe = JSON.parse(execFileSync("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", f]).toString());
   assert.equal(probe.streams[0].codec_name, "vp8"); assert.ok(Number(probe.format.duration) <= 120);
-  assert.ok(statSync(f).size <= 6e6); assert.ok(readFileSync(f).toString("base64").length <= 8e6);   // fits one design_evidence_put
+  assert.ok(statSync(f).size <= 4e6);                                                            // fits one design_evidence_put
+  assert.ok(Buffer.byteLength(JSON.stringify({ run: "r1", files: [{ name: "flow.webm", data: readFileSync(f).toString("base64") }] })) <= 8e6);
 });
 test("a noted issue number wins over search", async () => {   // modules/design/test/issues.test.ts
   await call("design_issue_note", { app: "acme", marker: "aidenhq-ui:design:acme", repo: "acme/app", number: 41 });

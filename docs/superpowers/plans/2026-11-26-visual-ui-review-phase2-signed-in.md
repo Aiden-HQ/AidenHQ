@@ -144,8 +144,8 @@ test("module job tool forwards the caller and the task's module source", async (
   - Job tool `login { app }` → `{ login_url, username, password, totp?: string /* the current code, never the seed */ }`,
     released only when: the caller holds `ui-login`; `task_module === "design"` and `task_source === "design:pass:<app>:<run>"`
     for that `app`; that run is the app's active pass (status `running`); the app has a login; **and the call presents that
-    run's single-use login nonce** (Task 3's `/aidenhq-out/login-nonce`, consumed on the first answer), never the run token
-    alone. Every other case, including a second call with the same nonce: 403 with the reason, nothing else. Test: a call with
+    run's single-use login nonce** (Task 3's `/aidenhq/engine/.aidenhq/login-nonce`, unreadable by the agent's uid, consumed
+    on the first answer), never the run token alone. Every other case, including a second call with the same nonce: 403 with the reason, nothing else. Test: a call with
     `AIDENHQ_RUN_TOKEN` in place of the nonce, and a replay of a used nonce, are both 403.
   - Until PR 2 lands, a pass for an app with `aidenhq_app: true` at depth `signed-in` or `tester` is refused with
     "signed-in review of AidenHQ apps waits for the owner's decision on test-user sessions"; its `scan` depth works.
@@ -184,14 +184,17 @@ test("a supplied login reaches only the app's own pass", async () => {
 
 **Interfaces (Produces):**
 - `ui-review login supplied --app <app> --out state.json`: calls `POST $AIDENHQ_GATEWAY_URL/v1/jobtools/module/design/login`
-  (the launcher forwards it to the kernel, Task 1) with a **single-use login nonce in the body, never `AIDENHQ_RUN_TOKEN`**:
-  at the pass's start the kernel mints one nonce, binds it to that run, and the launcher writes it to `/aidenhq-out/login-nonce`;
-  `login.ts` reads the file, calls the tool once and unlinks it before it returns. It signs in and writes Playwright storage
-  state; stdout is only `signed in (supplied) at <login path>`. The tool accepts the nonce and marks it used, so the agent's
-  own shell (which holds only the run token, and finds the file already gone) can neither fetch the credential nor replay the
-  call. This is what keeps the guarantee "login material is read only by the box's `ui-review` processes, never printed" true
-  when page text tries to steer the agent to fetch it. Test: the login call with `AIDENHQ_RUN_TOKEN` in place of the nonce,
-  or with a used nonce, is 403 and returns no credential.
+  (the launcher forwards it to the kernel, Task 1) with a **single-use login nonce in the body, never `AIDENHQ_RUN_TOKEN`**.
+  The nonce lives where the agent's uid cannot read it: the kernel mints one per pass and the launcher writes it to
+  `/aidenhq/engine/.aidenhq/login-nonce`, a directory owned by the box's `ui-review` uid, mode `0700`, the file mode `0600`
+  — not `/aidenhq-out` (the only folder the agent's tools and transcript read) and not the agent's `$HOME`. `login.ts` runs
+  as that uid, reads the nonce, calls the tool once and unlinks it before it returns. A page that tells the agent to "call
+  the login tool" therefore gives it no nonce to send, and the run token alone is refused; a nonce it somehow read is spent
+  by the first answer. It signs in and writes Playwright storage state; stdout is only
+  `signed in (supplied) at <login path>`. This is what keeps the guarantee "login material is read only by the box's
+  `ui-review` processes, never printed" true when page text tries to steer the agent to fetch it. Tests: the login call with
+  `AIDENHQ_RUN_TOKEN` in place of the nonce, and a replay of a used nonce, are both 403 and return no credential; a shell as
+  the agent's uid cannot open `/aidenhq/engine/.aidenhq/login-nonce` (its directory is `0700` for another uid).
 - `ui-review login form --url <login url> --user <u> --password-file <f> [--totp-file <f>] --out state.json` (the repo-aware
   rung: the agent found or created the user).
 - `ui-review login signup --url <signup url> --out state.json`: starts Mailpit on `127.0.0.1:1025` (SMTP) and `:8025` (API)
@@ -279,7 +282,9 @@ test("read mode blocks a write to a separate API origin, and the agent's own tab
   - `ui-review repro <clicks.json> --out <dir> [--session state.json] [--mode m]`: each `bug` **with `steps`** replayed
     twice, each in a fresh context, before|after captures around its last step, one judging call
     (`prompts/repro-judge.md`, Carbon) per replay; `verified = both replays show it`; writes `bugs` into `report.json` (only
-    verified ones) and `friction` items into the design review's input for the consolidation step. `candidates.json` is
+    verified ones) and `friction` items into the design review's input for the consolidation step. Each verified bug also
+    records `kind` and `selector` (its repro's last step's selector) in the shared `Bug` (phase 1's `types.ts`), which phase
+    3 keys the issue marker on. `candidates.json` is
     never an input: a candidate from `ui-review bugs` has no steps to replay, so it is a candidate for the clicking pass to
     turn into steps in `clicks.json`, and a candidate that never gets steps stays out of the report (`bugs` is verified-only).
     `repro` refuses a candidates-shaped file with `candidates have no steps: replay needs clicks.json` and exits 2.
@@ -293,6 +298,7 @@ test("repro keeps only bugs that happen twice", async () => {
   const r = await repro(fx("/"), clicksWith([deadArchive, reloadClearsFilter, notABug]), { model: "fake/judge" });
   assert.deepEqual(r.bugs.map((b) => b.title).sort(), ["Archive does nothing", "Filter lost on reload"]);
   assert.ok(r.bugs.every((b) => b.verified && b.repro!.length > 0 && b.captures.length >= 2));
+  assert.ok(r.bugs.every((b) => b.kind && b.selector));   // the marker's inputs, not the title
 });
 test("flows lists every page's key controls with a persona", async () => {
   const md = await flows(capturedFixtureDir); assert.match(md, /#\/settings/); assert.match(md, /Persona:/);
