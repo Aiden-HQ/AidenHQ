@@ -74,7 +74,7 @@ export function sharedCopies(root = repo) {
   // The module MCP endpoint (tools and a Fleet page view): ship's, the Maintainer's and code review's.
   "modules/ship/service/src/mcp.ts": ["modules/maintainer/service/src/mcp.ts", "modules/code-review/service/src/mcp.ts", "modules/sessions/service/src/mcp.ts", "modules/design/service/src/mcp.ts"],
   // The Fleet pages' shared kit (the common styles and bridge script), inlined into each module's page.html when it is served (mcp.ts pageHtml).
-  ...Object.fromEntries(["page-kit.css", "page-kit.js"].map((f) => [`services/shared/${f}`, [`modules/ship/service/src/${f}`, `modules/maintainer/service/src/${f}`, `modules/code-review/service/src/${f}`]])),
+  ...Object.fromEntries(["page-kit.css", "page-kit.js"].map((f) => [`services/shared/${f}`, [`modules/ship/service/src/${f}`, `modules/maintainer/service/src/${f}`, `modules/code-review/service/src/${f}`, `modules/design/service/src/${f}`]])),
   // The box's one MCP client (code mode): the engineer image's /opt/aidenhq/lib/tools.ts, which the in-box `aidenhq` CLI and a
   // session's generated tool files import; and the ui-review engine's (`ui-review put` and `get`: evidence files to the design tools).
   "kernel/sdk/src/tools-client.ts": ["services/computer/images/engineer/lib/tools.ts", "services/computer/images/agent-base/ui-review/tools-client.ts"],

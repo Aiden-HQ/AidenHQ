@@ -1,0 +1,395 @@
+<!doctype html>
+<!-- The UI testing page: an MCP Apps view (text/html;profile=mcp-app) the design connection serves as ui://design/page. Its own parts
+     only: the shared kit (services/shared/page-kit.css and .js: the bridge, helpers and common styles) is inlined where the markers sit
+     (mcp.ts pageHtml). Calls only the design_* tools the page declares (module.yaml board.pages) through the host; as the owner,
+     design_configure only proposes settings.ui_testing: the board shows the change and files it on his Save. Logins are never shown or
+     typed here: the board's Sign-ins panel under the frame writes them. Reports are a model's words about a stranger's site: set as
+     text only (diffs in <pre>), links through the host (kit link()). docs/design/board-ui.md "Modules". -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/*kit:css*/
+  :root { --bad: #d4493f; --warn: #c98a1b; --good: #2f9e6f; --s-req: #6b7a99; --s-deploy: #7c5cff; --s-always: #14a38b; --imp: #5b6cff; }
+  body { gap: 12px; grid-template-columns: minmax(0, 1fr); }
+  .card, .bar, .row > * { min-width: 0; }
+  .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .bar .grow { flex: 1 1 auto; }
+  .bar h2 { margin: 0; font-size: 16px; font-weight: 620; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--soft); margin-right: 6px; vertical-align: 1px; flex: none; }
+  .dot.busy { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); } .dot.done { background: var(--good); } .dot.failed { background: var(--bad); }
+  .clk { cursor: pointer; }
+  .clk:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: -2px; }
+  /* The apps list: name, schedule, today's spend against the cap, the last run, the action. */
+  .app { grid-template-columns: minmax(170px, 1.5fr) 118px minmax(130px, 1fr) minmax(190px, 1.6fr) 104px; padding: 10px 14px; }
+  .app .nm { display: grid; gap: 1px; min-width: 0; }
+  .app .nm b { font-weight: 600; display: flex; align-items: center; } .app .nm small { color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .app .act { display: flex; justify-content: flex-end; }
+  .app .act button { width: 100%; }
+  .sch { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 560; color: var(--sc); white-space: nowrap; }
+  .sch i { width: 8px; height: 8px; border-radius: 2px; background: var(--sc); flex: none; }
+  .sch.on-request { --sc: var(--s-req); } .sch.after-deploy { --sc: var(--s-deploy); } .sch.always { --sc: var(--s-always); }
+  .spend { display: grid; gap: 4px; font-size: 12px; }
+  .spend .txt { display: flex; justify-content: space-between; gap: 6px; color: var(--soft); } .spend .txt b { color: var(--color-text-primary, CanvasText); font-weight: 560; }
+  .meter { height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--line) 45%, transparent); overflow: hidden; }
+  .meter i { display: block; height: 100%; border-radius: 3px; background: var(--good); }
+  .meter.mid i { background: var(--warn); } .meter.full i { background: var(--bad); }
+  .lastr { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 12px; font-size: 12.5px; }
+  .cnt { display: inline-flex; gap: 5px; align-items: center; } .cnt i { width: 7px; height: 7px; border-radius: 2px; background: var(--tc, var(--soft)); }
+  .cnt.imp { --tc: var(--imp); } .cnt.bug { --tc: var(--bad); } .cnt.cov { --tc: var(--good); } .cnt.zero { opacity: .45; }
+  .lastr small { color: var(--soft); }
+  .findrun { display: flex; gap: 6px; align-items: center; } .findrun input { width: 190px; }
+  .intro { color: var(--soft); }
+  .addf { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(180px, 1.6fr) minmax(140px, 1fr) auto auto; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+  .addf label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12.5px; }
+  .empty { display: grid; gap: 6px; padding: 22px 14px; text-align: center; }
+  .empty b { font-size: 14px; }
+  /* An app's settings. */
+  .form { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px 18px; padding: 12px 14px 14px; }
+  .form .wide { grid-column: 1 / -1; }
+  .fld .fine { font-size: 12px; color: var(--soft); }
+  .fld .fine.warn { color: var(--color-text-warning, var(--warn)); }
+  .models { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+  .models label { display: grid; gap: 2px; font-size: 12px; color: var(--soft); }
+  .seg button { height: 24px; }
+  .fld > .seg { justify-self: start; }
+  .seg [data-v=on-request] { --tone: var(--s-req); } .seg [data-v=after-deploy] { --tone: var(--s-deploy); } .seg [data-v=always] { --tone: var(--s-always); }
+  .seg [data-v=scan] { --tone: #6b7a99; } .seg [data-v=standard] { --tone: var(--imp); } .seg [data-v=thorough] { --tone: #c2410c; }
+  .seg [data-v=read] { --tone: var(--good); } .seg [data-v=test-write] { --tone: var(--warn); } .seg [data-v=any] { --tone: var(--bad); }
+  .seg button:disabled { opacity: .55; }
+  .lock { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--soft); }
+  .lock b { color: var(--color-text-primary, CanvasText); font-weight: 560; }
+  /* A run: tiles, ranked improvements with before|after, bugs, motion, coverage. */
+  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+  .tiles > div { padding: 10px 14px; background: var(--color-background-primary, Canvas); display: grid; gap: 1px; }
+  .tiles b { font-size: 20px; font-weight: 620; font-variant-numeric: tabular-nums; line-height: 1.2; } .tiles small { color: var(--soft); font-size: 12px; }
+  .tiles .imp b { color: var(--imp); } .tiles .bug b { color: var(--bad); } .tiles .cov b { color: var(--good); }
+  .sect { padding: 8px 14px 6px; border-top: 1px solid var(--line); font-size: 12px; font-weight: 600; color: var(--soft); letter-spacing: .02em; display: flex; justify-content: space-between; gap: 8px; background: color-mix(in srgb, var(--line) 10%, transparent); }
+  .impr { padding: 12px 14px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 4px 12px; }
+  .rk { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; font-weight: 650; font-size: 12.5px; color: #fff; background: var(--imp); font-variant-numeric: tabular-nums; }
+  .impr.ease .rk { background: var(--s-always); }
+  .impr .body { display: grid; gap: 5px; min-width: 0; }
+  .impr h4 { margin: 0; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+  .impr p { margin: 0; overflow-wrap: anywhere; }
+  .impr .where { color: var(--soft); font-size: 12px; }
+  .kv { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 2px 10px; font-size: 12.5px; }
+  .kv dt { color: var(--soft); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+  .shot { display: grid; gap: 3px; min-width: 0; }
+  .shot small { font-size: 11.5px; color: var(--soft); font-weight: 560; text-transform: uppercase; letter-spacing: .04em; }
+  .shot.after small { color: var(--good); }
+  .img { position: relative; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: color-mix(in srgb, var(--line) 18%, transparent); aspect-ratio: 16 / 10; }
+  .img img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; cursor: zoom-in; }
+  .img .ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--soft); font-size: 12px; }
+  .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin-top: 4px; }
+  details { min-width: 0; } summary { cursor: pointer; color: var(--soft); font-size: 12.5px; }
+  pre.diff { margin: 6px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; background: color-mix(in srgb, var(--line) 8%, transparent); }
+  .fixst { font-size: 12px; font-weight: 560; } .fixst.shown { color: var(--good); } .fixst.rejected, .fixst.failed { color: var(--soft); }
+  .bugr { padding: 10px 14px; border-top: 1px solid var(--line); display: grid; gap: 4px; box-shadow: inset 3px 0 0 var(--bad); }
+  .bugr h4 { margin: 0; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+  .bugr ol { margin: 2px 0 0; padding-left: 20px; font-size: 12.5px; }
+  .mot { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr); font-size: 12.5px; }
+  .hist { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; font-size: 12.5px; }
+  .hist .sub { grid-column: 1; color: var(--soft); font-size: 12px; } .hist .num { grid-row: 1 / 3; grid-column: 2; align-self: center; }
+  .rec { padding: 10px 14px; border-top: 1px solid var(--line); display: grid; gap: 6px; }
+  .rec video { width: 100%; max-width: 960px; border-radius: var(--r); border: 1px solid var(--line); background: #000; }
+  .notes { padding: 8px 14px 12px; border-top: 1px solid var(--line); color: var(--soft); font-size: 12.5px; }
+  .notes ul { margin: 0; padding-left: 18px; }
+  .zoom { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / .72); cursor: zoom-out; }
+  .zoom img { max-width: 100%; max-height: 100%; border-radius: var(--r); box-shadow: 0 10px 40px rgb(0 0 0 / .5); }
+  .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  @media (min-width: 1500px) { .split.two { grid-template-columns: minmax(0, 1fr) minmax(360px, 440px); align-items: start; } }
+  @media (max-width: 860px) {
+    .app { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
+    .app .nm { grid-column: 1; } .app .sch { grid-column: 2; grid-row: 1; justify-self: end; }
+    .app .spend, .app .lastr { grid-column: 1 / -1; } .app .act { grid-column: 1 / -1; }
+    .addf { grid-template-columns: 1fr; } .findrun { flex: 1 1 100%; } .findrun input { width: auto; flex: 1; }
+    .pair { grid-template-columns: 1fr; }
+    .mot { grid-template-columns: 1fr auto; } .mot > :nth-child(n+3) { grid-column: 1 / -1; }
+    .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .bar .grow { flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="note" id="note" role="status"></div>
+<script>
+/*kit:js*/
+  // The apps as the overview read them; `draft`, the owner's unsaved edit of the whole list (UiApp fields only), or null.
+  let ov = null, draft = null, route = { page: "list" }, runData = null, adding = false;
+  const stopping = new Set();
+  const FIELDS = ["name", "url", "repo", "aidenhq_app", "live_mode", "schedule", "day_cap_usd", "spend", "models", "recording"];
+  const DEFAULTS = { aidenhq_app: false, live_mode: "read", schedule: "on-request", day_cap_usd: 5, spend: "standard", recording: false };
+  const SCHED = { "on-request": "On request", "after-deploy": "After deploy", always: "24/7" };
+  const SCHED_HELP = { "on-request": "Only when you press Run now (or ask Aiden). The default.", "after-deploy": "After each healthy AidenHQ deploy of the app or a push to its repo's default branch, up to the daily cap.", always: "Pass after pass, each resuming the coverage where the last stopped, until the daily cap; then it waits for the next UTC day." };
+  const SPEND_HELP = { scan: "Captures and a design review: no fixes, no clicking.", standard: "Plus the top 3 rendered fixes and one clicking pass. The default.", thorough: "The review on Claude Opus, the top 5 fixes and two clicking passes." };
+  const MODE_HELP = { read: "Loads pages only: no write of any kind. The default.", "test-write": "The test account may change its own data; deletes and paths like pay, send or invite stay blocked. Only for a test account holding test data alone.", any: "Allows everything." };
+  const STATUS = { running: ["busy", "Running"], done: ["done", "Done"], failed: ["failed", "Failed"], superseded: ["", "Replaced"], stopped: ["", "Stopped"] };
+  const RUN_ID = /^r-[a-z0-9]+-[0-9a-f]{8}$/;
+
+  const t = (tag, cls, text, props) => h(tag, { className: cls ?? "", ...(text !== undefined ? { textContent: text } : {}), ...(props ?? {}) });
+  const btn = (text, fn, cls, props) => { const b = h("button", { type: "button", textContent: text, className: cls ?? "", ...(props ?? {}) }); b.addEventListener("click", (e) => { e.stopPropagation(); fn(e); }); return b; };
+  const clickable = (el, fn) => { el.classList.add("clk"); el.tabIndex = 0; el.setAttribute("role", "button"); el.addEventListener("click", fn); el.addEventListener("keydown", (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); fn(); } }); return el; };
+  const usd = (n) => `$${Number(n ?? 0).toFixed(2)}`;
+  const fail = (e) => say(e.message, true);
+  const status = (s, word) => { const [tone, w] = STATUS[s] ?? ["", s]; return h("span", {}, t("span", `dot ${tone}`), word ?? w); };
+  const card = (title, aside, ...kids) => h("div", { className: "card" }, title ? h("div", { className: "head" }, typeof title === "string" ? t("b", "", title) : title, aside ?? h("span")) : null, ...kids);
+  const go = (r) => { route = r; runData = null; adding = false; render(); window.scrollTo?.(0, 0); if (r.page === "app") loadLast(); if (r.page === "run") loadRun(r.id); };
+  const appOf = (name) => (draft ?? ov?.apps ?? []).find((a) => a.name === name);
+  const live = (name) => ov?.apps.find((a) => a.name === name);
+
+  /* -------------------------------------------------------------------------------- reads */
+  async function loadOverview() {
+    ov = await tool("design_overview", {});
+    for (const n of [...stopping]) if (!live(n)?.active) stopping.delete(n);
+    render();
+  }
+  // An app's page shows its last run in full and its history.
+  async function loadLast() {
+    const name = route.app;
+    try {
+      const [runs, last] = [await tool("design_runs", { app: name, limit: 30 }), live(name)?.last];
+      const run = last ? await tool("design_run", { run: last.run }) : null;
+      if (route.page === "app" && route.app === name) { runData = { runs: runs.runs ?? [], run }; render(); }
+    } catch (e) { fail(e); }
+  }
+  async function loadRun(id) {
+    try { const run = await tool("design_run", { run: id }); if (route.page === "run" && route.id === id) { runData = { run }; render(); } }
+    catch (e) { if (route.page === "run" && route.id === id) { runData = { missing: e.message }; render(); } }
+  }
+  // An image of a run, fetched when it scrolls into view (a run holds dozens): a data: address, the only kind the frame shows.
+  const seen = new IntersectionObserver((es) => { for (const e of es) if (e.isIntersecting) { seen.unobserve(e.target); e.target._load(); } }, { rootMargin: "200px" });
+  const image = (run, name, alt) => {
+    const box = t("div", "img"), ph = t("span", "ph", "Loading…");
+    box.append(ph);
+    box._load = async () => {
+      try {
+        const f = await tool("design_image", { run, name });
+        const img = h("img", { src: `data:${f.type};base64,${f.data}`, alt: alt ?? name, loading: "lazy" });
+        img.addEventListener("click", () => { const z = h("div", { className: "zoom", role: "dialog", ariaLabel: alt ?? name }, h("img", { src: img.src, alt: alt ?? name })); z.addEventListener("click", () => z.remove()); document.body.append(z); });
+        box.replaceChildren(img);
+      } catch { ph.textContent = "Not kept"; }
+    };
+    seen.observe(box);
+    return box;
+  };
+  // Run now and Stop: the scheduler answers "already running", "cap reached today" or "unknown app" as the call's refusal.
+  async function runNow(name) {
+    try { const r = await tool("design_pass_start", { app: name }); say(`Started ${name}: run ${r.run}.`); await loadOverview(); }
+    catch (e) { say(String(e.message).replace(/^Refused:\s*/i, `${name}: `), true); }
+  }
+  async function stop(name) {
+    stopping.add(name); render();
+    try { await tool("design_pass_stop", { app: name }); say(`Stopping ${name}'s pass: its slot frees once the run has ended.`); }
+    catch (e) { stopping.delete(name); render(); fail(e); }
+  }
+  // Passes under way are followed.
+  setInterval(() => {
+    if (!ov || adding || document.activeElement?.matches?.("input, textarea, select")) return;
+    if (ov.apps.some((a) => a.active)) loadOverview().then(() => { if (route.page === "app") loadLast(); }).catch(() => {});
+    else if (route.page === "run" && runData?.run?.run?.status === "running") loadRun(route.id);
+  }, 8000);
+
+  /* -------------------------------------------------------------------------------- the owner's settings proposal */
+  // One entry as the setting stores it: UiApp fields only, defaults left out so instance.yaml stays short.
+  const entry = (a) => {
+    const e = {};
+    for (const k of FIELDS) {
+      const v = a[k];
+      if (v === undefined || v === null || v === "" || (k in DEFAULTS && v === DEFAULTS[k])) continue;
+      if (k === "models") { const m = Object.fromEntries(Object.entries(v ?? {}).filter(([, x]) => x)); if (Object.keys(m).length) e.models = m; continue; }
+      e[k] = v;
+    }
+    return e;
+  };
+  // change(list) builds the next list inside the queue, from the latest accepted draft, so quick edits never overwrite each other.
+  const propose = (change, what) => inOrder(async () => {
+    const apps = change(draft ?? ov.apps);
+    try { const r = await tool("design_configure", { apps: apps.map(entry) }); draft = apps; proposed({ changes: [what ?? (r.changes ?? []).join("; ")] }); render(); }
+    catch (e) { fail(e); }
+  });
+  const edit = (name, patch, what) => propose((list) => list.map((a) => (a.name === name ? { ...a, ...(typeof patch === "function" ? patch(a) : patch) } : a)), what);
+  const dirty = (name) => { if (!draft) return false; const a = draft.find((x) => x.name === name), b = ov.apps.find((x) => x.name === name); return !a || !b || JSON.stringify(entry(a)) !== JSON.stringify(entry(b)); };
+
+  /* -------------------------------------------------------------------------------- the list */
+  function appRow(a) {
+    const l = live(a.name), active = l?.active, cap = a.day_cap_usd ?? 5, today = l?.today_usd ?? 0, capped = today >= cap, pct = cap > 0 ? Math.min(100, (today / cap) * 100) : 100;
+    const last = l?.last, unsaved = !l || dirty(a.name);
+    const n = (cls, k, word) => h("span", { className: `cnt ${cls}${k ? "" : " zero"}` }, h("i"), `${k} ${word}${k === 1 ? "" : "s"}`);
+    const lastEl = active ? h("div", { className: "lastr" }, status("running", stopping.has(a.name) ? "Stopping…" : "Pass running"), t("small", "", ago(active.started) || "just now"))
+      : last?.status === "done" ? h("div", { className: "lastr" }, n("imp", last.improvements, "improvement"), n("bug", last.bugs, "bug"),
+        h("span", { className: "cnt cov" }, h("i"), `${last.coverage.done}/${last.coverage.total} covered`), t("small", "", ago(last.ended)))
+      : last ? h("div", { className: "lastr" }, status(last.status), t("small", "", ago(last.ended)))
+      : h("div", { className: "lastr" }, t("small", "", "No runs yet"));
+    const action = !l ? t("small", "soft", "Save to add")
+      : active ? btn(stopping.has(a.name) ? "Stopping…" : "Stop", () => stop(a.name), "", { disabled: stopping.has(a.name) })
+      : btn("Run now", () => runNow(a.name), "primary", { disabled: capped, title: capped ? "Today's cap is reached" : "" });
+    const row = h("div", { className: `row app${unsaved ? " unsaved" : ""}` },
+      h("div", { className: "nm" }, h("b", {}, t("span", `dot ${active ? "busy" : last?.status === "failed" ? "failed" : last ? "done" : ""}`), a.name), t("small", "", a.repo ? `${a.url} · ${a.repo}` : a.url)),
+      h("span", { className: `sch ${a.schedule ?? "on-request"}` }, h("i"), SCHED[a.schedule ?? "on-request"]),
+      h("div", { className: "spend" }, h("div", { className: "txt" }, h("span", {}, t("b", "num", usd(today)), ` of ${usd(cap)} today`), capped ? t("span", "", "cap reached") : null), h("div", { className: `meter${pct >= 100 ? " full" : pct >= 70 ? " mid" : ""}` }, h("i", { style: `width:${pct}%` }))),
+      lastEl, h("div", { className: "act" }, action));
+    return clickable(row, () => go({ page: "app", app: a.name }));
+  }
+  function addForm() {
+    const name = h("input", { type: "text", placeholder: "name (acme)", ariaLabel: "App name", autocomplete: "off", spellcheck: false });
+    const url = h("input", { type: "text", placeholder: "https://acme.example.com", ariaLabel: "App address", autocomplete: "off", spellcheck: false });
+    const repo = h("input", { type: "text", placeholder: "owner/repo (optional)", ariaLabel: "Repository", autocomplete: "off", spellcheck: false });
+    const own = h("input", { type: "checkbox", ariaLabel: "An app on this AidenHQ" });
+    const f = h("form", { className: "addf" }, name, url, repo, h("label", {}, own, "AidenHQ app"), h("button", { type: "submit", className: "primary", textContent: "Add app" }));
+    f.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const n = name.value.trim().toLowerCase(), add = { name: n, url: url.value.trim(), ...(repo.value.trim() ? { repo: repo.value.trim() } : {}), aidenhq_app: own.checked };
+      if ((draft ?? ov.apps).some((a) => a.name === n)) return say(`${n} is already listed.`, true);
+      adding = false;
+      propose((list) => (list.some((a) => a.name === n) ? list : [...list, add]), `add ${n}`);
+    });
+    setTimeout(() => name.focus(), 0);
+    return f;
+  }
+  function findRun() {
+    const inp = h("input", { type: "text", placeholder: "r-…", ariaLabel: "Run id", autocomplete: "off", spellcheck: false, className: "mono" });
+    const f = h("form", { className: "findrun" }, inp, h("button", { type: "submit", textContent: "Open run" }));
+    f.addEventListener("submit", (e) => { e.preventDefault(); const id = inp.value.trim(); if (!RUN_ID.test(id)) return say("A run id looks like r-mf3k2x9a-1a2b3c4d (an issue names it).", true); go({ page: "run", id }); });
+    return f;
+  }
+  function listPage() {
+    const apps = draft ?? ov.apps;
+    const head = h("div", { className: "head" }, h("b", {}, "Apps"), t("small", "", apps.length ? `${apps.length} app${apps.length === 1 ? "" : "s"} · ${usd(ov.apps.reduce((n, a) => n + (a.today_usd ?? 0), 0))} today` : ""), btn(adding ? "Cancel" : "Add app", () => { adding = !adding; render(); }, adding ? "" : "primary"));
+    return [
+      h("div", { className: "bar" }, t("p", "intro grow", "The UI Reviewer tests each app like a designer and a careful user: ranked design improvements with rendered fixes, and verified bugs. Each app runs on request unless you choose after-deploy or 24/7, within its daily cap."), findRun()),
+      h("div", { className: "card" }, head,
+        ...(adding ? [addForm()] : []),
+        ...(apps.length ? [h("div", { className: "row cols app" }, t("span", "", "App"), t("span", "", "Schedule"), t("span", "", "Spend"), t("span", "", "Last run"), t("span"))] : []),
+        ...apps.map(appRow),
+        ...(apps.length || adding ? [] : [h("div", { className: "empty" }, t("b", "", "No apps yet: add one by URL or repo"), t("span", "soft", "Nothing runs until you press Run now or pick a schedule."), h("div", {}, btn("Add app", () => { adding = true; render(); }, "primary")))])),
+    ];
+  }
+
+  /* -------------------------------------------------------------------------------- an app */
+  const seg = (label, values, value, set, titles, disabled) => {
+    const g = editor({ kind: "seg", label, values, value, f: label, titles, set });
+    if (disabled) for (const b of g.querySelectorAll("button")) b.disabled = true;
+    for (const b of g.querySelectorAll("button")) if (label === "Schedule") b.textContent = SCHED[b.dataset.v];
+    return g;
+  };
+  function settingsCard(a) {
+    const set = (k) => (v) => edit(a.name, { [k]: v }, `${a.name}: ${k.replace(/_/g, " ")} ${typeof v === "object" ? "changed" : v}`);
+    const text = (k, ph) => { const i = h("input", { type: "text", value: a[k] ?? "", placeholder: ph ?? "", ariaLabel: k, autocomplete: "off", spellcheck: false }); i.addEventListener("change", () => set(k)(i.value.trim() || undefined)); return i; };
+    const cap = h("input", { type: "text", inputMode: "decimal", value: String(a.day_cap_usd ?? 5), ariaLabel: "Daily cap in USD", className: "num" });
+    cap.addEventListener("change", () => { const n = Number(cap.value); if (!Number.isFinite(n) || n < 0 || n > 100) return say("The daily cap is a number of dollars from 0 to 100.", true); set("day_cap_usd")(n); });
+    const model = (k, what) => { const i = h("input", { type: "text", value: a.models?.[k] ?? "", placeholder: "the UI Reviewer's own", ariaLabel: `${what} model`, autocomplete: "off", spellcheck: false, className: "mono" }); i.addEventListener("change", () => { const v = i.value.trim() || undefined; edit(a.name, (cur) => ({ models: { ...(cur.models ?? {}), [k]: v } }), `${a.name}: ${what.toLowerCase()} model`); }); return h("label", {}, what, i); };
+    const rec = toggle(a.recording, "Record clicking flows", () => edit(a.name, (cur) => ({ recording: !cur.recording }), `${a.name}: recording`));
+    const own = toggle(a.aidenhq_app, "An app on this AidenHQ", () => edit(a.name, (cur) => ({ aidenhq_app: !cur.aidenhq_app }), `${a.name}: AidenHQ app`));
+    const l = live(a.name);
+    return card("Settings", h("span", { className: "bar" }, dirty(a.name) ? t("span", "tag needs", "Unsaved") : t("span", "tag ok", "Saved"), btn("Remove app", () => { propose((list) => list.filter((x) => x.name !== a.name), `remove ${a.name}`); go({ page: "list" }); })),
+      h("div", { className: "form" },
+        fld("Address", "Where a pass opens the app.", {}, text("url", "https://")),
+        fld("Repository", "owner/name: a pass may build its default branch, never a PR head. Pushes to the default branch start an after-deploy pass.", {}, text("repo", "owner/name (optional)")),
+        h("div", { className: "fld wide" }, h("div", { className: "fl" }, help("Schedule", "When passes start. Only one pass runs per app at a time.", { options: SCHED_HELP, current: a.schedule })), seg("Schedule", ["on-request", "after-deploy", "always"], a.schedule ?? "on-request", set("schedule"))),
+        h("div", { className: "fld" }, h("div", { className: "fl" }, help("Spend mode", "How much each pass does.", { options: SPEND_HELP, current: a.spend })), seg("Spend mode", ["scan", "standard", "thorough"], a.spend ?? "standard", set("spend"))),
+        fld("Daily cap (USD)", "Per UTC day, 0 to 100. No pass starts once the app's passes billed this much today; one already running finishes.", {}, cap, t("span", "fine", `${usd(l?.today_usd ?? 0)} spent today`)),
+        h("div", { className: "fld" }, h("div", { className: "fl" }, help("Live-app mode", "The most a pass may do on the live app.", { options: MODE_HELP, current: a.live_mode })), seg("Live-app mode", ["read", "test-write", "any"], a.aidenhq_app ? "read" : (a.live_mode ?? "read"), set("live_mode"), undefined, a.aidenhq_app),
+          a.aidenhq_app ? t("span", "fine", "AidenHQ apps are always read-only.") : null),
+        h("div", { className: "fld wide" }, h("div", { className: "fl" }, help("Models", "OpenRouter model ids for this app's passes; blank keeps the default.")), h("div", { className: "models" }, model("design", "Design review"), model("fixes", "Fixes"), model("clicking", "Clicking"))),
+        h("div", { className: "fld" }, h("div", { className: "fl" }, help("Recordings", "Record the clicking pass's flows as short videos (at most 2 minutes each), shown on the run.")), h("div", { className: "checks" }, rec, t("span", "soft", a.recording ? "On" : "Off"))),
+        h("div", { className: "fld" }, h("div", { className: "fl" }, help("AidenHQ app", "An app on this AidenHQ, named as it is there: it signs in with a read-only test-user session.")), h("div", { className: "checks" }, own, t("span", "soft", a.aidenhq_app ? "Yes" : "No")),
+          a.aidenhq_app ? t("span", "fine warn", "Signed-in passes need this app in the test user's apps (Settings).") : null)),
+      h("div", { className: "lock" }, t("span", `dot ${l?.login ? "done" : ""}`), a.aidenhq_app ? h("span", {}, t("b", "", "Sign-in: "), "the read-only test-user session.") : h("span", {}, t("b", "", l?.login ? "Login set. " : "No login set. "), "Passes sign in with it; set or replace it under Sign-ins below. It never reaches the model or a report.")));
+  }
+  function historyCard(name, runs) {
+    return card("Runs", t("small", "", runs.length ? `${runs.length} kept` : ""),
+      ...(runs.length ? [] : [t("div", "empty soft", "No runs yet.")]),
+      ...runs.map((r) => clickable(h("div", { className: "row hist" }, h("span", {}, status(r.status), " ", t("span", "mono soft", r.id)), t("span", "num", r.cost_usd == null ? "—" : usd(r.cost_usd)),
+        t("span", "sub", `${r.depth ?? r.kind} · ${new Date(r.started).toLocaleString()} · ${ago(r.started) || "now"}`)), () => go({ page: "run", id: r.id }))));
+  }
+  function appPage() {
+    const a = appOf(route.app);
+    if (!a) return [h("div", { className: "bar" }, btn("← UI testing", () => go({ page: "list" }))), card(null, null, t("div", "empty", `${route.app} isn't listed any more.`))];
+    const l = live(a.name), active = l?.active, cap = a.day_cap_usd ?? 5, capped = (l?.today_usd ?? 0) >= cap;
+    const act = !l ? null : active ? btn(stopping.has(a.name) ? "Stopping…" : "Stop pass", () => stop(a.name), "", { disabled: stopping.has(a.name) }) : btn("Run now", () => runNow(a.name), "primary", { disabled: capped });
+    const runs = runData?.runs ?? [];
+    return [
+      h("div", { className: "bar" }, btn("← UI testing", () => go({ page: "list" })), h("h2", { className: "grow" }, a.name), active ? status("running", stopping.has(a.name) ? "Stopping…" : `Pass running · ${ago(active.started) || "just now"}`) : capped ? t("span", "tag needs", "Cap reached today") : null, act),
+      h("div", { className: "split two" },
+        h("div", { className: "split" }, runData?.run ? runCard(runData.run, "Latest run") : card("Latest run", null, t("div", "empty soft", runData ? "No finished run yet: Run now starts one." : "Loading…"))),
+        h("div", { className: "split" }, settingsCard(a), historyCard(a.name, runs))),
+    ];
+  }
+
+  /* -------------------------------------------------------------------------------- a run */
+  function runCard(d, title) {
+    const r = d.run, rep = d.report ?? {}, files = d.files ?? [];
+    const imps = Array.isArray(rep.improvements) ? [...rep.improvements].sort((x, y) => (x.rank ?? 99) - (y.rank ?? 99)) : [];
+    const bugs = Array.isArray(rep.bugs) ? rep.bugs.filter((b) => b.verified !== false) : [];
+    const motion = Array.isArray(rep.motion) ? rep.motion : [];
+    const cov = rep.coverage ?? {};
+    const vids = files.filter((f) => /\.webm$/.test(f));
+    const where = (w) => w ? `${w.page ?? ""} · ${w.width ?? ""}px · ${w.theme ?? ""}${w.region ? ` · ${w.region}` : ""}` : "";
+    const impEl = (m) => {
+      const fix = m.fix ?? {};
+      return h("div", { className: `impr ${m.category ?? ""}` }, t("span", "rk", String(m.rank ?? "")),
+        h("div", { className: "body" },
+          t("h4", "", m.change ?? m.weak ?? ""), t("span", "where", `${m.category === "ease" ? "Ease" : "Polish"} · ${where(m.where)}`),
+          h("dl", { className: "kv" }, t("dt", "", "Weak"), t("dd", "", m.weak ?? ""), t("dt", "", "Why"), t("dd", "", m.why ?? ""), ...(m.best ? [t("dt", "", "Best"), t("dd", "", m.best)] : [])),
+          ...(fix.before && fix.after ? [h("div", { className: "pair" }, h("div", { className: "shot" }, t("small", "", "Before"), image(r.id, fix.before, `Before: ${m.change ?? ""}`)), h("div", { className: "shot after" }, t("small", "", "After"), image(r.id, fix.after, `After: ${m.change ?? ""}`)))]
+            : (m.captures ?? []).length ? [h("div", { className: "shots" }, ...m.captures.slice(0, 3).map((c) => image(r.id, c, where(m.where))))] : []),
+          ...(fix.status ? [h("div", {}, t("span", `fixst ${fix.status}`, fix.status === "shown" ? `Fix rendered${fix.wins ? ` · preferred ${fix.wins[0]} of ${fix.wins[0] + fix.wins[1]}` : ""}` : `Fix ${fix.status}${fix.why ? `: ${fix.why}` : ""}`))] : []),
+          ...(fix.diff ? [h("details", {}, h("summary", {}, "The fix (diff)"), t("pre", "diff", fix.diff))] : [])));
+    };
+    const bugEl = (b) => h("div", { className: "bugr" }, t("h4", "", b.title ?? ""), t("span", "where soft", `${b.page ?? ""} · ${b.width ?? ""}px · ${b.theme ?? ""}${b.kind ? ` · ${b.kind}` : ""}`), t("p", "", b.evidence ?? ""),
+      ...((b.repro ?? []).length ? [h("ol", {}, ...b.repro.map((s) => t("li", "", typeof s === "string" ? s : JSON.stringify(s))))] : []),
+      ...((b.captures ?? []).length ? [h("div", { className: "shots" }, ...b.captures.slice(0, 3).map((c) => image(r.id, c, b.title)))] : []));
+    const tiles = h("div", { className: "tiles" },
+      h("div", { className: "imp" }, t("b", "", String(imps.length)), t("small", "", "improvements")),
+      h("div", { className: "bug" }, t("b", "", String(bugs.length)), t("small", "", "verified bugs")),
+      h("div", { className: "cov" }, t("b", "", cov.total ? `${cov.done ?? 0}/${cov.total}` : "—"), t("small", "", "coverage")),
+      h("div", {}, t("b", "", r.cost_usd == null ? "—" : usd(r.cost_usd)), t("small", "", "cost")));
+    return card(h("span", { className: "bar" }, t("b", "", title), status(r.status), t("small", "mono soft", r.id)), t("small", "", `${r.depth ?? r.kind} · ${new Date(r.ended ?? r.started).toLocaleString()}`),
+      tiles,
+      ...(d.report ? [] : [t("div", "empty soft", r.status === "running" ? "The pass is running: its report lands here when it finishes." : "This run left no report.")]),
+      ...(imps.length ? [h("div", { className: "sect" }, t("span", "", "Design improvements, ranked")), ...imps.map(impEl)] : []),
+      ...(bugs.length ? [h("div", { className: "sect" }, t("span", "", "Verified bugs")), ...bugs.map(bugEl)] : []),
+      ...(motion.length ? [h("div", { className: "sect" }, t("span", "", "Motion")), h("div", { className: "row cols mot" }, t("span", "", "Where"), t("span", "", "Now"), t("span", "", "Better"), t("span", "", "Why")),
+        ...motion.map((m) => h("div", { className: "row mot" }, t("span", "", m.where ?? ""), t("span", "soft", m.before ?? ""), t("span", "", m.after ?? ""), t("span", "soft", m.why ?? "")))] : []),
+      ...(vids.length ? [h("div", { className: "sect" }, t("span", "", "Recordings")), ...vids.map((v) => recording(r.id, v))] : []),
+      ...((rep.notes ?? []).length ? [h("div", { className: "notes" }, h("ul", {}, ...rep.notes.map((n) => t("li", "", String(n)))))] : []));
+  }
+  // A recording loads on request: a flow's video is up to 4 MB.
+  const recording = (run, name) => {
+    const box = h("div", { className: "rec" }, h("div", { className: "bar" }, t("span", "mono grow", name), btn("Play", async (e) => {
+      e.currentTarget.disabled = true;
+      try { const f = await tool("design_image", { run, name }); box.append(h("video", { src: `data:${f.type};base64,${f.data}`, controls: true, autoplay: true, muted: true, playsInline: true })); e.currentTarget?.remove?.(); }
+      catch (err) { fail(err); }
+    })));
+    return box;
+  };
+  function runPage() {
+    const d = runData?.run;
+    const head = h("div", { className: "bar" }, btn("← UI testing", () => go({ page: "list" })), d?.run?.app && appOf(d.run.app) ? btn(`← ${d.run.app}`, () => go({ page: "app", app: d.run.app })) : null, h("h2", { className: "grow mono" }, route.id));
+    if (runData?.missing) return [head, card(null, null, t("div", "empty", `No run ${route.id}: it may be older than 30 days.`))];
+    return [head, d ? runCard(d, d.run.app ? `${d.run.app}` : "Run") : card(null, null, t("div", "empty soft", "Loading…"))];
+  }
+
+  /* -------------------------------------------------------------------------------- render */
+  function render() {
+    closeHelp();
+    if (!ov) return;
+    keepFocus(() => $("app").replaceChildren(...(route.page === "app" ? appPage() : route.page === "run" ? runPage() : listPage())));
+  }
+  start("design", async (ctx) => {
+    try {
+      await loadOverview();
+      // Opened at an address (#/team/m/ui-testing/r/<run> from an issue, or …/a/<app>): the host says which, once.
+      const at = String(ctx?.route ?? "").split("/");
+      if (at[0] === "r" && RUN_ID.test(at[1] ?? "")) go({ page: "run", id: at[1] });
+      else if (at[0] === "a" && live(at[1])) go({ page: "app", app: at[1] });
+    } catch (e) { fail(e); }
+  });
+</script>
+</body>
+</html>

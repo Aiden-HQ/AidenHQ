@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { createMcp, serveMcp } from "./mcp.ts";
+import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { designTools } from "./tools.ts";
@@ -13,6 +13,7 @@ import { DAY, openStore } from "./store.ts";
 import { createPasses, readApps, readLogins, validate } from "./passes.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createScheduler } from "./schedule.ts";
+import { overviewTools } from "./overview.ts";
 
 const env = process.env;
 const file = (p: string | undefined) => { try { return p ? readFileSync(p, "utf8").trim() : ""; } catch { return ""; } };
@@ -61,7 +62,9 @@ const mintSession = (assertion: string, app: string) => kernel().raw("POST", "/v
 const jobtools = createJobTools({ passes, logins, mintSession });
 const serviceKey = () => file(env.DESIGN_SERVICE_KEY_FILE);
 
-const mcp = serveMcp(createMcp("design", designTools(store, { passes, apps: () => apps, logins })), serviceKey, async (req) => ({ ...(await verifyCaller(req, jwks, "design")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }),
+const tools = [...designTools(store, { passes, apps: () => apps, logins }), ...overviewTools({ store, apps: () => apps, logins, spentToday: passes.spentToday })];
+// The UI testing Fleet page (module.yaml contributes.board.pages): a module view on this connection, calling the tools above as the owner.
+const mcp = serveMcp(createMcp("design", tools, [{ uri: "ui://design/page", html: pageHtml(new URL("./", import.meta.url)) }]), serviceKey, async (req) => ({ ...(await verifyCaller(req, jwks, "design")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }),
   // design_evidence_put takes 8 MB decoded per call: about 10.7 MB as base64 (the kernel's proxy takes 14 MB).
   12 * 1024 * 1024);
 const sweep = () => { try { const n = store.sweep(); if (n) log("swept old runs", { n }); } catch (e) { log("WARNING: sweep failed", { err: String((e as Error).message).slice(0, 300) }); } };
