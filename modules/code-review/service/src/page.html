@@ -14,6 +14,7 @@
   :root { --bad: #d4493f; --warn: #c98a1b; --good: #2f9e6f; }
   :root { --bad: #d4493f; --warn: #c98a1b; --good: #2f9e6f; --sev-i: #e03131; --sev-n: #e8a400; --sev-p: #7048e8; }
   body { gap: clamp(14px, .7vw + 8px, 22px); grid-template-columns: minmax(0, 1fr); max-width: 1920px; width: 100%; margin-inline: auto; }
+  #app { display: grid; grid-template-columns: minmax(0, 1fr); gap: inherit; min-width: 0; overflow-wrap: anywhere; }
   .card, .bar, .pad, .row > * { min-width: 0; }
   .pad, .mono, .soft { overflow-wrap: anywhere; }
   .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

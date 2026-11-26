@@ -103,7 +103,7 @@
 @media (max-width: 1000px) { .ask-aiden { position: fixed; inset: 0; z-index: 60; display: flex; pointer-events: none; } .ask-aiden > .ui-side { flex: 1; width: 100%; pointer-events: auto; } }
 
 /* Pages cap at --page-max and centre beyond it; the scrollbar stays at the window's edge. */
-.app-main .ui-page, .app-main .page.wide { padding-inline: max(var(--gutter), (100% - var(--page-max)) / 2); }
+.app-main .ui-page, .app-main .page.wide, .app-main .st-page { padding-inline: var(--page-pad); }
 
 /* ------------------------------------------------------------ a section's pages, on its left (Team, Insight, Tasks) */
 .subnav { flex: none; width: clamp(212px, 14vw, 264px); display: flex; flex-direction: column; gap: 1px; padding: var(--page-top) 12px 32px; border-right: 1px solid var(--border); background: var(--col); overflow-y: auto; }

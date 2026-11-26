@@ -34,8 +34,8 @@
 .st-shell.phone .st-page { padding: 16px 16px 48px; gap: 16px; }
 .st-page-in { animation: st-in var(--st-dur) var(--st-ease); }
 @keyframes st-in { from { opacity: 0; transform: translateY(4px); } }
-.st-pane > .ui-banner { margin: var(--page-top) var(--gutter) 0; }
-.st-pane > .powered-by { margin: 0 var(--gutter) 24px; }
+.st-pane > .ui-banner { margin: var(--page-top) var(--page-pad) 0; }
+.st-pane > .powered-by { margin: 0 var(--page-pad) 24px; }
 .st-note { margin: calc(var(--stack) / -2) 0 0; font-size: var(--text-base); color: var(--muted); }
 /* Inside a card, a note is a row: the page-level pull-up above would clip it under the card's top edge. */
 .st-rows > .st-note { margin: 0; padding: 14px 16px; }

@@ -79,7 +79,7 @@
 @keyframes ui-pulse { 50% { opacity: 0.3; transform: scale(0.8); } }
 
 /* Tag (Tag.tsx): a small square-cornered label for a fact (a count, a kind, a version). Never a pill. */
-.ui-tag { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); font-size: var(--text-xs); font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.ui-tag { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); font-size: var(--text-xs); font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .ui-tag-accent { color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); }
 .ui-tag-ok { color: var(--ok-text); background: color-mix(in srgb, var(--working) 10%, var(--surface)); border-color: color-mix(in srgb, var(--working) 30%, var(--border)); }
 .ui-tag-needs { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 13%, var(--surface)); border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }

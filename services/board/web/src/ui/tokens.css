@@ -157,6 +157,8 @@
 
   /* Layout: the widest a page's content runs, a side pane's width (DetailPane, SidePanel) and a card grid's narrowest column (.ui-grid). */
   --page-max: 1920px;
+  /* A page's side padding: the gutter, or what centres it at --page-max. */
+  --page-pad: max(var(--gutter), (100% - var(--page-max)) / 2);
   --pane-w: clamp(360px, 30vw, 560px);
   --grid-min: 280px;
   --shadow-pane: -12px 0 32px light-dark(rgba(15, 23, 42, 0.08), rgba(0, 0, 0, 0.6));
