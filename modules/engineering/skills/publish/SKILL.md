@@ -54,12 +54,13 @@ change the merge does not, keep it open and work from it: it is not redundant.
 Then close the duplicate by its own URL. The close names only the PR's number, so it is not conditional on the head you
 read: read both PRs again right before it, at the close's own step, and close only if that read still shows the heads
 the decision assumed. After the close, read both again: when the closed PR's head moved past what you read, its commits
-are not in the kept PR — take its head from `refs/pull/<n>/head`, publish it on a new `agent/<task>/…` branch, and wait
-on that PR. Report only what those reads show.
+are not in the kept PR — take its head from `refs/pull/<n>/head`, publish it on a new `agent/<task>/…` branch, and
+wait on that PR. Report only what those reads show.
 Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
 When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
-`refs/pull/<n>/head`, which the code host serves as a bundle (`codehost fetch` with that `ref`): fetch that bundle, publish
-it on a new `agent/<task>/…` branch, and wait on that PR instead of a merge that cannot happen.
+`refs/pull/<n>/head`: `aidenhq ship checkout <PR link> <head>` fetches it with the job's own token (`codehost fetch`
+needs a module's), then publish it on a new `agent/<task>/…` branch and wait on that PR instead of a merge that cannot
+happen.
 
 ## Finishing a cancelled task's PR (a handoff)
 
