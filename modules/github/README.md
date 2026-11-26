@@ -26,7 +26,7 @@ agent-built repos live there; unset, they live on this server (`codehost-local`)
 Two connections. Destructive tools are reviewed and need a grant naming them.
 
 - `github` (AidenHQ's own): reads such as `github_issue_read`, `github_search_issues`, `github_pr_files`,
-  `github_pr_threads`, `github_job_log`, `github_project_read`; write `commit_status_set`; destructive issue and PR writes
+  `github_pr_threads`, `github_job_log`, `github_project_read`; destructive issue and PR writes
   (`github_issue_comment`, `github_pr_review` (comment only), `github_rerun_failed`, `github_product_issue*`).
 - `github_official` (GitHub's own MCP server, as you): read-only, such as `get_file_contents`, `get_commit`,
   `list_commits`. Every mutating tool is refused.

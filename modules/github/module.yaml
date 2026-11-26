@@ -116,8 +116,7 @@ connections:
       # github_product_issue_status: a status lookup of product-bug issues (number, state, fixing commit; no issue text), so a
       # read: tagged destructive it filed a Tier 2 owner card on every check.
       read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_pr_threads, github_product_issue_status, github_issue_link, github_issue_list, github_label_events, github_pr_list, github_repo_tree, github_repo_file ]
-      # commit_status_set: the design-review check on agents-org PRs, as the owner; it also needs the design-review role.
-      write: [ commit_status_set ]
+      write: []
       # github_issue_link: the same report as an owner's prefilled "new issue" link, for an install where GitHub isn't connected (no
       # write, no role): named, so only the agents that report product bugs hold it.
       # github_product_issue: product bugs on settings.product_repo only, as the owner, and only for the product-issues role
@@ -137,7 +136,7 @@ connections:
       # destructive, so only a grant naming one reaches it and every call is a record the AI reviewer decides first (floor 1),
       # except the `unreviewed` ones (an issue's labels and state, a thread reply: owner, 2026-11-23), which run at once (Tier 0)
       # after code's refusals (instance details).
-      destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_pr_thread_reply, github_rerun_failed, github_product_issue, github_issue_label, github_issue_state, github_release_graduate ]
+      destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_pr_thread_reply, github_pr_thread_resolve, github_rerun_failed, github_product_issue, github_issue_label, github_issue_state, github_release_graduate ]
       unreviewed: [ github_issue_label, github_issue_state, github_pr_thread_reply ]
     # Granted only while the upstream setting allows issues.
     upstream: [ github_product_issue, github_product_issue_status, github_issue_link ]
@@ -171,8 +170,6 @@ codehost:
 # The PR watch is the ship module's (modules/ship/service/src/loop.ts): it reaches GitHub, code review's verdict and
 # pr-tasks.json through this service's /internal/ship/* routes (service/src/ship-routes.ts), with ship's own token.
 # A cancelled task's PR is left open and intact for a successor; a done task's unmerged PR is closed.
-# The design review's tasks (service/src/design-review.ts, W6) are filed for the UI Reviewer's role and cancelled when
-# superseded (kernel.tasks).
 # The release train (service/src/train.ts, W3) files the instance's pin bump as a kernel.apply, which the
 # kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
 # It reads that task's records (kernel.work-read) to adopt a bump whose own state was lost and follow it to its end, and lists
@@ -194,8 +191,8 @@ facts:
   pr.checks_completed: { subject: pr }
   pr.merged: { subject: pr }
   pr.reverted: { subject: pr }
-  work.waiting: { subject: pr, reasons: [ checks, design_review, code_review, retry, conflict, github ] }
-  work.resumed: { subject: pr, reasons: [ checks, design_review, code_review, retry, conflict, github ] }
+  work.waiting: { subject: pr, reasons: [ checks, code_review, retry, conflict, github ] }
+  work.resumed: { subject: pr, reasons: [ checks, code_review, retry, conflict, github ] }
   code.added: { subject: pr }
   code.rewritten: { subject: pr }
   issue.opened: { subject: issue }
@@ -254,7 +251,7 @@ services:
   run:
     # The GitHub process (spec 2026-11-20-github-owner-identity §1): both connections (8086 AidenHQ's tools, 8087 GitHub's own
     # MCP and the board's sign-in at /auth/*) and the code host (8100: the executor of the write kinds below, the merge queue,
-    # the release train, design reviews and tidying, ship's GitHub calls (/internal/ship/*), and the typed GitHub operations other modules get through the
+    # the release train and tidying, ship's GitHub calls (/internal/ship/*), and the typed GitHub operations other modules get through the
     # kernel, /v1/codehost/:op), in one Node process on the owner's one sign-in. Its token stays in this container's /state; it
     # mounts the job workspaces. It starts with the module and answers "GitHub isn't connected" until the owner connects.
     github:
@@ -273,8 +270,8 @@ services:
         GITHUB_MCP_URL: "${settings.github_mcp_url}"
         # The board's sign-in endpoints: state, and starting a device sign-in.
         GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
-        # github_fleet_org: where the fleet's repos live on GitHub; create_repo's bare names land here and commit_status_set
-        # writes only here (compile derives it).
+        # github_fleet_org: where the fleet's repos live on GitHub; create_repo's bare names land here (compile
+        # derives it).
         GITHUB_FLEET_ORG: "${settings.github_fleet_org}"
         # `1` while the ci module is on (the sign-in then asks for admin:org), and the official MCP's read tools (everything else is denied).
         GITHUB_CI: "${settings.github_ci}"

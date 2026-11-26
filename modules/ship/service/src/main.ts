@@ -94,7 +94,7 @@ const loop = startLoop({
   adopted: adoptedPass({
     gh, state, settings: settingsOf, paused, kernel, log,
     // The list read's node and default branch go along, so github reads neither again.
-    decision: (repo, number, head, view) => github("POST", "decision", { repo, number, head, pr: view.pr, main: view.main, ...(view.stackedOn ? { stackedOn: view.stackedOn } : {}) }),
+    decision: (repo, number, head, view) => github("POST", "decision", { repo, number, head, pr: view.pr, main: view.main, ...(view.stackedOn ? { stackedOn: view.stackedOn } : {}), ...(view.comments ? { comments: view.comments } : {}) }),
     effects,
   }),
 });
@@ -136,7 +136,9 @@ createServer(async (req, res) => {
       // The adoption is read again after the verdict: a hand-back, a stop or a re-adoption meanwhile ends the write.
       gen = generationOf(state, paused() || !settingsOf(repo), repo, n, q.get("at") ?? undefined);
     }
-    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...gen, ...(refused ? { refused: refused.why, ...(refused.retry ? { retry: true } : {}) } : {}) }));
+    // Members' comments are read again by github right before an approve, an enqueue or a merge goes on.
+    const comments = (what === "approve" || what === "merge") && s?.fix.includes("review") && gen.generation !== null && !gen.hold ? (state.get(repo, n) as Kept | undefined)?.commentsFor : undefined;
+    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...gen, ...(comments ? { comments } : {}), ...(refused ? { refused: refused.why, ...(refused.retry ? { retry: true } : {}) } : {}) }));
   }
   res.writeHead(req.url === "/healthz" ? 200 : 404).end();
 }).listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101 }));

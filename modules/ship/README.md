@@ -12,7 +12,8 @@ works can move with GitHub quiet (its task's state, a merge's outcome, a wedged 
 the code host opened for a task is adopted when first seen and owned by that task; any other PR is a hand-off: a member's `ship`
 label or `/ship` comment adopts it. For either, ship repairs a conflict (its no-model repair first), has GitHub update a branch
 that is behind (once, before asking for a fix, when it is red behind a green base), wakes the PR's task for red required checks
-or code review's findings, and files the merge (`github.merge`) once code review passes. Past a cap (`caps`) the PR holds and its
+or review comments (code review's findings, and any unanswered review thread or conversation comment from a member of the repo:
+github's member-comments.ts), and files the merge (`github.merge`) once code review passes. Past a cap (`caps`) the PR holds and its
 owner is told: a task's PR wakes whoever asked for the task, a member's PR gets its report comment and its author assigned; a new
 push resumes it. Checks whose jobs never started, and check runs wedged after their job finished, are re-run for any PR. Ship
 also closes a cancelled, superseded or finished task's leftover PR, files a Dependabot PR's task, and has the Maintainer nudge,

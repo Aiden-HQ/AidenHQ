@@ -10,13 +10,13 @@
 // terminal state (closed, head moved, red checks on the head, changes requested).
 // A product merge the kernel ran at Tier 0 (eligible: ci-required green and code review's pass on its head, merge-gate.ts
 // productMergeEligible) is checked again right before the merge; no longer eligible, it fails and the merge is filed again.
-// The UI Reviewer's design review is advisory: it never holds a merge.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, contextChecks, contextRank, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, contextChecks, contextRank, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
+import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type OpenItem } from "./member-comments.ts";
 import { HOLD_LABEL, PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
@@ -139,6 +139,17 @@ export function createMerges(d: {
       return false;
     }
   }
+  /** The open member comments on a PR (member-comments.ts): its comments read, members as flow.ts isMember has it. */
+  async function memberItems(repo: string, number: number, c: { since: string; author?: string }): Promise<OpenItem[]> {
+    const [owner, name] = repo.split("/");
+    const pr = await readMemberComments(async (beforeThreads, beforeComments) => {
+      const r = await d.gh("POST", "/graphql", { query: MEMBER_COMMENTS_QUERY, variables: { owner, repo: name, number, beforeThreads, beforeComments } });
+      const node = r.body?.data?.repository?.pullRequest;
+      if (r.status >= 300 || r.body?.errors?.length || !node) throw new Error(`GitHub GraphQL: the PR's comments couldn't be read (${r.status})`);
+      return node;
+    }, c.since);
+    return openMemberComments(pr, { since: c.since, ...(c.author ? { author: c.author } : {}), isMember: (login, association) => d.flow!.isMember(login, association, repo) });
+  }
   async function readPr(repo: string, number: number) {
     const [owner, name] = repo.split("/");
     const r = await d.gh("POST", "/graphql", { query: PR_QUERY, variables: { owner, repo: name, number, pullRef: `refs/pull/${number}/head` } });
@@ -258,9 +269,9 @@ export function createMerges(d: {
     const checks = await allChecks(repo, String(run.head_sha));
     return [...new Set(headChecks(checks).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
   }
-  /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts but the
-   * advisory design review; with none of those reported yet (the design review alone included) the caller waits. */
-  const fallbackRequired = (checks: { name: string }[]) => [...new Set(checks.map((c) => c.name).filter((n) => n !== DESIGN_REVIEW_CHECK))];
+  /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts;
+   * with none reported yet the caller waits. */
+  const fallbackRequired = (checks: { name: string }[]) => [...new Set(checks.map((c) => c.name))];
   async function mergePut(repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
     // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
     // The trailer goes on whatever the body says (withTrailer would keep a body's own AidenHQ trailer and drop ours), and it
@@ -437,6 +448,8 @@ export function createMerges(d: {
       // lifts), and treats anything else as the PR's own failure to hold on.
       if (q.ship && at?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
       if (q.ship && at?.hold) return fail(`its adoption ended or moved on: it is on hold by ship (${at.hold.kind}), and ship files a new merge when it resumes`);
+      // A member's comment since the record was filed (ship asks for the read): the merge ends, so ship's next round asks for the fix.
+      if (q.ship && at?.comments && (await memberItems(p.repo, p.number, at.comments)).length) return fail("ship-tier-pending: members have open review comments: the merge ends so ship asks for the fix");
       if (at?.refused) return fail(`${at.retry ? "ship-tier-pending: " : ""}ship's tier check refused the merge: ${at.refused}`);
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
       // A pause reports the adoption's generation with a `stopped` hold, so the hold ends it, not a null generation.
@@ -744,6 +757,8 @@ export function createMerges(d: {
   for (const [id, q] of Object.entries(s.queues)) if (q.outcome && !q.reported) deliver(id, q);
 
   return {
+    /** The open member comments on a PR (ship's write-time recheck: service.ts adoptionEnded). */
+    openComments: memberItems,
     /**
      * Ship's round decision for an adopted PR at `head` (its watch loop asks through /internal/ship/decision): decide with ship's
      * context, as an adoption's merge is judged here, and the required checks red on the head. On a merge queue branch (mergePath)
@@ -753,7 +768,7 @@ export function createMerges(d: {
      * the checks from its rollup unless that is cut at 100. Code review's verdict is read once and decided on (`findingsKey`
      * names its findings, so new findings at one head are a new fix_review).
      */
-    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number }) {
+    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string; author?: string } }) {
       // A skipped image scan is judged on the PR's files, which only the full read has.
       const listed = view && !skippedImageScan(view.pr);
       const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);
@@ -770,13 +785,18 @@ export function createMerges(d: {
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], redChecks: [] as string[], dirty: false, queue };
       const app = await reviewerLogin(repo);
       const ctx = { queue, verdict: g, required, checks, ...(app ? { app } : {}), ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
-      const v = decide(data, head, { ...ctx, approve: false });
-      const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
+      // Members' open review comments (member-comments.ts), asked for by ship where its `fix` includes review: read only once no earlier
+      // gate (a repair, red CI) decides, since they come after those. A read that fails throws: nothing merges on a PR not read.
+      const first = decide(data, head, { ...ctx, approve: false });
+      const memberComments = view?.comments && d.flow && !["repair", "fix_ci", "fail", "done"].includes(first.do) ? await memberItems(repo, number, view.comments) : [];
+      const gated = memberComments.length ? { ...ctx, comments: true } : ctx;
+      const v = memberComments.length ? decide(data, head, { ...gated, approve: false }) : first;
+      const approval = v.do === "wait" && decide(data, head, { ...gated, approve: true }).do === "approve";
       const failing = [...new Set(headChecks(checks).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
       // Every named check red on the head, required or not: a repo whose rules require only `ci-required` hides the `policy` job's
       // own red behind it, and ship's title-only wake reads it from here (a check red on the base too is ship's to filter).
-      const redChecks = [...new Set(headChecks(checks).filter((c) => c.name !== DESIGN_REVIEW_CHECK && c.name !== CODE_REVIEW_STATUS && !c.ok && !c.pending).map((c) => c.name))];
-      return { ...v, failing, redChecks, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "fix_review" && g && "findingsKey" in g && g.findingsKey ? { findingsKey: g.findingsKey } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
+      const redChecks = [...new Set(headChecks(checks).filter((c) => c.name !== CODE_REVIEW_STATUS && !c.ok && !c.pending).map((c) => c.name))];
+      return { ...v, ...(memberComments.length ? { memberComments } : {}), failing, redChecks, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "fix_review" && g && "findingsKey" in g && g.findingsKey ? { findingsKey: g.findingsKey } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
     enqueue(id: string, args: { prs: { repo: string; number: number; head: string; base?: string }[]; generation?: number }, task?: string, identifier?: string, tier?: number, byShip?: boolean): Promise<Outcome> {

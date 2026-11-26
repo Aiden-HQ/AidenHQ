@@ -68,7 +68,7 @@ line, a batch the kernel refused. Current emitters:
 
 | Module | Facts |
 |---|---|
-| `github` (`service/src/flow.ts`; task from `pr-tasks.json`) | `pr.opened`, `pr.pushed`, `pr.closed`, `pr.checks_started`, `pr.checks_completed`, `pr.merged`, `pr.reverted`, `issue.opened`, `issue.labeled`, `work.waiting` / `work.resumed` for merge-queue waits (reasons: checks, design_review, eval, retry, conflict), `code.added`, `code.rewritten` |
+| `github` (`service/src/flow.ts`; task from `pr-tasks.json`) | `pr.opened`, `pr.pushed`, `pr.closed`, `pr.checks_started`, `pr.checks_completed`, `pr.merged`, `pr.reverted`, `issue.opened`, `issue.labeled`, `work.waiting` / `work.resumed` for merge-queue waits (reasons: checks, eval, retry, conflict), `code.added`, `code.rewritten` |
 | `codehost-local` | the same `pr.*`, `work.*` (reason checks) and `code.*` facts, written by the kernel itself (`kernel/src/codehost.ts` `localFacts`) |
 | `grading` | `grade.requested`, `grade.verdict`, `work.waiting` / `work.resumed` (reason `grade_retry`) |
 | `maintainer` | `issue.triaged` (the stage starts at the issue's creation) |
@@ -83,7 +83,7 @@ Each module lists `facts:`, `stages:` and optionally `journeys:` in `module.yaml
 
 ```yaml
 facts:
-  work.waiting: { subject: pr, reasons: [checks, design_review, eval, retry, conflict] }
+  work.waiting: { subject: pr, reasons: [checks, eval, retry, conflict] }
 stages:
   - { name: merge_queue, label: Merge queue, from: work.waiting, to: work.resumed }
 ```

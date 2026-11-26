@@ -339,7 +339,7 @@ export class GitHub {
       const reviews = await this.request<GhReview[]>("GET", `${base}/pulls/${ref.number}/reviews`, { query: { per_page: 100 } });
       // The changed files' names (first 100), e.g. for the UI Reviewer to find the screens a PR touches.
       const files = await this.request<{ filename: string }[]>("GET", `${base}/pulls/${ref.number}/files`, { query: { per_page: 100 } }).catch(() => []);
-      // Commit statuses on the head (e.g. design-review pending) and the Actions check runs (CI) are separate lists:
+      // Commit statuses on the head (e.g. `aidenhq/review`) and the Actions check runs (CI) are separate lists:
       // a name missing from `statuses` may still be a check run, so both are read. A read that fails is reported
       // rather than flattened to [] (which reads as "no checks").
       const sha = /^[0-9a-f]{40}$/.test(String(pr.head?.sha)) ? pr.head!.sha! : undefined;
@@ -522,6 +522,22 @@ export class GitHub {
     const { root, owner, repo } = await this.threadRoot(ref, comment);
     const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${owner}/${repo}/pulls/${ref.number}/comments/${root}/replies`, { body: { body: withFooter(body, agent) } });
     return { url: r.html_url, id: r.id };
+  }
+
+  /** Resolves the review thread `comment` is in (a repo may require resolved threads to merge), as the owner. */
+  async resolveThread(ref: Ref, comment: number): Promise<{ resolved: boolean }> {
+    const { root, owner, repo } = await this.threadRoot(ref, comment);
+    let after: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const d: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { id: string; comments: { nodes: { fullDatabaseId?: string }[] } }[] } } | null } | null } = await this.graphql("reviewThreads", { owner, name: repo, number: ref.number, after });
+      const t = d.repository?.pullRequest?.reviewThreads;
+      if (!t) break;
+      const thread = t.nodes.find((n) => String(n.comments.nodes[0]?.fullDatabaseId) === String(root));
+      if (thread) return { resolved: (await this.resolveThreads([thread.id])).length === 1 };
+      if (!t.pageInfo.hasNextPage) break;
+      after = t.pageInfo.endCursor;
+    }
+    throw new GitHubRefused(`no review thread with the root comment ${root} on ${owner}/${repo}#${ref.number}`);
   }
 
   /**

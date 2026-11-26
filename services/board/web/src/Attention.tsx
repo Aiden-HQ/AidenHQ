@@ -1,12 +1,13 @@
 // The fleet header on Tasks: how many tasks need you, failed, or sit idle with nothing to wake them (the kernel's counts), and
-// the tasks themselves, oldest first. Every row shows the kernel's task state and nothing the board worked out.
+// the tasks themselves, oldest first, once a count is opened. Every row shows the kernel's task state and nothing the board
+// worked out.
 import { useRef, useState } from "react";
 import { AnswerForm } from "./AnswerForm";
 import { api } from "./api";
 import { useLive } from "./events";
 import { QUERIES, useQuery } from "./queries";
 import { ago } from "./util";
-import { ListRow, ListRows, Segmented } from "./ui";
+import { ListRow, ListRows } from "./ui";
 import { TaskState, needsOwner } from "./ui/TaskState";
 import { Bone } from "./Skeleton";
 import type { NeedsYou } from "./types";
@@ -29,124 +30,116 @@ const toYou = (i: Item) => {
 };
 
 /**
- * `compact` (Agent work, whose lanes already show these tasks): one line of counts, each opening its list in place; the
- * list starts closed. Otherwise (My day) the counts and the list, open on Needs you: a row with an open question answers it in place.
+ * One line of counts, each opening its list in place; the list starts closed. The line is the same height in every state —
+ * loading, all-clear and with tasks — so the board below it lands where it stays and nothing waits on the needs-you query.
+ * The counts never wrap to a second row (a longer count would move the board after the query answered): on a narrow phone the
+ * line scrolls sideways, as the board's tabs do. Opening a list grows the strip: that is a click, not a cold-load shift.
  */
-export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; compact?: boolean }) {
+export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
   const q = useQuery(QUERIES.needsYou, onSignIn);
   useLive(["approvals", "chat", "tasks"], q.reload, 30_000);
   const [chosen, setChosen] = useState<Which | null>(null);
-  const listRef = useRef<HTMLDivElement>(null);
+  // Every lane's list stays mounted once it has been opened, hidden unless it is the chosen one: closing a list, or opening
+  // another lane, must not tear down the answer forms that hold the owner's drafted reply and picks in their own state.
+  const [opened, setOpened] = useState<Which[]>([]);
+  const listRefs = useRef<Partial<Record<Which, HTMLDivElement | null>>>({});
   const headRef = useRef<HTMLElement>(null);
   const d = q.data;
   // A failed read is not a load: no busy frame, just the one line (the base code showed nothing at all).
   if (!d && q.error)
     return (
-      <section className={compact ? "attn attn-compact" : "attn"} aria-label="What needs attention">
+      <section className="attn attn-compact" aria-label="What needs attention">
         <div className="attn-head">
           <b className="attn-title">Fleet attention</b>
           <span className="attn-failed" role="status">Unavailable: {q.error}</span>
         </div>
       </section>
     );
-  // The strip's own frame, at the height the loaded strip takes: the counts, then the open list's area, so a cold load
-  // lands it in one place instead of pushing the board's columns down by its whole height (the Tasks page's layout shift).
+  // The loaded line, with a count-shaped placeholder in each of its three parts, so the row is the width and height it will
+  // be once the counts arrive. No list area: the list only exists after a click, and reserving it would push the board down.
   if (!d)
     return (
-      <section className={compact ? "attn attn-compact" : "attn"} role="status" aria-busy="true" aria-label="Loading fleet attention">
+      <section className="attn attn-compact" role="status" aria-busy="true" aria-label="Loading fleet attention">
         <div className="attn-head">
           <b className="attn-title">Fleet attention</b>
-          {/* The loaded counts' segmented control, with a count-shaped placeholder in each of its three parts: the row keeps
-              its width and its wrap points, so the heading is the same height before and after the counts arrive. */}
-          <span className="ui-seg attn-counts-load" aria-hidden>
-            {(["Needs you · ", "Failed · ", "Unexplained idle · "] as const).map((label) => (
-              <span key={label} className="attn-count-load">
-                {label}
-                <Bone w={7} h={11} />
-              </span>
+          {/* The loaded buttons themselves, disabled, with a bone where each number goes: the same words and the same box, on the
+              row that never wraps, so the line is the height it will be once the counts arrive. */}
+          <span className="attn-counts">
+            {(["need you", "failed", "unexplained"] as const).map((label) => (
+              <button key={label} type="button" className="attn-count attn-count-load" tabIndex={-1} disabled aria-hidden>
+                <Bone w={7} h={11} /> {label}
+              </button>
             ))}
           </span>
-          {!compact && <Bone className="attn-order-load" w={54} h="1.45em" />}
         </div>
-        {!compact && (
-          <div className="attn-list attn-list-load" aria-hidden>
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="attn-row-load">
-                <Bone w="46%" h={13} />
-                <Bone w="28%" h={10} />
-                <Bone w="100%" h={30} />
-              </div>
-            ))}
-          </div>
-        )}
       </section>
     );
   const n: Record<Which, number> = { needs: d.counts.needs_you, failed: d.counts.failed, idle: d.counts.unexplained_idle };
-  const which = chosen ?? (compact ? (n.needs ? "needs" : n.failed ? "failed" : n.idle ? "idle" : "needs") : "needs");
-  const rows = d.items.filter(IN[which]);
+  const rows = chosen ? d.items.filter(IN[chosen]) : [];
   /** After an answer: the next row's first control, else the heading, so the keyboard never lands on a removed row. */
   const moveOn = (identifier: string) => {
-    const els = [...(listRef.current?.querySelectorAll<HTMLElement>(".attn-row, .ui-row") ?? [])];
+    const els = [...(listRefs.current[chosen ?? "needs"]?.querySelectorAll<HTMLElement>(".attn-row, .ui-row") ?? [])];
     const next = els[els.findIndex((e) => e.dataset.task === identifier) + 1];
     const target = next?.matches(".ui-row") ? next : next?.querySelector<HTMLElement>("button, input");
     (target ?? headRef.current)?.focus();
   };
-  const list = rows.length > 0 && (
-    <div className={`attn-list${rows.some((i) => i.ask) ? " asks" : ""}`} ref={listRef}>
-      <ListRows>
-        {rows.map((i) => {
-          const ask = needsOwner(i.state) ? i.ask : undefined;
-          if (!ask) return <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} note={toYou(i) || undefined} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />;
-          return (
-            <div key={i.identifier} className="attn-row" data-task={i.identifier}>
-              <b className="attn-q">{ask.question || i.title}</b>
-              <div className="attn-meta">
-                <span>{i.agent}</span>
-                <a href={`#/t/${i.identifier}`}>{i.identifier}</a>
-                <time title={new Date(ask.waitSince).toLocaleString()}>{ago(ask.waitSince)}</time>
-              </div>
-              <AnswerForm
-                key={`${ask.waitSince}:${ask.questions.length}`}
-                questions={ask.questions}
-                askedAbove
-                onAnswer={(text) => api.answer(i.identifier, text, ask.waitSince).then(() => (void q.reload(), moveOn(i.identifier)))}
-              />
-            </div>
-          );
-        })}
-      </ListRows>
-    </div>
-  );
-  if (compact) {
-    const words: Record<Which, string> = { needs: `${n.needs} need you`, failed: `${n.failed} failed`, idle: `${n.idle} unexplained` };
+  // One list per lane, each mounted from its first opening on and hidden unless chosen: counted per lane so a row that moves
+  // between lanes is its own row, and `hidden` takes a closed list out of the page and the reading order. The forms keep their
+  // drafts either way. A lane with no rows shows its empty line instead of a list.
+  const laneList = (w: Which) => {
+    const laneRows = d.items.filter(IN[w]);
     return (
-      <section className="attn attn-compact" aria-label="What needs attention">
-        <div className="attn-head">
-          <b className="attn-title" tabIndex={-1} ref={headRef}>Fleet attention</b>
+      <div key={w} className="attn-list" ref={(el) => { listRefs.current[w] = el; }} hidden={chosen !== w}>
+        <ListRows>
+          {laneRows.map((i) => {
+            const ask = needsOwner(i.state) ? i.ask : undefined;
+            if (!ask) return <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} note={toYou(i) || undefined} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />;
+            return (
+              <div key={i.identifier} className="attn-row" data-task={i.identifier}>
+                <b className="attn-q">{ask.question || i.title}</b>
+                <div className="attn-meta">
+                  <span>{i.agent}</span>
+                  <a href={`#/t/${i.identifier}`}>{i.identifier}</a>
+                  <time title={new Date(ask.waitSince).toLocaleString()}>{ago(ask.waitSince)}</time>
+                </div>
+                <AnswerForm
+                  key={`${ask.waitSince}:${ask.questions.length}`}
+                  questions={ask.questions}
+                  askedAbove
+                  onAnswer={(text) => api.answer(i.identifier, text, ask.waitSince).then(() => (void q.reload(), moveOn(i.identifier)))}
+                />
+              </div>
+            );
+          })}
+        </ListRows>
+      </div>
+    );
+  };
+  const words: Record<Which, string> = { needs: `${n.needs} need you`, failed: `${n.failed} failed`, idle: `${n.idle} unexplained` };
+  return (
+    <section className="attn attn-compact" aria-label="What needs attention">
+      <div className="attn-head">
+        <b className="attn-title" tabIndex={-1} ref={headRef}>Fleet attention</b>
+        <span className="attn-counts">
           {(["needs", "failed", "idle"] as const).map((w) => (
-            <button key={w} type="button" className={`attn-count attn-${w}${n[w] ? " on" : ""}`} aria-expanded={chosen === w} onClick={() => setChosen(chosen === w ? null : w)}>
+            <button
+              key={w}
+              type="button"
+              className={`attn-count attn-${w}${n[w] ? " on" : ""}`}
+              aria-expanded={chosen === w}
+              onClick={() => {
+                setOpened((o) => (o.includes(w) ? o : [...o, w]));
+                setChosen(chosen === w ? null : w);
+              }}
+            >
               {words[w]}
             </button>
           ))}
-          {chosen && rows.length > 0 && <span className="attn-order">oldest first</span>}
-        </div>
-        {chosen && (list || <p className="attn-none">{EMPTY[chosen]}</p>)}
-      </section>
-    );
-  }
-  return (
-    <section className="attn" aria-label="What needs attention">
-      <div className="attn-head">
-        <b className="attn-title" tabIndex={-1} ref={headRef}>Fleet attention</b>
-        <Segmented
-          label="Needs attention"
-          value={which}
-          onChange={setChosen}
-          options={[["needs", `Needs you · ${n.needs}`], ["failed", `Failed · ${n.failed}`], ["idle", `Unexplained idle · ${n.idle}`]] as const}
-        />
-        <span className="attn-order">oldest first</span>
+        </span>
+        {chosen && rows.length > 0 && <span className="attn-order">oldest first</span>}
       </div>
-      {list || <p className="attn-none">{EMPTY[which]}</p>}
+      {opened.map(laneList)}
+      {chosen && rows.length === 0 && <p className="attn-none">{EMPTY[chosen]}</p>}
     </section>
   );
 }
