@@ -17,6 +17,7 @@ import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
 import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type OpenItem } from "./member-comments.ts";
+import { ASYNC_POLL_MS, DIRECT_POLLS, mergeDirect, requestStore } from "./async-merge.ts";
 import { HOLD_LABEL, PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
@@ -94,6 +95,8 @@ export function createMerges(d: {
   /** Tells the kernel why a claimed record is still running (POST /v1/writes/:id/wait), so its task hears the reason. */
   waiting?(id: string, reason: string | null): Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** How long a direct merge's async request is polled (reads, and ms between them). */
+  asyncPolls?: number; asyncPollMs?: number;
   now?: () => Date;
   everyMs?: number;
 }) {
@@ -105,6 +108,7 @@ export function createMerges(d: {
   const platform = [d.productRepo].filter(Boolean) as string[];
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "merges.json");
+  const requests = requestStore(join(d.dir, "async-requests.json"), d.log);
   const s: { queues: Record<string, Queue> } = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { queues: {} };
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify({ queues: s.queues })); renameSync(`${file}.tmp`, file); };
   const waiters = new Map<string, { promise: Promise<Outcome>; resolve: (o: Outcome) => void }>();
@@ -272,7 +276,7 @@ export function createMerges(d: {
   /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts;
    * with none reported yet the caller waits. */
   const fallbackRequired = (checks: { name: string }[]) => [...new Set(checks.map((c) => c.name))];
-  async function mergePut(repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
+  async function mergePut(id: string, repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
     // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
     // The trailer goes on whatever the body says (withTrailer would keep a body's own AidenHQ trailer and drop ours), and it
     // carries this call's nonce (mergedBy).
@@ -280,9 +284,9 @@ export function createMerges(d: {
     // A hold put on after the readiness read still stops this merge: the labels are read again right before it.
     const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);
     if (labels.status < 300 && (labels.body ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) throw Object.assign(new Error(`held: it carries the \`${HOLD_LABEL}\` label`), { status: 409 });
-    const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });
-    if (r.status >= 300) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
-    return r.body?.sha;
+    // GitHub's async merge API, the one merge call (a PR in a native stack is refused by every other): its result is polled for
+    // a short while, and a request still pending is the next poll's to read from the PR itself (an unanswered call).
+    return mergeDirect(d.gh, repo, number, { sha, merge_method: method, ...message }, d.asyncPolls ?? DIRECT_POLLS, d.asyncPollMs ?? ASYNC_POLL_MS, requests, id);
   }
   /**
    * What this poll proves about who merged the PR: its sha only when the merge commit is the one this queue's own merge call made.
@@ -496,7 +500,7 @@ export function createMerges(d: {
       // Persisted before the call: a restart mid-PUT must still hold the nonce that proves whether that PUT merged the PR.
       save();
       try {
-        p.sha = await mergePut(p.repo, p.number, p.head, method, body, token);
+        p.sha = await mergePut(id, p.repo, p.number, p.head, method, body, token);
       } catch (e) {
         // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does. This answer rules out
         // this attempt's commit only; an earlier PUT that went unanswered may still have landed, so its token is kept.
