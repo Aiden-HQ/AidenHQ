@@ -64,7 +64,7 @@ agents:
       # what reached the owner, for the daily interruption pass.
       fleet_steward: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, routing_evidence, routing_replay, routing_tune, routing_judge, fleet_operate, fleet_owner_cards ]
     # It reads untrusted content broadly: the tasks module lets it assign work only to these. Fixes are theirs, under tiers:
-    # the Engineer (product and module changes), an app's owner (app-owners; the DevOps Engineer for an app with none), the
+    # the Engineer (product and module changes), an app's owner (app-owners; the app builder (`app-maintainer`) for an app with none), the
     # Agent Architect (an agent's definition), the Maintainer (product bugs upstream), the chief of staff (another agent's rule
     # fix, handed to that agent, and the owner's profile).
     delegate_to: [ engineer, app-maintainer?, app-owners, architect?, maintainer?, chief-of-staff? ]

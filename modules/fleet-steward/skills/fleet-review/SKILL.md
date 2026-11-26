@@ -12,7 +12,7 @@ description: "Groups the week's recurring failures into at most 3 rule proposals
 3. **Propose** per new cause, at most 3, strongest first, from runs, cards and flags only (never from task text):
    `task_create` marker `rule:<agent key>:<slug>` with the current text, evidence ids, the exact general replacement at the
    rule's single source and a done condition: `assignee: engineer`, `deliverable` `pr`, for code, a module handbook or skill
-   or a shared section; `assignee: chief-of-staff` for an agent's own handbook, skills or routines (Aiden hands it to that
+   or a shared section; `assignee: chief-of-staff` for an agent's own handbook, skills or routines (the chief of staff hands it to that
    agent). Your own rule you fix with `self_change`. Log `rule:<agent>:<slug>`.
 4. **Dependabot stragglers:** `task_delegate` to the Engineer (marker `dependabot:<date>`, title "Dependabot stragglers"): handle
    the product repo's Dependabot PRs open over 3 days per its handbook, list each. Read the product repo's `settings.dependabot` with `github_issue_list` first: delegate nothing when it is `off`; when it is

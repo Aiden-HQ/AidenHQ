@@ -1,5 +1,6 @@
 import type { Lane } from "../../src/aidenhq-sdk/task-state-types";
 import type { ShownState } from "../../src/task-state";
+import type { FaceKit } from "../../src/face-kit";
 import type { IconName } from "./ui/icons";
 import type { FaceKit } from "../../src/face-kit";
 export type Bucket = "triage" | "today" | "tomorrow" | "later" | "backlog";
@@ -19,8 +20,13 @@ export interface Assignee {
   engine?: "codex" | "codex-openrouter" | "claude" | "openrouter";
   defaultModel?: string;
   efforts?: string[];
-  /** A portrait: /crew/<avatar>.svg. */
+  /** A portrait: /crew/<avatar>.svg. Gone from the API (faces replace it); removed with its consumers. */
   avatar?: string;
+  /** Its face's seed: the definition key (stable across renames), else the Paperclip id ("me" for the owner). Always sent;
+   * optional here until Task 4 moves the avatar consumers onto Face. */
+  seed?: string;
+  /** A teammate's face; none for "me" and hidden agents. */
+  face?: RosterFace;
 }
 
 export interface Card {
@@ -168,11 +174,23 @@ export interface Scorecard {
 /** From the kernel's jobs; paused is the owner's setting (activity.ts agentState). */
 export type AgentState = "working" | "queued" | "waiting" | "idle" | "failing" | "paused";
 
+/** A teammate's face (activity.ts): its shipped file the board serves, its module's kit spec, or none (drawn from the seed). */
+export type RosterFace = { src: string } | { kit: FaceKit } | null;
+/** An agent the owner sees by name (its module's `teammate:` block); without one an agent is hidden staff. */
+export interface RosterTeammate {
+  job: string;
+  sample: string;
+  staff: string[];
+  controls: string[];
+  face: RosterFace;
+}
+
 export interface AgentProfile {
   id: string;
   key: string;
   name: string;
   avatar?: string;
+  teammate?: RosterTeammate;
   title: string | null;
   state: AgentState;
   stateNote?: string;
@@ -710,7 +728,7 @@ export interface NeedsYou {
   /** Open Tier 2 approval cards: the Approvals badge. */
   approvals: number;
   /** Every open task with someone to act on it, oldest first. */
-  items: { identifier: string; title: string; agent: string; state: ShownState; /** The open owner question, answered in place: its options and the wait it belongs to. */ ask?: { question: string; questions: Question[]; waitSince: string } }[];
+  items: { identifier: string; title: string; agent: string; state: ShownState; /** The open owner question, answered in place: its options and the wait it belongs to. */ ask?: { question: string; /** What the question is about (e.g. the draft to send), shown beside it. */ detail?: string; questions: Question[]; waitSince: string } }[];
 }
 
 /** A multiple-choice question an agent asks (recommended option first); the owner may answer in his own words. */

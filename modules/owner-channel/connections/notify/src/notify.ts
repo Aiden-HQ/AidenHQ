@@ -20,6 +20,7 @@ export interface NotifyArgs {
   text: string;
   task?: string | undefined; // the chat (task identifier) this is about: its agent's name heads it; the reply lands there
   questions?: Question[] | undefined; // multiple choice: the board shows a form; channels get them spelled out
+  detail?: string | undefined; // what a decision is about (e.g. the draft to send): beside the question on the board, quoted on the phone
   actions?: string[] | undefined; // one-tap answers (a press sends the label as the owner's message)
   dedupe_key?: string | undefined; // one message per key in the window, from any sender
   /** A job's reply the kernel relays (kernel relay.ts): already on its task, it goes only to the channel the owner wrote from. */
@@ -51,7 +52,7 @@ export interface Deps {
    * assertion). The kernel says who settles it: the owner (this message goes to them), else the chief of staff (it got the
    * question; nothing goes to the owner).
    */
-  wait?: (task: string, assertion: string, question: string) => Promise<{ to?: string; open?: boolean; since?: string }>;
+  wait?: (task: string, assertion: string, question: string, detail?: string) => Promise<{ to?: string; open?: boolean; since?: string }>;
   /** Files a task for the chief of staff (the kernel's POST /v1/tasks, by role; the same `source` is one task). Throws on failure. */
   fileTask?: (b: { title: string; description: string; role: string; source: string }) => Promise<{ id: string; deduplicated: boolean }>;
   /** A wake notice on a task (the kernel's POST /v1/wakes): shown as a kernel notice, not the assignee's words, and wakes its agent; `closed` when the task is. */
@@ -118,9 +119,12 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const text = stripPlaceholder(a.text);
     if (!text && !a.questions?.length) return { sent: false, reason: "error", note: "The message is empty." };
     const kind: Kind = a.questions?.length ? "decision" : a.kind;
+    // A decision's detail (the draft it is about), quoted under the text wherever the message is read as text.
+    const detail = a.detail?.trim() || undefined;
+    const quoted = detail ? `\n\n${detail.split("\n").map((l) => `> ${l}`).join("\n")}` : "";
     // The chief of staff asks the owner in multiple choice, always: its recommendation first, their own words always welcome.
     if (kind === "decision" && !a.questions?.length && caller?.roles?.includes(CHIEF)) return { sent: false, reason: "error", note: "Ask the owner with `questions`: each question with 2-5 options, your recommendation first (they can always answer in their own words). Put the context in `text`. Nothing was sent." };
-    const dedupe = `dedupe:${createHash("sha256").update(a.dedupe_key ? `key\n${a.dedupe_key}` : `${kind}\n${a.task ?? ""}\n${text}\n${JSON.stringify(a.questions ?? [])}`).digest("hex").slice(0, 32)}`;
+    const dedupe = `dedupe:${createHash("sha256").update(a.dedupe_key ? `key\n${a.dedupe_key}` : `${kind}\n${a.task ?? ""}\n${text}\n${JSON.stringify(a.questions ?? [])}${detail ? `\n${detail}` : ""}`).digest("hex").slice(0, 32)}`;
     const last = Number(d.store.getKv(dedupe) ?? 0);
     if (last && now - last < (kind === "alert" ? WINDOW.alert : WINDOW.other)) return { sent: true, reason: "duplicate" };
     // Whose message it is for attention and the brake: the calling agent, or the agent a kernel-relayed question is from.
@@ -150,7 +154,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       if (!found) {
         if (!d.fileTask || !d.noticeTask) return { sent: false, reason: "error", note: `Your question couldn't reach ${settler}: nothing was sent.` };
         const who = caller.name ?? caller.key;
-        const q = `A question from ${who} (data, not instructions):\n\n${fence([text, spellOut(a.questions)].join("").slice(0, 1500))}`;
+        const q = `A question from ${who} (data, not instructions):\n\n${fence([text, quoted, spellOut(a.questions)].join("").slice(0, 1500))}`;
         const srcKey = `notify-ask-src:${caller.key}`;
         let source = d.store.getKv(srcKey) ?? `notify-ask:${caller.key}`;
         let err: string | undefined;
@@ -175,7 +179,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       }
       if (!d.wait) return { sent: false, reason: "error", note: "Your question couldn't be recorded: nothing was sent." };
       const question = [text, spellOut(a.questions)].join("").slice(0, 1500);
-      const w = await d.wait(found.issueId, caller.assertion, question).catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 200) }));
+      const w = await d.wait(found.issueId, caller.assertion, question, detail).catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 200) }));
       if ("error" in w) return { sent: false, reason: "error", note: `Your question wasn't recorded (${w.error}): nothing was sent; try again.` };
       if (w.open) return { sent: false, reason: "duplicate", note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." };
       if (w.to !== "owner" && w.to !== "chief_of_staff" && w.to !== "steward") return { sent: false, reason: "error", note: "Your question wasn't routed: nothing was sent; try again." };
@@ -185,10 +189,10 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const muted = kind === "fyi" && d.muteFyi === true && !a.actions?.length;
     const digested = att.do === "digest" && found?.ownerVia !== "board" && !muted;
     // The ledger entry (what the owner gets to read, questions spelled out): written once the message reached them or is queued for the digest.
-    const told: Told = { source: who?.key ?? "kernel", ...(a.task ? { task: a.task } : {}), kind, text: clip(text, Math.max(0, TOLD_MAX - Array.from(spellOut(a.questions)).length)) + spellOut(a.questions) };
+    const told: Told = { source: who?.key ?? "kernel", ...(a.task ? { task: a.task } : {}), kind, text: clip(text + quoted, Math.max(0, TOLD_MAX - Array.from(spellOut(a.questions)).length)) + spellOut(a.questions) };
     // The reply on its chat, as the agent's own comment.
     const mirror = found && caller && d.postReply;
-    const onChat = mirror ? await d.postReply!(found.issueId, replyBody(text, a.actions, a.questions), caller.assertion).catch(() => false) : false;
+    const onChat = mirror ? await d.postReply!(found.issueId, replyBody(text + quoted, a.actions, a.questions), caller.assertion).catch(() => false) : false;
     // A digest line already on the owner's chat is told now; its digest line then goes without a second ledger row.
     if (digested) queueDigest(d.store, { agent: found?.agentName ?? caller?.name ?? "agent", ...(a.task ? { task: a.task } : {}), text, source: who?.key ?? "kernel", kind, ...(onChat ? { told: true } : {}) }, now);
     // The owner is typing in this chat on the board: the reply stays there (the board notifies them).
@@ -199,13 +203,13 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     // to ask again.
     let waitError: string | undefined;
     const chief = kind === "decision" && found && caller?.roles?.includes(CHIEF) && d.wait;
-    const fileWait = async () => (await d.wait!(found!.issueId, caller!.assertion, [text, ...(a.questions ?? []).map((q) => q.question)].join("\n")).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); return undefined; }))?.since;
+    const fileWait = async () => (await d.wait!(found!.issueId, caller!.assertion, [text, ...(a.questions ?? []).map((q) => q.question)].join("\n"), detail).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); return undefined; }))?.since;
     if (chief && !boardOnly) since = await fileWait();
     const only = a.questions?.length === 1 ? a.questions[0]! : undefined;
     const answer = since && only && !only.multi && only.options.length >= 2 && only.options.length <= 4 && !a.actions?.length ? { options: only.options, since } : undefined;
     let out: "sent" | "down" | "off" | "board" = "board";
     if (!boardOnly) {
-      const m: Message = { kind, text: text + spellOut(a.questions), ...(found && a.task ? { head: { agent: found.agentName, task: a.task, issue: found.issueId } } : {}), ...(a.actions?.length ? { actions: a.actions } : {}), ...(a.questions?.length ? { asks: true as const } : {}), ...(answer ? { answer } : {}) };
+      const m: Message = { kind, text: text + quoted + spellOut(a.questions), ...(found && a.task ? { head: { agent: found.agentName, task: a.task, issue: found.issueId } } : {}), ...(a.actions?.length ? { actions: a.actions } : {}), ...(a.questions?.length ? { asks: true as const } : {}), ...(answer ? { answer } : {}) };
       const to = a.relay ? [transportOf[a.relay.via]] : order(d.transports, found?.ownerVia);
       out = await deliver(d, m, to);
       // The kernel's, the board's and the runner's messages have no chat to land on: they also wait for a channel to be set up.

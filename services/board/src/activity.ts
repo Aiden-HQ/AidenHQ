@@ -4,6 +4,7 @@ import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import type { Step } from "./codex-activity.js";
 import type { KernelActivity, LiveRun, PastRun } from "./runs.js";
 import { type Agent, type Issue, type Routine } from "./paperclip.js";
+import { faceKitProblem, type FaceKit } from "./face-kit.js";
 
 const UUID = /^[0-9a-f-]{36}$/;
 const IDENT = /^[A-Z][A-Z0-9]{1,9}-\d{1,7}$/;
@@ -62,8 +63,8 @@ export interface RosterAgent {
   name: string;
   /** Its definition key (module.yaml / agents/<key>), when setup made it. */
   key?: string;
-  /** A bundled portrait: /crew/<avatar>.svg. */
-  avatar?: string;
+  /** A teammate (an agent the owner sees by name); without one the agent is hidden staff. */
+  teammate?: RosterTeammate;
   /** Its one-line routing description. */
   title: string | null;
   /** Where it sits on the Agents page, from what setup wrote (never from its name): a module's agent or the instance's own. */
@@ -119,12 +120,30 @@ export function departmentOf(a: Pick<Agent, "metadata">): Department {
   return { id: d.id, name: d.name, ...(typeof d.description === "string" ? { description: d.description } : {}), order: d.order };
 }
 
-/** The agent's definition key ("aidenhq:fleet-ops" → "fleet-ops") and bundled portrait, for its avatar on the board. */
-function identity(a: Pick<Agent, "metadata">): { key?: string; avatar?: string } {
-  const m = a.metadata ?? {};
-  const key = typeof m.setupKey === "string" && m.setupKey.startsWith("aidenhq:") ? m.setupKey.slice(8) : undefined;
-  const avatar = typeof m.avatar === "string" && /^[a-z0-9-]{1,40}$/.test(m.avatar) ? m.avatar : undefined;
-  return { ...(key ? { key } : {}), ...(avatar ? { avatar } : {}) };
+/** The agent's definition key ("aidenhq:fleet-ops" → "fleet-ops"). */
+export function keyOf(a: Pick<Agent, "metadata">): string | undefined {
+  const k = a.metadata?.setupKey;
+  return typeof k === "string" && k.startsWith("aidenhq:") ? k.slice(8) : undefined;
+}
+
+/** A teammate's face: its shipped file the board serves, the kit spec its module picked, or none (the kit draws one from the key). */
+export type RosterFace = { src: string } | { kit: FaceKit } | null;
+export interface RosterTeammate { job: string; sample: string; staff: string[]; controls: string[]; face: RosterFace }
+const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+
+/** The teammate block setup wrote (scripts/paperclip-setup.ts display()), or undefined for a hidden agent: the one parser. */
+export function teammateOf(a: Pick<Agent, "metadata">): RosterTeammate | undefined {
+  const t = a.metadata?.teammate as Record<string, unknown> | undefined;
+  if (!t || typeof t !== "object" || typeof t.job !== "string" || typeof t.sample !== "string") return undefined;
+  const key = keyOf(a);
+  const face: RosterFace = typeof t.face === "string" && key ? { src: `/api/faces/${key}` } : t.face && !faceKitProblem(t.face) ? { kit: t.face as FaceKit } : null;
+  return { job: t.job, sample: t.sample, staff: strings(t.staff), controls: strings(t.controls), face };
+}
+
+function identity(a: Pick<Agent, "metadata">): { key?: string; teammate?: RosterTeammate } {
+  const key = keyOf(a);
+  const teammate = teammateOf(a);
+  return { ...(key ? { key } : {}), ...(teammate ? { teammate } : {}) };
 }
 
 /** The org metadata setup writes for a team (metadata.team on the record, metadata.memberOf on a member). */

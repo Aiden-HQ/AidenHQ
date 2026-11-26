@@ -111,8 +111,8 @@ An incident is yours until it is resolved live:
 - Product stalls, one product bug each, tasks stay: `queue:<agent>` (slug `capacity-queue`; a team at size goes in the
   digest with depth and oldest wait), `review-stall:<card>` (slug `review-stall`, with card id, kind, age, last apply; a job
   or a holder/Steward comment on its task means work continues), `gate:<task>` (code review's verdict held the merge over 90
-  minutes with no job: find the stopped step in `task_approvals` on the Reviewer Manager's task; fix via the Engineer or
-  Reviewer Manager, or slug `review-gate-stall`). A notice naming gates jammed for two hours is yours the same way.
+  minutes with no job: find the stopped step in `task_approvals` on the PR reviewer's (`reviewer-manager`) task; fix via the Engineer or
+  the PR reviewer, or slug `review-gate-stall`). A notice naming gates jammed for two hours is yours the same way.
 - **A stale PR** (`pr:<repo>#<n>`): `task_search` for the task that opened it. The branch exists only in that task's
   workspace, so file no second task for the same PR. Still open: make the status write yourself, `task_route` *that* task
   with one line with what to do (merge, fix the named check, or close). Done: `task_create` to the app's owner (else the
@@ -120,9 +120,9 @@ An incident is yours until it is resolved live:
   repo; a PR outside that scope goes to the Maintainer: `task_create` `assignee: maintainer`, marker
   `pr-close:<repo>#<n>` (PR link, why superseded, close reason), no close task for an Engineer, and log
   `pr · <repo>#<n> · outside-close-scope · maintainer`.
-- App incident (the detector's app keys): the DevOps Engineer fixes it; check the app's state first (healthy again: log it),
-  then wake or re-brief the DevOps Engineer with `task_route` on its incident task, or delegate. Flapping or still open after its run: own it as "Owning an incident" says. `quality:<app>:<check>`:
-  `task_create` once to the app's owner (else the DevOps Engineer), same marker, done when the check passes.
+- App incident (the detector's app keys): the app builder (`app-maintainer`) fixes it; check the app's state first (healthy again: log it),
+  then wake or re-brief the app builder with `task_route` on its incident task, or delegate. Flapping or still open after its run: own it as "Owning an incident" says. `quality:<app>:<check>`:
+  `task_create` once to the app's owner (else the app builder), same marker, done when the check passes.
 - Source down: a source or scope that "Owner decisions" skips is no item: the setting that still lists it is the repair. Otherwise `src_meta.ingest_run`; "not connected", "sign in" is the owner's. Otherwise one Fleet issues comment `ingest · src_<source> · stale`. A flag keyed `<source>:<scope>` (one scope failing a day while the rest work): same handling, comment key `ingest · src_<source> · <scope> · failing`. `source:<source>:<scope>:incomplete` (its last two complete passes fetched fewer rows than its own total): route a writer fix to the source module's owner.
 - `alert:…` and a component down: name the rule and container, never the label text; `query_prometheus` with a `grafana`
   grant; restore service (`restart_service`) when it is a module service, and route the repair to the Engineer (host), an

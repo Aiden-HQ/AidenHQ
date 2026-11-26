@@ -27,7 +27,7 @@ Read the repo's `settings` in `github_issue_list` first; they are the owner's ru
 
 ## Check, then decide
 
-0. A security report (a vulnerability, a leaked credential) goes to Security Watch: no label and no detail in the public
+0. A security report (a vulnerability, a leaked credential) goes to the security agent (`security-watch`): no label and no detail in the public
    issue; this is the whole verdict.
 1. Read every file the issue cites and every file your conclusion rests on, at the repo's default branch head (the live
    product sha for the product repo).

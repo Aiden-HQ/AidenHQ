@@ -23,7 +23,7 @@
 // Staging (`--stage`, or AIDENHQ_COMPILE_STAGE=1; ops/apply-config-work.sh validates a generation with it before anything
 // restarts): the same files go to config.next/ and compose.modules.next.yaml, and nothing else on the host is touched (no
 // secrets, keys, data dirs or account files are created). The apply then compiles for real and checks the two agree.
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
@@ -98,6 +98,8 @@ if (secretsDir && !stage) for (const d of new Set(out.stateDirs)) mkdirSync(join
 
 // The grants table's directory exists before compose mounts it (Docker would create a root-owned one setup can't write).
 if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"), "grants"), { recursive: true });
+// Likewise the teammates' faces the board serves (GET /api/faces/<key>; compose.yaml mounts the directory).
+if (!stage) mkdirSync(join(resolve(repo, env("AIDENHQ_CONFIG_DIR") ?? "config"), "faces"), { recursive: true });
 // Likewise the apps node's state and serve config (compose.yaml apps-edge; apps-mcp writes the serve config), and the
 // on-server code host's repos (apps-mcp mounts them read-only; the runner, as the host user, creates repos in them). Here,
 // not in apply-config.sh: the apply that brings this in still runs the old script, which then runs this compile.
@@ -159,6 +161,7 @@ else if (!appsKeyed && out.compose.services["apps-edge"]) {
 const compose = Object.fromEntries(Object.entries(out.compose).filter(([k, v]) => k === "services" || Object.keys(v).length));
 writeFileSync(composeOut, dump(compose));
 writeFileSync(join(cfgOut, "modules.json"), JSON.stringify(out.catalog, null, 2) + "\n");
+syncFaces(join(cfgOut, "faces"), out.faces);
 writeFileSync(join(cfgOut, "computers.json"), JSON.stringify({ ...computers, ...hostDirs(repo) }, null, 2) + "\n");
 writeFileSync(join(cfgOut, "gateway.json"), JSON.stringify(out.gateway, null, 2) + "\n");
 writeFileSync(join(cfgOut, "jobcaps.json"), JSON.stringify(out.jobcaps, null, 2) + "\n");
@@ -199,3 +202,16 @@ if (out.edge) {
 for (const w of out.warnings) console.log(`  warning: ${w}`);
 const on = out.catalog.filter((m) => m.enabled).map((m) => m.name);
 console.log(`${stage ? "staged" : "compiled"} ${on.length} modules (${on.join(", ")}): ${Object.keys(out.paperclip.agents).length} agents, ${Object.keys(out.paperclip.routines).length} routines, ${out.apps.apps.length} apps, ${Object.keys(out.compose.services).length} compose services`);
+
+/**
+ * config/faces/ holds exactly the teammates' shipped face files (`<key>.<ext>`), synced in place: the board bind-mounts the
+ * directory, so it is never removed and recreated (the container would keep the old inode).
+ */
+function syncFaces(dir: string, faces: Record<string, string>) {
+  mkdirSync(dir, { recursive: true });
+  for (const [name, src] of Object.entries(faces)) {
+    const bytes = readFileSync(src);
+    if (!existsSync(join(dir, name)) || !readFileSync(join(dir, name)).equals(bytes)) writeFileSync(join(dir, name), bytes);
+  }
+  for (const f of readdirSync(dir)) if (!Object.hasOwn(faces, f)) unlinkSync(join(dir, f));
+}

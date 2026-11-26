@@ -1,0 +1,31 @@
+{
+  "why": "Meeting notes moved from the Researcher to the meetings agent (Nora). Old: the Researcher's mission at the commit before the move. New: the thin meetings mission. Both sides read the meeting-notes skill.",
+  "writes": [
+    "task_create",
+    "task_comment",
+    "task_finish (say `issue: <id>` in text when it closes a task other than the run's)",
+    "meeting_match (put its calendar_status in text)",
+    "meeting_publish (put the extraction JSON in text)",
+    "source_register_drive_document",
+    "source_mark_failed",
+    "sync_cursor_set",
+    "transcripts_scan"
+  ],
+  "routines": {
+    "meeting-scan": {
+      "old": {
+        "ref": "109c7706478349d2e2120d260cd31d61bf3071f5",
+        "handbook": "chief-of-staff/agents/assistant/AGENTS.md",
+        "skills": [
+          "meetings/skills/meeting-notes"
+        ]
+      },
+      "new": {
+        "handbook": "meetings/agents/meetings/AGENTS.md",
+        "skills": [
+          "meetings/skills/meeting-notes"
+        ]
+      }
+    }
+  }
+}

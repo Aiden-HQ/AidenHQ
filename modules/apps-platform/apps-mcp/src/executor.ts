@@ -23,7 +23,7 @@ export function appsExecutor(p: Platform): Executor {
   };
   const mutable = (name: unknown, c: Caller) => {
     const a = p.find(String(name ?? ""));
-    if (!canMutate(p, a, c)) throw new Error(`${c.name} can't change ${a.name}: only its owner (${a.owner}), or the DevOps Engineer during an incident`);
+    if (!canMutate(p, a, c)) throw new Error(`${c.name} can't change ${a.name}: only its owner (${a.owner}), or the app builder (app-maintainer) during an incident`);
     return a;
   };
 

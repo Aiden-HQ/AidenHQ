@@ -15,12 +15,12 @@ contributes:
   board.pages:
     - { id: code-review, title: Reviews, icon: reviews, order: 5, connection: code_review, view: "ui://code-review/page", tools: [ code_review_overview, code_review_run_detail, code_review_report, code_review_catalog, code_review_available, code_review_run, code_review_dismiss, code_review_configure ] }
 roles:
-  # kernel.tasks: one task per reviewed PR for the Reviewer Manager (role reviewer-manager), where its posts' approvals land.
+  # kernel.tasks: one task per reviewed PR for the PR reviewer (role reviewer-manager), where its posts' approvals land.
   # kernel.wake, kernel.owner-notice: a one-off ask's one summary, as a wake notice on the task that asked for it (its agent
   # hears it) or, for an ask from the board with no task, as one alert to the owner.
   requests: [ kernel.checks, kernel.facts, kernel.tasks, kernel.settings, kernel.wake, kernel.owner-notice ]
   declares:
-    - { id: reviewer-manager, description: "Holds each reviewed PR's task (fixed text: repo and number), where code review's posts are approved; the Reviewer Manager agent." }
+    - { id: reviewer-manager, description: "Holds each reviewed PR's task (fixed text: repo and number), where code review's posts are approved; the PR reviewer." }
 # A review run's snapshot of repo@head (and its base), read under this grant: any repo the owner's GitHub sign-in reaches.
 codehost:
   snapshot: { repos: [ "*/*" ] }
@@ -110,8 +110,8 @@ settings:
     writers: [ reviewer-manager ]
     default:
       repos: []
-# The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no
-# code tools and no delegation; its settings changes are kernel.settings records the AI reviewer decides. Aiden
+# The PR reviewer (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no
+# code tools and no delegation; its settings changes are kernel.settings records the AI reviewer decides. The chief of staff
 # (the chief of staff) delegates code review asks to it; no heartbeat, no schedule: it runs only when a task asks.
 agents:
   reviewer-manager:

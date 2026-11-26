@@ -1,6 +1,6 @@
 name: chief-of-staff
 description: "Aiden (the chief of staff the owner talks to, who delegates and follows up), the Researcher (long research, drafts, task replies and recurring reports) and the daily brief."
-# Aiden and the Researcher hand code work to the Engineers (the "Handing work to an Engineer" section).
+# The chief of staff and the Researcher hand code work to the Engineers (the "Handing work to an Engineer" section).
 requires: [ engineering, owner-channel ]
 roles:
   declares:
@@ -9,14 +9,13 @@ roles:
     # Declared here (every instance has the chief of staff) so the upstream tools have a holder even without the Maintainer;
     # the Maintainer requests it (it files the Fleet Steward's product-bug reports).
     - { id: product-issues, description: "Product bugs as issues on the product repo, as the owner (github-mcp github_product_issue)." }
-  # ops-key (the meetings module's): the Researcher runs the meeting scan, so ops-mcp acts as it, while meetings is on.
-  requests: [ ops-key?, ship-admin? ]
+  requests: [ ship-admin? ]
 agents:
   chief-of-staff:
     skills: [ tasks.delegate-work ]
     department: leadership
     # The owner's message must not queue behind a long wake on another task: on 2026-11-14 a Telegram question waited
-    # 5m48s for two runs on Aiden's notice chat (WOR-2275). Paperclip still runs one at a time per task.
+    # 5m48s for two runs on the chief of staff's notice chat (WOR-2275). Paperclip still runs one at a time per task.
     max_parallel: 2
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -47,9 +46,9 @@ agents:
     # product-issues: product bugs upstream as the owner (github-mcp).
     roles: [ fleet-admin, product-issues, ship-admin? ]
   assistant:
-    skills: [ chief-of-staff.recurring-reports, chief-of-staff.research-tasks, chief-of-staff.research-tools, chief-of-staff.task-replies, google.calendar-changes, google.gmail-writes, meetings.meeting-notes, primer.primer-docs, tasks.delegate-work ]
+    skills: [ chief-of-staff.recurring-reports, chief-of-staff.research-tasks, chief-of-staff.research-tools, chief-of-staff.task-replies, google.calendar-changes, google.gmail-writes, primer.primer-docs, tasks.delegate-work ]
     department: leadership
-    max_parallel: 3 # research asks are independent; the 15-minute meeting scan takes a slot of its own
+    max_parallel: 3 # research asks are independent
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     # Recurring runs read many channels, docs and notes.
@@ -58,11 +57,10 @@ agents:
       # Public web pages, and the apps' live pages (reads only).
       apps: [ app_list, web_view, app_view ]
       # knowledge_*: reference docs mounted from the meetings knowledge_mounts setting.
-      # The meeting scan (skill meetings.meeting-notes): ops-mcp makes every vault write decision; its runs are webhook routines (tier0).
-      ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, meeting_note_correct, voice_note_read, voice_note_add, knowledge_list, knowledge_index, knowledge_search, knowledge_read,
-                  transcripts_scan, source_read, source_register_drive_document, meeting_match, meeting_resolve, meeting_publish, source_mark_failed, sync_cursor_get, sync_cursor_set ]
+      # The notes vault: reads, a correction to a meeting note the owner asks for (skill task-replies) and voice notes.
+      ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, meeting_note_correct, voice_note_read, voice_note_add, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
       glean?: read
-      # HubSpot (hubspot module): reads only; changing the CRM is Aiden's.
+      # HubSpot (hubspot module): reads only; changing the CRM is the chief of staff's.
       hubspot?: [ get_user_details, get_organization_details, discover_hubspot_schema, search_crm_objects, get_crm_objects, query_crm_data, search_properties, get_properties, search_owners, tool_guidance ]
       # Jira through Atlassian's MCP server, signed in as the owner (jira module): reads only.
       # Not granted: getJiraBoardConfig, getJiraProjectVersionRelatedWork (tool-budget slimming, 2026-11-13).
@@ -79,8 +77,8 @@ agents:
       # task_team, task_delegate: code work goes to an Engineer the way everyone hands it on (skill tasks.delegate-work).
       # task_schedule, task_recurring: board moves on a date and recurring tasks. task_merge: merging tasks.
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_create, task_update, task_comment, task_handoff, task_block, task_wait, task_cancel, task_team, task_delegate, task_amend_rubric, fleet_catalog, task_schedule, task_recurring, task_pass_on, task_merge, task_finish, fanout_map ]
-    # board-writer: board moves and recurring tasks (paperclip-tasks-mcp). ops-key: ops-mcp acts as it (meetings on).
-    roles: [ board-writer, ops-key? ]
+    # board-writer: board moves and recurring tasks (paperclip-tasks-mcp).
+    roles: [ board-writer ]
 routines:
   daily-brief:
     title: Prepare daily brief

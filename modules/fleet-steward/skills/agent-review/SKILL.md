@@ -26,7 +26,7 @@ then a handbook line (cutting beats adding). Every fix task has marker `coach:<a
 - Module handbook or shared section: `assignee: engineer`, `deliverable` `pr`, `ref` the product repo. A grant or a module
   agent's schedule: `deliverable` `apply`. An agent's definition: `assignee: architect` if in `fleet_catalog`, else the Engineer.
 - The agent's own handbook ("Instance rules", a local agent's `AGENTS.md`), a skill it uses, its own routine or a fact it
-  keeps getting wrong: `assignee: chief-of-staff`; Aiden hands it to the agent, which changes itself (`self_change`,
+  keeps getting wrong: `assignee: chief-of-staff`; the chief of staff hands it to the agent, which changes itself (`self_change`,
   `memory_note`). An Engineer holds no `self_change`: its own instance rules go as `assignee: engineer`, `deliverable` `apply`
   on `aidenhq-alpha/aidenhq-instance`, checked with `handbook_read`.
 - App rule or check: `assignee` the app's owner (else `app-maintainer`), `deliverable` `app`, `ref` the app's registered name.

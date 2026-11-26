@@ -12,7 +12,7 @@ description: "Files one deletion task for handbook rules uncited in 30 days, dup
 4. One `task_create` `assignee: engineer`, marker `coach-prune:<date>`, `dedupe_closed: true`, `deliverable` `pr`, `ref` the
    product repo, titled `Prune dead handbook rules — <date>`: per deletion the file, exact rule line, reason and searches
    run. Deletions in an agent's own handbook ("Instance rules", a local agent's `AGENTS.md`) go in one `task_create`
-   `assignee: chief-of-staff`, marker `coach-prune-own:<date>`, listed the same way: Aiden hands each agent its deletions,
+   `assignee: chief-of-staff`, marker `coach-prune-own:<date>`, listed the same way: the chief of staff hands each agent its deletions,
    made with `self_change`. An Engineer holds no `self_change`, so its own deletions go as `assignee: engineer`,
    `deliverable` `apply` on `aidenhq-alpha/aidenhq-instance`, checked with `handbook_read`. Nothing qualifies: `task_finish`
    "nothing to prune".

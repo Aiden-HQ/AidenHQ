@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><title>Slack Scout</title>
-<rect width="64" height="64" fill="#c2255c"/>
-<path d="M10 64c2-13 11-19 22-19s20 6 22 19z" fill="#5c940d"/>
-<g fill="#343a40"><rect x="22" y="47" width="8" height="9" rx="3"/><rect x="34" y="47" width="8" height="9" rx="3"/><rect x="29" y="49" width="6" height="3"/></g><circle cx="26" cy="55" r="2.2" fill="#74c0fc"/><circle cx="38" cy="55" r="2.2" fill="#74c0fc"/>
-<rect x="28" y="37" width="8" height="9" rx="3" fill="#c6956d"/>
-<ellipse cx="32" cy="28" rx="10" ry="12" fill="#d9a982"/>
-<path d="M21 25c0-9 5-12 11-12s11 3 11 12c-3-2-7-3-11-3s-8 1-11 3z" fill="#2f9e44"/><path d="M21 25c4-2 12-2 16 0l7 2c-1 2-5 1-8 0-5-1-11-1-15-2z" fill="#2b8a3e"/>
-<circle cx="28" cy="27.5" r="1.3" fill="#17201f"/><circle cx="36" cy="27.5" r="1.3" fill="#17201f"/>
-</svg>

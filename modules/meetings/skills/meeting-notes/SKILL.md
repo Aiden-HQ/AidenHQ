@@ -1,6 +1,6 @@
 ---
 name: meeting-notes
-description: "Turns transcripts and Google Meet documents into a meeting note and a project-note entry through ops-mcp. Use on the meeting scan run (Researcher)."
+description: "Turns transcripts and Google Meet documents into a meeting note and a project-note entry through ops-mcp. Use on the meeting scan run."
 ---
 
 # Meeting notes

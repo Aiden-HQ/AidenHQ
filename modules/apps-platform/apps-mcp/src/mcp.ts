@@ -77,7 +77,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
   };
   const mutable = (name: string) => {
     const a = p.find(name);
-    if (!canMutate(p, a, caller)) throw new Error(`${caller.name} can't change ${name}: only its owner (${a.owner}), or the DevOps Engineer during an incident`);
+    if (!canMutate(p, a, caller)) throw new Error(`${caller.name} can't change ${name}: only its owner (${a.owner}), or the app builder (app-maintainer) during an incident`);
     return a;
   };
   const name = z.string().describe("app name");
@@ -128,7 +128,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
   );
 
   // In-app requests and roles (docs/design/access.md, In-app requests and roles): for the app's owner agent and
-  // agents with the app-requests role (the DevOps Engineer). The kernel makes the one check that matters (the request's
+  // agents with the app-requests role (the app builder). The kernel makes the one check that matters (the request's
   // gate-verified requester is an admin of the app now); this only says which agent asked.
   const toBoard = (path: string, body: unknown) => {
     if (!board) throw new Error("the kernel isn't wired to apps-mcp");
@@ -136,7 +136,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
   };
   const requestsOf = (name: string) => {
     const a = p.find(name);
-    if (caller.key !== a.owner && !caller.roles.includes("app-requests")) throw new Error(`only ${a.owner} (its owner) or the DevOps Engineer handles ${name}'s requests`);
+    if (caller.key !== a.owner && !caller.roles.includes("app-requests")) throw new Error(`only ${a.owner} (its owner) or the app builder handles ${name}'s requests`);
     if (!a.share?.host) throw new Error(`${name} isn't a shared app: it has no in-app requests or roles`);
     return a;
   };
@@ -164,7 +164,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
   );
   tool(
     "app_roles",
-    "A shared app you maintain: its people roles (core blocked/member/admin and the app's own, with meanings), its default, every assignment by email and the last 50 changes (who changed, who asked). Its owner agent and the DevOps Engineer only.",
+    "A shared app you maintain: its people roles (core blocked/member/admin and the app's own, with meanings), its default, every assignment by email and the last 50 changes (who changed, who asked). Its owner agent and the app builder only.",
     { name },
     false,
     async ({ name }) => toBoard("roles", { app: requestsOf(name).name }),
@@ -248,11 +248,11 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
 
   tool(
     "finding_verdict",
-    "Record your verdict on a security finding (finding_id from src_security.findings): not-affected (a false positive; it drops out of source_new and shows the verdict in warehouse_query until the finding changes or 30 days pass) or confirmed. Give the evidence in reason. Only Security Watch holds this.",
+    "Record your verdict on a security finding (finding_id from src_security.findings): not-affected (a false positive; it drops out of source_new and shows the verdict in warehouse_query until the finding changes or 30 days pass) or confirmed. Give the evidence in reason. Only the security agent (`security-watch`) holds this.",
     { finding_id: z.string().regex(/^[0-9a-f]{16}$/), verdict: z.enum(["not-affected", "confirmed"]), reason: z.string().min(1).max(1000) },
     true,
     ({ finding_id, verdict, reason }) => {
-      if (!caller.roles.includes("security-verdict")) throw new Error("finding_verdict needs the security-verdict role (Security Watch)");
+      if (!caller.roles.includes("security-verdict")) throw new Error("finding_verdict needs the security-verdict role (the security agent)");
       return findingVerdict(p.warehouse(), caller.name, finding_id, verdict, reason);
     },
   );

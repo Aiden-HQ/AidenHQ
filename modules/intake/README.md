@@ -3,7 +3,7 @@
 ## What it does
 
 Intake (`inbox-agent`) turns what needs you into one deduplicated task each: your inbox, your Slack messages (asks,
-promises, the messages you pin with 📌), the Primer digest and your own meeting action items. It pages you only for an
+promises, the messages you pin with 📌) and the Primer digest. Your meeting action items are Nora's (`meetings`). It pages you only for an
 urgent ask, and flags a task answered, unpinned or unlabelled for you to close (it never closes one).
 
 **Email.** Each scan reads every account's inbox since the last one. Code sets the noise aside before any model sees it:
@@ -25,8 +25,7 @@ Needs `slack` and `google` connected, and `owner_email` set. The Slack user id i
   `gmail_search`, `gmail_read_thread`; `gmail_label` only clears `Aiden` from a thread whose task is closed) and the live
   Slack events, creates tasks and notifies you. It has no web access, since it reads untrusted text.
 - Routines: `inbox-scan` (every 30 minutes, weekdays 08:00 to 19:00), `slack-triage` (a batch of live Slack events,
-  including your 📌 reactions), `primer-digest` (each morning, with `primer`) and `meeting-actions` (every 30 minutes, with
-  `meetings`).
+  including your 📌 reactions), and `primer-digest` (each morning, with `primer`).
 
 ## New installs
 
