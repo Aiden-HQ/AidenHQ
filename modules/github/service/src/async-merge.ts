@@ -41,19 +41,21 @@ export const requestKey = (repo: string, number: number, head: string) => `${rep
 
 /**
  * A direct merge: the merge commit's sha once GitHub reports `merged`. The accepted request's id is kept until it is terminal, and
- * a request kept from an earlier pass is read to its end before any new PUT is made. A request still pending after `polls` reads,
+ * a request kept from an earlier pass (by the same record) is read to its end before any new PUT is made. A request still pending after `polls` reads,
  * a 200 (GitHub's answer for a PR already merged or queued: never proof of this call's merge), a 409 and a failed read throw with
  * no status, so the caller reads the PR itself and credits only a commit this call made. `failed` throws a 409: GitHub's refusal.
  */
-export async function mergeDirect(gh: Gh, repo: string, number: number, body: { sha: string; merge_method: string; commit_message?: string }, polls: number, pollMs: number, store: ReturnType<typeof requestStore>): Promise<string> {
+export async function mergeDirect(gh: Gh, repo: string, number: number, body: { sha: string; merge_method: string; commit_message?: string }, polls: number, pollMs: number, store: ReturnType<typeof requestStore>, record: string): Promise<string> {
   const unanswered = (why: string) => new Error(`GitHub didn't settle the async merge: ${why}`);
-  const key = requestKey(repo, number, body.sha);
-  /** The request read to its terminal result within the budget; undefined when GitHub no longer holds it. */
-  const settle = async (uuid: string, status = "pending", details: any = {}): Promise<string | undefined> => {
+  // Bound to the record that made the request: another record at the same head never claims its result.
+  const key = `${requestKey(repo, number, body.sha)}#${record}`;
+  /** The request read to its terminal result within the budget. */
+  const settle = async (uuid: string, status = "pending", details: any = {}): Promise<string> => {
     for (let i = 0; status === "pending" && i < polls; i++) {
       if (i) await new Promise((done) => setTimeout(done, pollMs));
       const got = await readAsync(gh, repo, number, uuid);
-      if (got.got === 404) { store.set(key); return undefined; }
+      // GitHub no longer holds it: the next pass, gated afresh, makes its own request.
+      if (got.got === 404) { store.set(key); throw unanswered("the request is gone"); }
       if (got.status) ({ status, details } = got);
     }
     if (status === "merged" && details.sha) { store.set(key); return String(details.sha); }
@@ -61,13 +63,11 @@ export async function mergeDirect(gh: Gh, repo: string, number: number, body: { 
     throw unanswered(status || "no status");
   };
   const known = store.get(key);
-  if (known) { const sha = await settle(known); if (sha) return sha; }
+  if (known) return settle(known);
   const r = await gh("PUT", asyncPath(repo, number), { ...body, merge_action: "direct_merge" });
   if (r.status >= 400 && r.status !== 409) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
   if (r.status !== 202) throw unanswered(`HTTP ${r.status}`);
   const details = r.body?.details ?? {};
   if (r.body?.status === "pending" && details.uuid) store.set(key, String(details.uuid));
-  const sha = await settle(String(details.uuid ?? ""), String(r.body?.status ?? ""), details);
-  if (sha) return sha;
-  throw unanswered("the request is gone");
+  return settle(String(details.uuid ?? ""), String(r.body?.status ?? ""), details);
 }

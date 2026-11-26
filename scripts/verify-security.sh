@@ -827,7 +827,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const mergeToken = () => `queue-${randomUUID()}`;' "$rq" \
   && grep -qF 'p.mergeCalls = [...(p.mergeCalls ?? []), attempt];' "$rq" \
   && grep -qF 'if (!calls?.length) return undefined;' "$rq" \
-  && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method, body, token);' "$rq" \
+  && grep -qF 'p.sha = await mergePut(id, p.repo, p.number, p.head, method, body, token);' "$rq" \
   && grep -qF 'trailer(`merge queue ${token}`)' "$rq" \
   && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
   && grep -qF '  ownRepo(slug, fleetOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/git-auth.ts \
