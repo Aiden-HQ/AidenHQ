@@ -110,6 +110,26 @@ describe("notify", () => {
     expect([sent[1]!.m.answer, sent[2]!.m.answer]).toEqual([undefined, undefined]);
   });
 
+  it("a form option with no visible text is refused whole, before it is posted, queued or sent", async () => {
+    const { d, sent, posted } = world();
+    const ask = (questions: { question: string; options: string[] }[], text = "Which layout?") => ({ kind: "decision" as const, text, task: "WOR-9", questions });
+    d.resolveTask = async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "telegram" });
+    d.wait = async () => ({ to: "owner", since: "2026-11-24T10:00:00.000Z" });
+    const refused = await notify(d, ask([{ question: "Which layout?", options: ["?", "Wide"] }]), agent("a1"));
+    expect(refused).toEqual({ sent: false, reason: "error", note: "Question 1's option 1 has no visible text (send an option the owner can read, not a label or punctuation). Nothing was sent." });
+    // A bare label prefix is no more readable than punctuation; "A" or "1" on its own is text and stays legal.
+    for (const option of ["A)", "A.", "1)", "1.", "--", "..."])
+      expect(await notify(d, ask([{ question: "Which layout?", options: ["Wide", option] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 2 has no visible text[^]*Nothing was sent\./ });
+    // The tool marks the first option itself, so a caller writing the marker shows two recommendations.
+    expect(await notify(d, ask([{ question: "Which layout?", options: ["Wide (recommended)", "Narrow"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 1 writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./ });
+    expect(await notify(d, ask([{ question: "Which layout? (recommended)", options: ["Wide", "Narrow"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's text writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./ });
+    expect([sent.length, posted.length, d.store.waiting().length]).toEqual([0, 0, 0]);
+    // A form the owner can read still sends, "A" and "1" included.
+    expect(await notify(d, ask([{ question: "Ship?", options: ["Wait", "Publish"] }], "Context."), agent("a1"))).toEqual({ sent: true, onChat: true });
+    expect(await notify(d, ask([{ question: "Ship?", options: ["A", "1"] }], "Labels as options."), agent("a1"))).toEqual({ sent: true, onChat: true });
+    expect([sent.length, posted.length]).toEqual([2, 2]);
+  });
+
   it("notify's input is strict", async () => {
     const { d, sent } = world();
     const client = new Client({ name: "t", version: "1" });
