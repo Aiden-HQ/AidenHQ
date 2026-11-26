@@ -995,7 +995,7 @@ export function App() {
       )}
       </ErrorBoundary>
 
-      {mobile && !chatFull && <BottomBar sessions={!!sessions} view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} pages={pages} go={go} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
+      {mobile && !chatFull && route.kind !== "task" && <BottomBar sessions={!!sessions} view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} pages={pages} go={go} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
       </div>
       </div>
       <Palette
