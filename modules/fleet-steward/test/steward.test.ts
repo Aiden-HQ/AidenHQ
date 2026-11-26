@@ -45,6 +45,12 @@ test("the last-three failing check treats a SIGTERM stop (failed, exit 143) as n
       { id: "r3", agent: "a2", state: "failed", exit: 1, started_at: ago(3), ended_at: ago(3) },
       { id: "r4", agent: "a2", state: "failed", exit: 1, started_at: ago(4), ended_at: ago(4) },
     ],
+    // A job still waiting for its box (`admitted`) has not finished: with two real failures it fills no third slot.
+    a4: [
+      { id: "q1", agent: "a4", state: "admitted", started_at: ago(0), ended_at: null },
+      { id: "q2", agent: "a4", state: "failed", exit: 1, started_at: ago(1), ended_at: ago(1) },
+      { id: "q3", agent: "a4", state: "failed", exit: 1, started_at: ago(2), ended_at: ago(2) },
+    ],
     // Skipping the stop leaves only two real outcomes: not three real failures, so no key (the stop is not a reset either).
     a3: [
       { id: "m1", agent: "a3", state: "failed", exit: 1, started_at: ago(1), ended_at: ago(1) },
