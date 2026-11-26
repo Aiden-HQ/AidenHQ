@@ -77,11 +77,13 @@ async function signIn(page: PwPage, url: string, user: string, password: string,
   const c = await visible(page, CODE);
   if (c && !(await visible(page, "input[type=password]"))) {
     if (!code) fail("the sign-in asks for a one-time code and no TOTP seed was given");
+    const codeAt = page.url();
     await c.fill(code!());
     await c.press("Enter");
     await page.waitForLoadState("domcontentloaded").catch(() => {});
     await ready(page);
-    if (await visible(page, CODE)) fail("the one-time code was refused (the code step is still showing)");
+    // Still on the code step's own address with its field showing: refused (a code-like field on the page it lands on is not).
+    if (page.url() === codeAt && (await visible(page, CODE))) fail("the one-time code was refused (the code step is still showing)");
   }
   if (status >= 400) fail(`the sign-in was refused (the app answered ${status})`);
   if (await signedOut(page, { rung: "form", ...login })) fail("the sign-in didn't go through (still on the sign-in page)");
