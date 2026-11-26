@@ -54,15 +54,19 @@ export function createScheduler(d: ScheduleDeps) {
       const task = r.task;
       try {
         if (!task) {
-          // A filing whose answer was lost (a restart, a timeout, a kernel down): filed again under its source, which gets the
-          // same task back if it was made; one that never could be is failed once the pass is past its time.
+          // A filing whose answer was lost (a restart, a timeout, a kernel down). Once the pass is stopped or past its time, or its
+          // app's limits were lowered since, it never goes ahead: with no task made it ends here; a task the lost filing did make is
+          // bound (filing under its source returns it) and closed, and the bound path below frees the app once its job has ended.
           if (age < FILING_MS) continue;
-          if (r.stopping || overdue) {
-            // Never filed again once stopped or past its time: a task the lost filing did make is closed.
-            const made = open.get(`${passSource(r.app!)}${r.id}`);
-            if (made) await d.kernel.closeTask(made, `Stopped before it was bound (design run ${r.id}).`);
-            d.store.endPass(r.id, r.stopping ? "stopped" : "failed", r.stopping ? "stopped by the owner" : "its task was never filed");
-          } else await d.passes.file(r, true);
+          const made = open.get(`${passSource(r.app!)}${r.id}`), a = d.passes.app(r.app!);
+          const why = r.stopping || overdue ? "" : a ? await d.passes.limits(r, a) : "";
+          if (!made) {
+            if (r.stopping || overdue) d.store.endPass(r.id, r.stopping ? "stopped" : "failed", r.stopping ? "stopped by the owner" : "its task was never filed");
+            else await d.passes.file(r, true);
+            continue;
+          }
+          await d.passes.file(r);
+          if (why) await d.kernel.closeTask(made, `Not run: ${why} (design run ${r.id}).`);
           continue;
         }
         if (openIds.has(task)) {
@@ -105,6 +109,8 @@ export function createScheduler(d: ScheduleDeps) {
     for (const name of names) {
       const r = await d.passes.startPass(name, "deploy");
       log("deploy pass", { app: name, ...("refused" in r ? { refused: r.refused } : { run: r.run }) });
+      // A transient failure keeps the feed's cursor, so the next tick reads this deploy again (a pass it did start answers "already running").
+      if ("retry" in r && r.retry) throw new Error(`${name}'s deploy pass wasn't started: ${r.refused}`);
     }
   }
 

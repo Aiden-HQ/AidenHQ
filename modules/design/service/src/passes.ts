@@ -134,7 +134,7 @@ export interface PassDeps {
   now?: () => number;
 }
 
-export type PassStart = { run: string; task: string } | { refused: "already running"; run: string } | { refused: "cap reached today" | "unknown app" | string };
+export type PassStart = { run: string; task: string } | { refused: "already running"; run: string } | { refused: "cap reached today" | "unknown app" | string; /** a transient failure: the trigger may be tried again */ retry?: true };
 
 /** The UTC day of an instant, as the ledger's charges are counted. */
 export const utcDay = (t: number) => new Date(t).toISOString().slice(0, 10);
@@ -166,7 +166,7 @@ export function createPasses(d: PassDeps) {
     const running = d.store.active(a.name);
     if (running) return { refused: "already running", run: running.id };
     let spent: number;
-    try { spent = await spentToday(a.name); } catch (e) { return { refused: `today's spend couldn't be read: ${String((e as Error).message).slice(0, 200)}` }; }
+    try { spent = await spentToday(a.name); } catch (e) { return { refused: `today's spend couldn't be read: ${String((e as Error).message).slice(0, 200)}`, retry: true }; }
     if (spent >= a.day_cap_usd) return { refused: "cap reached today" };
     const mode = o.mode ?? top, model = o.model ?? a.models.design ?? preset.design ?? "the UI Reviewer's own model";
     const started = d.store.startPass({ app: a.name, target: a.url, model, depth, mode, trigger: why });
@@ -174,6 +174,11 @@ export function createPasses(d: PassDeps) {
     const filed = await file(d.store.pass(started.run)!);
     if ("task" in filed) return { run: started.run, task: filed.task };
     return { refused: filed.refused };
+  }
+
+  /** Why a pass may not go ahead under its app's limits as they are now ("" when it may): a lowered live_mode or a reached cap. */
+  async function limits(r: PassRow, a: App): Promise<string> {
+    return rank(r.mode as Mode) > rank(ceiling(a)) ? `its mode ${r.mode} is above ${a.name}'s live_mode now` : (await spentToday(a.name)) >= a.day_cap_usd ? "cap reached today" : "";
   }
 
   /**
@@ -186,7 +191,7 @@ export function createPasses(d: PassDeps) {
     if (!a) { d.store.endPass(r.id, "failed", "its app left settings.ui_testing before its task was filed"); return { refused: "unknown app" }; }
     // Filed again later: the app's limits as they are now (a lowered live_mode or cap since the first try).
     if (retry) {
-      const why = rank(r.mode as Mode) > rank(ceiling(a)) ? `its mode ${r.mode} is above ${a.name}'s live_mode now` : (await spentToday(a.name)) >= a.day_cap_usd ? "cap reached today" : "";
+      const why = await limits(r, a);
       if (why) { d.store.endPass(r.id, "failed", why); return { refused: why }; }
     }
     const run = r.id, depth = r.depth as Depth, preset = SPEND[a.spend], source = `${passSource(a.name)}${run}`;
@@ -250,6 +255,6 @@ export function createPasses(d: PassDeps) {
     return { run, app: a, refused: "" };
   }
 
-  return { startPass, file, stopPass, spentToday, passFor, app };
+  return { startPass, file, limits, stopPass, spentToday, passFor, app };
 }
 export type Passes = ReturnType<typeof createPasses>;

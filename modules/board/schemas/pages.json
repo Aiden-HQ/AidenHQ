@@ -27,7 +27,7 @@
               "properties": {
                 "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
                 "label": {"type": "string", "minLength": 1, "maxLength": 40},
-                "kind": {"enum": ["text", "password", "totp"], "description": "password and totp are typed hidden; none is ever shown back"}
+                "kind": {"enum": ["text", "password", "totp"], "description": "password and totp are typed hidden; none is ever shown back. Every field but a totp one is required: Set and Replace write the whole entry"}
               }
             }
           }

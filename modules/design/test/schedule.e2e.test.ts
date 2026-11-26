@@ -117,7 +117,7 @@ test("a filing whose answer was lost is filed again under its source; a refusal 
   assert.equal(store.active("acme")!.task, k.filed[0]!.id);
 });
 
-test("a pass stopped before its task was bound ends stopped and is never filed again; a task its lost filing made is closed", async () => {
+test("a pass stopped before its task was bound is never filed again; a task its lost filing made is bound and closed, and holds the app until its job ends", async () => {
   const { passes, tick, k, clock, store } = setup([{ name: "acme", url: U }]);
   k.refuse(0);
   const r = await passes.startPass("acme", "request");
@@ -128,9 +128,14 @@ test("a pass stopped before its task was bound ends stopped and is never filed a
   k.refuse(undefined);
   const made = await k.passes.fileTask({ title: "UI review pass: acme", description: "", role: "ui-login", source: `design:pass:acme:${run.id}` });
   clock.t += 3 * 60_000;
+  await tick(); // bound to the task the lost filing made
+  assert.equal(store.active("acme")!.task, made.id);
+  await tick(); // closed: its job may already run, so the app stays held until it ends
+  assert.equal(k.byId(made.id).status, "cancelled");
+  assert.equal(store.pass(run.id)!.status, "running");
+  k.jobLive(made.id, false);
   await tick();
   assert.equal(store.pass(run.id)!.status, "stopped");
-  assert.equal(k.byId(made.id).status, "cancelled");
   assert.equal(k.filed.length, 1, "never filed again");
   assert.equal(store.active("acme"), undefined);
 });

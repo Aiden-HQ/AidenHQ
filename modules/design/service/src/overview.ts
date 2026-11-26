@@ -44,7 +44,8 @@ export function overviewTools(d: OverviewDeps): Tool[] {
       run: async () => {
         const logins = d.logins();
         const apps = await Promise.all(d.apps().map(async (a) => {
-          const active = d.store.runs({ app: a.name, limit: 20 }).runs.find((r) => r.kind === "pass" && r.status === "running");
+          // The pass holding the app's slot (running, or finished while its job still ends): the one Run now waits for.
+          const active = d.store.active(a.name);
           const last = lastRun(d.store, a.name);
           return {
             name: a.name, url: a.url, ...(a.repo ? { repo: a.repo } : {}), aidenhq_app: a.aidenhq_app,

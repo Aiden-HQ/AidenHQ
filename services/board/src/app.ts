@@ -2751,7 +2751,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           // A password keeps its spaces exactly as typed; any other field is trimmed.
           const entry = Object.fromEntries(sm.fields.flatMap((f) => { const v = f.kind === "password" ? values[f.name] : values[f.name]?.trim(); return v ? [[f.name, v]] : []; }));
           if (Object.keys(values).some((k) => !sm.fields.some((f) => f.name === k))) throw new HttpError(400, "not one of this page's fields");
-          if (!Object.keys(entry).length) throw new HttpError(400, "give at least one value");
+          if (sm.fields.some((f) => f.kind !== "totp" && !entry[f.name])) throw new HttpError(400, "fill in every field (a TOTP seed is optional)");
           // A new entry only for a key the setting names; Clear works for any stored one.
           if (!mapKeys(sm.keys_from, appliedSettings()).includes(m[3]!)) throw new HttpError(400, "that isn't one of the keys this page lists");
           value = JSON.stringify(entry);

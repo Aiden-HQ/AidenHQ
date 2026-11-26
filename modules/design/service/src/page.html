@@ -190,11 +190,14 @@
     try { await tool("design_pass_stop", { app: name }); say(`Stopping ${name}'s pass: its slot frees once the run has ended.`); }
     catch (e) { stopping.delete(name); render(); fail(e); }
   }
-  // Passes under way are followed.
+  // Passes under way are followed every 8 s, and a pass started elsewhere (a deploy, Aiden) or a new UTC day shows within 40 s.
+  // A playing recording or an edit in progress is never redrawn under the owner.
+  let polls = 0;
   setInterval(() => {
-    if (!ov || adding || document.activeElement?.matches?.("input, textarea, select")) return;
-    if (ov.apps.some((a) => a.active)) loadOverview().then(() => { if (route.page === "app") loadLast(); }).catch(() => {});
-    else if (route.page === "run" && runData?.run?.run?.status === "running") loadRun(route.id);
+    polls++;
+    if (!ov || adding || document.activeElement?.matches?.("input, textarea, select") || [...document.querySelectorAll("video")].some((v) => !v.paused)) return;
+    if (route.page === "run") { if (runData?.run?.run?.status === "running") loadRun(route.id); return; }
+    if (ov.apps.some((a) => a.active) || polls % 5 === 0) loadOverview().then(() => { if (route.page === "app") loadLast(); }).catch(() => {});
   }, 8000);
 
   /* -------------------------------------------------------------------------------- the owner's settings proposal */
