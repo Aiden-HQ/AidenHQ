@@ -6,6 +6,7 @@ import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alert
 import { dueList } from "../service/src/coach.ts";
 import { checks, detectorState, failingScopes, gateActivity, reviewStalls, shortScopes, spendSpike, stewardOn, tick, unresumedWaits } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
+import { scorecard } from "../service/src/scorecard.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
 const ago = (h) => new Date(NOW - h * 3_600_000).toISOString();
@@ -502,4 +503,21 @@ test("the kernel's wait-park note is not an answer: an owner wait stays quiet, a
   // An agent's own comment carries the kernel's op/job tag too; that one is a real answer.
   const tagged = [{ authorType: "agent", authorAgentId: "maintainer", body: "Approved: rebase and go.\n\n<!-- aidenhq:job=abc kind=cp -->", createdAt: ago(2) }];
   assert.deepEqual((await unresumedWaits([wait("delegator_wait", "eng")], NOW, read(tagged), async () => "eng")).found.map((f) => f.key), ["t1"], "a tagged but genuine agent comment still answers");
+});
+
+test("the scorecard counts a done task as work only when the ledger holds a job for it: a self-closed holder lands in autoClosed, not done", () => {
+  const t = Date.parse("2026-11-26T02:20:00Z");
+  const at = (h) => new Date(t - h * 3_600_000).toISOString();
+  const closed = [
+    { id: "t-shipped", identifier: "ENG-1", title: "Ship acme/app#12: records", status: "done", assigneeAgentId: "eng", completedAt: at(4), updatedAt: at(4) },
+    { id: "t-worked", identifier: "WOR-2", title: "Fix the thing", status: "done", assigneeAgentId: "eng", completedAt: at(6), updatedAt: at(6) },
+    { id: "t-cancelled", identifier: "WOR-3", title: "Dropped", status: "cancelled", assigneeAgentId: "eng", completedAt: at(8), updatedAt: at(8) },
+  ];
+  const jobs = [{ state: "done", started_at: at(7), task: "t-worked" }];
+  const usage = [{ agent: "eng", day: new Date(t).toISOString().slice(0, 10), cost_usd: 2, calls: 2, priced: 2 }];
+  const s = scorecard({ closed, records: [], usage, jobs }, { id: "eng", key: "eng" }, t);
+  assert.equal(s.done.count, 1, "only the task a job ran counts as done");
+  assert.equal(s.done.autoClosed, 1, "the self-closed holder is reported apart");
+  assert.deepEqual(s.done.tasks.map((x) => x.identifier), ["WOR-2"]);
+  assert.equal(s.cost.perDone, 2, "cost divides by the worked done count, not every done task");
 });

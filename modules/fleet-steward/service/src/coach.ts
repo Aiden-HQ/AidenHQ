@@ -210,7 +210,8 @@ export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps:
         const closed: Closed[] = [];
         for (const c of await companies()) closed.push(...((await d.kernel.read(`/api/companies/${c.id}/issues?status=done,cancelled&assigneeAgentId=${a.id}&limit=500&excludeRoutineExecutions=true&updatedSince=${encodeURIComponent(from)}`)) as Issue[]).filter((i) => i.assigneeAgentId === a.id));
         const since = await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(from)}`);
-        return scorecard({ closed, records: since.records, usage: since.usage, jobs }, { id: a.id, key: keyOf(a) }, now);
+        // The scorecard counts a done task as work only when this agent ran it: the job's task id is what matches the two.
+        return scorecard({ closed, records: since.records, usage: since.usage, jobs: jobs.map((j) => ({ state: j.state, started_at: j.started_at, task: j.task })) }, { id: a.id, key: keyOf(a) }, now);
       });
       const fixes = await part("corrections", () => corrections(now));
       const s = detectorState(d.kv);
