@@ -56,7 +56,7 @@ import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError,
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { createTeammates, type HireCatalogRow, type HireGrants, grantsKeyOf, isTeammate, teammateFor, teammateKeys } from "./teammates.js";
 import { buildHome, nextEight, type HomeDeps } from "./home.js";
-import { NOTICE_MARKER, askedQuestions, boundQuestions, chatAgent, chatAgentMarker, conversation, foldOutcomeLines, lastWord, pickAgent, type Message, type Question } from "./chats.js";
+import { NOTICE_MARKER, askedQuestions, boundQuestions, chatAgent, chatAgentMarker, conversation, foldOutcomeLines, lastWord, pickAgent, replyQuestions, type Message, type Question } from "./chats.js";
 import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
 import type { StateRow } from "./aidenhq-sdk/task-state-types.js";
 import { addDays, nextWorkday, type Weekday } from "./dates.js";
@@ -792,7 +792,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       scheduled: store.schedules().get(issue.id) ?? null,
       recurring: rec ? recurringView(rec, await pc.routine(rec.routineId).catch(() => undefined)) : null,
       working: busy.map.get(issue.identifier) ?? null,
-      comments: comments.map((c) => ({ ...commentView(c, ctx.me, ctx.agents), ...byOf(names, c.id) })),
+      comments: comments.map((c) => ({ ...commentView(c, ctx.me, ctx.agents), ...byOf(names, c.id), ...(replyQuestions(c.body) ? { questions: replyQuestions(c.body) } : {}) })),
       files: fileViews(files, ctx.me),
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,

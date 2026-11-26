@@ -133,11 +133,11 @@ function Loaded({ d, ids, tab, go, onSignIn, setup, pairing, connect, can, advis
       )}
       <Pin m={m} />
       <div>
-        <Tabs<ModuleTab> label="Section" value={tab} tabs={TABS} href={(k) => `#/team/modules/${m.id}${k === "overview" ? "" : `/${k}`}`} />
+        <Tabs<ModuleTab> label="Section" value={tab} tabs={m.browse ? TABS.filter(([k]) => k !== "settings") : TABS} href={(k) => `#/team/modules/${m.id}${k === "overview" ? "" : `/${k}`}`} />
       </div>
       {tab === "overview" && <Overview d={d} ids={ids} />}
       {tab === "contents" && <Contents d={d} onSignIn={onSignIn} can={can} />}
-      {tab === "settings" && <ModuleSettings m={m} onSignIn={onSignIn} />}
+      {tab === "settings" && !m.browse && <ModuleSettings m={m} onSignIn={onSignIn} />}
       {tab === "changes" && <ModuleChanges m={m} />}
     </main>
   );

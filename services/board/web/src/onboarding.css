@@ -106,9 +106,10 @@
 .tms-name { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
 .tms-name .ui-field { flex: 1; min-width: min(100%, 14rem); max-width: 22rem; }
 /* A setup flow inside a stage: its own stages stack in the space there is. */
-.setup-inline { display: grid; gap: var(--stack); max-width: none; }
+.setup-inline { display: grid; gap: var(--stack); max-width: none; container-type: inline-size; }
 .setup-inline .setup-grid { grid-template-columns: minmax(0, 1fr); }
-@media (min-width: 1400px) { .setup-inline .setup-grid { grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); } }
+/* Two columns only when the flow's own container fits both (the hiring pane is narrower than the viewport). */
+@container (min-width: 640px) { .setup-inline .setup-grid { grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); } }
 
 /* ------------------------------------------------------------ Home on day one */
 .ui-card.gs-next { gap: 10px; border-style: dashed; border-color: var(--border-strong); box-shadow: none; }

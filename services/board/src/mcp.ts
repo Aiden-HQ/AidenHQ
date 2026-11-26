@@ -250,7 +250,7 @@ export function createMcp(d: McpDeps) {
           const replies = await read(id, sent);
           if (replies.length) return out(`Reply in ${id}.`, { chat: id, replied: true, reply: replies.join("\n\n") });
           const left = until - Date.now();
-          if (left <= 0) return out(`${id}: still working. Call get_task with this id to read the reply.`, { chat: id, replied: false, reply: null });
+          if (left <= 0) return out(`${id}: still working. Call get_task with this id to read the reply (a form's options ride on its comment as questions).`, { chat: id, replied: false, reply: null });
           await new Promise((r) => setTimeout(r, Math.min(1000, left)));
         }
       },
@@ -428,7 +428,7 @@ export function createMcp(d: McpDeps) {
             const bad = rowsOf.find((c) => (c.signIn && c.signIn.state !== "ok") || (c.probe && !c.probe.ok));
             return bad ? (bad.signIn && bad.signIn.state !== "ok" ? bad.signIn.state : "down") : "ok";
           };
-          const modules = p.items.map((m) => ({ module: m.id, description: short(m.description), state: m.state, enabled: m.state !== "off", connection_state: link(m.name), setup_flow: flows.has(m.name), counts: { agents: (m.agents ?? []).length, connections: (m.connections ?? []).length, routines: (m.routines ?? []).length, apps: (m.apps ?? []).length, settings: Object.keys(m.settings ?? {}).length } }));
+          const modules = p.items.map((m) => ({ module: m.id, description: short(m.description), state: m.state, enabled: m.state !== "off", connection_state: m.browse ? null : link(m.name), setup_flow: !m.browse && flows.has(m.name), counts: { agents: (m.agents ?? []).length, connections: (m.connections ?? []).length, routines: (m.routines ?? []).length, apps: (m.apps ?? []).length, settings: Object.keys(m.settings ?? {}).length } }));
           return out(`${modules.length} of ${r.modules.length} modules.`, { modules, next_cursor: p.next_cursor, ...rest, ...(a.cursor ? {} : { advisories: r.advisories ?? [] }) });
         }
         const [m, s] = await Promise.all([call("GET", `/api/modules/${encodeURIComponent(a.name)}`), call("GET", "/api/settings")]);

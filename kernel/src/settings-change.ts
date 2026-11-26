@@ -530,8 +530,8 @@ export type SettingsDeps = {
   log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
-/** An instance tree compiled as this host compiles it (the staged compiler's own inputs, scripts/compiler/inputs.ts). */
-export const compileTree = (product: string, dir: string) => compile(product, dir, loadInputs(product));
+/** An instance tree compiled as this host compiles it (the staged compiler's own inputs, scripts/compiler/inputs.ts), without the marketplace browse listing: validating a change needs none of its remote reads. */
+export const compileTree = (product: string, dir: string) => compile(product, dir, { ...loadInputs(product), browse: false });
 
 /**
  * POST /v1/settings/change: the owner's typed change on their settings task, written and filed as one kernel.apply. `asAgent`

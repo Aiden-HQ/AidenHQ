@@ -764,7 +764,7 @@ export function hostDirs(productDir: string, env = process.env) {
   return { work_dir: expand(String(y.work_dir ?? "~/aidenhq-work")), state_dir: expand(String(y.state_dir ?? "~/.local/state/aidenhq-runner")) };
 }
 
-export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string } = {}) {
+export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, browse = true }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string; browse?: boolean } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -1422,8 +1422,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     defaults: moduleDefaults(def, settings),
   })),
   // Third-party marketplaces' modules the instance doesn't install (browse, outside the install graph): listed for Modules and
-  // hiring only, never enabled; their text is untrusted (capped at read, fenced where an agent reads it).
-  ...browseMarketplaces(instance, { ...fetch, parse: (t: string) => YAML.parse(t) }, (m) => warnings.push(m), browseTeammate).map((b) => ({
+  // hiring only, never enabled; their text is untrusted (capped at read, fenced where an agent reads it). `browse: false` skips the
+  // remote reads: a validation compile (the kernel's self_change) must not wait on a marketplace's Git host.
+  ...(browse ? browseMarketplaces(instance, { ...fetch, parse: (t: string) => YAML.parse(t) }, (m) => warnings.push(m), browseTeammate) : []).map((b) => ({
     name: b.name, description: b.description, enabled: false, chosen: false, requires: b.requires, agents: b.agents, routines: [], connections: [], apps: [],
     marketplace: b.marketplace, tier: "declared", browse: true, revision: b.revision, source: b.source,
     teammates: b.teammates.map((t) => ({ key: t.key, name: t.name, job: t.job, sample: t.sample, description: t.description, department: deptName(departments, t.department), face: t.face ?? null, first: t.first ?? null })),

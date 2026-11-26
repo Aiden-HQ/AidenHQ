@@ -42,7 +42,7 @@ export function holdName(ref: string, name: string | null) {
   }
 }
 
-/** Changes this tab filed, by module id: StrictMode's double effect and a quick remount never file one twice. */
+/** Changes this tab is filing, by module id: StrictMode's double effect and a quick remount never file one twice. */
 const filedHere = new Set<string>();
 const RECENT_MS = 15 * 60_000;
 
@@ -115,8 +115,9 @@ export function TeammateSetup({ row, name, nameStep, onDone, onSignIn }: { row: 
       setRefused(true);
       return fail(e);
     }
+    // Held only while the filing is in flight and its change is read back: a later hire (after a turn-off) files again.
     api.changeSettings(items).then(
-      () => void readModule(),
+      () => void readModule().finally(() => filedHere.delete(`${row.id}:${retry}`)),
       (e) => {
         filedHere.delete(`${row.id}:${retry}`);
         setRefused(true);
@@ -158,11 +159,16 @@ export function TeammateSetup({ row, name, nameStep, onDone, onSignIn }: { row: 
   const ready = applied && conns !== null && flows !== null && pending.length === 0;
   const withTrial = skipped.length === 0;
   const [started, setStarted] = useState(false);
+  // A start the server refused (Paperclip briefly down) waits for Retry: no trial is polled until a start has answered.
+  const [startFailed, setStartFailed] = useState(false);
   // The server's start is idempotent (it resumes, and runs a trial once unless it failed), so a remount simply asks again.
   useEffect(() => {
     if (!ready) return;
     let stop = false;
-    api.teammateStart(row.ref, { trial: withTrial }).then(() => !stop && setStarted(true), fail);
+    api.teammateStart(row.ref, { trial: withTrial }).then(
+      () => !stop && setStarted(true),
+      (e) => { if (!stop) (setStartFailed(true), fail(e)); },
+    );
     return () => void (stop = true);
   }, [ready, row.ref, withTrial, retry, fail]);
   useEffect(() => {
@@ -187,7 +193,7 @@ export function TeammateSetup({ row, name, nameStep, onDone, onSignIn }: { row: 
     onDone({ trial: trial ?? { state: "none", found: [] } });
   }, [stage, trial, onDone]);
 
-  const again = () => (setError(""), setTrial(null), setStarted(false), setRetry((n) => n + 1));
+  const again = () => (setError(""), setTrial(null), setStarted(false), setStartFailed(false), setRetry((n) => n + 1));
   const n = row.name;
   const titles = (fs: SetupFlowView[]) => fs.map((f) => f.title).join(" and ");
   return (
@@ -216,7 +222,12 @@ export function TeammateSetup({ row, name, nameStep, onDone, onSignIn }: { row: 
         );
       })}
       <Line n={connections.length + 2} state={settled ? (trial?.state === "failed" ? "failed" : "done") : stage === "start" ? "now" : "wait"} title={withTrial ? `${n}'s first look at your data` : `${n} starts`}>
-        {stage === "start" && withTrial && (
+        {stage === "start" && startFailed && (
+          <div className="tms-actions">
+            <Button variant="primary" className="press" onClick={again}>Retry</Button>
+          </div>
+        )}
+        {stage === "start" && withTrial && !startFailed && (
           <div className="tms-trial" role="status">
             <p className="tms-hint">{n} is reading the last week. The first result shows here in about a minute.</p>
             {[0, 1, 2].map((i) => <Bone key={i} h={14} w={`${88 - i * 14}%`} />)}
@@ -293,7 +304,7 @@ function NameStep({ row, onSaved, onSignIn }: { row: HireRow; onSaved: () => voi
   return (
     <form className="tms-name" onSubmit={(e) => (e.preventDefault(), !problem && void save())}>
       <Field label="Name" error={problem || error || null} help={`${row.job} · you can rename them any time.`}>
-        {(id, note) => <Input id={id} aria-describedby={note} value={name} maxLength={24} aria-invalid={!!problem || !!error} onChange={(e) => (setName(e.target.value), holdName(row.ref, e.target.value))} />}
+        {(id, note) => <Input id={id} aria-describedby={note} value={name} maxLength={24} aria-invalid={!!problem || !!error} onChange={(e) => setName(e.target.value)} />}
       </Field>
       <Button type="submit" variant="primary" className="press" disabled={busy || !!problem}>{busy ? "Saving…" : name === row.name ? `Keep ${row.name}` : `Name them ${name}`}</Button>
     </form>

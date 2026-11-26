@@ -18,7 +18,8 @@ import "./hire.css";
 const market = (m: string) => (m === "aidenhq" ? "AidenHQ" : m.replace(/(^|-)([a-z])/g, (_, d: string, c: string) => `${d ? " " : ""}${c.toUpperCase()}`));
 const words = (r: HireRow) => [r.name, r.job, r.description, r.module, r.department, ...r.connections, ...r.requires].join(" ").toLowerCase();
 
-export function Hire({ setup, install, chat, onSignIn }: { setup?: string; install?: string; chat?: string; onSignIn: () => void }) {
+/** `owner`: only the instance owner starts a teammate (the board refuses anyone else), so an invited admin is told who can. */
+export function Hire({ setup, install, chat, owner, onSignIn }: { setup?: string; install?: string; chat?: string; owner: boolean; onSignIn: () => void }) {
   const [data, setData] = useState<TeammatesList | null>(null);
   const [error, setError] = useState("");
   const load = useCallback(() => api.teammates().then(setData, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), [onSignIn]);
@@ -31,13 +32,13 @@ export function Hire({ setup, install, chat, onSignIn }: { setup?: string; insta
         {error ? <EmptyState>Couldn't load teammates: {error}</EmptyState> : <div className="hire-grid" aria-busy="true">{[0, 1, 2, 3, 4, 5].map((i) => <Bone key={i} h={212} className="hire-bone" />)}</div>}
       </Page>
     );
-  if (describing || chat) return <Describe key={chat ?? ""} data={data} chat={chat} onBack={() => (setDescribing(false), chat && location.replace("#/team/hire"))} reload={load} onSignIn={onSignIn} />;
-  return <Browse data={data} setup={setup} install={install} onDescribe={() => setDescribing(true)} reload={load} onSignIn={onSignIn} />;
+  if (describing || chat) return <Describe key={chat ?? ""} data={data} chat={chat} onBack={() => (setDescribing(false), chat && location.replace("#/team/hire"))} reload={load} owner={owner} onSignIn={onSignIn} />;
+  return <Browse data={data} setup={setup} install={install} owner={owner} onDescribe={() => setDescribing(true)} reload={load} onSignIn={onSignIn} />;
 }
 
 type Show = "available" | "team" | `m:${string}`;
 
-function Browse({ data, setup, install, onDescribe, reload, onSignIn }: { data: TeammatesList; setup?: string; install?: string; onDescribe: () => void; reload: () => void; onSignIn: () => void }) {
+function Browse({ data, setup, install, owner, onDescribe, reload, onSignIn }: { data: TeammatesList; setup?: string; install?: string; owner: boolean; onDescribe: () => void; reload: () => void; onSignIn: () => void }) {
   const rows = data.rows;
   const [q, setQ] = useState("");
   const [show, setShow] = useState<Show>("available");
@@ -121,7 +122,7 @@ function Browse({ data, setup, install, onDescribe, reload, onSignIn }: { data: 
         )}
         {row && (
           <DetailPane open title={`Hire ${row.name}`} onClose={() => (setOpen(null), location.hash.includes("?") && location.replace("#/team/hire"))}>
-            <HirePane key={row.ref} row={row} onSignIn={onSignIn} onHired={reload} />
+            <HirePane key={row.ref} row={row} owner={owner} onSignIn={onSignIn} onHired={reload} />
           </DetailPane>
         )}
       </div>
@@ -133,7 +134,7 @@ function Browse({ data, setup, install, onDescribe, reload, onSignIn }: { data: 
  * The detail pane: who it is, then TeammateSetup with its name step; done, the trial's result and the way to them. A link only
  * selects the teammate: nothing is filed or started until the owner clicks Hire or Set up.
  */
-function HirePane({ row, onSignIn, onHired }: { row: HireRow; onSignIn: () => void; onHired: () => void }) {
+function HirePane({ row, owner, onSignIn, onHired }: { row: HireRow; owner: boolean; onSignIn: () => void; onHired: () => void }) {
   const [trial, setTrial] = useState<TrialView | null>(null);
   const [go, setGo] = useState(false);
   return (
@@ -146,7 +147,9 @@ function HirePane({ row, onSignIn, onHired }: { row: HireRow; onSignIn: () => vo
         </div>
       </div>
       {row.sample && <blockquote className="wl-quote">{quoted(row.sample)}</blockquote>}
-      {!go ? (
+      {!owner ? (
+        <p className="hire-pane-note">Only the owner of this instance can hire a teammate. Ask them to set up {row.name}.</p>
+      ) : !go ? (
         <>
           <p className="hire-pane-note">
             {row.browse ? `From ${market(row.marketplace)}: its module is reviewed when it is installed. ` : ""}
@@ -194,7 +197,7 @@ const EXTEND = /^Extend ([a-z0-9-]+)$/;
 type Next = { kind: "install"; row: HireRow } | { kind: "extend"; row: HireRow } | { kind: "handoff" };
 
 /** Describe → Look for existing → Set up: the description is a chat with the builder; its answer form picks the path. */
-function Describe({ data, chat: chatId, onBack, reload, onSignIn }: { data: TeammatesList; chat?: string; onBack: () => void; reload: () => void; onSignIn: () => void }) {
+function Describe({ data, chat: chatId, owner, onBack, reload, onSignIn }: { data: TeammatesList; chat?: string; owner: boolean; onBack: () => void; reload: () => void; onSignIn: () => void }) {
   const builder = data.builder;
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -321,7 +324,7 @@ function Describe({ data, chat: chatId, onBack, reload, onSignIn }: { data: Team
               <p>{next.row.description}</p>
             </div>
           </div>
-          <TeammateSetup row={next.row} nameStep onDone={(r) => (setTrial(r.trial), clearNext(), reload())} onSignIn={onSignIn} />
+          {owner ? <TeammateSetup row={next.row} nameStep onDone={(r) => (setTrial(r.trial), clearNext(), reload())} onSignIn={onSignIn} /> : <p className="hire-pane-note">Only the owner of this instance can hire a teammate. Ask them to set up {next.row.name}.</p>}
           {trial && (
             <>
               <TrialResult row={next.row} trial={trial} />

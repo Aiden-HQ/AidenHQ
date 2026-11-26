@@ -972,7 +972,7 @@ export function App() {
       {view === "home" && page.kind === "welcome" && <Onboarding session={session} onSignIn={signInNeeded} />}
       {view === "home" && page.kind !== "welcome" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} />}
       {view === "team" && page.kind === "teammate" && <Suspense fallback={<PageLoading />}><TeammateView key={page.key} agentKey={page.key} chat={page.chat} text={page.text} crew={mates} faces={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} /></Suspense>}
-      {view === "team" && page.kind === "hire" && <Suspense fallback={<PageLoading />}><HireView key={page.setup ?? page.install ?? ""} setup={page.setup} install={page.install} chat={page.chat} onSignIn={signInNeeded} /></Suspense>}
+      {view === "team" && page.kind === "hire" && <Suspense fallback={<PageLoading />}><HireView key={page.setup ?? page.install ?? ""} setup={page.setup} install={page.install} chat={page.chat} owner={session?.account?.owner === true} onSignIn={signInNeeded} /></Suspense>}
       {view === "team" && page.kind !== "teammate" && page.kind !== "hire" && <Suspense fallback={<PageLoading />}><TeamView go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "decisions" && <Suspense fallback={<PageLoading />}><DecisionsView onSignIn={signInNeeded} /></Suspense>}
       {view === "settings" && <SettingsView cat={page.kind === "settings" ? page.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} />}

@@ -16,6 +16,7 @@ One idea at a time, so the owner always knows the one next step that would help 
    - **A skipped connection:** the first option is "Connect <Title>"; reply with its setup link (`#/setup/<module>`) and finish.
 
 **Sources of ideas**, best first:
+- The teammates the owner chose in onboarding: the welcome task lists them (set up next, best first, then Later). Offer the first Set up next one; never a Later one before the others.
 - Teammates not yet on the team (`fleet_catalog` section `teammates`, `on_team: false`), the one that fits what the owner connected and talks about first. Never guess a teammate: only one the catalog lists.
 - Paused routines worth turning on (`fleet_status`): the morning brief first; then a weekly look at how the agents work, an evening fleet digest, agents checking in every few hours.
 - Connections they skipped (a setup flow still open: `fleet_status`), when a teammate on the team needs it.

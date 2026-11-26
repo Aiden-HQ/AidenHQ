@@ -22,6 +22,8 @@ const go = (hash: string) => {
 export function WelcomeGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<(WelcomeState & { orgs: boolean }) | null>(null);
   const [hash, setHash] = useState(location.hash);
+  // Whether the gate check has answered: #/welcome renders nothing until then, so onboarding never mounts ahead of the recovery key and organisation screens.
+  const [checked, setChecked] = useState(false);
   useEffect(() => {
     const on = () => setHash(location.hash);
     window.addEventListener("hashchange", on);
@@ -38,9 +40,11 @@ export function WelcomeGate({ children }: { children: ReactNode }) {
         setState(w);
         if (w && w.modelReady && !w.finished && location.hash !== "#/welcome") go("#/welcome");
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setChecked(true));
   }, []);
 
+  if (!checked && hash === "#/welcome") return null;
   if (state && !state.modelReady) return <ModelGate />;
   if (state && !state.finished && hash === "#/welcome") return <Gates state={state}>{children}</Gates>;
   return <>{children}</>;
@@ -126,11 +130,14 @@ export function Onboarding({ session, onSignIn }: { session: Session | null; onS
   useEffect(() => void load(), [load]);
 
   const finishing = useRef(false);
+  // The queue saves in order, and finishing waits for the last: Aiden's welcome task reads the saved choices.
+  const saving = useRef<Promise<unknown>>(Promise.resolve());
   const finish = async () => {
     if (finishing.current) return;
     finishing.current = true;
     setError("");
     try {
+      await saving.current;
       await api.welcomeFinish();
       write(STEP, null);
       write(WELCOME_SESSION, "1");
@@ -160,7 +167,7 @@ export function Onboarding({ session, onSignIn }: { session: Session | null; onS
   // The teammate this owner chose (Set up writes it before anything is filed), else the recommended one.
   const ref = queue.first ?? first;
   const row = rows.find((r) => r.ref === ref);
-  const save = (q: TeammateQueue) => (setQueue(q), void api.setTeammateQueue(q).catch(fail));
+  const save = (q: TeammateQueue) => (setQueue(q), void (saving.current = saving.current.then(() => api.setTeammateQueue(q)).catch(fail)));
   return (
     <Page className="wl" label="Getting started">
       {top(screen === "first" ? 0 : 1)}
@@ -344,7 +351,9 @@ function ReachScreen({ row, settings, onFinish, onSignIn, fail }: { row?: HireRo
   const readFlows = useCallback(() => api.setupFlows().then((r) => setFlows(r.flows), fail), [fail]);
   useEffect(() => void readFlows(), [readFlows]);
   const flow = pick === "board" ? undefined : flows?.find((f) => f.module === pick);
-  const ready = pick === "board" || !flow || (pick === "slack" ? !!flow.advanced?.done : flow.done);
+  // A channel with no setup flow isn't installed here: never ready, and never saved over the one that works.
+  const missing = pick !== "board" && !!flows && !flow;
+  const ready = pick === "board" || (!!flow && (pick === "slack" ? !!flow.advanced?.done : flow.done));
   const send = async () => {
     if (pick === "board") return;
     const to = pick;
@@ -361,8 +370,9 @@ function ReachScreen({ row, settings, onFinish, onSignIn, fail }: { row?: HireRo
   const go = async () => {
     setBusy(true);
     try {
-      const want = pick === "board" ? [] : [pick];
-      if (JSON.stringify(want) !== JSON.stringify(current)) await api.changeSettings([{ kind: "setting", key: "notify_transports", value: want }]);
+      // A channel that isn't set up yet is not saved: the working one keeps delivering.
+      const want = pick === "board" ? [] : ready ? [pick] : current;
+      if (want && JSON.stringify(want) !== JSON.stringify(current)) await api.changeSettings([{ kind: "setting", key: "notify_transports", value: want }]);
       await onFinish();
     } catch (e) {
       fail(e);
@@ -396,8 +406,8 @@ function ReachScreen({ row, settings, onFinish, onSignIn, fail }: { row?: HireRo
               {test.busy ? "Sending…" : test.sent ? "Sent ✓ · Send again" : test.reason ? "Try again" : "Send a test"}
             </Button>
           )}
-          <Button variant="primary" className="press" disabled={busy} onClick={() => void go()}>{busy ? "Saving…" : "Continue"}</Button>
-          <span className="wl-hint">{test.reason ? <span className="wl-bad" role="alert">Not sent: {test.reason}.</span> : "You can change this any time in Settings."}</span>
+          <Button variant="primary" className="press" disabled={busy || missing} onClick={() => void go()}>{busy ? "Saving…" : pick !== "board" && !ready ? `Continue without ${title}` : "Continue"}</Button>
+          <span className="wl-hint">{missing ? <span className="wl-bad" role="alert">{title} isn't installed on this instance: pick another way.</span> : test.reason ? <span className="wl-bad" role="alert">Not sent: {test.reason}.</span> : pick !== "board" && !ready ? `${title} isn't set up yet: you keep your current way of reaching you.` : "You can change this any time in Settings."}</span>
         </div>
       </div>
       {pick !== "board" && (

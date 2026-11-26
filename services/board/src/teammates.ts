@@ -84,6 +84,11 @@ export type TeammatesDeps = {
 const REF = /^([a-z0-9][a-z0-9-]{0,62}(?:@[a-z0-9][a-z0-9-]{0,62})?):([a-z0-9][a-z0-9-]{0,62})$/;
 const RefSchema = z.string().max(200).regex(REF);
 const QueueSchema = z.object({ first: RefSchema.optional(), next: z.array(RefSchema).max(20), later: z.array(RefSchema).max(20) }).strict();
+const queueKey = (account: string) => `teammates:${account}`;
+/** An account's Set up next / Later lists (and the one it started with), as onboarding saved them. */
+export const queueIn = (store: Store, account: string): TeammateQueue => {
+  try { return QueueSchema.parse(JSON.parse(store.meta(queueKey(account)) ?? "null")); } catch { return { next: [], later: [] }; }
+};
 /** A run that never recorded its task within this long never will (the board stopped between reserving and running). */
 const UNRUN_MS = 10 * 60_000;
 /** Home's getting-started band shows this long after the welcome. */
@@ -172,10 +177,7 @@ export function createTeammates(d: TeammatesDeps) {
     return ids.length >= wanted && ids.every((id) => got.find((r) => r.task === id)?.kind === "done") ? "done" : "running";
   };
 
-  const queueKey = (account: string) => `teammates:${account}`;
-  const queueOf = (account: string): TeammateQueue => {
-    try { return QueueSchema.parse(JSON.parse(d.store.meta(queueKey(account)) ?? "null")); } catch { return { next: [], later: [] }; }
-  };
+  const queueOf = (account: string) => queueIn(d.store, account);
   const owner = (who: AccountSession) => { if (!who.account.owner) throw new AccountError(403, "only the owner sets up a teammate"); };
 
   const routes: SetupRoute[] = [
