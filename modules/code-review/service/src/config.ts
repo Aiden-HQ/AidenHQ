@@ -93,9 +93,9 @@ export const gatesAny = (e: Entry) => selectable(e.rules).some((t) => gated(e.ti
  * bot's PR, such as the default skip of a dependency bump, can't name one for the fleet's own pushes: its App is a member), and sensitive,
  * which a PR over GitHub's 3,000-file list gets whatever the rules say. */
 export const gatesAll = (e: Entry) => [...selectable(e.rules.filter((r) => r.when?.author !== "bot")), "sensitive" as Tier].every((t) => gated(e.tiers[t]));
-/** A head's review policy: everything about how it is reviewed (its tier's mandatory combos, the base branch and the ignore globs),
- * never a commit and never the tier's name: two tiers with the same mandatory reviewers share one, so crossing between them costs no
- * new review (owner, 2026-11-25). Runs and coverage count for a head only under its current policy. */
+/** A head's review policy, a label of how it is reviewed (its tier's mandatory combos, the base branch and the ignore globs), never
+ * a commit and never the tier's name: two tiers with the same mandatory reviewers share one (owner, 2026-11-25). The verdict carries
+ * it for ship, which binds its approval to it; reviews never reset on it (engine.ts: a PR keeps its reviews across a change). */
 export const policyOf = (e: Entry, tier: Tier, base_ref: string) => createHash("sha256").update(JSON.stringify([
   MOMENTS.flatMap((k) => e.tiers[tier][k].filter((c) => c.mandatory).map((c) => [k, c.engine, c.model, c.effort])), base_ref, e.ignore])).digest("hex").slice(0, 16);
 /** The most combos one moment (or one ask) runs. */

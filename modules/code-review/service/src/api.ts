@@ -7,7 +7,7 @@
 //                                        the caller's live base branch differs from what it came from, or the caller's live author
 //                                        association shows a loss of access from the member association it was classified with) |
 //                                        { state: unwatched }; requires_review: the head's tier has a mandatory combo; policy: the
-//                                        head's review policy; kind: completed (the head is covered under its policy), exhausted (the
+//                                        head's review policy (a label); kind: completed (the head is covered), exhausted (the
 //                                        verdict stands on `reviewed`, an earlier head), skipped, or none (its tier needs no review)
 //   POST /reviews { pr_url, task? }      → { runs }   the ship module's ask on a fork it adopted: a one-off review of that PR,
 //                                        its summary on `task` (the adoption's)

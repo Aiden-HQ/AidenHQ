@@ -254,27 +254,19 @@ pending head is never treated as some tier. Ship never reads the fact store.
 #1687's `fresh()` take it instead of the entry.
 
 **The review policy.** A head's *policy* is a hash of its tier's mandatory combos (engine, model, effort, moment), the PR's
-base branch and the repo's effective `ignore` globs: everything about *how* the PR is reviewed. It holds no tier name
-**(owner, 2026-11-25: no needless spend)**: two tiers with the same mandatory reviewers share a policy, so a push that crosses
-between them (Aiden-HQ/AidenHQ runs its settled combos in every tier) keeps its coverage and runs no new opening batch. It holds no commit:
-which change was reviewed is the job of coverage and `carries()`, so a base merge that leaves the PR's own patch alone keeps
-its policy and carries (§7). Each run records
-the policy it ran under, and so does each `covered` row (the column exists). A head counts as covered, for the verdict and
-for #1687's `evidence()`, only by runs and coverage under the head's current policy. So adding a mandatory model on the Fleet
-page, removing an ignore glob, a retarget to another branch, or a head moving to a tier with other mandatory reviewers, asks
-for a review under the new policy; old open important findings still gate.
+base branch and the repo's effective `ignore` globs. It holds no tier name **(owner, 2026-11-25: no needless spend)**: two tiers
+with the same mandatory reviewers share one. It is a label only: the verdict carries it, and ship binds its approval to it.
 
-**A policy change is its own branch**, ahead of the ordinary push trigger in `poll()`. The PR row keeps `policy_since`: the
-first head of the PR's current run of heads under the current policy, reset whenever a head's policy differs from the one
-before it. Until the PR has a *completed* full opening batch under the current policy **at `policy_since` or a later head**
-(every mandatory `on_open` combo done or failed past its retries), the head gets
-that batch with `full: true` (the whole PR from its merge base, never the last covered head), queued once per head and policy.
-A push while that batch is queued supersedes it with the same batch at the new head, never with an `on_push` run. The same
-check runs on an unchanged head after a settings edit. Going down (sensitive to trivial) costs one cheap
-opening review; going up gets every opening reviewer of the higher tier over the whole PR (each only where the two tiers'
-mandatory reviewers differ). Later pushes get the tier's `on_push`, up to its `push_rounds`, counted from `policy_since`. A PR
-that leaves a tier for one with other reviewers and comes back therefore gets a new full opening review: a batch from its earlier stay never counts, and `gateRuns()` never falls back to it. `missing()` keeps its
-job of filling a head with no mandatory run.
+**A PR keeps its reviews (owner, 2026-11-26).** A settings edit, a retarget or a tier change never starts the PR's reviews over
+(#1901 paid for a third full opening review after its push rounds were used up). A new setting applies from the PR's next push;
+its push rounds count over its whole life (`push_rounds` caps the total); runs and coverage count whatever setting they ran
+under. The one thing added is a mandatory `on_open` combo the PR has never had an opening review from (done, or failed past its
+retries, at any head): `opening()`, ahead of the ordinary push trigger, queues just that combo with `full: true` (the whole PR),
+once per head, and the verdict waits on it (`not_started`). A PR with no finished opening review at all gets its tier's full
+opening batch. A push while either is queued supersedes it with the same runs at the new head, never with an `on_push` run.
+When push rounds are used up (or the tier has no mandatory `on_push`), `gateRuns()` stands on the latest opening run of each
+mandatory `on_open` combo the tier names now. `missing()` keeps its job of filling a head with no mandatory run. A genuinely new
+diff is reviewed by the next push as usual; a bare rebase carries (§7).
 
 **The verdict per head.** `verdict()` judges the head against its tier's policy and adds `requires_review`:
 

@@ -1489,24 +1489,81 @@ test("a partial mandatory review still lets the head pass, but never makes it a 
   }
 });
 
-test("a settings edit that changes a head's policy asks for a review under it: the owner adds a mandatory reviewer and the open head gets the full opening batch", async () => {
+test("a settings edit after the opening review and the push rounds: no new opening wave, no push review, and a dropped reviewer never holds the merge", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH], push_rounds: 1 }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); w.finish(1, NONE); await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(2, NONE); await w.tick();
+  assert.deepEqual(w.started.map((s) => [s.head, label(s)]), [[sha("2"), "codex/medium"], [sha("2"), "claude-code/high"], [sha("3"), "codex/low"]]);
+  // The owner drops claude-code from on_open and changes the push reviewer (#1901): a restart under the new settings.
+  const g = world({ db: w.db, repos: [{ repo: REPO, on_open: [MUST], on_push: [{ ...CLAUDE, mandatory: true }], push_rounds: 1 }] });
+  g.pr(2, sha("3"));
+  assert.equal(g.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "the reviews it had still stand");
+  await g.tick(); g.later(DEBOUNCE + 1); await g.tick();
+  g.pr(2, sha("4")); await g.tick(); g.later(DEBOUNCE + 1); await g.tick();
+  assert.deepEqual(g.started, [], "no opening batch again, and the push rounds keep counting: the cap is reached");
+  assert.equal(reasonOf(g.acks.find((a) => a.state === "skipped").why), "push_cap");
+  assert.equal(g.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
+});
+
+test("a retarget (feat/x to main) after the opening review and the push rounds: no new opening wave, no push review", async () => {
+  const w = gatedWorld({ push_rounds: 1 });
+  await w.tick(); w.later(1000);
+  w.pr(2, sha("2"), { base_ref: "feat/x" }); await w.tick();
+  w.finish(0, NONE); await w.tick();
+  w.pr(2, sha("3"), { base_ref: "feat/x" }); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, NONE); await w.tick();
+  w.pr(2, sha("3"), { base_ref: "main", base: sha("c") });
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"), { base: "main" })), ["not_started"], "classified again first");
+  await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 2, "the retarget queues nothing");
+  assert.equal(w.engine.verdict(REPO, 2, sha("3"), { base: "main" }).verdict, "pass");
+  w.pr(2, sha("4"), { base_ref: "main", base: sha("c") }); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 2, "past the cap: no push review");
+  assert.equal(w.engine.verdict(REPO, 2, sha("4"), { base: "main" }).verdict, "pass");
+});
+
+test("a mandatory opening reviewer the owner adds mid-PR reviews the whole PR once; the verdict waits on it; later pushes are pushes", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST, CLAUDE], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));
   w.finish(0, NONE); w.finish(1, NONE); await w.tick();
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
-  // A restart with a new mandatory set: the head's policy changed, so what reviewed it under the old one no longer counts.
+  // claude-code was advice; now it is mandatory, on open and on push. Its advisory opening run doesn't count as its opening review.
   const g = world({ db: w.db, repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [{ ...CLAUDE, mandatory: true }] }] });
   g.pr(2, sha("2"));
-  assert.deepEqual(codes(g.engine.verdict(REPO, 2, sha("2"))), ["not_started"], "nothing has reviewed it under the new policy yet");
+  assert.deepEqual(codes(g.engine.verdict(REPO, 2, sha("2"))), ["not_started"], "the new mandatory reviewer hasn't reviewed it");
   await g.tick();
-  assert.deepEqual(g.started.map((s) => [label(s), s.incremental_from]), [["codex/medium", null], ["claude-code/high", null]], "the tier's full opening batch");
-  g.finish(0, NONE); g.finish(1, NONE); await g.tick();
+  assert.deepEqual(g.started.map((s) => [label(s), s.incremental_from, s.full]), [["claude-code/high", null, true]], "only the added combo, over the whole PR");
+  assert.deepEqual(codes(g.engine.verdict(REPO, 2, sha("2"))), ["running"]);
+  g.finish(0, NONE); await g.tick(); g.later(DEBOUNCE + 1); await g.tick();
+  assert.equal(g.started.length, 1, "once");
   assert.equal(g.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
   g.pr(2, sha("3")); await g.tick(); g.later(DEBOUNCE + 1); await g.tick();
-  assert.deepEqual(g.started.slice(2).map((s) => [label(s), s.incremental_from]), [["claude-code/high", sha("2")]], "the next push: the tier's push reviewer, incremental");
+  assert.deepEqual(g.started.slice(1).map((s) => [label(s), s.incremental_from]), [["claude-code/high", sha("2")]], "the next push: the tier's push reviewer, incremental");
 });
 
-test("risk tiers: each head runs its tier's reviewers; a pending head waits; a tier change gets the new tier's full opening batch, coming back too; a skip tier needs no review", async () => {
+test("a mandatory reviewer dropped while it is still running holds nothing; one added that returns a partial review takes back the head's completed evidence", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["running"], "claude-code still runs");
+  const g = world({ db: w.db, repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  g.pr(2, sha("2"));
+  assert.equal(g.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "the dropped reviewer doesn't hold the merge");
+
+  const a = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  await opened(a, 3, sha("3"));
+  a.finish(0, NONE); await a.tick();
+  assert.equal(a.engine.evidence(REPO, 3, sha("3")).kind, "completed");
+  const b = world({ db: a.db, repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  b.pr(3, sha("3")); await b.tick();
+  b.finish(0, { findings: [], coverage: { reviewed: ["a.ts"], excluded: [], incomplete: "1 of 2 finders didn't finish (timeout)" } }); await b.tick();
+  assert.equal(b.engine.verdict(REPO, 3, sha("3")).verdict, "pass");
+  assert.equal(b.engine.evidence(REPO, 3, sha("3")).kind, "exhausted", "the added reviewer's partial review isn't completed evidence");
+});
+
+test("risk tiers: each head runs its tier's reviewers; a pending head waits; a tier change gets the opening reviewers the PR lacks, coming back gets none again; a skip tier needs no review", async () => {
   const w = world({ repos: [{ repo: REPO, preset: "standard" }] });
   const tierOf = (head) => w.engine.verdict(REPO, 2, head).tier;
   await opened(w, 2, sha("2")); // 5 lines in a.ts by a member: trivial, one cheap review
@@ -1526,11 +1583,11 @@ test("risk tiers: each head runs its tier's reviewers; a pending head waits; a t
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"]);
   w.finish(1, NONE); w.finish(2, NONE); await w.tick();
   assert.deepEqual([w.engine.verdict(REPO, 2, sha("3")).verdict, w.engine.evidence(REPO, 2, sha("3")).kind], ["pass", "completed"]);
-  // Trimmed back to trivial: a new run of heads under trivial's policy, so its opening review runs again over the whole PR.
+  // Trimmed back to trivial: its opening reviewer already reviewed the PR and trivial has no push review, so nothing runs again.
   w.snaps.files.delete(2);
-  w.pr(2, sha("4")); await w.tick();
-  assert.deepEqual(w.started.slice(3).map((s) => [label(s), s.incremental_from]), [["codex/medium", null]]);
-  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("4"))), ["running"]);
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 3);
+  assert.deepEqual([w.engine.verdict(REPO, 2, sha("4")).tier.tier, w.engine.verdict(REPO, 2, sha("4")).verdict], ["trivial", "pass"]);
 
   // A repo whose rules send small PRs to skip: nothing runs, and the verdict passes needing no review.
   const s = world({ repos: [{ repo: REPO, rules: [{ when: { lines_max: 10 }, tier: "skip" }, { tier: "standard" }] }] });
