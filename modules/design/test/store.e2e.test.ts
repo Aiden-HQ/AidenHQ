@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { createMcp, serveMcp } from "../service/src/mcp.ts";
 import { designTools } from "../service/src/tools.ts";
-import { DAY, openStore } from "../service/src/store.ts";
+import { DAY, openStore, type Store } from "../service/src/store.ts";
+import { createPasses } from "../service/src/passes.ts";
+
+const tools = (store: Store) => designTools(store, { passes: createPasses({ store, apps: () => [], logins: () => ({}), fileTask: async () => ({ id: "t", agent: "a" }) }), apps: () => [], logins: () => ({}) });
 
 const png64 = Buffer.from("\x89PNG fake image bytes").toString("base64");
 const minimalReport = { version: 2, target: "http://acme.example.com", model: "m", captures: [], improvements: [], bugs: [], cost_usd: 0.42 };
@@ -14,7 +17,7 @@ const minimalReport = { version: 2, target: "http://acme.example.com", model: "m
 function setup() {
   let t = Date.UTC(2026, 10, 26);
   const store = openStore(mkdtempSync(join(tmpdir(), "design-")), () => t);
-  const handle = createMcp("design", designTools(store));
+  const handle = createMcp("design", tools(store));
   const as = (agent: string) => async (name: string, args: object) => {
     const out = (await handle({ id: 1, method: "tools/call", params: { name, arguments: args as Record<string, unknown> } }, async () => ({ agent, key: agent, name: agent, roles: [], task: "WOR-1", tool: name, call: "c", kind: "run" }))) as { result: { content: { text: string }[]; isError?: boolean } };
     const text = out.result.content[0]!.text;
@@ -49,7 +52,7 @@ test("a run's evidence round-trips and expires", async () => {
 
 test("an 8 MB evidence upload passes the HTTP endpoint and /healthz answers", async () => {
   const store = openStore(mkdtempSync(join(tmpdir(), "design-")));
-  const mcp = serveMcp(createMcp("design", designTools(store)), () => "k", async () => ({ agent: "reviewer", key: "reviewer", name: "r", roles: [], tool: "t", call: "c", kind: "run" }), 12 * 1024 * 1024);
+  const mcp = serveMcp(createMcp("design", tools(store)), () => "k", async () => ({ agent: "reviewer", key: "reviewer", name: "r", roles: [], tool: "t", call: "c", kind: "run" }), 12 * 1024 * 1024);
   const server = createServer(async (req, res) => { if (!(await mcp(req, res))) res.writeHead(req.url === "/healthz" ? 200 : 404).end(); });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
