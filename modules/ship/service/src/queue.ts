@@ -14,7 +14,7 @@ export interface QueueFacts { groupFailing?: string[]; onBase?: string[] }
 
 export type QueueNext =
   | { act: "nothing"; owner?: true }
-  | { act: "enqueue"; attempt: number; retried?: boolean }
+  | { act: "enqueue"; attempt: number; retried?: boolean; /** The previous attempt asked again for wait-free reasons (a pending request, an unread gate): it spends no repair round. */ pending?: boolean }
   | { act: "fix_ci"; failing: string[] }
   | { act: "wait"; why: string }
   | { act: "hold"; why: string; /** GitHub's own refusal, in words for the report. */ refused?: string };
@@ -38,7 +38,9 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   // Not queued (a refusal, an unanswered call that read back as not queued): a new attempt at the same head.
   // Ended by a pause or a stop (the adoption moved on): queued again now that it is worked again. Any other end (a refusal, a veto,
   // a call that read back as not queued) holds, never queued again at this head; the outcome is on the record.
-  if (r.state !== "done") return pending || /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
+  // A `ship-tier-pending` answer is not a refusal either: the head is asked again, and that ask is a wait's, not a repair's.
+  const later = pending || /^ship-generation|ship-tier-pending/.test(text);
+  if (r.state !== "done") return later ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried, pending: true } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
   // Queued, and open and out of the queue again: removed.
   const onBase = new Set(f.onBase ?? []);
   const own = (f.groupFailing ?? []).filter((n) => !onBase.has(n));
