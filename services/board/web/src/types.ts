@@ -20,11 +20,8 @@ export interface Assignee {
   engine?: "codex" | "codex-openrouter" | "claude" | "openrouter";
   defaultModel?: string;
   efforts?: string[];
-  /** A portrait: /crew/<avatar>.svg. Gone from the API (faces replace it); removed with its consumers. */
-  avatar?: string;
-  /** Its face's seed: the definition key (stable across renames), else the Paperclip id ("me" for the owner). Always sent;
-   * optional here until Task 4 moves the avatar consumers onto Face. */
-  seed?: string;
+  /** Its face's seed: the definition key (stable across renames), else the Paperclip id ("me" for the owner). */
+  seed: string;
   /** A teammate's face; none for "me" and hidden agents. */
   face?: RosterFace;
 }
@@ -189,7 +186,6 @@ export interface AgentProfile {
   id: string;
   key: string;
   name: string;
-  avatar?: string;
   teammate?: RosterTeammate;
   title: string | null;
   state: AgentState;
@@ -228,7 +224,6 @@ export interface RosterAgent {
   system: boolean;
   department: { id: string; name: string; description?: string; order: number };
   key?: string;
-  avatar?: string;
   teammate?: RosterTeammate;
   model: string | null;
   reportsTo: string | null;

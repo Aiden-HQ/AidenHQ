@@ -180,7 +180,6 @@ kbd {
 
 .avatar { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; font-size: var(--text-3xs); font-weight: 700; color: var(--on-solid); flex: none; }
 .avatar-me { background: var(--who-me); }
-.avatar.portrait { display: inline-block; object-fit: cover; background: var(--col); }
 
 /* ------------------------------------------------------------ menus, toasts */
 .menu-wrap { position: relative; }
@@ -680,7 +679,6 @@ kbd {
 .side-time { font-size: var(--text-2xs); color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
 .side-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--muted); }
 .side-chat .ts { font-size: var(--text-2xs); max-width: 150px; flex: 0 1 auto; min-width: 0; }
-.monogram { flex: none; }
 
 .ws-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; background: var(--surface); container-type: inline-size; }
 .conv-head { display: flex; align-items: center; gap: 12px; padding: 10px 20px; padding-top: max(10px, env(safe-area-inset-top)); border-bottom: 1px solid var(--border); min-width: 0; }
@@ -934,7 +932,6 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .fleet-row.nested > .fleet-main::before { content: ""; position: absolute; left: calc(20px + (var(--depth) - 1) * 28px + 17px); top: 0; bottom: 0; width: 1px; background: var(--border); }
 .fleet-row.team > .fleet-main { background: color-mix(in srgb, var(--hover) 55%, transparent); }
 .fleet-row.team > .fleet-main:hover, .fleet-row.team.open > .fleet-main { background: var(--hover); }
-.fleet-who .avatar, .fleet-who .avatar.portrait { width: 36px; height: 36px; font-size: var(--text-lg); }
 .fleet-row.busy .crew-portrait::before { inset: -3px; border-color: var(--working); border-right-color: transparent; animation: spin 1.4s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .fleet-row.busy .crew-portrait::before { animation: none; border-right-color: var(--working); } }
 .fleet-name { min-width: 0; display: grid; gap: 1px; }
@@ -1052,7 +1049,6 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 
 /* ------------------------------------------------------------ apps, activity, tasks */
 .column { max-width: 520px; }
-.monogram.portrait { display: inline-block; object-fit: cover; background: var(--surface-2); }
 
 /* Costs: overview tiles, spend over time by model, by model / agent / kind, a drill-down, and the folded estimate check.
    Series colours are categorical slots in fixed order (validated on --surface light and dark); text never wears them. */
@@ -1280,16 +1276,6 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 .run-err { flex-basis: 100%; padding-left: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------------ Settings (Settings.tsx): Chat's sidebar, one pane per category */
-/* ------------------------------------------------------------ agent faces (AgentAvatar, avatar.ts) */
-/* Each tone: a tinted disc with dark letters (light mode) or a deep disc with light letters (dark mode), 7:1 or better. */
-.agent-face { flex: none; display: inline-block; vertical-align: middle; border-radius: 50%; }
-.agent-face.portrait { object-fit: cover; background: var(--surface-2); }
-.agent-face.mono { overflow: hidden; background: none; }
-.agent-face.mono circle { fill: var(--tone-bg); }
-.agent-face.mono text { fill: var(--tone-fg); font-family: inherit; font-weight: 650; letter-spacing: -0.02em; }
-.agent-face.mono.front circle { fill: var(--accent); }
-.agent-face.mono.front text { fill: var(--accent-text); }
-
 /* ------------------------------------------------------------ loading (Skeleton.tsx) */
 /* Bones sit where the real content will, in the real layout classes, so nothing moves when data arrives. */
 .sk { display: block; width: 100%; height: 0.9em; border-radius: 6px; background: color-mix(in srgb, var(--text) 7%, transparent); position: relative; overflow: hidden; }

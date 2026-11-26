@@ -1,7 +1,17 @@
 // Items as tiles in a grid that adds columns as the screen grows. A tile is one target (the whole tile opens `href`, or
-// calls `onOpen` for a dialog) with its action raised above it, so a button inside stays its own target. Its monogram takes the item's tone (avatar.ts).
-import { initials, tone } from "../avatar";
-import { hueClass } from "./hue";
+// calls `onOpen` for a dialog) with its action raised above it, so a button inside stays its own target. Its monogram takes the item's tone (hue.ts).
+import { hueClass, tone } from "./hue";
+
+/** Up to two letters: the first of the first two words ("Slack Scout" → "SS"), else the first two of one ("Aiden" → "Ai"). */
+export function initials(name: string): string {
+  const words = name.replace(/^Engineer · /, "").trim().split(/[\s·_-]+/).filter((w) => /\p{L}|\d/u.test(w));
+  if (!words.length) return "?";
+  if (words.length === 1) {
+    const [a = "", b = ""] = [...words[0]!.replace(/[^\p{L}\d]/gu, "")];
+    return (a.toUpperCase() + b.toLowerCase()) || "?";
+  }
+  return words.slice(0, 2).map((w) => [...w.replace(/[^\p{L}\d]/gu, "")][0]?.toUpperCase() ?? "").join("") || "?";
+}
 
 /** A rounded square with the item's initials on its tone (ui/tokens.css .tone-0…7, 7:1 in both themes); "chief-of-staff" → "CS". */
 export function Monogram({ name, size = 32 }: { name: string; size?: number }) {

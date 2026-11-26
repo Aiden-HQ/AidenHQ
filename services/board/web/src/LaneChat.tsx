@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Markdown } from "./markdown";
-import { Composer, Monogram, portraitOf } from "./Workspace";
+import { Composer } from "./Workspace";
+import { AgentFace } from "./components";
 import type { Assignee, LaneAgent, LaneMessage } from "./types";
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
@@ -69,7 +70,7 @@ export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile
             ‹
           </button>
         )}
-        <Monogram name={agent.name} size={32} avatar={portraitOf(crew, agent.key)} />
+        <AgentFace crew={crew} agent={agent.id} name={agent.name} size={32} />
         <span className="conv-who">
           <span className="conv-name">{agent.name}</span>
           <span className="conv-title muted small">{replying ? "working…" : "fast chat"}</span>
@@ -83,7 +84,7 @@ export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile
             <div key={m.id} className={`msg ${m.role}`}>
               {m.role === "agent" && (
                 <div className="msg-who">
-                  <Monogram name={agent.name} size={26} avatar={portraitOf(crew, agent.key)} /> <b className="msg-name">{agent.name}</b> <span className="msg-time">{clock(m.at)}</span>
+                  <AgentFace crew={crew} agent={agent.id} name={agent.name} size={26} /> <b className="msg-name">{agent.name}</b> <span className="msg-time">{clock(m.at)}</span>
                 </div>
               )}
               <div className="bubble">

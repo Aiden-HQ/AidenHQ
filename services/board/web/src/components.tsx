@@ -2,17 +2,17 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { AgentAvatar } from "./AgentAvatar";
 import { ConnectButton } from "./Connect";
 import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
+import { Face, faceProps, type FaceState } from "./ui";
 import { TaskState } from "./ui/TaskState";
 import { SOURCE_NAMES, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn, untilLabel } from "./util";
 
-/** A crew member's portrait (or its monogram, AgentAvatar), or a letter for you. */
-export function Avatar({ assignee, size }: { assignee: Assignee | undefined; size?: number }) {
+/** A crew member's face (ui/Face: its kit or shipped image, by its seed), or a letter for you. */
+export function Avatar({ assignee, size = 18, state }: { assignee: Assignee | undefined; size?: number; state?: FaceState }) {
   if (!assignee) return null;
-  if (assignee.kind !== "me") return <AgentAvatar className="avatar" name={shortName(assignee)} portrait={assignee.avatar} size={size} title={assignee.name} />;
+  if (assignee.kind !== "me") return <Face seed={assignee.seed} {...faceProps(assignee.face)} state={state} size={size} label={assignee.name} />;
   const style = size ? { width: size, height: size, fontSize: Math.round(size * 0.5) } : undefined;
   return (
     <span className="avatar avatar-me" title={assignee.name} style={style}>
@@ -23,11 +23,25 @@ export function Avatar({ assignee, size }: { assignee: Assignee | undefined; siz
 
 const STATE_WORDS: Record<CrewState, string> = { needs: "needs you", failed: "got stuck", working: "working", queued: "queued", waiting: "waiting", done: "done" };
 
-/** A crew member's portrait with a ring for where they stand. */
+/** An agent's face seed and face, found in the crew by its Paperclip id, then its name; one not found (a deleted agent) is seeded by its name. */
+export const faceOf = (crew: Assignee[], keyOrName: string) => {
+  const a = crew.find((c) => c.key === keyOrName) ?? crew.find((c) => c.name === keyOrName);
+  return { seed: a?.seed ?? keyOrName, face: a?.face };
+};
+
+/** An agent's face (ui/Face), looked up in the crew by its Paperclip id or name. */
+export function AgentFace({ crew, agent, name, size = 28 }: { crew: Assignee[]; agent: string; name: string; size?: number }) {
+  const f = faceOf(crew, agent);
+  return <Face seed={f.seed} {...faceProps(f.face)} size={size} label={name} />;
+}
+
+const FACE_STATE: Record<CrewState, FaceState> = { needs: "needs", failed: "idle", working: "working", queued: "working", waiting: "idle", done: "idle" };
+
+/** A crew member's face with a ring for where they stand. */
 export function CrewAvatar({ member, assignee, size }: { member: Pick<CrewMember, "state" | "since">; assignee: Assignee | undefined; size?: number }) {
   return (
     <span className={`crew-av st-${member.state}`} title={`${shortName(assignee)}: ${STATE_WORDS[member.state]}${member.state === "working" && member.since ? ` · ${elapsed(member.since)}` : ""}`}>
-      <Avatar assignee={assignee} size={size} />
+      <Avatar assignee={assignee} size={size ?? 22} state={FACE_STATE[member.state]} />
       <span className="pip" />
     </span>
   );

@@ -34,7 +34,7 @@ const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, em
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
 const LANE: Record<string, string> = { owner_wait: "needs_you", card_owner: "needs_you", handback: "needs_you", job_running: "working", failed: "blocked", blocked: "blocked", unknown: "blocked", orphaned: "blocked", history_expired: "blocked", unpolled: "blocked", scheduled: "idle", backlog: "idle", owner_task: "idle", chat_turn: "idle", closed: "done", cancelled: "done" };
 const st = (kind: string, reason: string, o: Record<string, unknown> = {}) => ({ task: "t", identifier: null as string | null, kind, reason, since: ago(30), holder: null, attention: [] as unknown[], lane: LANE[reason] ?? "waiting", ...o });
-const ASK = st("waiting", "owner_wait", { since: ago(120), question: "Which week should I compare against?", attention: [A("owner", "owner_wait", "wait:t")] });
+const ASK = st("waiting", "owner_wait", { since: ago(120), question: "Which week should I compare against?", detail: "Hi Jonas, a quick nudge on the signed contract from last week. Could you send it over by Friday? Thanks!", attention: [A("owner", "owner_wait", "wait:t")] });
 const CARD = st("waiting", "card_owner", { since: ago(9), ref: "record:k-00000000000000a1", refLabel: "Deploy the invoices app at 4e1a9c2", attention: [A("owner", "card", "record:k-00000000000000a1")] });
 const WORKING_CARD = st("working", "job_running", { since: ago(12), stage: "CI running", ref: "job:j-2", lane: "needs_you", attention: [A("owner", "card", "record:k-00000000000000a2")] });
 const FAILED = st("idle", "failed", { since: ago(8), ref: "job:j-1", refLabel: "timed out", attention: [A("agent", "failed", "job:j-1")] });
@@ -62,16 +62,28 @@ const named = <T extends object>(identifier: string, state: T) => ({ ...state, i
 
 const dept = (id: string, name: string, order: number) => ({ id, name, order });
 const OPS = dept("ops", "Chief of staff", 0), ENG = dept("eng", "Engineering", 1), DESK = dept("desk", "Desk", 2);
+// A teammate's block as the roster sends it (activity.ts teammateOf); its kit spec as in its module's AGENTS.md.
+const kit = (hair: string, accessory: string, body: string, n: number, hairColor = n) => ({ kit: { hair, accessory, body, skin: n, hair_color: hairColor, palette: n } });
+const mate = (job: string, sample: string, face: unknown, staff: string[] = [], controls: string[] = []) => ({ job, sample, staff, controls, face });
+const idle = { running: 0, queued: 0, workingSince: null, schedules: [] as { title: string; paused: boolean; nextRunAt: string | null }[], lastRunAt: ago(90), lastRunStatus: "succeeded" };
 const roster = [
-  { id: "a1", key: "aiden", name: "Aiden", title: "Chief of staff", system: false, department: OPS, avatar: "chief-of-staff", model: "deepseek-flash", reportsTo: null, state: "working", running: 1, queued: 0, workingSince: ago(3), schedules: [{ title: "Morning brief", paused: false, nextRunAt: ahead(600) }], lastRunAt: ago(3), lastRunStatus: "succeeded" },
-  { id: "a2", key: "open-loops", name: "Open Loops", title: "Follow-ups and promises", system: false, department: OPS, avatar: "open-loops", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Sweep", paused: false, nextRunAt: ahead(25) }], lastRunAt: ago(35), lastRunStatus: "succeeded" },
-  { id: "a3", key: "engineer", name: "Engineer", title: "Builds and fixes code", system: false, department: ENG, avatar: "engineer", model: "deepseek-flash", reportsTo: "a1", state: "working", running: 3, queued: 1, workingSince: ago(12), schedules: [], lastRunAt: ago(12), lastRunStatus: "succeeded", maxParallel: 4 },
-  { id: "a4", key: "platform-engineer", name: "Platform Engineer", title: "Keeps the fleet healthy", system: false, department: ENG, avatar: "platform-engineer", model: "deepseek-flash", reportsTo: "a1", state: "failing", stateNote: "Last 2 runs failed", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Health check", paused: false, nextRunAt: ahead(48) }], lastRunAt: ago(50), lastRunStatus: "failed" },
-  { id: "a5", key: "ui-designer", name: "UI Designer", title: "Designs app screens", system: false, department: ENG, avatar: "ui-designer", model: "deepseek-flash", reportsTo: "a3", state: "queued", running: 0, queued: 2, workingSince: null, schedules: [], lastRunAt: ago(240), lastRunStatus: "succeeded" },
-  { id: "a6", key: "email-triage", name: "Email Triage", title: "Sorts the inbox", system: false, department: DESK, avatar: "email-triage", model: "deepseek-flash", reportsTo: "a1", state: "paused", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Inbox pass", paused: true, nextRunAt: null }], lastRunAt: ago(1440), lastRunStatus: "succeeded" },
-  { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "working", running: 1, queued: 0, workingSince: null, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
-  { id: "a9", key: "session", name: "Session", title: "Long-lived coding sessions", system: false, department: ENG, avatar: "engineer", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [], lastRunAt: ago(20), lastRunStatus: "succeeded", maxParallel: 8 },
-  { id: "a8", key: "researcher", name: "Researcher", title: "Research and drafts", system: true, department: OPS, avatar: "aiden", model: "deepseek-flash", reportsTo: null, state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Process task replies", paused: true, nextRunAt: null }], lastRunAt: ago(60), lastRunStatus: "succeeded" },
+  { id: "a1", key: "aiden", name: "Aiden", title: "Chief of staff", system: false, department: OPS, teammate: mate("Chief of staff", "Four things need you. The rest is handled.", kit("short", "none", "tie", 0), ["inbox-agent"], ["chief-of-staff", "owner-channel"]), model: "deepseek-flash", reportsTo: null, state: "working", running: 1, queued: 0, workingSince: ago(3), schedules: [{ title: "Morning brief", paused: false, nextRunAt: ahead(600) }], lastRunAt: ago(3), lastRunStatus: "succeeded" },
+  { id: "a2", key: "open-loops", name: "Tess", title: "Follow-ups and promises", system: false, department: OPS, teammate: mate("Follow-up chaser", "Jonas Weber still owes you the signed contract (5 days). Chaser drafted for you to send.", kit("long", "headset", "none", 1)), model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Sweep", paused: false, nextRunAt: ahead(25) }], lastRunAt: ago(35), lastRunStatus: "succeeded" },
+  { id: "a7", key: "meetings", name: "Nora", title: "Notes from every meeting", system: false, department: DESK, teammate: mate("Meeting notes", "Leadership sync: 4 actions, 2 are yours, due Friday.", kit("long", "pencil", "notepad", 2)), model: "deepseek-flash", reportsTo: "a1", state: "working", running: 1, queued: 0, workingSince: null, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
+  { id: "a10", key: "reviewer-manager", name: "Max", title: "Reviews pull requests", system: false, department: ENG, teammate: mate("PR reviewer", "PR #812: 2 findings, one real bug. Fix suggested.", kit("spiky", "glasses", "none", 3), [], ["code-review"]), model: "deepseek-flash", reportsTo: "a1", state: "working", ...idle, running: 1, workingSince: ago(6) },
+  { id: "a11", key: "ship", name: "Sam", title: "How your pull requests ship", system: false, department: ENG, teammate: mate("Release manager", "Invoices export v2 merged at 06:10.", kit("short", "cap", "none", 4), [], ["ship"]), model: "deepseek-flash", reportsTo: "a1", state: "idle", ...idle },
+  { id: "a12", key: "maintainer", name: "Mia", title: "Keeps your repos tidy", system: false, department: ENG, teammate: mate("Repo maintainer", "3 bugs triaged, 1 fix merged this week.", kit("bun", "none", "badge", 5)), model: "deepseek-flash", reportsTo: "a1", state: "idle", ...idle },
+  { id: "a13", key: "app-maintainer", name: "Iris", title: "Builds and runs your apps", system: false, department: ENG, teammate: mate("App builder", "Hiring pipeline board, fed by recruiter emails.", kit("curly", "earrings", "none", 6), ["engineer", "ui-designer"], ["apps-platform"]), model: "deepseek-flash", reportsTo: "a1", state: "queued", ...idle, queued: 1 },
+  { id: "a14", key: "architect", name: "Archie", title: "Designs new agents", system: false, department: OPS, teammate: mate("Agent Architect", "Board prep: a one-page brief the day before.", kit("short", "hard-hat", "none", 7)), model: "deepseek-flash", reportsTo: "a1", state: "idle", ...idle },
+  { id: "a15", key: "security-watch", name: "Vik", title: "Watches for vulnerabilities", system: false, department: ENG, teammate: mate("Security", "1 high CVE in an image you run. Fix PR ready.", kit("short", "headband", "shield", 8, 0)), model: "deepseek-flash", reportsTo: "a1", state: "failing", stateNote: "Last scan failed", ...idle, lastRunStatus: "failed" },
+  { id: "a8", key: "researcher", name: "Rhea", title: "Research and drafts", system: true, department: OPS, teammate: mate("Researcher", "Weekly metrics digest, every Monday.", kit("long", "round-glasses", "none", 9, 8)), model: "deepseek-flash", reportsTo: null, state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Process task replies", paused: true, nextRunAt: null }], lastRunAt: ago(60), lastRunStatus: "succeeded" },
+  { id: "a16", key: "acme-bot", name: "Acme Bot", title: "A local teammate with its own picture", system: false, department: DESK, teammate: mate("Invoice desk", "Three invoices matched to payments today.", { src: "/api/faces/acme-bot" }), model: "deepseek-flash", reportsTo: "a1", state: "idle", ...idle },
+  // Hidden staff (no teammate block): drawn from the seed.
+  { id: "a3", key: "engineer", name: "Engineer", title: "Builds and fixes code", system: false, department: ENG, model: "deepseek-flash", reportsTo: "a1", state: "working", running: 3, queued: 1, workingSince: ago(12), schedules: [], lastRunAt: ago(12), lastRunStatus: "succeeded", maxParallel: 4 },
+  { id: "a4", key: "platform-engineer", name: "Platform Engineer", title: "Keeps the fleet healthy", system: false, department: ENG, model: "deepseek-flash", reportsTo: "a1", state: "failing", stateNote: "Last 2 runs failed", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Health check", paused: false, nextRunAt: ahead(48) }], lastRunAt: ago(50), lastRunStatus: "failed" },
+  { id: "a5", key: "ui-designer", name: "UI Designer", title: "Designs app screens", system: false, department: ENG, model: "deepseek-flash", reportsTo: "a3", state: "queued", running: 0, queued: 2, workingSince: null, schedules: [], lastRunAt: ago(240), lastRunStatus: "succeeded" },
+  { id: "a6", key: "inbox-agent", name: "Intake", title: "Sorts what comes in", system: false, department: DESK, model: "deepseek-flash", reportsTo: "a1", state: "paused", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Inbox pass", paused: true, nextRunAt: null }], lastRunAt: ago(1440), lastRunStatus: "succeeded" },
+  { id: "a9", key: "session", name: "Session", title: "Long-lived coding sessions", system: false, department: ENG, model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [], lastRunAt: ago(20), lastRunStatus: "succeeded", maxParallel: 8 },
 ];
 
 const CARD_STATES: Record<number, ReturnType<typeof st>> = { 812: STATES.orphaned, 815: ASK, 790: WORKING_CARD, 801: STATES.queued, 802: FAILED, 770: STATES.scheduled, 700: STATES.agentWait, 705: UNKNOWN, 600: STATES.backlog };
@@ -169,7 +181,7 @@ const board = () => ({
   },
   brief: null, done: [], recurring: [],
   work: mock.empty ? [] : WORK(), asOf: new Date().toISOString(), incomplete: false, projects: mock.empty ? [] : PROJECTS,
-  assignees: [{ key: "me", kind: "me", name: "Me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : a.key === "researcher" ? "assistant" : "agent", name: a.name, avatar: a.avatar, ...(a.key === "engineer" ? { defaultModel: "openrouter/~deepseek/deepseek-flash-latest", efforts: ["low", "medium", "high"] } : {}) }))],
+  assignees: [{ key: "me", kind: "me", name: "Me", seed: "me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : a.key === "researcher" ? "assistant" : "agent", name: a.name, seed: a.key, ...(a.teammate ? { face: a.teammate.face } : {}), ...(a.key === "engineer" ? { defaultModel: "openrouter/~deepseek/deepseek-flash-latest", efforts: ["low", "medium", "high"] } : {}) }))],
   labels: mock.empty ? [] : LABELS, prefix: "WOR", timezone: "Asia/Dubai", slackTeams: {}, rollsOn: "Monday", rollsTomorrow: true, agentsActive: 4,
   spend: { day: { spent: 3.42, cap: 50 }, month: { spent: 61.2, cap: 1000 } }, google: null, signIns: [],
 });
@@ -199,7 +211,7 @@ const chatRows = () => mock.empty ? [] : [
   { identifier: "WOR-818", title: "Build a small app that tracks invoices", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-818", CARD), updatedAt: ago(9), preview: { text: "The app is ready; the deploy waits on your approval.", at: ago(9), from: "agent" }, unread: true },
   { identifier: "WOR-815", title: "Weekly metrics digest looks off", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-815", ASK), updatedAt: ago(40), preview: { text: "Which week should I compare against?", at: ago(40), from: "agent" }, unread: false },
   { identifier: "WOR-803", title: "Ship the invoices app's export", open: true, agent: { key: "engineer", name: "Engineer" }, state: named("WOR-803", STATES.running), updatedAt: ago(5), preview: { text: "Running the export tests.", at: ago(5), from: "agent" }, unread: false },
-  { identifier: "WOR-811", title: "Summarise yesterday's leadership sync", open: true, agent: { key: "meeting-librarian", name: "Meeting Librarian" }, state: named("WOR-811", STATES.done), updatedAt: ago(180), preview: { text: "Summary posted with 4 action items.", at: ago(180), from: "agent" }, unread: false },
+  { identifier: "WOR-811", title: "Summarise yesterday's leadership sync", open: true, agent: { key: "meetings", name: "Nora" }, state: named("WOR-811", STATES.done), updatedAt: ago(180), preview: { text: "Summary posted with 4 action items.", at: ago(180), from: "agent" }, unread: false },
   { identifier: "WOR-806", title: "Why did the health check fail?", open: true, agent: { key: "platform-engineer", name: "Platform Engineer" }, state: named("WOR-806", FAILED), updatedAt: ago(52), preview: { text: "Timed out after 30 minutes.", at: ago(52), from: "agent" }, unread: false },
   { identifier: "WOR-799", title: "Draft a reply to the hiring agency", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-799", STATES.chatTurn), updatedAt: ago(1500), preview: { text: "Sent.", at: ago(1500), from: "you" }, unread: false },
 ];
@@ -220,7 +232,7 @@ const chatDetail = (ref: string) => {
     messages: [
       { kind: "owner", id: "m1", text: row.title, at: ago(15) },
       { kind: "reply", id: "m2", agent: row.agent.name, text: "On it. I'll check both calendars and propose **three slots** that avoid your focus blocks.\n\n- Tuesday 10:00\n- Wednesday 14:30\n- Thursday 09:00", at: ago(12), run: { id: "j-bbbbbbbbbbbbbbbb", seconds: 372, trigger: "Your comment" } },
-      { kind: "notes", id: "m3", agent: row.agent.name, at: ago(10), notes: [{ by: "Aiden", text: "Asked Open Loops whether Sam has a pending thread.", at: ago(10) }] },
+      { kind: "notes", id: "m3", agent: row.agent.name, at: ago(10), notes: [{ by: "Aiden", text: "Asked Tess whether Sam has a pending thread.", at: ago(10) }] },
       { kind: "owner", id: "m4", text: "Wednesday works best, but keep it to 30 minutes.", at: ago(6) },
       { kind: "reply", id: "m5", agent: row.agent.name, text: "Got it: Wednesday 14:30 for 30 minutes. Which title should the invite carry?", at: ago(2), run: { id: "j-cccccccccccccccc", seconds: 41, trigger: "Schedule: daily-brief" }, questions: [{ question: "Invite title", options: ["Sam / sync", "Q1 planning", "Catch-up"] }] },
     ],
@@ -267,7 +279,7 @@ const modules = () => [
   moduleRow("engineering", "Engineers that build and fix code in your repos.", "on", { agents: ["engineer", "ui-designer"], connections: ["github"] }),
   moduleRow("apps-platform", "Runs the apps agents build, each in its own sandbox.", "dependency", { neededBy: ["engineering"] }),
   moduleRow("google", "Gmail and Calendar for every agent you grant.", "on", { connections: ["google_workspace"], setup: "google" }),
-  moduleRow("meetings", "Notes and action items from every meeting.", "off", { agents: ["meeting-librarian"] }),
+  moduleRow("meetings", "Notes and action items from every meeting.", "off", { agents: ["meetings"] }),
 ];
 
 const settingsData = () => ({
@@ -306,7 +318,7 @@ const connections = () => ({
   compiled: true, sourcesError: false,
   connections: [
     { name: "google_workspace", module: "google", kind: "connection", transport: "http", tools: { read: 14, write: 6 }, grants: [{ agent: "aiden", name: "Aiden", access: "write", tools: 20 }], setup: "google", probe: { ok: true, checkedAt: ago(2) }, signIn: null, google: { accounts: [{ email: "alex@example.com", primary: true, state: "ok", since: ago(5000) }] } },
-    { name: "slack", module: "open-loops", kind: "connection", transport: "http", tools: { read: 9, write: 3 }, grants: [{ agent: "open-loops", name: "Open Loops", access: "read", tools: 9 }], setup: null, probe: { ok: true, checkedAt: ago(2) }, signIn: { state: "ok", configured: true, since: ago(9000) } },
+    { name: "slack", module: "open-loops", kind: "connection", transport: "http", tools: { read: 9, write: 3 }, grants: [{ agent: "open-loops", name: "Tess", access: "read", tools: 9 }], setup: null, probe: { ok: true, checkedAt: ago(2) }, signIn: { state: "ok", configured: true, since: ago(9000) } },
     { name: "github", module: "engineering", kind: "connection", transport: "http", tools: { read: 22, write: 11 }, grants: [], setup: null, probe: { ok: false, status: 401, detail: "Token expired", checkedAt: ago(2) }, signIn: { state: "expired", configured: true, since: ago(60) } },
     { name: "jira", module: "engineering", kind: "connection", transport: "http", tools: { read: 7, write: 2 }, grants: [], setup: null, probe: null, signIn: { state: "missing", configured: false, since: ago(60) } },
     { name: "paperclip_tasks", module: "core", kind: "connection", transport: "stdio", tools: { read: 5, write: 5 }, grants: [], setup: null, probe: null, signIn: null },
@@ -316,7 +328,7 @@ const connections = () => ({
 
 const profile = (key: string) => {
   const a = roster.find((r) => r.key === key) ?? roster[0]!;
-  return { id: a.id, key: a.key, name: a.name, avatar: a.avatar, title: a.title, state: a.state, stateNote: a.stateNote, model: a.model, effort: "high", reportsTo: a.reportsTo, source: { module: "core", marketplace: "aidenhq", tier: "official", revision: "a1b2c3d" }, schedules: a.schedules };
+  return { id: a.id, key: a.key, name: a.name, ...(a.teammate ? { teammate: a.teammate } : {}), title: a.title, state: a.state, stateNote: a.stateNote, model: a.model, effort: "high", reportsTo: a.reportsTo, source: { module: "core", marketplace: "aidenhq", tier: "official", revision: "a1b2c3d" }, schedules: a.schedules };
 };
 const days = Array.from({ length: 7 }, (_, i) => new Date(now - (6 - i) * 86_400_000).toISOString().slice(0, 10));
 
@@ -536,20 +548,20 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/chats": return [200, { chats: chatRows(), agents: [{ key: "aiden", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];
     case "/api/needs-you": return [200, mock.empty ? { counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, approvals: 0, items: [] } : { counts: { needs_you: 6, failed: 1, unexplained_idle: 3 }, approvals: 2, items: [
-      { identifier: "WOR-801", title: "Brief decisions", agent: "Aiden", state: named("WOR-801", ASK), ask: { question: "Ship the weekly digest now, or wait for the corrected data?", waitSince: ago(120), questions: [{ question: "Ship the weekly digest now, or wait for the corrected data?", options: ["Wait for the corrected data", "Ship it now"] }] } },
+      { identifier: "WOR-801", title: "Chase Jonas for the signed contract", agent: "Tess", state: named("WOR-801", ASK), ask: { question: "Send this chaser to Jonas?", detail: "Hi Jonas, a quick nudge on the signed contract from last week. Could you send it over by Friday? Thanks!", waitSince: ago(120), questions: [{ question: "Send this chaser to Jonas?", options: ["Send", "Not now"] }] } },
       { identifier: "WOR-815", title: "Weekly metrics digest looks off", agent: "Aiden", state: named("WOR-815", ASK), ask: { question: "A few things before I rebuild the digest.", waitSince: ago(75), questions: [{ question: "Which week should I compare against?", options: ["Last week", "Same week last month"] }, { question: "Which channels should get it?", options: ["#metrics", "#leads", "#exec"], multi: true }] } },
       { identifier: "WOR-821", title: "Design the invoice screens", agent: "UI Designer", state: named("WOR-821", ASK), ask: { question: "What should the empty invoice list say?", waitSince: ago(30), questions: [{ question: "What should the empty invoice list say?", options: [] }] } },
       { identifier: "WOR-790", title: "Fix the sbom job", agent: "Engineer", state: named("WOR-790", { ...WORKING_CARD, refLabel: "approve the push to main" }) },
       { identifier: "WOR-795", title: "A task handed back to you", agent: "Engineer", state: named("WOR-795", STATES.handback) },
-      { identifier: "WOR-802", title: "Slack ingest", agent: "Open Loops", state: named("WOR-802", FAILED) },
+      { identifier: "WOR-802", title: "Slack ingest", agent: "Tess", state: named("WOR-802", FAILED) },
       { identifier: "WOR-705", title: "Primer lint", agent: "Engineer", state: named("WOR-705", UNKNOWN) },
-      { identifier: "WOR-812", title: "Reply to Acme's renewal question", agent: "Open Loops", state: named("WOR-812", STATES.orphaned) },
+      { identifier: "WOR-812", title: "Reply to Acme's renewal question", agent: "Tess", state: named("WOR-812", STATES.orphaned) },
       { identifier: "WOR-650", title: "An old task whose history expired", agent: "Engineer", state: named("WOR-650", EXPIRED) },
     ] }];
     case "/api/approvals": return [200, { approvals: approvals() }];
 
     case "/api/agents/roster": return [200, { roster: mock.empty ? roster.slice(0, 1) : roster }];
-    case "/api/agents": return [200, { sessions: [{ id: "s1", agent: "Engineer", agentId: "a3", state: "working", startedAt: ago(12), said: "Running the export tests", run: { identifier: "WOR-790", title: "Ship the invoices app's export" }, tasks: [] }, { id: "s2", agent: "Meeting Librarian", agentId: "a7", state: "working", startedAt: ago(3), said: "Summarising the leadership sync", run: { identifier: "WOR-840", title: "Summarise yesterday's leadership sync and file the four action items with their owners" }, tasks: [] }], finished: [], roster }];
+    case "/api/agents": return [200, { sessions: [{ id: "s1", agent: "Engineer", agentId: "a3", state: "working", startedAt: ago(12), said: "Running the export tests", run: { identifier: "WOR-790", title: "Ship the invoices app's export" }, tasks: [] }, { id: "s2", agent: "Nora", agentId: "a7", state: "working", startedAt: ago(3), said: "Summarising the leadership sync", run: { identifier: "WOR-840", title: "Summarise yesterday's leadership sync and file the four action items with their owners" }, tasks: [] }], finished: [], roster }];
     case "/api/apps": return [200, { apps: apps() }];
     case "/api/app-admins": return [200, { apps: [] }];
     case "/api/modules": return [200, { modules: modules(), advisories: [] }];

@@ -60,7 +60,7 @@
   --hue-6: light-dark(#7048e8, #b197fc);
   --hue-7: light-dark(#5c6773, #a5b0bc);
 
-  /* Monogram and avatar tones (avatar.ts): 7:1 text on its fill in both themes. */
+  /* Monogram tones (ui/hue.ts tone): 7:1 text on its fill in both themes. */
   --tone-0-bg: light-dark(#dbe4ff, #22305c); --tone-0-fg: light-dark(#1e3a8a, #c9d6ff);
   --tone-1-bg: light-dark(#d3f3ee, #173f3a); --tone-1-fg: light-dark(#0f4f45, #b5eee4);
   --tone-2-bg: light-dark(#dcf2d9, #1f3d22); --tone-2-fg: light-dark(#1f5420, #c3ecbf);

@@ -2,10 +2,9 @@
 // (opened by itself when one of them waits on an approval, with the Approvals page's card in that row), and the side chat:
 // a question about a task, answered by a model, never posted on the task and never waking its agent.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { ApprovalCard } from "./Chat";
-import { CloseIcon } from "./components";
+import { AgentFace, CloseIcon } from "./components";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import type { AsideMessage, Assignee, Lineage, LineageRow } from "./types";
@@ -90,10 +89,6 @@ export function LineageStrip({ data, refId, title, agent, crew, prefix, href, on
     setUnfolded((u) => new Set([...u, ...pending.split(",")]));
   }, [pending]);
   const shown = table ?? Boolean(pending);
-  const portrait = (name: string) => {
-    const a = crew.find((c) => c.name === name);
-    return a?.avatar;
-  };
   if (!rows.length) return null;
   const t = data!.total;
   const open = (target: Target, el: HTMLElement) => setAsk({ target, anchor: el.getBoundingClientRect(), drawer: false });
@@ -108,7 +103,7 @@ export function LineageStrip({ data, refId, title, agent, crew, prefix, href, on
           </button>
         )}
         <span className="lin-ag">
-          <AgentAvatar name={r.agent} portrait={portrait(r.agent)} size={18} />
+          <AgentFace crew={crew} agent={r.agent} name={r.agent} size={18} />
           {r.agent}
         </span>
       </td>
@@ -159,7 +154,7 @@ export function LineageStrip({ data, refId, title, agent, crew, prefix, href, on
             const tone = waitsOnApproval(r) ? "needs" : r.state ? stateWords(r.state).tone : "idle";
             return (
               <button key={r.identifier} className={`lin-chip s-${tone}`} title={`${r.agent}: ${r.title}${r.state ? ` (${stateWords(r.state).word}${stateWords(r.state).detail ? `: ${stateWords(r.state).detail}` : ""})` : ""}`} onClick={() => setTable(!shown)}>
-                <AgentAvatar name={r.agent} portrait={portrait(r.agent)} size={18} />
+                <AgentFace crew={crew} agent={r.agent} name={r.agent} size={18} />
                 <span className="lin-chip-name">{r.agent}</span>
                 <span className="lin-c">
                   {r.children.length > 0 && `+${r.children.length}`}
