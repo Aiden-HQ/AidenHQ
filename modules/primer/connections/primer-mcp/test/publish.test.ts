@@ -38,9 +38,9 @@ describe("primer.publish executor", () => {
     expect((await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", own: true }, requester: agent, task: "T-2" })).raise?.tier).toBe(2);
     const vouched = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", own: true }, requester, task: "T-1" });
     expect([vouched.raise, (vouched.args as any).own]).toEqual([undefined, true]);
-    // The agent learns the version Primer made and what became of each change.
+    // The agent learns the version Primer made, and by its place in the version, what became of each change.
     expect(await ex.execute({ id: "k-0000000000000002", kind: "primer.publish", args: v.args, digest: "d", idempotency_key: "k-0000000000000002" })).toEqual({
-      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\n1 of the 3 changed parts became suggestions for a person to decide (for example because people edited them since you read the document). Leave them to the person: publishing the same change again adds nothing. 2 changed parts went in as written.',
+      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\nOf the 3 changed parts: part 1 went in as written; part 2 went in as written; part 3 became a suggestion for a person to decide, so leave it to them (publishing it again adds nothing).',
     });
     expect(calls.at(-1)).toEqual(["primer_add_version", { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2", baseVersionNumber: 3 }]);
   });
@@ -57,6 +57,27 @@ describe("primer.publish executor", () => {
     expect((await version(run, "T-1")).raise).toBeUndefined();
     expect((await version(run, "T-2")).raise?.tier).toBe(2);
     expect((await version({ ...run, agent: "a2" }, "T-1")).raise?.tier).toBe(2);
+  });
+
+  it("tells a mixed round's parts apart by place, with Primer's own reason for a conflict and no ids", async () => {
+    const made = (reconciliation: unknown) => publisher(async () => ({ text: JSON.stringify({ versionNumber: 7, versionId: "v-7", url: "https://primer.example/d/01a1-doc0/v/7", reconciliation }) }), memory());
+    const run = (ex: ReturnType<typeof publisher>) =>
+      ex.execute({ id: "k-0000000000000004", kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", format: "markdown" }, digest: "d", idempotency_key: "k-0000000000000004" });
+    const outcomes = [
+      { index: 0, status: "applied" },
+      { index: 1, status: "suggested", suggestionId: "s-1" },
+      { index: 2, status: "conflict", refusal: { code: "target_changed", message: "Block b-9 changed since you read it.", fix: "Read the block again and retry with its current version.", details: { blockId: "b-9", version: "abc" } } },
+      { index: 3, status: "conflict", refusal: { code: "invalid_op", message: "The edit would leave the document invalid.", fix: "Change the op so every block keeps a valid place." } },
+    ];
+    expect((await run(made({ docVersion: 12, outcomes }))).text).toBe(
+      "New version v7 on Primer (document 01a1-doc0, version v-7): https://primer.example/d/01a1-doc0/v/7\nOf the 4 changed parts: part 1 went in as written; part 2 became a suggestion for a person to decide, so leave it to them (publishing it again adds nothing); part 3 conflicted with people's edits and was not applied (the text changed since you read it), so read the live document and change it from its current text; part 4 conflicted with people's edits and was not applied (Change the op so every block keeps a valid place.), so read the live document and change it from its current text.",
+    );
+    // No version made: nothing was written, and a conflict is not a suggestion.
+    const gone = { code: "target_changed", message: "Block b-9 no longer exists.", fix: "Read the block again and retry with its current version.", details: { blockId: "b-9", version: null } };
+    const none = await run(publisher(async () => ({ text: JSON.stringify({ url: "https://primer.example/d/01a1-doc0", reconciliation: { docVersion: 12, outcomes: [{ index: 0, status: "conflict", refusal: gone }] } }) }), memory()));
+    expect(none.text).toBe("No new version on Primer (document 01a1-doc0): nothing was applied: https://primer.example/d/01a1-doc0\nOf the 1 changed part, none was written: part 1 conflicted with people's edits and was not applied (the text is gone from the document), so read the live document and change it from its current text.");
+    // Every part applied: nothing extra to say.
+    expect((await run(made({ docVersion: 12, outcomes: [{ index: 0, status: "applied" }] }))).text).toBe("New version v7 on Primer (document 01a1-doc0, version v-7): https://primer.example/d/01a1-doc0/v/7");
   });
 
 });

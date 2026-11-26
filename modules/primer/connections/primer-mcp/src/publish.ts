@@ -60,24 +60,39 @@ export function versionResult(documentId: string, text: string): string {
     return `New version on Primer (document ${documentId}). Primer answered: ${text.slice(0, 1500)}`;
   }
   const head = j?.versionNumber ? `New version v${j.versionNumber} on Primer (document ${documentId}, version ${j.versionId ?? "?"})` : `No new version on Primer (document ${documentId}): nothing was applied`;
-  return `${head}${j?.url ? `: ${j.url}` : "."}${reconciled(j?.reconciliation, Boolean(j?.versionNumber))}`;
+  return `${head}${j?.url ? `: ${j.url}` : "."}${reconciled(j?.reconciliation)}`;
 }
 
-/** What became of each changed part, in words (Primer's per-part status: applied, suggested or conflict). Nothing for a shape it doesn't know. */
-function reconciled(rec: any, made: boolean): string {
-  const parts: any[] = Array.isArray(rec) ? rec : Object.values(rec ?? {}).find(Array.isArray) ?? [];
-  const n = (s: string) => parts.filter((p) => p?.status === s);
-  const [applied, suggested, conflict] = [n("applied"), n("suggested"), n("conflict")];
-  if (!suggested.length && !conflict.length) return "";
-  const lines: string[] = [];
-  const total = parts.length;
-  if (suggested.length) lines.push(`${suggested.length} of the ${total} changed parts ${made ? "became suggestions for a person to decide" : "are now suggestions for a person to decide"} (for example because people edited them since you read the document). Leave them to the person: publishing the same change again adds nothing.`);
-  if (conflict.length) {
-    const named = conflict.map((c) => (typeof c?.note === "string" ? c.note : typeof c?.text === "string" ? c.text : "")).filter(Boolean).map((t) => `"${t.slice(0, 80)}"`);
-    lines.push(`${conflict.length} changed part${conflict.length > 1 ? "s" : ""} conflicted with people's edits and ${conflict.length > 1 ? "were" : "was"} not applied${named.length ? ` (${named.join("; ")})` : ""}: read the live document and change them from its current text.`);
-  }
-  if (applied.length) lines.push(`${applied.length} changed part${applied.length > 1 ? "s" : ""} went in as written.`);
-  return `\n${lines.join(" ")}`;
+/**
+ * What became of each changed part, in words: its place in the version the agent wrote, then whether it went in, became a
+ * suggestion or conflicted, so a round of several fixes tells which one landed, which awaits a person and which failed.
+ * Nothing for a shape it doesn't know and nothing when every part went in.
+ */
+function reconciled(rec: any): string {
+  const found: any[] = Array.isArray(rec) ? rec : Object.values(rec ?? {}).find(Array.isArray) ?? [];
+  const parts = [...found].sort((a, b) => (a?.index ?? 0) - (b?.index ?? 0));
+  if (!parts.some((p) => p?.status === "suggested" || p?.status === "conflict")) return "";
+  const said = parts
+    .map((p, i) => {
+      const at = `part ${Number.isInteger(p?.index) ? p.index + 1 : i + 1}`;
+      if (p?.status === "applied") return `${at} went in as written`;
+      if (p?.status === "suggested") return `${at} became a suggestion for a person to decide, so leave it to them (publishing it again adds nothing)`;
+      if (p?.status === "conflict") return `${at} conflicted with people's edits and was not applied (${reasonOf(p)}), so read the live document and change it from its current text`;
+      return "";
+    })
+    .filter(Boolean);
+  if (!said.length) return "";
+  const of = `Of the ${parts.length} changed part${parts.length === 1 ? "" : "s"}`;
+  const head = parts.some((p) => p?.status === "applied") ? `${of}:` : `${of}, none was written:`;
+  return `\n${head} ${said.join("; ")}.`;
+}
+
+/** Primer's own reason a part was not applied, in words: a conflict's detail is under `refusal` (its code, fix and details), not `note` or `text`. */
+function reasonOf(p: any): string {
+  if (typeof p?.note === "string" && p.note.trim()) return p.note.trim().slice(0, 120);
+  const r = p?.refusal;
+  if (r?.code === "target_changed") return typeof r?.details?.version === "string" ? "the text changed since you read it" : "the text is gone from the document";
+  return typeof r?.fix === "string" && r.fix.trim() ? r.fix.trim().slice(0, 120) : "Primer gave no reason";
 }
 
 /** The requester's identity as the kernel names it: the agent and its task (a module or an empty one has none). */
