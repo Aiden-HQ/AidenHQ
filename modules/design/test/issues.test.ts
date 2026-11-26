@@ -14,7 +14,7 @@ test("a noted issue number wins over search, and a changed repo starts afresh", 
   const store = openStore(mkdtempSync(join(tmpdir(), "design-")));
   let apps: App[] = readApps(JSON.stringify({ apps: [{ name: "acme", url: "https://acme.example.com", repo: "Acme/App" }] })).apps;
   const k = fakeKernel();
-  const passes = createPasses({ store, apps: () => apps, logins: () => ({}), kernel: k.passes, boardUrl: "https://board.example.com/" });
+  const passes = createPasses({ store, apps: () => apps, logins: () => ({}), kernel: k.passes });
   const tools = new Map(designTools(store, { passes, apps: () => apps, logins: () => ({}) }).map((t) => [t.name, t]));
   const call = (name: string, args: Record<string, unknown>) => tools.get(name)!.run(args, { agent: "ui-agent", roles: [] });
 
@@ -23,7 +23,6 @@ test("a noted issue number wins over search, and a changed repo starts afresh", 
   const first = (await call("design_pass_start", { app: "acme", depth: "scan" })) as { run: string; task: string };
   const text = k.byId(first.task).description;
   assert.match(text, /aidenhq-ui:design:acme → acme\/app#41/);
-  assert.match(text, /https:\/\/board\.example\.com\/#\/team\/m\/ui-testing \(run r-/);
   assert.deepEqual(((await call("design_run", { run: first.run })) as { issues: unknown[] }).issues, [{ app: "acme", repo: "acme/app", marker: "aidenhq-ui:design:acme", number: 41 }]);
 
   k.close(first.task, "done"); store.endPass(first.run, "failed", "test");

@@ -50,5 +50,6 @@ export type Report = {
   candidates?: string[]; // the route check's generic heuristics (a control that changed nothing, a link that shows the same page): to look at, never blocking
   blocked: Blocked[]; // requests the live-app guard refused (guard.ts); a socket's method is "WS"
   session?: { rung: "supplied" | "form" | "signup" | "aidenhq" | "patch"; relogins: number }; // a signed-in run: how it signed in, how often again
+  issues?: { design?: string; bugs?: string[]; unavailable?: string }; // a UI testing pass: its GitHub issues' URLs, or why it has none (the board report stands)
 };
 export type Blocked = { method: string; origin: string; path: string; page: string };

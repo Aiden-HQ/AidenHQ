@@ -28,7 +28,7 @@ const kernel = () => kernelClient(kernelUrl, file(env.DESIGN_TOKEN_FILE));
 /** Closes a pass's task, cancelled: the dispatcher stops its job (a Stop, a pass past its time). */
 const closeTask = async (task: string, body: string) => void await kernel().call("POST", `/v1/tasks/${encodeURIComponent(task)}/close`, { status: "cancelled", body });
 const passes = createPasses({
-  store, apps: () => apps, logins, boardUrl: env.DESIGN_BOARD_URL,
+  store, apps: () => apps, logins,
   kernel: {
     fileTask: async (t) => { const r = await kernel().call("POST", "/v1/tasks", t); return { id: String(r.id), agent: String(r.agent) }; },
     closeTask,

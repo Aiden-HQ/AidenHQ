@@ -570,6 +570,8 @@ describe("issues and recordings", () => {
     assert.match(design.body, /````diff\n[\s\S]+```\n````/, "a diff holding a fence keeps its own block");
     assert.equal(bugs.length, 1);
     assert.ok(bugs.every((b) => /^<!-- aidenhq-ui:bug:acme:[0-9a-f]{12} -->/.test(b.body)));
+    // Without the board's address the body names the page and the run, and links nothing.
+    assert.match(issueBodies(report([]), { app: "acme", run: "r1" }).design.body, /UI testing page \(Fleet, UI testing\), run `r1`/);
   });
 
   test("two titles for the same bug give one marker", async () => {

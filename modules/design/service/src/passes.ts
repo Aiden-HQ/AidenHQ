@@ -131,13 +131,8 @@ export interface PassDeps {
   apps: () => App[];
   logins: () => Record<string, Login>;
   kernel: PassKernel;
-  /** The board's address (BOARD_LAN_URL): issue bodies link to its UI testing page for a run's images. */
-  boardUrl?: string;
   now?: () => number;
 }
-
-/** The UI testing page on the board, where a run's images, fixes and recordings are found by its id. */
-export const pageUrl = (board: string | undefined) => `${(board || "http://localhost:3121").replace(/\/+$/, "")}/#/team/m/ui-testing`;
 
 export type PassStart = { run: string; task: string } | { refused: "already running"; run: string } | { refused: "cap reached today" | "unknown app" | string };
 
@@ -215,7 +210,6 @@ export function createPasses(d: PassDeps) {
       prior && prior.left > 0 ? `Coverage: resume from ${prior.run} (its queue.json has ${prior.left} captures left).` : "Coverage: a new cycle from the first page.",
       signIn,
       issues,
-      `Run link (issue bodies, --run-url): ${pageUrl(d.boardUrl)} (run ${run}).`,
       `Follow the design.ui-review skill ("A UI testing pass"); put the evidence on run ${run} and finish it with design_run_finish.`,
     ].join("\n");
     try {

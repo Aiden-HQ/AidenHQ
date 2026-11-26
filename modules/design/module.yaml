@@ -135,7 +135,6 @@ services:
         DESIGN_TOKEN_FILE: ${secrets.design_token}
         DESIGN_UI_LOGINS_FILE: ${secrets.ui_logins}
         DESIGN_UI_TESTING: "${settings.ui_testing}"
-        DESIGN_BOARD_URL: "${BOARD_LAN_URL:-}" # issue bodies link to the board's UI testing page
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - design_service_key

@@ -1,8 +1,8 @@
 // GitHub issue bodies for a UI testing pass, from its report.json: the app's one "design improvements" issue (refreshed in place
 // on every pass) and one issue per verified bug. Each body opens with its marker, which is the issue's identity: the app's name for
 // the design issue, and for a bug a hash of its page, kind and its repro's last step's selector, never the model's title, so a
-// reworded title is the same issue. Images stay on the board (GitHub takes none from the fleet): each body names the run and links
-// the UI testing page. Text from the model and the app is quoted as data: no marker, mention or fence can be smuggled in.
+// reworded title is the same issue. Images stay on the board (GitHub takes none from the fleet): each body names the run and
+// where to find it, the board's UI testing page (linked when the board's address is given). Text from the model and the app is quoted as data: no marker, mention or fence can be smuggled in.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import { parseArgs } from "node:util";
 import type { Bug, Improvement, Report } from "./types.ts";
 
 export type Issue = { marker: string; title: string; body: string };
-export type IssueOptions = { app: string; runUrl: string; run: string };
+export type IssueOptions = { app: string; runUrl?: string; run: string };
 
 /** A body stays under github_issue_create's 60,000 characters with room for the AidenHQ footer. */
 export const BODY_MAX = 55_000;
@@ -27,7 +27,8 @@ const fenced = (text: string, lang = "") => {
   const ticks = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
   return `${ticks}${lang}\n${text.replace(/<!--|-->/g, "")}\n${ticks}`;
 };
-const runLine = (o: IssueOptions) => `Images, before|after pairs and recordings: ${o.runUrl} (run \`${o.run}\`).`;
+const where = (o: IssueOptions) => `${o.runUrl ? o.runUrl : "the AidenHQ board's UI testing page (Fleet, UI testing)"}, run \`${o.run}\``;
+const runLine = (o: IssueOptions) => `Images, before|after pairs and recordings: ${where(o)}.`;
 
 function improvement(i: Improvement, n: number): string {
   const w = i.where, f = i.fix;
@@ -64,7 +65,7 @@ function designBody(r: Report, o: IssueOptions): string {
   const items = r.improvements.length ? r.improvements.map((i, n) => improvement(i, n + 1)) : ["No improvements found on this pass."];
   let body = head;
   for (const [n, it] of items.entries()) {
-    if (body.length + it.length + 200 > BODY_MAX) { body += `\n${items.length - n} more improvements are on the board (${o.runUrl}, run \`${o.run}\`).\n`; break; }
+    if (body.length + it.length + 200 > BODY_MAX) { body += `\n${items.length - n} more improvements are on ${where(o)}.\n`; break; }
     body += `${it}\n\n`;
   }
   return body.trimEnd() + "\n";
@@ -101,12 +102,12 @@ export function issueBodies(dir: string, o: IssueOptions): { design: Issue; bugs
   return { design: { marker: designMarker(o.app), title: `UI design improvements: ${o.app}`, body: designBody(r, o) }, bugs };
 }
 
-/** `ui-review issue-body <dir> --app <app> --run-url <url> --run <id>`: prints { design, bugs } as JSON, each { marker, title, body }. */
+/** `ui-review issue-body <dir> --app <app> --run <id> [--run-url <url>]`: prints { design, bugs } as JSON, each { marker, title, body }. */
 export async function issueBodyCommand(argv: string[]): Promise<number> {
   const { values: v, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { app: { type: "string" }, "run-url": { type: "string" }, run: { type: "string" } } });
-  if (!positionals[0] || !v.app || !v["run-url"] || !v.run || !/^[a-z][a-z0-9-]{1,30}$/.test(v.app)) { console.error("usage: ui-review issue-body <dir> --app <app> --run-url <url> --run <id>"); return 2; }
+  if (!positionals[0] || !v.app || !v.run || !/^[a-z][a-z0-9-]{1,30}$/.test(v.app) || (v["run-url"] !== undefined && !/^https?:\/\/\S+$/.test(v["run-url"]))) { console.error("usage: ui-review issue-body <dir> --app <app> --run <id> [--run-url <the board's UI testing page>]"); return 2; }
   try {
-    console.log(JSON.stringify(issueBodies(positionals[0], { app: v.app, runUrl: v["run-url"], run: v.run }), null, 2));
+    console.log(JSON.stringify(issueBodies(positionals[0], { app: v.app, run: v.run, ...(v["run-url"] ? { runUrl: v["run-url"] } : {}) }), null, 2));
     return 0;
   } catch (e) { console.error(`ui-review issue-body: ${(e as Error).message}`); return 1; }
 }
