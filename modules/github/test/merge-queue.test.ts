@@ -1418,6 +1418,18 @@ test("a red default branch takes no merge on top, except the PR that already hol
   assert.equal(decide(data(rollup("SUCCESS", { more: true }), 2), HEAD).do, "wait", "a base whose check list GitHub truncated waits, never merges on a partial read");
 });
 
+test("a PR carrying the ship:stop label waits, for the merge queue and for ship's rounds alike", () => {
+  const data = (labels) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
+    number: 1, state: "OPEN", isDraft: false, baseRefName: "main", headRefOid: HEAD, mergeStateStatus: "CLEAN", latestOpinionatedReviews: { nodes: [] },
+    labels: { nodes: labels.map((name) => ({ name })) },
+    files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup("SUCCESS") } }] },
+    baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup("SUCCESS") } },
+  } } });
+  assert.deepEqual(decide(data(["bug"]), HEAD), { do: "merge" });
+  assert.equal(decide(data(["bug", "ship:stop"]), HEAD).do, "wait");
+  assert.equal(decide(data(["ship:stop"]), HEAD, { queue: false, approve: false, required: ["build"], checks: [] }).do, "wait");
+});
+
 test("each check name on a head is judged by its newest run: a cancelled run an edit superseded is not red, and a later red or running one still holds", () => {
   // An edit to a PR body/title while CI runs starts a new run that cancels the old one (ci.yml `edited` +
   // `cancel-in-progress`); the superseded run's CANCELLED checks stay on the head forever. GitHub's branch protection judges a

@@ -5,11 +5,12 @@
 // the tool proxy as the job, and a job's requests for its next turn go to /v1/jobtools. Nothing here holds a credential
 // beyond the job token, and nothing is decided here.
 //
-//   aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]...
+//   aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... [--hold]
 //                                                    push each branch at its commit in this workspace's clone and open (or
 //                                                    update) its PR (a change request on this server): one codehost.pr write each;
 //                                                    --fixes adds a `Fixes <owner/repo#n>` line to the body for each issue the PR closes,
-//                                                    and needs --body-file: no body file means the existing description is kept
+//                                                    and needs --body-file: no body file means the existing description is kept;
+//                                                    --hold puts the `ship:stop` label on the PR (no automatic merge takes it)
 //   aidenhq review <org/repo> <branch>... [--title <title>] [--body-file <file>]
 //                                                    what the AI reviewer would say of publishing these branches, before
 //                                                    publishing: nothing is filed; up to 3 a job (each is a reviewer call)
@@ -55,7 +56,7 @@ import { join } from "node:path";
 // The box's one MCP client (kernel/sdk/src/tools-client.ts, copied beside this folder by scripts/sync-shared.ts).
 import { call as callTool, ToolError } from "../lib/tools.ts";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup | ship checkout <PR link> <head> | ship push <PR link> <head> <generation> | ship title <PR link> <head> <generation> <title>`;
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... [--hold] | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup | ship checkout <PR link> <head> | ship push <PR link> <head> <generation> | ship title <PR link> <head> <generation> <title>`;
 const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup", "ship"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
@@ -75,11 +76,11 @@ const words = [];
 const fixes = [];
 // Each command's own options: one used by another command is refused, so `publish --file body.md` can never look like
 // a body it doesn't send.
-const TAKES = { publish: ["--title", "--body-file", "--fixes"], review: ["--title", "--body-file", "--fixes"], advise: ["--file"], clone: ["--keep"] };
+const TAKES = { publish: ["--title", "--body-file", "--fixes", "--hold"], review: ["--title", "--body-file", "--fixes"], advise: ["--file"], clone: ["--keep"] };
 const allowed = (opt) => (TAKES[command] ?? []).includes(opt);
 // A value may itself start with `--` (a file named --notes.md); only a missing one, or an option this command takes, is
 // refused. `--opt=value` is recognised the same way, so `--body-file --title=x` is "needs a value", not a filename.
-const OPTION = /^(--fixes|--title|--body-file|--file|--keep)(=|$)/;
+const OPTION = /^(--fixes|--title|--body-file|--file|--keep|--hold)(=|$)/;
 const named = (opt, v) => {
   if (v === undefined || v === "") fail(`${opt} needs a value\n${usage}`, 2);
   return v;
@@ -108,9 +109,9 @@ for (let i = 0; i < rest.length; i++) {
     if (!allowed(arg)) fail(`${arg} isn't an option of aidenhq ${command}\n${usage}`, 2);
     if (arg === "--fixes") fixes.push(value(i)), i++;
     else flags[arg.slice(2)] = value(i), i++;
-  } else if (arg === "--keep") {
-    if (!allowed(arg)) fail(`--keep isn't an option of aidenhq ${command}\n${usage}`, 2);
-    flags.keep = true;
+  } else if (arg === "--keep" || arg === "--hold") {
+    if (!allowed(arg)) fail(`${arg} isn't an option of aidenhq ${command}\n${usage}`, 2);
+    flags[arg.slice(2)] = true;
   } else if (arg.startsWith("--")) fail(`unknown option ${arg}\n${usage}`, 2);
   else words.push(arg);
 }
@@ -295,7 +296,7 @@ if (command === "publish" || command === "review") {
     const title = flags.title ?? firstSubject(repo, branch);
     if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq ${command} --title 'fix(x): …'\` or reword the commit`, 2);
     // No --body-file (and no --fixes line): the PR's text carries no body, so an existing description is kept, never blanked.
-    const args = { only: [{ repo, branch, sha }], text: { title, ...(body ? { body } : {}) } };
+    const args = { only: [{ repo, branch, sha }], text: { title, ...(body ? { body } : {}) }, ...(command === "publish" && flags.hold ? { hold: true } : {}) };
     if (command === "publish") lines.push(`${repo} ${branch}: ${(await write("codehost.pr", args))}`);
     else {
       // The reviewer's verdict on the PR this would publish, filed by nothing; its reason is a model's words, shown as data.

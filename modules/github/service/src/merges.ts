@@ -17,7 +17,7 @@ import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, contextChecks, contextRank, na
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
+import { HOLD_LABEL, PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
 
@@ -266,6 +266,9 @@ export function createMerges(d: {
     // The trailer goes on whatever the body says (withTrailer would keep a body's own AidenHQ trailer and drop ours), and it
     // carries this call's nonce (mergedBy).
     const message = method === "rebase" ? {} : { commit_message: [body.trim(), trailer(`merge queue ${token}`)].filter(Boolean).join("\n\n") };
+    // A hold put on after the readiness read still stops this merge: the labels are read again right before it.
+    const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);
+    if (labels.status < 300 && (labels.body ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) throw Object.assign(new Error(`held: it carries the \`${HOLD_LABEL}\` label`), { status: 409 });
     const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });
     if (r.status >= 300) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
     return r.body?.sha;
