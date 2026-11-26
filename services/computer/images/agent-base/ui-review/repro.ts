@@ -18,7 +18,7 @@ const fence = (s: string) => `<untrusted>\n${s.replace(/<\/?untrusted>/gi, "")}\
 const judgeSchema = { type: "object", additionalProperties: false, required: ["shows", "why"], properties: { shows: { type: "boolean" }, why: { type: "string" } } };
 
 export type ReproOptions = { out: string; model?: string; session?: string; mode?: string; maxUsd?: number; base?: string; key?: string };
-type Replay = { ok: true; before: string; after: string; changed: { text: boolean; url: boolean } } | { ok: false; why: string };
+type Replay = { ok: true; before: string; after: string; changed: { text: boolean; url: boolean }; writes: number } | { ok: false; why: string };
 
 const SECRET = /pass|secret|token|otp|totp|pin\b/i;
 /** A step as text for the report; what is typed into a secret-looking field is never written. */
@@ -60,14 +60,15 @@ async function replay(newContext: () => Promise<BrowserContext>, base: string, c
     const page = await ctx.newPage();
     const steps = c.steps as Step[], last = steps.length - 1;
     const text = () => page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
-    let before = "", textBefore = "", urlBefore = "";
+    let before = "", textBefore = "", urlBefore = "", writes = 0;
+    page.on("request", (r) => { if (before && !["GET", "HEAD", "OPTIONS"].includes(r.method())) writes++; }); // sent by the last step (a guard may then refuse it)
     for (const [i, s] of steps.entries()) {
       if (i === last) { before = `repro/${tag}-before.png`; await page.screenshot({ path: join(out, before) }); textBefore = await text(); urlBefore = page.url(); }
       await run(page, base, s);
     }
     const after = `repro/${tag}-after.png`;
     await page.screenshot({ path: join(out, after) });
-    return { ok: true, before, after, changed: { text: (await text()) !== textBefore, url: page.url() !== urlBefore } };
+    return { ok: true, before, after, changed: { text: (await text()) !== textBefore, url: page.url() !== urlBefore }, writes };
   } catch (e) { return { ok: false, why: (e as Error).message.split("\n")[0] }; }
   finally { await ctx.close().catch(() => {}); }
 }
@@ -80,8 +81,9 @@ async function judge(c: Click, r: Extract<Replay, { ok: true }>, out: string, o:
       `Image 1 is the page just before the last step, image 2 just after it. The page is at ${c.width}px wide.`,
       `The reported defect:\n${fence(`${c.title}\nSaw: ${c.saw}\nExpected: ${c.expected}`)}`,
       `The steps:\n${fence((c.steps as Step[]).map(stepText).join("\n"))}`,
-      `Measured across the last step: the page's text ${r.changed.text ? "changed" : "did not change"}; the address ${r.changed.url ? "changed" : "did not change"}.`,
+      `Measured across the last step: the page's text ${r.changed.text ? "changed" : "did not change"}; the address ${r.changed.url ? "changed" : "did not change"}; the page sent ${r.writes} write request${r.writes === 1 ? "" : "s"} (a live-app guard may have refused them).`,
     ].join("\n\n"),
+    over: () => o.maxUsd !== undefined && spend.usd >= o.maxUsd,
     schema: judgeSchema, validate: (x) => { if (typeof (x as { shows?: unknown })?.shows !== "boolean") throw new Error('"shows" must be true or false'); },
   }) as { shows: boolean };
   return a.shows;
@@ -94,13 +96,15 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
   const list = JSON.parse(readFileSync(clicksFile, "utf8")) as unknown;
   if (!Array.isArray(list) || list.some((c) => (c as Click)?.kind !== "bug" && (c as Click)?.kind !== "friction")) throw new Error("candidates have no steps: replay needs clicks.json");
   const clicks = list as Click[];
+  if (!existsSync(join(o.out, "report.json"))) throw new Error(`${o.out}/report.json is missing: capture the app first, then replay into the same folder`);
   const dropped: string[] = [];
   const todo = clicks.filter((c) => {
     const ok = Array.isArray(c.steps) && c.steps.length > 0 && c.steps.every(validStep) && Number.isInteger(c.width) && typeof c.title === "string" && typeof c.page === "string";
     if (!ok) dropped.push(`${c.title ?? "(untitled)"}: no usable steps`);
     return ok;
   });
-  mkdirSync(join(o.out, "repro"), { recursive: true });
+  const batch = Date.now().toString(36); // each run's pictures have their own folder: an earlier bug's evidence is never overwritten
+  mkdirSync(join(o.out, "repro", batch), { recursive: true });
   spend.usd = 0; spend.calls = 0;
   const over = () => o.maxUsd !== undefined && spend.usd >= o.maxUsd;
   const l = await launch({ target: base, mode: o.mode } as Parameters<typeof launch>[0]);
@@ -123,10 +127,11 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
         const runs: Extract<Replay, { ok: true }>[] = [];
         let verified = true;
         for (const k of c.kind === "bug" ? [1, 2] : [1]) {
-          const r = await replay(fresh(c), base, c, o.out, `${id}-r${k}`);
+          const r = await replay(fresh(c), base, c, o.out, `${batch}/${id}-r${k}`);
           if (!r.ok) { dropped.push(`${c.title}: replay ${k} failed: ${r.why}`); verified = false; break; }
           runs.push(r);
           if (c.kind === "bug") {
+            if (over()) { dropped.push(`${c.title}: the --max-usd budget was reached`); verified = false; break; }
             try { if (!(await judge(c, r, o.out, o))) { dropped.push(`${c.title}: replay ${k} did not show it`); verified = false; break; } }
             catch (e) { dropped.push(`${c.title}: judging failed: ${(e as Error).message.split("\n")[0]}`); verified = false; break; }
           }
@@ -147,15 +152,12 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
     await Promise.all([worker(), worker()]);
   } finally { await l.close(); }
 
-  const file = join(o.out, "report.json");
-  if (existsSync(file)) {
-    const r = JSON.parse(readFileSync(file, "utf8")) as Report;
-    const mine = new Set(bugs.map((b) => `${b.page}|${b.title}`));
-    r.bugs = [...r.bugs.filter((b) => !mine.has(`${b.page}|${b.title}`)), ...bugs];
-    r.cost_usd = Math.round((r.cost_usd + spend.usd) * 1e4) / 1e4;
-    r.notes = [...r.notes, ...dropped.map((d) => `clicking pass, not reported: ${d}`)];
-    saveReport(o.out, r);
-  }
+  const r = JSON.parse(readFileSync(join(o.out, "report.json"), "utf8")) as Report;
+  const mine = new Set(todo.map((c) => `${c.page}|${c.title}`)); // every finding retried here: a bug that no longer reproduces leaves the report
+  r.bugs = [...r.bugs.filter((b) => !mine.has(`${b.page}|${b.title}`)), ...bugs];
+  r.cost_usd = Math.round((r.cost_usd + spend.usd) * 1e4) / 1e4;
+  r.notes = [...r.notes, ...dropped.map((d) => `clicking pass, not reported: ${d}`)];
+  saveReport(o.out, r);
   writeFileSync(join(o.out, "friction.json"), JSON.stringify(friction, null, 2));
   return { bugs, friction: friction.length, dropped };
 }

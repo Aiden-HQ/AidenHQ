@@ -24,7 +24,9 @@ export async function browserCommand(argv: string[]): Promise<number> {
     for (const o of state.origins ?? []) {
       const page = await ctx.newPage();
       await page.goto(o.origin, { waitUntil: "domcontentloaded" }).catch(() => {});
-      await page.evaluate((items) => { for (const i of items) localStorage.setItem(i.name, i.value); }, o.localStorage).catch(() => {});
+      // A root that redirects elsewhere (a sign-in provider) must never receive this app's stored values: fail closed.
+      if (new URL(page.url()).origin !== o.origin) { await l.close(); throw new Error(`the session's storage for ${o.origin} was not restored: its root went to ${new URL(page.url()).origin}`); }
+      await page.evaluate((items) => { for (const i of items) localStorage.setItem(i.name, i.value); }, o.localStorage);
       await page.close();
     }
   }

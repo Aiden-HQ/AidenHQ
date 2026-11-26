@@ -21,12 +21,12 @@ const schema = {
 const WIDTHS = [1512, 390]; // the desktop and the phone view of a page are what a judging call is shown
 
 /** The pictures one page's call is shown: per width, the default light capture's first shot, as its before|after when it changed. */
-function shown(caps: Capture[]): { file: string; label: string }[] {
+function shown(caps: Capture[]): { file: string; cite: string; compared: boolean }[] {
   return WIDTHS.flatMap((w) => {
     const c = caps.find((k) => k.width === w && k.theme === "light" && k.state === "default") ?? caps.find((k) => k.width === w && k.state === "default");
     if (!c?.shots[0]) return [];
     const d = c.diffs?.find((x) => x.shot === c.shots[0] && x.compare);
-    return [{ file: d?.compare ?? c.shots[0], label: `${c.shots[0]}${d ? " (before|after)" : ""}` }];
+    return [{ file: d?.compare ?? c.shots[0], cite: c.shots[0], compared: !!d }];
   });
 }
 
@@ -45,13 +45,14 @@ export async function bugs(dir: string, o: { model?: string; base?: string; key?
       const [page, caps] = item;
       const pics = shown(caps).filter((p) => existsSync(join(dir, p.file)));
       if (!pics.length) continue;
-      const facts = caps.filter((c) => pics.some((p) => p.label.startsWith(c.shots[0]))).map((c) => `${c.width}px: content ${c.measures.content.width}px of ${c.measures.content.viewport}px; ${c.settled ? "settled" : "not settled"}; checks: ${c.rules.map((r) => r.text).join(" | ") || "none"}`);
+      const facts = caps.filter((c) => pics.some((p) => p.cite === c.shots[0])).map((c) => `${c.width}px: content ${c.measures.content.width}px of ${c.measures.content.viewport}px; ${c.settled ? "settled" : "not settled"}; checks: ${c.rules.map((r) => r.text).join(" | ") || "none"}`);
       const a = await ask({
         model: o.model ?? DEFAULT_MODEL, system, base: o.base, key: o.key, schema, images: pics.map((p) => join(dir, p.file)),
-        text: `Page: ${fence(page)}${shows.has(page) ? `\nIt should show: ${fence(shows.get(page) as string)}` : ""}\n${pics.map((p) => `Capture: ${p.label}`).join("\n")}\nMeasured:\n${fence(facts.join("\n"))}`,
+        text: `Page: ${fence(page)}${shows.has(page) ? `\nIt should show: ${fence(shows.get(page) as string)}` : ""}\n${pics.map((p) => `Capture: ${p.cite}${p.compared ? "\n  (the picture shown for it is its before|after comparison)" : ""}`).join("\n")}\nMeasured:\n${fence(facts.join("\n"))}`,
         validate: (x) => { if (!Array.isArray((x as { candidates?: unknown })?.candidates)) throw new Error('"candidates" must be an array'); },
       }) as { candidates: Omit<Candidate, "page">[] };
-      for (const c of a.candidates) if (known.has(c.capture)) all.push({ ...c, page });
+      const cited = new Set(pics.map((p) => p.cite));
+      for (const c of a.candidates) if (known.has(c.capture) && cited.has(c.capture)) all.push({ ...c, page });
     }
   };
   await Promise.all([worker(), worker(), worker(), worker()]);

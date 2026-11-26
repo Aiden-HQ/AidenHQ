@@ -74,7 +74,7 @@ app per pass:
 ```sh
 ui-review flows review --out flows.md          # per page: flows of at most 6 steps, each with a persona and what should happen
 ui-review browser start --url <app url> --session state.json --mode <read|test-write|any> --out browser &   # prints the CDP port (also browser/browser.json); the guard covers every tab you open
-codex exec -m openai/gpt-6.2-sol -c model_reasoning_effort=low -C /workspace \
+codex exec --skip-git-repo-check -m openai/gpt-6.2-sol -c model_reasoning_effort=low <the gateway provider flags of "Show the fix" step 1> -C /workspace \
   "Follow /opt/aidenhq/skills/dogfood/SKILL.md, attaching with agent-browser --cdp <port>. Work the flows in flows.md and write clicks.json as flows.md says." < /dev/null
 ```
 
@@ -94,7 +94,9 @@ ui-review repro clicks.json --out review [--session state.json] [--mode <m>] [--
 `candidates.json` is leads only: turn a lead you can reproduce into steps in `clicks.json` (`kind: "bug"` with `steps`) and it is
 replayed; a candidate without steps stays out of the report. `repro` replays each bug twice in fresh browsers and writes into
 `report.json` only the ones that showed both times; `friction` items it replays once and hands to `ui-review review` (run
-`review` after `repro`). Report what `report.json`'s `bugs` holds, nothing else, each with its before|after and its steps.
+`review` after `repro`). Report what `report.json`'s `bugs` holds, nothing else, each with its before|after and its steps. For a PR, run `repro` on the base
+build too (the same `clicks.json`, into a scratch folder) and drop every bug whose title also verified there: the base's own
+defects are not the PR's.
 
 ## References
 
