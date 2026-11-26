@@ -19,7 +19,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), asyncMerge, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined } = {}) {
+async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), asyncMerge, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined, signedBranches = () => false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -104,7 +104,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   let refuseRef = false;
   // GitHub's signed commits (createCommitOnBranch inputs) and update-branch calls, as sent.
   const signed = [], updates = [];
-  const writes = githubWrites(() => origin, { refuse: () => (refuseRef ? "Repository rule violations found\n\nCommits must have verified signatures.\n\n" : undefined) });
+  const writes = githubWrites(() => origin, { signed: signedBranches, refuse: () => (refuseRef ? "Repository rule violations found\n\nCommits must have verified signatures.\n\n" : undefined) });
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
@@ -1100,7 +1100,134 @@ test("ship's decision from its list read: no PR or check read, the branch rules 
 // approval card whose box bundle was planned before a later push landed carries the older commit and must be refused as
 // ship-head-moved, never force the branch back over the newer one (issue #1775: PR #1746 was rewound to a pre-fix commit).
 test("a publish whose bundle carries H cannot rewind a branch at F, a child of H: it is refused as ship-head-moved and F stays", async (t) => {
-  const { ws, origin, H, F, main, run, call, calls, signed } = await setup(t);
+  const { ws, origin, H, F, run, call, calls } = await setup(t);
+  // The task's workspace box is at F (the fix, pushed), holding the bundle of H (the plan's older read).
+  sh(ws, "checkout", "--quiet", "lease");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch stands at F before the stale write");
+
+  for (const kind of ["github.push", "github.pr"]) {
+    const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: H }], ...(kind === "github.pr" ? { text: { title: "fix: stale write", body: "Why." } } : {}) };
+    const before = calls.length;
+    const r = await run(`k-00000000000000f${kind === "github.pr" ? "1" : "0"}`, kind, args);
+    assert.equal(r.ok, false, `${kind}: ${JSON.stringify(r)}`);
+    assert.match(r.text, /^ship-head-moved/, `${kind}: ${r.text}`);
+    assert.match(r.text, new RegExp(`moved to \`${F.slice(0, 12)}\` since the write read \`${H.slice(0, 12)}\``), r.text);
+    assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, `${kind}: the branch still stands at F`);
+    assert.deepEqual(calls.slice(before).filter((c) => c.method === "PATCH" && c.path.includes("/pulls/")), [], `${kind}: no PR was moved`);
+  }
+
+  // A first publish to a branch that doesn't exist yet still lands: there is no head to lease against, so no lease.
+  sh(ws, "checkout", "--quiet", "-b", "fresh", H);
+  const first = await run("k-00000000000000f2", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "fresh", sha: H }] });
+  assert.equal(first.ok, true, first.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/fresh"), H);
+
+  // The same write's own fast-forward of a branch this task owns still lands (the lease is on the head it read).
+  sh(ws, "checkout", "--quiet", "lease");
+  const ff = await run("k-00000000000000f3", "github.pr", { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: F }] });
+  assert.equal(ff.ok, true, ff.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "an unchanged head pushes nothing new and stays where it is");
+
+  // A rewrite of this task's own branch (a commit on H, diverging from F) is still allowed: its plan read the branch at F and it is
+  // still at F, and the new commit isn't one the branch already holds, so nothing is rewound.
+  sh(ws, "checkout", "--quiet", "-b", "rewrite", H);
+  writeFileSync(join(ws, "r.txt"), "r\n");
+  sh(ws, "add", "r.txt");
+  sh(ws, "commit", "--quiet", "-m", "rewrite");
+  const R = sh(ws, "rev-parse", "HEAD");
+  sh(ws, "update-ref", `refs/aidenhq/publish/${R}`, R);
+  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${R}.bundle`), `refs/aidenhq/publish/${R}`);
+  const rewriteArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: rewriteArgs, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  const rewrite = await run("k-00000000000000f4", "github.push", rewriteArgs);
+  assert.equal(rewrite.ok, true, rewrite.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), R, "the task's own rewrite lands");
+
+  // The card path: a write planned while the branch is at H does not rewrite it after the branch moves to F (a different child of
+  // H). The bundle's commit isn't an ancestor of F, so only the head the plan bound refuses it -- the ancestry check would not.
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const staleArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  const staleCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: staleArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(staleCard.status, 200, JSON.stringify(staleCard.json));
+  // The card is bound to the head it read, in its own stored args: the branch was at H when it was filed.
+  assert.deepEqual(staleCard.json.args.heads, { [`${REPO} lease`]: H });
+  sh(origin, "update-ref", "refs/heads/lease", F);
+  assert.throws(() => sh(ws, "merge-base", "--is-ancestor", R, F), "R and F diverge: the ancestry check alone would not refuse this");
+  const stale = await run("k-00000000000000f5", "github.push", staleArgs, staleCard);
+  assert.equal(stale.ok, false, stale.text);
+  assert.match(stale.text, /^ship-head-moved/, stale.text);
+  assert.match(stale.text, new RegExp(`moved to \`${F.slice(0, 12)}\` since the write read \`${H.slice(0, 12)}\``), stale.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch the card planned against moved; it is never rewritten");
+
+  // A card filed at H cannot be widened by planning the same request again after the branch moved to F: the second plan is its
+  // own record (its own args, its own head), and the first card still refuses. This is the finding's case: a mutable cache keyed
+  // by the request alone would hand the old card F.
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const widenArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  const filed = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: widenArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(filed.status, 200);
+  assert.equal(filed.json.args.heads[`${REPO} lease`], H);
+  sh(origin, "update-ref", "refs/heads/lease", F);
+  const again = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: widenArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(again.status, 200);
+  assert.equal(again.json.args.heads[`${REPO} lease`], F, "the new plan reads F, as its own record");
+  const oldCard = await run("k-00000000000000f7", "github.push", widenArgs, filed);
+  assert.match(oldCard.text, /^ship-head-moved/, oldCard.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the earlier card keeps H and never rewrites the branch from F");
+
+  // A revalidation is handed the record's stored args back unchanged: the head it bound is the one it still checks.
+  const revalidated = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: filed.json.args, requester: { kind: "job", roles: [] }, task: "t1", revalidate: true });
+  assert.equal(revalidated.status, 200);
+  assert.deepEqual(revalidated.json.args.heads, { [`${REPO} lease`]: H });
+
+  // A card whose own push already landed before GitHub dropped the connection is resumed, not refused: the branch already holds
+  // the commit, so there is nothing to push and the PR is finished (a held write retried by id is the same record).
+  sh(origin, "update-ref", "refs/heads/lease", H);
+  const resumeArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] };
+  const resumeCard = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { ...resumeArgs, text: { title: "fix: resume" } }, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(resumeCard.status, 200);
+  sh(origin, "update-ref", "refs/heads/lease", R);
+  const beforeResume = calls.length;
+  const resumed = await run("k-00000000000000f8", "github.pr", { ...resumeArgs, text: { title: "fix: resume" } }, resumeCard);
+  assert.equal(resumed.ok, true, resumed.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), R, "the branch still holds the commit its write pushed");
+  const resumeCalls = calls.slice(beforeResume);
+  assert.deepEqual(resumeCalls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/pulls`), [], "the branch already had its PR: none is opened");
+  assert.equal(resumeCalls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/8`).length, 1, "the existing PR #8 is the one finished");
+
+  // A branch planned absent and created before the push is refused: this write would take a create over a branch it never read.
+  const absentArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "late", sha: H }] };
+  const absentCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: absentArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(absentCard.status, 200);
+  assert.deepEqual(absentCard.json.args.heads, { [`${REPO} late`]: null }, "planned absent");
+  sh(origin, "update-ref", "refs/heads/late", F);
+  const late = await run("k-00000000000000f9", "github.push", absentArgs, absentCard);
+  assert.match(late.text, /^ship-head-moved: .*appeared at/, late.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/late"), F, "the branch someone else created is left where it is");
+
+  // A branch deleted since the plan is "missing", not a crash: the write lands as an ordinary first publish.
+  const goneArgs = { workspace: "TASK-1", only: [{ repo: REPO, branch: "gone", sha: F }] };
+  sh(origin, "update-ref", "refs/heads/gone", F);
+  const goneCard = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args: goneArgs, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(goneCard.status, 200);
+  assert.equal(goneCard.json.args.heads[`${REPO} gone`], F);
+  sh(origin, "update-ref", "-d", "refs/heads/gone");
+  const gone = await run("k-00000000000000fa", "github.push", goneArgs, goneCard);
+  assert.equal(gone.ok, true, gone.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/gone"), F, "a branch deleted since is created again, no crash");
+
+  // A push straight to an agents-org repo's default branch (plan.ts raises it as `default-branch` rather than refusing it) moves
+  // forward with no force and no lease. A lease here would name an empty expected head against an existing `main` and refuse it
+  // ("stale info"), which is the regression a default-branch lease introduces.
+  const toMain = await run("k-00000000000000f6", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "main", sha: H }] });
+  assert.equal(toMain.ok, true, toMain.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/main"), H, "the default branch moved forward, unleased");
+});
+
+// The same on a branch whose rules require signed commits: each publish is one commit GitHub makes with the box commit's tree, bound
+// to the branch's head, and every binding names GitHub's commit.
+test("on a signature-required branch a publish is GitHub's own commit of the box's tree, and a stale bundle still cannot rewind it", async (t) => {
+  const { ws, origin, H, F, main, run, call, calls, signed } = await setup(t, { signedBranches: () => true });
   // The task's workspace box is at F (the fix, pushed), holding the bundle of H (the plan's older read).
   sh(ws, "checkout", "--quiet", "lease");
   assert.equal(sh(origin, "rev-parse", "refs/heads/lease"), F, "the branch stands at F before the stale write");
@@ -1235,8 +1362,8 @@ test("a publish whose bundle carries H cannot rewind a branch at F, a child of H
   assert.equal(sh(origin, "rev-parse", "refs/heads/main^"), main);
 });
 
-test("a republish of a branch rebased onto the base's new tip has GitHub merge that tip in first, so the PR's diff stays the task's own", async (t) => {
-  const { ws, origin, F, main, run, updates } = await setup(t);
+test("on a signature-required branch, a republish of a branch rebased onto the base's new tip has GitHub merge that tip in first, so the PR's diff stays the task's own", async (t) => {
+  const { ws, origin, F, main, run, updates } = await setup(t, { signedBranches: () => true });
   // The base moves on after the task published `lease` at F (PR #8), and the box rebases its branch onto the new tip.
   sh(ws, "checkout", "--quiet", "-b", "moved", main);
   writeFileSync(join(ws, "m.txt"), "m\n");

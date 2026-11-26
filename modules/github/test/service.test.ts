@@ -24,7 +24,7 @@ const boxBundle = (ws, branch) => {
 };
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"], refuse, taskStatus } = {}) {
+async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"], remoteHooks = "", refuse, signed, taskStatus } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -54,6 +54,14 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   sh(ws, "commit", "--quiet", "-m", "ci: add the workflow");
   const wfSha = boxBundle(ws, "workflow");
   sh(ws, "checkout", "--quiet", "feature");
+  // A pre-receive script a test writes: "GitHub" refusing a push for a reason it gives (the workflow scope refusal). Installed
+  // after the fixture's own pushes, which it would refuse.
+  if (remoteHooks) {
+    mkdirSync(join(root, "hooks"), { recursive: true });
+    writeFileSync(join(root, "hooks", "pre-receive"), remoteHooks);
+    chmodSync(join(root, "hooks", "pre-receive"), 0o755);
+    sh(origin, "config", "core.hooksPath", join(root, "hooks"));
+  }
   for (const h of ["post-checkout", "pre-push", "reference-transaction", "post-update", "pre-receive", "update", "push-to-checkout"]) {
     writeFileSync(join(ws, ".git", "hooks", h), `#!/bin/sh\ntouch ${marker}\n`);
     chmodSync(join(ws, ".git", "hooks", h), 0o755);
@@ -79,8 +87,9 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   });
   const created = [];
   const ghCalls = [];
-  // GitHub's signed commits and refs over the bare repos (fake-github-writes.ts); `refuse` is GitHub refusing a commit in its words.
-  const writes = githubWrites((slug) => join(root, "github", `${slug}.git`), { refuse });
+  // GitHub's signed commits, refs and branch rules over the bare repos (fake-github-writes.ts): `signed` names the branches whose
+  // rules require signed commits, `refuse` is GitHub refusing a commit in its words.
+  const writes = githubWrites((slug) => join(root, "github", `${slug}.git`), { refuse, signed });
   const gh = async (method, path, body) => {
     ghCalls.push({ method, path, body });
     const routed = routes(method, path);
@@ -176,7 +185,7 @@ test("connected: a new app's repository is created in the fleet org with the app
   assert.equal((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000c2", ...push, digest: "d", idempotency_key: "p" })).json.accepted, true);
   for (let i = 0; i < 300 && outcomes.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(outcomes[1]?.ok, true, JSON.stringify(outcomes));
-  assert.equal(sh(origin, "rev-parse", "refs/heads/first^{tree}"), sh(ws, "rev-parse", `${sha}^{tree}`), "GitHub's commit with the branch's content");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/first"), sha);
 });
 
 test("a PR to a repo outside ours is refused while its text or a commit message names our tooling", async (t) => {
@@ -718,7 +727,7 @@ test("a PR's card carries the branch's diff for the reviewer (#744): every kind 
 });
 
 test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {
-  const { root, marker, origin, ws, sha, outcomes, call } = await setup(t);
+  const { root, marker, origin, sha, outcomes, call } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -731,7 +740,7 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   assert.deepEqual(ex.json, { accepted: true });
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.equal(sh(origin, "rev-parse", "refs/heads/feature^{tree}"), sh(ws, "rev-parse", `${sha}^{tree}`));
+  assert.equal(sh(origin, "rev-parse", "refs/heads/feature"), sha);
   assert.equal(existsSync(marker), false, "a workspace hook, filter or fsmonitor ran");
   assert.match(readFileSync(join(root, "cache", ".reviewed-refs.jsonl"), "utf8"), /"repo":"acme-agents\/widget","ref":"refs\/ws\/TASK-1\/feature"/, "the kept head is noted for pruning");
 });
@@ -745,16 +754,15 @@ test("a head is the runner's own only in the repo it was pushed to: the same com
   await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdee", kind: "github.push", args, digest: "d", idempotency_key: "i" });
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  // The commit GitHub made for the push, then the same commit opened as a PR on a maintained repo outside the agents org.
-  const head = sh(origin, "rev-parse", "refs/heads/feature");
+  // The same commit, opened as a PR on a maintained repo outside the agents org.
   const other = join(root, "github", "globex", "payments.git");
   mkdirSync(other, { recursive: true });
   sh(other, "init", "--quiet", "--bare", "-b", "main");
-  sh(origin, "push", "--quiet", other, "main", `${head}:refs/heads/feature`);
+  sh(origin, "push", "--quiet", other, "main", `${sha}:refs/heads/feature`);
   const main = sh(origin, "rev-parse", "main");
-  const pr = (repo) => ({ [`/repos/${repo}/pulls/1`]: { number: 1, head: { sha: head }, base: { sha: main }, changed_files: 2, user: { login: "someone" } }, [`/repos/${repo}/pulls/1/files?per_page=100`]: [{ filename: "app.js" }, { filename: ".gitattributes" }] });
+  const pr = (repo) => ({ [`/repos/${repo}/pulls/1`]: { number: 1, head: { sha }, base: { sha: main }, changed_files: 2, user: { login: "someone" } }, [`/repos/${repo}/pulls/1/files?per_page=100`]: [{ filename: "app.js" }, { filename: ".gitattributes" }] });
   pulls = { ...pr("acme-agents/widget"), ...pr("globex/payments") };
-  const merge = (repo) => call("/aidenhq/v1/executor/plan", { kind: "github.merge", args: { prs: [{ repo, number: 1, head }] }, requester: { kind: "job", roles: [] }, task: "t1" });
+  const merge = (repo) => call("/aidenhq/v1/executor/plan", { kind: "github.merge", args: { prs: [{ repo, number: 1, head: sha }] }, requester: { kind: "job", roles: [] }, task: "t1" });
   const own = await merge("acme-agents/widget");
   assert.equal(own.status, 200, JSON.stringify(own.json));
   assert.equal(own.json.raise, undefined, "pushed to this repo: Tier 0");
@@ -803,12 +811,66 @@ test("the workflow refusal is read from GitHub's words and raised as the typed s
   assert.equal(err.message, "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)");
 });
 
-// GitHub refuses any commit that creates or updates a workflow file when the OAuth grant lacks `workflow`; its words are the only
-// signal. The publish turns them into the typed need, hands it to the retrying need queue, and fails with the same 403 a scope
-// need gets. The commit is always attempted: the scopes read say nothing, GitHub's answer decides.
-test("a commit GitHub refuses for the missing workflow scope is the typed scope need, and the need queue hears it", async (t) => {
+// GitHub refuses any commit that creates or updates a workflow file when the OAuth grant lacks `workflow`; its words in the git
+// child's stderr are the only signal. The push path turns them into the typed need, hands it to the retrying need queue, and
+// fails with the same 403 a scope need gets, never a bare git failure.
+test("a push GitHub refuses for the missing workflow scope is the typed scope need, and the need queue hears it", async (t) => {
+  const { origin, wfSha, outcomes, reported, call } = await setup(t, {
+    // The sign-in's scopes cannot be read here, so only git's own refusal can name the need.
+    scopes: () => [],
+    remoteHooks: "#!/bin/sh\necho \"refusing to allow an OAuth App to create or update workflow '.github/workflows/ci.yml' without 'workflow' scope\" >&2\nexit 1\n",
+  });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "workflow", sha: wfSha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e1", kind: "github.push", args, digest: "d", idempotency_key: "wf" })).json, { accepted: true });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /GitHub needs the `workflow` permission: reconnect GitHub on the board \(Settings, Connections\)/);
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/workflow"), "the refused branch is not on GitHub");
+  // The need goes through github-mcp's queue, which keeps and retries it when the kernel can't take it.
+  assert.deepEqual(reported, [{ need: { cause: "scope", scope: "workflow" }, detail: "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)" }]);
+});
+
+// An existing workflow file that the branch does not change is not a reason to refuse: GitHub accepts the push without the scope,
+// so the code host must attempt it rather than infer the need from a scope list. The typed need comes only from GitHub's refusal.
+test("a workflow that already exists on the branch is pushed without the scope, and only GitHub's refusal names the need", async (t) => {
+  const remoteHooks = (marker) => `#!/bin/sh\ntouch ${marker}\necho \"refusing to allow an OAuth App to create or update workflow '.github/workflows/ci.yml' without 'workflow' scope\" >&2\nexit 1\n`;
+  const acceptedMarker = join(mkdtempSync(join(tmpdir(), "codehost-wf-")), "PUSHED");
+  const accepted = await setup(t, { scopes: () => ["repo", "read:org", "project"], remoteHooks: `#!/bin/sh\ntouch ${acceptedMarker}\nexit 0\n` });
+  const args = (wfSha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "workflow", sha: wfSha }] });
+  assert.equal((await accepted.call("/aidenhq/v1/executor/plan", { kind: "github.push", args: args(accepted.wfSha), requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  assert.equal((await accepted.call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e2", kind: "github.push", args: args(accepted.wfSha), digest: "d", idempotency_key: "wf2" })).json.accepted, true);
+  for (let i = 0; i < 300 && !accepted.outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(accepted.outcomes[0]?.ok, true, JSON.stringify(accepted.outcomes));
+  assert.equal(existsSync(acceptedMarker), true, "GitHub's answer decided it: the push was attempted");
+  assert.equal(accepted.reported.length, 0, "nothing missing");
+
+  const refusedMarker = join(mkdtempSync(join(tmpdir(), "codehost-wf-")), "PUSHED");
+  const missing = await setup(t, { scopes: () => ["repo", "read:org", "project"], remoteHooks: remoteHooks(refusedMarker) });
+  assert.equal((await missing.call("/aidenhq/v1/executor/plan", { kind: "github.push", args: args(missing.wfSha), requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  assert.equal((await missing.call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e2", kind: "github.push", args: args(missing.wfSha), digest: "d", idempotency_key: "wf2" })).json.accepted, true);
+  for (let i = 0; i < 300 && !missing.outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(missing.outcomes[0]?.ok, false, JSON.stringify(missing.outcomes));
+  assert.match(missing.outcomes[0].text, /GitHub needs the `workflow` permission/);
+  assert.deepEqual(missing.reported, [{ need: { cause: "scope", scope: "workflow" }, detail: "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)" }]);
+  assert.equal(existsSync(refusedMarker), true, "GitHub was asked, and its refusal named the need");
+  assert.throws(() => sh(missing.origin, "rev-parse", "--verify", "refs/heads/workflow"), "the branch is not on GitHub");
+
+  // The scope granted: the same branch pushes, and GitHub accepts it.
+  const granted = await setup(t, { scopes: () => ["repo", "read:org", "workflow", "project"] });
+  assert.equal((await granted.call("/aidenhq/v1/executor/plan", { kind: "github.push", args: args(granted.wfSha), requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  assert.equal((await granted.call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e3", kind: "github.push", args: args(granted.wfSha), digest: "d", idempotency_key: "wf3" })).json.accepted, true);
+  for (let i = 0; i < 300 && !granted.outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(granted.outcomes[0]?.ok, true, JSON.stringify(granted.outcomes));
+  assert.equal(sh(granted.origin, "rev-parse", "refs/heads/workflow"), granted.wfSha);
+  assert.equal(granted.reported.length, 0, "nothing missing");
+});
+
+// On a branch whose rules require signed commits the publish is GitHub's own commit: GitHub's workflow-scope refusal of it is the same
+// typed need, and the branch it created for the commit is taken away again.
+test("a signed commit GitHub refuses for the missing workflow scope is the typed scope need, and the need queue hears it", async (t) => {
   const refuse = (input) => (input.fileChanges.additions.some((f) => f.path.startsWith(".github/workflows/")) ? "refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope" : undefined);
-  const { origin, wfSha, outcomes, reported, call, ghCalls } = await setup(t, { scopes: () => ["repo", "read:org", "workflow", "project"], refuse });
+  const { origin, wfSha, outcomes, reported, call, ghCalls } = await setup(t, { scopes: () => ["repo", "read:org", "workflow", "project"], refuse, signed: () => true });
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "workflow", sha: wfSha }] };
   assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
   assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e1", kind: "github.push", args, digest: "d", idempotency_key: "wf" })).json, { accepted: true });
@@ -821,9 +883,27 @@ test("a commit GitHub refuses for the missing workflow scope is the typed scope 
   assert.deepEqual(reported, [{ need: { cause: "scope", scope: "workflow" }, detail: "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)" }]);
 });
 
+// The branch's rules decide how a publish lands, read before anything is pushed: a read GitHub can't answer refuses the publish with
+// its reason; a private repo on a plan without rulesets has none, so it is the ordinary git push.
+test("a rules read GitHub can't answer is a refused publish; a plan without rulesets is a git push", async (t) => {
+  for (const [rules, ok] of [[{ status: 502, body: { message: "Bad Gateway" } }, false], [{ status: 403, body: { message: "Upgrade to GitHub Pro or make this repository public to enable this feature." } }, true]]) {
+    const { origin, sha, outcomes, call } = await setup(t, { routes: (m, path) => (path.includes("/rules/branches/") ? rules : undefined) });
+    const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+    assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+    await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e9", kind: "github.push", args, digest: "d", idempotency_key: "r" });
+    for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(outcomes[0]?.ok, ok, JSON.stringify(outcomes));
+    if (ok) assert.equal(sh(origin, "rev-parse", "refs/heads/feature"), sha, "the box's own commit, pushed");
+    else {
+      assert.match(outcomes[0].text, /^publish-refused: .*rules read: 502 Bad Gateway/);
+      assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "nothing pushed");
+    }
+  }
+});
+
 test("held write resumes on reconnect", async (t) => {
   let on = false;
-  const { origin, ws, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
+  const { origin, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
   assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
   assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d1", kind: "github.push", args, digest: "d", idempotency_key: "h" })).json, { accepted: true });
@@ -834,7 +914,7 @@ test("held write resumes on reconnect", async (t) => {
   await handle.stepHeld();
   await handle.stepHeld(); // a second step runs nothing again
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(sh(origin, "rev-parse", "refs/heads/feature^{tree}"), sh(ws, "rev-parse", `${sha}^{tree}`));
+  assert.equal(sh(origin, "rev-parse", "refs/heads/feature"), sha);
   assert.equal(outcomes.length, 1, JSON.stringify(outcomes));
   assert.equal(outcomes[0].ok, true);
   assert.equal((await call("/aidenhq/v1/executor/status", { id: "k-00000000000000d1" })).json.state, "done");

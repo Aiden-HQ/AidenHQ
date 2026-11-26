@@ -1,16 +1,19 @@
 // GitHub's write API over bare repos, as the code host's signed writes use it: createCommitOnBranch (GitHub's own commit, bound to
 // expectedHeadOid, each file replaced in full, an existing file keeping its mode, a new one 100644), and git/refs create, read and
-// delete, and git/commits. `originOf(slug)` is the bare repo GitHub holds for a repo; `refuse(input)` is a repository rule's words
-// refusing a commit. Any other route answers undefined, for the test's own fake.
+// delete, git/commits, and the rules that apply to a branch. `originOf(slug)` is the bare repo GitHub holds for a repo; `refuse(input)`
+// is a repository rule's words refusing a commit; `signed(slug, branch)` says the branch's rules require signed commits. Any other
+// route answers undefined, for the test's own fake.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export function githubWrites(originOf, { refuse = (_input) => undefined } = {}) {
+export function githubWrites(originOf, { refuse = (_input) => undefined, signed = (_slug, _branch) => false } = {}) {
   const git = (origin, args, o = {}) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: origin, encoding: "utf8", ...o, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_COMMITTER_NAME: "GitHub", GIT_COMMITTER_EMAIL: "noreply@github.com", GIT_AUTHOR_NAME: "owner1", GIT_AUTHOR_EMAIL: "owner1@example.com", ...o.env } }).trim();
   const tip = (origin, ref) => { try { return git(origin, ["rev-parse", "--verify", "--quiet", ref]); } catch { return ""; } };
   return (method, path, body) => {
+    const rules = method === "GET" && /^\/repos\/([^/]+\/[^/]+)\/rules\/branches\/([^?]+)/.exec(path);
+    if (rules) return { status: 200, body: signed(rules[1], decodeURIComponent(rules[2])) ? [{ type: "required_signatures", ruleset_id: 1 }] : [] };
     if (path === "/graphql" && String(body?.query ?? "").includes("createCommitOnBranch")) {
       const { branch, expectedHeadOid, message, fileChanges } = body.variables.input;
       const origin = originOf(branch.repositoryNameWithOwner);
