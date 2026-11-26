@@ -100,12 +100,15 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       // Closed before it is recorded: a close that failed is tried again next pass (an already-closed task answers ok).
       // A queued merge must land on the base the enqueue was bound to; anywhere else it is reported, not closed as done.
       if (a.queue && a.queue.base !== pr.base) {
-        a = { ...a, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
+        // A person checks the mismatch: ship settles none of its tasks here, and the record says so to `gone()`'s reconciler.
+        const { closing: _, ...settled } = a;
+        a = { ...settled, tasksClosed: true, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
         d.state.put(a);
         a = await report(d, a, pr, { kind: "hold", text: `Merged into \`${pr.base}\`, not the base it was queued for (\`${a.queue.base}\`). A person checks that this is what was meant.` });
         return "acted";
       }
-      for (const t of tasksOf(a)) {
+      // A hold's queued closes (`closing`, a refusal kept for the next pass) land here too, so the queue never outlives the PR.
+      for (const t of [...new Set([...(a.closing ?? []), ...tasksOf(a)])]) {
         try { await d.kernel.call("POST", `/v1/tasks/${t}/close`, { status: "done", body: `${pr.url} is merged.` }); } catch (e) {
           d.log("task close failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
           return "nothing";
@@ -113,7 +116,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       // Told before it is recorded: a wake the kernel didn't take is sent again next pass.
       if (a.owner?.kind === "task") await tell(d, a, pr, `**Merged:** ${pr.url} is merged at \`${pr.head.slice(0, 12)}\`. Finish your task if this was its change.`, `merged.${pr.head.slice(0, 12)}`);
-      a = { ...a, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
+      // The closes are done: the queue goes with the `done` marker and the record is settled, so nothing reads it again.
+      const { closing: _, ...settled } = a;
+      a = { ...settled, tasksClosed: true, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
       d.state.put(a);
       a = await report(d, a, pr, { kind: "merged" });
     }
