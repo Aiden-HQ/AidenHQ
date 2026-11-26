@@ -52,6 +52,32 @@ test("a text file past the total budget is cut, and its last page and fact say h
   for (const block of Object.values(ev.data)) assert.ok(block.length < 20_000, "a cut page still fits its fence");
 });
 
+test("a file that fits the total budget is sent whole, with no cut marker from a reserved one", async () => {
+  // The finding: four pages' worst-case headings and cut marker were charged up front and refunded only after the cut was
+  // decided, so a 59,800-character file under the 60,000-character budget lost its last 180 characters and said "cut".
+  const text = "x".repeat(59_800);
+  const ev = await fileEvidence([file("audit.md")], read(text));
+  const fact = ev.facts.find((f: string) => f.startsWith("file_1:"))!;
+  assert.match(fact, /text, 59800 characters, shown in 4 pages \(FILES_1, FILES_2, FILES_3, FILES_4\)/);
+  assert.doesNotMatch(fact, /cut/, "a file under the budget is not cut");
+  const joined = Object.values(ev.data).join("\n");
+  assert.doesNotMatch(joined, /\[cut:/);
+  const bodies = Object.values(ev.data).map((block) => block.replace(/^=== [^\n]*===\n/, ""));
+  assert.equal(bodies.reduce((n, b) => n + b.length, 0), 59_800, "every character reaches the grader");
+  for (const block of Object.values(ev.data)) assert.ok(block.length < 20_000);
+});
+
+test("a next file gets the budget the pages did not use, not a worst-case reserve", async () => {
+  // The first file's headings and cut marker are real costs, so only those leave the budget; 1,000 characters of the second
+  // must still fit after a 30,000-character first file.
+  const first = { ...file("first.md", "file_1"), createdAt: "2026-01-02T00:00:00.000Z" };
+  const second = { ...file("second.md", "file_2"), createdAt: "2026-01-01T00:00:00.000Z" };
+  const ev = await fileEvidence([first, second], async (id: string) => Buffer.from(id === "first.md" ? "a".repeat(30_000) : "b".repeat(1_000), "utf8"));
+  const secondFact = ev.facts.find((f: string) => f.startsWith("file_2:"))!;
+  assert.match(secondFact, /text, 1000 characters, shown in 1 page \(FILES_3\)/, "the second file is sent whole, uncut");
+  assert.doesNotMatch(secondFact, /cut/);
+});
+
 test("a file that cannot be read stays awaiting, never silently not shown", async () => {
   const ev = await fileEvidence([file("audit.md")], async () => {
     throw new Error("the file store timed out");

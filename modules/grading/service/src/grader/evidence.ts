@@ -1113,6 +1113,7 @@ export const MAX_IMAGES = 20; // a mockup task attaches ~18 screenshots; the byt
 const IMAGE_SIDE = 2048; // a PNG with a longer side is downscaled (the vision models scale to about this anyway)
 const IMAGE_BYTES = 3 * 1024 * 1024; // one image as sent; a bigger one is downscaled if a PNG, else left out
 const IMAGES_BYTES = 12 * 1024 * 1024; // all images as sent (base64 adds a third; the gateway takes 32 MB)
+const CUT_MARK = `\n[cut: 999999999 of 999999999 characters not shown]`.length; // the longest cut marker a page can carry
 const TEXT_PAGE = 16_000; // one page of a text file's characters; with its heading the block stays well under the prompt's 20,000 fence
 export const TEXT_TOTAL = 60_000; // all text files' characters across their pages (a page is its own fenced block)
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|ya?ml|log|html?|tsx|ts|jsx|js|css)$/i;
@@ -1169,12 +1170,11 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
       facts.push(`${f.label}: attached, not sent to the grader (only ${MAX_IMAGES} images are sent: those the rubric names, then those the comments name, then the newest)`);
       continue;
     }
-    // A page's heading and its cut marker are paid for out of the budget too, so the fence never cuts a block.
+    // A page's heading is paid for out of the budget too, so the fence never cuts a block.
     const label = `${f.label}: ${name.slice(0, 200)}`;
     const heading = (k: number, n: number) => `=== ${label}, page ${k} of ${n} ===\n`;
-    // A page pays the longest heading and cut marker it can carry before its characters; the real ones are shorter.
-    const reserve = heading(9999, 9999).length + `\n[cut: 999999999 of 999999999 characters not shown]`.length;
-    if (isText && textLeft <= reserve) {
+    // 9,999 pages is far past any count TEXT_TOTAL can pay for, so this is the longest heading a page can carry.
+    if (isText && textLeft <= heading(9999, 9999).length + CUT_MARK) {
       facts.push(`${f.label}: text, ${Number(f.byteSize) || 0} bytes, not sent to the grader (the text budget of ${TEXT_TOTAL} characters was spent on other files)`);
       continue;
     }
@@ -1225,24 +1225,37 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
     // The whole text as sequential pages, while the shared budget lasts: each page is its own fenced block, headed with the
     // file's label, its name and "page k of n", so every block stays under the prompt's 20,000-character fence.
     const text = buf.toString("utf8");
-    const chunks: string[] = [];
-    for (let at = 0; at < text.length && textLeft > reserve; ) {
-      const take = Math.min(TEXT_PAGE, text.length - at, textLeft - reserve);
-      if (take <= 0) break;
-      chunks.push(text.slice(at, at + take));
-      at += take;
-      textLeft -= reserve + take;
+    const marker = (shown: number) => `\n[cut: ${text.length - shown} of ${text.length} characters not shown]`;
+    const headings = (n: number) => Array.from({ length: n }, (_, i) => heading(i + 1, n).length).reduce((a, b) => a + b, 0);
+    // A page count sets every heading's width ("of n"), so each candidate count is priced as a whole: its headings, its
+    // characters and, only when it cannot take the whole file, the cut marker. Nothing is reserved that is not spent.
+    const fits = (n: number, content: number) => headings(n) + content + (content < text.length ? marker(content).length : 0) <= textLeft;
+    // The count that shows the most: the whole file when a count takes it, else the last page filled as far as it can hold.
+    let shown = 0;
+    for (let n = 1; shown < text.length; n++) {
+      const full = Math.min(text.length, n * TEXT_PAGE);
+      if (fits(n, full)) {
+        shown = full;
+        continue;
+      }
+      // A cut page's own marker is shorter than CUT_MARK, so this bound always leaves room to write it.
+      const limit = Math.min(TEXT_PAGE, text.length - TEXT_PAGE * (n - 1));
+      let partial = Math.max(0, Math.min(limit, textLeft - headings(n) - CUT_MARK));
+      while (partial < limit && fits(n, partial + 1)) partial++;
+      shown = Math.max(shown, TEXT_PAGE * (n - 1) + partial);
+      break;
     }
+    const chunks: string[] = [];
+    for (let at = 0; at < shown; at += TEXT_PAGE) chunks.push(text.slice(at, Math.min(at + TEXT_PAGE, shown)));
     if (!chunks.length) chunks.push(""); // an empty file is still one (empty) page
-    const shown = chunks.reduce((n, c) => n + c.length, 0);
-    const cut = shown < text.length ? `\n[cut: ${text.length - shown} of ${text.length} characters not shown]` : "";
+    const cut = shown < text.length ? marker(shown) : "";
     const blocks = chunks.map((_, i) => `FILES_${pages + i + 1}`);
     blocks.forEach((key, i) => (data[key] = `${heading(i + 1, chunks.length)}${chunks[i]}${i === chunks.length - 1 ? cut : ""}`));
-    // A real heading and marker are shorter than the reserve, so what they did not use stays in the budget for the next file.
-    textLeft += chunks.length * reserve - chunks.reduce((n, _, i) => n + heading(i + 1, chunks.length).length, 0) - cut.length;
+    // Exactly what the pages cost, so a later file gets every character this one did not use.
+    textLeft -= headings(chunks.length) + shown + cut.length;
     pages += chunks.length;
-    const count = `${chunks.length} page${chunks.length === 1 ? "" : "s"}`;
-    facts.push(`${f.label}: text, ${text.length} characters, shown in ${count} (${blocks.join(", ")})${cut ? `, cut at the text budget of ${TEXT_TOTAL} characters: the rest marked in ${blocks[blocks.length - 1]}` : ""}`);
+    const pageWord = `${chunks.length} page${chunks.length === 1 ? "" : "s"}`;
+    facts.push(`${f.label}: text, ${text.length} characters, shown in ${pageWord} (${blocks.join(", ")})${cut ? `, cut at the text budget of ${TEXT_TOTAL} characters: the rest marked in ${blocks[blocks.length - 1]}` : ""}`);
   }
   return { facts, images, data };
 }
