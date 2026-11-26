@@ -44,6 +44,8 @@ export interface RoundFacts extends QueueFacts {
   decided?: boolean;
   /** Code review's findings at this head (its digest): a new set at the same head is a new fix_review. */
   findingsKey?: string;
+  /** Members' review comments nobody has answered (github's member-comments.ts): they stand like findings, and a new one is a new fix_review. */
+  memberComments?: { id: string; kind: string; author: string; path?: string; line?: number }[];
   /** Red at a head behind a green base: GitHub's update-branch is tried once at this head before any fix_ci wake. */
   behindGreen?: boolean;
 }
@@ -283,7 +285,12 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const policyWhy: "titleStep" | "titleUnread" | "unreadable" = policyStep !== "title" ? "unreadable" : pr.title === undefined ? "titleUnread" : "titleStep";
   // A title-only CI wake is its own action at the head: it fixes no commit, so a real red check at the same head is still woke for.
   // The unclear case is keyed apart too, so a later confirmed diagnosis wakes as its own action.
-  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}`
+  // Members' comments key the fix by the ones not asked about yet; the same ones still open at this head are not asked again
+  // (answering one of two threads wakes nobody), and a new head asks again for any left.
+  const open = f.memberComments ?? [];
+  const fresh = open.filter((i) => !(a!.asked ?? []).includes(i.id));
+  const reviewKey = [f.findingsKey, fresh.length ? createHash("sha256").update(fresh.map((i) => i.id).join(",")).digest("hex").slice(0, 12) : ""].filter(Boolean).join(":") || (open.length ? "comments" : "");
+  const act = v.do === "fix_review" && reviewKey ? `fix_review:${reviewKey}`
     : v.do === "fix_ci" && titleFix ? "fix_ci:title"
     : v.do === "fix_ci" && policyUnclear ? "fix_ci:policy-unread"
     : v.do;
@@ -423,7 +430,19 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (pr.fork && !pr.canModify) return hold(noEdits, HOLD.noEdits);
         // How many review and fix cycles a PR gets is code review's (its push_rounds): ship fixes what each review finds.
         c.review++;
-        return wake("fix_review", `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.\n${push()}`);
+        const threads = open.filter((i) => i.kind === "thread"), comments = open.filter((i) => i.kind === "comment");
+        const did = await wake("fix_review", [
+          open.length && !f.findingsKey && v.why !== "changes are requested on it"
+            ? `${pr.url}: members have open review comments at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence.`
+            : `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.`,
+          // Authors and places only: the comments' own text is untrusted and the wake keeps 2,000 characters.
+          threads.length ? `Open review threads (read them with github_pr_threads): ${threads.slice(0, 8).map((t) => `${t.path ?? "?"}:${t.line ?? "?"} by ${t.author}`).join("; ")}${threads.length > 8 ? `; and ${threads.length - 8} more` : ""}.` : "",
+          comments.length ? `Conversation comments from ${[...new Set(comments.map((x) => x.author))].join(", ")} (github_issue_read): act on those that ask for a change.` : "",
+          push(),
+        ].filter(Boolean).join("\n"));
+        // What was asked is recorded unless the wake held the PR: those items wait, blocking, for their answers.
+        if (open.length && !a!.hold) { a = { ...a!, asked: open.map((i) => i.id) }; c.acted = [...(c.acted ?? []), "fix_review:comments"]; }
+        return did;
       }
       case "merge": {
         if (merge === "off") return "nothing";

@@ -26,7 +26,7 @@ export type AdoptedOptions = {
   /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
    * whether the branch merges through a merge queue, the required checks red on the PR's latest merge_group run, and whether an
    * approval of the head is all it waits on. */
-  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }): Promise<Decision & { failing?: string[]; redChecks?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
+  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; /** Ask for members' unanswered review comments (member-comments.ts): `since` is the hand-off's time. */ comments?: { since: string } }): Promise<Decision & { memberComments?: { id: string; kind: string; author: string; path?: string; line?: number }[]; failing?: string[]; redChecks?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
   /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
   effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string, live?: { base?: string; association?: string }): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
@@ -326,7 +326,7 @@ export function adoptedPass(o: AdoptedOptions) {
         } else if (a.stack.landed === view.head) return;
         else { const { stack: _, ...rest } = a; a = rest as Kept; o.state.put(a); }
       }
-      const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}) });
+      const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}), ...(o.settings(repo)?.fix.includes("review") ? { comments: { since: a.trigger.at } } : {}) });
       // Red checks whose jobs never started are being re-run (ci-recover.ts): no fix is asked for a failure CI never ran.
       if (v.do === "fix_ci" && recovery?.envRed) Object.assign(v, { do: "wait", why: "re-running required checks whose jobs never started" });
       // A check run still pending well after its job finished and was re-run: no push fixes it, so its owner is told once per head.
@@ -359,7 +359,7 @@ export function adoptedPass(o: AdoptedOptions) {
       // Red while behind a green base: round() has GitHub update the branch once at this head before asking for a fix.
       const behindGreen = v.do === "fix_ci" && main.rollup?.state === "SUCCESS" && main.oid && a.counters?.updated !== view.head
         ? Number((await o.gh("GET", `/repos/${repo}/compare/${main.oid}...${view.head}`)).body?.behind_by) > 0 : false;
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { decided: true, dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], ...(redAtHead.length ? { redChecks: redAtHead } : {}), groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { decided: true, dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], ...(redAtHead.length ? { redChecks: redAtHead } : {}), groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(v.memberComments?.length ? { memberComments: v.memberComments } : {}), ...(behindGreen ? { behindGreen } : {}) });
     },
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {

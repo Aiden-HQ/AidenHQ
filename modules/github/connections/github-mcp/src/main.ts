@@ -525,13 +525,13 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_pr_thread_reply",
     {
-      description: "Reply on a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as the owner, signed by you. Answer a code review finding: \"fixed: <what changed, commit>\" or \"disputed: <reason, file:line>\".",
-      inputSchema: { ...ref, comment: z.number().int().min(1), body: z.string().min(1).max(2000) },
+      description: "Reply on a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as the owner, signed by you. Answer a reviewer's comment: \"fixed in <commit>: <what changed>\" with `resolve: true` (the thread is resolved, as a repo may require that to merge), or \"declined: <reason, file:line>\" (left open for the reviewer).",
+      inputSchema: { ...ref, comment: z.number().int().min(1), body: z.string().min(1).max(2000), resolve: z.boolean().optional().describe("Resolve the thread after the reply: only for a fixed one") },
       annotations: write,
     },
     run(
       "github_pr_thread_reply",
-      logged("github_pr_thread_reply", at, async (a: { url?: string; repo?: string; number?: number; comment: number; body: string }) => github.reply(parseRef(a), a.comment, publicText(a.body, OWNER_TERMS, "reply"), agent)),
+      logged("github_pr_thread_reply", at, async (a: { url?: string; repo?: string; number?: number; comment: number; body: string; resolve?: boolean }) => github.reply(parseRef(a), a.comment, publicText(a.body, OWNER_TERMS, "reply"), agent, a.resolve === true)),
     ),
   );
   server.registerTool(
