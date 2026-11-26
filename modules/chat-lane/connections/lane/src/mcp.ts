@@ -22,6 +22,8 @@ export interface LaneTools {
   agents: () => Record<string, LaneAgent>;
   timezone: string;
   taskIsClosed: (task: string) => Promise<boolean>;
+  /** Files a task wake in the kernel now, due at `at`, so the task's state sees it before it is due; never rejects. */
+  fileWake: (id: number, task: string, note: string, at: number) => Promise<void>;
 }
 export const MAX_WAKES = 50;
 
@@ -80,6 +82,7 @@ export function buildServer(lane: LaneTools, caller?: Caller): McpServer {
             wakes: pending.map((w) => ({ task: w.task, chat: Boolean(w.chat), due_local: `${localShort(lane.timezone, w.due_at)} (${lane.timezone})` })),
           });
         const id = lane.store.addWake(owner, due, a.note, Boolean(a.chat), a.task ?? null);
+        if (a.task) await lane.fileWake(id, a.task, a.note, due);
         return json({ ok: true, id, due_local: `${localShort(lane.timezone, due)} (${lane.timezone})` });
       });
     },
