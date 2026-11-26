@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatAgentMarker, conversation } from "../src/chats.js";
+import { chatAgentMarker, conversation, foldOutcomeLines } from "../src/chats.js";
 import type { Comment } from "../src/paperclip.js";
 
 let n = 0;
@@ -44,17 +44,28 @@ describe("conversation", () => {
     agent("Duplicate wake; no new action", 3),
     owner("[slack] thanks", 5),
     owner("Not right: it's due Thursday\n\n<!-- aidenhq-correction -->", 6),
-    owner("Applied. deployed (approval A1234abcd)\n\n<!-- aidenhq-approval -->", 7),
+    owner("**Done** (approval A1234abcd, deploy). Outcome.\n\n<!-- aidenhq-approval -->", 7),
   ];
   const msgs = conversation(chat, comments, "me", name);
 
   it("opens with the owner's first message, shows tagged replies, and folds run notes into one line per stretch", () => {
-    expect(msgs.map((m) => m.kind)).toEqual(["owner", "notes", "reply", "notes", "owner", "owner", "notice"]);
+    expect(msgs.map((m) => m.kind)).toEqual(["owner", "notes", "reply", "notes", "owner", "owner"]); // the kernel's approval outcome line is the agent's, never shown
     expect(msgs[0]).toMatchObject({ text: "can you chase Sam on the audit?", via: "Telegram" });
     expect(msgs[2]).toMatchObject({ agent: "Aiden", text: "**On it**: Sam has it, due Friday.", actions: ["Chase now", "Not now"] });
     expect(msgs[3]).toMatchObject({ kind: "notes", notes: [{ by: "Aiden" }] });
     expect(msgs[4]).toMatchObject({ text: "thanks", via: "Slack" });
     expect(msgs[5]).toMatchObject({ text: "it's due Thursday", correction: true });
+  });
+
+  it("keeps a failure's outcome line only while the chat doesn't have its card", () => {
+    const failed = owner("**Failed** (approval k-0123456789abcdef, push). The push was refused.\n\n<!-- aidenhq-approval -->", 8);
+    const msgs = conversation(chat, [...comments, failed], "me", name);
+    const line = msgs.find((m) => m.kind === "notice" && m.text.startsWith("**Failed** (approval k-0123456789abcdef"));
+    expect(line).toBeDefined();
+    // The card is in the chat: its line only restates it.
+    expect(foldOutcomeLines(msgs, ["k-0123456789abcdef"]).some((m) => m.kind === "notice" && m.text.startsWith("**Failed**"))).toBe(false);
+    // A done line never shows, whatever the chat has.
+    expect(conversation(chat, [...comments, owner("**Done** (approval k-0123456789abcdef, push).\n\n<!-- aidenhq-approval -->", 9)], "me", name).some((m) => m.kind === "notice" && m.text.startsWith("**Done**"))).toBe(false);
   });
 
   it("a kernel job's reply is the agent's reply, even in a chat its earlier notify replies tagged", () => {

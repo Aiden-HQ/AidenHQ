@@ -3,7 +3,7 @@ import { api } from "./api";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import { QUERIES, useQuery } from "./queries";
-import { inFilter, deciderOf, foldsInChat, outcomeOf, type ApprovalFilter } from "./conversation";
+import { inFilter, deciderOf, headOf, foldsInChat, outcomeOf, type ApprovalFilter } from "./conversation";
 import { Explain } from "./Explain";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ShownState } from "./types";
@@ -124,9 +124,9 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick, hold 
   const [seenPending] = useState(a.state === "pending");
   const [shown, setShown] = useState(false);
   const [explained, setExplained] = useState(false);
+  const by = deciderOf(a);
   if (inline && !shown && foldsInChat(a, seenPending)) {
     const o = outcomeOf(a);
-    const by = deciderOf(a);
     return (
       <li className={`approval-folded inline tone-${o.tone}`}>
         <button className="folded-line" onClick={() => setShown(true)} aria-expanded={false} title={`${a.sentence} (${a.id}): show the whole card`}>
@@ -167,7 +167,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick, hold 
         )}
         <button className="chat-open" onClick={() => open(a.identifier)}>
           <span className="chat-agent">{a.requestedBy}</span>
-          <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.state === "running" ? "is running" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
+          <span className="chat-title">{inline ? headOf(a) : "Open the chat"}</span>
         </button>
         <a className="muted small approval-id" href={`#/approvals/${a.id}`} title="Open this card alone">{a.id}</a>
         {inline && shown && (
@@ -184,19 +184,16 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick, hold 
         <dd className="pre">{a.changes}</dd>
         <dt>Cost</dt>
         <dd>{a.cost}</dd>
-        <dt>Exact request</dt>
-        <dd className="mono">{a.digest.slice(0, 12)}</dd>
         <dt>Tier</dt>
         <dd>
           {TIER_WORDS[a.tier] ?? `Tier ${a.tier}`}
           {a.reason && <span className="muted"> ({a.reason})</span>}
-          {a.reasonCode && <span className="mono muted"> · {a.reasonCode}</span>}
           {a.baseTier != null && a.baseTier < a.tier && <span className="muted"> · Tier {a.baseTier} on its merits</span>}
         </dd>
-        {a.decidedBy && (
+        {by && (
           <>
             <dt>Decided by</dt>
-            <dd className={a.decidedByName ? "" : "mono"}>{a.decidedByName ?? a.decidedBy}</dd>
+            <dd>{by}</dd>
           </>
         )}
         {a.review && (
@@ -205,18 +202,31 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick, hold 
             <dd className="pre">
               {a.reviewCode === "reviewer_unsure" && <strong>{a.state === "rejected" ? "Two reviewers weren't sure, so it went back to the agent: " : "The reviewer wasn't sure, so it's yours: "}</strong>}
               {a.review}
-              {a.reviewCode && <span className="mono muted"> · {a.reviewCode}</span>}
             </dd>
           </>
         )}
       </dl>
       {a.replaced && a.state === "pending" && <p className="muted small">This replaces an earlier request in this chat.</p>}
-      {a.details && (
-        <details className="approval-more">
-          <summary>Details</summary>
-          <pre className="approval-details">{a.details}</pre>
-        </details>
-      )}
+      <details className="approval-more">
+        <summary>Details</summary>
+        <dl className="approval-facts">
+          <dt>Exact request</dt>
+          <dd className="mono">{a.digest.slice(0, 12)}</dd>
+          {a.reasonCode && (
+            <>
+              <dt>Tier reason</dt>
+              <dd className="mono">{a.reasonCode}</dd>
+            </>
+          )}
+          {a.reviewCode && (
+            <>
+              <dt>Review code</dt>
+              <dd className="mono">{a.reviewCode}</dd>
+            </>
+          )}
+        </dl>
+        {a.details && <pre className="approval-details">{a.details}</pre>}
+      </details>
       <button className="link-btn small approval-explain" onClick={() => setExplained(!explained)} aria-expanded={explained}>
         {explained ? "Hide the explanation" : a.state === "pending" ? "Explain: who decides this, and why" : "Explain this decision"}
       </button>

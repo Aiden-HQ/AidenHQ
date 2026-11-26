@@ -11,9 +11,9 @@ import { createHash } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileLedger, type Ledger } from "./ledger.js";
 import { fileOwners, type Owner, type Owners } from "./owners.js";
+import { titleOf, type Call } from "./lookup.js";
 
 export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; baseVersionNumber?: number; path?: string; own?: true; private?: true; repo_key?: string; by?: Owner };
-type Call = (tool: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
 
@@ -175,17 +175,22 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       if (req.requester?.kind === "module" && req.requester.module !== "primer" && !args.private) throw new Error("a module files private reports only");
       const report = Boolean(args.private);
       const sha = createHash("sha256").update(args.content).digest("hex");
+      // A revised document is named by the title read from the document itself, never by a title the request carries: a
+      // request can name one document's id and another's title, and the owner must approve the document that will change.
+      // Unreadable (or past its deadline), the card says "the document" rather than guess.
+      const title = args.documentId ? await titleOf(call, args.documentId, req.revalidate === true) : undefined;
+      const named = args.documentId ? (title ? `"${title}"` : "the document") : `"${args.title}"`;
       return {
         args,
         targets: { artifact_sha256: sha, ...(args.documentId ? { document: args.documentId } : {}), ...(args.repo_key ? { repo_key: args.repo_key } : {}) },
         facts: { size: args.content.length, short: sha.slice(0, 12) },
-        ...(args.documentId && !args.own && !report ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of document ${args.documentId}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
+        ...(args.documentId && !args.own && !report ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of ${named}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
         card: {
-          what: args.private ? `the private report "${args.title ?? args.repo_key}" (${args.repo_key})` : args.documentId ? `a new version of Primer document ${args.documentId}` : `the new document "${args.title}"`,
+          what: args.private ? `the private report "${args.title ?? args.repo_key}" (${args.repo_key})` : args.documentId ? `a new version of ${named}` : `the new document "${args.title}"`,
           changes: args.private
             ? "Publishes this report as a new Primer document that only its owner can read."
             : args.documentId
-            ? `Adds this as the latest version of document ${args.documentId} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
+            ? `Adds this as the latest version of ${named} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
             : "Creates a new Primer document that everyone in the organization can read.",
           from: args.path ? `, from the workspace file ${args.path}` : "",
         },
