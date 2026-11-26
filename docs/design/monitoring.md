@@ -51,8 +51,9 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
 - Gateway: `aidenhq_gateway_spend_usd_today{agent,kind}`, `aidenhq_gateway_install_spend_usd{period}` and
   `aidenhq_gateway_install_limit_usd{period}` (`period` is `day` or `month`), `aidenhq_gateway_cap_refusals_today{agent,kind}`,
   `aidenhq_gateway_inflight`. Labels are agent keys.
-- Kernel jobs (relayed by the Fleet Steward's `/metrics`, role `kernel.work-read`): `aidenhq_kernel_jobs_running`, `_oldest_seconds`,
-  `_duration_seconds` (histogram over every job on record).
+- Kernel jobs (relayed by the Fleet Steward's `/metrics`, role `kernel.work-read`): `aidenhq_kernel_jobs_running`, `_oldest_seconds`
+  (running jobs other than sessions: sessions are deadline-free, so their age is no fault), `_duration_seconds` (histogram over
+  every job on record), and `aidenhq_kernel_session_oldest_seconds` for the age of the oldest running session job.
 - Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_unit_backoff{scope="user",unit}` (a CI runner's persisted wait
   after a refused registration token, seconds; absent when none, and never for a runner systemd has neither enabled nor seen
   running, so a disabled runner that is still retrying keeps it),
