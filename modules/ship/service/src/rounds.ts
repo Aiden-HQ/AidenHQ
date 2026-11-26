@@ -490,7 +490,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (dismissing) return dismissing;
         if (q.act === "hold") return hold(q.why, q.refused ? HOLD.refused(q.refused) : HOLD.failed);
         if (q.act === "wait") { queueWait = q.why; return "nothing"; }
-        if (q.attempt > 1) {
+        // Asking again after a wait (a pending async request, an unread gate) spends no repair round and is never capped: nothing
+        // was attempted and refused, and a capped PR would sit held long after GitHub recovered. A real re-enqueue still spends one.
+        if (q.attempt > 1 && !q.pending) {
           if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`, HOLD.cap);
           c.rounds++;
         }

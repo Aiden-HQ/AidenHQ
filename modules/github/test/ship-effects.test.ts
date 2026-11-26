@@ -18,7 +18,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), asyncMerge, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true, reviewGate = async () => undefined } = {}) {
+async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), asyncMerge, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -130,6 +130,11 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (asyncMerge && method === "PUT" && path === `/repos/${REPO}/pulls/7/merge-async`) return asyncMerge.put(body);
     if (asyncMerge && method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/merge-async/`)) return asyncMerge.get(path.split("/").pop());
     if (path === "/graphql" && body.query.includes("MemberComments") === false && body.query.includes("reviewThreads(last")) return { status: 200, body: { data: { repository: { pullRequest: memberPr.v } } } };
+    // A queue read GitHub could not answer (`queueRead()` returns a failure for it): the transient case a read must survive.
+    if (path === "/graphql" && body.query.includes("isInMergeQueue")) {
+      const failed = queueRead(queue);
+      if (failed) return failed;
+    }
     if (path === "/graphql") return { status: 200, body: { data: { repository: { pullRequest: { id: "PR_7", state: "OPEN", headRefOid: pr.head, baseRefName: "main", isInMergeQueue: Boolean(queue.head), mergeQueueEntry: queue.head ? { headCommit: { oid: queue.head } } : null, ...queue.review } } } } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
@@ -645,6 +650,47 @@ test("the async enqueue rechecks the head approval before the PUT and never queu
   assert.equal(puts, 0, "no REST request goes out for a head whose approval is gone");
 });
 
+test("a code review gate that already waits when the enqueue starts is retryable at that head, never a hold", async (t) => {
+  let puts = 0;
+  const { c1, run } = await setup(t, {
+    enqueueAnswer: () => STACK_REFUSAL,
+    reviewGate: async () => ({ wait: "code review: running" }),
+    asyncMerge: { put: () => { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-w" } } }; }, get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) },
+  });
+  const out = await run("k-00000000000000fb", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "asked again at this head once the gate passes");
+  assert.equal(puts, 0);
+});
+
+test("a queue read GitHub can't answer at the start of an enqueue waits, never holds the head", async (t) => {
+  const { c1, run } = await setup(t, { queueRead: () => ({ status: 502, body: {} }) });
+  const out = await run("k-00000000000000fd", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: .*couldn't read it for the enqueue/, "asked again next round, never a hold");
+});
+
+test("a queue read that fails after the review gate passes also waits, never holds", async (t) => {
+  let reads = 0;
+  const { c1, run } = await setup(t, { queueRead: () => (++reads === 2 ? { status: 502, body: {} } : undefined) });
+  const out = await run("k-00000000000000fe", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: .*couldn't read it for the enqueue/);
+});
+
+test("a gate wait whose confirming queue read fails is still retryable, never a thrown hold", async (t) => {
+  let reads = 0;
+  const { c1, run } = await setup(t, {
+    reviewGate: async () => ({ wait: "code review: running" }),
+    // The confirming read after the gate's wait (the enqueue's second) is the one GitHub can't answer: a 502, not a head or a
+    // queue state. The first, before the gate, is answered.
+    queueRead: () => (++reads === 2 ? { status: 502, body: {} } : undefined),
+  });
+  const out = await run("k-00000000000000fc", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "the retryable answer survives a failed read");
+});
+
 test("the async enqueue rechecks code review's gate before the PUT", async (t) => {
   let puts = 0, calls = 0;
   const { c1, run } = await setup(t, {
@@ -654,7 +700,7 @@ test("the async enqueue rechecks code review's gate before the PUT", async (t) =
   });
   const out = await run("k-00000000000000fa", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
   assert.equal(out.ok, false, out.text);
-  assert.match(out.text, /not queued: code review: running/);
+  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "a gate wait is retryable, never a hold");
   assert.equal(puts, 0, "a review gate that closed while the enqueue was in flight stops the request");
 });
 
