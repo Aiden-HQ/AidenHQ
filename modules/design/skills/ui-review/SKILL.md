@@ -56,7 +56,7 @@ Write the owner's taste (the text of `library.owner-taste`, when you have it) an
 guidelines to files, then:
 
 ```sh
-ui-review review review --taste taste.md --brand brand.md --model <the ask's model, else the default>
+ui-review review review --taste taste.md --brand brand.md --refs <the refs step's refs.json> --model <the ask's model, else the default>
 ```
 
 The default model suits a normal review; `anthropic/claude-opus-5.5` is the thorough option when the ask says "thorough".
