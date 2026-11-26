@@ -91,6 +91,30 @@ export function spellOut(questions: Question[] = []): string {
   return `\n\n${blocks.join("\n\n")}\n\nReply like "1A, 2B", or in your own words.`;
 }
 
+/** The text as the owner's chat renders it: markdown emphasis and escapes go, so a marker or label is judged as read. */
+const plain = (s: string) => s.replace(/[*_~`\\]/g, "");
+/** The tool's own marker, appended to the first option: a caller writing it itself would show two recommendations. */
+const MARKER = /\(\s*recommended\s*\)/i;
+/** A label with no text after it ("A)", "A.", "1)", "1.", "(A)", "(1)"): nothing the owner can read. */
+const LABEL_ONLY = /^(?:[A-Za-z]|\d+)\s*[).]$|^\((?:[A-Za-z]|\d+)\)$/;
+
+/**
+ * The first question or option the owner couldn't read, named so the caller fixes the wording: an option of only punctuation
+ * or symbols, a bare label prefix, or the tool's own recommendation marker (which it adds to the first option itself). The
+ * form is refused whole rather than sent broken.
+ */
+function formProblem(questions: Question[] = []): string | undefined {
+  for (const [n, q] of questions.entries()) {
+    if (MARKER.test(plain(q.question))) return `Question ${n + 1}'s text writes the tool's own "(recommended)" marker: the tool marks the first option itself. Nothing was sent.`;
+    for (const [i, o] of q.options.entries()) {
+      const t = plain(o).trim();
+      if (MARKER.test(t)) return `Question ${n + 1}'s option ${i + 1} writes the tool's own "(recommended)" marker: the tool marks the first option itself. Nothing was sent.`;
+      if (!/[\p{L}\p{N}]/u.test(t) || LABEL_ONLY.test(t)) return `Question ${n + 1}'s option ${i + 1} has no visible text (send an option the owner can read, not a label or punctuation). Nothing was sent.`;
+    }
+  }
+  return undefined;
+}
+
 // Some agents fill `text` with the word "placeholder" (the real message in `questions`): it never reaches the owner.
 const stripPlaceholder = (text: string) => text.replace(/^\s*placeholder\b[\s:.\-–—]*/i, "").trim();
 
@@ -124,6 +148,10 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const quoted = detail ? `\n\n${detail.split("\n").map((l) => `> ${l}`).join("\n")}` : "";
     // The chief of staff asks the owner in multiple choice, always: its recommendation first, their own words always welcome.
     if (kind === "decision" && !a.questions?.length && caller?.roles?.includes(CHIEF)) return { sent: false, reason: "error", note: "Ask the owner with `questions`: each question with 2-5 options, your recommendation first (they can always answer in their own words). Put the context in `text`. Nothing was sent." };
+    // A form the owner can't read (a blank or label-only option, or a second recommendation) is refused before anything is
+    // deduped, waited on, posted, queued or sent, so a corrected form is the only one that reaches them.
+    const unreadable = formProblem(a.questions);
+    if (unreadable) return { sent: false, reason: "error", note: unreadable };
     const dedupe = `dedupe:${createHash("sha256").update(a.dedupe_key ? `key\n${a.dedupe_key}` : `${kind}\n${a.task ?? ""}\n${text}\n${JSON.stringify(a.questions ?? [])}${detail ? `\n${detail}` : ""}`).digest("hex").slice(0, 32)}`;
     const last = Number(d.store.getKv(dedupe) ?? 0);
     if (last && now - last < (kind === "alert" ? WINDOW.alert : WINDOW.other)) return { sent: true, reason: "duplicate" };
