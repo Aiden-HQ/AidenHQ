@@ -7,6 +7,8 @@ type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: nu
  * the wait is short and a still-pending answer is reported as pending (ship's next round asks again, and GitHub answers the
  * repeat with the same request), never as a merge. */
 export const ASYNC_POLLS = 24, ASYNC_POLL_MS = 5_000;
+/** A direct merge is read this many times inside the queue's serial pass (30 s): a request still pending then is the next pass's to read from the PR. */
+export const DIRECT_POLLS = 6;
 
 export const asyncPath = (repo: string, number: number) => `/repos/${repo}/pulls/${number}/merge-async`;
 

@@ -17,7 +17,7 @@ import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
 import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type OpenItem } from "./member-comments.ts";
-import { ASYNC_POLLS, ASYNC_POLL_MS, mergeDirect } from "./async-merge.ts";
+import { ASYNC_POLL_MS, DIRECT_POLLS, mergeDirect } from "./async-merge.ts";
 import { HOLD_LABEL, PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
@@ -285,7 +285,7 @@ export function createMerges(d: {
     if (labels.status < 300 && (labels.body ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) throw Object.assign(new Error(`held: it carries the \`${HOLD_LABEL}\` label`), { status: 409 });
     // GitHub's async merge API, the one merge call (a PR in a native stack is refused by every other): its result is polled for
     // a short while, and a request still pending is the next poll's to read from the PR itself (an unanswered call).
-    return mergeDirect(d.gh, repo, number, { sha, merge_method: method, ...message }, d.asyncPolls ?? ASYNC_POLLS, d.asyncPollMs ?? ASYNC_POLL_MS);
+    return mergeDirect(d.gh, repo, number, { sha, merge_method: method, ...message }, d.asyncPolls ?? DIRECT_POLLS, d.asyncPollMs ?? ASYNC_POLL_MS);
   }
   /**
    * What this poll proves about who merged the PR: its sha only when the merge commit is the one this queue's own merge call made.
