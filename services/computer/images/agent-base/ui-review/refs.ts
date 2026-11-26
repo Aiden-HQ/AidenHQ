@@ -95,9 +95,9 @@ export async function refs(list: RefEntry[], opts: RefsOptions = {}): Promise<{ 
       for (const [w, h] of [[1512, 900], [390, 844]] as const) {
         await page.setViewportSize({ width: w, height: h });
         await page.waitForTimeout(500);
-        const f = join(out, `ref-${id}-${w}.png`);
-        await page.screenshot({ path: f });
-        shots.push(f);
+        const name = `ref-${id}-${w}.png`; // relative to <out>, where refs.json is written: review reads it from there
+        await page.screenshot({ path: join(out, name) });
+        shots.push(name);
       }
       return { kind: e.kind, url, product: e.product, shots, tokens, source };
     } catch (err) {
