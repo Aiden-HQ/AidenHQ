@@ -342,6 +342,7 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
           </div>
         </div>
         <div className="fleet-status">
+          <span className="fleet-sr">Status</span>
           {runsLoaded || st.tone ? <StatusDot tone={st.tone} title={a.stateNote}>{st.text}</StatusDot> : <Bone className="tag-sk" />}
         </div>
         <div className={`fleet-now${on.length || queued.length || !runsLoaded ? "" : " is-empty"}`}>
