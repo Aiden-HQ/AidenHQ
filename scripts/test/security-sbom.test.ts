@@ -1,7 +1,7 @@
 // ops/security-sbom.sh with a fake `docker` on PATH: the syft invocations it would run are read back from the fake's
 // log, so the host scan's scope is its argument list, not an inference from the script's text.
 import assert from "node:assert/strict";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -464,7 +464,23 @@ case "$1" in
       truncate -s "$grow" "$file"
     fi
     exit 0 ;;
-  save) exit 0 ;;
+  save)
+    # docker save <ref> (no "image" subcommand): the same answer docker image save gives, so a save of an image the
+    # daemon does not hold is refused here too rather than answering success for anything.
+    shift; file=""; id=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -o) file="$2"; shift 2 ;;
+        -*) shift ;;
+        *) id="$1"; shift ;;
+      esac
+    done
+    failed="\$(awk -F '\\t' -v ref="\$id" '\$1 == ref { print \$2; found = 1 } END { exit !found }' "\$SAVE_ERRORS")" && { echo "\$failed" >&2; exit 1; }
+    if grep -qxF -- "\$id" "\$HELD" || awk -F '\\t' -v ref="\$id" '\$1 == ref { found = 1 } END { exit !found }' "\$TAGS"; then
+      if [ -n "\$file" ]; then : > "\$file"; fi
+      : > "\$SAVED"; exit 0
+    fi
+    echo "Error response from daemon: No such image: \$id" >&2; exit 1 ;;
 esac
 exit 0
 `);
@@ -628,6 +644,19 @@ test("security-sbom: a running container whose image record is gone is inventori
   assert.equal(row[3], "container:c1", "the row names the container whose filesystem it read");
   assert.ok(existsSync(join(dir, "data/modules/security/sbom/current", row[1]!)), `the row has no syft-json file on disk: ${row[1]}`);
   assert.ok(!calls.some((c) => c.startsWith("save ")), `nothing was saved:\n${calls.join("\n")}`);
+  // This case only means what it claims when the daemon is out of both ways to the image: the inspect the survey runs, and
+  // a save. Ask the very fixture the pass just ran against for that save, so a fake that would have answered one of them
+  // cannot make the test pass.
+  const refused = spawnSync(join(dir, "bin/docker"), ["image", "save", "-o", join(dir, "probe.tar"), "sha256:1111"], {
+    env: {
+      ...process.env, DIR: dir, CALLS: join(dir, "calls"), HELD: join(dir, "held"), TAGS: join(dir, "tags"),
+      SAVE_ERRORS: join(dir, "save-errors"), SAVE_GROW: join(dir, "save-grow"), TAKE_AFTER_SAVE: join(dir, "take-after-save"),
+      FREE_TAKEN: join(dir, "free-taken"), SAVED: join(dir, "saved.tar"), PLATFORM_MANIFESTS: join(dir, "platform-manifests"),
+    },
+    encoding: "utf8",
+  });
+  assert.notEqual(refused.status, 0, `the daemon answered a save for an image it does not hold: ${refused.stdout}${refused.stderr}`);
+  assert.match(`${refused.stdout}${refused.stderr}`, /No such image: sha256:1111/, "the save refused for a reason other than the image being gone");
   // Criteria 1-3: the export names the unresolvable container, and syft reads the extracted root as a directory with the
   // same target name.
   assert.ok(calls.some((c) => /^export .* -o \S+ c1$/.test(c) || /^export .* c1$/.test(c)), `no export of c1:\n${calls.join("\n")}`);
