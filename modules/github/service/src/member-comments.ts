@@ -65,7 +65,7 @@ export async function openMemberComments(pr: Json, o: { since: string; author?: 
     const body = String(c.body ?? "");
     if (String(c.createdAt) <= o.since || c.author?.login === o.author) continue;
     if (body.trimStart().startsWith("/") || hasFooter(body) || body.includes(REPORT_MARK)) continue;
-    if (answers.some((a) => a.at > String(c.createdAt) && a.body.includes(String(c.fullDatabaseId)))) continue;
+    if (answers.some((a) => a.at > String(c.createdAt) && new RegExp(`(^|\\D)${c.fullDatabaseId}:`).test(a.body))) continue;
     if (!(await member(c.author, c.authorAssociation))) continue;
     items.push({ id: `comment:${c.fullDatabaseId}`, kind: "comment", author: String(c.author.login) });
   }

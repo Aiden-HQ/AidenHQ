@@ -444,7 +444,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           replyOnly ? "This fork takes no pushes from ship: answer each comment on GitHub; one that needs a change is declined, saying the fork allows no maintainer edits." : push(),
         ].filter(Boolean).join("\n"));
         // What was asked is recorded unless the wake held the PR: those items wait, blocking, for their answers.
-        if (open.length && !a!.hold) { a = { ...a!, membersAsked: open.map((i) => i.id) }; c.acted = [...(c.acted ?? []), "fix_review:comments", ...(f.findingsKey ? [`fix_review:${f.findingsKey}`] : [])]; }
+        if (open.length && !a!.hold) { a = { ...a!, membersAsked: open.filter((i) => i.kind === "thread" || comments.indexOf(i) < 8).map((i) => i.id) }; c.acted = [...(c.acted ?? []), "fix_review:comments", ...(f.findingsKey ? [`fix_review:${f.findingsKey}`] : [])]; }
         return did;
       }
       case "merge": {
