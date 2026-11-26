@@ -8,7 +8,7 @@
 // Every start goes through passes.ts startPass, so one pass runs per app and none starts at the app's day cap. A 24/7 app rests
 // for the rest of the UTC day after the owner's Stop or after FAILED_MAX failed passes, so a pass that dies at once can't refile
 // every minute.
-import { PASS_MS, utcDay, type App, type Passes } from "./passes.ts";
+import { PASS_MS, passSource, utcDay, type App, type Passes } from "./passes.ts";
 import type { Store } from "./store.ts";
 
 /** A pass whose task isn't bound this long after it started (its filing's answer was lost) is filed again. */
@@ -46,8 +46,9 @@ export function createScheduler(d: ScheduleDeps) {
   async function reconcile() {
     const runs = d.store.holding();
     if (!runs.length) return;
-    let openIds: Set<string>;
-    try { openIds = new Set((await d.kernel.openTasks("design:pass:")).map((t) => t.id)); } catch (e) { return log("WARNING: the pass tasks weren't listed; reconcile waits", { err: String((e as Error).message).slice(0, 200) }); }
+    let open: Map<string, string>;
+    try { open = new Map((await d.kernel.openTasks("design:pass:")).map((t) => [t.source, t.id])); } catch (e) { return log("WARNING: the pass tasks weren't listed; reconcile waits", { err: String((e as Error).message).slice(0, 200) }); }
+    const openIds = new Set(open.values());
     for (const r of runs) {
       const age = now() - Date.parse(r.started), overdue = age > PASS_MS;
       const task = r.task;
@@ -56,8 +57,12 @@ export function createScheduler(d: ScheduleDeps) {
           // A filing whose answer was lost (a restart, a timeout, a kernel down): filed again under its source, which gets the
           // same task back if it was made; one that never could be is failed once the pass is past its time.
           if (age < FILING_MS) continue;
-          if (overdue) d.store.endPass(r.id, "failed", "its task was never filed");
-          else await d.passes.file(r);
+          if (r.stopping || overdue) {
+            // Never filed again once stopped or past its time: a task the lost filing did make is closed.
+            const made = open.get(`${passSource(r.app!)}${r.id}`);
+            if (made) await d.kernel.closeTask(made, `Stopped before it was bound (design run ${r.id}).`);
+            d.store.endPass(r.id, r.stopping ? "stopped" : "failed", r.stopping ? "stopped by the owner" : "its task was never filed");
+          } else await d.passes.file(r, true);
           continue;
         }
         if (openIds.has(task)) {

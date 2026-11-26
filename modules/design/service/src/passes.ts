@@ -181,9 +181,14 @@ export function createPasses(d: PassDeps) {
    * lost answer gets the same task back. A refusal (4xx) ends the run and frees the app; any other failure leaves it to the
    * scheduler, which files it again (schedule.ts reconcile).
    */
-  async function file(r: PassRow): Promise<{ task: string } | { refused: string }> {
+  async function file(r: PassRow, retry = false): Promise<{ task: string } | { refused: string }> {
     const a = app(r.app ?? "");
     if (!a) { d.store.endPass(r.id, "failed", "its app left settings.ui_testing before its task was filed"); return { refused: "unknown app" }; }
+    // Filed again later: the app's limits as they are now (a lowered live_mode or cap since the first try).
+    if (retry) {
+      const why = rank(r.mode as Mode) > rank(ceiling(a)) ? `its mode ${r.mode} is above ${a.name}'s live_mode now` : (await spentToday(a.name)) >= a.day_cap_usd ? "cap reached today" : "";
+      if (why) { d.store.endPass(r.id, "failed", why); return { refused: why }; }
+    }
     const run = r.id, depth = r.depth as Depth, preset = SPEND[a.spend], source = `${passSource(a.name)}${run}`;
     // The work follows the depth the pass runs at: a scan neither signs in nor clicks; a tester pass clicks at least once.
     const clicking = depth === "tester" ? Math.max(preset.clicking, 1) : 0;

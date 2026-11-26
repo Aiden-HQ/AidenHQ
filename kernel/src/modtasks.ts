@@ -169,7 +169,9 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
       idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
-    if (!r.json.deduplicated) db.prepare("INSERT OR IGNORE INTO task_filers (task, filer, source) VALUES (?, ?, ?)").run(String(r.json.id), `module:${module}`, b.source);
+    // A dedup hit records the filing too when this module made the task (its marker, no agent): a filing whose first answer was
+    // lost before the row was written is recorded on its retry.
+    if (!r.json.deduplicated || (!r.json.createdByAgentId && ownTask(module, String(r.json.description ?? "")))) db.prepare("INSERT OR IGNORE INTO task_filers (task, filer, source) VALUES (?, ?, ?)").run(String(r.json.id), `module:${module}`, b.source);
     // Graded status is the kernel's own row, never the task's editable text. A dedup hit takes a rubric only on a task this
     // module filed graded.
     if (graded) {

@@ -57,7 +57,7 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
   // | always), why it failed, when its stop was asked; and one running pass per app (runs_active), the newest kept from before it.
   const cols = new Set((db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["depth", "mode", "source", "trigger", "why", "stopping"]) if (!cols.has(c)) db.exec(`ALTER TABLE runs ADD COLUMN ${c} TEXT`);
-  if (!cols.has("slot")) db.exec(`ALTER TABLE runs ADD COLUMN slot INTEGER;
+  if (!cols.has("slot")) db.exec(`DROP INDEX IF EXISTS runs_active; ALTER TABLE runs ADD COLUMN slot INTEGER;
     UPDATE runs SET status = 'superseded', ended = started WHERE kind = 'pass' AND status = 'running' AND id NOT IN (
       SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY app ORDER BY started DESC, id DESC) AS n FROM runs WHERE kind = 'pass' AND status = 'running') WHERE n = 1);
     UPDATE runs SET slot = 1 WHERE kind = 'pass' AND status = 'running';`);
