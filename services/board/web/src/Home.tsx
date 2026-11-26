@@ -430,24 +430,22 @@ function IdeaCard({ idea, fail, reload }: { idea: NonNullable<Home["idea"]>; fai
 }
 
 /** Who the owner waits on and today's calendar: each only with a source and something in it. */
-function World({ world, reload }: { world: Home["world"]; reload: () => void }) {
+function World({ world, reload }: { world: Home["world"]; reload: () => Promise<void> }) {
   const tz = world.today?.timezone;
   // Rows the owner closed here: hidden at once, back with the error if the close is refused.
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
+  const forget = (id: string) => setClosed((s) => (s.delete(id), new Set(s)));
+  // The row hides at once; the read after the close is the truth, so the entry is dropped then (a task reopened later
+  // shows again), and a refused close brings the row back with the error.
   const close = (id: string, status: "done" | "cancelled") => {
     setError("");
     setClosed((s) => new Set(s).add(id));
-    api.update(id, { status }).then(reload, (e) => {
-      setClosed((s) => (s.delete(id), new Set(s)));
-      setError(`Couldn't close ${id}: ${(e as Error).message}`);
-    });
+    api.update(id, { status }).then(
+      () => reload().then(() => forget(id)),
+      (e) => (forget(id), setError(`Couldn't close ${id}: ${(e as Error).message}`)),
+    );
   };
-  // A fresh read without a closed row confirms it; forget it then, so a task reopened later shows again.
-  useEffect(() => {
-    const listed = new Set(world.waiting_on?.map((w) => w.identifier));
-    setClosed((s) => { const kept = [...s].filter((id) => listed.has(id)); return kept.length === s.size ? s : new Set(kept); });
-  }, [world.waiting_on]);
   const waiting = world.waiting_on?.filter((w) => !closed.has(w.identifier)) ?? [];
   if (!waiting.length && !world.today?.events.length) return null;
   return (
