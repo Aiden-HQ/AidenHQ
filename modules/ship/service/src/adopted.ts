@@ -271,7 +271,8 @@ export function adoptedPass(o: AdoptedOptions) {
       if (ctx.opener && !work) throw new Error(`its task ${ctx.opener} couldn't be read`);
       let a = await intake(handoff, view, taskId, ctx.bump) as Kept | undefined;
       // The PR is open: a "closed" end from before it was reopened no longer holds (its hold, if any, stays until a trusted trigger).
-      if (a?.counters?.lastRound === "closed") { a = { ...a, counters: { ...a.counters, lastRound: undefined } }; o.state.put(a); }
+      // Its settled marker goes with it: a close this record still owes is no longer answered by the end before the reopen.
+      if (a?.counters?.lastRound === "closed") { const { tasksClosed: _, ...rest } = a; a = { ...rest, counters: { ...a.counters, lastRound: undefined } }; o.state.put(a); }
       // A stopped PR gets no CI re-run either: recovery runs only for one nobody stopped.
       const recover = (x: Kept | undefined) => isStopped(repo, view, x) ? Promise.resolve(undefined) : ctx.recover?.();
       if (!a) { await recover(a); return; }

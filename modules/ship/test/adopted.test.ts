@@ -445,3 +445,27 @@ test("a wrong-base merge recorded before this change is settled without closing 
   await pass.gone("acme/app", "main", new Set());
   assert.deepEqual(closes, [], "a person checks the mismatch");
 });
+
+test("a closed PR reopened clears its settled marker, so a second close's failed task close is retried", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "7".repeat(40);
+  state.put({ repo: "acme/app", number: 29, generation: 1, trigger: { kind: "label", event: "e29", actor: "maria", at: "2026-11-24T09:00:00Z", head: H }, owner: { kind: "member", login: "maria" }, holder: "R29", hold: null, tasksClosed: true, counters: { head: "", wakes: 0, rounds: 0, ci: 0, review: 0, red: {}, lastRound: "closed" } });
+  let closed = false, refuse = true;
+  const closes = [];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: closed ? { state: "closed", merged_at: null, html_url: "https://github.com/acme/app/pull/29" } : { state: "open", merged_at: null, html_url: "https://github.com/acme/app/pull/29" } }),
+    state, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path) => { if (path.endsWith("/close")) { closes.push(path.split("/")[3]); if (refuse) throw new Error("kernel 503"); } return {}; } },
+    decision: async () => ({ do: "wait" }), effects: { comment: async () => 1, askReview: async () => {}, askFresh: async () => {}, verdict: async () => verdict() },
+  });
+  const pr = { number: 29, url: "https://github.com/acme/app/pull/29", headRefOid: "8".repeat(40), baseRefName: "main", author: { __typename: "User", login: "maria" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } };
+  await pass.open("acme/app", { name: "main", rollup: { contexts: { nodes: [] } } }, pr);
+  assert.equal(state.get("acme/app", 29).tasksClosed, undefined, "the settled marker goes when the PR reopens");
+  closed = true;
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes, ["R29"]);
+  refuse = false;
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes, ["R29", "R29"], "the refusal is retried rather than skipped as settled");
+  assert.equal(state.get("acme/app", 29).tasksClosed, true);
+});
