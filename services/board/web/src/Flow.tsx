@@ -45,7 +45,7 @@ export const nameOf = (x: { subject: string; identifier: string | null }) => (x.
 const linkName = (subject: string) => `${subject.startsWith("pr:") ? "PR" : subject.slice(0, subject.indexOf(":"))} #${subject.split("#")[1] ?? ""}`;
 
 const tabOf = (): Tab => {
-  const t = /^#\/?flow\/([a-z]+)/.exec(location.hash)?.[1];
+  const t = /^#\/?insight\/flow\/([a-z]+)/.exec(location.hash)?.[1];
   return TABS.some(([k]) => k === t) ? (t as Tab) : "overview";
 };
 

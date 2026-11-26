@@ -828,6 +828,20 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     return messages;
   }
 
+  /** Unassigned chats' agents from their whole description (the marker at its end never changes), by chat id. */
+  const markers = new Map<string, string | undefined>();
+  /** A listed chat's agent: lists truncate descriptions, so an unassigned chat whose marker was cut is read whole, once. */
+  async function chatAgentOf(i: Issue): Promise<string | undefined> {
+    if (i.assigneeAgentId || !i.descriptionTruncated) return chatAgent(i);
+    // A row gone since the list was read (deleted) has no agent here; the next list leaves it out.
+    if (!markers.has(i.id)) {
+      const whole = await pc.issue(i.id).catch(() => undefined);
+      if (!whole) return undefined;
+      markers.set(i.id, chatAgent(whole));
+    }
+    return markers.get(i.id);
+  }
+
   /**
    * One chat, as the conversation view shows it: messages, the live run, files, approvals, and the work handed out from it.
    * `peek` (a prefetch from a hovered row) leaves it unread.
@@ -906,6 +920,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       open: !["done", "cancelled"].includes(issue.status),
       agent: agent ? { key: agent.id, name: agent.name } : { key: "", name: "You" },
       state: states.get(issue.id) ?? null,
+      // Settled as the chat lists show it (GET /api/chats): until something happens on it, or work handed out from it runs again.
+      settled: stillSettled(store.settledAt().get(issue.id), issue, states.get(issue.id)) && !kids.some((k) => isActive(states.get(k.id))),
       // The owner's side of the chat: an admin other than the owner wrote it gets their name on it (the opening is the task's).
       messages: messages.map((m) => (m.kind === "owner" ? { ...m, ...byOf(names, m.id === `${issue.id}:opening` ? issue.id : m.id) } : m)),
       working: liveWork,
@@ -1871,16 +1887,24 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const ctx = await context();
         const id = key ? agentIdByKey(key) : undefined;
         if (key && (!id || !ctx.agents.some((a) => a.id === id))) throw new HttpError(404, `no agent ${key}`);
-        const ours = (i: Issue) => !id || chatAgent(i) === id;
+        // Each chat's agent; an unassigned one's is the marker at the end of its description (chatAgentOf reads it whole).
+        const agentIds = new Map<string, string | undefined>();
+        const resolve = (rows: Issue[]) => Promise.all(rows.map(async (i) => void agentIds.set(i.id, await chatAgentOf(i))));
+        const ours = (i: Issue) => !id || agentIds.get(i.id) === id;
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         // The open chats are among the open tasks (the snapshot, which also gives the work handed out from them); only the newest finished ones are read.
         // One agent's settled list reads whole pages of 100 from `offset` until it holds 25 of that agent's chats or a page
         // comes back short, so other agents' newer chats never hide this one's older ones; `next_offset` is the raw offset after.
         const readFinished = async () => {
-          if (!key || want === "active") return pc.labelled(label.id, "done,cancelled", key ? "100" : "20", offset);
+          if (!key || want === "active") {
+            const p = await pc.labelled(label.id, "done,cancelled", key ? "100" : "20", offset);
+            await resolve(p);
+            return p;
+          }
           const rows: Issue[] = [];
           for (let at = offset, full = true; full && rows.filter(ours).length < 25; ) {
             const p = await pc.labelled(label.id, "done,cancelled", "100", at);
+            await resolve(p);
             rows.push(...p);
             at += p.length;
             full = p.length === 100;
@@ -1891,12 +1915,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const finished = new Set(finishedPage.map((i) => i.id));
         const closed = finishedPage.filter(ours);
         // A later page of one agent's chats is finished ones only: its open chats are on the first.
-        const open = offset ? [] : openTasks.filter((i) => isChat(i, ctx) && !finished.has(i.id) && ours(i));
+        const openChats = offset ? [] : openTasks.filter((i) => isChat(i, ctx) && !finished.has(i.id));
+        await resolve(openChats);
+        const open = openChats.filter(ours);
         const newest = (a: Issue, b: Issue) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt);
         const all = [...open.sort(newest), ...(key && want === "active" ? [] : closed.sort(newest))];
-        // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent (the fleet-wide list only).
+        // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent (the fleet-wide list
+        // only), and read for every list, since it running again brings a settled chat back.
         const chatIds = new Map(open.map((i) => [i.id, i.identifier]));
-        const kids = !key && chatIds.size ? openTasks.filter((i) => i.parentId && chatIds.has(i.parentId) && !all.some((c) => c.id === i.id)) : [];
+        const kids = chatIds.size ? openTasks.filter((i) => i.parentId && chatIds.has(i.parentId) && !all.some((c) => c.id === i.id)) : [];
         const states = await stateRows([...all, ...kids].map((i) => i.id));
         const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
         const row = (i: Issue, agent: ReturnType<typeof agentOf>) => ({
@@ -1915,7 +1942,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const chats = await Promise.all(
           all.map(async (i) => {
             const messages = knownMessages(i) ?? [];
-            const r = row(i, agentOf(chatAgent(i)));
+            const r = row(i, agentOf(agentIds.get(i.id)));
             const said = lastWord(messages);
             // Settled: out of the active list until something happens on it (then it comes back on its own).
             const settled = stillSettled(settledAt.get(i.id), i, r.state);
@@ -2004,7 +2031,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       method: "POST",
       path: /^\/api\/home\/snooze$/,
       handle: async (_m, body) => {
-        const { id, on } = parse(z.object({ id: z.string().min(1).max(64), on: z.boolean() }).strict(), body);
+        // `id`: a row's snooze key (an answer row's is its task and wait, home.ts).
+        const { id, on } = parse(z.object({ id: z.string().min(1).max(120), on: z.boolean() }).strict(), body);
         const until = nextEight(Date.now(), opts.timezone);
         if (on) store.snooze(viewer(), id, until);
         else store.unsnooze(viewer(), id);
@@ -2374,6 +2402,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const own = issue.id === task?.id ? ctx.assignees.find((a) => a.kind === "assistant")?.key : issue.assigneeAgentId;
         // Only teammates are @-mentioned: a hidden agent's name is plain text.
         const { is } = teammates();
+        // A message to a finished or handed-back chat goes back to the chat's agent (below): only a teammate takes chats.
+        const back = isChat(issue, ctx) && (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") ? chatAgent(issue) : undefined;
+        if (back && !is({ id: back })) throw new HttpError(409, `${ctx.agents.find((a) => a.id === back)?.name ?? "This agent"} isn't a teammate: hidden agents work through their teammate, so start a chat with that teammate instead`);
         const named = task ? mentionedAgents(text, ctx.assignees.filter((a) => a.kind !== "me" && is({ id: a.key }))) : [];
         const others = named.filter((a) => a.key !== own);
         // Hidden markers are machine-only: the runner ignores comments that carry its marker.
@@ -2385,8 +2416,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // A message to a finished chat reopens it.
         // A chat keeps its agent: a message to a chat the agent handed back goes to that agent again.
         if (isChat(issue, ctx) && (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled")) {
-          const agentId = chatAgent(issue);
-          await pc.updateIssue(issue.id, { status: "todo", ...(agentId && !issue.assigneeAgentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) });
+          await pc.updateIssue(issue.id, { status: "todo", ...(back && !issue.assigneeAgentId ? { assigneeAgentId: back, assigneeUserId: null } : {}) });
         }
         const where = issue.id === task?.id ? "the team chat" : `${ctx.assignees.find((a) => a.key === issue.assigneeAgentId)?.name ?? "another agent"}'s chat`;
         const parts = [];

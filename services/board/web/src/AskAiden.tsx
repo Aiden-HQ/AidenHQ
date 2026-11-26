@@ -31,6 +31,12 @@ export function openAsk(opts: { text?: string; chat?: string; toggle?: boolean }
   window.dispatchEvent(new CustomEvent("aidenhq:ask", { detail: opts }));
 }
 export const toggleAsk = () => openAsk({ toggle: true });
+/** Closes it, keeping its chat (a link followed from the phone's full-screen sheet). */
+export function closeAsk(): void {
+  if (!store.open) return;
+  store.open = false;
+  emit();
+}
 export const useAskOpen = () => useSyncExternalStore(subscribe, () => store.open);
 
 type Props = { mobile: boolean; crew: Assignee[]; faces: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: (t: string) => void };
@@ -53,7 +59,9 @@ function AskPanel({ mobile, crew, faces, prefix, go, onSignIn, toast }: Props) {
   const list = useQuery(agentChatsQuery(FRONT, state), onSignIn);
   const active = useQuery(agentChatsQuery(FRONT), onSignIn);
   const lane = useQuery(QUERIES.lane, onSignIn).data?.agents ?? [];
-  const current = store.chat ?? active.data?.chats.find((c) => c.open)?.identifier ?? "";
+  // Undefined while the first read of Aiden's chats is on its way (an unreadable list shows a new chat).
+  const current = store.chat ?? (active.data || active.error ? active.data?.chats.find((c) => c.open)?.identifier ?? "" : undefined);
+  const reloadLists = useCallback(() => Promise.all([active.reload(), list.reload()]), [active.reload, list.reload]);
   const pick = (chat: string) => ((store.chat = chat), setHistory(false), emit());
   const close = useCallback(() => {
     store.open = false;
@@ -75,6 +83,7 @@ function AskPanel({ mobile, crew, faces, prefix, go, onSignIn, toast }: Props) {
   const start = async (text: string, files: File[] = []) => {
     try {
       const { identifier } = await api.newChat(text || `Files: ${files.map((f) => f.name).join(", ")}`);
+      if (identifier.startsWith("lane:") && files.length) toast(`The fast lane takes text only: ${files.map((f) => f.name).join(", ")} wasn't sent`);
       for (const f of identifier.startsWith("lane:") ? [] : files) await api.attach(identifier, f).catch((e: Error) => toast(`Couldn't attach ${f.name}: ${e.message}`));
       store.text = "";
       pick(identifier);
@@ -84,20 +93,20 @@ function AskPanel({ mobile, crew, faces, prefix, go, onSignIn, toast }: Props) {
       throw e;
     }
   };
-  const intercept = async (text: string) => {
+  const intercept = async (text: string, files: File[]) => {
     if (!/^@\S/.test(text.trim())) return false;
-    await start(text);
+    await start(text, files);
     return true;
   };
 
-  const laneAgent = current.startsWith("lane:") ? lane.find((a) => a.key === current.slice(5)) : undefined;
+  const laneAgent = current?.startsWith("lane:") ? lane.find((a) => a.key === current.slice(5)) : undefined;
   const job = aiden?.teammate?.job ?? "Chief of staff";
   const historyBtn = (
     <Button variant="quiet" aria-label={history ? "Back to the chat" : "Earlier chats"} aria-pressed={history} title={history ? "Back to the chat" : "Earlier chats"} onClick={() => setHistory(!history)}>
       <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
     </Button>
   );
-  const fresh = !history && !current;
+  const fresh = !history && current === "";
   return (
     <div id="ask-aiden" ref={root} className="ask-aiden">
       <SidePanel
@@ -114,11 +123,13 @@ function AskPanel({ mobile, crew, faces, prefix, go, onSignIn, toast }: Props) {
         }
       >
         {history ? (
-          <ChatHistory rows={list.data?.chats ?? null} state={state} setState={setState} current={current} pick={pick} />
+          <ChatHistory rows={list.data?.chats ?? null} state={state} setState={setState} current={current ?? ""} pick={pick} />
         ) : laneAgent ? (
           <LaneChat key={laneAgent.key} agent={laneAgent} mobile={mobile} faces={faces} go={go} />
+        ) : current === undefined ? (
+          <p className="ask-empty">Loading…</p>
         ) : current && !current.startsWith("lane:") ? (
-          <Conversation key={current} refId={current} mobile={mobile} crew={crew} faces={faces} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} reloadList={active.reload} compact intercept={intercept} />
+          <Conversation key={current} refId={current} row={[...(active.data?.chats ?? []), ...(list.data?.chats ?? [])].find((c) => c.identifier === current)} mobile={mobile} crew={crew} faces={faces} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} reloadList={reloadLists} compact intercept={intercept} />
         ) : (
           <p className="ask-empty">
             Ask about anything your team is doing, or hand Aiden something to take off your plate. Start with @ to talk to a teammate. <Kbd>{askKey}</Kbd> opens and closes this.

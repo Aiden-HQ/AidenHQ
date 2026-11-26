@@ -118,10 +118,11 @@ describe("home", () => {
   });
 
   it("a snoozed row is gone until the next 08:00, and Undo brings it back", async () => {
-    const { until } = await call("POST", "/api/home/snooze", { id: asking.id, on: true });
+    // An answer row is snoozed by its task and wait (a new question on the task is a new row).
+    const { until } = await call("POST", "/api/home/snooze", { id: `${asking.id}:${first.needs[2].waitSince}`, on: true });
     expect(new Date(until).getUTCHours()).toBe(8);
     expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1"]);
-    await call("POST", "/api/home/snooze", { id: asking.id, on: false });
+    await call("POST", "/api/home/snooze", { id: `${asking.id}:${first.needs[2].waitSince}`, on: false });
     expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1", asking.id]);
   });
 });

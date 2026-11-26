@@ -21,7 +21,8 @@ export function pickAgent(text: string, agents: Agent[]): { agent: Agent; note?:
   const m = /^@(\S+(?:[ -]\S+){0,3})/.exec(text.trim());
   if (!m) return { agent: aiden };
   const said = norm(m[1]!);
-  const names = (a: Agent) => [norm(a.name), norm(String(a.metadata?.setupKey ?? "").replace(/^aidenhq:/, ""))];
+  // Its name, its handle (the name without spaces, as the composer's @-autocomplete writes it) or its key.
+  const names = (a: Agent) => [norm(a.name), norm(a.name.replace(/\s+/g, "")), norm(String(a.metadata?.setupKey ?? "").replace(/^aidenhq:/, ""))];
   // Longest name that the words after @ start with ("@inbox agent please…" → "inbox agent").
   const hit = agents
     .filter((a) => !agentPaused(a))

@@ -7,7 +7,7 @@ import { HttpStatusError, SignInRequired, api, type Session } from "./api";
 import { ApprovalCard, BatchBar, Decide } from "./ApprovalCard";
 import { useLive } from "./events";
 import { askForNotifications, notificationsSupported } from "./notify";
-import { doneAction, useNeedsKeys } from "./needs";
+import { doneAction, formOnly, useNeedsKeys } from "./needs";
 import { QUERIES, homeFrom, useQuery } from "./queries";
 import { Bone } from "./Skeleton";
 import type { Approval, FaceRef, Home, NeedRow, SinceItem } from "./types";
@@ -16,8 +16,9 @@ import { ago } from "./util";
 import "./home.css";
 
 type Toast = (text: string, action?: { label: string; run: () => void }) => void;
-type Receipt = { text: string; onUndo?: () => void };
-/** A receipt's key: an answer row's task and wait (a follow-up question on the same task is a new row), else the row's id. */
+/** A row answered, decided or snoozed on this visit: its receipt, and the row itself (kept on screen after a refetch drops it). */
+type Receipt = { text: string; onUndo?: () => void; row: NeedRow };
+/** A receipt's key and a row's snooze key (home.ts): an answer row's task and wait (a follow-up question on the same task is a new row), else the row's id. */
 const rkey = (r: NeedRow) => (r.kind === "answer" ? `${r.id}:${r.waitSince}` : r.id);
 /** What the detail pane shows: a Needs row, every Since item, or a card that isn't in Needs (#/approvals/<id>). */
 type Pane = { kind: "row"; id: string } | { kind: "since" } | { kind: "card"; id: string } | null;
@@ -60,8 +61,9 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   // only one that shows something newer than the last mark. (A mark emits `home`, which refetches: marking every snapshot
   // would loop.)
   const seen = useRef<string | null>(null);
+  // Only while Home is in front: a task or run drawer over it (full screen on a phone) hides the snapshot.
   useLayoutEffect(() => {
-    if (!data || seen.current === data.as_of || !data.since_complete || !fresh) return;
+    if (!front || !data || seen.current === data.as_of || !data.since_complete || !fresh) return;
     const last = seen.current;
     if (last && !data.since?.items.some((i) => i.at > last)) return;
     const asOf = data.as_of;
@@ -71,22 +73,24 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
       void api.homeSeen(asOf).catch(() => {});
     });
     return () => cancelAnimationFrame(f);
-  }, [data?.as_of, fresh]);
+  }, [data?.as_of, fresh, front]);
 
   // Answered and decided rows keep their receipt for this visit, even when a refetch still lists them.
   const [receipts, setReceipts] = useState<Map<string, Receipt>>(() => new Map());
-  const receipt = useCallback((id: string, r: Receipt | null) => setReceipts((m) => { const n = new Map(m); if (r) n.set(id, r); else n.delete(id); return n; }), []);
+  const receipt = useCallback((row: NeedRow, r: Omit<Receipt, "row"> | null) => setReceipts((m) => { const n = new Map(m); if (r) n.set(rkey(row), { ...r, row }); else n.delete(rkey(row)); return n; }), []);
   const [pane, setPane] = useState<Pane>(null);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
   const [unbatched, setUnbatched] = useState<string[]>([]);
-  // Rows snoozed on this visit: the server leaves them out from the next read, and they stay here with their Undo.
-  const [held, setHeld] = useState<NeedRow[]>([]);
+  // A row with a receipt stays for the visit after a refetch leaves it out (answered, decided, snoozed), with its receipt; one
+  // row per task (its newest receipt), as rows are picked and opened by id.
   const rows = useMemo(() => {
     const needs = data?.needs ?? [];
-    return [...needs, ...held.filter((h) => !needs.some((n) => n.id === h.id))];
-  }, [data?.needs, held]);
+    const kept = new Map<string, NeedRow>();
+    for (const { row } of receipts.values()) if (!needs.some((n) => n.id === row.id)) kept.set(row.id, row);
+    return [...needs, ...kept.values()];
+  }, [data?.needs, receipts]);
   const live = rows.filter((r) => !receipts.has(rkey(r)));
 
   const fail = (e: unknown, what: string) => {
@@ -98,20 +102,19 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const answer = async (row: NeedRow & { kind: "answer" }, text: string) => {
     try {
       await api.answer(row.task.identifier, text, row.waitSince);
-      receipt(rkey(row), { text: row.detail && text === row.options[0] ? `${row.teammate.name} is sending it` : `Sent: ${text}` });
+      receipt(row, { text: row.detail && text === row.options[0] ? `${row.teammate.name} is sending it` : `Sent: ${text}` });
     } catch (e) {
       fail(e, "answer");
       // The form keeps what was typed for another try.
       throw e;
     }
   };
-  const decided = (row: NeedRow, d: "approve" | "reject") => receipt(rkey(row), { text: d === "approve" ? "Approved" : "Rejected" });
+  const decided = (row: NeedRow, d: "approve" | "reject") => receipt(row, { text: d === "approve" ? "Approved" : "Rejected" });
   const snooze = async (row: NeedRow) => {
     try {
-      await api.homeSnooze(row.id, true);
-      setHeld((h) => [...h.filter((x) => x.id !== row.id), row]);
-      const undo = () => void api.homeSnooze(row.id, false).then(() => (receipt(rkey(row), null), setHeld((h) => h.filter((x) => x.id !== row.id)), reload()), (e) => fail(e, "undo"));
-      receipt(rkey(row), { text: "Hidden until 08:00", onUndo: undo });
+      await api.homeSnooze(rkey(row), true);
+      const undo = () => void api.homeSnooze(rkey(row), false).then(() => (receipt(row, null), reload()), (e) => fail(e, "undo"));
+      receipt(row, { text: "Hidden until 08:00", onUndo: undo });
     } catch (e) {
       fail(e, "snooze");
     }
@@ -122,7 +125,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     if (!act) return setPane({ kind: "row", id: row.id });
     try {
       if (act === "approve" && row.kind === "approval") (await api.decide(row.card.id, row.card.digest, "approve"), decided(row, "approve"));
-      else if (act === "close" && row.kind === "open") (await api.update(row.task.identifier, { status: "done" }), receipt(rkey(row), { text: "Marked done" }));
+      else if (act === "close" && row.kind === "open") (await api.update(row.task.identifier, { status: "done" }), receipt(row, { text: "Marked done" }));
       else if (typeof act === "object" && row.kind === "answer") await answer(row, act.answer).catch(() => {});
     } catch (e) {
       fail(e, "do that");
@@ -176,7 +179,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     <DetailPane open title="Details" onClose={closePane}>
       {pane?.kind === "row" && paneRow && <RowDetail row={paneRow} answer={answer} done={done} receipt={receipts.get(rkey(paneRow))} />}
       {pane?.kind === "since" && data.since && <SinceAll items={data.since.items} total={data.since.total} />}
-      {pane?.kind === "card" && <CardAlone id={pane.id} />}
+      {pane?.kind === "card" && <CardAlone key={pane.id} id={pane.id} />}
     </DetailPane>
   );
 
@@ -241,7 +244,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
               <p className="home-clear">All clear. When a teammate needs your say, it lands here first.</p>
             )}
             {selecting && chosen.length > 0 && (
-              <BatchBar cards={chosen} busy={batching} setBusy={setBatching} hold={false} done={(failed) => (setUnbatched(failed), approvals.filter((r) => picked.includes(r.id) && !failed.some((f) => f.startsWith(`${r.card.identifier}:`))).forEach((r) => receipt(rkey(r), { text: "Decided" })), setPicked([]), void reload())} />
+              <BatchBar cards={chosen} busy={batching} setBusy={setBatching} hold={false} done={(failed) => (setUnbatched(failed.map((f) => f.why)), approvals.filter((r) => picked.includes(r.id) && !failed.some((f) => f.id === r.card.id)).forEach((r) => receipt(r, { text: "Decided" })), setPicked([]), void reload())} />
             )}
           </SectionCard>
         </div>
@@ -298,8 +301,8 @@ function RowActions({ row, answer, decided, snooze, done, open, pick }: { row: N
       </>
     );
   const notNow = row.options.find((o) => /^not now$/i.test(o));
-  // Several questions are answered together, in the pane's form: an answer claims the whole wait.
-  if (row.questions.length > 1)
+  // Several questions, or one taking several options, are answered in the pane's form: an answer claims the whole wait.
+  if (formOnly(row))
     return (
       <>
         <Button variant="primary" className="press" onClick={open}>Answer</Button>

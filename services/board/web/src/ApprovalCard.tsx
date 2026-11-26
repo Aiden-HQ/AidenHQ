@@ -71,19 +71,19 @@ export function Decide({ a, hold, onDecided }: { a: Approval; hold?: boolean; /*
  * The batch bar for the cards picked on Home's Needs you: Approve n, or Reject n with one reason. Each card is decided on its
  * own against the digest it showed (as a single card is), so one that changed meanwhile fails alone and is named here.
  */
-export function BatchBar({ cards, done, busy, setBusy, hold }: { cards: Approval[]; /** The cards not decided (each with why), once the batch has run. */ done: (failed: string[]) => void; /** The running batch's decision: the list holds it, so hiding the bar never unlocks a batch still running. */ busy: "approve" | "reject" | null; setBusy: (b: "approve" | "reject" | null) => void; /** The cards are an earlier visit's copy: nothing is decided until the fresh one lands. */ hold: boolean }) {
+export function BatchBar({ cards, done, busy, setBusy, hold }: { cards: Approval[]; /** The cards not decided (each card's id, and why), once the batch has run. */ done: (failed: { id: string; why: string }[]) => void; /** The running batch's decision: the list holds it, so hiding the bar never unlocks a batch still running. */ busy: "approve" | "reject" | null; setBusy: (b: "approve" | "reject" | null) => void; /** The cards are an earlier visit's copy: nothing is decided until the fresh one lands. */ hold: boolean }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const n = cards.length;
   const off = busy !== null || hold;
   const decide = async (d: "approve" | "reject") => {
     setBusy(d);
-    const bad: string[] = [];
+    const bad: { id: string; why: string }[] = [];
     for (const a of cards) {
       try {
         await api.decide(a.id, a.digest, d, d === "reject" ? reason.trim() || undefined : undefined);
       } catch (e) {
-        bad.push(`${a.identifier}: ${(e as Error).message}`);
+        bad.push({ id: a.id, why: `${a.identifier}: ${(e as Error).message}` });
       }
     }
     setBusy(null);

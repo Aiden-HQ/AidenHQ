@@ -22,7 +22,7 @@ export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval
   const allOf: Records["allOf"] = async (state, kinds, task, _maxPages) =>
     cards
       .filter((a) => !task || a.issueId === task || a.identifier === task)
-      .filter((a) => (state === "recent" ? true : state === "pending" ? a.state === "pending" : state === "approved" ? a.state === "approved" || a.state === "running" : a.state === "pending" || a.state === "approved" || a.state === "running"))
+      .filter((a) => (state === "recent" ? true : state === "owner" ? a.state === "pending" && a.tier === 2 : state === "pending" ? a.state === "pending" : state === "approved" ? a.state === "approved" || a.state === "running" : a.state === "pending" || a.state === "approved" || a.state === "running"))
       .filter((a) => !kinds?.length || kinds.some((k) => a.action === k.replace(/^github\./, "") || a.action === k));
   return { cards, settings, list, live, allOf, one: async (id) => cards.find((a) => a.id === id), advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), connectionOk: async () => {}, validate: async () => ({ ok: true }), sharePreview: async () => { throw Object.assign(new Error("no kernel"), { refused: true }); }, share: async () => { throw Object.assign(new Error("no kernel"), { refused: true }); }, settingsChange: async (task, changes, credential) => (settings.push({ task, changes, ...(credential ? { credential } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
 }

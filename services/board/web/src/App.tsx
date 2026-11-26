@@ -29,7 +29,7 @@ import type { ModuleTab } from "./ModulePage";
 import { QUERIES, VIEW_CHUNKS, hashPath, landsOnBoard, useQuery } from "./queries";
 import { watchNeedsYou } from "./notify";
 import { HomeView } from "./Home";
-import { AskAiden, openAsk, toggleAsk } from "./AskAiden";
+import { AskAiden, closeAsk, openAsk, toggleAsk } from "./AskAiden";
 import { CardView, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
@@ -134,11 +134,16 @@ class MouseOrPenSensor extends PointerSensor {
  * Where an old address lives now (the path after `#/`), or null when it isn't an old one. parseRoute rewrites the address
  * once (replaceState) and reads the new one; the old views are gone. `#/c/` with or without text also opens Ask Aiden.
  */
+/** An address's path and its query (after the first `?`, still encoded). */
+const splitQuery = (h: string): [string, string] => {
+  const i = h.indexOf("?");
+  return i < 0 ? [h, ""] : [h.slice(0, i), h.slice(i + 1)];
+};
 export function redirectOld(h: string): string | null {
-  const [path = "", query] = h.split("?", 2) as [string, string | undefined];
+  const [path, query] = splitQuery(h);
   const q = query ? `?${query}` : "";
   if (path === "c" || path === "c/") {
-    const p = new URLSearchParams(query ?? "");
+    const p = new URLSearchParams(query);
     if (p.has("to")) return "team";
     pendingAsk = { text: p.get("text") ?? undefined };
     return "";
@@ -176,7 +181,7 @@ function parseRoute(): Route {
     history.replaceState(null, "", `#/${moved}`);
     h = hashPath();
   }
-  const [path = "", query = ""] = h.split("?", 2) as [string, string | undefined];
+  const [path, query] = splitQuery(h);
   // #/t/PEN-12 opens a task; #/t/PEN-12/PEN-15 opens it on the agent working in PEN-15.
   if (path.startsWith("t/")) {
     const [ref = "", focus] = path.slice(2).split("/");
@@ -208,7 +213,8 @@ function parseRoute(): Route {
   // #/team/m/<id>[/<sub>] opens a module's page (board.pages, ModuleView.tsx).
   const page = /^team\/m\/([a-z][a-z0-9-]{0,30})(?:\/([\w/-]{1,100}))?$/.exec(path);
   if (page) return { kind: "page", id: page[1]!, ...(page[2] ? { sub: page[2] } : {}) };
-  // #/team/<key>[/c/<chat>][?text=…]: a teammate's page (after the reserved hire, agents, modules and m).
+  // #/team/<key>[/c/<chat>][?text=…]: a teammate's page (after the reserved hire, agents, modules and m, which the compiler
+  // refuses as a teammate's key: scripts/modules.ts TEAM_PAGES).
   const mate = /^team\/(?!(?:hire|agents|modules|m)(?:\/|$))([a-z0-9-]+)(?:\/c\/([A-Za-z0-9-]{1,40}))?$/.exec(path);
   if (mate) {
     const text = new URLSearchParams(query).get("text") ?? undefined;
@@ -473,6 +479,8 @@ export function App() {
         underHash.current = location.hash || "#/";
         setView(v, r);
       } else setRoute(r);
+      // Below 1000px Ask Aiden is a full-screen sheet (shell.css): a link followed from it (a task, a run) shows at once.
+      if (matchMedia("(max-width: 1000px)").matches) closeAsk();
       // An old #/c/?text=… link: Home, with Ask Aiden open on that text.
       if (pendingAsk) (openAsk(pendingAsk), (pendingAsk = null));
     };

@@ -1,7 +1,7 @@
 // Insight › Decisions (#/insight/decisions): every write record's history. What waits on the AI reviewer, what was decided
 // and what failed, live claimed records with their wait, Tier 0 tool calls behind a toggle, each row opening its full
 // cards. What waits for the owner is on Home (Needs you), never here.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ApprovalCard, forOwner, withAI } from "./ApprovalCard";
 import { useLive } from "./events";
 import { QUERIES, useQuery } from "./queries";
@@ -72,16 +72,7 @@ export function DecisionsView({ onSignIn }: { onSignIn: () => void }) {
               </header>
               <ul className="history">
                 {reviewing.map((a) => (
-                  <li key={a.id}>
-                    <button className="history-row" onClick={() => open(a.identifier)} title={`${a.sentence}\n${a.target}`}>
-                      <span className="history-state wide">
-                        <StatusDot tone="working">AI reviewing</StatusDot>
-                      </span>
-                      <span className="history-who">{a.requestedBy}</span>
-                      <span className="history-what">{a.sentence}</span>
-                      <span className="history-target">{a.identifier}</span>
-                    </button>
-                  </li>
+                  <HistoryRow key={a.id} group={[a]} state={<span className="history-state wide"><StatusDot tone="working">AI reviewing</StatusDot></span>} />
                 ))}
               </ul>
             </section>
@@ -116,17 +107,19 @@ export function DecisionsView({ onSignIn }: { onSignIn: () => void }) {
   );
 }
 
-/** One request in the history: its latest attempt in a line (earlier tries counted), the full cards a tap away. */
-function HistoryRow({ group }: { group: Approval[] }) {
+/** One request in the history (or under AI reviewing, with its `state`): its latest attempt in a line (earlier tries counted), the full cards a tap away. */
+function HistoryRow({ group, state }: { group: Approval[]; state?: ReactNode }) {
   const [shown, setShown] = useState(false);
   const a = group[0]!;
   const o = outcomeOf(a);
   return (
     <li className={shown ? "open" : ""}>
       <button className="history-row" aria-expanded={shown} onClick={() => setShown(!shown)} title={`${a.sentence}\n${a.target}`}>
-        <span className="history-state">
-          <span className={`run-status run-${o.tone}`}>{o.text}</span>
-        </span>
+        {state ?? (
+          <span className="history-state">
+            <span className={`run-status run-${o.tone}`}>{o.text}</span>
+          </span>
+        )}
         <span className="history-who">{a.requestedBy}</span>
         <span className="history-what">{a.sentence}</span>
         <span className="history-target">{a.target}</span>

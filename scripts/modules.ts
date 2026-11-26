@@ -46,6 +46,8 @@ const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // agents' own. A closed allowlist of manifest keys (no roles, services, connections, apps or privileged), the fields one of
 // their agents may set (identity included: a local AGENTS.md has no frontmatter), and the fields one of their routines may set.
 export const LOCAL_MODULE_KEYS = ["name", "description", "agents", "routines"];
+/** Team's own pages under #/team/ (the board's parseRoute): no teammate takes one of these keys. */
+const TEAM_PAGES = new Set(["hire", "agents", "modules", "m"]);
 const LOCAL_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "max_parallel", "image", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile", "teammate"];
 // A local agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
@@ -1271,6 +1273,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // chat's @name and the task tools address agents by either.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     if (!a.teammate) continue;
+    // A teammate's page is #/team/<key>; these keys are Team's own pages (services/board/web/src/App.tsx parseRoute).
+    if (TEAM_PAGES.has(key)) fail(`agent ${key}: a teammate can't have the key ${key}: #/team/${key} is a Team page; give the agent another key`);
     // A default name a hidden agent (a local one, a team member) already has: the teammate goes by its key until renamed.
     // Two teammates' names are the owner's to settle, so that collision fails below.
     const hidden = Object.fromEntries(Object.entries<{ name: string; teammate?: unknown }>(paperclip.agents).filter(([k, o]) => !o.teammate || k === key));

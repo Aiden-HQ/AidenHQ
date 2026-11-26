@@ -555,7 +555,7 @@ const homeData = () => {
     { id: "id-815", kind: "answer", teammate: fref("researcher", "needs"), since: ago(40), task: { identifier: "WOR-815", title: "Weekly metrics digest" }, question: "Weekly metrics digest: compare against last week, or the same week last month?", detail: undefined, options: ["Last week", "Same week last month"], questions: [{ question: "Which week should the digest compare against?", options: ["Last week", "Same week last month"] }], waitSince: ago(40) },
     { id: "k-00000000000000a2", kind: "approval", teammate: fref("ship", "needs"), since: ago(50), task: { identifier: "WOR-806", title: "Runner timeout" }, question: "Raise the Platform Engineer's run timeout to 45 minutes?", card: approval("k-00000000000000a2", { identifier: "WOR-806", action: "push", sentence: "Raise the Platform Engineer's run timeout to 45 minutes", reads: "instance.yaml", requestedBy: "Sam" }) },
     { id: "k-00000000000000a1", kind: "approval", teammate: fref("app-maintainer", "needs"), since: ago(120), task: { identifier: "WOR-818", title: "Hiring pipeline app" }, question: "Let the Hiring pipeline app read your “Recruiting” Gmail label?", card: approval("k-00000000000000a1", { sentence: "Let the Hiring pipeline app read your “Recruiting” Gmail label", reads: "Read only · that one label", requestedBy: "Iris" }) },
-  ].filter((n) => !homeMock.snoozed.has(n.id));
+  ].filter((n) => ![...homeMock.snoozed].some((k) => k === n.id || k.startsWith(`${n.id}:`))); // an answer row's key carries its wait
   const items = [
     sinceItem("ship", "Invoices export v2 shipped. PR #812 merged at 06:10 after review.", 140, "WOR-812"),
     sinceItem("open-loops", "6 chasers sent overnight; Priya and Omar replied.", 200, "WOR-842", "digest"),

@@ -234,7 +234,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
     // Reached the owner (a channel took it, or it is on their chat) (a digest item is told when its digest goes); a message still waiting for a channel is written by the retry that delivers it.
-    if (out === "sent" || onChat) d.store.told(told, now);
+    // Stamped now, once delivered (not when the send began): a Home read during the send never moves its cursor past the row.
+    if (out === "sent" || onChat) d.store.told(told);
     const failed = waitError ? { wait_error: `the question went out, but its wait wasn't recorded (${waitError}): call task_wait for: owner with the question so the task isn't woken as idle.` } : {};
     const chat = onChat ? { onChat: true as const } : {};
     // Sent only when a channel took it, its chat holds it or the digest will carry it; waiting for a channel is never "sent".
@@ -264,7 +265,7 @@ async function retryPass(d: Pick<Deps, "send" | "store">, now: number): Promise<
     const out = now - at > 24 * 60 * MIN ? "off" : await deliver(d, m, to);
     if (out === "down" || (out === "off" && keep && now - at <= 24 * 60 * MIN)) continue;
     d.store.done(w.id);
-    if (out === "sent") { n++; if (told) d.store.told(told, now); }
+    if (out === "sent") { n++; if (told) d.store.told(told); }
   }
   return n;
 }

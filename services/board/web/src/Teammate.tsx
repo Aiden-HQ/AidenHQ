@@ -1,7 +1,7 @@
 // A teammate's page (#/team/<key>[/c/<chat>]): who it is and what it does now, Pause, one Advanced link; its chat (the
 // newest open one, any of its chats from the switcher, or a new one) beside a generic side column: what it does, its recent
 // work, how it is set up (its modules' declared settings) and the team behind it. Nothing here is per-module.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
 import { load, useCached } from "./cache";
 import { Composer, Conversation } from "./ChatPane";
@@ -130,9 +130,15 @@ function ChatCard({ a, chat, text, crew, faces, prefix, go, onSignIn, toast, mob
   // A route with text (#/team/<key>?text=…) asks for a new chat with it prefilled, whatever chat is open.
   const current = fresh ? undefined : chat ?? (text ? undefined : active.data?.chats.find((c) => c.open && !c.settled)?.identifier);
   const rows = [...(list.data?.chats ?? []), ...older];
+  // Settling or reopening a chat moves it between the two lists.
+  const reloadLists = useCallback(() => Promise.all([active.reload(), list.reload()]), [active.reload, list.reload]);
+  // Bumped when the filter changes: a page of older chats asked for under the filter left is dropped.
+  const filterRun = useRef(0);
   const showOlder = async () => {
+    const run = filterRun.current;
     try {
       const r = await api.chats(key, { state, offset: next ?? list.data?.next_offset ?? 0 });
+      if (run !== filterRun.current) return;
       const shown = new Set(list.data?.chats.map((c) => c.identifier));
       setOlder((o) => [...o, ...r.chats.filter((c) => !shown.has(c.identifier) && !o.some((x) => x.identifier === c.identifier))]);
       setMore(!!r.more);
@@ -150,7 +156,7 @@ function ChatCard({ a, chat, text, crew, faces, prefix, go, onSignIn, toast, mob
   };
   const tools = lane ? undefined : (
     <span className="mate-chat-tools">
-      <Segmented label="Chats" value={state} onChange={(s) => (setState(s), setOlder([]), setMore(null), setNext(null))} options={[["active", "Active"], ["settled", "Settled"]] as const} />
+      <Segmented label="Chats" value={state} onChange={(s) => (filterRun.current++, setState(s), setOlder([]), setMore(null), setNext(null))} options={[["active", "Active"], ["settled", "Settled"]] as const} />
       <Menu
         label={`${a.name}'s chats`}
         items={[
@@ -168,7 +174,7 @@ function ChatCard({ a, chat, text, crew, faces, prefix, go, onSignIn, toast, mob
           {lane ? (
             <LaneChat agent={lane} mobile={mobile} faces={faces} go={go} />
           ) : current ? (
-            <Conversation key={current} refId={current} row={rows.find((r) => r.identifier === current)} mobile={mobile} crew={crew} faces={faces} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} reloadList={active.reload} compact />
+            <Conversation key={current} refId={current} row={rows.find((r) => r.identifier === current)} mobile={mobile} crew={crew} faces={faces} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} reloadList={reloadLists} compact />
           ) : (
             <div className="mate-new ws-main">
               <p className="mate-new-hint">{fresh ? `A new chat with ${a.name}.` : `No chat with ${a.name} yet.`} Tell {a.name} what you want; it changes its own settings and shows you exactly what changed.</p>

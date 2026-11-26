@@ -4,14 +4,16 @@ import { accountsApi, api } from "./api";
 import { adoptStoredAccount, load, prefetch, useCached, type Persist } from "./cache";
 import { chatListForDevice } from "./conversation";
 
-/** The URL hash without its `#/`, percent-decoded; a malformed escape stays raw. */
+/** The address after `#/`: its path decoded, its query (after the first `?`) left encoded for URLSearchParams to read (an encoded `&` or `?` in a value stays in it); a malformed escape stays raw. */
 export function hashPath(): string {
   const raw = location.hash.replace(/^#\/?/, "");
+  const q = raw.indexOf("?");
+  const path = q < 0 ? raw : raw.slice(0, q);
+  let decoded = path;
   try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
+    decoded = decodeURIComponent(path);
+  } catch {}
+  return q < 0 ? decoded : `${decoded}${raw.slice(q)}`;
 }
 
 export interface Query<T> {

@@ -80,7 +80,7 @@ type Ask = ChatDetail["asks"][number];
 type Item = { at: string; key: string } & ({ type: "message"; m: ChatMessage } | { type: "approval"; a: Approval } | { type: "ask"; q: Ask });
 
 /** One chat. `crew`: who the composer offers for @-mentions (teammates only); `faces`: every agent, so each message shows its speaker's own face. `compact` (Ask Aiden): the header drops the agent's face and name. */
-export function Conversation({ refId, row, mobile, crew, faces, prefix, go, onSignIn, toast, reloadList, compact, intercept }: { refId: string; row?: ChatRow; mobile: boolean; crew: Assignee[]; faces: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: (t: string) => void; reloadList: () => Promise<unknown>; compact?: boolean; /** A message the caller takes instead (Ask Aiden: "@Max …" starts a chat with Max); true when it did. */ intercept?: (text: string) => Promise<boolean> }) {
+export function Conversation({ refId, row, mobile, crew, faces, prefix, go, onSignIn, toast, reloadList, compact, intercept }: { refId: string; row?: ChatRow; mobile: boolean; crew: Assignee[]; faces: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: (t: string) => void; reloadList: () => Promise<unknown>; compact?: boolean; /** A message the caller takes instead (Ask Aiden: "@Max …" starts a chat with Max); true when it did. */ intercept?: (text: string, files: File[]) => Promise<boolean> }) {
   // From the cache (queries.ts): a chat opened before (or warmed by a hover) paints at once, then refreshes.
   const query = useQuery(chatQuery(refId), onSignIn);
   const chat = query.data ?? null;
@@ -146,7 +146,7 @@ export function Conversation({ refId, row, mobile, crew, faces, prefix, go, onSi
    * a failure stays on the message with Retry, even after a switch to another chat and back.
    */
   async function send(text: string, files: File[], answer = false) {
-    if (!answer && !files.length && intercept && (await intercept(text))) return;
+    if (!answer && intercept && (await intercept(text, files))) return;
     const id = Date.now() + Math.random();
     const queued = live;
     const q = chatQuery(refId);
@@ -164,12 +164,14 @@ export function Conversation({ refId, row, mobile, crew, faces, prefix, go, onSi
           if (view.movedTo) toast(`Sent to ${view.movedTo}`);
           setOutbox(refId, (p) => p.map((x) => (x.id === id ? { ...x, text: body, state: "sent" } : x)));
         } else setOutbox(refId, (p) => p.filter((x) => x.id !== id));
-        // Through the cache, not this view: it may have closed by now.
-        await Promise.all([loadCached(q.key, q.fetch, false, true), reloadList()]);
       } catch (e) {
         if (e instanceof SignInRequired) onSignIn();
         setOutbox(refId, (p) => p.map((x) => (x.id === id ? { ...x, state: "failed", error: (e as Error).message } : x)));
+        return;
       }
+      // Sent: a refresh that fails is never a Retry (that would post it twice); the next event or poll brings it.
+      // Through the cache, not this view: it may have closed by now.
+      await Promise.all([loadCached(q.key, q.fetch, false, true), reloadList()]).catch(() => {});
     };
     setOutbox(refId, (p) => [...p, { id, text, files: files.map((f) => f.name), state: "sending", queued, retry: () => void inTurn(refId, attempt) }]);
     (stick.current = true), setAtEnd(true);
@@ -196,7 +198,7 @@ export function Conversation({ refId, row, mobile, crew, faces, prefix, go, onSi
       () => toast(on ? `Settled “${shortTitle(chat!.title)}”` : "Back in the active list"),
       (e: Error) => toast(`Couldn't ${on ? "settle" : "reopen"}: ${e.message}`),
     );
-    await reloadList();
+    await Promise.all([load(), reloadList()]).catch(() => {});
   }
 
   const notRight = useCallback(
@@ -327,7 +329,7 @@ export function Conversation({ refId, row, mobile, crew, faces, prefix, go, onSi
             </span>
           </span>
           <TaskState state={chat.state} />
-          {row?.settled ? (
+          {chat.settled ? (
             <button className="btn settle-btn on" onClick={() => void settle(false)} title="Settled: bring it back to the active list">
               ◆ Settled · Reopen
             </button>

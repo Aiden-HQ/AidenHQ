@@ -41,7 +41,7 @@ export type Home = {
 export type HomeDeps = {
   pc: Pick<Paperclip, "openIssues" | "closedSince" | "comments">;
   taskStates: TaskStates;
-  records: Pick<Records, "list">;
+  records: Pick<Records, "allOf">;
   views?: Pick<ViewHost, "read">;
   store: Store;
   compiled: () => Compiled | null;
@@ -69,13 +69,13 @@ type Told = { source: string; task: string | null; kind: string; at: string; cur
 /** The text inside the ledger's ``` fence (owner-channel fences what agents wrote), first line, as one plain line. */
 export const toldLine = (t: string) => oneLine((/^(`{3,})\n([\s\S]*)\n\1$/.exec(t)?.[2] ?? t).split("\n").find((l) => l.trim()) ?? "");
 
-/** The next 08:00 in `tz` after `now` (a snooze's end). */
+/** 08:00 on the next calendar day in `tz` after `now` (a snooze's end: never later the same morning). */
 export function nextEight(now: number, tz: string): string {
   const parts = (at: number) => Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(at)).map((p) => [p.type, p.value]));
   // The zone's offset at an instant: its wall clock read as UTC, less the instant.
   const offset = (at: number) => { const p = parts(at); return Date.UTC(+p.year!, +p.month! - 1, +p.day!, +p.hour!, +p.minute!, +p.second!) - Math.floor(at / 1000) * 1000; };
   const p = parts(now);
-  for (const add of [0, 1, 2]) {
+  for (const add of [1, 2]) {
     const wall = Date.UTC(+p.year!, +p.month! - 1, +p.day! + add, 8);
     const at = wall - offset(wall - offset(wall));
     if (at > now) return new Date(at).toISOString();
@@ -95,7 +95,7 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   const [read, open, cards, roster, told, closed, today] = await Promise.all([
     d.taskStates.read({ open: true }),
     d.pc.openIssues(),
-    d.records.list("owner", { strict: true }).then((l) => Promise.all(l.map(d.named))),
+    d.records.allOf("owner").then((l) => Promise.all(l.map(d.named))),
     d.roster().catch(() => [] as RosterAgent[]),
     toldSince(d, since_from, nowMs).catch((err) => {
       d.log.warn({ err: String((err as Error).message ?? err).slice(0, 300) }, "home: what the owner was told isn't readable");
@@ -122,7 +122,8 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   const snoozed = d.store.snoozed(viewer.accountId, as_of);
   const states = await d.shownRows(read.tasks.filter((r) => byId.has(r.task) && !labelled(byId.get(r.task)!, "idea") && r.attention.some((a) => a.who === "owner" && ["owner_wait", "handback", "card"].includes(a.why))));
   const cardRows = new Map(cards.map((c) => [c.id, c]));
-  type Pending = { id: string; agentKey: string; build: () => NeedRow };
+  /** `snooze`: the key a snooze hides it by: an answer row's task and wait (a new question on the task is a new row), else its id. */
+  type Pending = { id: string; snooze?: string; agentKey: string; build: () => NeedRow };
   const pending: Pending[] = [];
   const onTask = new Set<string>();
   for (const st of states) {
@@ -137,7 +138,7 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
     }
     if (waitsForAnswer(st) && st.wait_since) {
       const q = boundQuestions(askedQuestions(await d.pc.comments(i.id).catch(() => [] as Comment[]), i.assigneeAgentId), st.question ?? "");
-      pending.push({ id: i.id, agentKey, build: () => ({ id: i.id, kind: "answer", teammate: face(agentKey), since: st.wait_since!, task: ref(i), question: st.question ?? "", ...(st.detail ? { detail: st.detail } : {}), options: q[0]?.options ?? [], questions: q, waitSince: st.wait_since! }) });
+      pending.push({ id: i.id, snooze: `${i.id}:${st.wait_since}`, agentKey, build: () => ({ id: i.id, kind: "answer", teammate: face(agentKey), since: st.wait_since!, task: ref(i), question: st.question ?? "", ...(st.detail ? { detail: st.detail } : {}), options: q[0]?.options ?? [], questions: q, waitSince: st.wait_since! }) });
       continue;
     }
     const a = owner.find((x) => x.why !== "card");
@@ -147,7 +148,7 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   function approvalRow(c: Approval, task: TaskRef | null): NeedRow {
     return { id: c.id, kind: "approval", teammate: face(keyOfAgent(c.requesterId)), since: c.createdAt, task, question: c.sentence, card: d.shownApproval(c) };
   }
-  const shown = pending.filter((p) => !snoozed.has(p.id));
+  const shown = pending.filter((p) => !snoozed.has(p.snooze ?? p.id));
   for (const p of shown) owners.add(teammateFor(p.agentKey, keys));
   const needs = shown.map((p) => p.build()).sort((a, b) => a.since.localeCompare(b.since));
 

@@ -662,6 +662,8 @@ export interface ChatDetail {
   title: string;
   open: boolean;
   agent: { key: string; name: string };
+  /** Settled out of the active list (as the chat lists say). */
+  settled?: boolean;
   state: ShownState | null;
   messages: ChatMessage[];
   working: Working | null;

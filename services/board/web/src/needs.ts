@@ -4,16 +4,20 @@
 import { useEffect, useRef, useState } from "react";
 import type { NeedRow } from "./types";
 
+/** A wait answered in the pane's form, never by one tap: several questions (answered whole) or one that takes several options. */
+export const formOnly = (row: NeedRow & { kind: "answer" }) => row.questions.length > 1 || !!row.questions[0]?.multi;
+
 /** What E does to a row: approve a card, answer a one-question wait with its first (recommended) option, or mark an open
- * task done; null opens the pane (a wait with several questions is answered whole, in its form). */
+ * task done; null opens the pane (formOnly). */
 export function doneAction(row: NeedRow): "approve" | { answer: string } | "close" | null {
   if (row.kind === "approval") return "approve";
   if (row.kind === "open") return "close";
-  return row.questions.length <= 1 && row.options[0] ? { answer: row.options[0] } : null;
+  return !formOnly(row) && row.options[0] ? { answer: row.options[0] } : null;
 }
 
 const typing = (el: Element | null) => !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || (el as HTMLElement).isContentEditable);
 const AWAY = "#ask-aiden, .ui-detail, dialog[open], .palette, .drawer-backdrop";
+const CONTROL = "button, a[href], summary, [role=button], [role=link]";
 
 /** `on`: Home is the page in front (an overlay over it, a task or a run, takes the keys). */
 export function useNeedsKeys(rows: NeedRow[], opts: { open: (id: string) => void; done: (row: NeedRow) => void; snooze: (row: NeedRow) => void }, on = true): { at: string | null; setAt: (id: string | null) => void } {
@@ -42,6 +46,8 @@ export function useNeedsKeys(rows: NeedRow[], opts: { open: (id: string) => void
       }
       const row = rows[i];
       if (!row) return;
+      // A focused button or link keeps its own Enter.
+      if (e.key === "Enter" && (e.target as Element | null)?.closest?.(CONTROL)) return;
       if (e.key === "Enter") return e.preventDefault(), opts.open(row.id);
       if (k === "e") return e.preventDefault(), opts.done(row);
       if (k === "s") return e.preventDefault(), opts.snooze(row);

@@ -33,11 +33,11 @@ describe("Home", () => {
     await key("j");
     await key("s");
     await settle();
-    expect(sent.find((s) => s.path === "/api/home/snooze")?.body).toEqual({ id: "id-841", on: true });
+    expect(sent.find((s) => s.path === "/api/home/snooze")?.body).toEqual({ id: "id-841:2026-11-21T08:00:00Z", on: true });
     const undo = [...el.querySelectorAll<HTMLButtonElement>("#need-id-841 button")].find((b) => b.textContent === "Undo")!;
     await act(async () => undo.click());
     await settle();
-    expect(sent.filter((s) => s.path === "/api/home/snooze").map((s) => s.body)).toContainEqual({ id: "id-841", on: false });
+    expect(sent.filter((s) => s.path === "/api/home/snooze").map((s) => s.body)).toContainEqual({ id: "id-841:2026-11-21T08:00:00Z", on: false });
   });
 
   it("marks the snapshot seen once, and refetches keep the visit's window", async () => {
