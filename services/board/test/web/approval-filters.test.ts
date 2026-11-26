@@ -1,6 +1,6 @@
 // Which Approvals tab a card is in (web/src/conversation.ts): a card in flight has not ended, so the Done tab never lists it.
 import { describe, expect, it } from "vitest";
-import { headOf, inFilter, inProgress, shownInChat } from "../../web/src/conversation";
+import { headOf, inFilter, inProgress, isNoise, shownInChat } from "../../web/src/conversation";
 import type { Approval } from "../../web/src/types";
 
 const card = (o: Partial<Approval>): Approval =>
@@ -39,6 +39,14 @@ describe("Approvals filters", () => {
   });
 });
 
+describe("a conversation's outcome lines", () => {
+  it("keeps a failed card's line, which is the only sign of one the chat can't show", () => {
+    const failed = { kind: "notice" as const, id: "c1", at: "2026-11-22T00:00:00Z", text: "**Failed** (approval k-0123456789abcdef, push). Refused." };
+    expect(isNoise(failed)).toBe(false);
+    expect(isNoise({ ...failed, text: "**Done** (approval k-0123456789abcdef, push). Landed." })).toBe(true);
+  });
+});
+
 describe("a conversation's cards", () => {
   it("shows only what needs the owner, is in flight or went wrong; what the AI reviewer approved stays on Approvals", () => {
     expect(shownInChat(card({ state: "pending", tier: 2 }))).toBe(true);
@@ -48,6 +56,10 @@ describe("a conversation's cards", () => {
     expect(shownInChat(card({ state: "used", outcome: "applied", decidedBy: "reviewer:~openai/gpt-luna-latest" }))).toBe(false);
     expect(shownInChat(card({ state: "auto", outcome: "applied" }))).toBe(false);
     expect(shownInChat(card({ state: "pending", tier: 1 }))).toBe(false);
+    // The owner saw it pending in the open chat: it stays there once decided, until he leaves the chat.
+    const applied = card({ state: "used", outcome: "applied", decidedBy: "reviewer:~openai/gpt-luna-latest" });
+    expect(shownInChat(applied, true)).toBe(true);
+    expect(shownInChat(applied, false)).toBe(false);
   });
 
   it("says who decided in words, and asks for approval only while it waits for the owner", () => {

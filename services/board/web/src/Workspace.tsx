@@ -573,12 +573,17 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
     [refId, toast, load],
   );
 
+  // A card the owner saw pending here stays in this view after he decides it (an applied card's result is on screen
+  // rather than vanishing under his tap). The set is this chat's visit only: leaving it forgets, so a fresh visit shows
+  // exactly the cards that still need him.
+  const seen = useRef(new Set<string>());
+  for (const a of chat?.approvals ?? []) if (a.state === "pending") seen.current.add(a.id);
   // Messages, cards and questions in time order; runs of progress lines (notes, wake-ups) fold to one line.
   const items: Folded<Item>[] = useMemo(() => {
     if (!chat) return [];
     const list: Item[] = [
       ...chat.messages.map((m) => ({ type: "message" as const, m, at: m.at, key: m.id })),
-      ...chat.approvals.filter(shownInChat).map((a) => ({ type: "approval" as const, a, at: a.createdAt, key: a.id })),
+      ...chat.approvals.filter((a) => shownInChat(a, seen.current.has(a.id))).map((a) => ({ type: "approval" as const, a, at: a.createdAt, key: a.id })),
       ...(chat.asks ?? []).map((q) => ({ type: "ask" as const, q, at: q.at, key: q.id })),
     ];
     return foldNoise(

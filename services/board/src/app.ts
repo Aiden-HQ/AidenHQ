@@ -54,7 +54,7 @@ import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
-import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, lastWord, pickAgent, type Message, type Question } from "./chats.js";
+import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, foldOutcomeLines, lastWord, pickAgent, type Message, type Question } from "./chats.js";
 import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
 import type { StateRow } from "./aidenhq-sdk/task-state-types.js";
 import { addDays, nextWorkday, type Weekday } from "./dates.js";
@@ -831,7 +831,17 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       runLinks(issue.id, ctx.agents),
       opts.flow?.task(issue.id).catch(() => null) ?? null,
     ]);
-    const [said, states, jobs] = await Promise.all([chatMessages(issue, ctx, comments), stateRows([issue.id, ...kids.map((k) => k.id)]), work.task(issue.id).catch(() => [])]);
+    const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
+    // The chat's own cards, read by task: the fleet-wide page above is the latest 50 records, so an old card of this chat
+    // (a failure from weeks ago) is not in it, and read only from there it would be missing from the chat.
+    const [said, states, jobs, own] = await Promise.all([
+      chatMessages(issue, ctx, comments),
+      stateRows([...ids]),
+      work.task(issue.id).catch(() => []),
+      Promise.all([...ids].map((t) => cardsOf("recent", { task: t, limit: 100 }).catch(() => [] as Approval[]))).then((p) => p.flat()),
+    ]);
+    const byId = new Map<string, Approval>(cards.map((a) => [a.id, a]));
+    for (const a of own) byId.set(a.id, a);
     // A reply's `answers`: the newest owner message its run had read. The reply's own kernel tag names the run (a model can't write
     // one: the plugin quotes it), and the run's `saw` is the newest comment its prompt or live input carried.
     const saw = new Map(jobs.map((j) => [j.id, j.saw ?? []]));
@@ -852,9 +862,10 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       }
       return last;
     };
-    const messages = said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? ""), run: runLineOf(bodies.get(m.id) ?? "", facts, ctx.agents) } : m));
+    const mine = [...byId.values()].filter((a) => ids.has(a.issueId));
+    // A failure's outcome line stays only while the card it names isn't here (chats.ts foldOutcomeLines).
+    const messages = foldOutcomeLines(said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? ""), run: runLineOf(bodies.get(m.id) ?? "", facts, ctx.agents) } : m)), mine.map((a) => a.id));
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
-    const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
     const agent = agentOf(chatAgent(issue));
     if (!peek) store.markSeen(issue.id);
     const [liveWork, handedOut, asks] = await Promise.all([
@@ -878,7 +889,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       messages: messages.map((m) => (m.kind === "owner" ? { ...m, ...byOf(names, m.id === `${issue.id}:opening` ? issue.id : m.id) } : m)),
       working: liveWork,
       files: fileViews(files, ctx.me),
-      approvals: cards.filter((a) => ids.has(a.issueId)).map((a) => shownApproval(names, a)),
+      approvals: mine.map((a) => shownApproval(names, a)),
       handedOut,
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       runs,

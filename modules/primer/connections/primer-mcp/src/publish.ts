@@ -11,9 +11,9 @@ import { createHash } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileLedger, type Ledger } from "./ledger.js";
 import { fileOwners, type Owner, type Owners } from "./owners.js";
+import { titleOf, type Call } from "./lookup.js";
 
 export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; baseVersionNumber?: number; path?: string; own?: true; private?: true; repo_key?: string; by?: Owner };
-type Call = (tool: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
 
@@ -74,19 +74,7 @@ export const NEUTRAL_TITLE = "Repo review";
 const PLACEHOLDER = "This private report is being prepared.";
 const locks = new Map<string, Promise<unknown>>();
 
-/** A document's title for a card, from primer_get_document; its id when Primer doesn't answer with one. */
-async function readTitle(call: Call, id: string): Promise<string> {
-  const r = await call("primer_get_document", { documentId: id }).catch(() => undefined);
-  let j: any;
-  try {
-    j = r && !r.isError ? JSON.parse(r.text) : undefined;
-  } catch {}
-  const t = j?.title ?? j?.document?.title;
-  return typeof t === "string" && t.trim() ? `"${t.trim()}"` : `document ${id}`;
-}
-
 export function publisher(call: Call, owners: Owners = fileOwners(), priv: Private = { makePrivate: async () => {}, done: fileLedger() }): Executor {
-  const titleOf = (id: string) => readTitle(call, id);
   return {
     async plan(req) {
       const args = normalise(req.args, req.requester?.kind === "job");
@@ -102,13 +90,16 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       if (req.requester?.kind === "module" && req.requester.module !== "primer" && !args.private) throw new Error("a module files private reports only");
       const report = Boolean(args.private);
       const sha = createHash("sha256").update(args.content).digest("hex");
-      // The card names a revised document by its title: the args carry none for a new version, so read it (its id when unreadable).
-      const named = args.title ? `"${args.title}"` : args.documentId ? await titleOf(args.documentId) : "the document";
+      // A revised document is named by the title read from the document itself, never by a title the request carries: a
+      // request can name one document's id and another's title, and the owner must approve the document that will change.
+      // Unreadable (or past its deadline), the card says "the document" rather than guess.
+      const title = args.documentId ? await titleOf(call, args.documentId, req.revalidate === true) : undefined;
+      const named = args.documentId ? (title ? `"${title}"` : "the document") : `"${args.title}"`;
       return {
         args,
         targets: { artifact_sha256: sha, ...(args.documentId ? { document: args.documentId } : {}), ...(args.repo_key ? { repo_key: args.repo_key } : {}) },
         facts: { size: args.content.length, short: sha.slice(0, 12) },
-        ...(args.documentId && !args.own && !report ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of document ${args.documentId}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
+        ...(args.documentId && !args.own && !report ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of ${named}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
         card: {
           what: args.private ? `the private report "${args.title ?? args.repo_key}" (${args.repo_key})` : args.documentId ? `a new version of ${named}` : `the new document "${args.title}"`,
           changes: args.private

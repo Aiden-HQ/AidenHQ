@@ -4,11 +4,15 @@
 // (Tier 2) on any other. The request names the document; Tier 1 needs the owners map to say this agent published it on this
 // task AND the document's comments (primer_get_comments' `comments` array) (parsed as data) to hold a comment whose `thread_id` field is exactly that thread; an
 // unparseable answer or no exact match is Tier 2. The document_id is for this check only: the upstream tools take just the thread. A `body` is a reply; no `body` resolves the thread.
+// The card says which thread without ids: the document's title and the thread's first comment (lookup.ts, bounded), so two
+// resolve cards on different documents, or two replies sending the same words, are told apart.
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileOwners, type Owners } from "./owners.js";
+import { few, threadOf, type Call as Lookup } from "./lookup.js";
 
-/** A Primer write; `document` names the document a thread reply is on (the comment loop's batches), which Primer's tool doesn't take. */
+/** A Primer call that may name the document a thread is on (the comment loop's batches); Primer's tool doesn't take it. */
 type Call = (tool: string, args: Record<string, unknown>, document?: string) => Promise<{ text: string; isError?: boolean }>;
+/** A Primer write. */
 export type Reply = { document_id: string; thread_id: string; body?: string };
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -21,30 +25,25 @@ export function normaliseReply(a: any): Reply {
   return { document_id, thread_id, ...(body ? { body } : {}) };
 }
 
-/** True when the parsed answer's `comments` array holds a comment whose `thread_id` field is exactly the id (text in a comment body never counts). */
-const hasThread = (answer: any, id: string) => Array.isArray(answer?.comments) && answer.comments.some((c: any) => c?.thread_id === id);
-
 export function replier(call: Call, owners: Owners = fileOwners()): Executor {
   return {
     async plan(req) {
       const args = normaliseReply(req.args);
       const agent = req.requester?.agent;
-      let document: string | undefined;
       const owner = owners.get(args.document_id);
-      if (owner && agent && owner.agent === agent && owner.task === req.task) {
-        const r = await call("primer_get_comments", { documentId: args.document_id }).catch(() => undefined);
-        try {
-          if (r && !r.isError && hasThread(JSON.parse(r.text), args.thread_id)) document = args.document_id;
-        } catch {}
-      }
+      // The comment check is this plan's Tier answer and its card's target: one bounded read, reused when the kernel plans again.
+      const thread = await threadOf(call as Lookup, args.document_id, args.thread_id, req.revalidate === true);
+      const document = owner && agent && owner.agent === agent && owner.task === req.task && thread.has ? args.document_id : undefined;
+      const where = thread.title ? `"${thread.title}"` : "the document";
+      const quoted = thread.excerpt ? ` “${thread.excerpt}”` : "";
       return {
         args,
         targets: { thread: args.thread_id, document: args.document_id },
         facts: { body: args.body ?? "", doc: document ?? "" },
         ...(document ? {} : { raise: { tier: 2 as const, rule: "primer-reply-not-own", reason: "a reply on a thread the owners map and the document's comments don't show on a document this agent published on this task" } }),
         card: {
-          what: args.body ? "a reply on a Primer thread" : "resolving a Primer thread",
-          changes: args.body ? `Posts this reply on the comment thread; everyone who can read the document sees it: “${args.body.length > 300 ? `${args.body.slice(0, 300)}…` : args.body}”` : "Marks the comment thread resolved.",
+          what: args.body ? `a reply on a thread in ${where}` : `resolving a thread in ${where}`,
+          changes: args.body ? `Posts this reply on the comment thread${quoted}: everyone who can read ${where} sees it: “${few(args.body, 300)}”` : `Marks the comment thread${quoted} resolved.`,
         },
       };
     },

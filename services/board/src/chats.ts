@@ -54,7 +54,24 @@ const isReply = (body: string) => body.includes(REPLY_MARKER) || JOB_REPLY.test(
 /** A board notice on a chat (an approval's outcome, a file it couldn't read): shown as a line, never as the owner's words. */
 export { NOTICE_MARKER };
 export const APPROVAL_MARKER = "<!-- aidenhq-approval -->";
-const OUTCOME_LINE = /^\*\*(Done|Failed|Still running)\*\* \(approval /;
+/** A card's own outcome line, and the approval it names (`**Failed** (approval k-…, push). …`). */
+const OUTCOME_LINE = /^\*\*(Done|Failed|Still running)\*\* \(approval ([^,)\s]+)/;
+/** The card an outcome line names, and how it ended; undefined for any other notice. */
+export const outcomeLine = (text: string) => {
+  const m = OUTCOME_LINE.exec(text);
+  return m ? { how: m[1]!, card: m[2]! } : undefined;
+};
+/**
+ * An outcome line only restates a card, and the chat shows the card. A failure whose card the chat doesn't have (an old
+ * one behind the records page cap) is the only sign of it there, so it stays.
+ */
+export function foldOutcomeLines(messages: Message[], cards: readonly string[]): Message[] {
+  return messages.filter((m) => {
+    if (m.kind !== "notice") return true;
+    const o = outcomeLine(m.text);
+    return !o || (o.how === "Failed" && !cards.includes(o.card));
+  });
+}
 const CORRECTION_MARKER = "<!-- aidenhq-correction -->";
 
 export type Via = "Telegram" | "Slack" | "Telegram voice note";
@@ -164,7 +181,9 @@ export function conversation(issue: { id: string; description: string | null; cr
     // The board (through the kernel) and runner post as the owner or as no user; another user's comment is never a system message.
     const system = c.authorType !== "agent" && (!c.authorUserId || c.authorUserId === me);
     // The kernel's outcome lines for a card ("Done (approval …)") wake the agent; the owner sees the card, never this line.
-    if (system && has(c.body, APPROVAL_MARKER) && OUTCOME_LINE.test(strip(c.body))) continue;
+    // A failure is kept (foldOutcomeLines drops it once the chat has its card): it may be the only sign of an old one.
+    const outcome = system && has(c.body, APPROVAL_MARKER) ? outcomeLine(strip(c.body)) : undefined;
+    if (outcome && outcome.how !== "Failed") continue;
     if (system && (has(c.body, APPROVAL_MARKER) || isSystemNote(c.body))) out.push({ kind: "notice", id: c.id, text: strip(c.body), at: c.createdAt });
     else if (system && relayed(c.body)) note(c, "Someone else");
     else if (c.authorType === "agent") {

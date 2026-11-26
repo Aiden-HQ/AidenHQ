@@ -14,12 +14,13 @@ export function chatListForDevice(r: { chats: ChatRow[]; agents: ChatAgent[] }) 
 }
 
 /**
- * A system line that only reports progress: runner and agent notes and wake-ups. A failure, a file the board couldn't read and someone else's opening words stay in the conversation.
+ * A system line that only reports progress: runner and agent notes and wake-ups. A failure (a card's own outcome line
+ * included), a file the board couldn't read and someone else's opening words stay in the conversation.
  */
 export function isNoise(m: ChatMessage): boolean {
   if (m.kind === "notes") return true;
   if (m.kind !== "notice") return false;
-  return !/^(Someone else opened this|I couldn't read|\*\*Failed:\*\*)/.test(m.text);
+  return !/^(Someone else opened this|I couldn't read|\*\*Failed:\*\*|\*\*Failed\*\* )/.test(m.text);
 }
 
 export type Folded<T> = T | { type: "fold"; key: string; at: string; until: string; items: T[] };
@@ -85,9 +86,11 @@ export const inFilter = (a: Approval, f: ApprovalFilter) =>
 
 /**
  * Which cards a conversation shows: the ones that need the owner, are still in flight or went wrong. What the AI reviewer
- * or code approved and applied stays on Approvals and in the agent's activity.
+ * or code approved and applied stays on Approvals and in the agent's activity. `seenPending`: the owner saw this card
+ * pending in the open chat, so it stays there after he decides it (until he leaves the chat) instead of vanishing
+ * under his tap; a fresh visit doesn't restore an applied card.
  */
-export const shownInChat = (a: Approval) => a.state !== "auto" && (awaitsOwner(a) || inProgress(a) || a.state === "rejected" || outcomeOf(a).tone === "bad");
+export const shownInChat = (a: Approval, seenPending = false) => seenPending || (a.state !== "auto" && (awaitsOwner(a) || inProgress(a) || a.state === "rejected" || outcomeOf(a).tone === "bad"));
 
 /**
  * A card in a conversation folds to one line once it is decided; a pending one stays whole with its buttons. A card

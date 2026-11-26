@@ -59,4 +59,18 @@ describe("primer.publish executor", () => {
     expect((await version({ ...run, agent: "a2" }, "T-1")).raise?.tier).toBe(2);
   });
 
+  it("names a revised document by the title read from it, never by a title the request carries", async () => {
+    const ex = publisher(async (name) => ({ text: name === "primer_get_document" ? '{"documentId":"01a1-doc2","title":"Finance Plan"}' : "{}" }), memory());
+    const plan = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc2", title: "Weekly Notes", content: "x" }, requester, task: "T-3" });
+    expect(plan.card?.what).toBe('a new version of "Finance Plan"');
+    expect(plan.card?.changes).toContain('the latest version of "Finance Plan"');
+    expect(JSON.stringify(plan.card)).not.toContain("Weekly Notes");
+  });
+
+  it("says \"the document\" when the title lookup doesn't answer, rather than guessing one", async () => {
+    const ex = publisher(async (name) => (name === "primer_get_document" ? new Promise(() => {}) : { text: "{}" }), memory());
+    const plan = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc3", title: "Weekly Notes", content: "x" }, requester, task: "T-4" });
+    expect(plan.card?.what).toBe("a new version of the document");
+    expect(plan.card?.changes).toContain("the latest version of the document");
+  }, 10_000);
 });
