@@ -58,9 +58,12 @@ are not in the kept PR — take its head from `refs/pull/<n>/head`, publish it o
 wait on that PR. Report only what those reads show.
 Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
 When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
-`refs/pull/<n>/head`: `aidenhq ship checkout <PR link> <head>` fetches it with the job's own token (`codehost fetch`
-needs a module's) and puts it on `ship-pr-<n>`; branch from there onto a new `agent/<task>/…` branch (a scratch branch,
-so it needs that rename), publish that, and wait on its PR instead of a merge that cannot happen.
+`refs/pull/<n>/head`. Fetch it with the credential the job has: an Engineer job runs `aidenhq ship checkout <PR link>
+<head>`, which uses its own token (`codehost fetch` needs a module's) and leaves the head on `ship-pr-<n>`; a session
+job, which holds the repo's App credential but no clone grant, fetches it over https in its clone
+(`git fetch https://github.com/<org>/<repo> refs/pull/<n>/head`). Put the head on a new `agent/<task>/…` branch —
+`ship-pr-<n>` is a scratch branch the planner refuses to publish — publish that, and wait on its PR instead of a merge
+that cannot happen.
 
 ## Finishing a cancelled task's PR (a handoff)
 

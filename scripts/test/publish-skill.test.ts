@@ -72,6 +72,9 @@ test("the duplicate-PR section never closes the only live copy, an already-close
   assert.match(section, /When it holds a\s+change the merge does not, keep it open and work from it/i, "the PR holding unique work stays open");
   assert.match(section, /The close names only the PR's number, so it is not conditional on the head you\s+read: read both PRs again right before it, at the close's own step/, "the close is re-read at its own step, since it cannot bind a head");
   assert.match(section, /when the closed PR's head moved past what you read, its commits\s*are not in the kept PR — take its head from `refs\/pull\/<n>\/head`, publish it on a new `agent\/<task>\/…` branch/, "a raced close is recovered through a new branch, never a reopen no tool offers");
-  assert.match(section, /`aidenhq ship checkout <PR link> <head>` fetches it with the job's own token/, "the head is fetched with a job-authorized call, not a bare fetch of the aidenhq:// origin");
+  assert.match(section, /an Engineer job runs `aidenhq ship checkout <PR link>\s*<head>`, which uses its own token/, "an Engineer job recovers the head with a job-authorized call, not a bare fetch of the aidenhq:// origin");
   assert.match(section, /`codehost fetch`\s*needs a module's/, "the module-token-only op is never the Engineer's recovery path");
+  assert.match(section, /a session\s+job, which holds the repo's App credential but no clone grant, fetches it over https in its clone/, "a session job, whose clone grant the Engineer-only tool refuses, has a path of its own");
+  assert.match(section, /`git fetch https:\/\/github\.com\/<org>\/<repo> refs\/pull\/<n>\/head`/, "the session's path is the plain https fetch its App credential serves");
+  assert.match(section, /Put the head on a new `agent\/<task>\/…` branch —\s*`ship-pr-<n>` is a scratch branch the planner refuses to publish/, "both paths branch off ship-pr-<n> before publishing, since the planner refuses it");
 });
