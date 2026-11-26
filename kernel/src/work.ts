@@ -22,7 +22,7 @@
 //                            a time (default 20, at most 100; `next` is the id to pass as `after`): what interrupted the owner, for
 //                            the Fleet Steward's daily interruption pass. The card's sentence and who filed it, never its args.
 //   GET /v1/work?pauses=1    the Fleet Steward's open pauses (fleet-ops.ts): the detector keeps each one an incident
-//   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*) over the same rows
+//   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*, aidenhq_kernel_session_*) over the same rows
 import type { DatabaseSync } from "node:sqlite";
 import { fleetGenerations } from "./generations.ts";
 import { MALICE } from "./tier.ts";
@@ -31,7 +31,7 @@ import type { Records } from "./records.ts";
 /** Job duration buckets, seconds: a quick reply to a two-hour build. */
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
 /** The columns job() reads, and enough of a job's final words for its first line (cut to 200). */
-const JOB_COLS = "id, agent, task, engine, state, pid, at, ended, session, saw";
+const JOB_COLS = "id, agent, task, engine, state, pid, at, ended, session, profile, saw";
 const FINAL_HEAD = "substr(final, 1, 400) AS final";
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
@@ -39,7 +39,7 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   // `started`: whether the run got a shell. A row is written `admitted` with pid 0 and only `start()` sets the pid, so a job
   // that failed or was cancelled before launching is `failed`/`cancelled` with pid 0, and nothing about it ran.
-  const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), started: r.state !== "admitted" && Number(r.pid) > 0, session: r.session ?? null, saw: r.saw ? JSON.parse(r.saw) : [] });
+  const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), started: r.state !== "admitted" && Number(r.pid) > 0, session: r.session ?? null, profile: r.profile ?? null, saw: r.saw ? JSON.parse(r.saw) : [] });
   /** A rejection the AI reviewer judged malicious (tier.ts MALICE), not code's refusal. */
   const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && MALICE.includes(r.review_code ?? "");
   /** One row, or undefined when its table isn't there (a kernel without the wake inbox or the fact log). */
@@ -240,13 +240,19 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
     },
     metrics(now = Date.now()) {
       // Counted in SQL over the integer columns alone: no job row is materialised per scrape. A duration is a job that has ended (ms).
+      // A session job is deadline-free (jobs.ts) and lives until it is stopped, so its age is no sign of trouble: it is counted in
+      // the session gauge alone, never in the oldest-job series the JobOverlong alert reads.
       const bucket = BUCKETS.filter((b) => b !== Infinity).map((b, i) => `COALESCE(SUM(d <= ${b * 1000}), 0) AS b${i}`).join(", ");
-      const m = rows(`SELECT COALESCE(SUM(state = 'running'), 0) AS running, MIN(CASE WHEN state = 'running' THEN at END) AS first, COUNT(d) AS n, COALESCE(SUM(d), 0) AS ms, ${bucket}
-        FROM (SELECT state, at, CASE WHEN state != 'running' AND ended AND at AND ended >= at THEN ended - at END AS d FROM jobs)`)[0]!;
+      const m = rows(`SELECT COALESCE(SUM(state = 'running'), 0) AS running,
+        MIN(CASE WHEN state = 'running' AND (profile IS NULL OR profile != 'session') THEN at END) AS first,
+        MIN(CASE WHEN state = 'running' AND profile = 'session' THEN at END) AS session_first,
+        COUNT(d) AS n, COALESCE(SUM(d), 0) AS ms, ${bucket}
+        FROM (SELECT state, at, profile, CASE WHEN state != 'running' AND ended AND at AND ended >= at THEN ended - at END AS d FROM jobs)`)[0]!;
       const out: string[] = [];
       const gauge = (name: string, help: string, v: number) => out.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`, `${name} ${v}`);
       gauge("aidenhq_kernel_jobs_running", "Jobs the kernel runs for its own agents, running now.", m.running);
       gauge("aidenhq_kernel_jobs_oldest_seconds", "How long the oldest running kernel-owned job has run.", Math.round(Math.max(0, m.first == null ? 0 : (now - m.first) / 1000)));
+      gauge("aidenhq_kernel_session_oldest_seconds", "How long the oldest running session job has run.", Math.round(Math.max(0, m.session_first == null ? 0 : (now - m.session_first) / 1000)));
       out.push("# HELP aidenhq_kernel_jobs_duration_seconds Kernel-owned job runs, start to end, over every job on record.", "# TYPE aidenhq_kernel_jobs_duration_seconds histogram");
       BUCKETS.forEach((b, i) => out.push(`aidenhq_kernel_jobs_duration_seconds_bucket{le="${b === Infinity ? "+Inf" : b}"} ${b === Infinity ? m.n : m[`b${i}`]}`));
       out.push(`aidenhq_kernel_jobs_duration_seconds_sum ${Math.round(m.ms / 1000)}`, `aidenhq_kernel_jobs_duration_seconds_count ${m.n}`);

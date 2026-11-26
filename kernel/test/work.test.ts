@@ -232,7 +232,7 @@ test("an agent's history leaves quiet routine runs out before its limit of 50", 
   // `brief`: the same window and rows, one query's worth of fields, no per-job timeline (three reads each).
   const brief = work.agent("a9", { since: 0, brief: true }).jobs;
   assert.equal(brief.length, 61);
-  assert.deepEqual(Object.keys(brief[0]).sort(), ["agent", "ended_at", "engine", "id", "saw", "session", "started", "started_at", "state", "task"]);
+  assert.deepEqual(Object.keys(brief[0]).sort(), ["agent", "ended_at", "engine", "id", "profile", "saw", "session", "started", "started_at", "state", "task"]);
 });
 
 test("a task's read names what its work made: its PRs, the files its landed writes changed, its last final", () => {
@@ -304,4 +304,21 @@ test("sessions: a session agent's task is a session, with its lease, state and s
   records.db.prepare("UPDATE jobs SET state = 'failed', final = 'boom\nmore', ended = 3000000 WHERE id = 'j-2'").run();
   assert.deepEqual(work.sessions("t1").sessions.map((x) => [x.state, x.lease, x.error]), [["error", null, "boom"]]);
   assert.equal(work.sessions("t9").sessions.length, 0);
+});
+
+test("metrics: a running session job is the session gauge's alone, never the oldest job the JobOverlong alert reads", () => {
+  const { records, work } = setup();
+  const now = Date.parse("2026-11-26T15:03:00Z");
+  // The oldest job in the table is a session idle for hours (deadline-free, jobs.ts); a plain job started an hour ago. The
+  // session must not make `aidenhq_kernel_jobs_oldest_seconds` read hours (the JobOverlong alert's input), but its own gauge
+  // reports it, so a genuinely wedged session stays visible.
+  records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended, profile) VALUES (?, 'dispatch', 'a3', 't3', 'codex', 1, '', '', ?, '[]', 0, 0, 'running', NULL, 'session')").run("s-1", now - 4 * 3_600_000);
+  records.db.prepare("UPDATE jobs SET at = ? WHERE id IN ('j-2', 'j-3')").run(now - 3_600_000); // plain jobs, an hour old
+  const metrics = work.metrics(now);
+  assert.match(metrics, /^aidenhq_kernel_jobs_oldest_seconds 3600$/m, "the plain job's hour, not the session's four");
+  assert.match(metrics, /^aidenhq_kernel_session_oldest_seconds 14400$/m);
+  assert.match(metrics, /^aidenhq_kernel_jobs_running 3$/m, "a true count of live jobs, sessions included");
+  // The per-job read carries the profile, so the fleet detector can tell a session from a stuck run.
+  assert.deepEqual(work.agent("a3").jobs.map((j) => [j.id, j.profile]), [["s-1", "session"]]);
+  assert.equal(work.agent("a1").jobs.every((j) => j.profile === null), true);
 });

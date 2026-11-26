@@ -52,6 +52,15 @@
           },
           "expr": "aidenhq_kernel_jobs_oldest_seconds",
           "legendFormat": "oldest running (s)"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "aidenhq_kernel_session_oldest_seconds",
+          "legendFormat": "oldest session (s)"
         }
       ]
     },

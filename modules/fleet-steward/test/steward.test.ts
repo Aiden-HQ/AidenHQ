@@ -17,16 +17,18 @@ const agent = (id, h = 24 * 60) => ({ id, key: id, name: id, createdAt: ago(h) }
 const due = (o) => dueList({ agents: [], reviews: [], corrections: [], flags: [], now: NOW, ...o });
 const reviewed = (id, h) => ({ agentId: id, at: ago(h), outcome: "reviewed" });
 
-test("the run check reads the kernel's jobs: stuck past twice the timeout, three failures in a row, and silent runs", async () => {
+test("the run check reads the kernel's jobs: stuck past twice the timeout (never a session), three failures in a row, and silent runs", async () => {
   const t = Date.parse("2026-11-20T12:00:00Z");
   const jobs = {
     a1: [{ id: "j1", agent: "a1", state: "running", started_at: ago(3), ended_at: null }], // 180 min timeout x2 = 360: not stuck
     a2: [{ id: "j2", agent: "a2", state: "running", started_at: ago(10), ended_at: null }],
     a3: [1, 2, 3].map((n) => ({ id: `f${n}`, agent: "a3", state: n === 1 ? "timeout" : "failed", started_at: ago(n), ended_at: ago(n) })),
     a4: [1, 2, 3].map((n) => ({ id: `s${n}`, agent: "a4", state: "done", steps: 0, has_final: false, started_at: ago(n), ended_at: ago(n) })),
+    // A session job is deadline-free on purpose (jobs.ts): idle for hours is alive, not stuck.
+    a5: [{ id: "s5", agent: "a5", state: "running", profile: "session", started_at: ago(10), ended_at: null }],
   };
   const kernel = {
-    read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : [1, 2, 3, 4].map((n) => ({ id: `a${n}`, name: `Agent ${n}`, status: "idle" }))),
+    read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : [1, 2, 3, 4, 5].map((n) => ({ id: `a${n}`, name: `Agent ${n}`, status: "idle" }))),
     call: async (_m, p) => ({ jobs: jobs[decodeURIComponent(p.split("agent=")[1])] ?? [] }),
   };
   const found = await checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => t }).run();

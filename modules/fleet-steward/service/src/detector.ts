@@ -273,7 +273,7 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
 
 interface Company { id: string }
 interface AgentRow { id: string; name: string; status: string; lifecycleState?: string; adapterConfig?: { timeoutSec?: number } }
-interface JobRow { id: string; agent: string; task?: string; routine?: string | null; state: string; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
+interface JobRow { id: string; agent: string; task?: string; routine?: string | null; state: string; profile?: string | null; started_at: string | null; ended_at: string | null; exit?: number | null; timed_out?: boolean; steps?: number; has_final?: boolean }
 interface RoutineRow { id: string; title: string; status: string; triggers?: { kind?: string; enabled?: boolean; label?: string | null; nextRunAt?: string | null }[] }
 interface IssueRow { id: string; identifier?: string; title?: string; status: string; createdAt?: string; parentId?: string | null; priority?: string; updatedAt: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; originKind?: string | null; labels?: ({ name?: string } | null)[] }
 interface CommentRow { authorType?: string; authorAgentId?: string | null; body?: string; createdAt: string; deletedAt?: string | null }
@@ -677,7 +677,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
         const mine = await jobsOf(a.id);
         const timeout = Number(a.adapterConfig?.timeoutSec) * 1000;
         const limit = timeout > 0 ? 2 * timeout : STUCK_DEFAULT_MS;
-        const stuck = mine.find((j) => j.state === "running" && age(j.started_at, t) > limit);
+        // A session job is deadline-free on purpose (`profile: "session"`, jobs.ts): an idle session alive for hours is not stuck.
+        const stuck = mine.find((j) => j.state === "running" && j.profile !== "session" && age(j.started_at, t) > limit);
         if (stuck) out.push({ key: `${a.id}:stuck`, reason: `${a.name}: a run has been running ${mins(age(stuck.started_at, t))} (limit ${mins(limit)})` });
         // A SIGTERM stop (exit 143: a stop, restart or box replaced) is no failure (work.ts), so it is not evidence either
         // way: it leaves the window rather than resetting it, and the agent's last FAILS real outcomes decide. `admitted`
