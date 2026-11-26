@@ -222,6 +222,17 @@ test("an agent's history leaves quiet routine runs out before its limit of 50", 
   assert.deepEqual(work.agent("a9", { shown: true }).jobs.map((j) => j.id), ["j-fail"]);
   // A detector's read keeps them: a quiet success after failures is a success.
   assert.equal(work.agent("a9").jobs.length, 50);
+  // A read from an instant returns every job at or after it, uncut: a caller that decides what an agent did in a window needs
+  // the whole window, or an absent task would read as one it never ran when its row was only past the 50.
+  assert.equal(work.agent("a9", { since: 0 }).jobs.length, 61);
+  const recent = work.agent("a9", { since: 3_500_000 }).jobs;
+  assert.equal(recent.length, 60);
+  assert.deepEqual(recent.map((j) => j.id).sort()[0], "j-q0");
+  assert.equal(work.agent("a9", { since: 5_000_000 }).jobs.length, 0);
+  // `brief`: the same window and rows, one query's worth of fields, no per-job timeline (three reads each).
+  const brief = work.agent("a9", { since: 0, brief: true }).jobs;
+  assert.equal(brief.length, 61);
+  assert.deepEqual(Object.keys(brief[0]).sort(), ["agent", "ended_at", "engine", "id", "saw", "session", "started", "started_at", "state", "task"]);
 });
 
 test("a task's read names what its work made: its PRs, the files its landed writes changed, its last final", () => {

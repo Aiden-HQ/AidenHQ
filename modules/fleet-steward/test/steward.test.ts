@@ -85,7 +85,7 @@ function world({ tasks, jobs = {}, records = [], work = {}, comments = {}, chatL
       throw new Error(`unexpected ${p}`);
     },
     call: async (_m, p) => {
-      if (p.startsWith("/v1/work?agent=")) return { jobs: jobs[decodeURIComponent(p.split("agent=")[1])] ?? [] };
+      if (p.startsWith("/v1/work?agent=")) return { jobs: jobs[decodeURIComponent(new URL(p, "http://k").searchParams.get("agent"))] ?? [] };
       if (p.startsWith("/v1/work?job=")) return { final: finals[decodeURIComponent(p.split("job=")[1])] ?? null };
       if (p.startsWith("/v1/work?since=")) return { records, usage: [] };
       if (p.startsWith("/v1/work?task=")) return work[decodeURIComponent(p.split("task=")[1])] ?? { busy: false, jobs: [], records: [] };
@@ -555,13 +555,13 @@ test("the scorecard counts a done task as work only when the ledger holds a job 
   assert.equal(s.done.autoClosed, 2, "the self-closed holders are reported apart, never as done");
   assert.deepEqual(s.done.tasks.map((x) => x.identifier), ["WOR-2"]);
   assert.equal(s.cost.perDone, 2, "cost divides by the worked done count, not every done task");
-  // The ledger read is the newest 50 jobs: a task created before it reaches may have run in a row it left out, so it is never
-  // called auto-closed on that absence; a task created inside the window is.
+  // The rule is the row, with no age exemption: the ledger read covers the window whole (coach.ts reads it from before the
+  // oldest closed task), so a done task of any age with no job row is one the agent never ran, never a task of unknown fate.
   const cut = Array.from({ length: 50 }, (_, n) => ({ state: "done", started_at: at(5), task: `t-job${n}` }));
-  const older = [{ id: "t-older", identifier: "WOR-9", title: "Ran before the read", status: "done", assigneeAgentId: "eng", createdAt: at(30), completedAt: at(6), updatedAt: at(6) }];
+  const older = [{ id: "t-older", identifier: "WOR-9", title: "Filed long before the read, never ran", status: "done", assigneeAgentId: "eng", createdAt: at(30), completedAt: at(6), updatedAt: at(6) }];
   assert.deepEqual(
     (({ done, cost }) => ({ count: done.count, autoClosed: done.autoClosed, perDone: cost.perDone }))(scorecard({ closed: older, records: [], usage, jobs: cut }, { id: "eng", key: "eng" }, t)),
-    { count: 1, autoClosed: 0, perDone: 2 },
+    { count: 0, autoClosed: 1, perDone: null },
   );
   // A job only queued (`admitted`) never started: it does not make its task the agent's work.
   const queuedOnly = [{ state: "admitted", started_at: at(4), task: "t-queued" }];
@@ -611,6 +611,10 @@ test("the evidence scorecard reads the job ledger after the closed set, and says
   const s = await card();
   assert.equal(ledgerReads.length, 2, "the ledger is read once for the runs and once more inside the scorecard");
   assert.deepEqual(order.slice(1, 3), ["closed", "ledger"], "the scorecard's ledger read comes after the closed set it classifies (finding f677a49)");
+  // Read from before the oldest closed task was filed, uncut: the scorecard decides a task by the ledger row alone, so the read
+  // must reach every task it classifies (no job row then means the agent never ran it, not that the row fell past a limit).
+  const readSince = Date.parse(new URL(ledgerReads[1], "http://k").searchParams.get("since"));
+  assert.ok(readSince < Date.parse(at(40)), `the scorecard's ledger read starts before the oldest closed task (${new Date(readSince).toISOString()})`);
   assert.deepEqual({ count: s.done.count, autoClosed: s.done.autoClosed }, { count: 1, autoClosed: 1 }, "a task that closed after the runs read still counts as the agent's work");
 
   // Both ledger reads fail: the scorecard is unavailable, never "every done task is auto-closed".
