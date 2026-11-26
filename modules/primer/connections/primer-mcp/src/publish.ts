@@ -74,7 +74,19 @@ export const NEUTRAL_TITLE = "Repo review";
 const PLACEHOLDER = "This private report is being prepared.";
 const locks = new Map<string, Promise<unknown>>();
 
+/** A document's title for a card, from primer_get_document; its id when Primer doesn't answer with one. */
+async function readTitle(call: Call, id: string): Promise<string> {
+  const r = await call("primer_get_document", { documentId: id }).catch(() => undefined);
+  let j: any;
+  try {
+    j = r && !r.isError ? JSON.parse(r.text) : undefined;
+  } catch {}
+  const t = j?.title ?? j?.document?.title;
+  return typeof t === "string" && t.trim() ? `"${t.trim()}"` : `document ${id}`;
+}
+
 export function publisher(call: Call, owners: Owners = fileOwners(), priv: Private = { makePrivate: async () => {}, done: fileLedger() }): Executor {
+  const titleOf = (id: string) => readTitle(call, id);
   return {
     async plan(req) {
       const args = normalise(req.args, req.requester?.kind === "job");
@@ -90,17 +102,19 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       if (req.requester?.kind === "module" && req.requester.module !== "primer" && !args.private) throw new Error("a module files private reports only");
       const report = Boolean(args.private);
       const sha = createHash("sha256").update(args.content).digest("hex");
+      // The card names a revised document by its title: the args carry none for a new version, so read it (its id when unreadable).
+      const named = args.title ? `"${args.title}"` : args.documentId ? await titleOf(args.documentId) : "the document";
       return {
         args,
         targets: { artifact_sha256: sha, ...(args.documentId ? { document: args.documentId } : {}), ...(args.repo_key ? { repo_key: args.repo_key } : {}) },
         facts: { size: args.content.length, short: sha.slice(0, 12) },
         ...(args.documentId && !args.own && !report ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of document ${args.documentId}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
         card: {
-          what: args.private ? `the private report "${args.title ?? args.repo_key}" (${args.repo_key})` : args.documentId ? `a new version of ${args.title ? `"${args.title}"` : "the document"}` : `the new document "${args.title}"`,
+          what: args.private ? `the private report "${args.title ?? args.repo_key}" (${args.repo_key})` : args.documentId ? `a new version of ${named}` : `the new document "${args.title}"`,
           changes: args.private
             ? "Publishes this report as a new Primer document that only its owner can read."
             : args.documentId
-            ? `Adds this as the latest version of ${args.title ? `"${args.title}"` : "the document"} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
+            ? `Adds this as the latest version of ${named} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
             : "Creates a new Primer document that everyone in the organization can read.",
           from: args.path ? `, from the workspace file ${args.path}` : "",
         },
