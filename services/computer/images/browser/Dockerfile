@@ -18,6 +18,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
       libdrm2 libxkbcommon0 libatspi2.0-0t64 libcups2t64 libxshmfence1 libgbm1 fonts-liberation fonts-noto-color-emoji \
       fonts-noto-cjk fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/*
+# krb5 1.22.3-1 fixes seven high GSS-API/RPC CVEs (CVE-2026-107778, -112314, -112320, -112321, -112322, -112323, -119079).
+# The sid base carries 1.22.1-3, and naming an installed package is what upgrades it, so all four are named; the build
+# then fails rather than ship a stale mirror's copy. agent-base and engineer name the same four in their own apt steps.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libkrb5-3 libgssapi-krb5-2 libkrb5support0 libk5crypto3 \
+    && for p in libkrb5-3 libgssapi-krb5-2 libkrb5support0 libk5crypto3; do \
+         v="$(dpkg-query -W -f='${Version}' "$p")" && dpkg --compare-versions "${v:-0}" ge 1.22.3-1 \
+           || { echo "krb5: $p is ${v:-not installed}, need >= 1.22.3-1" >&2; exit 1; }; \
+       done \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local /usr/local
 RUN npm i -g agent-browser@0.41.2 && npm cache clean --force
 # Chrome for Testing 157.0.8103.78 (2026-11-11, critical CVE fixes; supply-chain exception), checksummed, readable by every uid. ops/vm/setup.sh installs the same build
