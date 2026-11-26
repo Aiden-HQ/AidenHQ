@@ -654,7 +654,7 @@ test("the async enqueue rechecks code review's gate before the PUT", async (t) =
   });
   const out = await run("k-00000000000000fa", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
   assert.equal(out.ok, false, out.text);
-  assert.match(out.text, /not queued: code review: running/);
+  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "a gate wait is retryable, never a hold");
   assert.equal(puts, 0, "a review gate that closed while the enqueue was in flight stops the request");
 });
 

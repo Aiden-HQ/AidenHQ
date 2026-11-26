@@ -1579,7 +1579,9 @@ export function createService(o: Options) {
           if ((now.labels?.nodes ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) return `${url} carries the \`${HOLD_LABEL}\` label: not queued; queued once it is removed.`;
           if ((now.reviewDecision === "REVIEW_REQUIRED" || now.reviewDecision === "APPROVED") && !approvedAt(now, a.head, app)) return `ship-tier-pending: ${url} has no approval on \`${String(a.head).slice(0, 12)}\` from someone who can push: not queued; queued again once it has one.`;
           const gate = await o.reviewGate(s.slug, n, a.head, { base: String(now.baseRefName ?? ""), association: String(now.authorAssociation ?? "") });
-          if (gate && "wait" in gate) return `not queued: ${gate.wait}${gate.unblock ? ` (${gate.unblock})` : ""}`;
+          // `ship-tier-pending`: a gate that closed or can't be reached is asked again next round. A plain "not queued" would hold
+          // the PR for good, the same way the GraphQL path's own gate answer would not.
+          if (gate && "wait" in gate) return `ship-tier-pending: not queued: ${gate.wait}${gate.unblock ? ` (${gate.unblock})` : ""}`;
           return (await adoptionEnded(s.slug, n, a.generation, String(a.head), { do: "merge", head: a.head, base: String(now.baseRefName ?? ""), association: String(now.authorAssociation ?? "") })) ?? "";
         });
         if (!out.ambiguous) return out;
