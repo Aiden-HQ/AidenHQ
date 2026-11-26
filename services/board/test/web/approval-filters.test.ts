@@ -55,6 +55,8 @@ describe("a conversation's cards", () => {
     expect(shownInChat(card({ state: "rejected" }))).toBe(true);
     expect(shownInChat(card({ state: "used", outcome: "applied", decidedBy: "reviewer:~openai/gpt-luna-latest" }))).toBe(false);
     expect(shownInChat(card({ state: "auto", outcome: "applied" }))).toBe(false);
+    // A Tier 0 run that failed: its outcome line is folded once the card is in the chat, so the card itself must show.
+    expect(shownInChat(card({ state: "auto", outcome: "failed" }))).toBe(true);
     expect(shownInChat(card({ state: "pending", tier: 1 }))).toBe(false);
     // The owner saw it pending in the open chat: it stays there once decided, until he leaves the chat.
     const applied = card({ state: "used", outcome: "applied", decidedBy: "reviewer:~openai/gpt-luna-latest" });
