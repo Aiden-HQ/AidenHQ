@@ -14,7 +14,7 @@ import { openFacts } from "../src/facts.ts";
 function setup() {
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "kernel-work-")), "kernel.db"));
   createJobs({ db: records.db, cfg: {}, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: "" }); // creates the jobs table
-  const add = (id, agent, task, state, at, ended) => records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended) VALUES (?, 'dispatch', ?, ?, 'codex', 1, '', '', ?, '[]', 0, 0, ?, ?)").run(id, agent, task, at, state, ended ?? null);
+  const add = (id, agent, task, state, at, ended, pid = 1) => records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended) VALUES (?, 'dispatch', ?, ?, 'codex', ?, '', '', ?, '[]', 0, 0, ?, ?)").run(id, agent, task, pid, at, state, ended ?? null);
   add("j-1", "a1", "t1", "done", 1_000_000, 1_090_000);
   add("j-2", "a1", "t1", "running", 2_000_000);
   add("j-3", "a2", "t2", "running", 2_000_000);
@@ -198,6 +198,16 @@ test("an agent's timeline: each job's wake and who caused it, why it ended, its 
   const get = (path, token = "board-key") => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
   assert.deepEqual(await (await get(`/v1/writes/${rec.id}/chain`)).json(), { chain: "Fix the login\n\nIt 500s." });
   assert.equal((await get(`/v1/writes/${rec.id}/chain`, "wrong")).status, 401);
+});
+
+test("a job that never got a shell is not started: a launch failure or an early stop reads started false", () => {
+  const { work, records } = setup();
+  const add = (id, state, ended, pid) => records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended) VALUES (?, 'dispatch', 'a7', 't7', 'codex', ?, '', '', 1, '[]', 0, 0, ?, ?)").run(id, pid, state, ended);
+  add("u-failed", "failed", 1_000, 0); // couldn't start: admission's launch failure
+  add("u-stopped", "cancelled", 1_000, 0); // the owner's Stop during launch
+  add("u-ran", "done", 9_000, 4242);
+  const got = work.agent("a7").jobs.filter((j) => j.id.startsWith("u-")).sort((x, y) => x.id.localeCompare(y.id));
+  assert.deepEqual(got.map((j) => [j.id, j.started]), [["u-failed", false], ["u-ran", true], ["u-stopped", false]]);
 });
 
 test("an agent's history leaves quiet routine runs out before its limit of 50", async () => {
