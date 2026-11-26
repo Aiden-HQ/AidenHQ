@@ -6,7 +6,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { uncheckableAbsence } from "./absence.ts";
-import { keepRequestedParent, requestedParentOf } from "./requested-parent.ts";
+import { requesterOfListed, requestedParentOf, withRequester } from "./requested-parent.ts";
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
@@ -758,15 +758,29 @@ export function similar(a: Json, b: Json) {
 }
 /**
  * The tasks filed under `parent`, whoever holds them: its children, plus the ones a delegation asked it for that the control
- * plane placed beside it (a grandchild request becomes a sibling, and the task records the one that asked for it). A task placed
+ * plane placed elsewhere — beside it under its parent (a grandchild request becomes a sibling), or at the top level when the
+ * create didn't authorize the placement (the create response's `parentAdjusted`, effective parent null). A task records the one
+ * that asked for it (requested-parent.ts), first in its description so a list row's 1200-char cut keeps it; the rows are found
+ * under the requester, under its placed parent, and among those the control plane says were created from it. A task placed
  * under `parent` that another task asked for is not one of them.
  */
-async function childrenOf(parent: Json, statuses = OPEN_STATUSES) {
+async function childrenOf(parent: Json, statuses = OPEN_STATUSES, assignees?: string[]) {
   const found = new Map<string, Json>();
-  for (const placed of [parent.id, parent.parentId].filter(Boolean)) {
-    const q = new URLSearchParams({ parentId: placed, status: statuses, limit: "50" });
+  // Under the task itself a child's requester is its parent, as it always was: only the other lists can hold a task that asked
+  // for `parent` but was placed elsewhere, so only those rows are ever read whole.
+  const queries: { base: URLSearchParams; precise: boolean }[] = [{ base: new URLSearchParams({ parentId: parent.id, status: statuses, limit: "50" }), precise: false }];
+  if (parent.parentId) queries.push({ base: new URLSearchParams({ parentId: parent.parentId, status: statuses, limit: "50" }), precise: true });
+  // A top-level placement no longer carries the requester in `parentId`: the create's origin still names it.
+  queries.push({ base: new URLSearchParams({ createdFromIssueId: parent.id, status: statuses, limit: "50" }), precise: true });
+  for (const { base, precise } of queries) for (const agent of assignees?.length ? assignees : [undefined]) {
+    // The assignee filter goes in the query, before the limit: the check is for these agents' tasks, not the first 50 of anyone's.
+    const q = new URLSearchParams(base);
+    if (agent) q.set("assigneeAgentId", agent);
     const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-    for (const k of Array.isArray(kids) ? kids : []) if (k.id !== parent.id && requestedParentOf(k) === parent.id) found.set(k.id, k);
+    for (const k of Array.isArray(kids) ? kids : []) {
+      const asked = precise ? await requesterOfListed(k, (id) => api("GET", `/api/issues/${id}`).catch(() => undefined)) : requestedParentOf(k);
+      if (k.id !== parent.id && asked === parent.id) found.set(k.id, k);
+    }
   }
   return [...found.values()];
 }
@@ -779,7 +793,7 @@ async function openSiblings(parent: Json, target: Json) {
     const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
     for (const a of all) if (keys.has(keyOf(a))) ids.add(a.id);
   }
-  return (await childrenOf(parent)).filter((k) => ids.has(k.assigneeAgentId));
+  return (await childrenOf(parent, OPEN_STATUSES, [...ids])).filter((k) => ids.has(k.assigneeAgentId));
 }
 const keyOf = (a: Json) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "") || a.name;
 // An Engineer (setup marks it runnerEngine in its metadata): code work goes to it with a brief.
@@ -1623,7 +1637,9 @@ const TOOLS: Record<string, Tool> = {
         const markers = String(current.description ?? "").match(/<!-- (?:merged-)?source:[^>]*-->/g) ?? [];
         // The requester a delegation recorded outlives the edit too (requested-parent.ts): it routes the task's delegator,
         // notices and siblings, so an edit that dropped it would re-parent the chain.
-        body.description = keepRequestedParent(current.description, String(description).replace(/<!--|-->/g, "").slice(0, 60_000) + (markers.length ? `\n\n${markers.join("\n")}` : ""));
+        // The requester goes first, as the plugin writes it (a task list cuts a long description to 1200 chars), and only the
+        // one the task already records counts: a marker in the agent's own text is stripped with its other tags above.
+        body.description = withRequester(current.description, String(description).replace(/<!--|-->/g, "").slice(0, 60_000) + (markers.length ? `\n\n${markers.join("\n")}` : ""));
       }
       if (!Object.keys(body).length) throw new Error("nothing to update");
       const i = await brief(await api("PATCH", `/api/issues/${issueRef(issue)}`, body));

@@ -7,7 +7,9 @@ import assert from "node:assert/strict";
 import { bridge, parse } from "./helpers.ts";
 
 // chief of staff (WOR-1) → architect (WOR-2, a child of WOR-1) → engineer (WOR-3, placed beside the architect under WOR-1)
+// The marker leads the description (a list cuts one to 1200 chars), as the plugin writes it.
 const MARK = (id: string) => `<!-- aidenhq:requested-parent:${id} -->`;
+const marked = (id: string, text: string) => `${MARK(id)}\n\n${text}`;
 
 function world({ adjusted, me = "me" }: { adjusted: boolean; me?: string }) {
   const writes: Json[] = [];
@@ -16,7 +18,7 @@ function world({ adjusted, me = "me" }: { adjusted: boolean; me?: string }) {
     root: { id: "root", identifier: "WOR-1", title: "Ship it", status: "in_progress", assigneeAgentId: "boss" },
     // A task the architect delegated earlier, and one the chief of staff delegated. When Paperclip adjusted the first, it sits
     // beside the architect under WOR-1 and records that the architect's task asked for it.
-    sibling: { id: "sibling", identifier: "WOR-4", title: "Write the API", status: "in_progress", assigneeAgentId: "eng", parentId: adjusted ? "root" : "cur", createdByAgentId: "me", description: `Build the API.${adjusted ? `\n\n${MARK("cur")}` : ""}` },
+    sibling: { id: "sibling", identifier: "WOR-4", title: "Write the API", status: "in_progress", assigneeAgentId: "eng", parentId: adjusted ? "root" : "cur", createdByAgentId: "me", description: adjusted ? marked("cur", "Build the API.") : "Build the API." },
     chiefKid: { id: "chiefKid", identifier: "WOR-5", title: "Write the API", status: "in_progress", assigneeAgentId: "eng", parentId: "root", createdByAgentId: "boss", description: "Build the API." },
   };
   let n = 0;
@@ -45,7 +47,15 @@ function world({ adjusted, me = "me" }: { adjusted: boolean; me?: string }) {
         const q = new URL(url, "http://x").searchParams;
         const parent = q.get("parentId");
         const agent = q.get("assigneeAgentId");
-        return send(Object.values(tasks).filter((t) => (!parent || t.parentId === parent) && (!agent || t.assigneeAgentId === agent)));
+        const from = q.get("createdFromIssueId");
+        // A list row is cut to 1200 chars (Paperclip's ISSUE_LIST_DESCRIPTION_MAX_CHARS), flagged by descriptionTruncated.
+        const rows = Object.values(tasks)
+          .filter((t) => (!parent || t.parentId === parent) && (!from || t.from === from) && (!agent || t.assigneeAgentId === agent))
+          // Newest first, then the page: a filter not pushed into the query can be crowded out by earlier rows.
+          .sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")))
+          .slice(0, Number(q.get("limit") ?? 50))
+          .map((t) => (!t.description || t.description.length <= 1200 ? t : { ...t, description: t.description.slice(0, 1200), descriptionTruncated: true }));
+        return send(rows);
       }
       if (m && /\/comments$/.test(url)) return send({ id: "c1" });
       send([]);
@@ -116,4 +126,40 @@ test("with no placement adjustment, task_current reads the parent as before", as
   const r = parse(await engineer.call("task_current", {}));
   assert.equal(r.error, undefined, r.error);
   assert.equal(r.out.parent?.identifier, "WOR-2");
+});
+
+test("a placed task whose 1200-char list row hides its marker is read whole, so it still groups by its requester", async () => {
+  const { call, tasks } = world({ adjusted: true });
+  // A long brief that would have put the marker past the cut before it led the description: the list row is cut, the marker with it.
+  const long = `${"Detail. ".repeat(200)}`;
+  tasks.sibling.description = `${long}${MARK("cur")}`;
+  tasks.sibling.descriptionTruncated = true;
+  const refused = parse(await call("task_delegate", { ...brief, marker: "api" }));
+  assert.match(refused.error ?? "", /WOR-4 .* is already Kai's open task for this brief under WOR-2/);
+});
+
+test("the duplicate check sees every task of the target agent, not just the first 50 under the parent", async () => {
+  const { call, tasks } = world({ adjusted: true });
+  // Fifty higher-ranked open tasks held by other agents come first; the older matching one, held by Kai, is behind them.
+  for (let i = 0; i < 50; i++) tasks[`other${i}`] = { id: `other${i}`, identifier: `WOR-${100 + i}`, title: `Unrelated ${i}`, status: "in_progress", assigneeAgentId: "someone", parentId: "root", createdAt: `2026-11-25T10:${String(i).padStart(2, "0")}:00Z` };
+  tasks.sibling.createdAt = "2026-11-20T00:00:00Z";
+  tasks.chiefKid.createdAt = "2026-11-19T00:00:00Z";
+  tasks.cur.createdAt = "2026-11-18T00:00:00Z";
+  tasks.root.createdAt = "2026-11-17T00:00:00Z";
+  tasks.sibling.createdAt = "2026-11-20T00:00:00Z";
+  const refused = parse(await call("task_delegate", { ...brief, marker: "api" }));
+  assert.match(refused.error ?? "", /WOR-4 .* is already Kai's open task/, "the matching task behind 50 others is found");
+});
+
+test("a delegation Paperclip filed at the top level is still found by the task that asked for it", async () => {
+  const { call, tasks } = world({ adjusted: true });
+  // No structural parent at all: the create sent no expectedParentId, so Paperclip wrote a standalone task. Its create origin
+  // (the run's task) still names the requester, and the first marker says which task asked for it.
+  tasks.sibling.parentId = undefined;
+  tasks.sibling.from = "cur";
+  const refused = parse(await call("task_delegate", { ...brief, marker: "api" }));
+  assert.match(refused.error ?? "", /WOR-4 .* is already Kai's open task for this brief under WOR-2/);
+  const fresh = parse(await call("task_delegate", { ...brief, title: "Add pagination", description: "Paginate the API's list endpoint.", marker: "paging" }));
+  assert.equal(fresh.error, undefined, fresh.error);
+  assert.equal(tasks.new1.parentId, "root");
 });

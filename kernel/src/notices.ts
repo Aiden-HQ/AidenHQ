@@ -48,11 +48,25 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
       return i.json as { id?: string; status?: string; parentId?: string | null; description?: string | null };
     };
     if (r.parent) {
-      // The task's delegator: the task that asked for it, which is its parent unless the control plane placed it beside that
-      // task (requestedParentOf). The queue holds the task, so this is read when the notice is sent, as the parent was.
-      const asked = requestedParentOf(await read(task));
+      // The task's delegator: the task that asked for it, which is its parent unless the control plane placed it elsewhere
+      // (requestedParentOf). The queue holds the task, so this is read when the notice is sent, as the parent was.
+      const self = await read(task);
+      const asked = requestedParentOf(self);
       if (!asked) return;
-      task = asked;
+      // A closed task takes no comment (it would reopen it). The requester hears it while open; a closed or gone requester
+      // falls back to the task the control plane placed this one under, which heard every parent notice before this change.
+      const open = async (id: string | undefined) => {
+        if (!id || id === task) return undefined;
+        const i = await read(id);
+        return i && !CLOSED.includes(String(i.status)) ? id : undefined;
+      };
+      const to = (await open(asked)) ?? (self?.parentId && self.parentId !== asked ? await open(self.parentId) : undefined);
+      if (!to) {
+        // Nobody open is left to hear something the task's agent needs: say it where a person will, never lose it silently.
+        alert(`A notice for task ${task} has no open requester (${asked}) to go to:\n\n${r.body.slice(0, 1500)}`);
+        return;
+      }
+      task = to;
     }
     const i = await read(task);
     if (!i || CLOSED.includes(String(i.status))) return;

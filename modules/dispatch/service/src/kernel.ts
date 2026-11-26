@@ -3,6 +3,7 @@
 import type { Step } from "./progress.ts";
 import { KernelError, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Agent, Comment, Directory, Issue } from "./thread.ts";
+import { requesterOfListed } from "./requested-parent.ts";
 
 /** An inbox row the module claimed (kernel wakes.ts); `live_job`: a comment for that running job. */
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; live_job?: string }
@@ -90,7 +91,16 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     routine: (id) => call("GET", `/v1/cp/read/api/routines/${e(id)}`),
     cancelRoutineRun: async (task, why, body) => void (await call("POST", "/v1/routines/cancel", { task, why, body })),
     // A child parked in backlog still counts: it is a task of this batch, and a summary that left it out would misreport the batch.
-    children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,backlog,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
+    // A delegation the control plane placed by its origin at the top level (no structural parent) is listed by the create's
+    // origin, and kept only when it records that this task asked for it (requested-parent.ts): the placement still names it.
+    children: async (parent, company) => {
+      const query = (f: string) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?${f}&status=todo,in_progress,in_review,blocked,backlog,done,cancelled&limit=200`) as Promise<Issue[]>;
+      const [placed, from] = await Promise.all([query(`parentId=${e(parent)}`), query(`createdFromIssueId=${e(parent)}`)]);
+      const found = new Map<string, Issue>([...placed.filter((i) => i.parentId === parent), ...from].map((i) => [i.id, i]));
+      const out: Issue[] = [];
+      for (const i of found.values()) if (i.id !== parent && (await requesterOfListed(i, (id) => call("GET", `/v1/cp/read/api/issues/${e(id)}`).catch(() => undefined))) === parent) out.push(i);
+      return out;
+    },
     wake: async (task, text, id) => void (await call("POST", "/v1/wakes", { task, text, ...(id ? { id } : {}) })),
     schedule: async (b) => void (await call("POST", "/v1/wakes", b)),
     fileTask: async (b) => await call("POST", "/v1/tasks", b),

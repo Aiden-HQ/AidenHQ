@@ -13,7 +13,7 @@ import { createGithub } from "./github.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 import { appsEvidence, type AppsCall } from "./apps-evidence.ts";
 import { rubricHash } from "./grades.ts";
-import { requestedParentOf } from "./requested-parent.ts";
+import { requestedParentOf, requesterOfListed } from "./requested-parent.ts";
 
 type Json = any;
 /** The kernel as the grading loop needs it: its calls with this module's token (kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake). */
@@ -73,13 +73,16 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     // anything on it (its work, its records, its files) is read.
     taskOnly: (ref: string) => read(`/api/issues/${encodeURIComponent(ref)}`),
     comments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/comments`),
-    // The tasks filed under it: its children, and a delegation's that the control plane placed beside it (requested-parent.ts).
+    // The tasks filed under it: its children, and a delegation's that the control plane placed elsewhere — beside it
+    // (requested-parent.ts), or at the top level when the create didn't authorize that placement.
     children: async (parentId: string) => {
       const parent = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(parentId)}`);
-      const placed = [parentId, parent.parentId].filter(Boolean) as string[];
-      const found = new Map<string, Json>();
-      for (const p of placed) for (const i of await read(`/api/companies/${parent.companyId}/issues${q({ parentId: p, limit: "200" })}`)) if (i.id !== parentId && requestedParentOf(i) === parentId) found.set(i.id, i);
-      return [...found.values()];
+      const places = [...new Set([parentId, parent.parentId].filter(Boolean) as string[])];
+      const listed = new Map<string, Json>();
+      const queries = [...places.map((p) => q({ parentId: p, limit: "200" })), q({ createdFromIssueId: parentId, limit: "200" })];
+      for (const query of queries) for (const i of await read(`/api/companies/${parent.companyId}/issues${query}`)) if (i.id !== parentId) listed.set(i.id, i);
+      const found = await Promise.all([...listed.values()].map(async (i) => ({ ...i, asked: await requesterOfListed(i, (id) => read(`/api/issues/${encodeURIComponent(id)}`).catch(() => undefined)) })));
+      return found.filter((i) => i.asked === parentId);
     },
     // The task's own agent, whatever its company (work or personal).
     agent: (id: string) => read(`/api/agents/${encodeURIComponent(id)}`).catch((e: { status?: number }) => (e.status === 404 ? undefined : Promise.reject(e))),

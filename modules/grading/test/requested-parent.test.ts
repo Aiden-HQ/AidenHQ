@@ -41,7 +41,7 @@ async function world(t, { adjusted }) {
   }).listen(0);
   t.after(() => gateway.close());
   const issue = {
-    id: "eng", identifier: "WOR-3", title: "Build the totals page", description: `Build it.${adjusted ? `\n\n${MARK("WOR2")}` : ""}`,
+    id: "eng", identifier: "WOR-3", title: "Build the totals page", description: adjusted ? `${MARK("WOR2")}\n\nBuild it.` : "Build it.",
     status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "arch", parentId: adjusted ? "WOR1" : "WOR2",
   };
   const calls = { resolve: [], wake: [] };

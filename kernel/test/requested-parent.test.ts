@@ -145,5 +145,75 @@ test("a retried create that died before recording the requester records it on th
   assert.equal(second.child, first.child, "the retry finds the task the first attempt made");
   assert.equal(second.found, true);
   assert.equal(requestedParentOf(issues[first.child!]), ARCH, "the retry records the task that asked for it");
-  assert.match(String(issues[first.child!].description), /^Build it, with paging\./, "and keeps the edit that landed in between");
+  assert.match(String(issues[first.child!].description), /Build it, with paging\./, "and keeps the edit that landed in between");
+  assert.match(String(issues[first.child!].description), new RegExp(`^<!-- aidenhq:requested-parent:${ARCH} -->`), "the marker goes first: a list cuts a long description");
+});
+
+test("a parent notice for a placed grandchild falls back to the placed parent when its requester has closed", async () => {
+  const { ctx, issues } = paperclip();
+  const id = await delegate(ctx, { from: ARCH, title: "Fix the totals", description: "Build it.", assignee: ENG, tag: "op-5" });
+  // The Architect's task closes while the Engineer's run is still going; the chief of staff's task is open above it.
+  issues[ARCH].status = "done";
+  const posted: string[] = [];
+  const alerts: string[] = [];
+  const api = async (method: string, path: string, body?: { body?: string }) => {
+    if (method === "GET" && path.includes("/comments")) return { status: 200, json: [] };
+    if (method === "GET") {
+      const ref = decodeURIComponent(String(path).split("/")[3]);
+      const i = Object.values(issues).find((x) => x.id === ref || x.identifier === ref);
+      return i ? { status: 200, json: i } : { status: 404, json: {} };
+    }
+    posted.push(decodeURIComponent(String(path).split("/")[3]));
+    return { status: 201, json: {} };
+  };
+  const n = createNotices({ db: new DatabaseSync(":memory:"), api, alert: (t) => alerts.push(t) });
+  n.queue(id, "**Rejected** on WOR-3 (approval r-1, push).", { parent: true });
+  await n.send();
+  assert.deepEqual(posted, [CHIEF], "the placed parent hears it, as every parent notice went there before the requester was recorded");
+  assert.deepEqual(alerts, [], "nothing was lost silently");
+
+  // With the placed parent closed too, there is nobody open to hear it: the owner is told, never a silent drop.
+  issues[CHIEF].status = "done";
+  n.queue(id, "**Blocked** on WOR-3.", { parent: true, tag: "blocked" });
+  await n.send();
+  assert.deepEqual(posted, [CHIEF]);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0], /WOR-3|no open requester/);
+});
+
+test("an edit through the plugin keeps the requester it recorded, first in the description", async () => {
+  const { ctx, issues } = paperclip();
+  const id = await delegate(ctx, { from: ARCH, title: "Fix the totals", description: "Build it.", assignee: ENG, tag: "op-6" });
+  assert.equal(issues[id].parentId, CHIEF);
+  const params = { issueId: id, tag: "<!-- aidenhq:op=op-6-edit -->", patch: { description: "Build it, with paging." }, scope: "created", ts: 4_000 };
+  const out = await post(ctx, { ...params, sig: signature(KEY, "co", ARCHITECT, params) }, { actor: { type: "agent", agentId: ARCHITECT, runId: null }, companyId: "co" }, KEY, 4_000);
+  assert.equal(out.refused, undefined, out.refused);
+  assert.match(String(issues[id].description), /^<!-- aidenhq:requested-parent:/, "the marker leads: a list cuts a long description");
+  assert.match(String(issues[id].description), /Build it, with paging\./);
+  assert.equal(requestedParentOf(issues[id]), ARCH, "the edit kept the requester the create recorded");
+});
+
+test("a delegation Paperclip filed at the top level (no effective parent) still records and resolves its requester", async () => {
+  // The create sent no `expectedParentId`, so Paperclip wrote no adjusted edge: the task is standalone, still saying what it was asked for.
+  const { ctx, issues } = pluginHost({
+    [CHIEF]: { id: CHIEF, identifier: "WOR-1", status: "in_progress", assigneeAgentId: CHIEF, companyId: "co", parentId: null },
+    [ARCH]: { id: ARCH, identifier: "WOR-2", status: "in_progress", assigneeAgentId: ARCHITECT, companyId: "co", parentId: CHIEF },
+  });
+  const create = ctx.issues.create;
+  ctx.issues.create = async (input) => ({ ...(await create({ ...input, parentId: undefined })), parentAdjusted: { reason: "max_agent_depth", applied: true, requestedParent: { id: input.parentId, identifier: issues[input.parentId!]?.identifier ?? null }, effectiveParent: null } });
+  const id = await delegate(ctx, { from: ARCH, title: "Fix the totals", description: "Build it.", assignee: ENG, tag: "op-7" });
+  assert.equal(issues[id].parentId, undefined, "standalone");
+  assert.equal(requestedParentOf(issues[id]), ARCH, "the requester is still recorded");
+});
+
+test("an edit keeps a requester marker an older task carries at the end, and moves it first", async () => {
+  const { ctx, issues } = paperclip();
+  const id = await delegate(ctx, { from: ARCH, title: "Fix the totals", description: "Build it.", assignee: ENG, tag: "op-8" });
+  // A task filed before the marker led the description: it sits at the end of the brief.
+  issues[id].description = `Build it.\n\n${requestedParentMarker(ARCH)}`;
+  assert.equal(requestedParentOf(issues[id]), ARCH);
+  const params = { issueId: id, tag: "<!-- aidenhq:op=op-8-edit -->", patch: { description: "Build it, with paging." }, scope: "created", ts: 5_000 };
+  const out = await post(ctx, { ...params, sig: signature(KEY, "co", ARCHITECT, params) }, { actor: { type: "agent", agentId: ARCHITECT, runId: null }, companyId: "co" }, KEY, 5_000);
+  assert.equal(out.refused, undefined, out.refused);
+  assert.equal(String(issues[id].description), `${requestedParentMarker(ARCH)}\n\nBuild it, with paging.`, "kept once, first");
 });
