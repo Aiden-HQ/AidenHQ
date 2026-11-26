@@ -19,7 +19,7 @@ writeFileSync(
   join(dir, "paperclip.yaml"),
   stringify({
     settings: { glean_mcp_url: { value: "", set: false }, grading: { value: "on", set: false }, maintainer_repos: { value: [{ repo: "acme/product" }], set: true } },
-    agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", engine: "codex-openrouter", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", engine: "codex-openrouter", profile: "engineer" }, helper: { name: "Helper", module: "helper", tier: "local" }, "team-eng": { name: "Engineer", profile: "engineer", team: { name: "engineering", members: ["kai"] } }, kai: { name: "Kai", profile: "engineer", member_of: "team-eng" } },
+    agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", engine: "codex-openrouter", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", engine: "codex-openrouter", profile: "engineer" }, helper: { name: "Helper", module: "helper", tier: "local" }, "team-eng": { name: "Engineer", profile: "engineer", team: { name: "engineering", members: ["kai"] } }, kai: { name: "Kai", profile: "engineer", member_of: "team-eng" }, "open-loops": { name: "Tess", module: "open-loops", teammate: { job: "Follow-up chaser" } }, "reviewer-manager": { name: "Max", module: "code-review", teammate: { job: "PR reviewer" } } },
     mcp_servers: { crm: { tools: { read: ["crm_find"], write: ["crm_update"] } } },
     routines: { digest: { title: "Digest" } },
   }),
@@ -131,6 +131,21 @@ describe("POST /api/settings/change", () => {
     });
     expect(r.status).toBe(200);
     expect(r.body.changes[0]).toMatchObject({ identifier: "WOR-9", stage: "working", items: [{ kind: "setting", key: "glean_mcp_url" }, { kind: "agent", field: "reasoning_effort" }, { kind: "grants", connection: "crm" }] });
+  });
+
+  it("renames a teammate by the one name rule: unique against every agent's name and key, hidden ones included", async () => {
+    const rename = (agent: string, value: string) => post({ changes: [{ kind: "agent", agent, field: "name", value }] });
+    const before = created.length;
+    for (const [agent, value, why] of [
+      ["open-loops", "aiden", "already an agent's name"],
+      ["open-loops", "Engineer", "already an agent's name"],
+      ["open-loops", "reviewer manager", "an agent's key"],
+      ["fleet-engineer", "Nova", "only a teammate is renamed"],
+      ["open-loops", "N".repeat(25), "1 to 24"],
+    ]) expect(await rename(agent!, value!), `${agent} → ${value}`).toMatchObject({ status: 400, body: { error: expect.stringContaining(why!) } });
+    expect(created).toHaveLength(before);
+    expect((await rename("open-loops", "Nova")).status).toBe(200);
+    expect(created.at(-1)!.title).toBe("Settings: rename Tess to Nova");
   });
 
   it("needs a signed-in admin", async () => {

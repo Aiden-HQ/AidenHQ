@@ -89,6 +89,8 @@ interface CompiledAgent {
   /** crew, engineer or check (compile sets it for every agent). */
   profile?: string;
   department?: { id: string; name: string; description?: string; order: number };
+  /** A teammate (the owner sees and renames it by name); hidden agents have none. */
+  teammate?: { job: string };
   roles?: string[];
   enabled_tools?: Record<string, string[]>;
 }

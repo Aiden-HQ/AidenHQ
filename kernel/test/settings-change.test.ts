@@ -116,6 +116,23 @@ test("on a team, the record's settings edit teams.<t>.defaults, a member's its e
     assert.throws(() => checkTyped(bad, src), /isn't a change|team|can't be/);
 });
 
+test("a teammate is renamed by the owner only, by the one name rule, into overrides.agents.<key>.name", () => {
+  const compiled = { agents: { "chief-of-staff": { name: "Aiden", teammate: { job: "Chief of staff" } }, "open-loops": { name: "Tess", teammate: { job: "Follow-up chaser" } }, "reviewer-manager": { name: "Max", teammate: { job: "PR reviewer" } }, engineer: { name: "Engineer" } } };
+  const src = { compiled, catalog: [] };
+  const rename = (agent, value) => ({ kind: "agent", agent, field: "name", value });
+  checkTyped(rename("open-loops", "Nova"), src);
+  for (const [ch, why] of [
+    [rename("open-loops", "aiden"), /already an agent's name/],
+    [rename("open-loops", "Engineer"), /already an agent's name/],
+    [rename("open-loops", "reviewer manager"), /an agent's key/],
+    [rename("engineer", "Nova"), /only a teammate is renamed/],
+    [rename("open-loops", "N".repeat(25)), /1 to 24/],
+  ]) assert.throws(() => checkTyped(ch, src), why);
+  assert.throws(() => checkTyped(rename("open-loops", "Nova"), { ...src, self: { key: "open-loops", roles: [] } }), /never renames/);
+  const out = YAML.parse(planFiles([rename("open-loops", "Nova")], { read: (p) => (p === "instance.yaml" ? "product: x\n" : undefined), localOf: () => undefined, teamOf: () => undefined, moduleHandbook: () => undefined, bundle: [] }).get("instance.yaml"));
+  assert.equal(out.overrides.agents["open-loops"].name, "Nova");
+});
+
 test("a setting its module declares `entry:` takes a list of names or maps carrying that field, bounded; other lists stay plain", () => {
   const src = { compiled: { settings: {} }, catalog: [{ name: "github", enabled: true, settings: { maintainer_repos: { entry: "repo" }, ignore: {} } }] };
   checkTyped({ kind: "setting", key: "maintainer_repos", value: ["a/b", { repo: "c/d", issues: false }] }, src);
