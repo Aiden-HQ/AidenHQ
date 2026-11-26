@@ -205,14 +205,14 @@ contributes:
   `styles.variables`: the MCP Apps standard names the board has tokens for (`--color-background-*`, `--color-text-*`,
   `--color-border-primary|secondary`, `--color-ring-primary`, `--font-sans`, `--font-text-xs|sm|md-size`,
   `--border-radius-xs|sm|md|lg`, `--shadow-sm|md|lg`; the one table is `TOKENS` in `ModuleView.tsx`), as the board's tokens
-  write them, so the view sets `color-scheme` to `theme`), `ui/notifications/initialized`, `tools/call` and `ui/notifications/size-changed`
+  write them, so the view sets `color-scheme` to `theme`), `ui/notifications/initialized`, `tools/call`, `ui/message` (opens Ask Aiden with the text ready) and `ui/notifications/size-changed`
   (the frame's height). Nothing else is answered. A web host should use a sandbox proxy on a second origin; the board has one
   origin in every exposure mode, so the single sandboxed frame stands in for it.
 - **The page kit** (`services/shared/page-kit.css|js`, copied into each module that serves a page by
   `scripts/sync-shared.ts` and inlined by its `mcp.ts`) gives a view the board's look through those variables only, with
   neutral fallbacks, so another MCP Apps host's theme maps too: `.card` with a `.head` (title, meta, action), `.row`,
   `button` and `.primary`, and `.tag` with `.ok`, `.needs` and `.failed` (radius, hairline borders, hover lift, press
-  scale, focus ring, reduced motion). A module page uses these classes instead of its own styles.
+  scale, focus ring, reduced motion), plus `.collapse` (an in-place grow), `button.quiet|.sm`, `select.pick` (auto width) and `.tag.run`; a view's `ask(text)` sends `ui/message`. A module page uses these classes instead of its own styles.
 - **A tool call** goes board → kernel (`POST /v1/views/<module>/mcp`, the board's key), which lets through only that view's
   resource and its page's tools, and calls the module with a caller assertion of kind `owner` (no agent, no roles, no
   control-plane reach).
@@ -227,7 +227,7 @@ contributes:
 - **A view's job:** the module's state and its feature settings, empty states that say how to connect. The example
   (`web/dev/example-view.html`, the mock API's Notes page) is the starting point: no build step, about 100 lines.
 
-Code review's Reviews page is a module view too (`modules/code-review/service/src/page.html`, order 5: tabs Reviews, Repos and Insights, a run's findings with the owner's Dismiss, a repo's settings through `code_review_configure`'s proposal). Every module page has this one path; an old `#/reviews/…` link redirects to it.
+Code review's Reviews page is a module view too (`modules/code-review/service/src/page.html`, order 5), results first: a one-sentence summary, what needs the owner, one row per pull request that opens in place to its findings (with the owner's Dismiss), and a rail (what the reviewer covers, Ask, whole-repo checks, Advanced). Advanced writes a repo's settings as editable sentences (through `code_review_configure`'s proposal). Every module page has this one path; an old `#/reviews/…` link redirects to it.
 
 **`board.reads`** are a module's owner-view reads for Home: `{id, connection, tool}`, a read tool of its own connection,
 called by the board through the kernel's view route (google's `calendar_today`, owner-channel's `told`). Home names no

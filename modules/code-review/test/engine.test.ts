@@ -108,6 +108,8 @@ test("a new PR runs each on_open combo, each posted with its combo; a push debou
   await w.tick();
   assert.deepEqual(w.posted.map((p) => [p.review.engine, p.review.model, p.review.effort]), [["codex", CODEX.model, "medium"], ["claude-code", CLAUDE.model, "high"]]);
   const runs = w.engine.runs({ repo: REPO });
+  assert.ok(runs.every((r) => r.pr_state === "open"), "a run says its PR is open (the Reviews page groups and labels by it)");
+  assert.deepEqual(w.engine.needs(), [], "nothing is held or waiting on the owner here");
   const cc = runs.find((r) => r.engine === "claude-code");
   assert.deepEqual([cc.cost_usd, cc.tokens_in, cc.tokens_cached, cc.tokens_out, cc.duration_ms], [0.31, 1000, 200, 50, 5000]);
   assert.deepEqual(w.engine.run(cc.id).findings, [{ id: "f2", severity: "nit", path: "b.ts", line: 1, title: "n", outcome: null }]);

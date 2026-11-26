@@ -68,7 +68,7 @@ const api = handler(engine, (auth, module) => isModule(kernelUrl, auth, module))
 // filed as the calling job (its assertion goes along).
 const raw = () => { try { const v = JSON.parse(env.CODE_REVIEW_SETTINGS || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };
 const mcp = serveMcp(createMcp("code-review", configTools({
-  raw, repos: () => engine.repos(), runs: (q) => engine.runs(q), oneoff: (b, asker) => engine.oneoff(b, asker), resolve: (b) => engine.resolve(b), findings: (r, n) => engine.openFindings(r, n), repoReview: (b) => engine.repoReview(b),
+  raw, repos: () => engine.repos(), needs: () => engine.needs(), runs: (q) => engine.runs(q), oneoff: (b, asker) => engine.oneoff(b, asker), resolve: (b) => engine.resolve(b), findings: (r, n) => engine.openFindings(r, n), repoReview: (b) => engine.repoReview(b),
   batches: (q) => engine.batches(q), detail: (id) => engine.run(id) ?? (() => { throw new Error(`no review ${id}`); })(), report: (b) => engine.report(b), catalog: (q) => engine.catalogFor(q), available: (q) => engine.available(q), dismiss: (b) => engine.dismiss(b),
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });

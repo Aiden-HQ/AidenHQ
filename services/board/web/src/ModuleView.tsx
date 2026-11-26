@@ -9,6 +9,7 @@ import type { PageRow } from "./types";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
 import { Button, Page, PageHeader } from "./ui";
+import { openAsk } from "./AskAiden";
 import "./modules.css";
 
 const PROTOCOL = "2026-01-26";
@@ -108,6 +109,14 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
         const url = typeof m.params?.url === "string" && URL.canParse(m.params.url) ? new URL(m.params.url) : null;
         if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) return answer(m, { error: { code: -32602, message: "only http and https links open" } });
         window.open(url.href, "_blank", "noopener,noreferrer");
+        return answer(m, { result: {} });
+      }
+      // A message the view asks to send (MCP Apps ui/message): Ask Aiden opens with its text ready, the owner sends it.
+      if (m.method === "ui/message") {
+        const content = m.params?.content;
+        const text = Array.isArray(content) ? (content as { type?: string; text?: unknown }[]).find((c) => c?.type === "text")?.text : undefined;
+        if (typeof text !== "string" || !text.trim()) return answer(m, { error: { code: -32602, message: "a message has text" } });
+        openAsk({ text: text.slice(0, 2000) });
         return answer(m, { result: {} });
       }
       if (m.method !== "tools/call") return; // ui/notifications/initialized needs nothing; anything else isn't offered

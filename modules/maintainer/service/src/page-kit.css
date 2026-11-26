@@ -96,4 +96,15 @@ button:disabled { opacity: .5; cursor: default; box-shadow: none; }
 .chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip .x { height: 18px; width: 18px; padding: 0; border: 0; background: transparent; color: var(--soft); font-size: 14px; line-height: 1; }
 .chip .x:hover { color: var(--color-text-danger, red); }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } button:not(:disabled):active { transform: none; } }
+/* Motion and small parts a results-first page uses (Reviews; any page may): a card rises in, a .collapse grows in place (put the content in its one child),
+   a quiet and a small button, an auto-width select for a toolbar (a bare select fills its row), and a running tag. */
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.card { animation: rise .32s var(--ease) both; }
+.collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .26s var(--ease); }
+.collapse.open { grid-template-rows: 1fr; }
+.collapse > * { overflow: hidden; min-height: 0; }
+button.quiet { border-color: transparent; background: none; box-shadow: none; color: var(--soft); }
+button.sm { height: 24px; padding: 0 9px; font-size: 12px; }
+select.pick { width: auto; max-width: 100%; }
+.tag.run { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: transparent; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } button:not(:disabled):active { transform: none; } }
