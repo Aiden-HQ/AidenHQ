@@ -18,7 +18,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), app = true, toolsDir = false } = {}) {
+async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -111,6 +111,9 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for await (const c of req) body += c;
     const m = /^\/v1\/writes\/([^/]+)\/outcome$/.exec(req.url);
     if (m) { outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
+    // A held write's own record, read before it runs (`stillClaimed`): live until an outcome is reported for it.
+    const w = /^\/v1\/writes\/([^/?]+)$/.exec(req.url);
+    if (w && req.method === "GET") return res.writeHead(200).end(JSON.stringify({ state: outcomes.some((o) => o.id === w[1]) ? "done" : "claimed" }));
     // Ship's repair check job, already done: its result and the file it kept.
     if (req.url === "/v1/checks") { checks.push(JSON.parse(body)); if (duringRepair) duringRepair(); return res.writeHead(200).end(JSON.stringify({ id: "c-1", state: "done", version: 1, result: repairResult.result })); }
     if (req.url === "/v1/checks/c-1/kept") return res.writeHead(200).end(JSON.stringify(repairResult.keep));
@@ -136,7 +139,9 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "PATCH" && path === `/repos/${REPO}/pulls/8`) return { status: 200, body: { number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } } };
     // A new PR the publish opens (a branch with none yet): its head is whatever the branch holds when it asks.
     if (method === "POST" && path === `/repos/${REPO}/pulls`) return { status: 201, body: { number: 9, html_url: `https://github.com/${REPO}/pull/9`, head: { sha: bare(["rev-parse", `refs/heads/${body.head}`]), ref: body.head }, base: { ref: body.base, sha: main }, user: { login: "owner1" } } };
-    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
+    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", title: pr.title ?? "wip", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
+    // The title write: only the title changes; the fake keeps the rest as it read it (a body, base or state sent would show here).
+    if (method === "PATCH" && path === `/repos/${REPO}/pulls/7`) { pr.title = body?.title ?? pr.title; return { status: 200, body: { number: 7, title: pr.title, state: "open", head: { sha: pr.head }, base: { ref: pr.base ?? "main" } } }; }
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
     // A merge's plan lists the PR's files (at most a page): this one changed one file, so the listing is the whole set.
     if (method === "GET" && path === `/repos/${REPO}/pulls/7/files?per_page=100`) return { status: 200, body: [{ filename: "b.txt" }] };
@@ -197,7 +202,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     return { status: 404, body: { message: "fake GitHub: no route" } };
   };
   const access = {
-    connected: () => true, scopes: () => ["repo"], status: () => ({ scopes: ["repo"], problems: [] }), token: async () => "tok",
+    connected, scopes: () => ["repo"], status: () => ({ scopes: ["repo"], problems: [] }), token: async () => "tok",
     identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
     rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
     graphql: async () => ({}),
@@ -214,7 +219,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
-    remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg: "acme-agents", productRepo: "acme/aidenhq",
+    remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg, productRepo: "acme/aidenhq", maintained,
     reviewGate: async () => undefined, ship,
     // The App, installed on the repo: its writes are recorded like the owner's (`as` marks whose they are).
     reviewer: async () => (app ? { login: "acme-app[bot]", token: async () => "app-token", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
@@ -238,7 +243,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, base, c1, fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, checks, repairResult, treePosts, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; }, refuseTree: (v) => { refuseTree = v; } };
+  return { root, ws, origin, base, c1, fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, treePosts, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; }, refuseTree: (v) => { refuseTree = v; } };
 }
 
 test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
@@ -1111,4 +1116,89 @@ test("a publish whose bundle carries H cannot rewind a branch at F, a child of H
   const toMain = await run("k-00000000000000f6", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "main", sha: H }] });
   assert.equal(toMain.ok, true, toMain.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/main"), H, "the default branch moved forward, unleased");
+});
+
+test("retitle is ship's alone, Tier 0 at the head, and refuses a moved head, a stale generation or a non-adopted PR; a valid one writes only the title", async (t) => {
+  const { c1, calls, call, run, adoption, pr } = await setup(t);
+  const title = "fix(widget): keep the drawer open";
+  const a = { repo: REPO, number: 7, head: c1, generation: 2, title };
+  // The Engineer's own `aidenhq ship title` files it on the adoption's task (its task differs from the adoption's is refused).
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: { kind: "job", roles: ["platform-engineer"] }, task: "t9" })).json.error, /adoption's task/);
+  // A stale generation, a moved head and a PR no longer adopted are each refused before any PATCH.
+  adoption.generation = 1;
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" })).json.error, /generation 2 is stale/);
+  adoption.generation = null;
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" })).json.error, /isn't adopted/);
+  adoption.generation = 2;
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: { ...a, head: "f".repeat(40) }, requester: SHIP, task: "t1" })).json.error, /head moved|moved to/);
+
+  // An adoption with no task yet belongs to no job: no job may retitle it.
+  adoption.task = null;
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" })).json.error, /no task owns the adoption/);
+  adoption.task = "t1";
+  // At the plan's own head the write is Tier 0 (no raise), and it PATCHes the title alone.
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester: SHIP, task: "t1" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  assert.equal(plan.json.raise, undefined);
+  assert.equal(plan.json.args.from, pr.title ?? "wip", "the title the plan read rides in the record");
+  const out = await run("k-00000000000000ea", "github.retitle", plan.json.args, plan);
+  assert.equal(out.ok, true, out.text);
+  assert.equal(pr.title, title);
+  const patches = calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`);
+  assert.deepEqual(patches.map((c) => c.body), [{ title }], "only the title is sent: never the body, base or state");
+
+  // The same record replayed after its PATCH landed (a lost answer, a crash): already that title is done, never a scope refusal.
+  const replay = await run("k-00000000000000ee", "github.retitle", plan.json.args, plan);
+  assert.equal(replay.ok, true, replay.text);
+  assert.match(replay.text, /is titled/);
+  assert.equal(calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length, 1, "the replay sends nothing");
+
+  // The author corrected the title while the record waited: that edit is theirs, and nothing is sent.
+  pr.title = "fix(widget): the author's own wording";
+  const retitled = await run("k-00000000000000ec", "github.retitle", plan.json.args, plan);
+  assert.match(retitled.text, /^ship-scope: .*title changed since the write was filed/);
+  assert.equal(pr.title, "fix(widget): the author's own wording", "the author's edit stands");
+  pr.title = title;
+
+  // Read again off its head after filing: the write is refused, and nothing is sent.
+  pr.head = "e".repeat(40);
+  const moved = await run("k-00000000000000eb", "github.retitle", plan.json.args, plan);
+  assert.match(moved.text, /^ship-head-moved/);
+  assert.equal(calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length, 1, "no PATCH on a moved head");
+});
+
+test("a retitle held while GitHub is away resumes on reconnect as the Engineer that filed it, and reaches the PATCH", async (t) => {
+  // The record is held with the requester the plan noted: the plan's args carry `from` (the title it read) and the lookup that
+  // finds that requester strips it too, so a reconnect does not read the held write as one nobody asked for.
+  let on = false;
+  const { c1, pr, calls, call, handle } = await setup(t, { connected: () => on });
+  const title = "fix(widget): hold the drawer";
+  const a = { repo: REPO, number: 7, head: c1, generation: 2, title };
+  const requester = { kind: "job", roles: ["platform-engineer"] };
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: a, requester, task: "t1" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  assert.equal(plan.json.args.from, pr.title ?? "wip", "the plan bound the title it read");
+  assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000ef", kind: "github.retitle", args: plan.json.args, digest: "d", idempotency_key: "held-retitle", tier: 0 })).json, { accepted: true });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal((await call("/aidenhq/v1/executor/status", { id: "k-00000000000000ef" })).json.state, "running", "held, not run");
+  assert.notEqual(pr.title, title, "nothing was written while GitHub was away");
+  const before = calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length;
+  on = true;
+  await handle.stepHeld();
+  assert.equal(pr.title, title, "the held retitle ran after the reconnect");
+  assert.equal(calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length, before + 1, "one PATCH, and only the title");
+  assert.equal((await call("/aidenhq/v1/executor/status", { id: "k-00000000000000ef" })).json.state, "done");
+});
+
+test("a retitle outside the fleet's own repos is refused when the title names our tooling, and nothing is sent", async (t) => {
+  // The same repo, not in the agents org and not maintained: its PR's title is public text, read as a `.pr`'s is.
+  const { c1, calls, call } = await setup(t, { fleetOrg: "other-agents", maintained: [] });
+  const args = { repo: REPO, number: 7, head: c1, generation: 2, title: "fix(widget): run it from the aidenhq worktree" };
+  const refused = await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args, requester: SHIP, task: "t1" });
+  assert.equal(refused.status >= 400, true, JSON.stringify(refused.json));
+  assert.match(String(refused.json?.error ?? refused.json?.message ?? ""), /mentions "aidenhq"|internal names/);
+  assert.equal(calls.filter((c) => c.method === "PATCH" && c.path === `/repos/${REPO}/pulls/7`).length, 0, "nothing is sent");
+  // The same title in the fleet's own repo is the fleet's to write.
+  const own = await setup(t);
+  assert.equal((await own.call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: { ...args, head: own.c1 }, requester: SHIP, task: "t1" })).status, 200);
 });

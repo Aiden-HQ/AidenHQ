@@ -13,7 +13,7 @@
 // The UI Reviewer's design review is advisory: it never holds a merge.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DESIGN_REVIEW_CHECK, contextChecks, contextRank, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, contextChecks, contextRank, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
@@ -400,7 +400,8 @@ export function createMerges(d: {
       if (v.do === "fail") return fail(v.why ?? "");
       if (v.do === "wait") return wait(v.why ?? "", v.why);
       if (v.do !== "merge") return;
-      // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
+      // The live base branch goes along: a risk tier computed from another base is stale (code review: pending). The author
+      // association is not compared: the classifier and the queue read it under different identities.
       const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       if (review && "wait" in review) {
         // Why this PR still waits: the record's own reason is built from every PR still waiting after the poll (publishWait), so
@@ -741,7 +742,8 @@ export function createMerges(d: {
       // A skipped image scan is judged on the PR's files, which only the full read has.
       const listed = view && !skippedImageScan(view.pr);
       const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);
-      // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
+      // The live base branch goes along: a risk tier computed from another base is stale (code review: pending). The author
+      // association is not compared: the classifier and the queue read it under different identities.
       const g = await d.reviewGate(repo, number, head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       const rollup = data.repository.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
       // Every context by name, advisory ones included (a branch may require them), with the kind and rank the gate picks the
@@ -750,13 +752,16 @@ export function createMerges(d: {
       const checks = listed && !rollup?.contexts?.pageInfo?.hasNextPage ? fromRollup() : await allChecks(repo, head);
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
-      if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
+      if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], redChecks: [] as string[], dirty: false, queue };
       const app = await reviewerLogin(repo);
       const ctx = { queue, verdict: g, required, checks, ...(app ? { app } : {}), ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       const v = decide(data, head, { ...ctx, approve: false });
       const approval = v.do === "wait" && decide(data, head, { ...ctx, approve: true }).do === "approve";
       const failing = [...new Set(headChecks(checks).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
-      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "fix_review" && g && "findingsKey" in g && g.findingsKey ? { findingsKey: g.findingsKey } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
+      // Every named check red on the head, required or not: a repo whose rules require only `ci-required` hides the `policy` job's
+      // own red behind it, and ship's title-only wake reads it from here (a check red on the base too is ship's to filter).
+      const redChecks = [...new Set(headChecks(checks).filter((c) => c.name !== DESIGN_REVIEW_CHECK && c.name !== CODE_REVIEW_STATUS && !c.ok && !c.pending).map((c) => c.name))];
+      return { ...v, failing, redChecks, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "fix_review" && g && "findingsKey" in g && g.findingsKey ? { findingsKey: g.findingsKey } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
     enqueue(id: string, args: { prs: { repo: string; number: number; head: string; base?: string }[]; generation?: number }, task?: string, identifier?: string, tier?: number, byShip?: boolean): Promise<Outcome> {

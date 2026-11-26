@@ -588,9 +588,14 @@ export function createService(o: Options) {
         current: at ? at.generation : undefined, ...(at?.hold ? { hold: at.hold } : {}), ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
       };
     };
-    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget")) {
+    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget") || kind.endsWith(".retitle")) {
       const s = slugOf(a.repo);
       const n = Number(a.number);
+      // Outside our own repos a PR's text names none of our tooling: the title is public text on the PR, exactly as a `.pr`'s is.
+      if (kind.endsWith(".retitle") && !ownRepo(s.slug, o.fleetOrg, o.productRepo)) {
+        const leak = leakIn(a.title);
+        if (leak) throw fail(422, `Not done: the PR title mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools or local paths; reword it and ask again.`);
+      }
       const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
       const ship = await adoption(s.slug, n, a.generation, a.head, pr, a.base);
       // An enqueue is a merge by the queue: the reviewer reads the PR's diff at its head when the head isn't the runner's own.
@@ -610,8 +615,8 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
-      return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
+      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : kind.endsWith(".retitle") ? `Retitle ${url} ${at} to \`${String(a.title).replace(/`/g, "")}\` (only the title: the PR's head, base and body stay as they are)` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
+      return { ...(kind.endsWith(".retitle") ? { from: String(pr.title ?? "") } : {}), state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha), { base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? "") }) } : {}),
         ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))) }] }, facts: { target: url, sentence: `${what} (generation ${a.generation}).`, diff } };
@@ -756,14 +761,17 @@ export function createService(o: Options) {
   const executor: Executor = {
     async plan(req: PlanRequest) {
       if (req.kind.endsWith(".setup")) return setupWrite.plan(api, req.args, (text) => (ownRepo(String(req.args?.repo), o.fleetOrg, o.productRepo) ? undefined : leakIn(text)));
-      const { state, facts, reads, changed, bases, heads, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; heads?: Record<string, string | null>; own?: Set<string>; task?: string };
+      const { state, facts, reads, changed, bases, heads, own, task, from } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; heads?: Record<string, string | null>; own?: Set<string>; task?: string; from?: string };
       // The head each published branch had when this plan read it rides in the record's own args: the kernel stores the plan's
       // args (never the caller's) and its digest covers them, so a card can only ever rewrite the branch from the head it was
       // filed at -- and a later plan of the same request, at a head that has moved, is its own record instead of widening this
       // one. A revalidation gets the record's stored args back, `heads` included, unchanged. The caller's args are stripped
       // first: a requester can't name a head.
-      const { heads: _asked, ...asked } = (req.args ?? {}) as { heads?: unknown };
-      const bound = req.revalidate ? (req.args ?? {}) : !heads || !Object.keys(heads).length ? asked : { ...asked, heads };
+      // A caller can name neither a bound head nor the title a retitle was planned against (both are the plan's own read).
+      const { heads: _asked, from: _from, ...asked } = (req.args ?? {}) as { heads?: unknown; from?: unknown };
+      // A retitle also binds the title it read: an author's own correction while the record waits is refused, never overwritten.
+      const title = !req.revalidate && from !== undefined ? { from } : {};
+      const bound = req.revalidate ? (req.args ?? {}) : { ...(!heads || !Object.keys(heads).length ? asked : { ...asked, heads }), ...title };
       const planned = planRules({ kind: req.kind, args: bound }, state, facts);
       // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
       // does): a write held while GitHub is disconnected is re-checked as them, and its PR is signed with their name.
@@ -868,6 +876,7 @@ export function createService(o: Options) {
       if (action === "enqueue") return enqueue(a);
       if (action === "repair") return repairPr(a);
       if (action === "retarget") return retarget(a);
+      if (action === "retitle") return retitle(a);
       if (action === "push" && a.pr) return pushOnto(a);
       if (action === "push" || action === "pr") {
         for (const b of a.only) {
@@ -996,7 +1005,29 @@ export function createService(o: Options) {
     const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
     return r.status < 300 ? { ok: true, text: `${url} now targets \`${a.to}\`.` } : { ok: false, text: `GitHub refused the retarget of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
-  /** Why this write may not go on, or undefined. `push`: this is the push onto the PR's branch, the one write a `stalled` hold admits
+  /**
+   * An adopted PR's title, replaced with a Conventional Commit one (ship's `retitle`): the `policy` job's title check is red and no
+   * commit can make it pass. Only the title is written (never the body, base or state), only at the bound head and generation, and
+   * only while the PR is open and still says what the record read. Already that title is done.
+   */
+  async function retitle(a: any): Promise<{ ok: boolean; text: string }> {
+    const s = slugOf(a.repo);
+    const n = Number(a.number);
+    const url = `https://github.com/${s.slug}/pull/${n}`;
+    const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    if (pr.state !== "open") return { ok: false, text: `${url} is ${pr.state}: not retitled.` };
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not retitled.` };
+    const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head));
+    if (ended) return { ok: false, text: ended };
+    // Already the title this write asks for: it landed (a replay after a lost answer), so there is nothing to send.
+    if (pr.title === a.title) return { ok: true, text: `${url} is titled \`${a.title}\`.` };
+    // The title the plan read: an author's own correction while the record waited is theirs, not overwritten.
+    if (pr.title !== a.from) return { ok: false, text: `ship-scope: ${url}'s title changed since the write was filed (it now reads ${JSON.stringify(String(pr.title).slice(0, 80))}): read it again.` };
+    const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { title: a.title });
+    return r.status < 300 ? { ok: true, text: `${url} is now titled \`${a.title}\`.` } : { ok: false, text: `GitHub refused the retitle of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+  }
+  /**
+   * Why this write may not go on, or undefined. `push`: this is the push onto the PR's branch, the one write a `stalled` hold admits
    * (ship clears such a hold on a new head, so the push is what resumes the adoption). Approve, enqueue, a repair and a retarget keep
    * `push` false: any hold refuses them, and a hand-back, a stop or a pause refuses the push too. Whether a hold admits the write is
    * the plan's own rule (`holdAdmits`), with the adoption's task as ship reports it, so the two never disagree.
@@ -1411,7 +1442,9 @@ export function createService(o: Options) {
   const askersFile = join(o.cacheDir, "askers.json");
   const readAskers = (): Record<string, Asker> => { try { return JSON.parse(readFileSync(askersFile, "utf8")); } catch { return {}; } };
   /** A request without the head its plan bound (`heads`, carried in the record's own args): who asked is the same request either way. */
-  const askedOf = (args: unknown) => { const { heads: _heads, ...rest } = (args ?? {}) as Record<string, unknown>; return rest; };
+  // The caller's own words of a request: the heads the plan bound and the title a retitle bound are the plan's reads, stripped
+  // from both the note and the lookup so a held write finds the requester that filed it.
+  const askedOf = (args: unknown) => { const { heads: _heads, from: _from, ...rest } = (args ?? {}) as Record<string, unknown>; return rest; };
   const askerOf = (kind: string, args: unknown): Asker | undefined => { const all = readAskers(); return all[askerKey(kind, askedOf(args))]; };
   function noteAsker(kind: string, args: unknown, who: Asker) {
     const all = readAskers();

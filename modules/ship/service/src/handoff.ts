@@ -22,6 +22,9 @@ export interface TriggerEvent { id: string; kind: "labeled" | "unlabeled" | "com
 export interface PrView {
   repo: string; number: number; url: string;
   head: string; base: string; defaultBranch: string;
+  /** The PR's title as GitHub shows it: the `policy` job's Conventional Commit check reads it, and a retitle wake needs to know it
+   * fails that rule (title.ts). Undefined where the view doesn't carry it (a merged PR read after the fact). */
+  title?: string;
   author: string; authorBot: boolean;
   /** The head lives in another repository (`headRepo`, owner/name), and whether its author lets maintainers push there. */
   fork: boolean; canModify: boolean; headRepo?: string;
@@ -46,7 +49,7 @@ export type Kept = Adoption & {
   /** The head and facts of a report that failed to post or edit: the next pass at that head posts it again (the code host finds a comment a lost answer made). */
   reportStale?: { head: string; facts: import("./report.ts").Facts };
   /** Counters for the caps: per head (wakes), per PR (rounds, ci, review) and the heads each required check was red on. */
-  counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[]; /** The head GitHub was asked to update (red while behind a green base): once per head. */ updated?: string };
+  counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[]; /** The head GitHub was asked to update (red while behind a green base): once per head. */ updated?: string; /** The head the `policy` job was asked to re-run (its steps unreadable): once per head. */ policyRerun?: string };
   /** The direct merge filed for a head: its kernel record and attempt (a failed one is filed again with the next attempt). */
   merge?: { head: string; attempt: number; record: string };
   /** A fork's code review was asked for (retried each pass until it was). */
