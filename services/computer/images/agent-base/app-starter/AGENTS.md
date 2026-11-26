@@ -101,5 +101,5 @@ these commands in the same PR, as it does `feature-map.json`.
 - **Keep it reviewable:** a seed or sample-data mode runs the app locally with realistic data, so the UI review can
   screenshot every state.
 - **Before a UI PR:** `npm ci && npm run lint && npm test && npm run screens`, then the self-review in the design system's
-  `review-checklist.md`. `ui-review` (in agent computers) clicks every link on the pages it reviews and reports any
+  `review-checklist.md`. `ui-review routes` (in agent computers) clicks every link on the pages it reviews and reports any
   route that doesn't render on click, Back/Forward or reload.

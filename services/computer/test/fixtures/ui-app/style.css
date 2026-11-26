@@ -1,0 +1,23 @@
+:root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #5c5c66; --line: #e2e2e8; --accent: #2f5bea; --on-accent: #fff; --card: #f6f6f9; }
+@media (prefers-color-scheme: dark) { :root { --bg: #14141a; --fg: #ececf1; --muted: #a0a0ad; --line: #2c2c36; --accent: #7b9bff; --on-accent: #0b0b10; --card: #1d1d25; } }
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+header { display: flex; gap: 16px; align-items: center; padding: 12px 24px; border-bottom: 1px solid var(--line); }
+header a { color: var(--muted); text-decoration: none; }
+main { padding: 24px; max-width: 960px; }
+h1 { font-size: 20px; margin: 0 0 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+button { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.scroller { height: calc(100vh - 56px); overflow-y: auto; }
+.scroller .row { padding: 24px 16px; border-bottom: 1px solid var(--line); }
+.skeleton { height: 12px; background: var(--line); border-radius: 4px; }
+/* /planted: the defects the measurements must find */
+.planted .gap13 { margin-top: 13px; }
+.planted .odd-size { font-size: 15px; }
+.planted .hot { color: rgb(255, 0, 170); }
+.planted .cards { position: relative; }
+.planted .cards .card { width: 240px; }
+.planted .cards .card.off { margin-left: 2px; }
+.planted .slow { transition: background-color 800ms ease-in-out; }
+.planted .slow:hover { background: var(--accent); }

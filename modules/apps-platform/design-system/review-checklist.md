@@ -5,12 +5,12 @@ app's design audit and to its own mockups. A review is a quick look for obvious,
 designer's: shell, blocks, palette and layout are the designer's choices, and a mockup the task names as its
 spec fixes them for the build. It judges a pull request against its
 base: only what the PR introduced blocks, and a finding the base already had is not this PR's, even in a file it touches
-(`ui-review --baseline` lists the base's own findings under "already on this base").
+(`ui-review capture --baseline` lists the base's own findings under "already on this base").
 
-1. **Evidence:** run `ui-review <url> --out after` from the app's folder, which reviews the app's `feature-map.json` (its
+1. **Evidence:** run `ui-review capture <url> --out after` and `ui-review routes <url> --out routes` from the app's folder, which reviews the app's `feature-map.json` (its
    pages and stateful URLs); `--paths <changed pages>` replaces that list. Run it with `--baseline before` against the
    base when you can run both, read `report.md` and look at the screenshots of the changed pages once. With a named mockup,
-   also put the head beside the mockup's screenshots (`ui-review --baseline <dir of the mockup's screenshots>`, named
+   also put the head beside the mockup's screenshots (`ui-review capture --baseline <dir of the mockup's screenshots>`, named
    as `ui-review` names its own, writes before|after pictures). Try the main flow the PR touches once; that is enough.
    Only screenshots taken now, of the app built from the head under review, are evidence: images committed in the
    repository, attached by others or left from an earlier head show another commit.
@@ -24,7 +24,7 @@ A PR that breaks one of these, where its base held it, is blocked.
 - [ ] The page renders, styled, loads every resource and runs cleanly under the CSP.
 - [ ] Each core flow the PR touches works and gives the right result.
 - [ ] Every nav link and in-app link renders its page on click, on Back and Forward, and on reload, and the header's
-      brand opens home at the top from every page (`ui-review`'s route check lists each one under "Routes").
+      brand opens home at the top from every page (`ui-review routes` lists each one in its report).
 - [ ] Every visible button, `[role=button]` and other clickable element visibly acts when clicked: the address, the
       page, the focus or what is open changes. A click that changes nothing is a dead click.
 - [ ] The data on screen is present and right (real values, the right counts and totals), and everything people could
@@ -53,10 +53,10 @@ better, suggest a mockup from the UI/UX Designer.
 - [ ] Meets the guidelines' floors: readable contrast in both themes, visible focus, details at a URL that opens them on
       load, every page at its own URL, and empty, loading and error states.
 - [ ] Every nav link and in-app link renders its page on click, Back/Forward and reload: routes and links go through
-      the starter's navigation (`Link`, `useLocation`), each route is in the server's `PAGES`, and `ui-review`'s route
-      check reports every link as rendering.
+      the starter's navigation (`Link`, `useLocation`), each route is in the server's `PAGES`, and `ui-review routes`
+      reports every link as rendering.
 - [ ] The header brand is `Link href="/"`, opens home at the top from every page, and every visible control acts:
-      `ui-review` reports the brand and each control it clicks, with no dead click.
+      `ui-review routes` reports the brand and each control it clicks, with nothing under "To look at".
 - [ ] Forms and async work: a button that starts work shows it is pending and is disabled until it ends; an error sits
       under the field it belongs to; a destructive action asks to confirm or offers undo; a toast announces without
       taking focus.

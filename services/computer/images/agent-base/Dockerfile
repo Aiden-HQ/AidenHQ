@@ -46,11 +46,16 @@ RUN ln -s "$(find "$(npm root -g)/@openai/codex" -path '*/vendor/*/bin/codex' -t
 RUN echo 'case ":$PATH:" in *:/opt/aidenhq/bin:*) ;; *) PATH="/opt/aidenhq/bin:/opt/rust/cargo/bin:$PATH" ;; esac' > /etc/profile.d/aidenhq-path.sh
 WORKDIR /workspace
 # repo-checkout is not in the image: the launcher mounts it (lib.ts jobMounts) only into a job box whose agent holds the role.
-# ui-review: screenshots, axe (embedded in agent-browser), web vitals and layout checks for a running app; the design system
+# ui-review: the UI review engine (a TypeScript package on playwright-core driving the image's Chrome): capture, coverage queue,
+# measurements, axe, web vitals and layout checks for a running app; the design system
 # (synced from modules/apps-platform/design-system by scripts/sync-shared.ts) as the review reference; the app starter (synced from
 # modules/apps-platform/starter: shadcn/ui on Vite + React) to scaffold new apps and mockups from, and to serve /catalog.
-COPY --chmod=755 ui-review /usr/local/bin/ui-review
-COPY ui-review-copy.json /usr/local/bin/ui-review-copy.json
+# Its dependencies come from the checked-in lockfile (exact pins, nothing new); the build checks Chrome launches through playwright-core.
+COPY ui-review /opt/aidenhq/ui-review
+RUN cd /opt/aidenhq/ui-review && npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force \
+    && printf '#!/bin/sh\nexec node /opt/aidenhq/ui-review/main.ts "$@"\n' > /usr/local/bin/ui-review && chmod 755 /usr/local/bin/ui-review \
+    && node -e 'require("/opt/aidenhq/ui-review/node_modules/playwright-core").chromium.launch({ executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH }).then((b) => b.close())' \
+    && ui-review --help >/dev/null
 COPY design-system /opt/aidenhq/design-system
 COPY app-starter /opt/aidenhq/app-starter
 # The starter's dependencies, installed once from its lockfile (exact pins, nothing new), so a mockup or a review's

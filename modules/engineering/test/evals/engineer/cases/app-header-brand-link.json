@@ -1,8 +1,8 @@
 {
  "name": "app-header-brand-link",
  "routine": "app",
- "why": "The header's brand is a link to / that opens home in its default state, and ui-review reads 'renders' on every route before publishing.",
- "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-35 -> {\"title\":\"Redesign the header of acme-agents/inventory\",\"description\":\"Redesign the header with the logo on the left and the nav on the right. Done: merged.\"}\nworkspace: /workspace/inventory (acme-agents/inventory at 41de7f0)\nThe header is changed; `PORT=4173 node server.mjs & ui-review http://127.0.0.1:4173 --widths 1280 --modes light` ran: Routes: / renders, /items renders, brand link: DEAD CLICK (the logo is a plain img, not a link).",
+ "why": "The header's brand is a link to / that opens home in its default state, and ui-review's route check finds nothing blocking before publishing.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-35 -> {\"title\":\"Redesign the header of acme-agents/inventory\",\"description\":\"Redesign the header with the logo on the left and the nav on the right. Done: merged.\"}\nworkspace: /workspace/inventory (acme-agents/inventory at 41de7f0)\nThe header is changed; `PORT=4173 node server.mjs & ui-review routes http://127.0.0.1:4173 --out .aidenhq/out/routes` ran: Blocking (2): / the header brand: its header has no brand link to the home page; /items the header brand: its header has no brand link to the home page (the logo is a plain img, not a link).",
  "expect": [
   {
    "tool": "aidenhq_publish",

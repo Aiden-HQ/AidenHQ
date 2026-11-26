@@ -1,0 +1,11 @@
+{
+  "name": "ui-review",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The UI review engine: capture, coverage queue, measurements, model review. Runs in the agent-base image (node main.ts).",
+  "dependencies": {
+    "axe-core": "4.14.1",
+    "playwright-core": "1.65.1"
+  }
+}

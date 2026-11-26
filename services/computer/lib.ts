@@ -364,7 +364,7 @@ const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/loca
 
 /** Every name a job box's env file may hold: the job's revocable token and plain settings. */
 export const JOB_ENV_NAMES = [
-  "AIDENHQ_RUN_TOKEN", "AIDENHQ_AGENT_NAME", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH", "npm_config_cache",
+  "AIDENHQ_RUN_TOKEN", "AIDENHQ_AGENT_NAME", "AIDENHQ_GATEWAY_URL", "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH", "npm_config_cache",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
   "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
   "AIDENHQ_SESSION_PORT", "AIDENHQ_TERM_PORT", "OPENCODE_SERVER_PASSWORD", "AIDENHQ_TERM_CREDENTIAL",
@@ -383,6 +383,7 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {}, lease }: { t
     AIDENHQ_RUN_TOKEN: token,
     AIDENHQ_AGENT_NAME: clean(identity.agent), // the commit-msg hook's trailer names the agent
     AIDENHQ_GATEWAY_URL: gatewayUrl, // the `aidenhq` commands (images/engineer/bin/aidenhq) and repo-checkout
+    OPENROUTER_BASE_URL: `${gatewayUrl}/api/v1`, OPENROUTER_API_KEY: token, // the model route for `ui-review review` (the gateway meters and caps it)
     AIDENHQ_MCP_B64: Buffer.from(mcp ?? "").toString("base64"),
     HOME: JOB_HOME, AIDENHQ_TASK_WORKTREE: "/workspace", // the task folder, as on the host (its .aidenhq/out/ is attached)
     CODEX_HOME: "/codex-home",
