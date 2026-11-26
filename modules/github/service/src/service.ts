@@ -858,12 +858,14 @@ export function createService(o: Options) {
     // A label a person already put on stays theirs: only a label this write added is a hold a later publish may lift.
     const theirs = !wasHeld && (open[0]?.labels ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL);
     // Ownership first, so a label call that fails still leaves the PR worked by this task (a lift of a label that never landed is a 404).
-    if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: a.hold === true && !theirs }); // the PR watch works the PR for the task that published it
+    // A lift keeps the hold recorded until the label is gone, so a failed lift is retried by the next publish.
+    if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: (a.hold === true && !theirs) || (!a.hold && wasHeld) }); // the PR watch works the PR for the task that published it
     if (a.hold) {
       if (!theirs) await api("POST", `/repos/${s.slug}/issues/${Number(pr.number)}/labels`, { labels: [HOLD_LABEL] });
     } else if (wasHeld) {
       const r = await gh("DELETE", `/repos/${s.slug}/issues/${Number(pr.number)}/labels/${encodeURIComponent(HOLD_LABEL)}`);
       if (r.status >= 300 && r.status !== 404) throw fail(502, `GitHub could not lift the hold on ${pr.html_url}: ${r.status} ${r.body?.message ?? ""}`.trim());
+      notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: false });
     }
     // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
     const n = Number(pr.number);
