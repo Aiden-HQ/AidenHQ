@@ -47,7 +47,7 @@ function fakeGitHub(prs) {
       return { status: 400, body: { errors: [{ message: "fake GitHub: unknown query" }] } };
     }
     if (method !== "GET") {
-      const m = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)\/merge$/.exec(path);
+      const m = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)\/merge-async$/.exec(path);
       if (m) {
         const p = prs[`${m[1]}#${m[2]}`] ?? prs[m[1]];
         p.state = "MERGED";
@@ -56,7 +56,7 @@ function fakeGitHub(prs) {
         // the trailer, so the token in the queue's commit_message is still in it, but not as the whole message.
         const sent = String(body?.commit_message ?? "");
         p.message = sent ? `${sent}\n\n(#${m[2]})` : "";
-        return { status: 200, body: { sha: p.merged } };
+        return { status: 202, body: { status: "merged", details: { sha: p.merged } } };
       }
       return { status: 200, body: {} };
     }
@@ -90,7 +90,7 @@ function fakeGitHub(prs) {
     }
     return { status: 404, body: { message: "fake GitHub: no route" } };
   };
-  return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
+  return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge-async")) };
 }
 
 async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, kernelReply, kernelBefore, putFails = () => false, graphql, repo = () => 404, pull = () => 404, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug), reviewGate = async () => undefined }) {
@@ -126,7 +126,7 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     rest: async (m, p, b) => {
       if (!connected.on) throw Object.assign(new Error("GitHub isn't connected"), { need: { cause: "not_connected" } });
       // A merge call that never answers: GitHub may or may not have merged it (merges.ts mergeCalls).
-      if (m === "PUT" && p.endsWith("/merge") && putFails()) throw new Error("The operation was aborted due to timeout");
+      if (m === "PUT" && p.endsWith("/merge-async") && putFails()) throw new Error("The operation was aborted due to timeout");
       // The repo read the queue confirms an absent repository with: `repo(slug)` is its status (404: really gone).
       if (m === "GET" && /^\/repos\/[^/]+\/[^/]+$/.test(p)) return { status: repo(p.slice("/repos/".length)), body: { full_name: p.slice("/repos/".length) }, headers: new Headers() };
       // The PR read the queue confirms a PR-named NOT_FOUND with (a 404: really gone; a 200: only invisible to this token).
@@ -1059,6 +1059,30 @@ test("an owner's merge at the bound head after an unanswered merge call stays sk
   assert.equal(outcomes[0].objects, undefined, "no object of the owner's merge is named as made here");
 });
 
+test("a direct merge is GitHub's async merge: a pending 202 is polled to merged (a PR in a stack included), and its merge commit is the one reported", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const reports = [], sent = [];
+  const gh = async (m, p, b) => {
+    if (m === "PUT" && String(p).endsWith("/merge-async")) { sent.push(b); return { status: 202, body: { status: "pending", details: { uuid: "u-1" } } }; }
+    // The request settles: the fake merges the PR, and the poll reads the merge commit.
+    if (m === "GET" && String(p).endsWith("/merge-async/u-1")) return { status: 200, body: (await github.gh("PUT", "/repos/acme-agents/widget/pulls/1/merge-async", sent[0])).body };
+    return github.gh(m, p, b);
+  };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-async-")), gh, fleetOrg: "acme-agents", asyncPollMs: 0,
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000cc", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].merge_action, "direct_merge");
+  assert.equal(sent[0].sha, HEAD);
+  assert.equal(reports[0]?.ok, true, JSON.stringify(reports));
+  assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"]);
+});
+
 test("an unanswered PUT whose merge lands is still credited when the retry is refused while GitHub's read lags", async () => {
   // The first PUT merges on GitHub's side and never answers. The next poll still reads the PR open (a lag), so the queue sends a
   // retry; GitHub refuses it because the PR is in fact merged, and its re-read now shows the merge. The merge commit carries the
@@ -1068,7 +1092,7 @@ test("an unanswered PUT whose merge lands is still credited when the retry is re
   const reports = [];
   let puts = 0;
   const gh = async (m, p, b) => {
-    if (m === "PUT" && String(p).endsWith("/merge")) {
+    if (m === "PUT" && String(p).endsWith("/merge-async")) {
       puts += 1;
       if (puts === 1) { await github.gh(m, p, b); throw new Error("The operation was aborted due to timeout"); }
       throw Object.assign(new Error("HTTP 405: Pull request is not mergeable"), { status: 405 });
@@ -1100,7 +1124,7 @@ test("a refused retry whose re-read still lags keeps the earlier call's nonce, s
   const reports = [];
   let puts = 0;
   const gh = async (m, p, b) => {
-    if (m === "PUT" && String(p).endsWith("/merge")) {
+    if (m === "PUT" && String(p).endsWith("/merge-async")) {
       puts += 1;
       if (puts === 1) { await github.gh(m, p, b); throw new Error("The operation was aborted due to timeout"); }
       throw Object.assign(new Error("HTTP 405: Pull request is not mergeable"), { status: 405 });
@@ -1130,7 +1154,7 @@ test("a refusal with no earlier unanswered attempt is still a failure, and a ref
   const reports = [];
   let puts = 0;
   const gh = async (m, p, b) => {
-    if (m === "PUT" && String(p).endsWith("/merge")) { puts += 1; throw Object.assign(new Error("HTTP 405: Pull request is not mergeable"), { status: 405 }); }
+    if (m === "PUT" && String(p).endsWith("/merge-async")) { puts += 1; throw Object.assign(new Error("HTTP 405: Pull request is not mergeable"), { status: 405 }); }
     return github.gh(m, p, b);
   };
   const merges = createMerges({
@@ -1474,7 +1498,7 @@ test("a maintained repo merges as the owner; once it leaves maintainer_repos its
   void listed.enqueue("k-00000000000000f1", { prs: [{ repo: "globex/payments", number: 1, head: HEAD }] });
   await listed.step();
   await tick();
-  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/globex/payments/pulls/1/merge", HEAD]]);
+  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/globex/payments/pulls/1/merge-async", HEAD]]);
   assert.equal(listed.status("k-00000000000000f1").state, "done");
 
   // Approved while listed, then the owner took the repo off the list (the service restarts with the new setting).
@@ -1572,12 +1596,12 @@ test("a PR left unpolled behind another of its repository is never published as 
   const { handle, github, outcomes, waits, merge, settle } = await setup(t, { prs });
   await merge("k-00000000000000d1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }, { repo: "acme-agents/widget", number: 2, head: HEAD }]);
   await handle.stepMerges();
-  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/widget/pulls/1/merge"], "the first PR merged, the second waited its turn");
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/widget/pulls/1/merge-async"], "the first PR merged, the second waited its turn");
   assert.deepEqual(waits.map((w) => w.reason), [], "the second PR has no reason, so no wait is published for it");
   await handle.stepMerges();
   await settle();
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/widget/pulls/1/merge", "/repos/acme-agents/widget/pulls/2/merge"]);
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/widget/pulls/1/merge-async", "/repos/acme-agents/widget/pulls/2/merge-async"]);
 });
 
 test("a repo code review gates merges only on its pass for the bound head; wait (unreachable too) keeps the merge queued with no time limit; other repos never ask", async () => {
@@ -1602,19 +1626,19 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
   void merges.enqueue("k-00000000000000g2", { prs: [{ repo: "acme-agents/other", number: 2, head: HEAD }] });
   await merges.step();
   assert.deepEqual(asked, [[`http://code-review:8098/v1/verdict?repo=acme-agents%2Fwidget&pr=1&head=${HEAD}&base=main`, "Bearer github-module-token"]], "only the gated repo asks, with its live base branch");
-  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge"]);
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge-async"]);
   assert.match(logs.find(([m]) => m === "merge waits for code review")[1].why, /the review is running \(it resumes by itself\)/);
   clock.t += 7 * 24 * 3600_000; // a week of waiting on the review: still waiting
   await merges.step();
   assert.equal(merges.status("k-00000000000000g1").state, "running");
   answer = "down"; // the service goes down: a wait for as long as it lasts, never a merge without its verdict
   for (let i = 0; i < 24 * 120; i++) { clock.t += 30_000; await merges.step(); }
-  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge"], "a day unreachable: still not merged");
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge-async"], "a day unreachable: still not merged");
   assert.equal(merges.status("k-00000000000000g1").state, "running");
   assert.match(logs.filter(([m]) => m === "merge waits for code review").at(-1)[1].why, /code review can't be reached: the merge waits until it answers/);
   answer = { status: 200, body: { verdict: "pass" } };
   await merges.step();
-  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/other/pulls/2/merge", HEAD], ["/repos/acme-agents/widget/pulls/1/merge", HEAD]], "merged once code review passes it");
+  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/other/pulls/2/merge-async", HEAD], ["/repos/acme-agents/widget/pulls/1/merge-async", HEAD]], "merged once code review passes it");
 });
 
 test("the review gate's findings key follows the whole set of reasons, not the cut text", async () => {
