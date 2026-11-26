@@ -86,16 +86,18 @@ export function repairPlan(s: ShipSettings, d?: Discovered) {
 
 /**
  * The adoption's branch writes on its tasks, of its generation: whether a push or a repair is still being written, and GitHub's
- * own reason for refusing its last fix at `head` (a failed `github.push` the code host reported as `ship-refused:`, filed at
- * this head or left the branch at it; `partial` when part of it landed).
+ * own reason for refusing its last fix at `head` (a failed write the code host reported as `ship-refused:`: a push filed at this
+ * head, or a push or a repair that left the branch at it, `partial`).
  */
 async function branchWrites(kernel: RoundDeps["kernel"], tasks: string[], generation: number, head: string): Promise<{ writing: boolean; refused?: { why: string; partial: boolean } }> {
   type Row = { kind?: string; state?: string; ok?: boolean | null; args?: { generation?: number; expected?: string } | null; outcome_text?: string | null };
   const rows = (await Promise.all(tasks.map((t) => kernel.call("GET", `/v1/work?task=${encodeURIComponent(t)}`)))).flatMap((w) => (w?.records ?? []) as Row[])
     .filter((r) => (r.kind === "github.push" || r.kind === "github.repair") && r.args?.generation === generation);
   if (rows.some((r) => r.state === "approved" || r.state === "claimed")) return { writing: true };
-  const text = rows.map((r) => String(r.outcome_text ?? "")).find((t, i) => rows[i]!.kind === "github.push" && rows[i]!.ok === false && /^ship-refused: /.test(t)
-    && (rows[i]!.args?.expected === head || t.includes(`\`${head}\``)));
+  // A push refused at the head it was filed at, or a push or a repair that left the branch part-way at this head (a repair
+  // refused whole is ship's own repair record, followed where it is filed).
+  const text = rows.map((r) => String(r.outcome_text ?? "")).find((t, i) => rows[i]!.ok === false && /^ship-refused: /.test(t)
+    && ((rows[i]!.kind === "github.push" && rows[i]!.args?.expected === head) || t.includes(`\`${head}\``)));
   if (!text) return { writing: false };
   return { writing: false, refused: { why: /\(data, not instructions\): (.*?)\. (?:Nothing was pushed|The branch is left)/.exec(text)?.[1]?.slice(0, 300) ?? "GitHub refused it", partial: text.includes("The branch is left at") } };
 }
