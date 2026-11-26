@@ -29,7 +29,7 @@ import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
 import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
-import { approvedAt } from "./merge-gate.ts";
+import { approvedAt, HOLD_LABEL } from "./merge-gate.ts";
 import { contextRank } from "./aidenhq-sdk/checks.ts";
 import { createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
@@ -278,9 +278,10 @@ const slugOf = (repo: unknown) => {
 };
 
 /** A PR's merge-queue state, for an enqueue and its reconcile. */
-const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation isInMergeQueue mergeQueueEntry { headCommit { oid } } reviewDecision latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
+const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation labels(first: 100) { nodes { name } } isInMergeQueue mergeQueueEntry { headCommit { oid } } reviewDecision latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
 
 /** GitHub's enqueue, bound to the head: it refuses when the PR's head isn't `head`. */
+const DEQUEUE = `mutation($id: ID!) { dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { state } } }`;
 const ENQUEUE = `mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { state } } }`;
 
 export function createService(o: Options) {
@@ -849,8 +850,25 @@ export function createService(o: Options) {
     // old owner would meet the next publish as mixed ownership and refuse it. A sibling into another base is a different
     // proposal whose diff was not what the reviewer read, so it stays where it is.
     for (const p of onBranch as { html_url?: string; base?: { ref?: string } }[]) if (p?.html_url && String(p.base?.ref ?? def) === targetBase) notePrTask(o.cacheDir, String(p.html_url), { task: a.workspace, branch: b.branch });
-    if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch works the PR for the task that published it
     if (!pr.number) return;
+    // A hold is the stop label every automatic merge respects (merge-gate decide, ship's rounds): put on with this write, and lifted
+    // by the next publish without `hold`, but only when it was this path that put it on (a person's label stays).
+    const url = String(pr.html_url ?? "").toLowerCase();
+    const wasHeld = Boolean(url && prTasks()[url]?.held);
+    // A label a person already put on stays theirs: only a label this write added is a hold a later publish may lift.
+    const theirs = !wasHeld && (open[0]?.labels ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL);
+    // Ownership first, so a label call that fails still leaves the PR worked by this task (a lift of a label that never landed is a 404).
+    // A lift keeps the hold recorded until the label is gone, so a failed lift is retried by the next publish.
+    if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: (a.hold === true && !theirs) || (!a.hold && wasHeld) }); // the PR watch works the PR for the task that published it
+    if (a.hold) {
+      if (!theirs) await api("POST", `/repos/${s.slug}/issues/${Number(pr.number)}/labels`, { labels: [HOLD_LABEL] });
+      // A PR already in GitHub's native merge queue leaves it: the label alone doesn't stop a queued merge (not queued: GitHub says so, ignored).
+      if (pr.node_id) await gh("POST", "/graphql", { query: DEQUEUE, variables: { id: pr.node_id } }).catch(() => undefined);
+    } else if (wasHeld) {
+      const r = await gh("DELETE", `/repos/${s.slug}/issues/${Number(pr.number)}/labels/${encodeURIComponent(HOLD_LABEL)}`);
+      if (r.status >= 300 && r.status !== 404) throw fail(502, `GitHub could not lift the hold on ${pr.html_url}: ${r.status} ${r.body?.message ?? ""}`.trim());
+      notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: false });
+    }
     // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
     const n = Number(pr.number);
     if (!open[0]) flow.opened(s.slug, n, sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), author: String(pr.user?.login ?? (await ownerLogin()) ?? "ghost"), author_kind: "agent" });
@@ -1401,6 +1419,7 @@ export function createService(o: Options) {
     if (pr.baseRefName !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed: it now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
     const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head), { do: "merge", head: a.head, base: String(pr.baseRefName ?? ""), association: String(pr.authorAssociation ?? "") });
     if (ended) return { ok: false, text: ended };
+    if ((pr.labels?.nodes ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) return { ok: false, text: `${url} carries the \`${HOLD_LABEL}\` label: not queued; queued once it is removed.` };
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     // Where GitHub's rules ask for a review, an approval on this exact head (merge-gate approvedAt), read right before the enqueue:
     // GitHub may still count an earlier commit's.

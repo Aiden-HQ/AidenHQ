@@ -659,6 +659,37 @@ test("an open PR into another base is not reused by a publish into the default b
 
 // The CLI now sends `text` without `body` when there is no --body-file; the kernel's strict args schema must accept it, or
 // the fix would be refused before the service's guard ever runs.
+test("a publish with hold puts ship:stop on the PR; a later publish without it lifts that hold, never a person's label", async (t) => {
+  const url = "https://github.com/acme-agents/widget/pull/7";
+  const open = "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature&base=main";
+  const { sha, outcomes, ghCalls, call } = await setup(t, {
+    routes: (m, p) =>
+      m === "GET" && p === open ? { status: 200, body: [{ number: 7, html_url: url, head: { sha } }] }
+        : m === "PATCH" && p === "/repos/acme-agents/widget/pulls/7" ? { status: 200, body: { number: 7, html_url: url } }
+          : m === "POST" && p === "/repos/acme-agents/widget/issues/7/labels" ? { status: 200, body: [] }
+          : m === "DELETE" && p === "/repos/acme-agents/widget/issues/7/labels/ship%3Astop" ? { status: 200, body: [] }
+            : undefined,
+  });
+  const labelCalls = () => ghCalls.filter((c) => /\/issues\/7\/labels/.test(c.path)).map((c) => `${c.method} ${c.body ? JSON.stringify(c.body) : ""}`.trim());
+  let n = 0;
+  const publish = async (hold) => {
+    const id = `k-${String(++n).padStart(16, "0")}`;
+    const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }], text: { title: "fix(widget): wait", body: "" }, ...(hold ? { hold: true } : {}) };
+    assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id, kind: "github.pr", args, digest: "d", idempotency_key: id })).json, { accepted: true });
+    for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+    const out = outcomes.shift();
+    assert.equal(out?.ok, true, JSON.stringify(out));
+  };
+  await publish(false);
+  assert.deepEqual(labelCalls(), [], "a PR nobody held is left alone, a person's own ship:stop included");
+  await publish(true);
+  assert.deepEqual(labelCalls(), ['POST {"labels":["ship:stop"]}']);
+  await publish(false);
+  assert.deepEqual(labelCalls(), ['POST {"labels":["ship:stop"]}', "DELETE"], "the republish lifts the hold");
+  await publish(false);
+  assert.equal(labelCalls().length, 2, "and only once");
+});
+
 test("the pr args schema accepts a text without a body", () => {
   const schema = JSON.parse(readFileSync(new URL("../schemas/pr.json", import.meta.url), "utf8"));
   validate(schema, { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha: "a".repeat(40) }], text: { title: "fix(widget): keep the description" } });

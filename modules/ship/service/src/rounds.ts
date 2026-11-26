@@ -40,6 +40,8 @@ export interface RoundFacts extends QueueFacts {
   approval?: Judged;
   /** The head's risk tier with its `by_tier` approve and merge (safe.ts riskOf, from code review's verdict). Without one nothing merges. */
   risk?: Risk;
+  /** The merge gate's own decision (adopted.ts), as opposed to a stall ship raised itself: a stall from it clears on any later pass that decides otherwise. */
+  decided?: boolean;
   /** Code review's findings at this head (its digest): a new set at the same head is a new fix_review. */
   findingsKey?: string;
   /** Red at a head behind a green base: GitHub's update-branch is tried once at this head before any fix_ci wake. */
@@ -57,6 +59,8 @@ export interface RoundDeps {
   /** GitHub's update-branch bound to the head (expected_head_sha): a clean merge of the base, no conflict. */
   updateBranch(repo: string, number: number, head: string): Promise<void>;
   assign(repo: string, number: number, logins: string[]): Promise<void>;
+  /** Removes the logins ship itself assigned when it raised a hold; a person's own assignment is never one of them. */
+  unassign(repo: string, number: number, logins: string[]): Promise<void>;
   /** The code host's comment op (POST /v1/codehost/comment): posts, or edits comment `id`; answers the comment's id. */
   comment(repo: string, number: number, body: string, id?: number): Promise<number>;
   log(msg: string, f?: Record<string, unknown>): void;
@@ -92,6 +96,19 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     a = { ...a, hold: null, counters: undefined };
     d.state.put(a);
     d.log("hold cleared by a new head", { pr: pr.url });
+  }
+  // A stall from the gate's decision (a review, a resolved thread, a label) is over once the gate no longer says stall: ship takes
+  // back its own assignment and goes on. A pause, a draft, the stop label or a person's assignment is checked first: a stopped PR is
+  // neither resumed nor unassigned.
+  if (a.hold?.kind === "stalled" && a.hold.onChange && pr.state === "open" && v.do !== "stall" && !d.paused() && !pr.draft && !pr.labels.includes(s.stop_label) && !pr.assignees.some((x) => !(a!.assigned ?? []).includes(x))) {
+    // A refused unassignment keeps the record, so ship's own assignee is never read as a person's stop.
+    let undone = true;
+    if (a.assigned?.length) await d.unassign(pr.repo, pr.number, a.assigned).catch((e) => { undone = false; d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }); });
+    const { assigned: kept, ...rest } = a;
+    // The hold's report is replaced by what this pass says, even when it is the line said before the stall.
+    a = { ...rest, ...(undone ? {} : { assigned: kept }), hold: null, ...(a.counters ? { counters: { ...a.counters, lastRound: undefined } } : {}) } as typeof a;
+    d.state.put(a);
+    d.log("stall cleared: the gate no longer says stall", { pr: pr.url });
   }
   // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.
   // Landed: a hand-off's task ends with it (a task's PR tells its task instead), whatever else holds the PR.
@@ -143,12 +160,12 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const risk = f.risk;
   const merge = risk?.merge ?? "off";
   const save = async (f: Facts) => { d.state.put(a!); a = await report(d, a!, pr, f); };
-  const hold = async (reason: string, plain: string) => {
+  const hold = async (reason: string, plain: string, onChange = false) => {
     // Its owner is told: a task's PR wakes whoever asked for the task; a member's PR assigns its author (and the report says why).
     const assign = a!.owner?.kind === "task" || pr.authorBot || !pr.author ? [] : [pr.author];
     if (assign.length) await d.assign(pr.repo, pr.number, assign).catch((e) => d.log("assign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
     if (a!.owner?.kind === "task") await tell(d, a!, pr, `**Ship stopped on ${pr.url}** at \`${pr.head.slice(0, 12)}\`: ${reason}. A new push resumes it. Decide its next step: re-scope the task, fix the cause another way, or tell the owner.`, `hold.${pr.head.slice(0, 12)}.${c.rounds}.${c.wakes}`, true);
-    a = { ...a!, hold: { kind: "stalled", reason, at: new Date().toISOString() }, assigned: assign };
+    a = { ...a!, hold: { kind: "stalled", reason, at: new Date().toISOString(), ...(onChange ? { onChange: true as const } : {}) }, assigned: assign };
     d.log("hold", { pr: pr.url, reason });
     await save({ kind: "hold", text: plain });
     return "acted" as const;
@@ -445,7 +462,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (!q || q.act === "nothing") return "nothing";
         const dismissing = await dismissStale();
         if (dismissing) return dismissing;
-        if (q.act === "hold") return hold(q.why, HOLD.failed);
+        if (q.act === "hold") return hold(q.why, q.refused ? HOLD.refused(q.refused) : HOLD.failed);
         if (q.act === "wait") { queueWait = q.why; return "nothing"; }
         if (q.attempt > 1) {
           if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`, HOLD.cap);
@@ -498,7 +515,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         return "acted";
       }
       case "stall":
-        return hold(v.why ?? "stalled", HOLD.stall);
+        return hold(v.why ?? "stalled", HOLD.stall, f.decided === true);
       default: {
         // wait: the report says what it waits on. An App approval that no longer stands for this head goes first.
         const dismissing = await dismissStale();

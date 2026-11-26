@@ -7,10 +7,12 @@
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
 //   GET /v1/work?record=<id> one write record (an approval card) by its id: state, kind, task, identifier, ok and outcome text
 //                            (the grader resolves a card a report cites; never the card's args or its requester)
-//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended (and `started`: whether the run got a
-//                            shell, false for one that failed or was cancelled before launching) and the routine its task traces to,
-//                            and for the board's timeline the wake that started it, why it ended, its billed cost, whether
-//                            it was a quiet routine run and the records the agent filed while it ran: { jobs }
+//   GET /v1/work?agent=<id>[&since=<iso>][&brief=1]  an agent's last 50 jobs (newest first; with `since`, every job `at` or after
+//                            it, newest first, uncut), each with how it ended (and `started`: whether the run got a shell, false for
+//                            one that failed or was cancelled before launching) and the routine its task traces to, and for the
+//                            board's timeline the wake that started it, why it ended, its billed cost, whether it was a quiet
+//                            routine run and the records the agent filed while it ran: { jobs }. `brief=1` leaves the timeline
+//                            out: one query for a caller that needs only each job's task and how it went.
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
 //                            UTC day from the gateway ledger: { records, usage, spend_components, spend_subjects } (usage and the last two: confirmed spend only; each day's
 //                            five costliest components and subjects; the Fleet Steward's scorecards and spend check; each record says
@@ -103,9 +105,16 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
         records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, ...(r.kind === "kernel.apply" ? { details: r.card?.details ?? "" } : {}), decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
       };
     },
-    agent(id: string, o: { shown?: boolean } = {}) {
+    agent(id: string, o: { shown?: boolean; since?: number; brief?: boolean } = {}) {
       // The last 50; `shown` (the Activity tab) leaves quiet routine runs out before the limit, so they never crowd out a failure.
-      const shown = rows(`SELECT * FROM jobs j WHERE agent = ?${o.shown ? " AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'job:' || j.id AND f.type = 'job.ended' AND json_extract(f.data, '$.quiet') = 1)" : ""} ORDER BY at DESC LIMIT 50`, id);
+      // `since` (a `from` instant, ms) asks instead for every job that started at or after it, uncut: a caller that has to decide
+      // what an agent did in a window needs all of its rows, so an absent task is a task it never ran, not one past the cut.
+      // `brief` skips the per-job timeline (three reads each), for that caller: it needs the task and how the run went, no more.
+      // An uncut read can be every job of a long-lived agent, so it selects those columns alone: a prompt, progress or final is
+      // never read, let alone the thousands of them a `SELECT *` would materialize before they are dropped.
+      const from = o.since === undefined ? undefined : [o.since];
+      const shown = rows(`SELECT ${o.brief ? JOB_COLS : "*"} FROM jobs j WHERE agent = ?${o.shown ? " AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'job:' || j.id AND f.type = 'job.ended' AND json_extract(f.data, '$.quiet') = 1)" : ""}${from ? " AND at >= ?" : ""} ORDER BY at DESC${from ? "" : " LIMIT 50"}`, ...(from ? [id, o.since!] : [id]));
+      if (o.brief) return { jobs: shown.map((r) => job(r)) };
       return { jobs: shown.map((r) => {
         const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
         return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : (progress.stepCount ?? 0), has_final: Boolean(r.final), routine: r.routine ?? null, ...timeline(r) };

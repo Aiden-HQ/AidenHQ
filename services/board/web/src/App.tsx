@@ -19,6 +19,7 @@ import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSo
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { SignInRequired, api, type Session } from "./api";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { SignInScreen, RETURN_KEY } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
 import { AttentionStrip } from "./Attention";
@@ -246,6 +247,8 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<Bucket>("today");
+  // A column's quick-add draft lives here, not in the column: leaving the board unmounts the columns, and the draft stays.
+  const [drafts, setDrafts] = useState<Record<Bucket, string>>(() => ({ triage: "", today: "", tomorrow: "", later: "", backlog: "" }));
   const [view, setViewState] = useState<View>(savedView);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -859,6 +862,7 @@ export function App() {
         </nav>
       )}
 
+      <ErrorBoundary resetKey={`${view}:${JSON.stringify(route)}`}>
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} card={route.kind === "view" && route.view === "approvals" ? route.card : undefined} />}
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} />}
@@ -873,7 +877,8 @@ export function App() {
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
       {view === "board" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} searching={searching} moreDone={found.hasMore ? found.more : undefined} onClear={() => tb.setFilters({})} />}
-      <main className={`columns${doneColumn || showRecurring ? " extra" : ""}`} hidden={view !== "board" || work}>
+      {view === "board" && !work && (
+      <main className={`columns${doneColumn || showRecurring ? " extra" : ""}`}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (
             <Column
@@ -893,6 +898,8 @@ export function App() {
               onAdd={(title) => addTask(title, b)}
               onCarried={b === "today" && !filtering ? (action) => void carriedAction(action) : undefined}
               addRef={b === "triage" ? addRef : undefined}
+              draft={drafts[b]}
+              onDraft={(title) => setDrafts((d) => (d[b] === title ? d : { ...d, [b]: title }))}
               timezone={board.timezone}
             />
           ))}
@@ -934,7 +941,10 @@ export function App() {
           </section>
         )}
       </main>
+      )}
+      </ErrorBoundary>
 
+      <ErrorBoundary resetKey={`overlay:${JSON.stringify(route)}`}>
       {route.kind === "task" && (
         <Drawer
           key={route.ref}
@@ -983,8 +993,9 @@ export function App() {
           toast={toast}
         />
       )}
+      </ErrorBoundary>
 
-      {mobile && !chatFull && <BottomBar sessions={!!sessions} view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} pages={pages} go={go} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
+      {mobile && !chatFull && route.kind !== "task" && <BottomBar sessions={!!sessions} view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} pages={pages} go={go} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
       </div>
       </div>
       <Palette
@@ -1038,13 +1049,15 @@ interface ColumnProps {
   onAdd: (title: string) => Promise<void>;
   onCarried?: (action: "keep" | "tomorrow" | "later") => void;
   addRef?: React.RefObject<HTMLInputElement | null>;
+  /** The quick-add draft, kept by the board so it survives this column unmounting. */
+  draft: string;
+  onDraft: (title: string) => void;
   timezone: string;
 }
 
-function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, onDone, onMove, onSnooze, onMerge, mergeTargets, onAdd, onCarried, addRef, timezone }: ColumnProps) {
+function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, onDone, onMove, onSnooze, onMerge, mergeTargets, onAdd, onCarried, addRef, draft, onDraft, timezone }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: bucket });
   const [adding, setAdding] = useState(bucket === "triage");
-  const [title, setTitle] = useState("");
   const hint =
     bucket === "today"
       ? new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", timeZone: timezone })
@@ -1053,9 +1066,9 @@ function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, o
         : HINTS[bucket];
   const carried = onCarried ? cards.filter((c) => c.carried).length : 0;
   async function submit() {
-    const t = title.trim();
+    const t = draft.trim();
     if (!t) return;
-    setTitle("");
+    onDraft("");
     await onAdd(t);
   }
   return (
@@ -1081,12 +1094,12 @@ function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, o
         >
           <input
             ref={addRef}
-            value={title}
+            value={draft}
             placeholder={bucket === "triage" ? "Add a task…  c" : `Add to ${BUCKET_NAMES[bucket]}…`}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => onDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
-                setTitle("");
+                onDraft("");
                 (e.target as HTMLInputElement).blur();
                 if (bucket !== "triage") setAdding(false);
               }

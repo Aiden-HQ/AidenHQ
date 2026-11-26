@@ -25,7 +25,8 @@ export function ModulesView({ onSignIn, can }: { onSignIn: () => void; can: Can 
   const [markets, setMarkets] = useState(false);
   return (
     <ChangesScope onSignIn={onSignIn}>
-      <div className="mods">
+      {/* A page with its own main landmark (off the board, App.tsx's <main> is hidden); .mods keeps its gutters and scroll. */}
+      <main className="mods page wide">
         {markets ? (
           <>
             <PageHeader crumb={<><a href="#/modules" onClick={(e) => (e.preventDefault(), setMarkets(false))}>Modules</a> / Marketplaces</>} title="Marketplaces" sub="Where modules come from, each held at a commit at least 7 days old. Updating one moves every module it holds." />
@@ -36,7 +37,7 @@ export function ModulesView({ onSignIn, can }: { onSignIn: () => void; can: Can 
         ) : (
           <ModulesList onSignIn={onSignIn} onMarkets={() => setMarkets(true)} can={can} />
         )}
-      </div>
+      </main>
     </ChangesScope>
   );
 }
@@ -161,8 +162,10 @@ function ModulesList({ onSignIn, onMarkets, can }: { onSignIn: () => void; onMar
           {shownInstalled.length > 0 && <Section title="Installed" count={shownInstalled.length}>{grid(shownInstalled)}</Section>}
           {shownAvailable.length > 0 && <Section title="Available" count={shownAvailable.length}>{grid(shownAvailable)}</Section>}
         </>
+      ) : show === "installed" ? (
+        <Section title="Installed" count={shownInstalled.length}>{grid(shownInstalled)}</Section>
       ) : (
-        grid(show === "installed" ? shownInstalled : shownAvailable)
+        <Section title="Available" count={shownAvailable.length}>{grid(shownAvailable)}</Section>
       )}
     </>
   );

@@ -126,8 +126,21 @@ RUN case "$(dpkg --print-architecture)" in \
 # a review run links only the selected skill or plugin into its own throwaway home (resolveSkill).
 #   /opt/review/skills/<owner>__<repo>/  the repo at its pin (skill folders inside)
 #   /opt/review/plugins/<name>/          a Claude Code plugin folder at its pin
-# deepsec 2.3.12 (2026-11-06; 2.3.13 on 2026-11-16 is too new): npm's tarball, install scripts off.
-RUN npm i -g --ignore-scripts deepsec@2.3.12 && npm cache clean --force && deepsec --version
+# deepsec 2.3.12 (2026-11-06; 2.3.13 on 2026-11-16 is too new): npm's tarball, install scripts off. It brings two nested zod
+# copies below the fix for GHSA-mrhx-c7xc-m3w5 ($ZodArray keeps one issue per failing element with no cap, so a large
+# unconstrained array in a request body exhausts memory): @vercel/sandbox 1.10.2 pins zod 3.24.4 and @vercel/cli-config 0.3.1
+# pins 4.1.11. deepsec accepts no @vercel/sandbox that pins a fixed zod (1.x all pin 3.24.4; 4.x/5.x need zod ^4.6.7), so
+# zod 4.6.7 replaces both copies from a checked-in lockfile (deepsec-zod/), installed with `npm ci` as agent-base does for
+# codegenie. One `mv` cannot serve both paths, so each copy is replaced and its version asserted; deepsec's own zod is 4.6.7.
+COPY deepsec-zod /opt/deepsec-zod
+RUN npm i -g --ignore-scripts deepsec@2.3.12 && npm cache clean --force \
+    && (cd /opt/deepsec-zod && npm ci --no-audit --no-fund) \
+    && for p in @vercel/sandbox @vercel/cli-config; do \
+         d="$(npm root -g)/deepsec/node_modules/$p/node_modules" && rm -rf "$d/zod" && cp -a /opt/deepsec-zod/node_modules/zod "$d/zod" \
+           && node -p "JSON.parse(require('fs').readFileSync('$d/zod/package.json','utf8')).version" | grep -qx 4.6.7 \
+           || { echo "zod: $p is not 4.6.7" >&2; exit 1; }; \
+       done \
+    && rm -rf /opt/deepsec-zod/node_modules && deepsec --version
 RUN set -eu; mkdir -p /opt/review/skills /opt/review/plugins; \
     pin() { d=$1; repo=$2; sha=$3; git init -q "$d" && git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$sha" && git -C "$d" checkout -q FETCH_HEAD && rm -rf "$d/.git"; }; \
     skills() { pin "/opt/review/skills/$(echo "$1" | sed 's#/#__#')" "$1" "$2"; }; \

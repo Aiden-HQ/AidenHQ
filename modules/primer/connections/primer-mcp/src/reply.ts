@@ -2,7 +2,7 @@
 // it resolved (primer_resolve_thread). A reply is shown to everyone who can read the document, so it is a kernel record the AI
 // reviewer decides (Tier 1) when the thread is on a document this agent published on this task (owners.ts), and the owner's
 // (Tier 2) on any other. The request names the document; Tier 1 needs the owners map to say this agent published it on this
-// task AND the document's comments (primer_get_comments' `comments` array) (parsed as data) to hold a comment whose `thread_id` field is exactly that thread; an
+// task AND the document's comments (primer_get_comments' `comments`, or `live.comments` for a live document's own threads) (parsed as data) to hold a comment whose `thread_id` field is exactly that thread; an
 // unparseable answer or no exact match is Tier 2. The document_id is for this check only: the upstream tools take just the thread. A `body` is a reply; no `body` resolves the thread.
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileOwners, type Owners } from "./owners.js";
@@ -21,8 +21,8 @@ export function normaliseReply(a: any): Reply {
   return { document_id, thread_id, ...(body ? { body } : {}) };
 }
 
-/** True when the parsed answer's `comments` array holds a comment whose `thread_id` field is exactly the id (text in a comment body never counts). */
-const hasThread = (answer: any, id: string) => Array.isArray(answer?.comments) && answer.comments.some((c: any) => c?.thread_id === id);
+/** True when the parsed answer's `comments` array (threads on the latest version) or `live.comments` (threads on a live document's own text, which belong to no version) holds a comment whose `thread_id` field is exactly the id (text in a comment body never counts). */
+const hasThread = (answer: any, id: string) => [answer?.comments, answer?.live?.comments].some((l) => Array.isArray(l) && l.some((c: any) => c?.thread_id === id));
 
 export function replier(call: Call, owners: Owners = fileOwners()): Executor {
   return {

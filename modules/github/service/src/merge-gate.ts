@@ -9,7 +9,7 @@
 // for a new merge at its new head. Missing evidence (no checks, a truncated page of checks, the base's aggregate gate
 // check not yet on the head) never counts as passing.
 
-import { GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 /** A check on a head, by name (service.ts checksAt, checks.ts namedChecks): `kind` and `rank` are what pick the newest of a name. */
@@ -46,12 +46,15 @@ export function headChecks<T extends NamedCheck>(checks: T[]): T[] {
   return latestChecks(checks);
 }
 
+/** The label that holds a PR from every automatic merge (ship's default stop label; `aidenhq publish --hold` puts it on). */
+export const HOLD_LABEL = "ship:stop";
+
 export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $pullRef: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name }
     squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed
     pullRequest(number: $number) {
-      id number title body url state isDraft reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName authorAssociation
+      id number title body url state isDraft labels(first: 30) { nodes { name } } reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName authorAssociation
       mergedAt mergedBy { login } mergeCommit { oid message }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } }
@@ -140,6 +143,7 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
   const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r: Json) => r.state);
   if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: ship ? "fix_review" : "fail", why: "changes are requested on it" };
   if (pr.isDraft) return { do: ship ? "wait" : "fail", why: "it is a draft" };
+  if (pr.labels?.nodes?.some((l: Json) => l.name === HOLD_LABEL)) return { do: "wait", why: `it carries the \`${HOLD_LABEL}\` label: merged once the label is removed` };
   if (ship && pr.isInMergeQueue) return { do: "wait", why: "in the merge queue" };
   // A conflict or a branch behind comes first for ship: checks on a conflicted PR may never run until it is repaired.
   if (ship && (pr.mergeStateStatus === "DIRTY" || pr.mergeStateStatus === "BEHIND")) return { do: "repair", why: pr.mergeStateStatus === "DIRTY" ? `it conflicts with \`${def}\`` : `it is behind \`${def}\`` };
@@ -201,10 +205,25 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
       return { do: "fail", why: `it conflicts with \`${def}\`: rebase it and ask for its merge again` };
     case "BEHIND":
       return { do: "fail", why: `it is behind \`${def}\`: rebase it and ask for its merge again` };
-    case "BLOCKED":
+    case "BLOCKED": {
+      if (!ship) return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
       // With the head's approval in, a code owner (or another required review) is what GitHub still waits for.
+      if (pr.reviewDecision === "REVIEW_REQUIRED") return { do: "wait", why: reviewWait(pr) };
+      // On a merge-queue branch a direct merge is always blocked (the queue is the path), and everything above has passed: the
+      // enqueue is the judge, and GitHub's refusal (a thread to resolve, a signature) is a hold with its reason (queue.ts). The
+      // queue tests the merged tree itself, so the base's CI is no wait here.
+      if (ship.queue) return { do: "enqueue", why: "ready" };
+      // GitHub also reports BLOCKED while a check is still running on the head, even when every required check is green (a
+      // duplicate workflow run's jobs in flight): the required guard above judges only `ship.required`, so the whole head is
+      // judged here by its newest run per name, and any check still pending is a wait. Code review's advisory *status* (commit
+      // status API, never a check run) is not what GitHub holds a merge for; a check run that merely shares its name is the repo's
+      // own job and still holds the wait.
+      const advisory = (c: NamedCheck) => c.kind === "status" && c.name === CODE_REVIEW_STATUS;
+      const held = headChecks(ship.checks).filter((c) => !advisory(c));
+      if (held.some((c) => c.pending)) return { do: "wait", why: "checks are still running on its head" };
       // Any other rule (conversations to resolve, signed commits, a deployment) is one ship doesn't handle: a visible stall.
-      return ship ? (pr.reviewDecision === "REVIEW_REQUIRED" ? { do: "wait", why: reviewWait(pr) } : { do: "stall", why: "blocked by a branch rule ship doesn't handle" }) : { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
+      return { do: "stall", why: "blocked by a branch rule ship doesn't handle" };
+    }
     default:
       return { do: "wait", why: "GitHub is still working out whether it can merge" };
   }

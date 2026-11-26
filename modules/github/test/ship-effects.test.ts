@@ -568,10 +568,27 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.equal(go({}, { checks: [], required: [] }).do, "merge", "none required, none run: green");
   assert.equal(go({}, { checks: [...ok, { name: "build", ok: false, pending: false }] }).do, "fix_ci", "a red status hides behind no green run of the same name");
   assert.equal(go({ mergeStateStatus: "BLOCKED" }).do, "stall", "a branch rule ship doesn't handle is a visible stall");
+  // On a merge-queue branch a ready PR is always BLOCKED (the queue is the path): it is enqueued, GitHub's enqueue the judge.
+  assert.deepEqual(go({ mergeStateStatus: "BLOCKED", reviewDecision: "APPROVED", ...approval(H) }, { queue: true }), { do: "enqueue", why: "ready" });
+  assert.equal(go({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }, { queue: true }).do, "wait", "a missing review still waits on a queue branch");
+  assert.equal(go({ mergeStateStatus: "BLOCKED" }, { queue: true, checks: [{ name: "build", ok: false, pending: false }] }).do, "fix_ci", "red checks come first");
+  // GitHub reports BLOCKED while a check is still running on the head even when every required check is green: a duplicate run's
+  // in-flight jobs are a wait, not a stall. The whole head is judged, not only `required`.
+  const running = { name: "packages (1)", ok: false, pending: true };
+  assert.deepEqual(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, running] }), { do: "wait", why: "checks are still running on its head" });
+  // A superseded cancelled twin never counts as pending: the newest run of the name decides.
+  assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name: "packages (1)", kind: "run", rank: 1, ok: false, pending: false }, { name: "packages (1)", kind: "run", rank: 2, ok: true, pending: false }] }).do, "stall", "an old cancelled run is not a pending check");
+  // Code review's advisory commit *status* is not what GitHub holds a merge for, so one pending never
+  // hides a stall; a check run that only shares the name is the repo's own job and still waits.
+  for (const name of ["aidenhq/review"]) {
+    assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name, kind: "status", ok: false, pending: true }] }).do, "stall", `the advisory ${name} status is not a running check`);
+    assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name, kind: "run", ok: false, pending: true }] }).do, "wait", `a check run named ${name} is still running`);
+  }
   // Without ship's context: the merge queue's rule, unchanged.
   assert.deepEqual(decide(data({}), H), { do: "merge" });
   assert.equal(decide(data({ mergeStateStatus: "DIRTY" }), H).do, "fail");
   assert.equal(decide(data({ baseRefName: "release" }), H).do, "fail");
+  assert.deepEqual(decide(data({ mergeStateStatus: "BLOCKED" }), H), { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" }, "the merge queue never waits on a pending check behind a branch rule");
   assert.equal(mergePath([{ type: "pull_request" }, { type: "merge_queue" }]), "queue");
   assert.equal(mergePath([]), "direct");
   assert.deepEqual(requiredChecks([{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "build" }] } }], { contexts: ["ci-required"] }).sort(), ["build", "ci-required"]);

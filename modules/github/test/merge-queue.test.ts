@@ -73,6 +73,14 @@ function fakeGitHub(prs) {
       const p = prs[wf[1]] ?? Object.entries(prs).find(([k]) => k.startsWith(`${wf[1]}#`))?.[1];
       return { status: 200, body: { total_count: p?.noCi ? 0 : 1, workflows: [] } };
     }
+    // Every check on a head (ship's readiness reads all pages over REST): the PR's rollup, or none when the repo has no PR.
+    const runs = /^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})\/(check-runs|statuses)\?/.exec(path);
+    if (runs) {
+      const p = prs[runs[1]] ?? Object.entries(prs).find(([k]) => k.startsWith(`${runs[1]}#`))?.[1];
+      if (!p) return { status: 200, body: runs[3] === "check-runs" ? { check_runs: [] } : [] };
+      if (runs[3] === "check-runs") return { status: 200, body: { check_runs: (p.runs ?? (p.names ?? ["build"]).map((name) => ({ name, status: "completed", conclusion: "success" }))) } };
+      return { status: 200, body: [] };
+    }
     const commit = /^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})$/.exec(path);
     if (commit) {
       const one = prs[commit[1]] as { message?: string } | undefined;
@@ -407,6 +415,63 @@ test("a Tier 0 product merge fails at merge once its eligibility is lost: file t
   await settle();
   assert.deepEqual(github.merges(), [], "never merged without the pass it was tiered on");
   assert.match(outcomes[0].text, /eligibility lost at merge: file the merge again/);
+});
+
+test("a merge that meets code review's open findings at its head ends, so ship can ask for the fix", async (t) => {
+  const prs = { "acme/aidenhq": { head: HEAD, checks: "SUCCESS", names: ["build", "ci-required"] } };
+  const verdict = { v: { wait: "code review: classifying: the risk tier of deadbee isn't read yet", unblock: "it resumes by itself within a minute or two" } };
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, reviewGate: async () => verdict.v });
+  await merge("k-00000000000000a7", [{ repo: "acme/aidenhq", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual([github.merges(), outcomes.length], [[], 0], "a classifying head waits, it does not end");
+  verdict.v = { wait: "code review: 1 important finding open: look up paths literally (service.ts:200, id f1)", unblock: "fix and push, or record it with code_review_resolve", findings: "code review: 1 important finding open: look up paths literally (service.ts:200, id f1)", findingsKey: "abc123" };
+  await handle.stepMerges();
+  await settle();
+  assert.deepEqual(github.merges(), [], "never merged on findings");
+  assert.equal(outcomes[0]?.ok, false);
+  assert.match(outcomes[0].text, /open important findings|1 important finding open/);
+  // A record ship did not file has no fixer to wake: its text must not claim ship will ask for one.
+  assert.match(outcomes[0].text, /nothing wakes a fixer for a merge ship did not file/);
+  assert.doesNotMatch(outcomes[0].text, /ship asks for the fix/);
+});
+
+test("a merge ship filed ends on findings with ship's fix wake, and a batch keeps the failed PR's findings on its card", async (t) => {
+  const prs = {
+    "acme-agents/widget": { head: HEAD, checks: "SUCCESS" },
+    "acme-agents/gadget": { head: "d".repeat(40), checks: "SUCCESS" },
+  };
+  const github = fakeGitHub(prs);
+  const waits = [];
+  const outcomes = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    const m = /^\/v1\/writes\/([^/]+)\/(outcome|wait)$/.exec(req.url);
+    if (m) {
+      const parsed = JSON.parse(body || "{}");
+      if (m[2] === "outcome") outcomes.push({ id: m[1], ...parsed });
+      else waits.push({ id: m[1], reason: parsed.reason ?? null });
+      return res.writeHead(200).end("{}");
+    }
+    res.writeHead(404).end("{}");
+  });
+  t.after(() => kernel.s.close());
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(),
+    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    // The widget's merge is ship's (its args name a generation) and meets findings at its head; the gadget's is still classifying.
+    reviewGate: async (repo) => repo === "acme-agents/widget"
+      ? { wait: "code review: 1 important finding open (widget.ts:1)", findings: "code review: 1 important finding open (widget.ts:1)", findingsKey: "k1" }
+      : { wait: "code review: classifying: the risk tier isn't read yet", unblock: "it resumes by itself" },
+  });
+  void merges.enqueue("k-00000000000000c3", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }, { repo: "acme-agents/gadget", number: 2, head: "d".repeat(40) }], generation: 2 });
+  await merges.step();
+  const widget = merges.status("k-00000000000000c3");
+  assert.equal(widget.state, "running", "the gadget keeps the batch live");
+  const card = waits.at(-1)?.reason;
+  assert.match(String(card), /acme-agents\/widget.*important finding/, "the failed PR's findings stay on the live card");
+  assert.match(String(card), /acme-agents\/gadget.*classifying/, "and the PR still waiting is named too");
+  assert.equal(outcomes.length, 0, "the batch has not ended");
 });
 
 test("a merge-queue wait and its end become waiting and resumed facts with the reason", async (t) => {
@@ -1341,6 +1406,18 @@ test("a red default branch takes no merge on top, except the PR that already hol
   assert.equal(decide(data(rollup("SUCCESS", { more: true }), 2), HEAD).do, "wait", "a base whose check list GitHub truncated waits, never merges on a partial read");
 });
 
+test("a PR carrying the ship:stop label waits, for the merge queue and for ship's rounds alike", () => {
+  const data = (labels) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
+    number: 1, state: "OPEN", isDraft: false, baseRefName: "main", headRefOid: HEAD, mergeStateStatus: "CLEAN", latestOpinionatedReviews: { nodes: [] },
+    labels: { nodes: labels.map((name) => ({ name })) },
+    files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup("SUCCESS") } }] },
+    baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup("SUCCESS") } },
+  } } });
+  assert.deepEqual(decide(data(["bug"]), HEAD), { do: "merge" });
+  assert.equal(decide(data(["bug", "ship:stop"]), HEAD).do, "wait");
+  assert.equal(decide(data(["ship:stop"]), HEAD, { queue: false, approve: false, required: ["build"], checks: [] }).do, "wait");
+});
+
 test("each check name on a head is judged by its newest run: a cancelled run an edit superseded is not red, and a later red or running one still holds", () => {
   // An edit to a PR body/title while CI runs starts a new run that cancels the old one (ci.yml `edited` +
   // `cancel-in-progress`); the superseded run's CANCELLED checks stay on the head forever. GitHub's branch protection judges a
@@ -1451,7 +1528,7 @@ test("a merge waiting on its checks publishes why to the record", async () => {
 test("a code review wait posts its reason to the kernel once per distinct reason, never per poll, and keeps its no-time-limit wait", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
-  let verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "fix and push" }] } };
+  let verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "running", text: "the review is running", unblock: "it resumes by itself" }] } };
   const fetchFn = async () => new Response(JSON.stringify(verdict.body), { status: verdict.status });
   const waits = [];
   const clock = { t: Date.now() };
@@ -1464,7 +1541,7 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   await merges.step();
   await merges.step();
   await merges.step();
-  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3) (fix and push)"], "once per distinct reason, not per poll");
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: the review is running (it resumes by itself)"], "once per distinct reason, not per poll");
   assert.equal(merges.status("k-00000000000000h1").state, "running");
   // A week later the same reason: still no second post, and the gate's Infinity limit never stops the wait.
   clock.t += 7 * 24 * 3600_000;
@@ -1472,12 +1549,12 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   assert.equal(waits.length, 1);
   assert.equal(merges.status("k-00000000000000h1").state, "running");
   // A materially changed reason is posted once more.
-  verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "2 important findings open: t, u", unblock: "fix and push" }] } };
+  verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "classifying", text: "the risk tier of deadbee isn't read yet", unblock: "it resumes by itself within a minute or two" }] } };
   await merges.step();
   await merges.step();
   assert.deepEqual(waits.map((w) => w.reason), [
-    "code review: 1 important finding open: t (a.ts:3) (fix and push)",
-    "code review: 2 important findings open: t, u (fix and push)",
+    "code review: the review is running (it resumes by itself)",
+    "code review: the risk tier of deadbee isn't read yet (it resumes by itself within a minute or two)",
   ]);
   assert.equal(github.merges().length, 0, "never merged while the gate waits");
   verdict = { status: 200, body: { verdict: "pass", reasons: [] } };
@@ -1507,7 +1584,7 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" }, "acme-agents/other": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
   const asked = [];
-  let answer = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "fix and push" }] } };
+  let answer = { status: 200, body: { verdict: "wait", reasons: [{ code: "running", text: "the review is running", unblock: "it resumes by itself" }] } };
   const fetchFn = async (url, init) => {
     asked.push([String(url), init.headers.authorization]);
     if (answer === "down") throw new Error("connect ECONNREFUSED");
@@ -1526,8 +1603,8 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
   await merges.step();
   assert.deepEqual(asked, [[`http://code-review:8098/v1/verdict?repo=acme-agents%2Fwidget&pr=1&head=${HEAD}&base=main`, "Bearer github-module-token"]], "only the gated repo asks, with its live base branch");
   assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge"]);
-  assert.match(logs.find(([m]) => m === "merge waits for code review")[1].why, /1 important finding open: t \(a\.ts:3\) \(fix and push\)/);
-  clock.t += 7 * 24 * 3600_000; // a week of waiting on findings: still waiting
+  assert.match(logs.find(([m]) => m === "merge waits for code review")[1].why, /the review is running \(it resumes by itself\)/);
+  clock.t += 7 * 24 * 3600_000; // a week of waiting on the review: still waiting
   await merges.step();
   assert.equal(merges.status("k-00000000000000g1").state, "running");
   answer = "down"; // the service goes down: a wait for as long as it lasts, never a merge without its verdict

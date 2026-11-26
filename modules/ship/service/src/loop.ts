@@ -164,7 +164,8 @@ export function startLoop(o: LoopOptions) {
       // One PR's failure (a recovery read, a round) never stops the repo's others.
       try {
         // A newer open PR the same task published supersedes this one.
-        const newer = task ? open.find((p) => p.number > pr.number && p.baseRefName === pr.baseRefName && opened[p.url.toLowerCase()]?.task === task && opened[p.url.toLowerCase()]?.branch === p.headRefName)?.url : undefined;
+        // Ship's own scratch branch for an adoption (`ship-pr-<n>`) is never a supersede: it is a checkout, not a replacement PR.
+        const newer = task ? open.find((p) => p.number > pr.number && p.baseRefName === pr.baseRefName && opened[p.url.toLowerCase()]?.task === task && opened[p.url.toLowerCase()]?.branch === p.headRefName && !/^ship-pr-\d+$/.test(String(p.headRefName)))?.url : undefined;
         // A stack: its base is another open PR's head branch (in this repo).
         // The parent into the default branch first (the same branch may also feed a backport into another base).
         const parents = open.filter((p) => p.number !== pr.number && p.isCrossRepository === false && p.headRefName === pr.baseRefName);

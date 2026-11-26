@@ -799,6 +799,26 @@ test("more than 50 open PRs are all seen", async (t) => {
   assert.equal(m.tasks.length, 60);
 });
 
+test("a live merge record at the bound head holds the fix_review wake; once the record ends, the fixer is woken", async (t) => {
+  const text = "code review: 1 important finding open (a.ts:1)";
+  const head = "h1";
+  let live = { state: "review", outcome: undefined };
+  const rec = { id: "r1", kind: "github.merge", state: "review", args: { prs: [{ repo: "acme/app", number: 1, head }] } };
+  const c = await rig(t, {
+    reviewGate: async () => ({ wait: text, findings: text, findingsKey: "k1" }),
+    records: [rec],
+    record: () => live,
+  });
+  c.set([c.agentPr(1)]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "a live merge record is followed, not re-decided");
+  live = { state: "failed", outcome: { text: "Not merged: acme/app#1: code review has open important findings" } };
+  rec.state = "failed";
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the record ended, so the findings wake the fixer");
+  assert.match(c.woke[0].text, /open important findings/);
+});
+
 test("code review's open findings wake the task once per set of findings at a head; a running review wakes nobody", async (t) => {
   let text = "code review: finding one (a.ts:1)";
   const c = await rig(t, { reviewGate: async () => ({ wait: text, findings: text, findingsKey: text }), merge: () => [200, { id: "r1" }] });
@@ -1332,6 +1352,27 @@ test("a PR into another base is not closed as superseded by the task's newer PR 
   await c.watch.tick();
   assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/23").length, 0, "the release PR is not superseded by the main PR");
   assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b23"), "and its branch stays");
+});
+
+// A `ship-pr-<n>` branch is ship's own scratch checkout of an adopted PR, not a replacement for it: a PR on one must never make
+// the PR it was checked out from look superseded (that closed #1879 as "superseded by #1881" and deleted its branch, unmerged).
+test("an adopted PR is not closed as superseded by a newer PR on ship's own scratch branch", async (t) => {
+  const c = await rig(t);
+  notePrTask(c.cacheDir, "https://github.com/acme/app/pull/93", { task: "ACME-92", branch: "ship-pr-92" });
+  c.set([c.agentPr(92), pr(93, { headRefName: "ship-pr-92", author: { __typename: "Bot", login: "aidenhq" } })]);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/92").length, 0, "the adopted PR is not closed as superseded by a scratch-branch PR");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b92"), "and its branch stays");
+});
+
+// The guard is narrow: the same task's newer PR on an ordinary branch still supersedes the older one, as before.
+test("an adopted PR is still closed as superseded by the same task's newer PR on an ordinary branch", async (t) => {
+  const c = await rig(t);
+  notePrTask(c.cacheDir, "https://github.com/acme/app/pull/93", { task: "ACME-92", branch: "b93" });
+  c.set([c.agentPr(92), pr(93, { headRefName: "b93", author: { __typename: "Bot", login: "aidenhq" } })]);
+  await c.watch.tick();
+  assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/92"), "the older PR is closed as superseded");
+  assert.ok(c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b92"), "and its branch goes with it");
 });
 
 // self-review: a re-run the credential can never be allowed to send is not retried forever: the red-head rules report the head.

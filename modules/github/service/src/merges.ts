@@ -16,7 +16,7 @@ import { CODE_REVIEW_STATUS, contextChecks, contextRank, namedChecks, skippedIma
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
+import { HOLD_LABEL, PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
 
@@ -24,7 +24,7 @@ import type { ShipAdoptions } from "./service.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; /** The base an adopted PR's merge was filed against (ship): a change fails it. */ base?: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; /** The task's own pr/push record named this bound head (pr-tasks.json had no row): kept once answered, so a settle credits the PR. A negative answer is never kept: a record filed after it is asked again each poll. A failed read is not kept either. */ bound?: { head: string }; wait?: { key: string; since: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; /** The base an adopted PR's merge was filed against (ship): a change fails it. */ base?: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; /** The task's own pr/push record named this bound head (pr-tasks.json had no row): kept once answered, so a settle credits the PR. A negative answer is never kept: a record filed after it is asked again each poll. A failed read is not kept either. */ bound?: { head: string }; wait?: { key: string; since: string }; /** The open important findings code review answered at this PR's bound head when the merge ended: kept so a live batch card still shows them (publishWait). */ findings?: string; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; fw?: { reason: string; since: string } };
 type Queue = { id: string; state: string; /** Filed by the ship module (a fleet PR's plain merge too): ship's pause or a repo switched off ends it at the call. */ byShip?: boolean; /** An adopted PR's merge (ship, args.generation): ship's readiness, the adoption read again before the merge call, and every other action ends it for ship's next round. */ ship?: { generation: number }; /** The kernel ran the record at Tier 0 (record.tier): a product merge must still be eligible at the merge. */ tier0?: boolean; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the kernel settled it as none), so no further read is needed. A failed read is not this; a pending one is not this either. */ recovered?: boolean; /** Which version settled `recovered`: 2 is this one, which reads the kernel's `identifier_pending`. Older queues took a first "none" as final, so one with an absent stamp is read again once (the kernel's upgrade reconcile may have recorded it since); a queue this version settled is never re-read. */ recoveredBy?: number; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The record has no identifier yet and none has been read (the kernel's upgrade reconcile is about to fill it in): a comparison that needs it waits for it instead of concluding from its absence. */ identifierPending?: boolean;  /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** How many times the task-binding read (prBound) has failed for this queue: only for the log, as the read is retried on every poll until it answers. */ boundTries?: number; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -265,6 +265,9 @@ export function createMerges(d: {
     // The trailer goes on whatever the body says (withTrailer would keep a body's own AidenHQ trailer and drop ours), and it
     // carries this call's nonce (mergedBy).
     const message = method === "rebase" ? {} : { commit_message: [body.trim(), trailer(`merge queue ${token}`)].filter(Boolean).join("\n\n") };
+    // A hold put on after the readiness read still stops this merge: the labels are read again right before it.
+    const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);
+    if (labels.status < 300 && (labels.body ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) throw Object.assign(new Error(`held: it carries the \`${HOLD_LABEL}\` label`), { status: 409 });
     const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });
     if (r.status >= 300) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
     return r.body?.sha;
@@ -320,8 +323,9 @@ export function createMerges(d: {
    */
   const identifierOwed = (q: Queue) => Boolean(q.task && !q.taskIdentifier && d.identifierOf && (!q.recovered || q.recoveredBy !== 2 || q.identifierPending));
   async function poll(id: string, q: Queue, p: Pr, merged: Set<string>) {
-    const fail = (why: string) => {
-      Object.assign(p, { status: "failed", note: why });
+    // `findings` keeps code review's open findings on the PR once the merge ends: a live batch card still shows them (publishWait).
+    const fail = (why: string, findings?: string) => {
+      Object.assign(p, { status: "failed", note: why, ...(findings ? { findings } : {}) });
       delete p.wait;
       delete p.mergeCalls;
       q.said.push(`**Not merged:** ${p.url}: ${why}.`);
@@ -403,6 +407,12 @@ export function createMerges(d: {
       // association is not compared: the classifier and the queue read it under different identities.
       const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       if (review && "wait" in review) {
+        // Open important findings at the bound head are the author's to fix, not a wait that can pass at this head: ending the
+        // record takes the live merge off ship's task, so its next round asks for the fix and wakes the fixer (rounds.ts fix_review).
+        // A record that is not ship's (an owner's or Engineer's `aidenhq merge`) has no fixer to wake: it ends with the truth for
+        // that case, the findings named so the author can fix and file the merge again.
+        const at = `\`${p.head.slice(0, 12)}\``;
+        if (review.findings) return fail(`code review has ${review.findings} at ${at}: ${q.ship || q.byShip ? "the merge ends so ship asks for the fix; a fixer's next push files a new merge" : "fix them and file the merge again; nothing wakes a fixer for a merge ship did not file"}`, review.findings);
         // Why this PR still waits: the record's own reason is built from every PR still waiting after the poll (publishWait), so
         // one PR leaving its wait never clears another's.
         // The card is read by the owner and agents: it carries how to unblock; ship's decision (merge-gate.ts) carries the wait alone.
@@ -617,8 +627,13 @@ export function createMerges(d: {
    * names, so a reason belongs to it, not to whichever PR was polled last.
    */
   async function publishWait(id: string, q: Queue) {
-    const reasons = [...new Set(q.prs.filter((p) => p.status === "pending" && p.note).map((p) => p.note!))];
-    const reason = reasons.length === 0 ? null : reasons.length === 1 ? reasons[0]! : q.prs.filter((p) => p.status === "pending" && p.note).map((p) => `${p.url}: ${p.note}`).join("\n");
+    // A PR that failed on code review's findings stays on the record's card while another PR keeps the batch live: its findings
+    // are the author's to fix, and ship skips the PR while the batch is live (adopted.ts), so dropping them would leave the card
+    // showing only the other PR's wait and nobody fixing these.
+    const live = q.prs.some((p) => p.status === "pending");
+    const shown = (p: Pr) => p.status === "pending" || (live && p.status === "failed" && Boolean(p.findings));
+    const reasons = [...new Set(q.prs.filter((p) => shown(p) && p.note).map((p) => p.note!))];
+    const reason = reasons.length === 0 ? null : reasons.length === 1 ? reasons[0]! : q.prs.filter((p) => shown(p) && p.note).map((p) => `${p.url}: ${p.note}`).join("\n");
     // `undefined` is "we don't know what the record has" and is never equal to a target, so a queue written by an older
     // implementation (no `waitSent`) or one that restarted before the kernel answered republishes on its first poll instead of
     // trusting a reason that may never have arrived. `null` is a clear the kernel took.
