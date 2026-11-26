@@ -76,10 +76,11 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
         .run(id, target, "pass", app, "", model, "running", at, depth, mode);
       return { run: id };
     },
-    // Once its task is filed: the app's earlier running passes end here, never before (a refused filing leaves them running).
+    // Once its task is filed: the app's earlier filed passes end here, never before (a refused filing leaves them running, and
+    // a filing still in flight is not ended by another).
     bindPass(run, task, agent, source) {
       const r = get(run);
-      db.prepare("UPDATE runs SET status = 'superseded', ended = ? WHERE kind = 'pass' AND app = ? AND status = 'running' AND id != ?").run(new Date(now()).toISOString(), r.app, run);
+      db.prepare("UPDATE runs SET status = 'superseded', ended = ? WHERE kind = 'pass' AND app = ? AND status = 'running' AND source IS NOT NULL AND id != ?").run(new Date(now()).toISOString(), r.app, run);
       db.prepare("UPDATE runs SET task = ?, agent = ?, source = ? WHERE id = ? AND kind = 'pass'").run(task, agent, source, run);
     },
     endPass(run, status) { db.prepare("UPDATE runs SET status = ?, ended = ? WHERE id = ? AND kind = 'pass' AND status = 'running'").run(status, new Date(now()).toISOString(), run); },

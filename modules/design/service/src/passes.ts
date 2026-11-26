@@ -13,6 +13,8 @@ export type Login = { login_url: string; username: string; password: string; tot
 
 const NAME = /^[a-z][a-z0-9-]{1,30}$/;
 const REPO = /^[\w.-]+\/[\w.-]+$/;
+/** A TOTP seed: base32 (spaces, dashes and padding allowed), as jobtools.ts totp() reads it. */
+const BASE32 = /^[A-Za-z2-7\s=-]+$/;
 const rank = (m: Mode) => MODES.indexOf(m);
 /** A pass is active this long after it starts, at most (the UI Reviewer's run is 40 minutes; a re-run on unvisited flows fits). */
 export const PASS_MS = 2 * 3_600_000;
@@ -28,7 +30,9 @@ export const ceiling = (a: App): Mode => (a.aidenhq_app ? "read" : a.live_mode);
 export function readApps(raw: string | undefined): { apps: App[]; errors: string[] } {
   let v: unknown;
   try { v = JSON.parse(raw || "{}"); } catch { return { apps: [], errors: ["ui_testing isn't JSON"] }; }
-  const list = v && typeof v === "object" && Array.isArray((v as { apps?: unknown }).apps) ? (v as { apps: unknown[] }).apps : [];
+  const given = v && typeof v === "object" ? (v as { apps?: unknown }).apps : undefined;
+  if (given !== undefined && !Array.isArray(given)) return { apps: [], errors: ["apps is a list of { name, url, repo?, aidenhq_app?, live_mode }"] };
+  const list = (given ?? []) as unknown[];
   const apps: App[] = [], errors: string[] = [];
   for (const [i, e] of list.entries()) {
     const a = (e && typeof e === "object" ? e : {}) as Record<string, unknown>;
@@ -54,7 +58,7 @@ export function readLogins(raw: string): Record<string, Login> {
   const out: Record<string, Login> = Object.create(null);
   for (const [app, e] of Object.entries(v as Record<string, unknown>)) {
     const l = (e && typeof e === "object" ? e : {}) as Record<string, unknown>;
-    if (![l.login_url, l.username, l.password].every((x) => typeof x === "string" && x) || (l.totp_secret !== undefined && typeof l.totp_secret !== "string")) continue;
+    if (![l.login_url, l.username, l.password].every((x) => typeof x === "string" && x) || (l.totp_secret !== undefined && (typeof l.totp_secret !== "string" || !BASE32.test(l.totp_secret)))) continue;
     if (!URL.canParse(String(l.login_url))) continue;
     out[app] = { login_url: String(l.login_url), username: String(l.username), password: String(l.password), ...(l.totp_secret ? { totp_secret: String(l.totp_secret) } : {}) };
   }
@@ -74,7 +78,8 @@ export function validate(input: { settings?: Record<string, unknown>; secret?: {
     if (!v || typeof v !== "object" || Array.isArray(v)) errors.push({ field: "ui_logins", message: "a JSON map of app name to { login_url, username, password, totp_secret? }" });
     else {
       const ok = readLogins(input.value ?? "");
-      for (const app of Object.keys(v)) if (!Object.hasOwn(ok, app)) errors.push({ field: "ui_logins", message: `${app.slice(0, 40)}: needs login_url (an address), username and password, and totp_secret as text if any` });
+      // By position only: a malformed paste may hold a credential where an app name belongs.
+      for (const [i, app] of Object.keys(v).entries()) if (!Object.hasOwn(ok, app)) errors.push({ field: "ui_logins", message: `entry ${i + 1}: needs login_url (an address), username and password, and totp_secret as a base32 seed if any` });
     }
   }
   return errors.length ? { ok: false, errors } : { ok: true };

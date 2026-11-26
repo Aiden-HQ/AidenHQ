@@ -111,6 +111,8 @@ test("the validate hook names a bad app or login, never a login's value; a faile
   const bad = validate({ secret: { name: "ui_logins" }, value: JSON.stringify({ acme: { username: "u", password: "hunter2" } }) });
   assert.equal(bad.ok, false); assert.ok(!JSON.stringify(bad).includes("hunter2"));
   assert.deepEqual(validate({ secret: { name: "ui_logins" }, value: LOGINS }), { ok: true });
+  assert.equal(validate({ secret: { name: "ui_logins" }, value: JSON.stringify({ acme: { login_url: "https://a.example.com", username: "u", password: "p", totp_secret: "not base32!" } }) }).ok, false);
+  assert.equal(validate({ settings: { ui_testing: { apps: { acme: {} } } } }).ok, false);
   assert.equal(readLogins("{}")["constructor" as string], undefined);
   const store = openStore(mkdtempSync(join(tmpdir(), "design-")));
   const { apps } = readApps(JSON.stringify({ apps: [{ name: "acme", url: "https://acme.example.com" }] }));
