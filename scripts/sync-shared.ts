@@ -141,6 +141,7 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/task-state-types.ts": ["services/board/src/aidenhq-sdk/task-state-types.ts"],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
+  "services/shared/face-kit.ts": ["services/board/src/face-kit.ts"],
   // A rubric criterion claiming a file's contents lack something: refused wherever a rubric is written (the grading service
   // files and amends; the task tools validate a delegation and an amendment before they send it).
   "services/shared/absence.ts": ["modules/grading/service/src/absence.ts", "modules/tasks/connections/tasks-mcp/src/absence.ts"],
