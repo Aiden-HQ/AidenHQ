@@ -52,6 +52,8 @@ SPIKE-REPORT, design/REPORT, taste/REPORT, taste/DESIGN-RULES-NEVER, design/boar
   where reachable. Scroll steps through the main scroller, at most 6 per capture.
 - Capture budget: the 60-route fixture app at 6 widths x 2 themes (720 captures, default state) finishes in under 600 s in
   the agent-base image at the computer's default limits (2 CPUs, 6 GB). Route checks are outside this budget (cap 300 s).
+- Phase 1 never clicks on a live target. Route checks and motion clicks run only on a local build (`127.0.0.1` or
+  `localhost`); a live URL gets passive capture and hover. Phase 2's live-app guard is what allows clicks on live targets.
 - Never wait for network idle. Readiness: loaded, fonts in, no fetch/XHR in flight, no `[aria-busy=true]`, skeleton or
   spinner (`[data-loading], [class*=skeleton], [role=progressbar]`) visible, no DOM change for 200 ms; capped at 4 s, then
   captured with a `not settled` note.
@@ -74,6 +76,19 @@ SPIKE-REPORT, design/REPORT, taste/REPORT, taste/DESIGN-RULES-NEVER, design/boar
   origin/main -m gpt-6.2-sol -c model_reasoning_effort=medium -o <scratchpad>/review.md < /dev/null`, in the background).
 - PRs: Conventional Commit titles, squash-merged, opened with the `ship:stop` label while lanes integrate. No per-task
   review gate: lanes build in parallel, then one integration review and CI.
+
+## Changed or dropped behaviour of `ui-review` (for the owner to OK in PR 1's body)
+
+| Today (#1876) | After PR 1 |
+|---|---|
+| `ui-review <url> …` runs capture and the route check together | `ui-review capture <url> …` and `ui-review routes <url> …`, two subcommands (a capture never waits on clicks) |
+| `--modes light,dark`; widths 390,768,1280 | `--themes light,dark`; widths 390,768,1024,1512,1920,2560 |
+| `--full` (whole page or scroll steps) | always scroll steps through the main scroller (at most 6) |
+| `--no-routes` | gone: routes are their own subcommand |
+| headless web vitals (LCP, CLS) as notes | dropped (a headless run's timings say little); layout shift is measured during interactions instead (`Motion.shifts`) |
+| "One system" and "Copy" notes | kept, inside `Measures` (`signatures`) and as notes (the copy word lists move to `copy.json`) |
+| `--paths`, `--palettes`, `--wait-text`, `--commit`, `--baseline`, "Look at these first", "Already on this base", exit 1 on blocking findings, `<page>-<width>-<mode>.png` names and the `aidenhq` PNG stamp | kept unchanged (the grader reads the stamp: `modules/grading/service/src/grader/images.ts`) |
+| feature-map.json in the working folder | kept; `--map <file>` points at another file of the same shape (the router read's output) |
 
 ## Review Focus
 
@@ -137,7 +152,7 @@ modules/code-review/recipe/ui.ts                      the ui.scan check job
 | E Code-review lens | 8 | A-D | 3 `feat(code-review): ui lens, ui.scan as a whole-repo check job reporting to Primer` |
 | F Evaluation set | 9 | after C's prompts exist | 2 |
 
-PR 1 merges first (images rebuild on apply); PR 2 and PR 3 merge after it, in either order. Integration: one Codex review
+PR 1 updates every caller of the CLI in the same PR (Task 1 Step 6). PR 1 merges first (images rebuild on apply); PR 2 and PR 3 merge after it, in either order. Integration: one Codex review
 of each PR plus CI, then the manual acceptance run (Task 10).
 
 ---
@@ -147,14 +162,16 @@ of each PR plus CI, then the manual acceptance run (Task 10).
 **Files:**
 - Create: `services/computer/images/agent-base/ui-review/{package.json,package-lock.json,types.ts,main.ts}`
 - Create: `services/computer/test/fixtures/ui-app/{server.ts,app.js}` (one HTML shell, hash router, 60 routes generated
-  from a list, `/live` polls every 50 ms, `/scroll` scrolls inside a `main` container, `/planted` carries the Task 3 plants)
+  from a list, `/live` polls every 50 ms, `/scroll` scrolls inside a `main` container, `/planted` carries the Task 3 plants, `/clock` renders "2m ago" from
+  `Date.now()`, `/danger` has Delete and Pay buttons that POST; the server counts writes)
 - Modify: `services/computer/images/agent-base/Dockerfile` (replace the two `ui-review` COPY lines with
   `COPY ui-review /opt/aidenhq/ui-review`, `RUN cd /opt/aidenhq/ui-review && npm ci --ignore-scripts --no-audit --no-fund`,
   and a `/usr/local/bin/ui-review` shim `exec node /opt/aidenhq/ui-review/main.ts "$@"`; the build check launches Chrome
   through `playwright-core`)
 - Delete: `services/computer/images/agent-base/ui-review` (the script), `ui-review-copy.json`
-- Modify: `.github/ci/areas.json` (the `services/computer` suite's paths include `services/computer/images/agent-base/ui-review`;
-  move that folder out of the `markdown` list)
+- Create: `services/computer/images/agent-base/ui-review/.gitignore` (`node_modules/`)
+- Modify: `.github/ci/areas.json` (add `services/computer/images/agent-base/ui-review` to the `services/computer` suite's
+  `paths`: `scripts/test/ci-areas.test.ts` requires a suite's imports to sit inside its paths; the `markdown` list stays)
 
 **Interfaces (Produces; every later task imports these from `types.ts`):**
 ```ts
@@ -195,9 +212,19 @@ export type Report = { version: 2; target: string; commit?: string; frozenAt: st
 - [ ] **Step 3:** Wire the Dockerfile; build: `ops/computer-images.sh agent-base` (or `docker build` with the browser
   base). Expected: build passes the Chrome launch check; `docker run --rm aidenhq/computer-agent-base:current ui-review --help`
   lists the subcommands.
-- [ ] **Step 4:** The command every engine test uses (put it in the test file's header comment):
-  `docker run --rm --cpus 2 --memory 6g -v "$WT":/w -w /w/services/computer aidenhq/computer-agent-base:current perl -e 'alarm shift; exec @ARGV' 900 node --test test/ui-review.e2e.test.ts`
+- [ ] **Step 4:** The command every engine test uses (put it in the test file's header comment). It tests the worktree's
+  code, not the image's copy: the package's dependencies are installed into the mounted folder first.
+  `docker run --rm --cpus 2 --memory 6g -v "$WT":/w aidenhq/computer-agent-base:current sh -c 'cd /w/services/computer/images/agent-base/ui-review && npm ci --ignore-scripts --no-audit --no-fund && cd /w/services/computer && perl -e "alarm shift; exec @ARGV" 900 node --test test/ui-review.e2e.test.ts'`
+  Expected before any lane lands: the tests are skipped or fail with "not built yet"; with no Chrome (CI) they are skipped.
 - [ ] **Step 5:** Commit `feat(computer): ui-review package skeleton, report contract and fixture app`.
+- [ ] **Step 6 (at integration, still PR 1):** update every caller to the new CLI and words:
+  `modules/design/agents/{ui-designer,ui-reviewer}/AGENTS.md` (the reviewer's commands only; its rewrite is Task 7),
+  `modules/engineering/skills/build-app/SKILL.md`, `modules/fleet-steward/skills/fleet-review/SKILL.md`,
+  `modules/apps-platform/design-system/{README.md,guidelines.md,review-checklist.md}`,
+  `modules/apps-platform/starter/{AGENTS.md,README.md,test/app.test.mjs,public/theme.js,src/catalog/catalog.tsx}` (then
+  `node scripts/sync-shared.ts` for the agent-base copies), `modules/engineering/test/evals/engineer/cases/app-header-brand-link.json`,
+  `docs/configuration.md`, `docs/design/design-system.md`; delete `services/computer/test/fixtures/agent-browser-stub.cts` if
+  nothing else uses it. Check: `git grep -n 'ui-review http\|--modes\|--no-routes' -- modules services docs` prints nothing.
 
 ### Task 2: Capture, coverage queue, page list (lane A)
 
@@ -218,7 +245,8 @@ test `services/computer/test/ui-review.e2e.test.ts`.
     after each item; `--resume` reopens it.
   - `capture(ctx: BrowserContext, base: string, item: QueueItem, o: { out: string; frozenAt: string; commit?: string }): Promise<Capture>`.
   - CLI: `ui-review capture <url> --out <dir> [--pages-file f] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4]`
-    and `ui-review routes <url> --out <dir>` (the route check, now its own subcommand so a capture never waits on it).
+    and `ui-review routes <url> --out <dir>` (the route check, now its own subcommand so a capture never waits on it; it
+    exits 2 "route checks click: a local build only" for a non-local target until phase 2's guard).
 
 Decisions the code must follow:
 - Workers: `--workers` (default 4) Playwright contexts on one Chrome; one context per (width, theme), reused across pages.
@@ -245,8 +273,17 @@ test("resume picks up a killed run without repeats", async () => {
   const r = await runCapture(fixtureUrl, { out, resume: true });
   assert.equal(r.coverage.done, r.coverage.total); assert.equal(new Set(r.captures.map(key)).size, r.captures.length);
 });
-test("two runs with one baseline show identical relative times", async () => { /* /clock renders "2m ago" from Date.now(); the
-  second run's report lists no changed page, and a page changed between runs is listed under "Look at these first" */ });
+test("two runs with one baseline show identical relative times", async () => {
+  const before = await runCapture(fixtureUrl, { pages: ["/clock", "/planted"], widths: [1512], themes: ["light"] });
+  await sleep(61_000); fixture.set("planted-title", "Changed");
+  const after = await runCapture(fixtureUrl, { pages: ["/clock", "/planted"], widths: [1512], themes: ["light"], baseline: before.out });
+  assert.deepEqual(after.lookFirst.map((c) => c.page), ["/planted"]);   // /clock unchanged: the clock is frozen
+});
+test("a live target is never clicked", async () => {
+  const r = await runCapture(liveAlias + "/#/danger", { widths: [1512], themes: ["light"] });   // a non-local host name, mapped to the fixture
+  await runRoutes(liveAlias + "/#/danger").catch(() => {});
+  assert.equal(fixture.writes, 0); assert.ok(r.captures[0].motion);    // measured passively
+});
 test("the queue takes 120 pages and defers the rest", async () => {
   const r = await runCapture(fixtureUrl, { pagesFile: pages(300), widths: [1512], themes: ["light"] });
   assert.equal(r.coverage.done, 120); assert.equal(r.coverage.deferred, 180);
@@ -278,7 +315,7 @@ Decisions:
 - Motion (measured, never from video): computed `transition-*` per element (grouped), `document.getAnimations()` with
   `playState === "running"` only (a finished animation held by `fill-mode` is excluded), `:hover`/`:active` rules and
   `@keyframes` read from same-origin stylesheets, `PerformanceObserver("long-animation-frame")` durations, and layout-shift
-  values recorded while each of up to 5 controls is hovered and clicked.
+  values recorded while each of up to 5 controls is hovered (and, on a local build only, clicked; see Global Constraints).
 
 - [ ] **Step 1: Write the failing test:**
 ```ts
@@ -300,11 +337,13 @@ test("refs skip a refusing site and keep to 4 requests/s", async () => {
 - [ ] **Step 2:** Run; expected FAIL. **Step 3:** Implement. **Step 4:** Run; expected PASS.
 - [ ] **Step 5:** Commit `feat(computer): ui-review design and motion measurements and category references`.
 
-### Task 4: The design review, motion pass and bug judging (lane C)
+### Task 4: The design review and the motion pass (lane C)
 
 **Files:** `model.ts`, `review.ts`, `report.ts` (review part), `prompts/design.md`, `prompts/consolidate.md`,
-`prompts/motion.md`, `prompts/bugs.md`, `prompts/router-read.md`, `rules/taste-never.md`; test with a fake model server in
-`ui-review.e2e.test.ts`.
+`prompts/motion.md`, `prompts/router-read.md`, `rules/taste-never.md`; test with a fake model server in
+`ui-review.e2e.test.ts`. No bug judging in phase 1: the spec's anti-goal is an unverified bug list, and a cold scan was ~35%
+real in the spike. Bugs arrive in phase 2 with reproduction; until then `Report.bugs` holds only the rule checks'
+blocking findings on a local build (the route check confirms each by a second click from a fresh page).
 
 **Interfaces:**
 - Consumes: `Capture`, `Measures`, `Motion` (Task 1), `refs.json` (Task 3).
@@ -313,8 +352,9 @@ test("refs skip a refusing site and keep to 4 requests/s", async () => {
     POST `${OPENROUTER_BASE_URL}/chat/completions` with `OPENROUTER_API_KEY`, images as `data:` URIs, `reasoning: { effort: "low" }`,
     `max_tokens: 32000`, `response_format: json_schema`; one retry that quotes the parse error; returns `cost_usd` from
     `usage.cost` into a run total.
-  - `ui-review review <dir> [--model m] [--taste file] [--refs refs.json] [--top 10] [--brand file]` writes
-    `improvements`, `motion` and `bugs` into `<dir>/report.json` and renders `report.md`.
+  - `ui-review review <dir> [--model m] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n]` writes
+    `improvements` and `motion` into `<dir>/report.json` and renders `report.md`; it stops calling the model once the run's
+    `cost_usd` reaches `--max-usd` and reports what it has.
 - Job boxes get the same two env names: `services/computer/lib.ts` job env adds `OPENROUTER_BASE_URL=$AIDENHQ_GATEWAY_URL/api/v1` (the launcher's model route) and
   `OPENROUTER_API_KEY=<the job's run token>` (both values already in the box as `AIDENHQ_GATEWAY_URL`/`AIDENHQ_RUN_TOKEN`;
   check boxes already have them). The engine reads only these two names.
@@ -328,8 +368,6 @@ Pipeline (code-owned order; the prompts own the judgment):
    candidate whose `captures` don't exist in the run.
 3. Motion pass (one call per page with motion data, text only): `Motion` + the two MIT reference texts; rows
    `Before/After/Why` with the CSS rule they come from; a row whose `css` is not found in the measured CSS is dropped.
-4. Bugs: one judging call per page (with its before|after pictures when `--baseline`), returning candidate `Bug`s with
-   `verified: false`; verification (clicking, repro) is the agent's in phase 2.
 
 `rules/taste-never.md` ships the universal rules from the spike's `DESIGN-RULES-NEVER.md`, in its
 `NEVER <failure> → INSTEAD <fix>, because <reason>` form: rules 2 (without the gradient clause), 3, 4 (without
@@ -350,7 +388,7 @@ test("review ranks concrete improvements and drops bad citations", async () => {
 });
 ```
 - [ ] **Step 2:** Run; FAIL. **Step 3:** Implement. **Step 4:** Run; PASS.
-- [ ] **Step 5:** Commit `feat(computer): ui-review design review, motion pass and bug judging`.
+- [ ] **Step 5:** Commit `feat(computer): ui-review design review and motion pass`.
 
 ### Task 5: Rendered fixes and the pairwise check (lane C)
 
@@ -364,8 +402,9 @@ test("review ranks concrete improvements and drops bad citations", async () => {
 - The fix loop is the agent's (skill text), using the engine: for each of the top 3 improvements, one at a time, in a
   throwaway copy of the repo: implement with `claude -p` (Sonnet) or `codex exec` (Sol), rebuild, `ui-review capture
   --pages-file <that page> --baseline <before dir>`, `ui-review fix-check` at `where.width`; accepted → keep the diff
-  (`git diff`) and the before|after pair; rejected or a failed build → revert, record `fix.status`. Collateral: the
-  capture's diff of every other page and width (>= 0.1%) is listed in `fix.collateral`.
+  (`git diff`) and the before|after pair; rejected or a failed build → revert, record `fix.status`. Collateral: before
+  judging, recapture every page at the target width and at 390 with `--baseline <before dir>`; each other page whose
+  pixels change by >= 0.1% is listed in `fix.collateral` (a fix with collateral is shown with that list, never hidden).
 
 - [ ] **Step 1: Write the failing test** (fake model biased to answer "first" for one pair, "second" for another):
 ```ts
@@ -389,10 +428,16 @@ test("fix-check needs AFTER in 2 of 3 in each order", async () => {
   `modules/design/test/store.e2e.test.ts`
 - Modify: `modules/design/module.yaml` (`services.run.design` with `data: ["evidence:/data"]`, port 8099, its connection
   `design` with `auth: design_service_key`, `generated_secrets`), `.github/ci/areas.json` (a `modules/design` suite)
-- Delete (only if #1876 merged without them; see the header): `modules/github/service/src/design-review.ts`,
-  `modules/github/test/design-review.test.ts`, the `design-review` role, `commit_status_set` (github-mcp and the grant),
-  the `design_review` wait reason, the design-review check in `kernel/sdk/src/checks.ts` and its copies, and the lines in
-  `TaskState.tsx`, `delegate-work/SKILL.md`, `docs/design/codehost-local.md`, `docs/design/flow.md`, `docs/operations.md`.
+- Delete (only if #1876 merged without them; see the header), every hit of `git grep -nE 'design-review|design_review'`
+  on `origin/main` today: `modules/github/service/src/design-review.ts`, `modules/github/test/design-review.test.ts`;
+  their uses in `modules/github/service/src/{main.ts,service.ts,flow.ts,merge-gate.ts}`, `modules/github/test/ship-effects.test.ts`,
+  `modules/github/module.yaml`, `modules/github/connections/github-mcp/src/{github.ts,main.ts,projects.ts}` (`commit_status_set`);
+  the check in `kernel/sdk/src/checks.ts`, `kernel/sdk/test/checks.test.ts` and the synced copies
+  (`modules/{github,grading,ship}/service/src/aidenhq-sdk/checks.ts`); `modules/design/{module.yaml,README.md}`,
+  `modules/apps-platform/agents/app-maintainer/AGENTS.md`, `modules/tasks/skills/delegate-work/SKILL.md`,
+  `scripts/verify-security.sh`, `services/board/web/{dev/mock-api.ts,src/ui/TaskState.tsx}`, and the docs
+  (`docs/configuration.md`, `docs/design/codehost-local.md`, `docs/design/flow.md`, `docs/operations.md`). Check: the grep
+  then prints only the spec and the plans.
 
 **Interfaces (Produces; phases 2 and 3 extend these, never add a second store):**
 - SQLite `/data/design.sqlite`: `runs (id TEXT PK, target TEXT, kind TEXT /* review|scan|pass */, app TEXT, task TEXT, model TEXT, status TEXT, started TEXT, ended TEXT, cost_usd REAL, report TEXT /* report.json */)`; files under `/data/evidence/<run>/`.
@@ -428,8 +473,9 @@ test("a run's evidence round-trips and expires", async () => {
   design_evidence_put, design_run_finish, design_runs, design_run]`; the agent's own harness model stays #1876's Sol: the
   design-review models are the engine's, per call), `modules/design/README.md` (the four-part shape, New installs)
 - Instance repo PR (`aidenhq-alpha/aidenhq-instance`): `modules/library/skills/owner-taste/SKILL.md` (the owner's positive
-  preferences: Stripe polish, Linear crispness, more colour, moderate 6-10px radius, little white space, prominent CTAs,
-  professional and restrained, no pills; the "References" list of public pages per `PageKind`), granted with
+  preferences, positive only: Stripe polish, Linear crispness, more colour, rounded rectangles at a moderate 6-10px radius,
+  compact layouts with little white space, prominent CTAs, a professional and restrained look; the "References" list of
+  public pages per `PageKind`), granted with
   `overrides.agents.ui-reviewer.skills.add: [library.owner-taste]` in `instance.yaml`.
 
 Skill sections (positive, how-to only): Run the app (repo: its AGENTS.md/README, seed or demo data, never a real
@@ -441,7 +487,10 @@ ranked improvements with their before|after images attached via `task_file_uploa
 evidence via `design_*`); Learning taste (every design correction the owner makes is distilled into `owner-taste` with
 `self_change`: the rule, its reason, `(inferred)` when the reason is a guess).
 
-- [ ] **Step 1:** `node scripts/compile.ts` and `cd scripts && npm test`. Expected: the design module compiles with the
+- [ ] **Step 1:** In the skill, how `claude -p` and `codex exec` reach the gateway from a job box: the same base URL and
+  run token the box's own harness uses (the launcher's `/api/v1/messages` route for Claude Code, `/api/v1/responses` for
+  Codex), as the engineer image's `code-review/engines.ts` configures them in a check box. Then `node scripts/compile.ts`
+  and `cd scripts && npm test`. Expected: the design module compiles with the
   new service, connection, skill and grants; handbook assertions in `services/computer` and `scripts` tests that named
   the old PR-gate text are updated in the same commit.
 - [ ] **Step 2:** Commit `feat(design): the UI Reviewer as an on-request designer with the ui-review skill`.
@@ -456,14 +505,20 @@ evidence via `design_*`); Learning taste (every design correction the owner make
 - Create: `modules/code-review/recipe/ui.ts`
 - Modify: `modules/code-review/module.yaml` (`check_jobs.code-review-ui`: `dir: recipe`, `argv: [node, /aidenhq-out/recipe/ui.ts]`,
   `timeout_min: 60`, `spec: { base: sha, run: text, option: text, model: text }`, `model: true`, `result: true`)
-- Modify: `modules/code-review/service/src/engine.ts` (`startTree`: an option whose `run.engine` is `ui-review` starts
-  profile `code-review-ui`), `seams.ts` (`Finding.ui?: { page: string; width: number; theme: "light" | "dark"; region: string; change: string; best: string }`),
-  `report.ts` (`LENS_ORDER` gains `ui`; a "UI" section lists improvements ranked, then bugs)
+- Modify: `modules/code-review/service/src/engine.ts`:
+  - `repoReview`: the effort check takes `UI_EFFORTS = ["low", "medium", "high"]` for `run.engine === "ui-review"`, as it
+    takes `DEEPSEC_EFFORTS` for deepsec (`ui-review` is **not** added to `config.ts` `ENGINES`, so no PR combo can name it);
+    `addTree(…, o.run.engine === "ui-review" ? "code-review-ui" : "code-review", null)` for `scope: repo` options;
+  - `startTree`: profile `code-review-ui` starts that check with `{ option, model }`;
+  - `treeCoverageOk`: a `code-review-ui` result needs `counts` like a review (pages eligible and captured).
+- Modify: `modules/code-review/service/src/adapters.ts` (`checkSpec`: `code-review-ui` → `{ base, run, option, model }`),
+  `seams.ts` (`ReviewSpec.profile` gains `code-review-ui`; `Finding.ui?: { page: string; width: number; theme: "light" | "dark"; region: string; change: string; best: string }`),
+  `report.ts` (`LENS_ORDER` gains `ui`; a "UI" section lists improvements ranked, then the rule checks' blocking findings)
 - Test: `modules/code-review/test/repo-review.test.ts` (one case)
 
 Catalog entry:
 ```json
-{"id":"ui.scan","name":"UI design scan","description":"Runs the app from the repo, captures every page at six widths in light and dark, measures it and reviews it as a product designer: ranked improvements and suspected bugs.","lens":"ui","modes":["one_off"],"recommended":[],"kind":"engine","model":"google/gemini-4-carbon","effort":"low","scope":"repo","source":{"repo":"Aiden-HQ/AidenHQ","version":"ui-review@2","licence":"AGPL-3.0-only"},"run":{"engine":"ui-review"},"when":["**/package.json"],"needs":"a web app with a package.json","output":"findings","runs_code":true,"cost":"high"}
+{"id":"ui.scan","name":"UI design scan","description":"Runs the app from the repo, captures every page at six widths in light and dark, measures it and reviews it as a product designer: ranked improvements and suspected bugs.","lens":"ui","modes":["one_off"],"recommended":[],"kind":"engine","model":"google/gemini-4-carbon","effort":"low","scope":"repo","source":{"repo":"Aiden-HQ/AidenHQ","version":"ui-review@2","licence":"AGPL-3.0-only"},"run":{"engine":"ui-review","max_cost_usd":10},"when":["**/package.json"],"needs":"a web app with a package.json","output":"findings","runs_code":true,"cost":"high"}
 ```
 
 `recipe/ui.ts` (in the check box: the snapshot, no credential but the run's model token):
@@ -473,19 +528,29 @@ Catalog entry:
 2. `ui-review capture http://127.0.0.1:8080 --pages-file .aidenhq-ui/pages.json --out /aidenhq-out/ui`, then
    `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/default.json` (an unattended
    scan carries no owner taste; agent runs do).
-3. Result: a `Review` with `target: "tree"`, findings mapped from the report: each improvement →
-   `{ severity: "nit", path: <the source file the change names, else the page path>, line: 0, title: weak, why, evidence: <captures>, fix_brief: change, option: "ui.scan", lens: "ui", ui: {...} }`;
-   each bug → `severity: "important"`. The result stays under 256 KB (top 10 improvements, top 20 bugs).
-   No rendered fixes at scan depth; the Primer report is text (its content limit is 80 KB markdown and it holds no images).
+3. Result: a `Review` (`version: 1`, `target: "tree"`, `engine: "ui-review"`, the spec's model, effort `low`) that the
+   tree validator accepts:
+   - `coverage: { reviewed: <captured page paths>, excluded: <failed or deferred page paths>, incomplete: null | "<why>", counts: { eligible: <pages listed>, reviewed: <pages captured> } }`,
+     `withheld: { important: 0, nit: <improvements beyond the top 10>, pre_existing: 0 }`;
+   - each improvement → `{ id: "ui-<rank>", severity: "nit", path: <the source file the change names, else the page path>, line: 0, title: weak, why, evidence: <the captures' names joined with ", ">, fix_brief: change, option: "ui.scan", lens: "ui", ui: {...} }`;
+   - each blocking rule finding (local build: route check, page errors, axe) → `{ id: "ui-rule-<n>", severity: "important", … }`.
+   The result stays under 256 KB (top 10 improvements, at most 20 rule findings). `--max-usd` is the option's
+   `max_cost_usd`. No rendered fixes at scan depth; the Primer report is text (publish `content` is at most 80 KB of
+   markdown and carries no images).
 
-- [ ] **Step 1: Write the failing test** (fake runner as the existing repo-review tests use):
+- [ ] **Step 1: Write the failing test** (fake kernel as `test/repo-review.test.ts` uses; `uiReview` is produced by
+  `recipe/ui.ts`'s own `toReview(report)` mapper from a fixture `report.json`, not written by hand):
 ```ts
 test("ui.scan runs as its own whole-repo check and reports a UI section", async () => {
   const b = await svc.repoReview({ target: { repo: "acme/app", commit: SHA }, options: ["ui.scan"] });
-  assert.equal(runner.started[0].profile, "code-review-ui");
-  runner.finish(0, uiReview);                                     // 2 improvements, 1 bug
+  const req = kernel.posts.find((p) => p.path === "/v1/checks")!;
+  assert.equal(req.body.run, "code-review-ui");
+  assert.deepEqual(Object.keys(req.body.spec).sort(), ["base", "model", "option", "run"]);
+  kernel.finishCheck(req, { result: toReview(fixtureReport, { model: "google/gemini-4-carbon" }) }); await svc.tick();
+  assert.equal(runOf(b.batch).status, "done");                     // the tree validator accepted it
   const md = await reportOf(b.batch);
   assert.match(md, /## UI/); assert.ok(md.indexOf("Widen the approvals grid") < md.indexOf("Compact the attention rail"));
+  await assert.rejects(svc.repoReview({ target: { repo: "acme/app", commit: SHA }, options: ["ui.scan"], combo: { effort: "xhigh" } }), /takes an effort of low, medium, high/);
 });
 ```
 - [ ] **Step 2-4:** FAIL, implement, PASS (`cd modules/code-review && npm test && npm run typecheck`).
@@ -495,9 +560,11 @@ test("ui.scan runs as its own whole-repo check and reports a UI section", async 
 
 **Files:** `modules/design/eval/{run.ts,README.md}`, `modules/design/eval/degrade.ts`, `modules/design/eval/fixes/<case>/{patch.css,expect.json}`
 (6 good + 6 bad fix cases on the app starter's catalog pages), `modules/design/eval/rated.example.json`;
-`.github/workflows/ci.yml` (job `ui-review-eval`, part of `ci-required`, on a same-repo PR or push to main touching
-`services/computer/images/agent-base/ui-review/{prompts,rules,review.ts,pairwise.ts,model.ts}` or `modules/design/eval/`,
-with the reviewer eval's key; reuses a pass for the same content of those files)
+`.github/workflows/ci.yml` (job `ui-review-eval`, part of `ci-required`, built like the `reviewer-eval` job: only on a
+same-repo PR or a push to main touching `services/computer/images/agent-base/ui-review/{prompts,rules,review.ts,pairwise.ts,model.ts}`
+or `modules/design/eval/`; the harness (`run.ts`, `degrade.ts`) and the existing cases come from the PR's base, the
+engine and prompts under test from the head; the key is the separate, capped eval key (`openrouter_eval_key`), never the
+fleet's; a fork's PR gets no key; a pass is reused for the same content of those files)
 - Instance repo: `design/eval/rated.json` (the owner's order: Stripe ≈ shadcn > Linear > Monday ≈ Cal > Airtable ≈ Notion
   ≈ Raycast > Duolingo; the board poor; Roadmap Keeper weaker) and `design/eval/corrections/` (one case per owner correction).
 
@@ -519,8 +586,19 @@ Suites and bars (initial, from the spike; change only with the owner):
   both above their bars; note cost (budget ~$2 a run).
 - [ ] **Step 2:** Commit `feat(design): ui-review regression set (degraded copies, fix pairs, calibration)`.
 
-### Task 10: Integration and acceptance (all lanes, once)
+### Task 10: Security review, integration and acceptance (all lanes, once)
 
+- [ ] **Step 0: Security review** (Conventions: every new path, before it switches on), written in each PR's body with
+  the test or code line that answers it:
+  1. `ui.scan` runs the repo's code with a model token and outbound network in a check box: the same exposure as today's
+     `runs_code` tools (whole-repo reviews only, never a fork's PR head); spend is bounded by `max_cost_usd` (10) in the
+     recipe and by the install's limits in the gateway.
+  2. Job boxes gain `OPENROUTER_BASE_URL`/`OPENROUTER_API_KEY`: the same token already in the box as `AIDENHQ_RUN_TOKEN`,
+     no new reach.
+  3. The `design` connection: `design_evidence_put` writes only under the caller's own run (path names checked), 8 MB a
+     call; the page-facing reads return only evidence of finished runs.
+  4. Phase 1 never clicks on a live target (Task 2/3 code path; test: the `/danger` fixture captured as a live URL gets no
+     POST).
 - [ ] **Step 1:** Merge lanes into their PR branches; `node scripts/ci-local.ts`; the engine tests in the image (Task 1
   Step 4); Codex review of each branch; fix every important finding.
 - [ ] **Step 2:** Deploy PR 1 and PR 2, then ask the UI Reviewer on a TEST task to review the board (built from `origin/main`
@@ -546,3 +624,10 @@ on-request reviews work on any URL or `local/` repo.
 - Phase split vs spec: the spec's phasing puts motion measurements in phase 3; this plan measures CSS and `getAnimations`
   motion in phase 1 (as the motion pass needs it) and leaves recording-derived motion to phase 3.
 - Types: `Report`, `Improvement`, `Capture` are defined once (Task 1) and used unchanged in 4, 5, 6, 8.
+- Decided here, beyond the spec: no bug judging until phase 2's reproduction (no unverified bug list); no clicks on live
+  targets until phase 2's guard; the product ships the app starter's catalog as default references (third-party
+  screenshots can't ship in the product), owners add theirs; an unattended `ui.scan` carries the universal rules only (the
+  owner's taste lives in the instance and reaches agent runs); `ui.scan` reports text to Primer (no images there).
+- Folded in from Codex's review of the plan: the `code-review-ui` profile wired through `checkSpec`, `addTree` and the tree
+  validator with a complete result contract; collateral checked by recapturing every page at the target width; the eval
+  job built like the reviewer eval (harness from the base, a capped eval key, same-repo only).

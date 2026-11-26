@@ -11,7 +11,7 @@ like a person, and reports only bugs it reproduced, without login material ever 
 |---|---|
 | The login ladder (supplied → repo-aware least-privilege → sign-up with Mailpit → throwaway auth patch), the session check, the live-app guard | the engine (`ui-review login`, `ui-review capture --session`, `browser.ts` guard) |
 | Releasing a supplied login to a box process, never to the model or a fork run | the design service's job tool `login`, reached through one new generic kernel route |
-| AidenHQ apps | the kernel's test-user session, widened from one agent key to a role and to a per-run live-app mode, served by the gate's test listener (per-request signed member identity) |
+| AidenHQ apps | the kernel's test-user session, widened from one agent key to a role and to a live-app mode, minted on the design service's request for its own pass (mode from the app's settings), served by the gate's test listener (per-request signed member identity) |
 | Which agent may do it | roles: `ui-login` (design), `app-tester` (apps-platform); never agent keys |
 | Clicking pass, reproduction | the agent (Codex with agent-browser's `dogfood` skill, attached to the engine's browser), the engine's `flows` and `repro` |
 
@@ -32,10 +32,19 @@ header for what is assumed from it).
   processes: never printed, never written to `report.*`, `queue.json`, logs or evidence, never a tool result.
 - A check box stays credential-free: `ui.scan-signed-in` uses only the rungs that need no secret (repo-aware, sign-up,
   auth patch on a local build).
-- Live-app mode per run: `read` (default for any target not built locally) allows `GET`/`HEAD` only; `test-write` allows
-  writes except `DELETE` and paths matching
-  `/(delete|destroy|remove|purge|archive|cancel|refund|pay|checkout|billing|invite|send|transfer|publish|deploy)/i`;
-  `any` allows everything. A local throwaway build defaults to `any`.
+- Live-app mode: each app's `live_mode` setting is the most a pass may do; a pass may only narrow it. `read` (the default
+  for any target not built locally) allows `GET`/`HEAD` only, no WebSocket upgrade and no gate-owned write
+  (`/.aidenhq/notify`); `test-write` means **the test account may change its own data**: writes are allowed except
+  `DELETE` and paths matching
+  `/(delete|destroy|remove|purge|archive|cancel|refund|pay|checkout|billing|invite|send|transfer|publish|deploy)/i`. That
+  list is a best-effort extra, not the guarantee (an app can hide an action in a body); the guarantee is the owner's choice
+  of `test-write` for an app whose test account holds only test data, and the setting's help says so. `any` allows
+  everything. A local throwaway build is `any`.
+- With the guard on, route checks and motion clicks may run on a live target under its mode (phase 1 kept them local).
+- Trust model (owner, 2026-11-23: own agents are trusted; the computer is the boundary): login material is kept out of the
+  model's text by the flow (box processes read it, nothing prints it), not by a jail against the agent, whose nested Codex
+  drives the same signed-in browser over CDP. The boundary that matters is that **untrusted code never runs beside a
+  supplied login**: passes run only on the owner's configured URL or default branch, never a fork or PR head.
 - Least privilege: a repo-aware session uses a seed or created user that is not an admin; when the repo only offers an
   admin, the run says so in its notes and proceeds read-only.
 - Clicking pass: 20 minutes and $3 per app per pass at most; it works the coverage queue's flows, never free roam.
@@ -79,17 +88,21 @@ build against them in parallel and meet at integration.
   `/v1/jobtools/<cmd>` today), `kernel/src/backplane.ts` (route `POST /v1/jobtools/module/:module/:op`), `kernel/src/jobtools.ts`
   (`moduleTool`), `scripts/modules.ts` (compile `providers.jobtools: { url, auth, ops: [..] }` into `modules.json`),
   `scripts/test/…` (compile refuses an op not listed)
-- Modify: `kernel/src/test-session.ts` (`TEST_SESSION_AGENTS` deleted: the agent must hold role `app-tester`;
-  `mint({ app, task, agent, mode, minutes })` with `mode: "read" | "test-write" | "any"`, `minutes` <= 60, default 15;
-  the session row stores `mode`), `kernel/src/backplane.ts` (`POST /v1/jobtools/test-session { app, mode, minutes }` with
-  the job's own token, beside the existing canary path), `modules/apps-platform/module.yaml` (declares role `app-tester`;
-  the red-teamer gets it, so the canary keeps working)
-- Modify: `modules/apps-platform/gate/test-listener.ts` (per request: the session's `mode` decides the methods and the
-  dangerous-path refusal of the Global Constraints; a refused request answers 403 `blocked by live-app mode`; the minted
-  identity's `methods` claim is the mode's list), `ops/vm/computer-net.sh` (boxes on `10.231.2.0/24` may reach
-  `10.231.6.1:3132`, the test listener, and nothing else new), `docs/design/access.md` ("Test-user sign-in": role, mode,
-  the computers network)
-- Test: `kernel/test/test-session-route.test.ts`, `kernel/test/jobtools-module.test.ts`, `modules/apps-platform/gate/test/test-listener.test.ts`
+- Modify: `kernel/src/test-session.ts` (`TEST_SESSION_AGENTS` deleted: the job's agent must hold role `app-tester`;
+  `mint({ app, task, agent, mode, minutes })` with `mode: "read" | "test-write" | "any"`, `minutes` <= 60, default 15; the
+  session row stores `mode`), `kernel/src/backplane.ts` (`POST /v1/test-session` also accepts a call from a module with role
+  `kernel.test-session` made while it serves a job-tool call the kernel forwarded for that job, carrying that call's
+  assertion, exactly as it accepts `apps.app_page_canary`'s tool call in flight today; `mode` and `minutes` come from the
+  module, never from the box), `modules/apps-platform/module.yaml` (declares role `app-tester`; the red-teamer gets it, so
+  the canary keeps working), `modules/design/module.yaml` (requests `kernel.test-session`)
+- Modify: `modules/apps-platform/gate/test-listener.ts` (per request, on both the request and the upgrade path: the
+  session's `mode` decides; `read` refuses every method but `GET`/`HEAD`, every WebSocket upgrade and `POST
+  /.aidenhq/notify`; `test-write` refuses `DELETE` and the dangerous paths; a refusal is 403 `blocked by live-app mode`),
+  `ops/vm/computer-net.sh` (boxes on `10.231.2.0/24` may reach `10.231.6.1:3132`, the test listener, and nothing else new),
+  `kernel/src/apply-tier.ts` (the host note an apply prints for an upgraded host now names this rule too),
+  `docs/design/access.md` ("Test-user sign-in": role instead of key, mode, the computers network)
+- Test: `kernel/test/test-session-route.test.ts`, `kernel/test/jobtools-module.test.ts`, `modules/apps-platform/gate/test/test-listener.test.ts`,
+  `scripts/test/modules.test.ts` (one case: compile refuses a job-tool op the module doesn't list)
 
 **Interfaces (Produces):**
 - `POST /v1/jobtools/module/:module/:op` (a kernel job's own token, body ≤ 16 KB) → the module's answer (≤ 64 KB). The kernel
@@ -97,7 +110,7 @@ build against them in parallel and meet at integration.
   to the module's `providers.jobtools.url` with the module's key. `task_module`/`task_source` are read from the task's
   markers only when the control plane's `createdByAgentId` is empty and the module marker is the only one (`modtasks.ts`
   `ownTask` rules). 404 for an op the module doesn't list.
-- `POST /v1/jobtools/test-session { app, mode, minutes }` → `{ handoff: string /* one-time URL on <app>.canary.localhost:3132 */, expires: string }`.
+- `POST /v1/test-session { app, mode, minutes }` from a module serving a forwarded job-tool call → `{ handoff: string /* one-time URL on <app>.canary.localhost:3132 */, expires: string }`.
 
 - [ ] **Step 1: Write the failing tests:**
 ```ts
@@ -106,21 +119,25 @@ test("module job tool forwards the caller and the task's module source", async (
   assert.deepEqual(design.lastCall.caller, { agent: "ui-reviewer", roles: ["ui-login"], task: T, task_module: "design", task_source: "design:pass:acme:r1" });
   assert.equal((await post("/v1/jobtools/module/design/nope", {}, { job: "ui" })).status, 404);
 });
-test("a test session needs the app-tester role and carries its mode", async () => {
-  assert.equal((await post("/v1/jobtools/test-session", { app: "tracker", mode: "read" }, { job: "no-role" })).status, 403);
-  const ok = await post("/v1/jobtools/test-session", { app: "tracker", mode: "read", minutes: 60 }, { job: "tester" });
+test("a test session is minted only for a module's in-flight job tool, for an app-tester", async () => {
+  assert.equal((await moduleCall("design", "/v1/test-session", { app: "tracker", mode: "read" }, { inFlight: null })).status, 403);
+  assert.equal((await moduleCall("design", "/v1/test-session", { app: "tracker", mode: "read" }, { inFlight: jobOf("no-role") })).status, 403);
+  const ok = await moduleCall("design", "/v1/test-session", { app: "tracker", mode: "read", minutes: 60 }, { inFlight: jobOf("tester") });
   assert.match(ok.json.handoff, /^http:\/\/tracker\.canary\.localhost:3132\/\.auth\/handoff\?code=/);
+  assert.equal((await moduleCall("design", "/v1/test-session", { app: "tracker", mode: "read", minutes: 61 }, { inFlight: jobOf("tester") })).status, 400);
 });
-test("the listener enforces the session's mode per request", async () => {
+test("the listener enforces the session's mode on requests, upgrades and its own notify", async () => {
   assert.equal((await viaListener("POST", "/api/items", { mode: "read" })).status, 403);
+  assert.equal((await viaListener("POST", "/.aidenhq/notify", { mode: "read" })).status, 403);
+  assert.equal((await upgradeViaListener("/live", { mode: "read" })).status, 403);
   assert.equal((await viaListener("DELETE", "/api/items/1", { mode: "test-write" })).status, 403);
   assert.equal((await viaListener("POST", "/api/items/1/publish", { mode: "test-write" })).status, 403);
   assert.equal((await viaListener("POST", "/api/items", { mode: "test-write" })).status, 200);
-  assert.deepEqual(app.lastIdentity.methods, ["GET", "HEAD", "POST", "PUT", "PATCH"]);
 });
 ```
 - [ ] **Step 2:** Run `cd kernel && npm test` and `cd modules/apps-platform/gate && npm test`; expected FAIL.
-- [ ] **Step 3:** Implement. Keep `app_page_canary` working through the same `mint` (mode `test-write`, 15 minutes).
+- [ ] **Step 3:** Implement. Keep `app_page_canary` working through the same `mint` (mode `test-write`, 15 minutes; its
+  existing test stays green).
 - [ ] **Step 4:** Run both suites and `npm run typecheck`; expected PASS. Regenerate `kernel/contract.lock.json` (new routes
   `experimental`).
 - [ ] **Step 5:** Security review in the PR body (the five questions in Task 5 Step 1), commit
@@ -130,11 +147,12 @@ test("the listener enforces the session's mode per request", async () => {
 
 **Files:**
 - Modify: `modules/design/module.yaml`:
-  - setting `ui_apps` (list of `{ name: "^[a-z][a-z0-9-]{1,30}$", url, repo?: "owner/name", aidenhq_app?: boolean }`, default
-    `[]`, edited on the generic module settings screen until phase 3 moves it to the page);
+  - setting `ui_testing` (an object, as code-review's `code_review`: `{ apps: [{ name: "^[a-z][a-z0-9-]{1,30}$", url, repo?: "owner/name", aidenhq_app?: boolean, live_mode: "read" | "test-write" | "any" }] }`,
+    default `{ apps: [] }`, `live_mode` default `read`; edited on the generic module settings screen until phase 3 moves it
+    to the page);
   - secret `ui_logins` (`setup:` a JSON map `{ "<app>": { "login_url", "username", "password", "totp_secret"? } }`, pasted in
     the module's secret field);
-  - `providers.jobtools: { url: http://design:8099/jobtools, auth: design_service_key, ops: [login] }`;
+  - `providers.jobtools: { url: http://design:8099/jobtools, auth: design_service_key, ops: [login, app-session] }`;
   - roles: declares `ui-login`; requests `kernel.tasks`;
   - ui-reviewer: `roles: [repo-checkout, ui-login, app-tester]`, grants `design_apps`, `design_pass_start`.
 - Modify: `modules/design/service/src/{main.ts,store.ts,mcp.ts}`, create `modules/design/service/src/{passes.ts,jobtools.ts}`
@@ -148,12 +166,15 @@ test("the listener enforces the session's mode per request", async () => {
     `passes.ts`: the one function that files a pass (phase 3's scheduler calls it too).
   - `design_pass_start { app: string; depth: "scan" | "signed-in" | "tester"; mode?: "read" | "test-write" | "any"; model?: string } → { run, task }`:
     files one module task for the holder of role `ui-login` (source `design:pass:<app>:<run>`, fixed text naming the app,
-    depth, mode and model) against the app's configured `url`, or its repo's default branch; never a PR head.
-  - `design_apps {} → { apps: { name, url, repo?, aidenhq_app, login: boolean }[] }` (whether a login is set, never its value).
+    depth, mode and model) against the app's configured `url`, or its repo's default branch; never a PR head. `mode` may
+    only narrow the app's `live_mode` (asking for more is refused).
+  - `design_apps {} → { apps: { name, url, repo?, aidenhq_app, live_mode, login: boolean }[] }` (whether a login is set, never its value).
   - Job tool `login { app }` → `{ login_url, username, password, totp?: string /* the current code, never the seed */ }`,
     released only when: the caller holds `ui-login`; `task_module === "design"` and `task_source === "design:pass:<app>:<run>"`
     for that `app`; that run is the app's active pass (status `running`); the app has a login. Every other case: 403 with
     the reason, nothing else.
+  - Job tool `app-session { app }` → the kernel's handoff (Task 1), under the same pass checks, for an app with
+    `aidenhq_app: true`, with `mode` = the pass's mode and `minutes: 60`. The box never names the mode.
 
 - [ ] **Step 1: Write the failing test:**
 ```ts
@@ -167,6 +188,13 @@ test("a supplied login reaches only the app's own pass", async () => {
     assert.equal((await jobtoolRaw("login", { app: "acme" }, c)).status, 403);
   finishRun(run); assert.equal((await jobtoolRaw("login", { app: "acme" }, caller({ source: `design:pass:acme:${run}` }))).status, 403);
   assert.ok(!JSON.stringify(await call("design_apps", {})).includes("hunter2"));
+});
+test("an app session takes its mode from the app and the pass, never the box", async () => {
+  settings({ apps: [{ name: "tracker", url: U, aidenhq_app: true, live_mode: "read" }] });
+  await assert.rejects(call("design_pass_start", { app: "tracker", depth: "tester", mode: "test-write" }), /live_mode/);
+  const { run } = await call("design_pass_start", { app: "tracker", depth: "tester" });
+  await jobtool("app-session", { app: "tracker", mode: "any" }, caller({ source: `design:pass:tracker:${run}` }));
+  assert.deepEqual(pick(kernel.lastTestSession, ["app", "mode", "minutes"]), { app: "tracker", mode: "read", minutes: 60 });
 });
 ```
 - [ ] **Step 2-4:** FAIL, implement, PASS (`cd modules/design/service && npm test`).
@@ -195,13 +223,14 @@ test("a supplied login reaches only the app's own pass", async () => {
 - `ui-review login signup --url <signup url> --out state.json`: starts Mailpit on `127.0.0.1:1025` (SMTP) and `:8025` (API)
   unless running, signs up as `ui-review+<run>@example.test`, follows the link or enters the code from the newest mail;
   stops with the reason on a CAPTCHA (`iframe[src*=captcha]`, `[class*=captcha]`, `g-recaptcha`, `h-captcha`) or a phone field.
-- `ui-review login aidenhq --app <app> --mode <m> --out state.json`: `POST /v1/jobtools/test-session`, opens the handoff,
+- `ui-review login aidenhq --app <app> --out state.json`: `POST $AIDENHQ_GATEWAY_URL/v1/jobtools/module/design/app-session`, opens the handoff,
   writes state for `<app>.canary.localhost:3132`; Chrome is launched with `--host-resolver-rules="MAP *.canary.localhost 10.231.6.1"`.
 - Every login writes `state.json` plus `state.meta.json` `{ rung, loginPath, loginTitle, origin }` (no secret).
 - `Report` (phase 1's `types.ts`) gains `blocked: { method: string; path: string; page: string }[]` and
   `session?: { rung: "supplied" | "form" | "signup" | "aidenhq" | "patch"; relogins: number }`.
 - Guard: `--mode read|test-write|any` (default `read` unless the target is `127.0.0.1`/`localhost`); CDP `Fetch.enable` for the
-  target origins; a refused request fails with `BlockedByClient` and is recorded `{ method, path, page }`.
+  target origins (requests and WebSocket opens); a refused request fails with `BlockedByClient` and is recorded
+  `{ method, path, page }`. With the guard on, `ui-review routes` and motion clicks accept a live target.
 - Session check: after each capture, a final URL whose path is `loginPath`, or a visible password input with the login
   title, means the session is gone: one re-login with the same rung (supplied, form, aidenhq), then `failed: session ended`.
 
@@ -234,7 +263,9 @@ test("the guard blocks writes in read mode and destructive paths in test-write",
 ### Task 4: Clicking pass, reproduction and verified bugs (lane C)
 
 **Files:**
-- Create: `services/computer/images/agent-base/ui-review/{flows.ts,repro.ts}`, `prompts/flows.md`, `prompts/repro-judge.md`
+- Create: `services/computer/images/agent-base/ui-review/{flows.ts,repro.ts,bugs.ts}`, `prompts/flows.md`, `prompts/bugs.md`
+  (one judging call per page over its captures, before|after when `--baseline`: candidate bugs, phase 1 left this out),
+  `prompts/repro-judge.md`
 - Modify: `services/computer/images/agent-base/Dockerfile` (agent-browser's `dogfood` skill at a pinned commit into
   `/opt/aidenhq/skills/dogfood`, its licence beside it), `modules/design/skills/ui-review/SKILL.md` (sections "Signing in",
   "Clicking pass", "Bugs"), `modules/design/agents/ui-reviewer/AGENTS.md` (one line: bugs are reported only once reproduced)
@@ -248,7 +279,8 @@ test("the guard blocks writes in read mode and destructive paths in test-write",
     and what should happen; ends with "write each finding to clicks.json as `{ kind: "friction" | "bug", page, width, title, steps: Step[], saw, expected }`".
   - `type Step = { open: string } | { click: string } | { fill: [string, string] } | { press: string } | { wait: string }`
     (selectors are Playwright locators: `role=button[name="Save"]`, `text=…`, CSS).
-  - `ui-review repro <clicks.json> --out <dir> [--session state.json] [--mode m]`: each `bug` replayed twice, each in a
+  - `ui-review bugs <dir> [--model m]`: candidate bugs from the captures into `candidates.json` (never into the report).
+  - `ui-review repro <clicks.json|candidates.json> --out <dir> [--session state.json] [--mode m]`: each `bug` replayed twice, each in a
     fresh context, before|after captures around its last step, one judging call (`prompts/repro-judge.md`, Carbon) per
     replay; `verified = both replays show it`; writes `bugs` into `report.json` (only verified ones) and `friction` items
     into the design review's input for the consolidation step.
@@ -272,12 +304,15 @@ test("flows lists every page's key controls with a persona", async () => {
 
 ### Task 5: Security review, integration and acceptance (once)
 
-- [ ] **Step 1: Security review** (written in PR 1's and PR 2's bodies, each answer pointing at a test):
-  1. Can any task other than the design module's own pass for that app get a supplied login? (Task 2 test)
+- [ ] **Step 1: Security review** (written in PR 1's and PR 2's bodies, each answer pointing at a test; the trust model
+  line of the Global Constraints is stated first):
+  1. Can any task other than the design module's own pass for that app get a supplied login or an app session, or a mode
+     above the app's `live_mode`? (Task 2 tests)
   2. Can a fork's code run while a supplied login is in the box? Passes run only on the app's URL or its default branch;
      on-request PR reviews never get a login (Task 2 test); check boxes never carry one (Task 3 Step 6 test).
   3. Can an agent without `app-tester` mint a test session, or a session outlive its task or 60 minutes? (Task 1 tests)
-  4. Can a read-mode session write? (Task 1 listener test; Task 3 guard test)
+  4. Can a read-mode session write, through a request, a WebSocket or the gate's notify? (Task 1 listener test; Task 3
+     guard test)
   5. Can login material reach a report, a log, a tool result or evidence? (Task 3 grep assertion)
 - [ ] **Step 2:** Merge lanes; `node scripts/ci-local.ts`; engine tests in the image; Codex review of each PR; fix findings.
 - [ ] **Step 3:** Deploy PR 1, then PR 2. Acceptance on TEST tasks: (a) a signed-in pass on Roadmap Keeper through
@@ -288,7 +323,7 @@ test("flows lists every page's key controls with a persona", async () => {
 
 ## New installs
 
-Nothing new is on: `ui_apps` is empty and no login is set, so signed-in passes need the owner to add an app (and, for a
+Nothing new is on: `ui_testing.apps` is empty and no login is set, so signed-in passes need the owner to add an app (and, for a
 supplied login, paste it). AidenHQ apps need `settings.edge.test_user` naming them, as for the canary; without it the
 AidenHQ rung answers "no test user for <app>" and the ladder moves on. Hosts upgraded from an older install must re-run
 `ops/vm/computer-net.sh` (apply prints this, as it does for the canary network).
@@ -302,4 +337,8 @@ AidenHQ rung answers "no test user for <app>" and the ladder moves on. Hosts upg
   enforcement (1, 3), clicking pass with dogfood (4), verified bugs (4), `ui.scan-signed-in` (3 Step 6).
 - The widened test session changes a rule `docs/design/access.md` states ("never widened by a setting: the agent key list"):
   it is widened in code from a key to a role, reviewed in Task 5. The app list stays the owner's `settings.edge.test_user`.
-- Types: `Step`, `state.meta.json`, `design_pass_start` and the job tool's `caller` match between Tasks 1-4.
+- Types: `Step`, `state.meta.json`, `design_pass_start`, `ui_testing.apps[]` and the job tool's `caller` match between
+  Tasks 1-4.
+- Codex's review of the plan (2026-11-26) asked to jail credentials from the agent itself and to replace the test-write
+  path list with per-app allowlists. Answered by design: own agents are trusted (owner, 2026-11-23), and `test-write` is the
+  owner's per-app choice for a test account with test data only; the list stays a best-effort extra.
