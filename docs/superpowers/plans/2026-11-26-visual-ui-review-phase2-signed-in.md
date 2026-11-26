@@ -263,8 +263,11 @@ test("read mode blocks a write to a separate API origin, and the agent's own tab
 ```
 - [ ] **Step 2-4:** FAIL, implement, PASS (phase 1's Task 1 Step 4 command).
 - [ ] **Step 5:** Commit `feat(computer): ui-review login ladder, session check and live-app guard`.
-- [ ] **Step 6:** `ui.scan-signed-in`: extend phase 1's `repo-review.test.ts` case: the option starts `code-review-ui` with
-  `option: "ui.scan-signed-in"`, and the recipe's spec carries no login field (assert the spec's keys equal phase 1's).
+- [ ] **Step 6:** `ui.scan-signed-in`: extend phase 1's `repo-review.test.ts` case: the option starts the same two checks in
+  turn, `code-review-ui` with `option: "ui.scan-signed-in"` and no `model` (the sign-in happens in that box, which still
+  holds no model token), then `code-review-ui-review` over its bundle. The spec carries **no login field**: the capture step
+  signs in with the rungs that need no secret (repo-aware, sign-up, auth patch on a local build), so the spec's keys equal
+  phase 1's and no session or credential reaches either the spec or the model.
   Commit `feat(code-review): ui.scan-signed-in`.
 
 ### Task 4: Clicking pass, reproduction and verified bugs (lane C)

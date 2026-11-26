@@ -13,7 +13,7 @@ A code-review repo review can run the same scan as the `ui.scan` option and publ
 | Capture, coverage queue, page list, measurements (design and motion), rule checks, model calls, pairwise check | the engine `ui-review` (agent-base image), rewritten as a TypeScript package on Playwright over the image's Chrome |
 | Judgment: which app, how to run it, reading the router, picking and implementing fixes, writing the report | the UI Reviewer (one agent, one skill `design.ui-review`) |
 | Runs, evidence (report and cited images), retention | the design module's new service `design` (its connection `design`, tools `design_*`) |
-| The unattended scan of a repo at a commit | code-review's `ui.scan` option: its own check job `code-review-ui`, report to Primer |
+| The unattended scan of a repo at a commit | code-review's `ui.scan` option: a token-free capture check (`code-review-ui`) then a model check over its report (`code-review-ui-review`), report to Primer |
 | Taste | universal NEVER/INSTEAD rules in the product; the owner's positive preferences and references in the instance repo |
 
 The engine decides nothing about taste: it captures, measures and asks the model with the prompts it ships; the agent runs
@@ -145,7 +145,7 @@ services/computer/test/fixtures/ui-app/               the 60-route fixture SPA (
 modules/design/service/                               evidence store + design_* tools (new)
 modules/design/skills/ui-review/SKILL.md              how the UI Reviewer works (the one skill)
 modules/design/eval/                                  regression set runner and neutral cases
-modules/code-review/recipe/ui.ts                      the ui.scan check job
+modules/code-review/recipe/ui.ts, ui-review.ts       the ui.scan check jobs (capture, then review)
 ```
 
 ## Lanes and PRs
@@ -563,41 +563,77 @@ evidence via `design_*`); Learning taste (every design correction the owner make
 
 **Files:**
 - Modify: `modules/code-review/recipe/catalog.ts` and `modules/code-review/service/src/catalog.ts` (`LENSES` adds `"ui"`; the
-  id pattern adds `ui`; `runs_code: true` is allowed for `kind: "engine"` with `run.engine: "ui-review"`; both validators
-  change in the same commit)
+  id pattern adds `ui`; `runs_code: true` is allowed for `kind: "engine"` with `run.engine: "ui-review"` **only because that
+  engine's repo-code step is a separate, token-free check job** — the comment on the rule says so, and the `ENGINES` list
+  still keeps `ui-review` out of PR combos; both validators change in the same commit. The reviewer's objection is exactly
+  what this rule exists to prevent: `recipe/catalog.ts:63` today refuses `runs_code` for anything but a tool, and nothing
+  in this change may let a token-bearing box run repo code)
 - Modify: `modules/code-review/service/src/catalog.json` (one entry, below)
-- Create: `modules/code-review/recipe/ui.ts`
-- Modify: `modules/code-review/module.yaml` (`check_jobs.code-review-ui`: `dir: recipe`, `argv: [node, /aidenhq-out/recipe/ui.ts]`,
-  `timeout_min: 60`, `title: the UI design scan`, `spec: { base: sha, run: text, option: text, model: text }`,
-  `model: true`, `result: true`: `title` is required, `checkJobs` refuses a recipe without one, `scripts/modules.ts:1724`)
+- Create: `modules/code-review/recipe/ui.ts` (the token-free capture step) and `modules/code-review/recipe/ui-review.ts`
+  (the model step over its report)
+- Modify: `modules/code-review/module.yaml` (two check jobs, because **the box that runs the repo's code must hold no model
+  token**: `code-review-ui` runs the app and captures it, and `code-review-ui-review` reads the captures' text with the model):
+  - `code-review-ui`: `dir: recipe`, `argv: [node, /aidenhq-out/recipe/ui.ts]`, `timeout_min: 60`, `title: the UI design scan`,
+    `spec: { base: sha, run: text, option: text, model: text }`, `result: true`, `keep: true` (it keeps the bundle for the
+    review step) and **no `model:` line** (the only form the compiler accepts besides `true`,
+    `scripts/modules.ts:1727`: `model: false` is refused). So `checkEnv("result")` gives it neither `OPENROUTER_API_KEY` nor
+    `OPENROUTER_BASE_URL` (`kernel/src/checkjobs.ts:176-179`).
+  - `code-review-ui-review`: `dir: recipe`, `argv: [node, /aidenhq-out/recipe/ui-review.ts]`, `timeout_min: 20`,
+    `title: the UI design review`, `spec: { base: sha, run: text, option: text, model: text, ui: input }`, `model: true`,
+    `result: true`. It gets the run's model token and, like every code check, the head tree at `ws` (`kernel/src/checkjobs.ts:504`),
+    plus the capture bundle as its input — but **nothing in it executes repo code**: no start script, no install, no repo
+    config or skill loaded, only file text read as data (deepsec's rule, `deepsec.ts:10`).
+  - `title` is required: `checkJobs` refuses a recipe without one (`scripts/modules.ts:1724`).
 - Modify: `modules/code-review/service/src/engine.ts`:
   - `repoReview`: the effort check takes `UI_EFFORTS = ["low", "medium", "high"]` for `run.engine === "ui-review"`, as it
     takes `DEEPSEC_EFFORTS` for deepsec (`ui-review` is **not** added to `config.ts` `ENGINES`, so no PR combo can name it);
     `addTree(…, o.run.engine === "ui-review" ? "code-review-ui" : "code-review", null)` for `scope: repo` options;
-  - `startTree`: profile `code-review-ui` starts that check with `{ option, model }`;
+  - `startTree`: profile `code-review-ui` starts the token-free capture check with `{ option, model }`; when it passes, the
+    service reads its kept bundle (`GET /v1/checks/:check/kept`), uploads it (`POST /v1/checks/inputs`) and starts
+    `code-review-ui-review` with that as `ui` — the same handoff deepsec's records use (`deepsec_data: input`). A capture that
+    fails is the option's failure; a review that fails leaves the batch incomplete, never clean;
   - `treeCoverageOk`: a `code-review-ui` result needs `counts` like a review (pages eligible and captured).
-- Modify: `modules/code-review/service/src/adapters.ts` (`checkSpec`: `code-review-ui` → `{ base, run, option, model }`),
-  `seams.ts` (`ReviewSpec.profile` gains `code-review-ui`; `Finding.ui?: { page: string; width: number; theme: "light" | "dark"; region: string; change: string; best: string }`),
+- Modify: `modules/code-review/service/src/adapters.ts` (`checkSpec`: `code-review-ui` and `code-review-ui-review` → `{ base, run, option, model }`; the review step's `inputs` names the capture check's kept report, as deepsec's records travel),
+  `seams.ts` (`ReviewSpec.profile` gains `code-review-ui` and `code-review-ui-review`; the review step's spec carries the
+  bundle as `ui`, uploaded like deepsec's records; `Finding.ui?: { page: string; width: number; theme: "light" | "dark"; region: string; change: string; best: string }`),
   `report.ts` (`LENS_ORDER` gains `ui`; a "UI" section lists improvements ranked, then the rule checks' blocking findings)
-- Test: `modules/code-review/test/repo-review.test.ts` (one case)
+- Test: `modules/code-review/test/repo-review.test.ts` (two cases: the capture-then-review chain, and the token split)
 
 Catalog entry:
 ```json
 {"id":"ui.scan","name":"UI design scan","description":"Runs the app from the repo, captures every page at six widths in light and dark, measures it and reviews it as a product designer: ranked improvements and suspected bugs.","lens":"ui","modes":["one_off"],"recommended":[],"kind":"engine","model":"google/gemini-4-carbon","effort":"low","scope":"repo","source":{"repo":"Aiden-HQ/AidenHQ","version":"ui-review@2","licence":"AGPL-3.0-only"},"run":{"engine":"ui-review","max_cost_usd":10},"when":["**/package.json"],"needs":"a web app with a package.json","output":"findings","runs_code":true,"cost":"high"}
 ```
 
-`recipe/ui.ts` (in the check box: the snapshot, no credential but the run's model token):
-1. `codex exec` (Sol, low) with `prompts/router-read.md` plus "start this app on 127.0.0.1:8080 with its seed or demo
-   data; write the command to `.aidenhq-ui/run.sh` and the pages to `.aidenhq-ui/pages.json`"; then run `run.sh` and wait
-   for the port (180 s cap).
-2. `ui-review capture http://127.0.0.1:8080 --pages-file .aidenhq-ui/pages.json --out /aidenhq-out/ui`, then
+`recipe/ui.ts` (**`code-review-ui`, the token-free box**: no `OPENROUTER_API_KEY`, no `OPENROUTER_BASE_URL` — the repo's code
+runs here, so nothing here may hold a model token, the rule `recipe/tools.ts:3` and `deepsec.ts:10` state. It therefore runs
+**no model at all**, not even the router read):
+1. Start the app **without a model**: run the `start` script `package.json` declares (`npm start` / `pnpm start` / `yarn start`,
+   else the framework's default), with `--host 127.0.0.1 --port 8080` where the framework takes them, else env
+   `PORT=8080 HOST=127.0.0.1`, and wait for the port (180 s cap). If the repo declares no start script and the framework
+   gives no default, the check **fails with `no start command: add a "start" script`** — it does not guess. Seed or demo data,
+   when one is needed, comes from a `start` script the repo declares, never from a command a model wrote.
+2. `ui-review capture http://127.0.0.1:8080 --out /aidenhq-out/ui` (its own page list: a same-origin link crawl plus
+   `sitemap.xml`; a repo may supply `.aidenhq-ui/pages.json`, committed, for pages a crawl can't reach), then
    `ui-review routes http://127.0.0.1:8080 --out /aidenhq-out/ui/routes` (its `report.json` lands inside the capture folder,
-   beside the captures' `report.json`; exit 1 means blocking findings, not a failure, exit 2 is a failed check), then
-   `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/references.json` (an unattended
-   scan carries no owner taste; agent runs do). `review` reads `/aidenhq-out/ui/routes/report.json` when it is there and
-   folds each blocking route finding into the capture report's `rules` as a `RuleHit` (`blocking: true`), so
-   `toReview` maps them like axe's and the page's own errors. A route the check could not run is a note, never a rule hit.
-3. Result: a `Review` (`version: 1`, `target: "tree"`, `engine: "ui-review"`, the spec's model, effort `low`) that the
+   beside the captures' `report.json`; exit 1 means blocking findings, not a failure, exit 2 is a failed check). Capture and
+   routes are measurement only: no model, no judgement. A route the check could not run is a note, never a rule hit.
+3. It leaves a **bounded bundle** at `/aidenhq-out/keep` (`keep: true`) for the review step: a gzipped tar of the capture
+   report plus the shots the review actually reads — per page its 390, 1512 and 2560 light captures and its 1512 dark, downscaled
+   to a 1200 px long edge — and nothing else. That keeps it inside a check input (`INPUT_MAX`, 64 MB, one file: a keep'd file
+   is one regular file, `kernel/src/checkjobs.ts:435-442`). When the bundle would exceed it, it drops pages from the tail of the
+   queue and marks `coverage.incomplete` with how many, so the result is never silently partial. Its own result is the report
+   in the tree-validator's shape. **No `Review` comes out of this box.**
+
+`recipe/ui-review.ts` (**`code-review-ui-review`, the model box**: `model: true`, so it gets the run's capped token and the
+gateway; its input is the bundle, and **it runs no repo code** — no `run.sh`, no install, no repo config):
+1. It untars the bundle to `/aidenhq-out/ui` (a plain extract, no script from it, entries checked to stay under that folder),
+   then `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/references.json` (an unattended
+   scan carries no owner taste; agent runs do). `review` folds each blocking route finding from the bundle's `routes/report.json`
+   into the capture report's `rules` as a `RuleHit` (`blocking: true`), so `toReview` maps them like axe's and the page's own
+   errors. What it opens is the bundle (the report's text and its PNGs) and, to name a file an improvement cites, that file's
+   text from the tree — read as data, never executed, never a `package.json` script, never a build. So repo code **runs** in
+   exactly one box, and that box has no token.
+2. Result: a `Review` (`version: 1`, `target: "tree"`, `engine: "ui-review"`, the spec's model, effort `low`) that the
    tree validator accepts. `toReview(report, spec)` fills `repo` and `head` from the kernel-provided spec
    (`/aidenhq-out/spec.json` carries `repo` and `head` beside the recipe's fields, `kernel/src/checkjobs.ts:529` as
    `kernel/src/checkjobs.ts:50` says): the service refuses a result whose `repo` or `head` differ from the run's
@@ -610,26 +646,32 @@ Catalog entry:
    `max_cost_usd`. No rendered fixes at scan depth; the Primer report is text (publish `content` is at most 80 KB of
    markdown and carries no images).
 
-- [ ] **Step 1: Write the failing test** (fake kernel as `test/repo-review.test.ts` uses; `uiReview` is produced by
-  `recipe/ui.ts`'s own `toReview(report, spec)` mapper from a fixture `report.json` and the spec the check's box gets
-  (`{ repo, head }` beside the recipe's fields, which is what the mapper binds the result to), not written by hand):
+- [ ] **Step 1: Write the failing test** (fake kernel as `test/repo-review.test.ts` uses; `toReview(report, spec)` comes from
+  `recipe/ui-review.ts`, the model step, and is the mapper the check's own box calls from a fixture `report.json` and the
+  spec it gets (`{ repo, head }` beside the recipe's fields), not written by hand):
 ```ts
-test("ui.scan runs as its own whole-repo check and reports a UI section", async () => {
+test("ui.scan captures in a token-free box, then reviews the text in a model box", async () => {
   const b = await svc.repoReview({ target: { repo: "acme/app", commit: SHA }, options: ["ui.scan"] });
-  const req = kernel.posts.find((p) => p.path === "/v1/checks")!;
-  assert.equal(req.body.run, "code-review-ui");
-  assert.deepEqual(Object.keys(req.body.spec).sort(), ["base", "model", "option", "run"]);
-  const spec = { ...req.body.spec, repo: "acme/app", head: SHA };   // /aidenhq-out/spec.json adds these two
-  kernel.finishCheck(req, { result: toReview(fixtureReport, spec) }); await svc.tick();
-  assert.equal(runOf(b.batch).status, "done");                     // the tree validator accepted it
+  const [capture, review] = kernel.posts.filter((p) => p.path === "/v1/checks");
+  assert.equal(capture.body.run, "code-review-ui");
+  assert.ok(!("model" in capture.body) || capture.body.model !== true);   // the repo's code runs with no model token
+  assert.deepEqual(Object.keys(capture.body.spec).sort(), ["base", "model", "option", "run"]);
+  const spec = { ...capture.body.spec, repo: "acme/app", head: SHA };   // /aidenhq-out/spec.json adds these two
+  kernel.finishCheck(capture, { result: captureReport(fixtureReport) }); await svc.tick();
+  assert.equal(review.body.run, "code-review-ui-review");
+  assert.equal(review.body.model, true);                            // the model reads only the kept bundle
+  assert.deepEqual(Object.keys(review.body.spec).sort(), ["base", "model", "option", "run", "ui"]);   // the bundle, not code
+  kernel.finishCheck(review, { result: toReview(fixtureReport, spec) }); await svc.tick();
+  assert.equal(runOf(b.batch).status, "done");                      // the tree validator accepted it
   const md = await reportOf(b.batch);
   assert.match(md, /## UI/); assert.ok(md.indexOf("Widen the approvals grid") < md.indexOf("Compact the attention rail"));
   await assert.rejects(svc.repoReview({ target: { repo: "acme/app", commit: SHA }, options: ["ui.scan"], combo: { effort: "xhigh" } }), /takes an effort of low, medium, high/);
 });
 test("ui.scan carries a blocking route finding as an important ui-rule finding", async () => {
   const b = await svc.repoReview({ target: { repo: "acme/app", commit: SHA }, options: ["ui.scan"] });
-  const req = kernel.posts.find((p) => p.path === "/v1/checks")!;
-  kernel.finishCheck(req, { result: toReview(fixtureReportWithRouteFail, { ...req.body.spec, repo: "acme/app", head: SHA }) }); await svc.tick();
+  const [capture, review] = kernel.posts.filter((p) => p.path === "/v1/checks");
+  kernel.finishCheck(capture, { result: captureReport(fixtureReportWithRouteFail) }); await svc.tick();
+  kernel.finishCheck(review, { result: toReview(fixtureReportWithRouteFail, { ...review.body.spec, repo: "acme/app", head: SHA }) }); await svc.tick();
   assert.equal(runOf(b.batch).status, "done");
   assert.match(await reportOf(b.batch), /ui-rule-/);
 });
@@ -673,9 +715,14 @@ Suites and bars (initial, from the spike; change only with the owner):
 
 - [ ] **Step 0: Security review** (Conventions: every new path, before it switches on), written in each PR's body with
   the test or code line that answers it:
-  1. `ui.scan` runs the repo's code with a model token and outbound network in a check box: the same exposure as today's
-     `runs_code` tools (whole-repo reviews only, never a fork's PR head); spend is bounded by `max_cost_usd` (10) in the
-     recipe and by the install's limits in the gateway.
+  1. `ui.scan` runs the repo's code, and the model token is kept out of that box: `code-review-ui` declares no `model`, so
+     `checkEnv("result")` gives it no `OPENROUTER_API_KEY`/`OPENROUTER_BASE_URL` (`kernel/src/checkjobs.ts:176-179`), and it
+     runs no model at all; the token-bearing `code-review-ui-review` box gets the kept capture bundle and runs no repo
+     code. This is the rule `recipe/tools.ts:3` ("credential-free box, with no model and no token at all") and
+     `deepsec.ts:10` ("Repo code never runs here, and the model token never reaches it") already state — the earlier
+     draft's "same exposure as `runs_code` tools" was wrong, since those tools have no token. Whole-repo reviews only,
+     never a fork's PR head; spend is bounded by `max_cost_usd` (10) in the recipe and by the install's limits in the
+     gateway.
   2. Job boxes gain `OPENROUTER_BASE_URL`/`OPENROUTER_API_KEY`: the same token already in the box as `AIDENHQ_RUN_TOKEN`,
      no new reach.
   3. The `design` connection: `design_evidence_put` writes only under the caller's own run (path names checked), 8 MB a
@@ -710,7 +757,9 @@ on-request reviews work on any URL or `local/` repo.
 - Decided here, beyond the spec: no bug judging until phase 2's reproduction (no unverified bug list); no clicks on live
   targets until phase 2's guard; the product ships reference URLs with measured tokens and captures them at run time
   (no third-party screenshots in the repo), the starter catalog only as a fallback, compared by the `references` suite; an unattended `ui.scan` carries the universal rules only (the
-  owner's taste lives in the instance and reaches agent runs); `ui.scan` reports text to Primer (no images there).
+  owner's taste lives in the instance and reaches agent runs); `ui.scan` reports text to Primer (no images there); its
+  repo-code box holds no model token and its model box runs no repo code (two check jobs, not one with both - the split
+  the AI reviewer's merge objection required).
 - Folded in from Codex's review of the plan: the `code-review-ui` profile wired through `checkSpec`, `addTree` and the tree
   validator with a complete result contract; collateral checked by recapturing every page at the target width.
 - Owner decisions folded in (2026-11-26): web vitals stay as notes; the regression set runs on request, never in CI; one
