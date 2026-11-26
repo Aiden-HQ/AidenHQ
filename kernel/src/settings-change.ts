@@ -625,6 +625,9 @@ export function createSettingsChanges(d: SettingsDeps) {
   async function write(taskId: string, issue: Dict, changes: unknown[], src: Sources, requester?: Requester, owner?: { account: string; via: string }) {
     const repo = d.instanceRepo() ?? refuse("this kernel has no instance repo (AIDENHQ_INSTANCE_REPO)");
     for (const ch of changes) checkTyped(ch, src);
+    // One module per name across the batch: two listings of one bare name would both pass the check above, and only the first is written.
+    const turnedOn = (changes as Dict[]).filter((c) => c.kind === "module" && c.on === true).map((c) => String(c.name).split("@")[0]!);
+    if (new Set(turnedOn).size < turnedOn.length) refuse("a change turns on two modules with the same name: one module per name");
     const typed = changes as Change[];
     const localOf = localOfIn(src.compiled);
     const allowed = allowedPaths(typed, localOf);

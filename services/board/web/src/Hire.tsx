@@ -31,7 +31,7 @@ export function Hire({ setup, install, chat, onSignIn }: { setup?: string; insta
         {error ? <EmptyState>Couldn't load teammates: {error}</EmptyState> : <div className="hire-grid" aria-busy="true">{[0, 1, 2, 3, 4, 5].map((i) => <Bone key={i} h={212} className="hire-bone" />)}</div>}
       </Page>
     );
-  if (describing || chat) return <Describe data={data} chat={chat} onBack={() => (setDescribing(false), chat && location.replace("#/team/hire"))} reload={load} onSignIn={onSignIn} />;
+  if (describing || chat) return <Describe key={chat ?? ""} data={data} chat={chat} onBack={() => (setDescribing(false), chat && location.replace("#/team/hire"))} reload={load} onSignIn={onSignIn} />;
   return <Browse data={data} setup={setup} install={install} onDescribe={() => setDescribing(true)} reload={load} onSignIn={onSignIn} />;
 }
 
@@ -121,7 +121,7 @@ function Browse({ data, setup, install, onDescribe, reload, onSignIn }: { data: 
         )}
         {row && (
           <DetailPane open title={`Hire ${row.name}`} onClose={() => (setOpen(null), location.hash.includes("?") && location.replace("#/team/hire"))}>
-            <HirePane key={row.ref} row={row} start={row.ref === setup} onSignIn={onSignIn} onHired={reload} />
+            <HirePane key={row.ref} row={row} onSignIn={onSignIn} onHired={reload} />
           </DetailPane>
         )}
       </div>
@@ -130,12 +130,12 @@ function Browse({ data, setup, install, onDescribe, reload, onSignIn }: { data: 
 }
 
 /**
- * The detail pane: who it is, then TeammateSetup with its name step; done, the trial's result and the way to them. `start`:
- * opened by Set up (Home's Next up, an idea's link), which already is the owner's go.
+ * The detail pane: who it is, then TeammateSetup with its name step; done, the trial's result and the way to them. A link only
+ * selects the teammate: nothing is filed or started until the owner clicks Hire or Set up.
  */
-function HirePane({ row, start, onSignIn, onHired }: { row: HireRow; start: boolean; onSignIn: () => void; onHired: () => void }) {
+function HirePane({ row, onSignIn, onHired }: { row: HireRow; onSignIn: () => void; onHired: () => void }) {
   const [trial, setTrial] = useState<TrialView | null>(null);
-  const [go, setGo] = useState(row.onTeam || start);
+  const [go, setGo] = useState(false);
   return (
     <div className="hire-pane">
       <div className="hire-pane-who">
@@ -153,7 +153,7 @@ function HirePane({ row, start, onSignIn, onHired }: { row: HireRow; start: bool
             {row.requires.length ? `Turns on ${row.requires.join(", ")} with it. ` : ""}
             {row.connections.length ? "You connect what it needs next; read-only until you say otherwise." : "Nothing to connect."}
           </p>
-          <Button variant="primary" className="press" onClick={() => setGo(true)}>Hire {row.name}</Button>
+          <Button variant="primary" className="press" onClick={() => setGo(true)}>{row.onTeam ? `Set up ${row.name}` : `Hire ${row.name}`}</Button>
         </>
       ) : (
         <TeammateSetup row={row} nameStep onDone={(r) => (setTrial(r.trial), onHired())} onSignIn={onSignIn} />
@@ -200,7 +200,33 @@ function Describe({ data, chat: chatId, onBack, reload, onSignIn }: { data: Team
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [chat, setChat] = useState<ChatDetail | null>(null);
-  const [next, setNext] = useState<Next | null>(null);
+  // The accepted path, kept per chat in this tab: a reload during setup resumes it (the answered form no longer shows).
+  const nextKey = `aidenhq.hire-next.${chatId ?? ""}`;
+  const [next, setNextState] = useState<Next | null>(() => {
+    try {
+      const saved = chatId ? (JSON.parse(sessionStorage.getItem(nextKey) ?? "null") as { kind: Next["kind"]; ref?: string } | null) : null;
+      if (saved?.kind === "handoff") return { kind: "handoff" };
+      const row = saved?.ref ? data.rows.find((r) => r.ref === saved.ref) : undefined;
+      return row && (saved?.kind === "install" || saved?.kind === "extend") ? { kind: saved.kind, row } : null;
+    } catch {
+      return null;
+    }
+  });
+  const clearNext = () => {
+    try {
+      sessionStorage.removeItem(nextKey);
+    } catch {
+      /* nothing kept */
+    }
+  };
+  const setNext = (n: Next) => {
+    setNextState(n);
+    try {
+      sessionStorage.setItem(nextKey, JSON.stringify(n.kind === "handoff" ? n : { kind: n.kind, ref: n.row.ref }));
+    } catch {
+      /* no storage: the path holds for this page only */
+    }
+  };
   const [trial, setTrial] = useState<TrialView | null>(null);
   const fail = useCallback((e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)), [onSignIn]);
   useEffect(() => {
@@ -295,7 +321,7 @@ function Describe({ data, chat: chatId, onBack, reload, onSignIn }: { data: Team
               <p>{next.row.description}</p>
             </div>
           </div>
-          <TeammateSetup row={next.row} nameStep onDone={(r) => (setTrial(r.trial), reload())} onSignIn={onSignIn} />
+          <TeammateSetup row={next.row} nameStep onDone={(r) => (setTrial(r.trial), clearNext(), reload())} onSignIn={onSignIn} />
           {trial && (
             <>
               <TrialResult row={next.row} trial={trial} />

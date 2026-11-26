@@ -159,12 +159,13 @@ export function createTeammates(d: TeammatesDeps) {
     };
   };
   const liveId = (key: string) => Object.entries(d.sources().grants?.routine_keys ?? {}).find(([, k]) => k === key)?.[0];
-  type Trial = { at: string; attempt: number; runs: Record<string, string> };
+  /** `at`: when the trial began (its findings start there); `tried`: the latest attempt (when unrecorded runs time out). */
+  type Trial = { at: string; tried?: string; attempt: number; runs: Record<string, string> };
   const trialOf = (ref: string): Trial | undefined => { try { return JSON.parse(d.store.meta(`trial:${ref}`) ?? "null") ?? undefined; } catch { return undefined; } };
   /** A trial's state from its runs' tasks (the kernel's task state): failed when one failed or a run never started. */
   const stateOf = async (t: Trial, wanted: number): Promise<TrialState> => {
     const ids = Object.values(t.runs);
-    if (ids.length < wanted && now() - Date.parse(t.at) > UNRUN_MS) return "failed";
+    if (ids.length < wanted && now() - Date.parse(t.tried ?? t.at) > UNRUN_MS) return "failed";
     const got = ids.length ? (await d.states.read({ ids })).tasks : [];
     // A cancelled run counts as failed: the owner can retry it.
     if (got.some((r) => r.attention.some((a) => a.why === "failed") || (r.kind === "done" && r.reason === "cancelled"))) return "failed";
@@ -222,10 +223,14 @@ export function createTeammates(d: TeammatesDeps) {
         if (!d.store.claimMeta(mkey, JSON.stringify(t))) {
           const was = trialOf(row.ref)!;
           if ((await stateOf(was, runnable.length)) !== "failed") return { resumed, trials: [] };
-          // A recorded run failed: a new attempt, every trial again. No run recorded at all: the same attempt again, so
-          // Paperclip's idempotency key dedupes any run it already accepted.
-          const failedRun = Object.keys(was.runs).length > 0;
-          t = failedRun ? { at: new Date(now()).toISOString(), attempt: was.attempt + 1, runs: {} } : { ...was, at: new Date(now()).toISOString() };
+          // Only routines whose run failed (or never recorded one) go again: a run that succeeded or still runs is kept, so the
+          // owner's data is never read twice. A failed run means a new attempt (a new idempotency key); with none, the same
+          // attempt again, so Paperclip's key dedupes any run it already accepted.
+          const ids = Object.values(was.runs);
+          const got = ids.length ? (await d.states.read({ ids })).tasks : [];
+          const bad = new Set(got.filter((r) => r.attention.some((a) => a.why === "failed") || (r.kind === "done" && r.reason === "cancelled")).map((r) => r.task));
+          const kept = Object.fromEntries(Object.entries(was.runs).filter(([, id]) => !bad.has(id)));
+          t = { at: was.at, tried: new Date(now()).toISOString(), attempt: bad.size ? was.attempt + 1 : was.attempt, runs: kept };
           d.store.setMeta(mkey, JSON.stringify(t));
         }
         const trials: string[] = [];

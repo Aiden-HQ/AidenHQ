@@ -451,8 +451,13 @@ export function browseMarketplaces(instance: Dict, f: Fetch & { parse: (s: strin
       }
       if (late) warn(`browse ran out of time: ${late} entries not listed`);
       if (complete) {
-        mkdirSync(join(f.cacheDir, "browse"), { recursive: true });
-        writeFileSync(file, JSON.stringify(listing));
+        // The cache only saves a refetch: a failed write keeps the listing in memory.
+        try {
+          mkdirSync(join(f.cacheDir, "browse"), { recursive: true });
+          writeFileSync(file, JSON.stringify(listing));
+        } catch (e) {
+          warn(`marketplace ${mkt}: its listing isn't cached (${(e as Error).message.slice(0, 200)})`);
+        }
       }
     }
     const installed = new Set(wanted.get(mkt) ?? []);

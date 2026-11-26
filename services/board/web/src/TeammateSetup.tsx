@@ -46,10 +46,30 @@ export function holdName(ref: string, name: string | null) {
 const filedHere = new Set<string>();
 const RECENT_MS = 15 * 60_000;
 
+/** The marketplace listings a module needs that its change must turn on with it: a requirement only a listing provides is
+ * not fetched until selected. One that two marketplaces list is the owner's pick, so the setup names it and files nothing. */
+function listedRequirements(mods: ModuleRow[], start: ModuleRow | undefined, requires: string[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const visit = (name: string) => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    const have = mods.find((m) => m.name === name && !m.browse);
+    // An installed or official module comes on through `requires`; one that is off may itself need a listing.
+    if (have) return void (have.state === "off" && have.requires.forEach(visit));
+    const listed = mods.filter((m) => m.name === name && m.browse);
+    if (listed.length > 1) throw new Error(`${name} is listed by ${listed.map((m) => m.marketplace).join(" and ")}: turn it on from the one you trust, then set this up again.`);
+    if (listed[0]) (ids.push(listed[0].id), listed[0].requires.forEach(visit));
+  };
+  (start?.requires ?? requires).forEach(visit);
+  return ids;
+}
+
 type Stage = "enable" | "connect" | "start" | "name" | "done";
 
 export function TeammateSetup({ row, name, nameStep, onDone, onSignIn }: { row: HireRow; name?: string; nameStep?: boolean; onDone: (r: { trial: TrialView }) => void; onSignIn: () => void }) {
   const [mod, setMod] = useState<ModuleRow | null | undefined>(undefined);
+  const [mods, setMods] = useState<ModuleRow[]>([]);
   const [filed, setFiled] = useState<FiledChange | undefined>();
   const [flows, setFlows] = useState<SetupFlowView[] | null>(null);
   const [trial, setTrial] = useState<TrialView | null>(null);
@@ -64,10 +84,12 @@ export function TeammateSetup({ row, name, nameStep, onDone, onSignIn }: { row: 
   const readModule = useCallback(
     () =>
       Promise.all([api.modules(), api.settingsChanges()]).then(([m, c]) => {
+        setMods(m.modules);
         setMod(m.modules.find((x) => x.id === row.id) ?? null);
         // Under way or just finished (as useFiled reads it): an old applied change from before a later turn-off says nothing.
         setFiled(c.changes.find((f) => f.createdAt >= since && (IN_FLIGHT.includes(f.stage) || Date.now() - Date.parse(f.createdAt) < RECENT_MS) && f.items.some((i) => i.kind === "module" && i.name === row.id && i.on)));
-      }, fail),
+        return true;
+      }, (e) => (fail(e), false)),
     [row.id, since, fail],
   );
   useEffect(() => {
@@ -77,18 +99,33 @@ export function TeammateSetup({ row, name, nameStep, onDone, onSignIn }: { row: 
     return () => clearInterval(t);
   }, [applied, readModule]);
 
-  // Enable: file the module change once the reads say none is under way (its requirements come on with it).
+  // Enable: file the module change once the reads say none is under way (its requirements come on with it). A failed filing
+  // is retryable: the Retry reads the changes again first, so one that did land is never filed twice.
   const stopped = filed && (filed.stage === "failed" || filed.stage === "rejected" || filed.stage === "closed");
   const waiting = filed && (IN_FLIGHT.includes(filed.stage) || filed.stage === "applied");
+  const [refused, setRefused] = useState(false);
   useEffect(() => {
-    if (applied || mod === undefined || waiting || stopped || filedHere.has(`${row.id}:${retry}`)) return;
+    if (applied || mod === undefined || waiting || stopped || refused || filedHere.has(`${row.id}:${retry}`)) return;
     filedHere.add(`${row.id}:${retry}`);
-    api.changeSettings([{ kind: "module", name: row.id, on: true }]).then(
+    let items: { kind: "module"; name: string; on: boolean }[];
+    try {
+      items = [row.id, ...listedRequirements(mods, mod ?? undefined, row.requires)].map((name) => ({ kind: "module" as const, name, on: true }));
+    } catch (e) {
+      filedHere.delete(`${row.id}:${retry}`);
+      setRefused(true);
+      return fail(e);
+    }
+    api.changeSettings(items).then(
       () => void readModule(),
-      // Already on (filed elsewhere meanwhile): the next read shows it.
-      (e) => (e instanceof HttpStatusError && /already/i.test(e.message) ? void readModule() : fail(e)),
+      (e) => {
+        filedHere.delete(`${row.id}:${retry}`);
+        setRefused(true);
+        // Already on (filed elsewhere meanwhile, or a dependency came on): the read shows it, and Retry files what is left.
+        if (e instanceof HttpStatusError && /already/i.test(e.message)) return void readModule();
+        fail(e);
+      },
     );
-  }, [applied, mod, waiting, stopped, row.id, retry, readModule, fail]);
+  }, [applied, mod, mods, waiting, stopped, refused, row.id, row.requires, retry, readModule, fail]);
 
   // Once on: the setup flows its modules still need. One the owner skipped (dismissed) is left for later.
   const readFlows = useCallback(() => api.setupFlows().then((r) => setFlows(r.flows), fail), [fail]);
@@ -155,13 +192,13 @@ export function TeammateSetup({ row, name, nameStep, onDone, onSignIn }: { row: 
   const titles = (fs: SetupFlowView[]) => fs.map((f) => f.title).join(" and ");
   return (
     <div className="tms" aria-live="polite">
-      <Line n={1} state={applied ? "done" : stopped ? "failed" : "now"} title={applied ? `${n} is on your team` : `Turning on ${n}`} meta={row.requires.length ? `with ${row.requires.join(", ")}` : undefined}>
+      <Line n={1} state={applied ? "done" : stopped || refused ? "failed" : "now"} title={applied ? `${n} is on your team` : `Turning on ${n}`} meta={row.requires.length ? `with ${row.requires.join(", ")}` : undefined}>
         {!applied && (
           <>
-            {filed ? <ChangeProgress f={filed} /> : <p className="tms-hint">Filing the change…</p>}
-            {stopped && (
+            {filed ? <ChangeProgress f={filed} /> : <p className="tms-hint">{refused ? "Something changed while filing." : "Filing the change…"}</p>}
+            {(stopped || refused) && (
               <div className="tms-actions">
-                <Button variant="primary" className="press" onClick={() => (setSince(new Date().toISOString()), setFiled(undefined), again())}>Retry</Button>
+                <Button variant="primary" className="press" onClick={() => (stopped ? (setSince(new Date().toISOString()), setFiled(undefined), again()) : void readModule().then((ok) => ok && (setRefused(false), again())))}>Retry</Button>
               </div>
             )}
           </>

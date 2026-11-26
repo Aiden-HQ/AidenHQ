@@ -107,7 +107,7 @@ function ModulesList({ onSignIn, onMarkets, can }: { onSignIn: () => void; onMar
   const grid = (list: ModuleRow[]) => (
     <TileGrid>
       {list.map((m) => (
-        <ModuleTile key={m.id} m={m} setup={needsSetup.has(m.name)} pairing={needsPairing.has(m.name)} connect={needsConnect.get(m.name)} advisory={advisoryOf.get(m.name)} info={info.get(m.id)} />
+        <ModuleTile key={m.id} m={m} setup={!m.browse && needsSetup.has(m.name)} pairing={!m.browse && needsPairing.has(m.name)} connect={m.browse ? undefined : needsConnect.get(m.name)} advisory={m.browse ? undefined : advisoryOf.get(m.name)} info={info.get(m.id)} />
       ))}
     </TileGrid>
   );
