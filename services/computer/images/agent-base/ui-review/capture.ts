@@ -12,7 +12,7 @@ import { crc32 } from "node:zlib";
 import type { BrowserContext, Page as PwPage, Route } from "playwright-core";
 import { heightOf, launch, ready, workerContext } from "./browser.ts";
 import { modeOf } from "./guard.ts";
-import { readSession, relogin, signedOut } from "./login.ts";
+import { pathOfUrl, readSession, relogin, signedOut } from "./login.ts";
 import { measurePage } from "./measure.ts";
 import { measureMotion } from "./motion.ts";
 import { pageList } from "./pages.ts";
@@ -144,7 +144,7 @@ export async function capture(ctx: BrowserContext, base: string, item: QueueItem
   // The app's own unhandled "Failed to fetch" for a request the guard refused on this page is the guard's doing.
   const errors = (o.blockedCount?.() ?? 0) > blocked0 ? errs.filter((e) => !/Failed to fetch/.test(e)) : errs;
   const hits = await rules(page, { where, width, theme: item.theme, widest: !!o.widest && item.state === "default", first: !!o.first, phone: !!o.phone, errors });
-  const motion = o.motion && item.state === "default" ? await measureMotion(page, { click: true }).catch(() => undefined) : undefined;
+  const motion = o.motion && item.state === "default" ? await measureMotion(page, { click: new URL(base).origin }).catch(() => undefined) : undefined;
   const c: Capture = { page: item.page, width, theme: item.theme, state: item.state, url, shots, settled, measures, ...(motion ? { motion } : {}), rules: [...notes, ...hits] };
   if (o.baseline && o.diffPage) c.diffs = await diffShots(await o.diffPage(), o.baseline, o.out, shots);
   return c;
@@ -273,7 +273,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
   let pages = prior?.pages;
   if (!pages) {
     try {
-      pages = v.paths ? v.paths.split(",").map((path): Page => ({ path, source: "feature-map" })) : await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true, session: session?.state });
+      pages = v.paths ? v.paths.split(",").map((path): Page => ({ path, source: "feature-map" })) : await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true, session: session?.state, mode });
     } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
     const palettes = list(v.palettes, [] as string[], String);
     // "/" is the URL given (a /catalog.html run keeps to the catalog), so its palette pages are that page's.
@@ -309,7 +309,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
             new Promise<never>((_, no) => { timer = setTimeout(() => no(new Error(`timed out after ${CAPTURE_TIMEOUT / 1000} s`)), CAPTURE_TIMEOUT); }),
           ]);
           let c = await once();
-          if (session && (await signedOut(await pageOf(ctx), session.meta))) {
+          if (session && pathOfUrl(urlOf(base, it.page, it.theme)) !== session.meta.loginPath && (await signedOut(await pageOf(ctx), session.meta))) {
             clearTimeout(timer);
             if (!(await reloginOnce(gen))) { ended = true; q.failed(it, "session ended", true); continue; }
             await fresh();

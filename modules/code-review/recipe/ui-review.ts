@@ -29,6 +29,8 @@ export interface UiReport {
   notes?: string[];
   /** The capture step's pages left out of the bundle to fit a check input (recipe/ui.ts). */
   dropped?: string[];
+  /** ui.scan-signed-in: why the capture step ran signed out (recipe/ui.ts), when no sign-in worked. */
+  signed_out?: string;
 }
 
 /** The option's spend cap in dollars: catalog.json `run.max_cost_usd` (a check's spec carries four fields only, so the recipe holds it; keep the two equal). */
@@ -131,6 +133,7 @@ export function toReview(report: UiReport, o: { model: string; effort?: string; 
 
   const cov = report.coverage;
   const gaps = [
+    ...(report.signed_out ? [`captured signed out: ${report.signed_out}`] : []),
     ...(pages.length ? [] : ["no page was captured"]),
     ...(skipped.length ? [`${skipped.length} captured pages not reviewed by the model (${some(skipped)})`] : []),
     ...(missed.length ? [`${missed.length} of ${listed.length} pages not captured (${some(missed)})`] : []),
@@ -189,6 +192,7 @@ export async function review({ spec, ui, ws, env = process.env }: { spec: UiRevi
   if (r.code !== 0) throw new Error(`ui-review review: ${stopped(r)}${r.stderr.trim() ? `; ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 200)}` : ""}`);
   const report = readReport(join(dir, "report.json"));
   if (!report) throw new Error("ui-review review left no report.json");
+  report.signed_out = captured.signed_out;   // the capture step's own note; the engine's review doesn't carry it
   return toReview(report, { model: spec.model, effort: spec.effort || "low", repo: spec.repo, head: spec.head, listed: listedPages(dir), routes: readReport(join(dir, "routes", "report.json")), root: ws, option: spec.option });
 }
 

@@ -21,7 +21,7 @@ import { parseArgs } from "node:util";
 import type { Page as PwPage } from "playwright-core";
 import { launch, ready, routeOf, workerContext } from "./browser.ts";
 import { modeOf } from "./guard.ts";
-import { readSession } from "./login.ts";
+import { readSession, signedOut } from "./login.ts";
 import { pageList } from "./pages.ts";
 import { readReport, splitPreexisting } from "./report.ts";
 import type { Bug, Report } from "./types.ts";
@@ -105,7 +105,7 @@ const HELPERS = () => {
 type R = { routeLinks(): { href: string; to: string; kind: string; label: string; nav: boolean }[]; sameLinks(): HTMLAnchorElement[]; controls(): Element[]; kindOf(e: Element): string; label(e: Element): string; brand(home: string): HTMLAnchorElement | undefined; view(): View; snap(): Snap; mark(attr: string, e: Element | undefined): boolean };
 
 /** One browser page for checks, with its page errors. */
-type Session = { page: PwPage; errs: string[]; origin: string };
+type Session = { page: PwPage; errs: string[]; origin: string; blockedAt: number };
 async function prep(s: Session) { if (!(await s.page.evaluate(() => "__uiRoutes" in window))) await s.page.evaluate(`(${HELPERS.toString()})()`); }
 async function openAt(s: Session, base: string, path: string) {
   await s.page.goto("about:blank");
@@ -143,7 +143,9 @@ export async function routesCommand(argv: string[]): Promise<number> {
   const origin = new URL(base).origin;
   if (paths.some((p) => new URL(p, base).origin !== origin)) { console.error("ui-review routes: every path must be on the app under review"); return 2; }
   const t0 = Date.now(), frozenAt = new Date().toISOString();
-  const b = await launch({ out, mode, session: v.session ? readSession(v.session).state : null });
+  let signedIn: ReturnType<typeof readSession> | null = null;
+  try { signedIn = v.session ? readSession(v.session) : null; } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
+  const b = await launch({ out, mode, session: signedIn?.state });
   const sessions: Session[] = [];
   // A session's page in its own context; `renew` replaces it (a timed-out check may still be clicking on the old one).
   const renew = async (s: Session) => {
@@ -151,7 +153,9 @@ export async function routesCommand(argv: string[]): Promise<number> {
     const page = await (await workerContext(b.browser, frozenAt)).newPage();
     await page.setViewportSize({ width: WIDTH, height: HEIGHT });
     await page.emulateMedia({ colorScheme: "light" });
-    page.on("pageerror", (e) => s.errs.push(String(e.message)));
+    s.blockedAt = b.blocked().length;
+    // The app's own "Failed to fetch" for a request the live-app guard refused is the guard's doing, listed under blocked.
+    page.on("pageerror", (e) => { if (!(/Failed to fetch/.test(e.message) && b.blocked().length > s.blockedAt)) s.errs.push(String(e.message)); });
     s.page = page;
   };
   const session = async () => {
@@ -318,7 +322,11 @@ export async function routesCommand(argv: string[]): Promise<number> {
         if (Date.now() - t0 > BUDGET_MS) { t.c.skipped = "not checked: the route check's 300 s ran out"; cut++; continue; }
         let timer: NodeJS.Timeout | undefined;
         // Each check in a fresh context: what an earlier check left in storage (an app's remembered last view) never shows.
-        try { await renew(s); await Promise.race([t.run(s), new Promise((_, no) => { timer = setTimeout(() => no(new Error(`timed out after ${CHECK_MS / 1000} s`)), CHECK_MS); })]); }
+        try {
+          await renew(s); await Promise.race([t.run(s), new Promise((_, no) => { timer = setTimeout(() => no(new Error(`timed out after ${CHECK_MS / 1000} s`)), CHECK_MS); })]);
+          // A check that ended on the sign-in page checked the sign-in page, not the route: not counted.
+          if (signedIn && (await signedOut(s.page, signedIn.meta))) { t.c.problems = []; t.c.skipped = "couldn't check it: the session ended (signed out)"; }
+        }
         catch (e) { t.c.skipped = `couldn't check it: ${firstLine(e)}`; await renew(s); }
         finally { clearTimeout(timer); }
       }
@@ -342,13 +350,14 @@ export async function routesCommand(argv: string[]): Promise<number> {
   const bugs: Bug[] = found.filter((h) => introduced.includes(text(h))).map((h): Bug => ({ page: h.from, width: WIDTH, theme: "light", title: `${h.what.join(", ")}: ${h.problem.split(":")[0]}`, evidence: h.problem, captures: [], verified: true, repro: [`open ${h.from}`, `click ${h.what[0]}`] }));
   const done = checks.filter((c) => !c.skipped).length;
   const r: Report = { version: 2, target: base, frozenAt, model: "", coverage: { done, total: checks.length, failed: checks.filter((c) => c.skipped && !c.skipped.startsWith("not checked")).length, deferred: checks.filter((c) => c.skipped?.startsWith("not checked")).length },
-    captures: [], improvements: [], motion: [], bugs, notes, cost_usd: 0, blocking: introduced, preexisting, candidates };
+    captures: [], improvements: [], motion: [], bugs, notes, cost_usd: 0, blocking: introduced, preexisting, candidates, blocked: b.blocked() };
   writeFileSync(join(out, "report.json"), JSON.stringify(r, null, 2));
   const md = [`# Route check of ${base}`, "", `${checks.length} checks at ${WIDTH}px light, ${Math.round((Date.now() - t0) / 1000)} s`, "",
     introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found", "", ...introduced.map((x) => `- ${x}`), "",
     ...(preexisting.length ? [`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((x) => `- ${x}`), ""] : []),
     ...(candidates.length ? [`## To look at (${candidates.length}): not blocking`, "", "Controls a click didn't visibly change and links that show the same page; some do act (a copy, a download, a dialog the check can't see, an alias). Look before filing:", "", ...candidates.map((x) => `- ${x}`), ""] : []),
     ...(notes.length ? ["## Notes", "", ...notes.map((n) => `- ${n}`), ""] : []),
+    ...(r.blocked.length ? [`## Blocked requests (${r.blocked.length})`, "", "The live-app guard refused these (the app's mode doesn't allow them):", "", ...r.blocked.map((x) => `- ${x.method} ${x.origin}${x.path} (from \`${x.page}\`)`), ""] : []),
     "## Checks (brand, links with Back, Forward and reload, controls)", "", ...checks.map((c) => `- ${c.from} ${c.what}: ${c.skipped ?? (c.problems.join("; ") || (c.to ? "renders" : "acts"))}`), ""];
   writeFileSync(join(out, "report.md"), md.join("\n"));
   console.log(`${join(out, "report.md")}: ${checks.length} checks, ${introduced.length} blocking, ${preexisting.length} already on this base, ${candidates.length} to look at, ${Math.round((Date.now() - t0) / 1000)} s`);

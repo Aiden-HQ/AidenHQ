@@ -143,12 +143,12 @@ export async function capture({ spec, ws, out, env = process.env }: { spec: UiSp
     ok(await run("ui-review", ["routes", url, "--out", join(ui, "routes"), "--pages-file", join(ui, "run.json"), ...signIn], { cwd: tmp, env: plainEnv, minutes: 8 }), "ui-review routes");
   } finally { stop(); }
 
+  // A signed-in scan that couldn't sign in says so in the bundle, so the review step's coverage carries it.
+  if (unsigned) { const f = join(ui, "report.json"); writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), signed_out: unsigned.slice(0, 300) })); }
   const b = bundle(ui);
   writeFileSync(join(out, "keep"), b.gz);
   const queue = JSON.parse(readFileSync(join(ui, "queue.json"), "utf8")) as { page: string }[];
-  const r = captureReport({ model: spec.model, repo: spec.repo, head: spec.head, listed: queue.map((i) => i.page), pages: b.pages, dropped: b.dropped });
-  if (unsigned) r.coverage.incomplete = [`captured signed out: ${unsigned}`, r.coverage.incomplete].filter(Boolean).join("; ").slice(0, 500);
-  return r;
+  return captureReport({ model: spec.model, repo: spec.repo, head: spec.head, listed: queue.map((i) => i.page), pages: b.pages, dropped: b.dropped });
 }
 
 /**
@@ -162,12 +162,14 @@ async function signInFor(ws: string, url: string, tmp: string, env: Record<strin
     try {
       const u = JSON.parse(seed) as { url?: unknown; user?: unknown; password?: unknown };
       if (typeof u.url !== "string" || typeof u.user !== "string" || typeof u.password !== "string") throw new Error();
+      // The local build's own sign-in page only.
+      if (new URL(u.url, url).origin !== new URL(url).origin) throw new Error();
       const pw = join(tmp, "seed-password");
       writeFileSync(pw, u.password, { mode: 0o600 });
       const r = await run("ui-review", ["login", "form", "--url", new URL(u.url, url).href, "--user", u.user, "--password-file", pw, "--out", state], { cwd: tmp, env, minutes: 3 });
       if (r.code === 0) return { args: ["--session", state] };
       tried.push(`the repo's test user didn't sign in (${r.stderr.trim().split("\n").at(-1)?.slice(0, 120) ?? "no reason"})`);
-    } catch { tried.push(".aidenhq-ui/login.json isn't { url, user, password }"); }
+    } catch { tried.push(".aidenhq-ui/login.json isn't { url, user, password } with a url on the local build"); }
   }
   for (const path of ["/signup", "/register"]) {
     const r = await run("ui-review", ["login", "signup", "--url", new URL(path, url).href, "--out", state], { cwd: tmp, env, minutes: 3 });

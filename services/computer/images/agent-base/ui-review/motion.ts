@@ -57,11 +57,12 @@ const SETTLE = async () => {
   return { transitions, animations, hover, active, keyframes, longFrames };
 };
 
-// Clicks are opt-in: the caller passes click only in a browser under the live-app guard (browser.ts launch), which refuses
-// what the app's mode doesn't allow. Controls named like a write are never clicked all the same.
+// Clicks are opt-in: `click` is the app's origin (a browser under the live-app guard, browser.ts launch, refuses what the app's
+// mode doesn't allow), and only while the page is on it: a redirect elsewhere (a hosted sign-in) ends them. Controls named like a
+// write are never clicked all the same.
 const RISKY = /delete|remove|destroy|pay|purchase|buy|submit|confirm|send|reset|sign out|log ?out|archive|cancel subscription/i;
 
-export async function measureMotion(page: PwPage, opts: { click?: boolean } = {}): Promise<Motion> {
+export async function measureMotion(page: PwPage, opts: { click?: string } = {}): Promise<Motion> {
   const base = (await page.evaluate(SETTLE)) as Omit<Motion, "shifts">;
   await page.evaluate(() => {
     const w = window as unknown as { __shift?: number };
@@ -84,7 +85,7 @@ export async function measureMotion(page: PwPage, opts: { click?: boolean } = {}
     if (hovered > 0) shifts.push(Math.round(hovered * 10000) / 10000);
     // Clicks only when the caller asked for them, only on buttons (a link would navigate), never a control in a form or one named like a write.
     const label = ((await c.innerText().catch(() => "")) || (await c.getAttribute("aria-label").catch(() => "")) || "").trim();
-    if (opts.click && (await c.evaluate((e) => !(e as HTMLButtonElement).form && (e.tagName === "BUTTON" || e.getAttribute("role") === "button")).catch(() => false)) && !RISKY.test(label)) {
+    if (opts.click && new URL(page.url()).origin === opts.click && (await c.evaluate((e) => !(e as HTMLButtonElement).form && (e.tagName === "BUTTON" || e.getAttribute("role") === "button")).catch(() => false)) && !RISKY.test(label)) {
       await c.click({ timeout: 1000 }).catch(() => {});
       await page.waitForTimeout(250);
       const clicked = await read();

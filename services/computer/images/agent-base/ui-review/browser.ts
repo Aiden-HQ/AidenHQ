@@ -44,7 +44,7 @@ export async function launch(o: { mode: Mode; port?: number; out?: string; polit
   for (let i = 0; i < 50 && !cdp; i++) {
     try { cdp = ((await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl; } catch { await sleep(100); }
   }
-  const guard = await installGuard(cdp, o.mode, { log: o.out ? join(o.out, "blocked.jsonl") : undefined, state: o.session });
+  const guard = await installGuard(cdp, o.mode, { log: o.out ? join(o.out, "blocked.jsonl") : undefined, state: o.session, lost: () => { console.error("ui-review: the live-app guard lost Chrome; stopping it"); void browser.close().catch(() => {}); } });
   if (o.out) writeFileSync(join(o.out, "browser.json"), JSON.stringify({ cdp, port, mode: o.mode }, null, 2));
   if (o.politeness) {
     const gap = (1000 / o.politeness.rps) * 1.05, { origin } = o.politeness;

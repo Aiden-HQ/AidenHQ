@@ -36,13 +36,15 @@ export function readSession(file: string): { state: StorageState; meta: SessionM
   catch { return fail(`no session at ${file} (run ui-review login first)`); }
 }
 
-/** The page is the sign-in page again: its path is the login page's, or a password field shows under the login page's title. */
+/** The page is the sign-in page again: a password field shows, on the login page's path or under its title. */
 export async function signedOut(page: PwPage, meta: SessionMeta): Promise<boolean> {
+  if (!(await page.locator("input[type=password]:visible").count().catch(() => 0))) return false;
   const u = new URL(page.url());
-  if (u.origin === meta.origin && pathOf(u) === meta.loginPath) return true;
-  return (await page.title().catch(() => "")) === meta.loginTitle && (await page.locator("input[type=password]:visible").count().catch(() => 0)) > 0;
+  return (u.origin === meta.origin && pathOf(u) === meta.loginPath) || (await page.title().catch(() => "")) === meta.loginTitle;
 }
 const pathOf = (u: URL) => routeOf(new URL(u.origin + u.pathname + u.hash)).replace(/\?.*$/, "");
+/** A URL's place as SessionMeta.loginPath records it (path and hash route, no query). */
+export const pathOfUrl = (url: string) => pathOf(new URL(url));
 
 const USER = "input[autocomplete=username], input[autocomplete=email], input[type=email], input[name*=user i], input[name*=email i], input[name*=login i], input[id*=user i], input[id*=email i]";
 const CODE = "input[autocomplete=one-time-code], input[name*=otp i], input[name*=totp i], input[name*=code i], input[id*=code i], input[inputmode=numeric]";

@@ -35,7 +35,8 @@ export function refuses(mode: Mode, method: string, url: string): boolean {
 }
 
 const where = (url: string) => { try { const u = new URL(url); return { origin: u.origin, path: u.pathname }; } catch { return { origin: "", path: url.slice(0, 200) }; } };
-const pageOf = (url: string) => { try { const u = new URL(url); return u.pathname + u.search + u.hash; } catch { return url.slice(0, 200); } };
+/** A page's label: its path and hash route, never a query or fragment (an auth callback's code stays out of every record). */
+const pageOf = (url: string) => { try { const u = new URL(url); return u.pathname + (u.hash.startsWith("#/") ? u.hash.replace(/[?&].*$/, "") : ""); } catch { return ""; } };
 
 const WS_BINDING = "__uiReviewSocket";
 /** Read mode's stand-ins: a WebSocket that reports itself to the guard and closes unopened; no WebTransport or peer connection. */
@@ -62,7 +63,7 @@ export type Guard = { mode: Mode; blocked(): Blocked[]; seed(state: StorageState
  * line), so a browser that outlives its command (the clicking pass) still reports them. With mode `any` and no session the guard
  * still attaches (it seeds sessions), but refuses nothing.
  */
-export async function installGuard(cdp: string, mode: Mode, o: { log?: string; state?: StorageState | null } = {}): Promise<Guard> {
+export async function installGuard(cdp: string, mode: Mode, o: { log?: string; state?: StorageState | null; lost?: () => void } = {}): Promise<Guard> {
   const ws = new WebSocket(cdp);
   await new Promise<void>((ok, no) => { ws.onopen = () => ok(); ws.onerror = () => no(new Error("the guard could not reach Chrome's CDP")); });
   let next = 0;
@@ -103,7 +104,8 @@ export async function installGuard(cdp: string, mode: Mode, o: { log?: string; s
       steps.push(send("Storage.setCookies", { browserContextId: info.browserContextId, cookies: state.cookies.map((c) => ({ ...c, ...(c.expires > 0 ? {} : { expires: undefined }) })) }));
     }
     if (state && page && state.origins.length) steps.push(pageOn.then(() => send("Page.addScriptToEvaluateOnNewDocument", { source: seedScript(state!) }, sessionId)));
-    await Promise.all(steps);
+    // Fail closed: a target whose rules didn't all take is closed, never resumed.
+    if ((await Promise.all(steps)).some((m) => (m as Msg | undefined)?.error)) { await send("Target.closeTarget", { targetId: info.targetId }); return; }
     await send("Runtime.runIfWaitingForDebugger", {}, sessionId);
   };
 
@@ -124,6 +126,9 @@ export async function installGuard(cdp: string, mode: Mode, o: { log?: string; s
       block({ method: "WS", ...where(String(p.payload)), page: pageOf(urls.get(m.sessionId!) ?? "") });
     }
   };
+  // A lost guard connection leaves nothing guarded: the caller stops the browser.
+  let closing = false;
+  ws.onclose = () => { if (!closing) o.lost?.(); };
   await send("Target.setDiscoverTargets", { discover: true });
   await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
   return {
@@ -131,7 +136,7 @@ export async function installGuard(cdp: string, mode: Mode, o: { log?: string; s
     blocked: () => [...blocked],
     // A new session (a re-login): contexts made from now on get it; the caller makes fresh contexts.
     seed: (s) => { state = s; seeded.clear(); },
-    close: () => { try { ws.close(); } catch { /* gone */ } },
+    close: () => { closing = true; try { ws.close(); } catch { /* gone */ } },
   };
 }
 
