@@ -98,9 +98,11 @@ test("an async enqueue GitHub accepted but has not settled asks again next round
   await round(w.deps as any, w.pr(), ready, { queue: true });
   w.records["rec-1"] = { state: "failed", outcome: { ok: false, text: "ship-enqueue-pending: https://github.com/a/b/pull/7: GitHub accepted the async merge request u-1 for `111111111111` and is still processing it: not merged." } };
   await round(w.deps as any, w.pr(), ready, { queue: true });
-  assert.equal(w.of("POST /v1/writes").length, 2, "a fresh attempt at the same head");
+  assert.equal(w.of("POST /v1/writes").length, 2, "one fresh attempt at the same head");
   assert.deepEqual(w.of("POST /v1/writes")[1]!.body.args, { repo: "a/b", number: 7, head: H1, base: "main", generation: 1, attempt: 2 });
   assert.doesNotMatch(w.of("comment").at(-1)?.body ?? "", /Ship blocked/);
+  // A repeat is the same request, not a second one: github answers it with a 409 naming that request's uuid, which it reads.
+  // So a still-pending answer never cycles a PR back into a queue on its own.
 });
 
 // The request was accepted and the PR then queued and removed for a red merge_group check while the request still read pending:

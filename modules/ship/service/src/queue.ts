@@ -32,7 +32,8 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   // `ship-enqueue-pending`: GitHub accepted the async merge request (or one is already pending) and its result is not terminal
   // yet — neither a refusal nor a hold. It may also have been queued and removed while the request read as pending (ship sees
   // only `wait` while a PR is in the queue, so the removal is seen here and nowhere else): a removal's own facts decide, as they
-  // do for any settled enqueue below.
+  // do for any settled enqueue below. With no removal behind it, the same head is asked again, and that repeat names the one
+  // request GitHub already holds (a 409 with its uuid), so it never makes a second one.
   const pending = /^ship-enqueue-pending/.test(text);
   const removed = (f.groupFailing?.length ?? 0) > 0;
   // Not queued (a refusal, an unanswered call that read back as not queued): a new attempt at the same head.

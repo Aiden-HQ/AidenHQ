@@ -1447,6 +1447,9 @@ export function createService(o: Options) {
       if (i) await new Promise((done) => setTimeout(done, o.asyncPollMs ?? ASYNC_POLL_MS));
       const got = await gh("GET", `${path}/${uuid}`);
       const status = String(got.body?.status ?? "");
+      // A request GitHub no longer holds (its result is kept 24 hours) is gone: the next round's request is a fresh one, never
+      // a merge this record claims.
+      if (got.status === 404) return { ok: false, text: `${PENDING} ${url}: GitHub no longer holds async merge request ${uuid} for ${head}: not merged.` };
       if (got.status >= 300 || !status) throw fail(502, `GitHub couldn't read ${url}'s async merge request ${uuid}: ${String(got.body?.message ?? got.status).slice(0, 200)}`);
       const out = said(status, got.body?.details ?? {});
       if (out) return out;
