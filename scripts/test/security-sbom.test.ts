@@ -163,7 +163,8 @@ if [ "$1" = run ]; then
       for f in usr/lib/libdup.so usr/lib/replica-only.so .replicas/c1/usr/lib/libdup.so .replicas/c2/usr/lib/libdup.so; do
         [ -f "$f" ] && printf 'content %s %s\n' "$f" "$(tr -d '\n' < "$f")" >> "$MODES"
       done
-      for f in etc/os-release bin opt/app/plugins .replicas/c2/opt/app/plugins/installed.txt; do
+      for f in etc/os-release bin opt/app/plugins .replicas/c2/opt/app/plugins/installed.txt \
+               app .replicas/probe .replicas-2/c2/app/.bash_profile; do
         if [ -L "$f" ]; then printf 'link %s %s\n' "$f" "$(readlink "$f")" >> "$MODES"
         elif [ -f "$f" ]; then printf 'regular %s\n' "$f" >> "$MODES"; fi
       done
@@ -731,6 +732,34 @@ test("security-sbom: a replica that has a directory where the other has a file k
   assert.equal(row?.[2], "", `the unit errored: ${row?.[2]}`);
   assert.ok(modes.some((m) => m === "regular opt/app/plugins"), `c1's file was lost: ${modes.join("\n")}`);
   assert.ok(modes.some((m) => m === "regular .replicas/c2/opt/app/plugins/installed.txt"), `c2's plugin was lost: ${modes.join("\n")}`);
+});
+
+test("security-sbom: a replica's symlink is never followed, so no file is written outside the staged root", { skip: NOT_LINUX }, async () => {
+  // A container controls its own tree. One replica holds `app -> /home/service` (the service user's home on the host) and
+  // the other has `app/.bash_profile`: a merge that followed the link through `-d` would write that file to the host as the
+  // pass's own user, from container-controlled content. The entry whose ancestor is a symlink is kept beside it instead,
+  // and the link itself goes nowhere near the host's /home.
+  const { status, out, targets, modes } = await run({
+    EXPORT_SYMLINKS: "c1:app=../../../../../../home/service",
+    EXPORT_EXTRAS: "c2:app/.bash_profile=evil;c2:.replicas/probe=inside",
+  }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.equal(row?.[2], "", `the unit errored: ${row?.[2]}\n${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "link app ../../../../../../home/service"), `c1's link was dropped: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "regular .replicas-2/c2/app/.bash_profile"), `c2's file was not kept beside the link: ${modes.join("\n")}`);
+  assert.ok(!modes.some((m) => m === "regular app/.bash_profile"), `the merge wrote through the container's link: ${modes.join("\n")}`);
+  // A container's own `/.replicas` (here a directory with its own file) is the container's, not the pass's: the holding
+  // directory takes the next free name instead of putting another replica's files inside the container's tree.
+  assert.ok(modes.some((m) => m === "regular .replicas/probe"), `c2's own .replicas was moved: ${modes.join("\n")}`);
 });
 
 test("security-sbom: the host scan excludes the pass's export directory where it is reachable under /", { skip: NOT_LINUX }, async () => {

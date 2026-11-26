@@ -558,7 +558,7 @@ run_watched() { # <secs> <cmd...>
   return "$rc"
 }
 # Fold one replica's extracted tree into the unit's merged root. A path the root does not hold is linked in at the
-# container's own path; a path it holds with different content is linked under `<root>/.replicas/<cid>/<path>`, so one
+# container's own path; a path it holds with different content is linked under `<root>/.replicas[-N]/<cid>/<path>`, so one
 # scan reads both replicas' files instead of one overwriting the other. A file identical on both sides is linked once.
 # Returns 1 with export_err if the merge cannot be made.
 # Whether two entries are the same thing: both symlinks with the same target, or both regular files with the same bytes.
@@ -569,19 +569,39 @@ same_entry() { # <a> <b>
   fi
   [ -f "$1" ] && [ -f "$2" ] && cmp -s "$1" "$2"
 }
-# Whether placing <rel> under <root> would run through something that is not a directory (one replica has a regular file
-# where another has a directory). Then the entry cannot go at its own path and must be kept aside.
+# Whether placing <rel> under <root> would run through something that is not a directory the merge itself made: a regular
+# file one replica has where another has a directory, or a symlink. A symlink in an ancestor is never followed, even when
+# it points somewhere inside the root: a container controls its own tree, so `app -> /home/<user>` in one replica and
+# `app/.bash_profile` in another would otherwise write that file to the host instead of the staged root, and a link into
+# another container's tree would put one target's files under another's. Such an entry is kept aside instead.
 ancestor_blocked() { # <root> <rel>
   local root="$1" rel="$2" rest part acc="$1"
   case "$rel" in */*) rest="${rel%/*}" ;; *) return 1 ;; esac
   local oldifs="$IFS"; IFS='/'
   for part in $rest; do
     acc="$acc/$part"
-    if [ -e "$acc" ] || [ -L "$acc" ]; then
-      if [ ! -d "$acc" ]; then IFS="$oldifs"; return 0; fi
-    fi
+    if [ -L "$acc" ]; then IFS="$oldifs"; return 0; fi
+    if [ -e "$acc" ] && [ ! -d "$acc" ]; then IFS="$oldifs"; return 0; fi
   done
   IFS="$oldifs"
+  return 1
+}
+# The directory conflicting entries are kept under. A container controls its own tree, so it can hold a `/.replicas` of its
+# own (a link, a file, a directory of its own paths), and that one is the container's, not the pass's: the merged root is
+# built fresh for every unit, so a name that already exists there came from a container, and the first free
+# `.replicas`, `.replicas-2`, ... is the one this merge creates. Kept per root, so both replicas of one unit agree on it.
+declare -A aside_for=()
+pick_asideroot() { # <rootfs>: sets `asideroot`
+  local rootfs="$1" k=1 cand
+  asideroot="${aside_for[$rootfs]:-}"
+  [ -n "$asideroot" ] && [ -d "$asideroot" ] && return 0
+  while [ "$k" -le 20 ]; do
+    if [ "$k" -eq 1 ]; then cand="$rootfs/.replicas"; else cand="$rootfs/.replicas-$k"; fi
+    if [ ! -e "$cand" ] && [ ! -L "$cand" ] && mkdir -p -m 755 "$cand" 2>/dev/null; then
+      asideroot="$cand"; aside_for[$rootfs]="$cand"; return 0
+    fi
+    k=$((k + 1))
+  done
   return 1
 }
 # Link one entry into place: a symlink stays a symlink (its target is part of what the scan reads), a regular file is a
@@ -592,13 +612,15 @@ place_entry() { # <src> <dst>
 }
 # Fold one replica's extracted tree into the unit's merged root, bounded by the snapshot deadline (the apply lock is held
 # while this runs, so it may not outlast the pass's own budget). A path the root does not hold is linked in at the
-# container's own path; one it holds with different content goes under `<root>/.replicas/<cid>/<rel>`; one whose ancestor
-# is a file on the other side goes there too. Symlinks are carried as symlinks, so a distro's `/etc/os-release -> ../usr/lib/
-# os-release` and `/bin -> usr/bin` are where syft looks for them. Returns 1 with export_err.
+# container's own path; one it holds with different content goes under `<root>/.replicas[-N]/<cid>/<rel>`; one whose ancestor
+# is a file, or a symlink the merge will not follow, goes there too. Symlinks are carried as symlinks, so a distro's
+# `/etc/os-release -> ../usr/lib/os-release` and `/bin -> usr/bin` are where syft looks for them. Returns 1 with export_err.
 merge_replica_root() { # <replica root> <merged root> <container id>
   local repodir="$1" rootfs="$2" cid="$3" f rel src dst keep n
   export_err=""
-  if ! ( cd "$repodir" && find . -mindepth 1 \( -type f -o -type l \) -print0 ) > "$exportdir/merge-$cid.list" 2>/dev/null; then
+  # Sorted, so one replica's files always merge in the same order: a merge that failed halfway must not depend on the
+  # order the filesystem happened to list a container's tree in.
+  if ! ( cd "$repodir" && find . -mindepth 1 \( -type f -o -type l \) -print0 | LC_ALL=C sort -z ) > "$exportdir/merge-$cid.list" 2>/dev/null; then
     export_err="could not list the extracted root"; return 1
   fi
   while IFS= read -r -d '' f; do
@@ -616,16 +638,23 @@ merge_replica_root() { # <replica root> <merged root> <container id>
       keep=1
     fi
     if [ -n "$keep" ]; then
-      dst="$rootfs/.replicas/$cid/$rel"
-      # A second conflicting version of the same path (two replicas, one already kept aside) gets its own suffix.
-      n=2
-      while [ -e "$dst" ] || [ -L "$dst" ]; do
+      # Chosen on the first conflict, not up front: a container's own `/.replicas` is merged before this is asked for, so
+      # the holding directory never takes a name the merged root already holds.
+      pick_asideroot "$rootfs" || { rm -f "$exportdir/merge-$cid.list"; export_err="could not create the replica holding directory"; return 1; }
+      # A second conflicting version of the same path (two replicas, one already kept aside) gets its own suffix, and a
+      # version whose own ancestors are a file or a link goes to the next suffix until one can hold it.
+      n=1
+      while :; do
+        if [ "$n" -eq 1 ]; then dst="$asideroot/$cid/$rel"; else dst="$asideroot/$cid.$n/$rel"; fi
+        if [ "$n" -gt 20 ]; then
+          rm -f "$exportdir/merge-$cid.list"; export_err="could not place $rel"; return 1
+        fi
+        if ancestor_blocked "$rootfs" "${dst#"$rootfs"/}"; then n=$((n + 1)); continue; fi
+        if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then break; fi
         same_entry "$src" "$dst" && break
-        dst="$rootfs/.replicas/$cid.$n/$rel"; n=$((n + 1))
+        n=$((n + 1))
       done
-      if [ -e "$dst" ] || [ -L "$dst" ]; then
-        rm -f "$exportdir/merge-$cid.list"; export_err="could not place $rel"; return 1
-      fi
+      if [ -e "$dst" ] || [ -L "$dst" ]; then continue; fi
     fi
     mkdir -p "$(dirname "$dst")" 2>/dev/null || { rm -f "$exportdir/merge-$cid.list"; export_err="could not create $(dirname "$dst")"; return 1; }
     place_entry "$src" "$dst" || { rm -f "$exportdir/merge-$cid.list"; export_err="could not place $rel"; return 1; }
@@ -1112,7 +1141,7 @@ save_wave() { # <wave>
           fi
           # Merged into the one real root: a path the merged root does not hold yet is added there (so /etc, /usr and the
           # package files sit at the container's own paths for the first replica), and a path it already holds with other
-          # content is kept under `<root>/.replicas/<id>/<path>` instead of being dropped, so the one scan still reads both
+          # content is kept under `<root>/.replicas[-N]/<id>/<path>` instead of being dropped, so the one scan still reads both
           # replicas' versions. Hard links keep the second copy from doubling the bytes.
           if ! merge_replica_root "$repodir" "$rootfs" "$cid"; then
             cont_err="container $cid: could not merge its root into the unit root (${export_err:-failed})"
