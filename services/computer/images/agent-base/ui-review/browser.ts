@@ -32,9 +32,12 @@ export type Launched = { cdp: string; port: number; browser: Browser; close(): P
 /**
  * Starts Chrome with a CDP port (written to <out>/browser.json when `out` is given). With `politeness`, every request to
  * another origin than `politeness.origin` (sub-requests included, from every context of this browser) waits its turn so
- * that together they stay under `rps` requests a second.
+ * that together they stay under `rps` requests a second. `target` is the app under review: when it is not a local build,
+ * every context is read only from its first navigation: a request that isn't GET, HEAD or OPTIONS is answered by the guard
+ * (204) and never sent, and no service worker, WebSocket, WebTransport or peer connection runs, so a live app's own code (a
+ * POST on mount, a socket, a data channel) never writes.
  */
-export async function launch(o: { port?: number; out?: string; politeness?: { origin: string; rps: number } } = {}): Promise<Launched> {
+export async function launch(o: { port?: number; out?: string; politeness?: { origin: string; rps: number }; target?: string } = {}): Promise<Launched> {
   const port = o.port ?? (await freePort());
   const browser = await chromium.launch({
     executablePath: CHROME, headless: true,
@@ -45,15 +48,24 @@ export async function launch(o: { port?: number; out?: string; politeness?: { or
     try { cdp = ((await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl; } catch { await sleep(100); }
   }
   if (o.out) writeFileSync(join(o.out, "browser.json"), JSON.stringify({ cdp, port }, null, 2));
-  if (o.politeness) {
-    const { origin, rps } = o.politeness;
-    const gap = (1000 / rps) * 1.05;
+  const readOnly = o.target !== undefined && !isLocal(o.target);
+  if (o.politeness || readOnly) {
+    const gap = o.politeness ? (1000 / o.politeness.rps) * 1.05 : 0;
     let nextAt = 0;
     const turn = async () => { const now = Date.now(), at = Math.max(now, nextAt); nextAt = at + gap; if (at > now) await sleep(at - now); };
     const newContext = browser.newContext.bind(browser);
     browser.newContext = async (opts) => {
-      const ctx = await newContext(opts);
-      await ctx.route((u) => u.origin !== origin && /^https?:$/.test(u.protocol), async (route) => { await turn(); await route.continue().catch(() => {}); });
+      const ctx = await newContext(readOnly ? { ...opts, serviceWorkers: "block" } : opts);
+      if (o.politeness) { const { origin } = o.politeness; await ctx.route((u) => u.origin !== origin && /^https?:$/.test(u.protocol), async (route) => { await turn(); await route.continue().catch(() => {}); }); }
+      if (readOnly) {
+        // Registered last, so it runs first: a write is aborted before the throttle or the app ever sees it.
+        // A write is answered by the guard itself (204, empty), so the app goes on as if it went: never sent, and never a page
+        // error or a failed load of the app's own in the findings.
+        await ctx.route("**/*", (route) => ["GET", "HEAD", "OPTIONS"].includes(route.request().method()) ? route.fallback() : route.fulfill({ status: 204, body: "" }));
+        await ctx.routeWebSocket(/.*/, (ws) => void ws.close());
+        // The channels request routing doesn't see (WebTransport, peer connections) are gone before the app's own code runs.
+        await ctx.addInitScript(() => { for (const k of ["WebTransport", "RTCPeerConnection", "webkitRTCPeerConnection"]) try { delete (globalThis as Record<string, unknown>)[k]; } catch { /* not there */ } });
+      }
       return ctx;
     };
   }

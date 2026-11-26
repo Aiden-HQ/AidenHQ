@@ -58,6 +58,8 @@ RUN cd /opt/aidenhq/ui-review && npm ci --ignore-scripts --no-audit --no-fund &&
     && ui-review --help >/dev/null
 COPY design-system /opt/aidenhq/design-system
 COPY app-starter /opt/aidenhq/app-starter
+# The UI review's regression set (modules/design/eval): `node /opt/aidenhq/design-eval/run.ts <suite>`, on request only. It needs no install.
+COPY design-eval /opt/aidenhq/design-eval
 # The starter's dependencies, installed once from its lockfile (exact pins, nothing new), so a mockup or a review's
 # `cp -r /opt/aidenhq/app-starter …` carries node_modules and can build at once, with no download.
 # Its Playwright Test (`npm run screens`) drives the image's pinned Chrome (AGENT_BROWSER_EXECUTABLE_PATH): no browser

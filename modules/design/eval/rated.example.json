@@ -1,0 +1,8 @@
+{
+  "items": [
+    { "id": "acme-site-a", "kind": "site", "urls": ["https://example.com/", "https://example.com/pricing"], "score": 9 },
+    { "id": "acme-site-b", "kind": "site", "urls": ["https://example.org/"], "score": 6 },
+    { "id": "acme-site-c", "kind": "site", "urls": ["https://example.net/"], "score": 3 },
+    { "id": "acme-app", "kind": "app", "urls": ["http://127.0.0.1:3600/", "http://127.0.0.1:3600/teams"], "score": 2 }
+  ]
+}

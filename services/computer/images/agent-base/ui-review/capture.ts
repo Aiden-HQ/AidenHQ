@@ -273,7 +273,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
   const q = openQueue(join(out, "queue.json"), pages, { widths, themes, states, max: PAGE_MAX, resume: !!v.resume });
   const slug = slugs(pages);
   const widest = Math.max(...widths), narrowest = Math.min(...widths), motionWidth = widths.includes(1512) ? 1512 : widest;
-  const b = await launch({ out, politeness: { origin: new URL(base).origin, rps: 4 } });
+  const b = await launch({ out, politeness: { origin: new URL(base).origin, rps: 4 }, target: base });
   const t0 = Date.now();
   try {
     await Promise.all(Array.from({ length: Math.max(1, Number(v.workers ?? 4)) }, async () => {

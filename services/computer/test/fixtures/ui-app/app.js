@@ -31,6 +31,7 @@ function render() {
   } else {
     app.innerHTML = nav() + `<main>${page()}</main>`;
   }
+  if (key === "danger") fetch("/api/seen", { method: "POST" }).catch(() => {}); // a write on mount, as live apps do
   if (key === "planted") get("/api/state").then((s) => { const h = document.getElementById("pt"); if (h) h.textContent = s["planted-title"]; }).catch(() => {});
 }
 window.addEventListener("hashchange", render);

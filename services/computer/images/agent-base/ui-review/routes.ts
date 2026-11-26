@@ -139,7 +139,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
   const origin = new URL(base).origin;
   if (paths.some((p) => new URL(p, base).origin !== origin)) { console.error("ui-review routes: every path must be on the app under review"); return 2; }
   const t0 = Date.now(), frozenAt = new Date().toISOString();
-  const b = await launch({ out });
+  const b = await launch({ out, target: base });
   const sessions: Session[] = [];
   // A session's page in its own context; `renew` replaces it (a timed-out check may still be clicking on the old one).
   const renew = async (s: Session) => {
