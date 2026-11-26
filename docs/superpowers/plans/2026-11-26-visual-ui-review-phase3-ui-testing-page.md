@@ -32,12 +32,13 @@ the `login` job tool, the engine's `--resume`, `browser start`, `flows`, `repro`
 - One active pass per app (a unique index, not a check in code paths). A pass asked for while one runs answers
   `already running: <run>`.
 - Per-app daily cap: `day_cap_usd` (default 5, at most 100), per UTC day, enforced by the scheduler, never by a new gateway
-  limit (the owner keeps one spend limit, the install's). Before starting a pass it sums what today's pass tasks of that app
-  billed: `GET /v1/work?task=<id>` (role `kernel.work-read`, which the design module requests) gives each ended job's
-  `cost_usd` from the gateway ledger. With one active pass per app, every earlier pass of the day has ended when the
-  scheduler looks, so no new kernel read is needed. A pass that starts below the cap runs to its own end, bounded by the
-  existing `task_usd` (default 10): the day can overshoot the cap by at most one pass. The install's day and month limits
-  still apply on top.
+  limit (the owner keeps one spend limit, the install's). Before starting a pass it sums the gateway ledger's charges for
+  the app's pass tasks in the current UTC day: `GET /v1/work?spend_tasks=design:pass:<app>:&day=<the UTC date>` (role
+  `kernel.work-read`, which the design module requests) returns each task's confirmed `cost_usd`, keyed by the charge's own
+  `at` (the same `settled` rows `work.ts` `since()` sums, `kernel/src/work.ts:130–136`), so a closed pass and a pass spanning
+  midnight both count on the day they spent. A pass that starts below the cap runs to its own end, bounded by the existing
+  `task_usd` (default 10): the day can overshoot the cap by at most one pass. The install's day and month limits still
+  apply on top.
 - Spend mode per app: `scan` (capture, design review, no fixes, no clicking), `standard` (default: plus top-3 rendered
   fixes and one clicking pass), `thorough` (the review on `anthropic/claude-opus-5.5`, top-5 fixes, two clicking passes).
   Models per app override any of `design`, `fixes`, `clicking` (OpenRouter ids).
@@ -98,9 +99,7 @@ phase 1 is still in review.
   - `ui_testing.apps[]` entries gain `schedule: on-request|after-deploy|always` (default `on-request`), `day_cap_usd` (default 5),
     `spend: scan|standard|thorough` (default `standard`), `models: { design?, fixes?, clicking? }`,
     `live_mode: read|test-write|any` (default `read`), `recording: false`; `depth` and `mode` of `design_pass_start` default from them;
-  - roles requests `kernel.work-read` (billed cost per task), and `kernel.tasks` reading lists closed tasks too
-    (`GET /v1/tasks?source=…&status=closed`, `kernel/src/modtasks.ts` `list`): the cap sums a day's closed passes, not only
-    the open ones;
+  - roles requests `kernel.work-read` (the ledger's billed cost for the day's cap);
   - `subscribes: { apps: { kinds: [app.deployed], resources: { setting: ui_testing, path: "apps[].name" } }, "github?": { kinds: [push], resources: { setting: ui_testing, path: "apps[].repo" } } }`
     (`github?`: optional, so the module compiles on an install without GitHub; a compile test without it);
   - `requires: [board]` (for the page).
@@ -110,11 +109,12 @@ phase 1 is still in review.
   (the event log dedupes on `(connection, id)`: a retry of one deploy is one event, a redeploy of the same sha another); a failed
   send is logged, never the deploy's failure)
 - Modify: `kernel/src/modtasks.ts` (`GET /v1/tasks?source=` lists a module's own source family too: a source starting
-  `<that module>:`, beside the release module's `release:instance:`, with `status=closed` covering done and cancelled tasks
-  as well as the open set; test in `kernel/test/modtasks.test.ts`: design lists `design:pass:` tasks open and closed, and is
-  refused `github:` ones)
-- Modify: `kernel/src/work.ts` (`GET /v1/work?task=` answers `billed: { day, cost_usd }[]`, the confirmed `calls` rows by
-  `task_subject` and UTC day; test in `kernel/test/work.test.ts`: a closed task's job costs still appear)
+  `<that module>:`, beside the release module's `release:instance:`; test in `kernel/test/modtasks.test.ts`: design lists
+  `design:pass:` tasks and is refused `github:` ones) — the reconcile sweep only, since the cap reads the ledger and needs no
+  closed task listed
+- Modify: `kernel/src/work.ts` (`GET /v1/work?spend_tasks=<prefix>&day=<UTC date>` answers `{ day, by_task }`, the confirmed
+  `calls` rows whose `task_subject` starts with `<prefix>` and whose `at` is in that UTC day; test in `kernel/test/work.test.ts`:
+  a closed task's charges appear, and a charge after midnight belongs to the new day, not the task's filing day)
 - Create: `modules/design/service/src/schedule.ts`; modify `passes.ts`, `store.ts` (unique partial index
   `runs_active ON runs(app) WHERE kind = 'pass' AND status = 'running'`), `main.ts` (a 60 s tick; the feed cursor as code-review's)
 - Test: `modules/design/test/schedule.e2e.test.ts`
@@ -123,25 +123,27 @@ phase 1 is still in review.
 - `startPass(app: string, why: "request" | "deploy" | "always", o?: { depth?; mode?; model? }): { run: string; task: string } | { refused: "already running" | "cap reached today" | "unknown app" }`
   (the one entry: `design_pass_start`, the tick and the feed all call it); files the module task with
   source `design:pass:<app>:<run>` (so a day's pass tasks of an app are listed by source).
-- `design_pass_stop { app }`: **stops the job, then closes the task, and only then frees the slot.** `POST /v1/tasks/:task/close`
-  alone only writes the control plane's task record (`kernel/src/modtasks.ts:75–85`); it stops no box, so marking the run
-  `stopped` on that call would free the unique slot while the pass still clicks and spends. The stop is the kernel's job-stop
-  path (`DELETE /v1/jobs/:job`, the run's live job, as the module that dispatches it: `kernel/src/jobs.ts` `stop`), awaited
-  until the job's state is `cancelled`/`done`; then the task is closed as `cancelled`; only then does the `runs_active` row
-  leave `running` (`stopped`). If the job has not exited within 60 s the run stays `running` (slot held, "stopping") and the
-  next tick tries again; the slot is never freed while a job of the pass is live. Test: Stop during a clicking pass files no
-  second pass on Run now, and `fixtureServer.writes` stops growing.
+- `design_pass_stop { app }`: **closes the task, which stops the run, and keeps the slot until the job has ended.** Design is
+  not the dispatcher and never stops a job itself: `POST /v1/tasks/:task/close` writes the task `cancelled`
+  (`kernel/src/modtasks.ts:75–85`), and the dispatcher — which follows every open job and stops one whose task is closed or
+  cancelled (`modules/dispatch/service/src/loop.ts:264–271`, the "task closed while running: run stopped" path) — ends the
+  run. Frees nothing yet: the run stays `running` (shown "stopping") and the slot stays held until the job's last state is
+  terminal (`done`/`cancelled`/`failed`, read from `GET /v1/jobs/:job` or the module's job list), and only then does the
+  `runs_active` row leave `running` (`stopped`). If the job is still live after 60 s the run stays `running` and the next
+  tick checks again, so Run now and an `always` tick answer "already running" while it is. Test: Stop during a clicking
+  pass files no second pass on Run now, and `fixtureServer.writes` stops growing.
 - Resume: `design_run_finish` stores the pass's `queue.json` in its evidence; the task text names the previous run so the
   skill runs `ui-review capture --resume` from it; a queue with nothing left starts a new cycle.
-- Cap: `startPass` reads the **gateway ledger**, not the task's jobs: the kernel's `GET /v1/work?task=<id>` gains
-  `billed: { day: string; cost_usd: number }[]`, the confirmed spend of that task's jobs from the `calls` table by
-  `task_subject` and UTC day (the same `settled` rows `work.ts` `since()` sums, `kernel/src/work.ts:130–136`). A task's job
-  rows carry no cost (`work.ts:42,76–79`), and `/v1/tasks?source=` lists only open tasks (`kernel/src/modtasks.ts:110–123`),
-  so a job-row sum would miss every closed pass: the ledger read has neither gap, a closed task's `calls` rows included.
-  `startPass` lists the app's pass tasks filed today **and closed today** (the module's own source family, closed ones
-  included: `GET /v1/tasks?source=design:pass:<app>:&status=closed`), reads each one's `billed` for the current UTC day, and
-  refuses with `"cap reached today"` once the sum reaches `day_cap_usd`, until the UTC day changes; nothing depends on the
-  agent reporting it. Test: a pass bills $5.10 (the ledger's `calls`), its task closes, and the next tick files none.
+- Cap: `startPass` reads the **gateway ledger's charges for the current UTC day**, not a set of tasks. The kernel gains
+  `GET /v1/work?spend_tasks=<prefix>[&day=<UTC date>]` → `{ day: string; by_task: { task_subject: string; cost_usd: number }[] }`:
+  it sums the `calls` rows whose `task_subject` starts with the prefix and whose `at` falls in that UTC day, using the same
+  `settled` filter as `since()` (`kernel/src/work.ts:130–136`). That closes every gap the reviewer found: a task's job rows
+  carry no cost (`work.ts:42,76–79`), `/v1/tasks?source=` lists only open tasks (`kernel/src/modtasks.ts:110–123`), and a pass
+  that starts before UTC midnight and spends after it is counted **on the day it spent**, because the day comes from the
+  charge's `at`, not the task's filing or closing time. `startPass` asks for `design:pass:<app>:` on today's UTC date, sums
+  `by_task`, and refuses with `"cap reached today"` once the sum reaches `day_cap_usd`, until the UTC day changes; nothing
+  depends on the agent reporting it. Test: a pass starts before midnight, bills $5.10 after midnight and closes, and the
+  next tick on the new day files none; a closed task's charges count as much as an open one's.
 - Reconcile: each tick lists the module's open pass tasks (`GET /v1/tasks?source=design:pass:`); a `running` run whose task
   is closed, cancelled or gone, or whose filing failed, becomes `failed: <why>` and frees the app. The queue a dead pass
   left is the last one `design_evidence_put` stored; the next pass resumes from it.
@@ -159,7 +161,7 @@ test("triggers follow each app's schedule", async () => {
 });
 test("always runs back to back until the cap, then waits a day", async () => {
   settings({ apps: [{ name: "acme", url: U, schedule: "always" }] }); await tick(); finishRun(last()); closeTask(last());
-  kernel.billed(tasks.filed[0].id, [{ day: today(), cost_usd: 3.0 }, { day: today(), cost_usd: 2.1 }]);   // the ledger's confirmed spend
+  kernel.spend("design:pass:acme:", today(), [{ task: "design:pass:acme:r1", cost_usd: 3.0 }, { task: "design:pass:acme:r1", cost_usd: 2.1 }]);
   await tick(); assert.equal(tasks.filed.length, 1); clock.nextUtcDay(); await tick(); assert.equal(tasks.filed.length, 2);
 });
 test("a pass whose worker died frees the app, and the next one resumes", async () => {

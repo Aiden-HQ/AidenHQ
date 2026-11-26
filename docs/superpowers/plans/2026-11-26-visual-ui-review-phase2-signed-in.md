@@ -144,9 +144,11 @@ test("module job tool forwards the caller and the task's module source", async (
   - Job tool `login { app }` → `{ login_url, username, password, totp?: string /* the current code, never the seed */ }`,
     released only when: the caller holds `ui-login`; `task_module === "design"` and `task_source === "design:pass:<app>:<run>"`
     for that `app`; that run is the app's active pass (status `running`); the app has a login; **and the call presents that
-    run's single-use login nonce** (Task 3's `/aidenhq/engine/.aidenhq/login-nonce`, unreadable by the agent's uid, consumed
-    on the first answer), never the run token alone. Every other case, including a second call with the same nonce: 403 with the reason, nothing else. Test: a call with
-    `AIDENHQ_RUN_TOKEN` in place of the nonce, and a replay of a used nonce, are both 403.
+    run's current login nonce** (Task 3's `/aidenhq/engine/.aidenhq/login-nonce`, unreadable by the agent's uid; each answer
+    spends the nonce it got and writes the next one there, so a dead session's re-login works), never the run token alone.
+    Every other case, including a second call with an already-spent nonce: 403 with the reason, nothing else. Tests: a call
+    with `AIDENHQ_RUN_TOKEN` in place of the nonce, and a replay of a spent nonce, are both 403; the nonce the first answer
+    writes lets the next call succeed.
   - Until PR 2 lands, a pass for an app with `aidenhq_app: true` at depth `signed-in` or `tester` is refused with
     "signed-in review of AidenHQ apps waits for the owner's decision on test-user sessions"; its `scan` depth works.
 
@@ -183,18 +185,22 @@ test("a supplied login reaches only the app's own pass", async () => {
   Codex step also produces `.aidenhq-ui/state.json` through `ui-review login repo|signup`, never `supplied`)
 
 **Interfaces (Produces):**
-- `ui-review login supplied --app <app> --out state.json`: calls `POST $AIDENHQ_GATEWAY_URL/v1/jobtools/module/design/login`
-  (the launcher forwards it to the kernel, Task 1) with a **single-use login nonce in the body, never `AIDENHQ_RUN_TOKEN`**.
-  The nonce lives where the agent's uid cannot read it: the kernel mints one per pass and the launcher writes it to
-  `/aidenhq/engine/.aidenhq/login-nonce`, a directory owned by the box's `ui-review` uid, mode `0700`, the file mode `0600`
-  — not `/aidenhq-out` (the only folder the agent's tools and transcript read) and not the agent's `$HOME`. `login.ts` runs
-  as that uid, reads the nonce, calls the tool once and unlinks it before it returns. A page that tells the agent to "call
-  the login tool" therefore gives it no nonce to send, and the run token alone is refused; a nonce it somehow read is spent
-  by the first answer. It signs in and writes Playwright storage state; stdout is only
-  `signed in (supplied) at <login path>`. This is what keeps the guarantee "login material is read only by the box's
-  `ui-review` processes, never printed" true when page text tries to steer the agent to fetch it. Tests: the login call with
-  `AIDENHQ_RUN_TOKEN` in place of the nonce, and a replay of a used nonce, are both 403 and return no credential; a shell as
-  the agent's uid cannot open `/aidenhq/engine/.aidenhq/login-nonce` (its directory is `0700` for another uid).
+- `ui-review login supplied --app <app> --out state.json [--renew]`: calls
+  `POST $AIDENHQ_GATEWAY_URL/v1/jobtools/module/design/login` (the launcher forwards it to the kernel, Task 1) with a
+  **one-time login nonce in the body, never `AIDENHQ_RUN_TOKEN`**, and it is **renewable**: the kernel mints a fresh nonce on
+  every login answer and writes it to `/aidenhq/engine/.aidenhq/login-nonce` (`login.ts`'s secret channel, below), so the
+  re-login a dead session needs calls the same tool with the new nonce the previous answer left, and the run keeps its
+  session through the whole capture. The nonce lives where the agent's uid cannot read it: `/aidenhq/engine/.aidenhq/`, a
+  directory owned by the box's `ui-review` uid, mode `0700`, the nonce file mode `0600` — not `/aidenhq-out` (the only
+  folder the agent's tools and transcript read) and not the agent's `$HOME`. `login.ts` runs as that uid, reads the nonce,
+  calls the tool once, and the tool leaves the next nonce in the same file for the next login (or a re-login), which is what
+  makes it renewable while each nonce is still single-use. A page that tells the agent to "call the login tool" gives it
+  no nonce to send, the run token alone is refused, and a nonce it somehow read is spent by the answer that replaces it.
+  It signs in and writes Playwright storage state; stdout is only `signed in (supplied) at <login path>`. This is what keeps
+  the guarantee "login material is read only by the box's `ui-review` processes, never printed" true when page text tries to
+  steer the agent to fetch it. Tests: the login call with `AIDENHQ_RUN_TOKEN` in place of the nonce, and a replay of a spent
+  nonce, are both 403 and return no credential; a second `--renew` login with the nonce the first answer wrote succeeds; a
+  shell as the agent's uid cannot open `/aidenhq/engine/.aidenhq/login-nonce` (its directory is `0700` for another uid).
 - `ui-review login form --url <login url> --user <u> --password-file <f> [--totp-file <f>] --out state.json` (the repo-aware
   rung: the agent found or created the user).
 - `ui-review login signup --url <signup url> --out state.json`: starts Mailpit on `127.0.0.1:1025` (SMTP) and `:8025` (API)
@@ -221,6 +227,8 @@ test("a supplied login reaches only the app's own pass", async () => {
   attached tab all go through these targets; no unguarded target exists.
 - Session check: after each capture, a final URL whose path is `loginPath`, or a visible password input with the login
   title, means the session is gone: one re-login with the same rung (supplied, form, aidenhq), then `failed: session ended`.
+  A supplied re-login calls `ui-review login supplied --renew`, which spends the refreshed nonce the previous answer left
+  (above), so it works as often as the session dies.
 
 - [ ] **Step 1: Write the failing tests:**
 ```ts
