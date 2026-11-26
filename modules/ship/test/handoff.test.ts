@@ -167,6 +167,36 @@ test("a stalled hold reports its generation and kind to the code host, and a rou
   assert.deepEqual([generationOf(w.state, false, "a/b", 7, H2).generation, generationOf(w.state, false, "a/b", 7, H2).hold], [1, null]);
 });
 
+test("a stall from the gate's decision clears on a later pass that no longer says stall, with ship's own assignment undone; other stalls wait for a new head", async () => {
+  const w = world();
+  await intake(w.deps, w.pr({ events: [w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z")] }));
+  const stall = { do: "stall" as const, why: "blocked by a branch rule ship doesn't handle" };
+  await round(w.deps, w.pr(), stall, { decided: true });
+  const held = w.state.get("a/b", 7) as any;
+  assert.deepEqual([held.hold.kind, held.hold.onChange, held.assigned], ["stalled", true, ["contrib"]]);
+  // Still stalled: nothing moves, nothing is unassigned. A person's own assignment never counts as ship's.
+  assert.equal(await round(w.deps, w.pr({ assignees: ["contrib"] }), stall, { decided: true }), "stopped");
+  assert.equal(w.of("unassign").length, 0);
+  // The gate decides otherwise (a review landed): the hold clears, ship's assignment is undone, and the round goes on.
+  await round(w.deps, w.pr({ assignees: ["contrib"] }), { do: "wait", why: "waiting on code owner @acme/api" });
+  const after = w.state.get("a/b", 7) as any;
+  assert.deepEqual([after.hold, after.assigned], [null, undefined]);
+  assert.deepEqual(w.of("unassign").map((c) => c.logins), [["contrib"]]);
+  // A stopped PR (the stop label) is neither resumed nor unassigned, even when the gate no longer says stall.
+  const st = world();
+  await intake(st.deps, st.pr({ events: [st.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z")] }));
+  await round(st.deps, st.pr(), stall, { decided: true });
+  await round(st.deps, st.pr({ labels: ["ship:stop"] }), { do: "wait", why: "checks running" });
+  assert.equal((st.state.get("a/b", 7) as any).hold.kind, "stalled");
+  assert.equal(st.of("unassign").length, 0);
+  // A stall ship raised itself (not from the gate's decision) stays until a new head.
+  const own = world();
+  await intake(own.deps, own.pr({ events: [own.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z")] }));
+  await round(own.deps, own.pr(), stall);
+  await round(own.deps, own.pr(), { do: "wait", why: "checks running" });
+  assert.equal((own.state.get("a/b", 7) as any).hold.kind, "stalled");
+});
+
 test("a hand-back over a stall closes its task, and a close the kernel refuses is tried again next pass", async () => {
   const w = world();
   const on = w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z");

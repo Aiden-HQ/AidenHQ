@@ -42,6 +42,7 @@ export const HOLD = {
   repair: "Ship couldn't repair this PR on its own. A person needs to resolve it.",
   steps: "A step the repo asks Ship to run before merging didn't pass. A person needs to look at it.",
   failed: "Ship's merge or approval for the latest commit was refused or didn't go through. A person decides what happens next.",
+  refused: (why: string) => `GitHub refused to queue this PR (${why.replace(/[\r\n]+/g, " ")}). A person clears it, or pushes a fix.`,
   stall: "GitHub blocks the merge on a rule Ship doesn't handle, such as review threads to resolve. A person clears it.",
   closed: "Ship stopped: its task was closed. A person decides what happens to this PR.",
   handedBack: "Ship handed this PR back. A person takes it from here; handing it over again restarts Ship.",

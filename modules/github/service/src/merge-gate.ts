@@ -246,20 +246,23 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
     case "BEHIND":
       return { do: "fail", why: `it is behind \`${def}\`: rebase it and ask for its merge again` };
     case "BLOCKED": {
+      if (!ship) return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
       // With the head's approval in, a code owner (or another required review) is what GitHub still waits for.
+      if (pr.reviewDecision === "REVIEW_REQUIRED") return { do: "wait", why: reviewWait(pr) };
+      // On a merge-queue branch a direct merge is always blocked (the queue is the path), and everything above has passed: the
+      // enqueue is the judge, and GitHub's refusal (a thread to resolve, a signature) is a hold with its reason (queue.ts). The
+      // queue tests the merged tree itself, so the base's CI is no wait here.
+      if (ship.queue) return { do: "enqueue", why: "ready" };
       // GitHub also reports BLOCKED while a check is still running on the head, even when every required check is green (a
       // duplicate workflow run's jobs in flight): the required guard above judges only `ship.required`, so the whole head is
-      // judged here by its newest run per name, and any check still pending is a wait.
-      // Any other rule (conversations to resolve, signed commits, a deployment) is one ship doesn't handle: a visible stall.
-      if (!ship) return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
-      if (pr.reviewDecision === "REVIEW_REQUIRED") return { do: "wait", why: reviewWait(pr) };
-      // The design review and code review's advisory *statuses* (both POST to the commit status API, never a check run) are not
-      // what GitHub holds a merge for, and the design review sits pending from the moment the task is filed: counting one here
-      // would hide a real branch-rule stall behind a verdict that has nothing to do with the merge. A check run that merely
-      // shares one of those names is the repo's own job and still holds the wait.
+      // judged here by its newest run per name, and any check still pending is a wait. The design review and code review's
+      // advisory *statuses* (commit status API, never a check run) are not what GitHub holds a merge for, and the design review
+      // sits pending from the moment a task is filed; a check run that merely shares one of those names is the repo's own job
+      // and still holds the wait.
       const advisory = (c: NamedCheck) => c.kind === "status" && (c.name === DESIGN_REVIEW_CHECK || c.name === CODE_REVIEW_STATUS);
       const held = headChecks(ship.checks).filter((c) => !advisory(c));
       if (held.some((c) => c.pending)) return { do: "wait", why: "checks are still running on its head" };
+      // Any other rule (conversations to resolve, signed commits, a deployment) is one ship doesn't handle: a visible stall.
       return { do: "stall", why: "blocked by a branch rule ship doesn't handle" };
     }
     default:
