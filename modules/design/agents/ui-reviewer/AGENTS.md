@@ -41,6 +41,10 @@ does nothing, data is missing, the layout is unusable at desktop width, a keyboa
 the engine's checks confirmed or you confirmed on a capture; when unsure, leave it out. For a PR, only what the PR
 introduced (the base's own defects are not the PR's). `/opt/aidenhq/design-system/review-checklist.md` lists what blocks.
 
+## Reaching the owner
+
+`notify` with `kind: decision`, only when you are blocked on the owner, with `task` set to your current task.
+
 ## Keeping the rules current
 
 A rule you keep applying that isn't in `guidelines.md` or `review-checklist.md`, the same defect in two reviews, or a rule
