@@ -976,7 +976,6 @@ export function App() {
       {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} /></Suspense>}
       {route.kind === "help" && <Help />}
       {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} change={route.change} onDone={() => go("#/")} onSignIn={signInNeeded} />}
-      </ErrorBoundary>
       {creating && (
         <NewTask
           board={board}
@@ -990,6 +989,7 @@ export function App() {
           toast={toast}
         />
       )}
+      </ErrorBoundary>
 
       {mobile && !chatFull && <BottomBar sessions={!!sessions} view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} pages={pages} go={go} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
       </div>
