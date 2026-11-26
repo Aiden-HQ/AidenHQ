@@ -25,5 +25,7 @@ export function mergedDescription(target: Pick<Issue, "description">, source: Pi
   const room = MAX_DESCRIPTION - head.length - section.length - markers.length - 8;
   const body = displayText(source.description);
   const text = body.length > room ? `${body.slice(0, Math.max(0, room - 40))}\n\n_(cut short: read ${source.identifier})_` : body;
-  return [head, `${section}${text ? `\n\n${text}` : ""}`, markers].filter(Boolean).join("\n\n");
+  // The requester marker leads (requested-parent.ts): a list row is cut to 1200 characters, and a marker after a long brief
+  // would be the part cut off. The source markers stay at the end.
+  return [requester.join("\n"), head, `${section}${text ? `\n\n${text}` : ""}`.trim(), [...new Set([...own, ...carried])].join("\n")].filter(Boolean).join("\n\n");
 }

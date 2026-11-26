@@ -59,6 +59,38 @@ describe("board", () => {
 
 
 
+// A delegation the cap placed beside its requester records that requester in its description (requested-parent.ts). It routes the
+// task's delegator and notices, so the board's edit and merge keep it — and keep it FIRST, because a task list cuts a row's
+// description to 1200 characters and a marker after a long brief would be the part cut off.
+describe("the recorded requester", () => {
+  const mark = (id: string) => `<!-- aidenhq:requested-parent:${id} -->`;
+
+  it("survives an edit, first, and the source markers keep their place at the end", () => {
+    const original = `<!-- source:delegate:WOR-2:api -->\n\n${mark("WOR-2")}\n\nBuild the API.`;
+    const edited = keepMarkers(original, `Detail. `.repeat(200) + "Build the API, with paging.");
+    expect(edited.startsWith(mark("WOR-2"))).toBe(true);
+    expect(edited.slice(0, 1200)).toContain(mark("WOR-2"));
+    expect(edited).toContain("<!-- source:delegate:WOR-2:api -->");
+    expect(edited).toContain("Build the API, with paging.");
+  });
+
+  it("survives a merge into it, first, and the merged task's requester is not adopted", () => {
+    const target = { description: `${mark("WOR-2")}\n\nBuild the API.` };
+    const source = { identifier: "WOR-9", title: "Merge me", description: `${mark("WOR-1")}\n\nOther work.` };
+    const merged = mergedDescription(target, source);
+    expect(merged.startsWith(mark("WOR-2"))).toBe(true);
+    expect(merged.slice(0, 1200)).toContain(mark("WOR-2"));
+    expect(merged).not.toContain(mark("WOR-1"));
+    expect(merged).toContain("Other work.");
+  });
+
+  it("leaves a task that records no requester as it was", () => {
+    expect(keepMarkers("<!-- source:delegate:WOR-2:api -->\n\nBuild it.", "Build it, again.")).toBe("Build it, again.\n\n<!-- source:delegate:WOR-2:api -->");
+    expect(mergedDescription({ description: "Build it." }, { identifier: "WOR-9", title: "Merge me", description: "Other work." })).not.toContain("requested-parent");
+  });
+});
+
+
 describe("request guard", () => {
   const hosts = ["localhost:3120", "127.0.0.1:3120"];
   const req = (method: string, headers: Record<string, string>) => ({ method, url: "/api/x", headers: { host: "localhost:3120", ...headers } });

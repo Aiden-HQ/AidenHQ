@@ -101,7 +101,8 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
       const [under, from] = await Promise.all([Promise.all(places.map((p) => query(`parentId=${e(p)}`))), query(`createdFromIssueId=${e(parent)}`)]);
       const found = new Map<string, Issue>([...under.flat(), ...from].map((i) => [i.id, i]));
       const out: Issue[] = [];
-      for (const i of found.values()) if (i.id !== parent && (await requesterOfListed(i, (id) => call("GET", `/v1/cp/read/api/issues/${e(id)}`).catch(() => undefined))) === parent) out.push(i);
+      // A cut row without a marker is read whole; a failed read throws rather than resolving to the placed parent it shows.
+      for (const i of found.values()) if (i.id !== parent && (await requesterOfListed(i, (id) => call("GET", `/v1/cp/read/api/issues/${e(id)}`))) === parent) out.push(i);
       return out;
     },
     wake: async (task, text, id) => void (await call("POST", "/v1/wakes", { task, text, ...(id ? { id } : {}) })),

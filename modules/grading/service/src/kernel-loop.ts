@@ -81,7 +81,9 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
       const listed = new Map<string, Json>();
       const queries = [...places.map((p) => q({ parentId: p, limit: "200" })), q({ createdFromIssueId: parentId, limit: "200" })];
       for (const query of queries) for (const i of await read(`/api/companies/${parent.companyId}/issues${query}`)) if (i.id !== parentId) listed.set(i.id, i);
-      const found = await Promise.all([...listed.values()].map(async (i) => ({ ...i, asked: await requesterOfListed(i, (id) => read(`/api/issues/${encodeURIComponent(id)}`).catch(() => undefined)) })));
+      // A cut row without a marker is read whole; a failed read throws so the pass retries, rather than counting the task under
+      // the placed parent a preview shows (which could leave a live child out of its requester's batch).
+      const found = await Promise.all([...listed.values()].map(async (i) => ({ ...i, asked: await requesterOfListed(i, (id) => read(`/api/issues/${encodeURIComponent(id)}`)) })));
       return found.filter((i) => i.asked === parentId);
     },
     // The task's own agent, whatever its company (work or personal).

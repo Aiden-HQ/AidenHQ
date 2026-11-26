@@ -58,7 +58,7 @@ export function createAsker(kernel: Kernel) {
     for (const place of [asked, task.parentId].filter(Boolean) as string[]) for (const c of await kernel.children(place, task.companyId!)) listed.set(c.id, c);
     listed.set(task.id, task);
     const found = await Promise.all([...listed.values()].map(async (c) => ({
-      ...c, asked: await requesterOfListed(c, (id) => kernel.task(id).catch(() => undefined)),
+      ...c, asked: await requesterOfListed(c, (id) => kernel.task(id)),
     })));
     const siblings = found.filter((c) => c.asked === asked).filter((c) => agentMade(c) && c.assigneeAgentId && dir[c.assigneeAgentId]);
     const runs = await Promise.all(siblings.map(async (c) => ({ c, run: await ended(c.id), live: await live(c.id) })));

@@ -13,6 +13,8 @@ const marked = (id: string, text: string) => `${MARK(id)}\n\n${text}`;
 
 function world({ adjusted, me = "me" }: { adjusted: boolean; me?: string }) {
   const writes: Json[] = [];
+  // Task ids whose single-task read fails (a transient error), so a row that had to be read whole cannot be decided on.
+  const broken = new Set<string>();
   const tasks: Record<string, Json> = {
     cur: { id: "cur", identifier: "WOR-2", title: "Design it", status: "in_progress", assigneeAgentId: "me", parentId: "root", createdByAgentId: "boss" },
     root: { id: "root", identifier: "WOR-1", title: "Ship it", status: "in_progress", assigneeAgentId: "boss" },
@@ -41,7 +43,7 @@ function world({ adjusted, me = "me" }: { adjusted: boolean; me?: string }) {
       }
       const m = /^\/api\/issues\/([^/?]+)$/.exec(url);
       if (m && req.method === "PATCH") return (writes.push({ ...json, id: m[1] }), send(Object.assign(tasks[m[1]], json)));
-      if (m) return tasks[m[1]] ? send(tasks[m[1]]) : send({ error: "not found" }, 404);
+      if (m) return broken.has(m[1]) ? send({ error: "unavailable" }, 503) : tasks[m[1]] ? send(tasks[m[1]]) : send({ error: "not found" }, 404);
       const list = /^\/api\/companies\/[^/]+\/issues\?/.exec(url);
       if (list) {
         const q = new URL(url, "http://x").searchParams;
@@ -64,7 +66,7 @@ function world({ adjusted, me = "me" }: { adjusted: boolean; me?: string }) {
   const { call } = bridge({ handler, agents: { me: { key: "architect" }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
   // The Engineer's task, as the Engineer's own run reads it: placed beside the Architect under WOR-1, recording WOR-2.
   const engineer = bridge({ handler, agents: { eng: { key: "engineer-openrouter" } }, agent: "eng", task: "sibling" });
-  return { call, writes, tasks, engineer };
+  return { call, writes, tasks, engineer, fail: (id: string) => void broken.add(id) };
 }
 
 const brief = { agent: "Kai", title: "Write the API", description: "Build the same API the last task asked for.", deliverable: { kind: "pr", ref: "acme/app" } };
@@ -136,6 +138,32 @@ test("a placed task whose 1200-char list row hides its marker is read whole, so 
   tasks.sibling.descriptionTruncated = true;
   const refused = parse(await call("task_delegate", { ...brief, marker: "api" }));
   assert.match(refused.error ?? "", /WOR-4 .* is already Kai's open task for this brief under WOR-2/);
+});
+
+test("a direct child whose cut list row hides its marker still groups by the requester it records", async () => {
+  const { call, tasks } = world({ adjusted: true });
+  // The board keeps the marker, but an older edit put it at the end: a direct child of the Architect whose row is cut there, and
+  // whose marker names the chief of staff's task instead. Its row's `parentId` says WOR-2; only the whole task says otherwise.
+  const long = "Detail. ".repeat(200);
+  tasks.kid = { id: "kid", identifier: "WOR-7", title: "Write the docs", status: "in_progress", assigneeAgentId: "eng", parentId: "cur", createdByAgentId: "me", description: `${long}${MARK("root")}` };
+  // It is the chief of staff's batch, not the Architect's: taking the cut row's `parentId` would refuse a fresh delegation of
+  // the Architect's as a repeat of the chief of staff's task.
+  const r = parse(await call("task_delegate", { ...brief, title: "Write the docs", description: "Document the API.", marker: "docs" }));
+  assert.equal(r.error, undefined, r.error);
+  assert.equal(r.out?.created, true, "the Architect may delegate its own work: WOR-7 belongs to the chief of staff");
+  assert.doesNotMatch(r.error ?? "", /WOR-7/);
+});
+
+test("a cut row whose full read fails is not counted under the placed parent", async () => {
+  const w = world({ adjusted: true });
+  const long = "Detail. ".repeat(200);
+  w.tasks.sibling.description = `${long}${MARK("cur")}`;
+  // Its row is cut and its single-task read fails: answering from the preview would file it under the placed parent (WOR-1).
+  w.fail("sibling");
+  const refused = parse(await w.call("task_delegate", { ...brief, marker: "api" }));
+  // The row cannot be decided on, so the check does not answer: it fails rather than filing a second task on a guess.
+  assert.equal(refused.created, undefined, "no delegation is filed on a guess");
+  assert.match(refused.error ?? "", /503|unavailable|no such task/i, "the failed read is reported, not swallowed");
 });
 
 test("the duplicate check sees every task of the target agent, not just the first 50 under the parent", async () => {

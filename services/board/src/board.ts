@@ -252,13 +252,16 @@ export const SOURCE_MARKERS = /<!-- (?:merged-)?source:[^>]*-->/g;
  */
 export const REQUESTED_PARENT_MARKER = /<!--\s*aidenhq:requested-parent:[A-Za-z0-9_-]{1,100}\s*-->/;
 
-/** Keep the source markers (merged tasks' too) when the user edits a description: deduplication depends on them. */
+/**
+ * Keep the source markers (merged tasks' too) when the user edits a description: deduplication depends on them. The requester
+ * marker (requested-parent.ts) is kept FIRST, as the plugin writes it: a list row is cut to 1200 characters, and a marker at the
+ * end of a long brief would be invisible to every reader that scans lists.
+ */
 export function keepMarkers(original: string | null | undefined, edited: string): string {
   const markers = String(original ?? "").match(SOURCE_MARKERS) ?? [];
   const requester = String(original ?? "").match(REQUESTED_PARENT_MARKER) ?? [];
   const text = displayText(edited);
-  const kept = [...markers, ...requester];
-  return kept.length ? `${text}\n\n${kept.join("\n")}` : text;
+  return [requester.join("\n"), text, markers.join("\n")].filter(Boolean).join("\n\n");
 }
 
 export interface CommentView {
