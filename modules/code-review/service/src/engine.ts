@@ -312,19 +312,25 @@ export function createEngine(d: EngineDeps) {
   /** What a head's classification was computed from: a stored one whose inputs differ from these is stale (pending). */
   type Inputs = { head: string; base: string; ref: string; author: string; association: string; config: string };
   const inputsOf = (p: PullRequest, cfg: Entry): Inputs => ({ head: p.head, base: p.base, ref: p.base_ref, author: authorKind(p.author, p.association, p.own, p.fork), association: String(p.association ?? ""), config: cfg.hash });
+  const isMemberAssociation = (a: string | undefined) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(String(a ?? "").toUpperCase());
+  /** Whether a head classified with a member association was asked about under a non-member one: the author lost collaborator access,
+   * so the tier rules keyed on `author` must run again. A stored non-member with a live member is the known identity difference (the
+   * App's NONE against the caller's OWNER), and a caller that supplies no association says nothing, so neither is stale. */
+  const lostAccess = (stored: string | undefined, live: string | undefined) => live !== undefined && isMemberAssociation(stored) && !isMemberAssociation(live);
   /** A PR head's tier as code review serves it: classified (current inputs), pending (none yet, or stale), or unwatched. `live` is a
-   * caller's own read of the PR's base branch: one that differs from what the tier came from is pending. Its author association is
-   * never compared: the caller and the classifier read it under different GitHub identities (a PR's owner reads as NONE through the
-   * App), while the tier depends on the author's kind, which the classification itself fixes. */
+   * caller's own read of the PR, and two things make the head pending: a base branch that differs from what the tier came from, and a
+   * genuine loss of access (see lostAccess) — the stored classification was made with a member association and the caller's now says
+   * otherwise. The comparison is one-directional: the caller and the classifier read the association under different GitHub identities
+   * (a PR's owner reads as NONE through the App, so a stored NONE sees a live OWNER), and only a member-to-outsider move is a loss. */
   type TierState = { state: "unwatched" } | { state: "pending" } | { state: "classified"; tier: Tier; rule: number; why: string; facts: Facts | null; c: Repo; policy: string; at: number };
   function tierState(repo: string, n: number, head: string, live: { base?: string; association?: string } = {}): TierState {
     const cfg = repoCfg(repo);
     if (!cfg) return { state: "unwatched" };
     const p = prRow(repo, n);
     const i = p?.cls ? (JSON.parse(p.cls) as Inputs) : undefined;
-    // A caller's live base branch that differs (a PR retargeted, which the feed doesn't announce), or a classification stored under
-    // another rule config: the PR is read again on the next tick.
-    const stale = !!p?.open && !!i && i.head === head && ((live.base !== undefined && live.base !== i.ref) || i.config !== cfg.hash);
+    // A caller's live base branch that differs (a PR retargeted, which the feed doesn't announce), a classification stored under
+    // another rule config, or an author association that dropped from member to outsider: the PR is read again on the next tick.
+    const stale = !!p?.open && !!i && i.head === head && (lostAccess(i.association, live.association) || (live.base !== undefined && live.base !== i.ref) || i.config !== cfg.hash);
     if (stale && !again.has(`${repo}#${n}`)) again.set(`${repo}#${n}`, 0);
     if (!p || !i || !p.tier || p.head !== head || i.head !== head || stale) return { state: "pending" };
     const policy = policyOf(cfg, p.tier, i.ref);
@@ -2294,7 +2300,7 @@ export function createEngine(d: EngineDeps) {
    * tier with no mandatory combo needs no review (`requires_review` false): it passes unless an earlier mandatory run's important
    * finding is still open. A head not classified yet waits. There is no fail: the merge queue asks again until it passes, the PR
    * moves or it closes. `live`: the caller's own read of the PR's base branch; one that differs from what the tier came from is
-   * pending (its author association is not compared: see tierState).
+   * pending (a genuine loss of author access is compared, one-directionally: see tierState).
    */
   function verdict(repo: string, n: number, head: string, live: { base?: string; association?: string } = {}): Verdict {
     const t = tierState(repo, n, head, live);

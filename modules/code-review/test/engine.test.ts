@@ -1566,6 +1566,23 @@ test("the merge gate is never held by the caller's author association: a head cl
   assert.deepEqual(codes(w.engine.verdict(REPO, 9, sha("9"), { base: "release", association: "OWNER" })), ["not_started"]);
 });
 
+test("a head classified as a collaborator is pending when the caller's live association shows the access was lost", async () => {
+  const w = gatedWorld();
+  await w.tick(); w.later(1000);
+  w.pr(9, sha("9"), { author: "carol", association: "COLLABORATOR" });
+  await w.tick();
+  w.finish(0, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 9, sha("9")).tier.state, "classified");
+  // The author lost collaborator access: the stored member association against the caller's non-member one is a loss, so the tier
+  // rules keyed on `author` re-run on the next tick.
+  const v = w.engine.verdict(REPO, 9, sha("9"), { association: "NONE" });
+  assert.deepEqual([v.verdict, v.tier.state], ["wait", "pending"]);
+  assert.deepEqual(codes(v), ["not_started"]);
+  w.later(AGAIN_MS + 1);
+  await w.tick({ github: false });
+  assert.equal(w.engine.verdict(REPO, 9, sha("9")).tier.state, "classified");
+});
+
 test("a classification stored under an older rule config schedules a re-read: a later tick resolves it with no PR event", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));
