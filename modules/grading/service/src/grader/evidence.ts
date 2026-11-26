@@ -1227,23 +1227,23 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
     const text = buf.toString("utf8");
     const marker = (shown: number) => `\n[cut: ${text.length - shown} of ${text.length} characters not shown]`;
     const headings = (n: number) => Array.from({ length: n }, (_, i) => heading(i + 1, n).length).reduce((a, b) => a + b, 0);
-    // A page count sets every heading's width ("of n"), so each candidate count is priced as a whole: its headings, its
-    // characters and, only when it cannot take the whole file, the cut marker. Nothing is reserved that is not spent.
-    const fits = (n: number, content: number) => headings(n) + content + (content < text.length ? marker(content).length : 0) <= textLeft;
-    // The count that shows the most: the whole file when a count takes it, else the last page filled as far as it can hold.
+    // A page count sets every heading's width ("of n"), so each candidate count is priced as a whole, against the budget the
+    // pages before it did not spend: its headings and characters, plus its cut marker only when it cannot take the whole file.
+    // The count that shows the most wins; nothing is reserved that is not spent.
     let shown = 0;
-    for (let n = 1; shown < text.length; n++) {
-      const full = Math.min(text.length, n * TEXT_PAGE);
-      if (fits(n, full)) {
-        shown = full;
-        continue;
+    const most = Math.max(1, Math.min(Math.ceil(text.length / TEXT_PAGE), Math.floor(textLeft / TEXT_PAGE) + 1));
+    for (let n = 1; n <= most; n++) {
+      const cap = textLeft - headings(n);
+      if (cap <= 0) break;
+      const limit = Math.min(text.length, n * TEXT_PAGE);
+      let take = Math.min(limit, cap);
+      if (take < text.length) {
+        // A cut page pays its marker too; its real marker is at most CUT_MARK, so each step is bounded.
+        while (take > 0 && take + marker(take).length > cap) take--;
+        while (take < limit && take + 1 + marker(take + 1).length <= cap) take++;
       }
-      // A cut page's own marker is shorter than CUT_MARK, so this bound always leaves room to write it.
-      const limit = Math.min(TEXT_PAGE, text.length - TEXT_PAGE * (n - 1));
-      let partial = Math.max(0, Math.min(limit, textLeft - headings(n) - CUT_MARK));
-      while (partial < limit && fits(n, partial + 1)) partial++;
-      shown = Math.max(shown, TEXT_PAGE * (n - 1) + partial);
-      break;
+      shown = Math.max(shown, take);
+      if (take >= text.length) break; // this count takes the whole file; a larger one only adds headings
     }
     const chunks: string[] = [];
     for (let at = 0; at < shown; at += TEXT_PAGE) chunks.push(text.slice(at, Math.min(at + TEXT_PAGE, shown)));

@@ -3,7 +3,7 @@
 // closed ungraded. Now the text goes as sequential FILES_<n> pages, each under the prompt's 20,000-character fence.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileEvidence } from "../service/src/grader/evidence.ts";
+import { TEXT_TOTAL, fileEvidence } from "../service/src/grader/evidence.ts";
 import { gradePrompt } from "../service/src/grader/grade.ts";
 
 const file = (name: string, label = "file_1") => ({ id: name, originalFilename: name, contentType: "text/markdown", byteSize: 30_000, createdAt: "2026-01-01T00:00:00.000Z", label });
@@ -76,6 +76,16 @@ test("a next file gets the budget the pages did not use, not a worst-case reserv
   const secondFact = ev.facts.find((f: string) => f.startsWith("file_2:"))!;
   assert.match(secondFact, /text, 1000 characters, shown in 1 page \(FILES_3\)/, "the second file is sent whole, uncut");
   assert.doesNotMatch(secondFact, /cut/);
+});
+
+test("pages and headings never overrun TEXT_TOTAL, whoever the file is", async () => {
+  for (const size of [20_000, 45_000, 59_900, 60_000, 60_100, 120_000, 1_000_000]) {
+    const ev = await fileEvidence([file("audit.md")], read("y".repeat(size)));
+    const blocks = Object.values(ev.data);
+    const cost = blocks.reduce((n, b) => n + b.length, 0);
+    assert.ok(cost <= TEXT_TOTAL, `${size} characters cost ${cost}, over the ${TEXT_TOTAL} budget`);
+    assert.ok(blocks.every((b) => b.length < 20_000), `${size}: every page fits the prompt's fence`);
+  }
 });
 
 test("a file that cannot be read stays awaiting, never silently not shown", async () => {
