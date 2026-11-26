@@ -10,6 +10,8 @@ export type Finding = {
   title: string; why: string; evidence: string; fix_brief: string;
   /** The catalog option that found it and its lens (a lens-option run's findings; a combo's have none). */
   option?: string; lens?: string;
+  /** A ui.scan finding's place (page, width, theme, region) and its words: the change asked for and what the best product in the category does. */
+  ui?: { page: string; width: number; theme: "light" | "dark"; region: string; change: string; best: string };
 };
 export type Review = {
   version: 1; repo: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -93,8 +95,9 @@ export type ReviewSpec = {
   /** What it reviews: a PR's change, or a whole tree at `head` (number 0, no merge base). */
   target: "pr" | "tree";
   /** The check job: `code-review` (one model option or combo, metered), `code-review-tools` (the selected tool options,
-   * token-free) or `code-review-plan` (a repo review's area plan, metered: combo.model is the planner's). */
-  profile: "code-review" | "code-review-tools" | "code-review-plan";
+   * token-free), `code-review-plan` (a repo review's area plan, metered: combo.model is the planner's), or the ui.scan option's two
+   * steps: `code-review-ui` (the repo's app captured, token-free) then `code-review-ui-review` (the captures reviewed, metered). */
+  profile: "code-review" | "code-review-tools" | "code-review-plan" | "code-review-ui" | "code-review-ui-review";
   /** A repo review run's id: part of its check's spec, so two reviews of one commit are two checks. */
   run?: string;
   /** The tools run's selected tool options, as the recipe runs them (catalog.ts toolSpec). */
@@ -105,6 +108,8 @@ export type ReviewSpec = {
   setup_files?: Record<string, string>;
   /** deepsec's records of the repo from earlier runs: their uploaded input's sha256 (ReviewRunner.input). */
   deepsec_data?: string;
+  /** The ui.scan capture's bundle for its review step: the uploaded input's sha256 (ReviewRunner.input). */
+  ui?: string;
   /** A repo review run's area of the plan (it sees only those files), the plan's areas a whole-repo option is given, and (the
    * plan run) the catalog's stack tags with their globs. */
   area?: { id: string; name: string; files: Record<string, string[]> }; area_map?: unknown; /** The area's files not read since they changed or never read: changed first (`changed` of them), then never reviewed; `more` left off to fit. */ unseen?: { files: string[]; changed: number; more: number }; stacks?: Record<string, string[]>;
@@ -134,9 +139,9 @@ export interface ReviewRunner {
   start(spec: ReviewSpec): Promise<{ check: string }>;
   /** Where it is now (never waits long). */
   result(check: string): Promise<RunResult>;
-  /** Uploads a file a later check's spec names (deepsec's records): its sha256. */
+  /** Uploads a file a later check's spec names (deepsec's records, the ui.scan capture's bundle): its sha256. */
   input(data: Buffer): Promise<string>;
-  /** The file a finished check left for this service (deepsec's changed records), or undefined when it left none. */
+  /** The file a finished check left for this service (deepsec's changed records, the ui.scan capture's bundle), or undefined when it left none. */
   kept(check: string): Promise<Buffer | undefined>;
 }
 

@@ -209,6 +209,33 @@ deepsec 254.
   Before the scan, a carried record whose file's content hash changed is set pending, because deepsec's own scan keeps an
   analysed file analysed.
 
+## UI scan (the `ui` lens, option `ui.scan`)
+
+A whole-repo option that runs no agent, as two check jobs on one run, because the box that runs the repo's code must hold no model
+token:
+
+- `code-review-ui` (`recipe/ui.ts`, 60 minutes, spec `{ base, run, option, model }`, `keep`, no `model` line: the kernel gives it no
+  OpenRouter token or address, and it runs no model). It installs the root package.json's dependencies with the lockfile's package manager (yarn
+  through corepack), runs its `build` script when it declares one, then its `start` script with `PORT=8080 HOST=127.0.0.1`, up once
+  `/` answers (a 5xx only after a minute of them) (no start script: the check fails, `no start command: add a "start" script`), then the agent-base image's `ui-review` engine: `capture` (the pages: a committed `.aidenhq-ui/pages.json`, else its crawl)
+  and `routes` over the same pages (exit 1 of either means blocking findings; 2 a failed check). It keeps a bundle (a gzipped tar of
+  at most 64 MB: the reports, run.json, queue.json and per page the shots the review reads, pages left out from the end when they
+  don't fit, saying so) and its result is coverage only. Its failure is the option's.
+- `code-review-ui-review` (`recipe/ui-review.ts`, 20 minutes, `model: true`, spec as above plus `ui`, the bundle the service uploads
+  from the capture's kept file, as deepsec's records travel). It unpacks the bundle with its own reader (regular files with the
+  bundle's names only), runs `ui-review review` over it (no install, no start, no repo config) and maps the report to the tree
+  `Review`: improvements (the top 10, ranked by the engine) are nits `ui-<rank>` with a `ui` place (page, width, theme, region,
+  change, best), blocking rule hits and the route check's verified bugs are important `ui-rule-<n>` (at most 20), pages are the
+  coverage counts (`eligible` = pages listed, `reviewed` = pages captured and reviewed); a page not captured, or one the model's
+  review failed on or the spend cap skipped, is a gap, never a clean review. A
+  failed review fails the run (the batch is incomplete); a retry starts from the capture, which the kernel answers with the
+  finished check and its kept bundle.
+
+No rendered fixes at scan depth. The report's "UI" section lists the improvements ranked, then the blocking findings, as text
+(Primer takes no images). `ui-review` is not in `ENGINES` (recipe/engines.ts), so no PR combo can name it: its efforts (low, medium,
+high) are the service's `UI_EFFORTS`, checked when a repo review is asked for. `runs_code: true` is allowed for it only because its
+repo-code step is the token-free capture check; otherwise only tools run repo code.
+
 ## Posting
 
 The service files a `post` write (Tier 0: no AI reviewer reads it; the `instance-details` write.filed check refuses a host, home path or address in a post's or reply's comment text; the service removes them first) or

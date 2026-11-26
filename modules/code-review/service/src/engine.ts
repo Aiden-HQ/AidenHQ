@@ -45,7 +45,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, gatesAny, openOnly, policyOf, PRESETS, tierCfg, type Combo, type Config, type Entry, type Repo } from "./config.ts";
 import { authorKind, classify, factsOf, tooMany, TOO_MANY_FILES, type Facts, type Tier } from "./aidenhq-sdk/tiers.ts";
-import type { Ack, CodeHost, Feed, Finding, Posted, Poster, PrComment, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
+import type { Ack, CodeHost, Feed, Finding, Posted, Poster, PrComment, PrSource, Publisher, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
 import { detect, toolSpec, whyNot, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
@@ -170,6 +170,12 @@ const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"];
 const ADVICE: Combo[] = PRESETS.standard.trivial.on_open.map((c) => ({ ...c, mandatory: false }));
 /** deepsec's efforts (recipe/engines.ts). */
 const DEEPSEC_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
+/** The ui-review engine's efforts: its own list, not in recipe/engines.ts ENGINES, so no PR combo can name it. */
+const UI_EFFORTS = ["low", "medium", "high"];
+/** The ui.scan option's two check jobs on one run: the repo's app captured in a token-free box, then the captures reviewed by the model. */
+const UI_CAPTURE = "code-review-ui", UI_REVIEW = "code-review-ui-review";
+/** The check job each whole-repo model option starts as: the ui scan's capture, the rest `code-review`. */
+const profileOf = (o: Option) => (o.kind === "engine" && o.run.engine === "ui-review" ? UI_CAPTURE : "code-review");
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS prs (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, last_reviewed_head TEXT,
@@ -711,7 +717,9 @@ export function createEngine(d: EngineDeps) {
 
   /** A repo review's run: the whole tree at its commit (no merge base, no recheck), one option's check (the tools run: its tool options). */
   async function startTree(r: RunRow) {
-    run("UPDATE runs SET attempts = attempts + 1, merge_base = ? WHERE id = ?", r.head, r.id);
+    // A ui.scan review step that failed starts again from its capture: the same spec is the same finished check, its bundle kept.
+    if (r.profile === UI_REVIEW) r = { ...r, profile: UI_CAPTURE };
+    run("UPDATE runs SET attempts = attempts + 1, merge_base = ?, profile = ? WHERE id = ?", r.head, r.profile, r.id);
     const b = batchRow(r.batch)!;
     const tools = r.profile === "code-review-tools";
     try {
@@ -734,7 +742,7 @@ export function createEngine(d: EngineDeps) {
       if (!fits) log("deepsec's setup files are too big for a check's spec: it sets up itself", { run: r.id });
       // A rerun's due area is read from the files not covered yet (changed first), the rest of it staying in the checkout as context.
       const unseen = o && o.scope !== "map" && o.scope !== "repo" && plan && b.blobs ? unseenOf(b, r, filesOf(plan, JSON.parse(b.blobs) as Record<string, string>, r.area), JSON.parse(b.blobs) as Record<string, string>) : undefined;
-      const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: tools ? "code-review-tools" : "code-review",
+      const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: (r.profile ?? "code-review") as ReviewSpec["profile"],
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skills: o.run.skills, tools: o.run.tools } : {}), ...(o?.run.max_cost_usd ? { max_cost_usd: o.run.max_cost_usd } : {}) },
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
         ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}), ...await deepsecData(r),
@@ -770,6 +778,17 @@ export function createEngine(d: EngineDeps) {
     }
   }
 
+  /** The ui.scan capture passed: its kept bundle is uploaded and the review step starts on the same run (the capture's bill carried).
+   * Nothing is written before the one UPDATE, so a kernel that can't answer now throws and the next tick hands it over again. */
+  async function uiReview(r: RunRow, billed?: number): Promise<void> {
+    const kept = await d.runner.kept(r.check_job!);
+    if (!kept) return finish(r, { state: "failed", why: "the UI capture left no bundle for its review", billed_usd: billed });
+    const ui = await d.runner.input(kept);
+    const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: UI_REVIEW, combo: comboOf(r), option: r.option!, lens: "ui", ui,
+      focus: null, intent: "", threads: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
+    run("UPDATE runs SET profile = ?, check_job = ?, bills = ? WHERE id = ?", UI_REVIEW, check, JSON.stringify(bills(r, billed)), r.id);
+  }
+
   /** The run's review.ended fact (a PR's flow; a repo review's runs have no PR); a one-off's askers are summarised once all the runs they asked for have ended. */
   function end(r: RunRow) {
     if (r.target === "tree") return;
@@ -796,6 +815,11 @@ export function createEngine(d: EngineDeps) {
   const validCounts = (k: unknown) => {
     const v = (k ?? {}) as { eligible?: unknown; reviewed?: unknown };
     return Number.isInteger(v.eligible) && Number.isInteger(v.reviewed) && (v.reviewed as number) >= 0 && (v.reviewed as number) <= (v.eligible as number);
+  };
+  /** A ui finding's place and words (the ui-review report's improvement, or a rule hit). */
+  const validUi = (u: unknown) => {
+    const v = (u ?? {}) as Record<string, unknown>;
+    return typeof v.page === "string" && Number.isInteger(v.width) && (v.theme === "light" || v.theme === "dark") && ["region", "change", "best"].every((k) => typeof v[k] === "string");
   };
   const treeCoverageOk = (c: unknown, r: RunRow, withheld: unknown) => {
     const v = (c ?? {}) as { options?: unknown; failed?: unknown; reviewed?: unknown; excluded?: unknown; incomplete?: unknown };
@@ -825,7 +849,7 @@ export function createEngine(d: EngineDeps) {
       const bound = String(v.repo ?? "").toLowerCase() === r.repo && v.head === r.head && Array.isArray(v.findings) && (r.target === "tree" || (v.pr === r.number && v.base === r.merge_base));
       if (!bound) res = { state: "failed", why: "the review's result isn't for this run (repo, PR, head or base differ)", billed_usd: res.billed_usd };
       // A repo review's findings come from many tools' mappers: one not in the shared shape fails the run with that reason.
-      else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string" && (f.end_line === undefined || Number.isInteger(f.end_line)) && ["why", "evidence", "fix_brief", "option", "lens"].every((k) => (f as Record<string, unknown>)[k] === undefined || typeof (f as Record<string, unknown>)[k] === "string")))
+      else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string" && (f.end_line === undefined || Number.isInteger(f.end_line)) && ["why", "evidence", "fix_brief", "option", "lens"].every((k) => (f as Record<string, unknown>)[k] === undefined || typeof (f as Record<string, unknown>)[k] === "string") && (f.ui === undefined || validUi(f.ui))))
         res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title, and its optional text and end line)", billed_usd: res.billed_usd };
       else if (r.target === "tree" && !treeCoverageOk(v.coverage, r, v.withheld))
         res = { state: "failed", why: "the review's result isn't for this run: its coverage, file counts or withheld counts aren't in the shared shape", billed_usd: res.billed_usd };
@@ -858,6 +882,8 @@ export function createEngine(d: EngineDeps) {
       if (r.kind !== "auto" || !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND id != ? AND status IN ('queued', 'running', 'done')", r.repo, r.number, r.head, r.id)) void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
     }
+    // A ui.scan capture is no review: its review step reads what it kept.
+    if (r.profile === UI_CAPTURE) return uiReview(r, res.billed_usd);
     const cost = charge(r, res.billed_usd);
     if (r.target === "tree") return finishTree(r, res.review, cost);
     // The run's own facts over whatever the box wrote for them.
@@ -2556,7 +2582,7 @@ export function createEngine(d: EngineDeps) {
       // The effort each model option's engine takes (recipe/engines.ts: deepsec up to xhigh; a skill runs on its harness), checked now, not when its run is refused.
       for (const o of picked.filter((o) => o.kind !== "tool")) {
         const key = o.kind === "engine" ? o.run.engine : o.run.harness;
-        const efforts: readonly string[] = key === "deepsec" ? DEEPSEC_EFFORTS : (ENGINES[key as keyof typeof ENGINES]?.efforts ?? []);
+        const efforts: readonly string[] = key === "deepsec" ? DEEPSEC_EFFORTS : key === "ui-review" ? UI_EFFORTS : (ENGINES[key as keyof typeof ENGINES]?.efforts ?? []);
         const effort = comboFor(o).effort as string;
         if (!efforts.includes(effort)) throw new RequestError(`${o.id} takes an effort of ${efforts.join(", ")}, not ${effort}`);
       }
@@ -2580,7 +2606,7 @@ export function createEngine(d: EngineDeps) {
         // The tools first (free), then each whole-repo model option in the catalog's order, and the area plan the others wait for.
         const tools = picked.filter((o) => o.kind === "tool").map((o) => o.id);
         if (tools.length) addTree(b, "tools", "", "", tools.join(","), "code-review-tools", null);
-        for (const o of picked.filter((o) => o.kind !== "tool" && o.scope === "repo")) { const c = comboFor(o); addTree(b, engineOf(o), c.model as string, c.effort as string, o.id, "code-review", null); }
+        for (const o of picked.filter((o) => o.kind !== "tool" && o.scope === "repo")) { const c = comboFor(o); addTree(b, engineOf(o), c.model as string, c.effort as string, o.id, profileOf(o), null); }
         if (picked.some((o) => o.kind !== "tool" && o.scope !== "repo")) addTree(b, "plan", PLAN_MODEL, "low", "plan", PLAN, null);
         return id;
       });

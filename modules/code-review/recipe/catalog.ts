@@ -5,7 +5,7 @@
 import { globRe } from "./review-checklist.ts";
 import type { SkillRef } from "./engines.ts";
 
-export const LENSES = ["correctness", "security", "maintainability", "performance"] as const;
+export const LENSES = ["correctness", "security", "maintainability", "performance", "ui"] as const;
 export const MODES = ["one_off", "continuous"] as const;
 export const KINDS = ["tool", "skill", "engine"] as const;
 /** How a tool's output is read: SARIF, a named JSON/text mapper (sarif.ts), or `findings` (a skill or engine restates its own). */
@@ -44,7 +44,7 @@ export function loadCatalog(source: string): Option[] {
   const seen = new Set<string>();
   for (const o of list) {
     const id = o?.id;
-    if (typeof id !== "string" || !/^(cor|sec|maint|perf)\.[a-z0-9-]+$/.test(id)) bad(id, "id is <lens prefix>.<name>");
+    if (typeof id !== "string" || !/^(cor|sec|maint|perf|ui)\.[a-z0-9-]+$/.test(id)) bad(id, "id is <lens prefix>.<name>");
     if (seen.has(id)) bad(id, "duplicate id");
     seen.add(id);
     if (!LENSES.includes(o.lens)) bad(id, "unknown lens");
@@ -60,7 +60,10 @@ export function loadCatalog(source: string): Option[] {
     if (o.kind === "skill" && o.modes.includes("one_off") && run.skills.every((x: SkillRef) => x.tree === false)) bad(id, "a one_off skill option has a skill that runs on a whole repo (tree isn't false)");
     if (run.exits !== undefined && (o.kind !== "tool" || !Array.isArray(run.exits) || !run.exits.length || run.exits.some((c: unknown) => !Number.isInteger(c) || (c as number) < 0 || (c as number) > 255))) bad(id, "exits is a tool's list of exit codes");
     if (run.max_cost_usd !== undefined && (o.kind !== "engine" || !(typeof run.max_cost_usd === "number" && run.max_cost_usd > 0))) bad(id, "max_cost_usd is an engine's spend cap in dollars");
-    if (o.runs_code === true && o.kind !== "tool") bad(id, "only a tool option runs repo code (runs_code)");
+    // Repo code runs only where no model token is: a tool (a JS config it imports, in the token-free tools box), and the ui-review
+    // engine only because its repo-code step (starting the app) is a separate token-free check job (`code-review-ui`) and its model
+    // step (`code-review-ui-review`) runs none. No other option may: a box with the model token never runs repo code.
+    if (o.runs_code === true && o.kind !== "tool" && !(o.kind === "engine" && run.engine === "ui-review")) bad(id, "only a tool option or the ui-review engine runs repo code (runs_code)");
     if (typeof o.runs_code !== "boolean" || !["free", "low", "high"].includes(o.cost)) bad(id, "runs_code is a boolean and cost is free, low or high");
     if (o.severity !== undefined && o.severity !== "nit") bad(id, "severity is nit or absent");
     if (o.stack !== undefined && (o.kind === "tool" || typeof o.stack !== "string" || !/^[a-z][a-z0-9-]{0,30}$/.test(o.stack) || !o.when.length)) bad(id, "stack is a model option's stack tag, with the globs (when) that find it");

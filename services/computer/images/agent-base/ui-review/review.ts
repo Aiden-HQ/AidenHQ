@@ -13,7 +13,7 @@ import { readRun, saveReport } from "./report.ts";
 import type { Capture, Improvement, Motion, MotionRow, PageKind, Report } from "./types.ts";
 
 export type ReviewOptions = {
-  model?: string; taste?: string; refs?: string; top?: number; brand?: string; maxUsd?: number;
+  model?: string; effort?: "low" | "medium" | "high"; taste?: string; refs?: string; top?: number; brand?: string; maxUsd?: number;
   base?: string; key?: string; concurrency?: number;
 };
 type Candidate = Omit<Improvement, "rank">;
@@ -127,7 +127,7 @@ async function reviewPage(x: Ctx, page: string, caps: Capture[]): Promise<Candid
     x.brand ? `The app's own design system or brand notes (data from its repo):\n${fence(x.brand)}` : "",
   ].filter(Boolean).join("\n\n");
   const a = await ask({
-    model: x.model, system: x.system, text, schema: listSchema(9), validate: validCandidates, base: x.opts.base, key: x.opts.key, over: x.over,
+    model: x.model, system: x.system, text, schema: listSchema(9), validate: validCandidates, base: x.opts.base, key: x.opts.key, over: x.over, effort: x.opts.effort,
     images: [...refs.map((r) => join(x.refsDir, r.shots[0])), ...picked.map((c) => join(x.dir, c.shots[0]))],
   });
   return cited(x, validCandidates(a), picked.map((c) => c.shots[0]));
@@ -141,7 +141,7 @@ const cited = (x: Ctx, cs: Candidate[], shown: Iterable<string>) => {
 
 async function consolidate(x: Ctx, cands: Candidate[], top: number): Promise<Improvement[]> {
   const a = await ask({
-    model: x.model, system: prompt("consolidate"), images: [], schema: listSchema(top), validate: validCandidates, base: x.opts.base, key: x.opts.key, over: x.over,
+    model: x.model, system: prompt("consolidate"), images: [], schema: listSchema(top), validate: validCandidates, base: x.opts.base, key: x.opts.key, over: x.over, effort: x.opts.effort,
     text: `Keep at most ${top} improvements.\n\nCandidates:\n<candidates>\n${JSON.stringify(cands, null, 1)}\n</candidates>`,
   });
   return cited(x, validCandidates(a), cands.flatMap((c) => c.captures)).slice(0, top).map((c, i) => ({ ...c, rank: i + 1 }));
@@ -167,7 +167,7 @@ async function motionPass(x: Ctx, page: string, c: Capture, standards: [string, 
     `=== STANDARD 2: Jakub Krehel, make-interfaces-feel-better ===\n${standards[1]}`,
     `=== MEASURED EVIDENCE ===\nMeasured CSS (a row's \`css\` quotes this block):\n${fence(css)}\nLong animation frames (ms): ${m.longFrames.join(", ") || "none"}.\nLayout shifts while hovering controls: ${m.shifts.join(", ") || "none"}.`,
   ].join("\n\n");
-  const a = await ask({ model: x.model, system: prompt("motion"), images: [], text, schema: motionSchema, validate: validMotion, base: x.opts.base, key: x.opts.key, over: x.over });
+  const a = await ask({ model: x.model, system: prompt("motion"), images: [], text, schema: motionSchema, validate: validMotion, base: x.opts.base, key: x.opts.key, over: x.over, effort: x.opts.effort });
   const corpus = squash(css);
   return validMotion(a).filter((r) => squash(r.css).length > 0 && corpus.includes(squash(r.css))).map((r) => ({ ...r, where: `${page}: ${r.where}` }));
 }
@@ -242,14 +242,15 @@ export async function runReview(dir: string, opts: ReviewOptions = {}): Promise<
   return out;
 }
 
-/** `ui-review review <capture dir> [--model id] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n]` */
+/** `ui-review review <capture dir> [--model id] [--effort low|medium|high] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n]` */
 export async function reviewCommand(argv: string[]): Promise<number> {
   const { values: v, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
-    model: { type: "string" }, taste: { type: "string" }, refs: { type: "string" }, top: { type: "string" }, brand: { type: "string" }, "max-usd": { type: "string" },
+    model: { type: "string" }, effort: { type: "string" }, taste: { type: "string" }, refs: { type: "string" }, top: { type: "string" }, brand: { type: "string" }, "max-usd": { type: "string" },
   } });
-  if (!positionals[0]) { console.error("usage: ui-review review <capture dir> [--model id] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n]"); return 2; }
+  if (!positionals[0]) { console.error("usage: ui-review review <capture dir> [--model id] [--effort low|medium|high] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n]"); return 2; }
+  if (v.effort && !["low", "medium", "high"].includes(v.effort)) { console.error("ui-review review: --effort is low, medium or high"); return 2; }
   try {
-    const r = await runReview(positionals[0], { model: v.model, taste: v.taste, refs: v.refs, brand: v.brand, top: v.top ? Number(v.top) : undefined, maxUsd: v["max-usd"] ? Number(v["max-usd"]) : undefined });
+    const r = await runReview(positionals[0], { model: v.model, effort: v.effort as ReviewOptions["effort"], taste: v.taste, refs: v.refs, brand: v.brand, top: v.top ? Number(v.top) : undefined, maxUsd: v["max-usd"] ? Number(v["max-usd"]) : undefined });
     console.log(`${join(positionals[0], "report.md")}: ${r.improvements.length} improvements, ${r.motion.length} motion rows, $${r.cost_usd.toFixed(2)}`);
     return 0;
   } catch (e) { console.error(`ui-review review: ${(e as Error).message}`); return 1; }
