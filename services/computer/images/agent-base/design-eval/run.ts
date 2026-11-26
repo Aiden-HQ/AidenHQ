@@ -25,11 +25,13 @@ const work = resolve(o.work ?? mkdtempSync(join(tmpdir(), "design-eval-")));
 const eng = (f: string) => import(pathToFileURL(join(ENGINE, f)).href);
 const { ask, spend } = await eng("model.ts");
 const { fixCheck } = await eng("pairwise.ts");
-const { DEFAULT_MODEL } = await eng("review.ts");
+const { DEFAULT_MODEL } = await eng("model.ts");
 const model: string = o.model ?? DEFAULT_MODEL;
 
 /** Starter pages every suite uses; the first four are the `degraded` set. */
 const PAGES = ["/", "/teams", "/?item=search-v2", "/?status=late"];
+/** Their page kinds (the review picks its reference pages by kind). */
+const KINDS: Record<string, string> = { "/": "list", "/teams": "list", "/?item=search-v2": "detail", "/?status=late": "list" };
 let starter: string | undefined;
 const starterUrl = async () => (starter ??= await serveStarter(work, Number(o.port ?? 3600)));
 
@@ -165,15 +167,27 @@ async function calibrate() {
 type Report = { improvements: { where: { page: string; region: string }; weak: string; change: string; why: string; best: string }[]; cost_usd: number };
 const concrete = /\d+(\.\d+)?\s*(px|rem|em|%|ms)|#[0-9a-f]{3,8}\b|\b\d{2,4}\b/i;
 
-function capture(url: string, paths: string[], dir: string, width = 1512, theme = "light") {
+/** A page: its path, or `{ path, kind }` (a targets file may name the kind; the starter's pages have theirs in KINDS). */
+type Target = string | { path: string; kind?: string };
+function capture(url: string, pages: Target[], dir: string, width = 1512, theme = "light") {
   if (existsSync(join(dir, "report.json"))) return;
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "pages-in.json"), JSON.stringify(paths.map((path) => ({ path, source: "links" }))));
+  const list = pages.map((p) => typeof p === "string" ? { path: p, kind: KINDS[p] } : p).map((p) => ({ path: p.path, ...(p.kind ? { kind: p.kind } : {}) }));
+  writeFileSync(join(dir, "pages-in.json"), JSON.stringify({ pages: list }));
   cli("capture", url, "--out", dir, "--pages-file", join(dir, "pages-in.json"), "--widths", String(width), "--themes", theme);
 }
 
+/** refs/fallback.json's page per kind as a references list on the served starter, written beside the work. */
+async function fallbackList(file: string): Promise<string> {
+  const base = await starterUrl();
+  const map = json(file) as Record<string, string>;
+  const out = join(work, "references", "fallback-refs.json");
+  writeFileSync(out, JSON.stringify(Object.entries(map).filter(([k]) => k !== "_" && k !== "other").map(([kind, path]) => ({ kind, url: new URL(path, base).href, product: "app starter" }))));
+  return out;
+}
+
 async function references() {
-  const targets = o.targets ? json(o.targets) as { name: string; url: string; pages: string[] }[] : null;
+  const targets = o.targets ? json(o.targets) as { name: string; url: string; pages: Target[] }[] : null;
   const refsIn = { references: o.refs ?? join(ENGINE, "refs/references.json"), fallback: o.fallback ?? join(ENGINE, "refs/fallback.json") };
   const rated = o.rated ? (json(o.rated) as Rated).items : [];
   const list = targets ?? [{ name: "starter", url: await starterUrl(), pages: PAGES }];
@@ -185,7 +199,9 @@ async function references() {
     for (const [v, refs] of Object.entries(refsIn)) {
       const dir = join(work, "references", `${t.name}-${v}`);
       if (!existsSync(join(dir, "report.json"))) cpSync(base, dir, { recursive: true });
-      cli("refs", refs, "--out", join(dir, "refs"));
+      // The fallback variant: the app starter's own page per kind (refs/fallback.json maps a kind to it) as the only references.
+      const list = v === "fallback" ? await fallbackList(refs) : refs;
+      cli("refs", list, "--out", join(dir, "refs"));
       cli("review", dir, "--model", model, "--refs", join(dir, "refs", "refs.json"), "--top", "10");
       const rep = json(join(dir, "report.json")) as Report;
       const tokens = (json(join(dir, "refs", "refs.json")) as { product?: string; tokens?: Record<string, unknown> }[]).flatMap((r) => [r.product, ...Object.values(r.tokens ?? {}).flat()].filter((x) => x !== undefined).map(String));

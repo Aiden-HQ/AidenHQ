@@ -6,8 +6,9 @@ description: "How the UI Reviewer reviews an app or a PR's UI on request: run th
 # Reviewing a UI
 
 The engine `ui-review` (in your computer) captures, measures and asks the model with the prompts it ships; you choose the
-app, run it, read what it finds, implement the top fixes and write the report. Work in `/workspace/review` (one folder per
-run: `captures/`, `report.json`, `report.md`).
+app, run it, read what it finds, implement the top fixes and write the report. Work in `/workspace` with one folder per
+run: `review/` holds the captures, `report.json` and `report.md` (`review` adds its part to the same two files), and the route
+check writes its own report into `review/routes/`.
 
 ## Run the app
 
@@ -30,9 +31,12 @@ when the router read leaves gaps. `--map <file>` points the engine at another fi
 ## Capture
 
 ```sh
-ui-review capture <url> --out review --workers 4          # 390, 768, 1024, 1512, 1920, 2560 wide, light and dark
-ui-review routes <url> --out review                        # the route check: local builds only
+ui-review capture <url> --out review --workers 4          # 390, 768, 1024, 1280, 1512, 1920, 2560 wide, light and dark
+ui-review routes <url> --out review/routes                 # the route check: local builds only
 ```
+
+The route check's "Blocking" findings are confirmed by a second click from a fresh page; its "To look at" list (controls a
+click didn't visibly change) is a lead to open in `agent-browser`, never a bug until you see it.
 
 `--widths 360,…` adds a width, `--states empty,error,loading` the states the app can show, `--pages-file <f>` a subset of
 pages, `--resume` continues a run that stopped (a big app queues at most 120 pages per run and records the rest as
@@ -76,12 +80,18 @@ fix; a checkout has no `.git`):
    `ANTHROPIC_DEFAULT_*_MODEL` variables set to the model; or `codex exec` on `openai/gpt-6.2-sol` with a provider whose
    `base_url` is `OPENROUTER_BASE_URL`, `env_key = "OPENROUTER_API_KEY"` and `wire_api = "responses"`. The same base URL and run
    token your own harness uses.
-2. Rebuild, then `ui-review capture --pages-file <that page> --baseline review/captures --out fix-N`.
-3. `ui-review fix-check <before.png> <after.png> --width <the width where the change shows>` prints
-   `{ wins, accepted }`. Accepted: keep `git diff` as the fix and the before|after pair. Rejected, or the build failed: revert
-   the change, keep the improvement as text and record `fix: failed` with the build error's first line.
-4. Collateral: recapture every other page at that width and at 390 with `--baseline review/captures`; a page whose pixels
-   change by 0.1% or more is listed with the fix.
+2. Rebuild, then `ui-review capture <url> --paths <that page> --widths <that width> --themes <its theme> --baseline review --out fix-N`.
+3. `ui-review fix-check review/<shot> fix-N/<shot> --width <the width where the change shows> --taste taste.md` prints
+   `{ wins, accepted }`: six calls, AFTER shown second and first, three each, judged against the product's design rules and
+   the owner's taste. It is accepted only when AFTER wins at least 2 of 3 in each order, so a model's preference for one
+   position never passes a fix. Accepted: keep `git diff` as the fix and the before|after pair (`fix.status: "shown"`, its
+   `wins`). Rejected: revert the change and keep the improvement as text (`fix.status: "rejected"`, its `wins`). The build
+   failed: revert it and record `fix.status: "failed"` with the build error's first line as `why`.
+4. Collateral, before you judge: recapture every other page at that width and at 390 with `--baseline review`; a page whose
+   pixels change by 0.1% or more (its "Look at these first") is listed in `fix.collateral`, and the fix is shown with that
+   list, never hidden.
+
+Write each improvement's `fix` into `review/report.json`; the report you post reads from it.
 
 ## Report
 
