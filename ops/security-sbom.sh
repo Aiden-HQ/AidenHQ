@@ -33,6 +33,19 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 set -a; [ -f .env ] && . ./.env; set +a
 SYFT="anchore/syft:v1.57.1@sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6410aecb7e80f95b060"
 out="${AIDENHQ_DATA_DIR:-$PWD/data}/modules/security/sbom"
+# Remove a tree this pass wrote. Tar restores a container's own directory modes, so a read-only dependency tree (a Go
+# module cache, say) leaves directories this user cannot unlink inside; a plain `rm -rf` would then fail under `set -e`
+# and, worse, the next pass's first cleanup would fail the same way and leave the runtime data on disk. The owner can
+# always chmod its own tree, so a failed removal is retried after granting owner write/search.
+discard_tree() { # <dir>...
+  local d
+  for d in "$@"; do
+    [ -e "$d" ] || continue
+    rm -rf "$d" 2>/dev/null && continue
+    chmod -R u+rwX "$d" 2>/dev/null || true
+    rm -rf "$d" 2>/dev/null || echo "security-sbom: could not remove $d" >&2
+  done
+}
 mkdir -p "$out"
 [ -w "$out" ] || { echo "security-sbom: $out isn't writable by $(id -un) (created by Docker?): sudo chown $(id -u):$(id -g) $out" >&2; exit 1; }
 # One pass at a time: two passes unpack two images each into their own .work on the same filesystem, and a timer that fires
@@ -46,11 +59,14 @@ next="$out/next"
 work="$out/.work"
 archives="$out/.archives"
 # A running container whose image the daemon no longer holds as an image record is inventoried from `docker export`
-# instead; the tar and its extracted tree live only here. A container export can hold runtime data, so this directory is
-# private to this user (mode 700) and removed with the pass, never left in data/ after the swap.
-exportdir="$out/.export"
-rm -rf "$next" "$work" "$archives" "$exportdir"
-mkdir -p "$next" "$work" "$archives" "$exportdir"
+# instead; its tar and extracted tree live only here. A container export can hold runtime data (a credential a process
+# wrote into its own filesystem, say), so it is kept outside the directory the long-running security-scanner mounts at
+# /sbom (modules/security/module.yaml), private to this user (mode 700) and removed with the pass: that service reads the
+# finished batch only, never a raw export or the tree unpacked from it, and nothing stays in data/ after the swap.
+exportdir="$(dirname "$out")/sbom-exports"
+discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
+mkdir -p "$next" "$work" "$archives"
+mkdir -p -m 700 "$exportdir"
 chmod 700 "$exportdir"
 : > "$next/targets.tsv"
 user="$(id -u):$(id -g)"
@@ -63,7 +79,7 @@ mkdir -p "$(dirname "$APPLY_LOCK")"
 exec 8>>"$APPLY_LOCK"
 if ! flock -n 8; then
   echo "security-sbom: an apply holds the apply lock; skipping this pass" >&2
-  rm -rf "$next" "$work" "$archives" "$exportdir"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 # The smallest free space a target may start with, in GB: syft writes a `docker save` archive and unpacks every layer under
@@ -89,7 +105,6 @@ free_bytes_at() { # <dir>
 # A container is this scanner's own only by its label: a name is not proof of ownership, so nothing else's is ever removed.
 scanner_container() { [ "$(docker inspect -f '{{index .Config.Labels "aidenhq.oneoff"}}' "$1" 2>/dev/null || true)" = 1 ]; }
 n=0
-
 # scan <target> <commit> [docker mount args...] -- <syft source> [syft args...]
 scan() {
   local target="$1" commit="$2"; shift 2
@@ -154,6 +169,15 @@ for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
 fail() { # <target> <error>: a target that never reached syft is a line with its error, like a failed scan
   n=$((n + 1))
   printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
+}
+# Whether a failed `docker image inspect` says the image record is gone, rather than that the daemon could not answer.
+# Only a positive "no such image/object" is proof: a deadline (124) or a transport error is a retryable read, and a
+# container export under that image's target would inventory something other than the target it names.
+image_absent() { # <inspect output>
+  case "$1" in
+    *"No such image"*|*"No such object"*|*"no such image"*) return 0 ;;
+  esac
+  return 1
 }
 ceil_gb() { echo $(( ($1 + 1073741823) / 1073741824 )); }
 # One Docker call with a deadline, so a daemon that stops answering can't hold the apply lock past it, and the whole
@@ -223,7 +247,7 @@ SNAPSHOT_DEADLINE=$((SECONDS + budget))
 if ! platform="$(docker_call 15 version -f '{{.Server.Os}}/{{.Server.Arch}}')" || [ -z "$platform" ]; then
   echo "security-sbom: could not read the Docker server platform; keeping the previous batch" >&2
   exec 8>&-
-  rm -rf "$next" "$work" "$archives" "$exportdir"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 # `docker image save --platform` needs API 1.48. A daemon older than that may still use the containerd image store and hold
@@ -250,19 +274,19 @@ fi
 if ! jq -e '(.images | type) == "object" and ([.images[] | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")] | all)' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" >/dev/null 2>"$work/configured.err"; then
   echo "security-sbom: config/computers.json is missing, unreadable or names an image that is not a tag ($(tr '\t\n' '  ' < "$work/configured.err" | tail -c 200)); keeping the previous batch" >&2
   exec 8>&-
-  rm -rf "$next" "$work" "$archives" "$exportdir"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 if ! jq -r '.images | to_entries[] | .value' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" > "$work/configured" 2>"$work/configured.err"; then
   echo "security-sbom: config/computers.json is missing or unreadable ($(tr '\t\n' '  ' < "$work/configured.err" | tail -c 200)); keeping the previous batch" >&2
   exec 8>&-
-  rm -rf "$next" "$work" "$archives" "$exportdir"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 if ! grep -q . "$work/configured"; then
   echo "security-sbom: config/computers.json names no image; keeping the previous batch" >&2
   exec 8>&-
-  rm -rf "$next" "$work" "$archives" "$exportdir"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 # Every reference the daemon holds that might export a platform manifest: the manifest itself, the container's index,
@@ -531,9 +555,14 @@ extract_container_root() { # <tar> <dir>
   fi
   # The export holds the container's device nodes (`dev/null`, `dev/console`). This pass runs as an ordinary user, so it
   # cannot recreate them; they are not package evidence, and tar's walk of the rest of the tree is what the scan needs.
-  # Sockets and fifos it cannot create are tolerated the same way, but a truncated or unreadable archive is not.
+  # The exclusion is anchored: GNU tar matches an unanchored pattern at any depth, so `dev/*` alone would also drop a
+  # nested `/opt/app/dev/...` (a dependency tree, say) and the row would claim a complete scan of a partial filesystem.
+  # Sockets and fifos it cannot create are tolerated the same way, but a truncated or unreadable archive is not. `--mode`
+  # keeps every directory owner-writable, so one the container had read-only (a Go module cache) can still be removed
+  # beneath the floor the pass restores.
   local errf="${exportdir}/extract-$(basename "$dir").err"
-  run_watched 900 tar --no-same-owner --exclude='dev/*' --exclude='./dev/*' -C "$dir" -xf "$tar" 2>"$errf"; rc=$?
+  run_watched 900 tar --anchored --no-same-owner --mode='u+rwX' --exclude='dev' --exclude='./dev' --exclude='dev/*' --exclude='./dev/*' \
+    -C "$dir" -xf "$tar" 2>"$errf"; rc=$?
   if [ "$rc" -eq 124 ]; then export_err="the snapshot deadline reached while extracting the container root"; return 1; fi
   if [ "$rc" -eq 137 ]; then export_space=1; export_err="extraction stopped: free space fell to the ${min_free_gb} GB floor"; return 1; fi
   if [ "$rc" -ne 0 ]; then
@@ -798,7 +827,11 @@ snapshot() {
       # image was untagged and collected while the container kept running. Its filesystem is in production and there is
       # nothing else to read, so a running container is inventoried from `docker export` under the same target. The image
       # path above runs unchanged whenever any reference answers, which is every image the daemon still holds.
-      if [ "$ref" = "$pin" ] && [ -n "${u_cid[$unit]:-}" ]; then
+      # Only the daemon's own "no such image" is that shape: a timeout (docker_call 124), a refused socket or a daemon
+      # mid-restart leaves the image in place, and exporting a live container then would publish a filesystem scan under
+      # the image's target — an inventory of the wrong thing that the absent-tag guards would read as a clean image. Those
+      # stay the size-read error line, so the next pass retries the image.
+      if [ "$ref" = "$pin" ] && [ -n "${u_cid[$unit]:-}" ] && image_absent "$raw"; then
         mode=container
         # Every container on this variant is exported when the image is gone: two replicas are one unit and one target
         # key, so their roots are scanned together under that row. Their root filesystem sizes, where the daemon reports
@@ -925,19 +958,22 @@ save_wave() { # <wave>
     cap_bytes=$(( $(free_bytes) - floor_bytes )); [ "$cap_bytes" -lt 0 ] && cap_bytes=0
     if [ "${p_mode[$idx]}" = container ]; then
       # No image record is left, so the containers' own root filesystems are what gets inventoried. One unit can hold
-      # two containers running the same gone image (two replicas); each is exported, and their trees are extracted side
-      # by side under one private unit directory, which is then scanned once under the unit's single target key. Every
-      # write is bounded like a save: capped at the room above the floor, under this wave's apply-lock hold and the
-      # snapshot deadline, with the floor watched while it runs. A container that cannot be exported or extracted leaves
-      # the unit a line with its daemon error rather than a gap, and no half-built tree is ever scanned.
-      unitdir="$exportdir/unit-$archive_seq"; tarsdir="$unitdir.tars"
+      # two containers running the same gone image (two replicas); each is exported, and their files are extracted into one
+      # root, which is then scanned once under the unit's single target key. The root has to be a real container root:
+      # syft looks for `/etc/os-release`, `/usr/lib` and the like at fixed paths relative to the scan root, so a root
+      # holding one subdirectory per container would find package files by glob but report no distro, and grype would skip
+      # that distro's advisory matching. Every write is bounded like a save: capped at the room above the floor, under this
+      # wave's apply-lock hold and the snapshot deadline, with the floor watched while it runs. A container that cannot be
+      # exported or extracted leaves the unit a line with its daemon error rather than a gap, and no half-built tree is
+      # ever scanned.
+      unitdir="$exportdir/unit-$archive_seq"; tarsdir="$unitdir.tars"; rootfs="$unitdir"
       cont_err=""; cont_space=0; cont_bytes=0
-      # The roots go in the unit directory, which is what syft scans; each tar goes beside it in `<unit>.tars`, so the
-      # scan never reads an export's bytes a second time as a file in the tree.
-      if ! mkdir -p -m 700 "$unitdir" "$tarsdir" 2>/dev/null; then
-        cont_err="could not create the private export directory $unitdir"
+      # Each tar goes beside the root in `<unit>.tars`, so the scan never reads an export's bytes a second time as a file
+      # in the tree.
+      if ! mkdir -p -m 700 "$rootfs" "$tarsdir" 2>/dev/null; then
+        cont_err="could not create the private export directory $rootfs"
       else
-        chmod 700 "$unitdir" "$tarsdir" 2>/dev/null || true
+        chmod 700 "$rootfs" "$tarsdir" 2>/dev/null || true
         for cid in ${p_cid[$idx]}; do
           ctarchive="$tarsdir/export-$cid.tar"
           cap_bytes=$(( $(free_bytes) - floor_bytes )); [ "$cap_bytes" -lt 0 ] && cap_bytes=0
@@ -959,31 +995,32 @@ save_wave() { # <wave>
           fi
           cont_bytes=$(( cont_bytes + ctbytes ))
           # Extracted here, under the same apply-lock hold: the tree is a second write of the container's filesystem and
-          # must not outlive the lock or the snapshot budget. The scan reads only the extracted trees, after the lock is
-          # released like every other scan.
+          # must not outlive the lock or the snapshot budget. The scan reads only the extracted root, after the lock is
+          # released like every other scan. A replica's files overlay the first one's, exactly as a second container of the
+          # same image would; identical image content makes that harmless, and a file only one replica has is kept.
           export_space=0
-          if ! extract_container_root "$ctarchive" "$unitdir/rootfs-$cid"; then
+          if ! extract_container_root "$ctarchive" "$rootfs"; then
             cont_err="container $cid: ${export_err:-failed to extract the container root}"
             [ "$export_space" = 1 ] && cont_space=1
             break
           fi
-          cont_bytes=$(( cont_bytes + $(du -sb "$unitdir/rootfs-$cid" 2>/dev/null | awk '{ print $1 }' || echo 0) ))
+          cont_bytes=$(( $(du -sb "$rootfs" 2>/dev/null | awk '{ print $1 }' || echo 0) ))
         done
       fi
       if [ -z "$cont_err" ]; then
-        # The tar and the tree stay until the scan ends (the scanned root is the tree); scan_wave removes the whole unit
-        # directory, tars included, so neither outlives its scan.
-        plan_add "image:$key" "$unitdir" "$pin" "$ref" "$sz" "$idx" "${p_bytes[$idx]}" "${p_cid[$idx]}"
+        # The tar and the root stay until the scan ends; scan_wave removes the whole unit directory, tars included, so
+        # neither outlives its scan.
+        plan_add "image:$key" "$rootfs" "$pin" "$ref" "$sz" "$idx" "${p_bytes[$idx]}" "${p_cid[$idx]}"
         # Both copies are resident until the scan ends: each tar and the trees unpacked from them. Charging only the tars
         # would let a later save in this wave use room the extraction has already taken.
         written=$(( written + cont_bytes )); [ "$cont_bytes" -gt "$written_big" ] && written_big="$cont_bytes"
       elif [ "$cont_space" = 1 ]; then
-        rm -rf "$unitdir" "$tarsdir"
+        discard_tree "$unitdir" "$tarsdir"
         why="skipped: the ${sz} GB container root filesystem does not fit: $cont_err"
         if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then continue; fi
         fail "image:$key" "$why"
       else
-        rm -rf "$unitdir" "$tarsdir"
+        discard_tree "$unitdir" "$tarsdir"
         fail "image:$key" "docker export: $cont_err"
       fi
       continue
@@ -1042,8 +1079,8 @@ save_wave() { # <wave>
 discard_plan_source() { # <archive file, extracted unit directory, or its tar directory>
   # A container unit's exported tars sit in `<unit>.tars` beside the extracted roots: the scan root must hold the roots
   # only, and both copies go together when the scan ends (or the unit is dropped), never at the end of the pass.
-  [ -e "$1.tars" ] && rm -rf "$1.tars"
-  if [ -d "$1" ]; then rm -rf "$1"; else rm -f "$1"; fi
+  [ -e "$1.tars" ] && discard_tree "$1.tars"
+  if [ -d "$1" ]; then discard_tree "$1"; else rm -f "$1"; fi
 }
 scan_wave() { # <first plan index>
   local first="$1" i k target archive root avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes workspace
@@ -1149,7 +1186,7 @@ scan_wave() { # <first plan index>
 }
 if ! snapshot; then
   exec 8>&-
-  rm -rf "$next" "$work" "$archives" "$exportdir"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 # The survey is done under the lock and fixed the target list. Each wave is saved under its own lock hold and scanned
@@ -1197,7 +1234,7 @@ for idx in "${!p_size[@]}"; do
   [ "${wave_of[$idx]}" -lt "$wave_no" ] && continue
   fail "image:${p_key[$idx]}" "skipped: not reached: this wave's export did not start (the pass's export budget was spent or an apply took the apply lock)"
 done
-rm -rf "$archives" "$exportdir"
+discard_tree "$archives"; discard_tree "$exportdir"
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
 if [ -n "$inst" ]; then scan repo:instance "$(git -C "$inst" rev-parse HEAD 2>/dev/null || true)" -v "$inst:/src:ro" -- dir:/src --exclude './.git/**' --exclude '**/node_modules/**'; fi
 apps="$PWD/data/apps/.platform"
@@ -1245,5 +1282,5 @@ if [ "${images_planned:-0}" -gt 0 ] && [ "$(grep -c $'^image:[^\t]*\t' "$next/ta
   : > "$next/images.complete"
 fi
 mv "$next" "$out/current"
-rm -rf "$out/prev" "$work" "$exportdir"
+discard_tree "$out/prev"; discard_tree "$work" "$exportdir"
 echo "security-sbom: $(wc -l < "$out/current/targets.tsv") targets, $(grep -c $'\t-\t' "$out/current/targets.tsv" || true) failed"
