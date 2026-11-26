@@ -40,4 +40,7 @@ export type Report = {
   captures: Capture[]; improvements: Improvement[]; motion: MotionRow[]; bugs: Bug[]; notes: string[]; cost_usd: number;
   blocking?: string[]; preexisting?: string[]; // the rule checks' blocking findings: this run's own, and those its baseline also had
   candidates?: string[]; // the route check's generic heuristics (a control that changed nothing, a link that shows the same page): to look at, never blocking
+  blocked: Blocked[]; // requests the live-app guard refused (guard.ts); a socket's method is "WS"
+  session?: { rung: "supplied" | "form" | "signup" | "aidenhq" | "patch"; relogins: number }; // a signed-in run: how it signed in, how often again
 };
+export type Blocked = { method: string; origin: string; path: string; page: string };

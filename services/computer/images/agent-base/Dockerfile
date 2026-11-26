@@ -56,6 +56,17 @@ RUN cd /opt/aidenhq/ui-review && npm ci --ignore-scripts --no-audit --no-fund &&
     && printf '#!/bin/sh\nexec node /opt/aidenhq/ui-review/main.ts "$@"\n' > /usr/local/bin/ui-review && chmod 755 /usr/local/bin/ui-review \
     && node -e 'require("/opt/aidenhq/ui-review/node_modules/playwright-core").chromium.launch({ executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH }).then((b) => b.close())' \
     && ui-review --help >/dev/null
+# Mailpit v1.34.0 (released 2026-11-17; MIT, its licence beside it): the local mail server `ui-review login signup` reads a
+# sign-up's confirmation mail from (SMTP 127.0.0.1:1025, API :8025), started only by that rung. Checksummed per architecture.
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) sum=af236b42f171b1c74f0ac5ff444f44d36f2f2ecc0134f5a2f1d4e307e56a0d2c ;; \
+      arm64) sum=179f3fe9642edb3a123edc613003e45641869c5b2728c2076c7bef1c3e09dd01 ;; \
+    esac \
+    && curl -fsSLo /tmp/mailpit.tgz "https://github.com/axllent/mailpit/releases/download/v1.34.0/mailpit-linux-$(dpkg --print-architecture).tar.gz" \
+    && echo "$sum  /tmp/mailpit.tgz" | sha256sum -c - \
+    && mkdir -p /usr/share/licenses/mailpit && tar -xzf /tmp/mailpit.tgz -C /tmp mailpit LICENSE \
+    && mv /tmp/mailpit /usr/local/bin/mailpit && mv /tmp/LICENSE /usr/share/licenses/mailpit/LICENSE && rm /tmp/mailpit.tgz \
+    && chmod 755 /usr/local/bin/mailpit && mailpit version | grep -q 'v1\.34\.0'
 COPY design-system /opt/aidenhq/design-system
 COPY app-starter /opt/aidenhq/app-starter
 # The UI review's regression set (modules/design/eval): `node /opt/aidenhq/design-eval/run.ts <suite>`, on request only. It needs no install.

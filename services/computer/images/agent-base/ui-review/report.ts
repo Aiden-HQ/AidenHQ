@@ -90,6 +90,12 @@ export function saveReport(out: string, r: Report): void {
   lines.push(introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found by the automated checks", "", ...introduced.map((b) => `- ${b}`), "");
   if (preexisting.length) lines.push(`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((b) => `- ${b}`), "");
   if (r.bugs.length) lines.push("## Bugs", "", ...r.bugs.map((b) => `- ${b.title} (\`${b.page}\`, ${b.width}px ${b.theme}${b.verified ? ", verified" : ""}): ${b.evidence}`), "");
+  if (r.session) lines.push("## Session", "", `Signed in (${r.session.rung})${r.session.relogins ? `, signed in again ${r.session.relogins} time${r.session.relogins > 1 ? "s" : ""} after the session ended` : ""}.`, "");
+  if (r.blocked?.length) {
+    const by = new Map<string, number>();
+    for (const b of r.blocked) { const k = `${b.method} ${b.origin}${b.path} (from \`${b.page}\`)`; by.set(k, (by.get(k) ?? 0) + 1); }
+    lines.push(`## Blocked requests (${r.blocked.length})`, "", "The live-app guard refused these (the app's mode doesn't allow them); each page was captured as it stood.", "", ...[...by].map(([k, n]) => `- ${k}${n > 1 ? ` x${n}` : ""}`), "");
+  }
   if (r.notes.length) lines.push(`## Notes (${r.notes.length}): not failures`, "", ...r.notes.map((n) => `- ${n}`), "");
   lines.push("## Pages", "");
   const shows = new Map(o.pages.filter((p) => p.shows).map((p) => [p.path, p.shows as string]));

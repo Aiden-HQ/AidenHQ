@@ -9,7 +9,7 @@ export type Queue = {
   items: QueueItem[];
   next(): QueueItem | undefined;
   done(i: QueueItem, c: Capture): void;
-  failed(i: QueueItem, why: string): void;
+  failed(i: QueueItem, why: string, final?: boolean): void; // final: no second try
   counts(): { done: number; total: number; failed: number; deferred: number };
   captures(): Capture[];
 };
@@ -41,7 +41,7 @@ export function openQueue(file: string, pages: Page[], o: { widths: number[]; th
     items,
     next: () => { const i = items.find((x) => x.status === "todo" && !taken.has(x)); if (i) taken.add(i); return i; },
     done: (i, c) => { appendFileSync(capsFile, JSON.stringify(c) + "\n"); i.status = "done"; i.tries++; delete i.why; taken.delete(i); save(); },
-    failed: (i, why) => { i.tries++; i.why = why; i.status = i.tries >= TRIES ? "failed" : "todo"; taken.delete(i); save(); },
+    failed: (i, why, final) => { i.tries++; i.why = why; i.status = final || i.tries >= TRIES ? "failed" : "todo"; taken.delete(i); save(); },
     counts: () => ({ done: items.filter((i) => i.status === "done").length, total: items.length, failed: items.filter((i) => i.status === "failed").length, deferred: items.filter((i) => i.status === "deferred").length }),
     captures: () => {
       const by = new Map<string, Capture>();

@@ -12,6 +12,10 @@
 //   2. `ui-review capture` (its pages: the repo's committed `.aidenhq-ui/pages.json` when there is one, else its own crawl) and
 //      `ui-review routes` over the same pages, both from a folder outside the checkout. Exit 1 means blocking findings (the reports
 //      say which), anything else but 0 a failed check.
+//   With the option ui.scan-signed-in, both run signed in, with only the rungs that need no secret (the spec carries no login):
+//   the repo's own test user when it commits one (`.aidenhq-ui/login.json`: { url, user, password }, a seed user of its local
+//   build, through `ui-review login form`), else a sign-up at /signup or /register (`ui-review login signup`, mail through
+//   Mailpit). The session stays outside the bundle; a run that can't sign in captures signed out and says so.
 //   3. The bundle for the review step (recipe/ui-review.ts, the model box) at /aidenhq-out/keep: the capture's report.json, run.json and
 //      queue.json, the route check's report.json and, per page, the shots the review reads (390, 1512 and 2560 light and 1512 dark,
 //      each capture's first). Pages that don't fit the kernel's 64 MB input are left out from the end of the list, and the result says
@@ -131,16 +135,48 @@ export async function capture({ spec, ws, out, env = process.env }: { spec: UiSp
   // A declared build runs first: `start` serves what it builds.
   if (typeof scripts.build === "string" && scripts.build.trim()) ok(await run(pm!, [...via, "run", "build"], { cwd: ws, env: plainEnv, minutes: 10 }), `\`${pm} run build\``, [0]);
   const stop = await startApp([pm!, ...via], ws, plainEnv);
+  let signIn: string[] = [], unsigned: string | undefined;
   try {
+    if (spec.option === "ui.scan-signed-in") ({ args: signIn, why: unsigned } = await signInFor(ws, url, tmp, plainEnv));
     // From a folder outside the checkout, so only the committed pages.json (or the crawl) decides the pages.
-    ok(await run("ui-review", ["capture", url, "--out", ui, "--commit", spec.head, ...(existsSync(pagesFile) ? ["--pages-file", pagesFile] : [])], { cwd: tmp, env: plainEnv, minutes: 25 }), "ui-review capture");
-    ok(await run("ui-review", ["routes", url, "--out", join(ui, "routes"), "--pages-file", join(ui, "run.json")], { cwd: tmp, env: plainEnv, minutes: 8 }), "ui-review routes");
+    ok(await run("ui-review", ["capture", url, "--out", ui, "--commit", spec.head, ...(existsSync(pagesFile) ? ["--pages-file", pagesFile] : []), ...signIn], { cwd: tmp, env: plainEnv, minutes: 25 }), "ui-review capture");
+    ok(await run("ui-review", ["routes", url, "--out", join(ui, "routes"), "--pages-file", join(ui, "run.json"), ...signIn], { cwd: tmp, env: plainEnv, minutes: 8 }), "ui-review routes");
   } finally { stop(); }
 
+  // A signed-in scan that couldn't sign in says so in the bundle, so the review step's coverage carries it.
+  if (unsigned) { const f = join(ui, "report.json"); writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), signed_out: unsigned.slice(0, 300) })); }
   const b = bundle(ui);
   writeFileSync(join(out, "keep"), b.gz);
   const queue = JSON.parse(readFileSync(join(ui, "queue.json"), "utf8")) as { page: string }[];
   return captureReport({ model: spec.model, repo: spec.repo, head: spec.head, listed: queue.map((i) => i.page), pages: b.pages, dropped: b.dropped });
+}
+
+/**
+ * The signed-in scan's session, from the rungs that need no secret: the repo's committed test user (`.aidenhq-ui/login.json`),
+ * else a sign-up at /signup or /register. `args`: the capture's `--session`; `why`: the reason it captures signed out.
+ */
+async function signInFor(ws: string, url: string, tmp: string, env: Record<string, string>): Promise<{ args: string[]; why?: string }> {
+  const state = join(tmp, "state.json"), tried: string[] = [];
+  const seed = readSmall(join(ws, ".aidenhq-ui", "login.json"), 10_000);
+  if (seed) {
+    try {
+      const u = JSON.parse(seed) as { url?: unknown; user?: unknown; password?: unknown };
+      if (typeof u.url !== "string" || typeof u.user !== "string" || typeof u.password !== "string") throw new Error();
+      // The local build's own sign-in page only.
+      if (new URL(u.url, url).origin !== new URL(url).origin) throw new Error();
+      const pw = join(tmp, "seed-password");
+      writeFileSync(pw, u.password, { mode: 0o600 });
+      const r = await run("ui-review", ["login", "form", "--url", new URL(u.url, url).href, "--user", u.user, "--password-file", pw, "--out", state], { cwd: tmp, env, minutes: 3 });
+      if (r.code === 0) return { args: ["--session", state] };
+      tried.push(`the repo's test user didn't sign in (${r.stderr.trim().split("\n").at(-1)?.slice(0, 120) ?? "no reason"})`);
+    } catch { tried.push(".aidenhq-ui/login.json isn't { url, user, password } with a url on the local build"); }
+  }
+  for (const path of ["/signup", "/register"]) {
+    const r = await run("ui-review", ["login", "signup", "--url", new URL(path, url).href, "--out", state], { cwd: tmp, env, minutes: 3 });
+    if (r.code === 0) return { args: ["--session", state] };
+    tried.push(`${path}: ${r.stderr.trim().split("\n").at(-1)?.replace(/^ui-review login signup: /, "").slice(0, 120) ?? "no reason"}`);
+  }
+  return { args: [], why: tried.join("; ") };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
