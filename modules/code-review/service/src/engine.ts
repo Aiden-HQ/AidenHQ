@@ -22,9 +22,9 @@
 //
 // Risk tiers (docs/superpowers/specs/2026-11-24-risk-tiers-design.md): each open PR head is classified before anything is queued for it
 // (classifyPr: one consistent read of its files, the repo's rules, stored on its row with the inputs it came from); a head without a
-// current classification is pending and gets nothing. What runs is its tier's (tierCfg). A head's policy (config.ts policyOf: the
-// tier's mandatory combos, its base branch, the ignore globs) changing starts a new run of heads (policy_since): it gets the tier's
-// full opening batch, and only runs and coverage under the current policy count for its verdict.
+// current classification is pending and gets nothing. What runs is its tier's (tierCfg). A PR keeps the reviews it has had across a
+// tier change, a settings edit and a retarget: a new setting applies from its next push, its push rounds keep counting, and the only
+// review added is a mandatory opening combo the PR has never had an opening review from (opening()), which its verdict waits on.
 //
 // A repo review (a batch whose target is a tree: a whole repo at one commit, resolved once when it is asked for) runs on the same
 // lifecycle: its catalog options as runs of one batch: the tools check (the selected tool options together, token-free) and each
@@ -43,7 +43,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
-import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, gatesAny, openOnly, policyOf, PRESETS, tierCfg, type Combo, type Config, type Entry, type Repo } from "./config.ts";
+import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, gatesAny, label, openOnly, policyOf, PRESETS, tierCfg, type Combo, type Config, type Entry, type Repo } from "./config.ts";
 import { authorKind, classify, factsOf, tooMany, TOO_MANY_FILES, type Facts, type Tier } from "./aidenhq-sdk/tiers.ts";
 import type { Ack, CodeHost, Feed, Finding, Posted, Poster, PrComment, PrSource, Publisher, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
 import { detect, toolSpec, whyNot, type Option } from "./catalog.ts";
@@ -99,8 +99,8 @@ export type RunRow = {
   mandatory: number;
   /** The moment it was queued for. */
   moment: Moment | null;
-  /** The head's risk tier when it was queued, and the review policy it runs under (config.ts policyOf; a one-off: none). */
-  tier: string | null; policy: string | null;
+  /** The head's risk tier when it was queued (a one-off: none). */
+  tier: string | null;
   /** 1 once its review is stored whole (no important finding withheld); what coverage reads, never its post's fate. */
   complete: number | null;
   /** The ledger's tokens for its model token (the kernel's figure), and how long it ran. */
@@ -265,9 +265,9 @@ export function createEngine(d: EngineDeps) {
   if ((db.prepare("PRAGMA table_info(area_seen)").all() as { name: string }[]).length && !(db.prepare("PRAGMA table_info(area_seen)").all() as { name: string }[]).some((c) => c.name === "combo")) db.exec("DROP TABLE area_seen");
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
     ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"], ["runs", "area", "TEXT"], ["batches", "plan", "TEXT"], ["batches", "blobs", "TEXT"], ["batches", "full", "INTEGER NOT NULL DEFAULT 0"], ["runs", "carried", "TEXT"],
-    ["prs", "tier", "TEXT"], ["prs", "rule", "INTEGER"], ["prs", "why", "TEXT"], ["prs", "facts", "TEXT"], ["prs", "cls", "TEXT"], ["prs", "policy", "TEXT"], ["prs", "policy_since", "TEXT"], ["prs", "policy_at", "INTEGER"], ["runs", "tier", "TEXT"], ["prs", "handled", "TEXT"], ["prs", "noted", "TEXT"]] as const)
+    ["prs", "tier", "TEXT"], ["prs", "rule", "INTEGER"], ["prs", "why", "TEXT"], ["prs", "facts", "TEXT"], ["prs", "cls", "TEXT"], ["runs", "tier", "TEXT"], ["prs", "handled", "TEXT"], ["prs", "noted", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
   if (version === 1) {
@@ -310,8 +310,6 @@ export function createEngine(d: EngineDeps) {
     tier: Tier | null; rule: number | null; why: string | null; facts: string | null; cls: string | null;
     /** The head and tier the PR's comment last said (`head:tier`). */
     noted: string | null;
-    /** The current run of heads under one policy: the policy, its first head and when it started. */
-    policy: string | null; policy_since: string | null; policy_at: number | null;
     /** The head the triggers last ran for (a push seen while its tier was pending is still a push once classified). */
     handled: string | null };
   const prRow = (repo: string, n: number) => one<PrRow>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
@@ -332,7 +330,7 @@ export function createEngine(d: EngineDeps) {
    * genuine loss of access (see lostAccess) — the stored classification was made with member access and the caller's live read now
    * says outsider. The comparison is one-directional: the caller and the classifier read the association under different GitHub
    * identities (a PR's owner reads as NONE through the App, so a stored NONE sees a live OWNER), and only member-to-outsider is a loss. */
-  type TierState = { state: "unwatched" } | { state: "pending" } | { state: "classified"; tier: Tier; rule: number; why: string; facts: Facts | null; c: Repo; policy: string; at: number };
+  type TierState = { state: "unwatched" } | { state: "pending" } | { state: "classified"; tier: Tier; rule: number; why: string; facts: Facts | null; c: Repo; policy: string };
   function tierState(repo: string, n: number, head: string, live: { base?: string; association?: string } = {}): TierState {
     const cfg = repoCfg(repo);
     if (!cfg) return { state: "unwatched" };
@@ -343,11 +341,9 @@ export function createEngine(d: EngineDeps) {
     const stale = !!p?.open && !!i && i.head === head && (lostAccess(i, p, live.association) || (live.base !== undefined && live.base !== i.ref) || i.config !== cfg.hash);
     if (stale && !again.has(`${repo}#${n}`)) again.set(`${repo}#${n}`, 0);
     if (!p || !i || !p.tier || p.head !== head || i.head !== head || stale) return { state: "pending" };
-    const policy = policyOf(cfg, p.tier, i.ref);
-    // A policy the watcher hasn't started its run of heads for yet (a settings edit since): nothing reviewed under it counts.
-    return { state: "classified", tier: p.tier, rule: p.rule ?? -1, why: p.why ?? "", facts: p.facts ? JSON.parse(p.facts) : null, c: tierCfg(cfg, p.tier), policy, at: p.policy === policy ? (p.policy_at ?? 0) : Infinity };
+    return { state: "classified", tier: p.tier, rule: p.rule ?? -1, why: p.why ?? "", facts: p.facts ? JSON.parse(p.facts) : null, c: tierCfg(cfg, p.tier), policy: policyOf(cfg, p.tier, i.ref) };
   }
-  /** The tier a classified head runs, with its policy and when that policy's run of heads started; undefined while pending. */
+  /** The tier a classified head runs; undefined while pending. */
   const current = (repo: string, n: number, head: string) => { const t = tierState(repo, n, head); return t.state === "classified" ? t : undefined; };
   const runRow = (id: string) => one<RunRow>("SELECT * FROM runs WHERE id = ?", id);
   const subject = (repo: string, n: number) => `pr:${repo}#${n}`;
@@ -471,7 +467,7 @@ export function createEngine(d: EngineDeps) {
       run("DELETE FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
     }
     const batch = `b-${randomBytes(6).toString("hex")}`;
-    // Each run records the head's tier and the policy it runs under (a one-off: none; it never gates or covers).
+    // Each run records the head's tier (a one-off: none; it never gates or covers).
     const at = kind === "oneoff" ? undefined : current(p.repo, p.number, p.head);
     // A one-off never gates; the recheck runs in the first mandatory run (whose verdict counts), else the first.
     const mand = (c: Combo) => kind !== "oneoff" && c.mandatory;
@@ -480,14 +476,13 @@ export function createEngine(d: EngineDeps) {
       if (kind !== "auto") {
         // The same ask is the same run only when it asks the same question: a different focus (or none) is its own run, so a
         // one-off asked with a focus never reuses a queued run of another ask and drop that ask's focus.
-        // …and under the same review policy and its run of heads: a run under an older ignore list or tier is another question.
-        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND policy IS ? AND created >= ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null, at?.policy ?? null, at && Number.isFinite(at.at) ? at.at : 0);
+        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null);
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
-      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, focus, full, due, created, author, batch, recheck, mandatory, moment, tier, policy)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, kind,
-        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0, o.moment ?? "open", at?.tier ?? null, at?.policy ?? null);
+      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, focus, full, due, created, author, batch, recheck, mandatory, moment, tier)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, kind,
+        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0, o.moment ?? "open", at?.tier ?? null);
       return runRow(id)!;
     });
     // Who asked, and the runs this request was answered with (its run set): the same ask twice by two askers shares those runs,
@@ -550,60 +545,57 @@ export function createEngine(d: EngineDeps) {
     return runRow(r.id);
   }
 
-  /** The baseline a run reviews from, unless it is full: in a gated tier the last head covered under the run's policy (so every
+  /** The baseline a run reviews from, unless it is full: in a gated tier the last covered head (so every
    * incremental range starts at a covered head), elsewhere the last reviewed one. It counts only while it is an ancestor of the head
    * (startRun asks GitHub): the base branch's sha moving on (main moved) never resets it. */
   function baseline(r: RunRow): string | null {
     if (r.full || r.kind === "oneoff") return null;
     const cfg = repoCfg(r.repo);
-    if (cfg && r.tier && gated(cfg.tiers[r.tier as Tier])) return one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? AND head != ? AND policy IS ? AND at >= ? ORDER BY at DESC LIMIT 1", r.repo, r.number, r.head, r.policy, isoAt(activeSince(r)))?.head ?? null;
+    if (cfg && r.tier && gated(cfg.tiers[r.tier as Tier])) return one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? AND head != ? ORDER BY at DESC LIMIT 1", r.repo, r.number, r.head)?.head ?? null;
     const p = prRow(r.repo, r.number);
     return p?.last_reviewed_head && p.last_reviewed_head !== r.head ? p.last_reviewed_head : null;
   }
-  /** An ISO time for a run of heads' start (ms; Infinity: a policy not started yet, which nothing is at or after). */
-  const isoAt = (ms: number) => new Date(Math.min(ms, 8.64e15)).toISOString();
-  /** Covered under `policy` in its current run of heads (since `since`): coverage from an earlier stay under the same policy never counts. */
-  const isCovered = (repo: string, n: number, head: string, policy: string | null, since = 0) => !!one("SELECT 1 FROM covered WHERE repo = ? AND number = ? AND head = ? AND policy IS ? AND at >= ?", repo, n, head, policy, isoAt(since));
-  /** When the run of heads under `policy` started on this PR, for a run's policy: 0 for a policy that isn't the PR's current one. */
-  const activeSince = (r: { repo: string; number: number; policy: string | null }) => { const p = prRow(r.repo, r.number); return p && p.policy === r.policy ? p.policy_at ?? 0 : 0; };
-  /** The mandatory reviewers that reviewed a head under a policy: its latest run per combo and moment there (one-offs left out),
-   * newest first. What the verdict waits on and coverage reads: what reviewed the head under its policy (a run under another policy
-   * reviewed it another way: a changed tier, mandatory combo, base branch or ignore list asks for a review under the new one). */
-  const reviewers = (repo: string, n: number, head: string, policy: string | null, since = 0) => {
+  const isCovered = (repo: string, n: number, head: string) => !!one("SELECT 1 FROM covered WHERE repo = ? AND number = ? AND head = ?", repo, n, head);
+  /** The mandatory reviewers that reviewed a head: its latest run per combo and moment there (one-offs left out), newest first.
+   * What the verdict waits on and coverage reads. A settings edit or a tier change never discounts them: it applies from the next push. */
+  const reviewers = (repo: string, n: number, head: string) => {
     const seen = new Set<string>();
-    return all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' AND policy IS ? AND created >= ? ORDER BY created DESC", repo, n, head, policy, since)
+    return all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' ORDER BY created DESC", repo, n, head)
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); });
   };
 
-  /** A PR's on_push rounds under its current policy (since `at`, its run of heads' start): its pushed heads with an automatic push
-   * batch whose runs all finished (done or failed), one with a review stored (posted or not). A batch with a run still going or
-   * superseded never counts, nor a carried run or an `aiden review`. */
-  const pushRounds = (repo: string, n: number, at: number) => one<{ c: number }>(`SELECT COUNT(DISTINCT r.head) c FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.kind = 'auto' AND r.moment = 'push' AND r.status IN ('done', 'failed') AND r.created >= ?
-    AND NOT EXISTS (SELECT 1 FROM runs q WHERE q.repo = r.repo AND q.number = r.number AND q.batch = r.batch AND q.status NOT IN ('done', 'failed'))`, repo, n, at)!.c;
-  /** When the PR's current run of heads under one policy started (its push rounds count from there). */
-  const since = (repo: string, n: number) => prRow(repo, n)?.policy_at ?? 0;
+  /** A PR's on_push rounds, over its whole life (a settings edit or a tier change never resets them): its pushed heads with an
+   * automatic push batch whose runs all finished (done or failed), one with a review stored (posted or not). A batch with a run still
+   * going or superseded never counts, nor a carried run or an `aiden review`. */
+  const pushRounds = (repo: string, n: number) => one<{ c: number }>(`SELECT COUNT(DISTINCT r.head) c FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.kind = 'auto' AND r.moment = 'push' AND r.status IN ('done', 'failed')
+    AND NOT EXISTS (SELECT 1 FROM runs q WHERE q.repo = r.repo AND q.number = r.number AND q.batch = r.batch AND q.status NOT IN ('done', 'failed'))`, repo, n)!.c;
   /** The PR has had the push reviews its tier's push_rounds allows: later heads get no on_push run. */
-  const capped = (cfg: Repo, n: number) => cfg.push_rounds !== null && pushRounds(cfg.repo, n, since(cfg.repo, n)) >= cfg.push_rounds;
+  const capped = (cfg: Repo, n: number) => cfg.push_rounds !== null && pushRounds(cfg.repo, n) >= cfg.push_rounds;
   /** openOnly for one PR: its tier has no mandatory on_push, or the PR's push rounds are used up; either way its later heads are
    * gated by the opening review and the findings still open. */
   const openOnlyPr = (cfg: Repo, n: number) => openOnly(cfg) || (gated(cfg) && capped(cfg, n));
 
   /** What the verdict waits on at a head: the mandatory reviewers that reviewed it (reviewers()). On a repo with no mandatory on_push
-   * combo, or a PR whose push rounds are used up (openOnlyPr), the PR's opening review stands for every later head: its latest mandatory opening run per combo, at any head,
+   * combo, or a PR whose push rounds are used up (openOnlyPr), the PR's opening review stands for every later head: its latest mandatory opening run per combo the tier names now, at any head,
    * with the mandatory runs at the head itself (an `aiden review`) and any mandatory run of the PR on its first post (a recheck at
    * an earlier head whose findings aren't posted yet; one still running there is superseded and never posts). */
-  const gateRuns = (cfg: Repo, repo: string, n: number, head: string, policy: string, since: number) => {
-    const at = reviewers(repo, n, head, policy, since);
+  const gateRuns = (cfg: Repo, repo: string, n: number, head: string) => {
+    const at = reviewers(repo, n, head);
     if (!openOnlyPr(cfg, n)) return at;
-    // Only the current run of heads under this policy: a batch from an earlier stay in the tier never stands for this one.
+    // Only the combos the tier names now: a reviewer the owner dropped, or another tier's, never stands for (or holds) this one.
     const seen = new Set<string>();
-    const opening = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' AND policy IS ? AND created >= ? ORDER BY created DESC", repo, n, policy, since)
+    const opening = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' ORDER BY created DESC", repo, n)
+      .filter((r) => cfg.on_open.some((c) => c.mandatory && sameCombo(c, r)))
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}`; return !seen.has(k) && !!seen.add(k); });
-    const pending = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND status = 'done' AND posted = 'pending' AND post_tries = 0 AND policy IS ? AND created >= ? ORDER BY created DESC", repo, n, policy, since);
+    const pending = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND status = 'done' AND posted = 'pending' AND post_tries = 0 ORDER BY created DESC", repo, n);
     const out = [...opening];
     for (const r of [...at, ...pending]) if (!out.some((o) => o.id === r.id)) out.push(r);
     return out;
   };
+  const sameCombo = (c: Combo, r: { engine: string; model: string; effort: string }) => c.engine === r.engine && c.model === r.model && c.effort === r.effort;
+  /** The tier's mandatory opening combos this PR has never had an opening review from (a run of it done, or failed past its retries,
+   * at any head): what opening() queues and the verdict waits on. A settings edit or a tier change that adds one asks for that one only. */
+  const unopened = (cfg: Repo, repo: string, n: number) => cfg.on_open.filter((c) => c.mandatory && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND kind != 'oneoff' AND mandatory = 1 AND COALESCE(moment, 'open') = 'open' AND engine = ? AND model = ? AND effort = ? AND status IN ('done', 'failed')", repo, n, c.engine, c.model, c.effort));
   /** The last posted review on the PR (the poster's view of what Aiden posted before). */
   const lastPosted = (r: { repo: string; number: number; id: string }) => one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
   type Open = { id: string; severity: string; path: string; line: number; title: string; why: string | null; evidence: string | null; gating: number; run: string };
@@ -702,7 +694,7 @@ export function createEngine(d: EngineDeps) {
   /** No carry while the baseline still owes something: a finding answered after its rechecking run started (what that run
    * rechecked was read as it started, so the claim waits for a mandatory recheck), or its review's first post still being decided (the verdict waits on that post at its own head only). */
   const answeredSince = (r: RunRow, from: string) => !!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome_at > COALESCE((SELECT MAX(started) FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'done' AND recheck = 1), '')", r.repo, r.number, r.repo, r.number, from)
-    || reviewers(r.repo, r.number, from, r.policy, activeSince(r)).some((x) => x.posted === "pending" && !x.post_tries);
+    || reviewers(r.repo, r.number, from).some((x) => x.posted === "pending" && !x.post_tries);
   /** A bare rebase's run: done at no cost and nothing posted, its range from the baseline it carries (covered, and the PR's
    * baseline next). The PR's findings are the PR's, so they stay as they are. */
   function carry(r: RunRow, from: string, merge_base: string) {
@@ -1484,11 +1476,9 @@ export function createEngine(d: EngineDeps) {
    */
   function cover(r: RunRow) {
     if (!repoCfg(r.repo) || !r.mandatory) return;
-    const since = activeSince(r);
-    const at = reviewers(r.repo, r.number, r.head, r.policy, since);
-    if (!at.length || !at.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from, r.policy, since)))) return;
-    // Covered under the run's policy: a head reviewed under another tier or other mandatory reviewers isn't covered under this one.
-    run("INSERT OR REPLACE INTO covered (repo, number, head, base, at, policy) VALUES (?, ?, ?, ?, ?, ?)", r.repo, r.number, r.head, r.base, iso(), r.policy);
+    const at = reviewers(r.repo, r.number, r.head);
+    if (!at.length || !at.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from)))) return;
+    run("INSERT OR REPLACE INTO covered (repo, number, head, base, at) VALUES (?, ?, ?, ?, ?)", r.repo, r.number, r.head, r.base, iso());
   }
 
   /** A post's outcome is in: a posted one is the PR's baseline and keeps its link; a one-off's task is done either way. */
@@ -1665,7 +1655,7 @@ export function createEngine(d: EngineDeps) {
 
   // ---- triggers and commands ------------------------------------------------------------------------------------------------
 
-  /** The head's tier's trigger for a new PR, a policy change (`open`, `full`: the whole PR from its merge base) or a push (`push`):
+  /** The head's tier's trigger for a new PR (`open`, `full`: the whole PR from its merge base) or a push (`push`):
    * a batch of the tier's combos for that moment. */
   function trigger(cfg: Repo, p: PullRequest, which: "open" | "push", full = false) {
     const row = prRow(p.repo, p.number)!;
@@ -1691,25 +1681,17 @@ export function createEngine(d: EngineDeps) {
   }
 
   /**
-   * A head whose policy (tier, the tier's mandatory combos, base branch, ignore globs) started a new run of heads (policy_since) gets
-   * the tier's full opening batch until one completed under that policy at policy_since or later (every mandatory on_open combo done
-   * or failed past its retries), queued once per head and policy; a push meanwhile supersedes it with the same batch at the new head,
-   * never with an on_push run. True while that branch holds the PR (the ordinary triggers wait); false once it is done, or when the
-   * tier has no mandatory opening combo (nothing gates on one).
+   * The tier's mandatory opening combos the PR has never had an opening review from (unopened()). A PR with no finished opening
+   * review gets the tier's full opening batch; one that has had one (a settings edit or a tier change added a mandatory reviewer)
+   * gets only the combos it lacks, each over the whole PR. Queued once per head; a push meanwhile supersedes it with the same runs at
+   * the new head, never with an on_push run. True while that holds the PR (the ordinary triggers wait); false once none lacks.
    */
-  function opening(c: Repo, p: PullRequest, policy: string, at: number): boolean {
-    const must = c.on_open.filter((x) => x.mandatory);
-    // A tier whose opening reviewers are all advice: its opening batch runs once when the run of heads starts, and holds nothing.
-    // Any run queued under the policy since (a push batch that replaced it too) means it was asked for: never queued again.
-    if (!must.length) {
-      if (!c.on_open.length || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND policy = ? AND kind != 'oneoff' AND created >= ?", p.repo, p.number, policy, at)) return false;
-      trigger(c, p, "open", true);
-      return true;
-    }
-    const has = (x: Combo, states: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND policy = ? AND kind != 'oneoff' AND mandatory = 1 AND COALESCE(moment, 'open') = 'open' AND engine = ? AND model = ? AND effort = ? AND status IN (${states}) AND created >= ?`, p.repo, p.number, policy, x.engine, x.model, x.effort, at);
-    if (must.every((x) => has(x, "'done', 'failed'"))) return false;
-    if (!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND policy = ? AND kind != 'oneoff' AND mandatory = 1 AND COALESCE(moment, 'open') = 'open' AND status IN ('queued', 'running')", p.repo, p.number, p.head, policy))
-      trigger(c, p, "open", true);
+  function opening(c: Repo, p: PullRequest): boolean {
+    const lacking = unopened(c, p.repo, p.number);
+    if (!lacking.length) return false;
+    if (one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND kind != 'oneoff' AND mandatory = 1 AND COALESCE(moment, 'open') = 'open' AND status IN ('queued', 'running')", p.repo, p.number, p.head)) return true;
+    if (!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' AND status IN ('done', 'failed')", p.repo, p.number)) trigger(c, p, "open", true);
+    else queue(p, lacking, "auto", { focus: prRow(p.repo, p.number)?.focus ?? null, moment: "open", full: true });
     return true;
   }
 
@@ -1818,23 +1800,17 @@ export function createEngine(d: EngineDeps) {
     // The head the triggers last ran for: a push seen while its tier was pending is still a push once it is classified.
     const seen = was?.handled ?? was?.head;
     run("UPDATE prs SET handled = ? WHERE repo = ? AND number = ?", p.head, p.repo, p.number);
-    const row = prRow(p.repo, p.number)!;
-    // A head whose policy differs from the head before it starts a new run of heads under that policy.
-    if (row.policy !== t.policy) {
-      run("UPDATE prs SET policy = ?, policy_since = ?, policy_at = ? WHERE repo = ? AND number = ?", t.policy, p.head, now(), p.repo, p.number);
-      t.at = now();
-    }
-    // Backlog (after the policy window is set, so a review asked for later counts under it): no automatic trigger.
+    // Backlog: no automatic trigger.
     if (backlog(p)) return true;
     const c = t.c;
     // A draft too, where the repo reviews drafts.
-    if ((!p.draft || c.drafts) && opening(c, p, t.policy, t.at)) return true;
+    if ((!p.draft || c.drafts) && opening(c, p)) return true;
     if (!was) trigger(c, p, "open");
     else if (seen !== p.head) trigger(c, p, pushed(p) ? "push" : "open");
     else if (was.draft && !p.draft && !runsOn(p)) trigger(c, p, "open");
     else if (!p.draft && !anyRun(p)) trigger(c, p, "open");
-    // A gated tier's open head missing a mandatory reviewer under its policy gets it.
-    else if (!p.draft && gated(c)) missing(c, p, t.policy, t.at);
+    // A gated tier's open head missing a mandatory reviewer gets it.
+    else if (!p.draft && gated(c)) missing(c, p);
     return true;
   }
   /** A PR's row as the PullRequest decide() takes: what the triggers read of it. */
@@ -1957,8 +1933,8 @@ export function createEngine(d: EngineDeps) {
   /** A gated repo's open head with no mandatory run at all (a PR open when its repo became gated) gets its trigger: its opening
    * review until a mandatory one reviewed the PR. A head that has one is never queued again here: a changed setting applies from
    * the next head. */
-  function missing(cfg: Repo, p: PullRequest, policy: string, at: number) {
-    const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND policy = ? AND created >= ?${head ? " AND head = ?" : ""}`, p.repo, p.number, policy, at, ...(head ? [head] : []));
+  function missing(cfg: Repo, p: PullRequest) {
+    const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'${head ? " AND head = ?" : ""}`, p.repo, p.number, ...(head ? [head] : []));
     // No mandatory on_push: a later head needs no review of its own, only a PR never reviewed by a mandatory combo gets one.
     if (openOnlyPr(cfg, p.number)) {
       // Its opening review lacks a mandatory run (a push superseded one): the newest head gets each such combo (as a batch of its
@@ -1966,7 +1942,7 @@ export function createEngine(d: EngineDeps) {
       // such batch still queued for an older head is superseded first.
       for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head != ? AND mandatory = 1 AND kind = 'command' AND COALESCE(moment, 'open') = 'open' AND status = 'queued'", p.repo, p.number, p.head)) skipQueued(q.id, "superseded: a newer push");
       if (one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND status IN ('queued', 'running')", p.repo, p.number)) return;
-      const opening = gateRuns(cfg, p.repo, p.number, p.head, policy, at).filter((r) => (r.moment ?? "open") === "open");
+      const opening = gateRuns(cfg, p.repo, p.number, p.head).filter((r) => (r.moment ?? "open") === "open");
       const lacking: Combo[] = opening.length ? opening.filter((r) => r.status === "skipped").map((r) => ({ engine: r.engine as Combo["engine"], model: r.model, effort: r.effort, mandatory: true })) : cfg.on_open.filter((c) => c.mandatory);
       if (lacking.length) queue(p, lacking, "command", { focus: prRow(p.repo, p.number)?.focus ?? null, moment: "open" });
       return;
@@ -2077,14 +2053,12 @@ export function createEngine(d: EngineDeps) {
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
-      // An automatic review starts only for the head it was queued for, under the policy it was queued under: a newer push or a
-      // changed policy (a new tier's reviewers, a settings edit) supersedes it; a head whose tier is pending waits.
+      // An automatic review starts only for the head it was queued for: a newer push supersedes it; a head whose tier is pending waits.
       if (r.target === "pr" && r.kind === "auto" && repoCfg(r.repo)) {
         const p = prRow(r.repo, r.number);
         if (p?.open && p.head !== r.head) { skipQueued(r.id, "superseded: a newer push"); continue; }
         const t = p?.open ? current(r.repo, r.number, r.head) : undefined;
         if (p?.open && !t) continue;
-        if (t && r.policy && t.policy !== r.policy) { skipQueued(r.id, "superseded: the head's review policy changed"); continue; }
       }
       // A repo review's runs start together, each its own check in its own box (metered by the gateway like any run), up to
       // TREE_RUNNING at once.
@@ -2111,13 +2085,13 @@ export function createEngine(d: EngineDeps) {
     // A pass with a mandatory reviewer it needs whose latest run at the head failed past its retries (no review stored) says so: it
     // passes without that review, never looks reviewed.
     const t = current(repo, n, head);
-    const runs = t && gated(t.c) ? gateRuns(t.c, repo, n, head, t.policy, t.at) : [];
+    const runs = t && gated(t.c) ? gateRuns(t.c, repo, n, head) : [];
     const failed = !v.reasons.length && runs.some((r) => r.status === "failed" && !one("SELECT 1 FROM reviews WHERE run = ?", r.id));
     const code = v.reasons[0]?.code ?? (failed ? "failed" : "pass");
     const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
     // Partial coverage (a file no finder read whole, a withheld finding, an unchecked recheck) is information: shown, never waited on.
     const partial = t && openOnlyPr(t.c, n) ? runs.some((r) => r.complete === 0)
-      : !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0 AND policy IS ?", repo, n, head, t?.policy ?? null);
+      : !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' AND complete = 0", repo, n, head);
     return { repo, number: n, head, reason, important: openGating(repo, n).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })), ...(partial ? { partial: true } : {}) };
   }
   /** Status writes GitHub or the kernel refused, by repo and head: tried again after STATUS_RETRY or once the verdict changes. */
@@ -2325,7 +2299,7 @@ export function createEngine(d: EngineDeps) {
   type TierView = { state: "unwatched" | "pending" } | { state: "classified"; tier: Tier; rule: number; why: string };
   type Verdict = { verdict: "pass" | "wait"; reasons: Reason[]; requires_review: boolean; tier: TierView; policy?: string };
   /**
-   * Whether a watched repo's PR may merge at `head`, judged against the head's tier: pass once the head is covered under its policy and
+   * Whether a watched repo's PR may merge at `head`, judged against the head's tier: pass once its mandatory reviewers are done and
    * no important finding a mandatory run made is open on the PR; else wait, with each reason in plain words and how it unblocks. A
    * tier with no mandatory combo needs no review (`requires_review` false): it passes unless an earlier mandatory run's important
    * finding is still open. A head not classified yet waits. There is no fail: the merge queue asks again until it passes, the PR
@@ -2353,7 +2327,9 @@ export function createEngine(d: EngineDeps) {
     }
     // Each mandatory reviewer that reviewed the head (reviewers()) has a run there that is done (whole or partial: a partial review
     // is still a review, a carried one too) or failed past its retries; queued or running ones wait. None yet: the watcher starts it.
-    const latest = gateRuns(cfg, repo, n, head, t.policy, t.at);
+    const latest = gateRuns(cfg, repo, n, head);
+    // A mandatory opening reviewer the PR has never had (one the owner just added, or the tier's): the watcher queues it (opening()).
+    const lacking = unopened(cfg, repo, n);
     const busy = latest.filter((r) => r.status === "queued" || r.status === "running");
     // A review whose first post is still being decided: its findings gate once they have threads, so the merge waits for it. A
     // post refused once (filed again in the background) holds nothing: its findings are pending, never blocking.
@@ -2364,6 +2340,7 @@ export function createEngine(d: EngineDeps) {
     else if (latest.some((r) => (r.status === "queued" || r.status === "running" || r.status === "failed") && SPEND_LIMIT.test(r.why ?? ""))) reasons.push({ code: "spend_limit", text: `install spend limit reached: the mandatory review of ${head.slice(0, 7)} can't run (${String(latest.find((r) => SPEND_LIMIT.test(r.why ?? ""))!.why).slice(0, 200)})`, unblock: "the owner raises spend_day_usd or spend_month_usd in Settings, or the limit resets; a failed review then runs again on `aiden review`" });
     else if (busy.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
+    else if (lacking.length) reasons.push({ code: "not_started", text: `the opening review by ${lacking.map(label).join(", ")} hasn't started`, unblock: "it starts by itself within a minute or two" });
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     if (open.length) findings();
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [], requires_review: true, tier, policy: t.policy };
@@ -2376,12 +2353,11 @@ export function createEngine(d: EngineDeps) {
    * covered head, which ship compares the PR's own change against (a later head with the same change carries its review).
    */
   function evidence(repo: string, n: number, head: string): { reviewed: string | null; kind: "completed" | "exhausted" | "skipped" | "none" } {
-    // Only coverage under the head's current policy: a review under another tier or other mandatory reviewers is not this one.
     const t = current(repo, n, head);
     if (t && !gated(t.c)) return { reviewed: null, kind: "none" };
-    const reviewed = t ? one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? AND policy IS ? AND at >= ? ORDER BY at DESC LIMIT 1", repo, n, t.policy, isoAt(t.at))?.head ?? null : null;
-    if (t && isCovered(repo, n, head, t.policy, t.at)) return { reviewed: head, kind: "completed" };
-    return { reviewed, kind: t && gateRuns(t.c, repo, n, head, t.policy, t.at).some((r) => r.status === "skipped") ? "skipped" : "exhausted" };
+    const reviewed = t ? one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? ORDER BY at DESC LIMIT 1", repo, n)?.head ?? null : null;
+    if (t && isCovered(repo, n, head)) return { reviewed: head, kind: "completed" };
+    return { reviewed, kind: t && gateRuns(t.c, repo, n, head).some((r) => r.status === "skipped") ? "skipped" : "exhausted" };
   }
 
   /** The owner's dismissal of an open finding (the board, in the owner's signed-in session). */
