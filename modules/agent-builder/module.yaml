@@ -9,12 +9,11 @@ agents:
   architect:
     department: agents
     skills: [ agent-builder.design-doc, engineering.supply-chain, engineering.write-code, primer.primer-docs, tasks.delegate-work ]
-    # Designs and onboards new agents. DeepSeek Flash at max effort (the owner's pick after a blind bake-off, 2026-11-13): its
-    # handbooks are what the other agents run on. Max can reason 60-90k tokens a turn: nothing in its path sets an output cap
-    # (Codex and the gateway send none), and the longer timeout covers slow turns. A 90k-token turn costs about $0.05, so
-    # the default $2 run cap allows about 40 of them.
+    # Designs and onboards new agents. DeepSeek Flash at high effort (owner, 2026-11-26: high is enough; max reasoned 5-20k
+    # tokens a step at ~86 tok/s, so one chat reply took 62 minutes on WOR-12723). Nothing in its path sets an output cap
+    # (Codex and the gateway send none), and the longer timeout covers slow turns.
     model: ~deepseek/deepseek-flash-latest
-    reasoning_effort: max
+    reasoning_effort: high
     timeout_sec: 3600
     # No fleet tools or other roles: it changes the fleet only by delegating to the Engineer, whose change waits for the
     # owner's tap (an approval record). It can't grant itself anything: its own grants live here, in the product.
