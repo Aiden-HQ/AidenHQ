@@ -10,9 +10,8 @@
 //   asking task, which ends the wait and wakes it, from the owner's decisions (owner/profile.md); a call that is truly the
 //   owner's it hands to the chief of staff.
 // - The chief of staff (role fleet-admin): the Steward's own asks. It brings to the owner only the calls that are theirs.
-// - The owner directly: only the chief of staff's own asks, an agent's question on a task the owner is talking to it on
-//   (the owner wrote there in the last day), and an agent's question on its part of the owner's own task (task_join: the
-//   owner holds the parent, so the owner is its delegator), e.g. the follow-up chaser's "Send this chaser?" in a sweep. A decision message headed by the waiting agent and its task, so the owner's reply
+// - The owner directly: only the chief of staff's own asks, and an agent's question on a task the owner is talking to it on
+//   (the owner wrote there in the last day). A decision message headed by the waiting agent and its task, so the owner's reply
 //   lands on that task and wakes it. It names that agent as its asker, so the owner channel applies its mutes and the brake.
 // An agent's ask is one open ask per task: another isn't sent while the recorded ask (the durable `ask:<task>` marker) still
 // has a wait fact for that question with no answer since, nor when the state can't be read (fail closed). A questionless wait
@@ -30,7 +29,7 @@ import type { Notice } from "./notify.ts";
 import type { StateRow } from "../sdk/src/task-state-types.ts";
 import { MARKER, fenced } from "./writes.ts";
 
-type Issue = { id: string; identifier?: string; status?: string; parentId?: string | null; description?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null };
+type Issue = { id: string; identifier?: string; status?: string; parentId?: string | null; description?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null };
 const CLOSED = ["done", "cancelled"];
 /** Marks a comment as a wake notice: it wakes the task's agent and is never read as the owner's words (dispatch thread.ts). */
 export const WAKE_NOTICE = "<!-- aidenhq-wake -->";
@@ -99,12 +98,6 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
     const asked = requestedParentOf(t);
     const d = asked ? await issue(asked) : undefined;
     return d && !CLOSED.includes(String(d.status)) && d.assigneeAgentId && reachable(d.assigneeAgentId) ? d : undefined;
-  }
-  /** Whether the task is an agent's part of the owner's own task (task_join): its open parent is held by a person, not an agent. */
-  async function ownersPart(t: Issue) {
-    const asked = requestedParentOf(t);
-    const p = asked ? await issue(asked) : undefined;
-    return Boolean(p && !CLOSED.includes(String(p.status)) && p.assigneeUserId && !p.assigneeAgentId);
   }
   /** The task's agent, as the owner channel reads it; undefined when it has none or can't be read (never the chief then). */
   const agentOf = async (t: Issue) => (t.assigneeAgentId ? await asker(t.assigneeAgentId).catch(() => undefined) : undefined);
@@ -193,8 +186,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       return to;
     },
     /**
-     * The agent waiting on `task` asks `who` its question. The owner hears it directly only from the chief of staff, on a
-     * task the owner is talking to its agent on, or on its part of the owner's own task; every other owner question goes to the Steward (the Steward's own to the
+     * The agent waiting on `task` asks `who` its question. The owner hears it directly only from the chief of staff, or on a
+     * task the owner is talking to its agent on; every other owner question goes to the Steward (the Steward's own to the
      * chief of staff). A delegator question goes to the open delegator, else the same settler. `asked`: the question reached
      * the owner already (the agent's reply, notify): recorded, not sent, when it may go to them directly; otherwise it goes to
      * the settler. One open ask per task: while a recorded question is unanswered, only a retry of
@@ -210,7 +203,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       // The delegator is resolved once, for both the route and the delivery: resolving it again in send() could land the question
       // on another recipient than the marker records, and the next call would read that ask as abandoned.
       const d = who === "delegator" ? await delegatorOf(t) : undefined;
-      const to: AskTo = who === "owner" ? (settler === "owner" || (await ownersPart(t)) || (await conversing(t.id)) ? "owner" : settler) : d ? "delegator" : settler;
+      const to: AskTo = who === "owner" ? (settler === "owner" || (await conversing(t.id)) ? "owner" : settler) : d ? "delegator" : settler;
       const open = await openAsk(t);
       if (open === "unknown") return { sent: "open" };
       // A legacy marker doesn't say which recipient waits; the caller refuses, actionably.
