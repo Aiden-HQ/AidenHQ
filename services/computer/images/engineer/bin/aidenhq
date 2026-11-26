@@ -35,6 +35,10 @@
 //                                                    checked out as the branch ship-pr-<n> in this workspace's clone
 //   aidenhq ship push <PR link> <head> <generation>  push the checked-out branch's commits on top of <head> onto the adopted PR's
 //                                                    branch (a fix ship woke you for): one codehost.push write, refused if the PR moved
+//   aidenhq ship title <PR link> <head> <generation> <title>
+//                                                    replace the adopted PR's title (a Conventional Commit title that the `policy`
+//                                                    check accepts): one codehost.retitle write, which changes only the title, and
+//                                                    is refused if the PR moved
 //
 // Every git write waits for its record to end: done prints its outcome; failed, rejected or stale prints the reason and exits 1;
 // waiting on the AI reviewer or the owner is said plainly and exits 0 (not an error).
@@ -51,7 +55,7 @@ import { join } from "node:path";
 // The box's one MCP client (kernel/sdk/src/tools-client.ts, copied beside this folder by scripts/sync-shared.ts).
 import { call as callTool, ToolError } from "../lib/tools.ts";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup | ship checkout <PR link> <head> | ship push <PR link> <head> <generation>`;
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup | ship checkout <PR link> <head> | ship push <PR link> <head> <generation> | ship title <PR link> <head> <generation> <title>`;
 const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup", "ship"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
@@ -363,9 +367,11 @@ if (command === "publish" || command === "review") {
   if (!question) fail('usage: aidenhq advise "<question>" [--file <brief>]', 2);
   lines.push(await tool("advisor_ask", { question, ...(flags.file ? { context: readFileSync(flags.file, "utf8") } : {}) }));
 } else if (command === "ship") {
-  const [sub, link, head, gen] = words;
-  const shape = sub === "push" ? words.length === 4 && /^[1-9]\d{0,8}$/.test(gen) : sub === "checkout" && words.length === 3;
-  if (!shape || !/^[0-9a-f]{40}$/.test(head)) fail("usage: aidenhq ship checkout <PR link> <head> | ship push <PR link> <head> <generation> (copy the line from ship's wake)", 2);
+  const [sub, link, head, gen, title] = words;
+  const shape = sub === "push" ? words.length === 4 && /^[1-9]\d{0,8}$/.test(gen)
+    : sub === "title" ? words.length === 5 && /^[1-9]\d{0,8}$/.test(gen) && Boolean(title)
+    : sub === "checkout" && words.length === 3;
+  if (!shape || !/^[0-9a-f]{40}$/.test(head)) fail("usage: aidenhq ship checkout <PR link> <head> | ship push <PR link> <head> <generation> | ship title <PR link> <head> <generation> <title> (copy the line from ship's wake)", 2);
   const { repo, number } = pr(link);
   if (sub === "checkout") {
     // The clone (made or refreshed), then the PR's head commit itself from the code host: a fork's commit is the base repo's too.
@@ -387,6 +393,13 @@ if (command === "publish" || command === "review") {
     if (kept && kept !== at(`refs/ship/pushed/pr-${number}`)) { try { execFileSync("git", ["-C", dir, "merge-base", "--is-ancestor", kept, head]); } catch { fail(`ship-pr-${number} has commits beyond ${head.slice(0, 12)}: push them with \`aidenhq ship push\`, or rename the branch, then check out again`, 2); } }
     execFileSync("git", ["-C", dir, "checkout", "--quiet", "-B", `ship-pr-${number}`, head], { stdio: ["ignore", "ignore", "inherit"] });
     console.log(`${link}: ship-pr-${number} is checked out at ${head.slice(0, 12)} in ${dir}`);
+    process.exit(0);
+  }
+  // The title alone (the `policy` job's Conventional Commit check): no checkout, no clone, no commit: the write names the PR's head.
+  if (sub === "title") {
+    lines.push(`${link}: ${(await write("codehost.retitle", { repo, number, head, generation: Number(gen), title }))}`);
+    console.log(lines.join("\n"));
+    if (bad.length) process.exit(1);
     process.exit(0);
   }
   const dir = cloneOf(repo).have;

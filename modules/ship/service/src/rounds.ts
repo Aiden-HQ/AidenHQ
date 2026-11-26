@@ -14,6 +14,8 @@ import { ACK, HOLD, renderReport, say, waitFacts, type Facts } from "./report.ts
 import { staleApproval, type Judged, type Risk } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
+import { GATE_CHECK } from "./aidenhq-sdk/checks.ts";
+import { conventional } from "./title.ts";
 
 /** merge-gate's decide answer for the PR at its head, with ship's context (github's merge-gate.ts Action). */
 export type Decision = { do: "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "enqueue" | "merge" | "done" | "stall" | "fail"; why?: string };
@@ -29,6 +31,9 @@ export interface RoundFacts extends QueueFacts {
   queue?: boolean;
   /** Required checks red on the head, and the same names red on the target branch's latest completed run. */
   failing?: string[]; onBase?: string[];
+  /** Every named check red on the head, required or not: the product's branch protection requires only `ci-required`, so the
+   * `policy` job's own red check is not in `failing` there, and the title-only wake needs it. */
+  redChecks?: string[];
   /** Discovery on the target branch (discover.ts); the repo's `generated` setting wins over it. */
   discovered?: Discovered;
   /** safe.ts judge()'s answer at the head, where approval is needed: what the App approves on (and decide's ShipContext.approve). */
@@ -57,6 +62,12 @@ export interface RoundDeps {
   log(msg: string, f?: Record<string, unknown>): void;
   /** GitHub as the owner (github's /internal/ship/gh): the repo's own actions and discovery (actions.ts). Without it, neither runs. */
   gh?: Gh;
+  /** The `policy` job at the head: its Actions job id (re-run on an unreadable failure) and which of its steps failed. `"other"`
+   * when another of the job's steps (the age and pin checks) failed too, so no title edit clears the check; `"unknown"` when its
+   * steps can't be read. Undefined when the job itself can't be found. */
+  policyJob?: (repo: string, head: string) => Promise<{ job: string; step: "title" | "other" | "unknown" } | undefined>;
+  /** Re-runs the `policy` job (POST actions/jobs/{id}/rerun): a fresh attempt's steps can be read where a timed-out one's can't. */
+  policyRerun?: (repo: string, head: string, job: string) => Promise<"accepted" | "refused">;
 }
 
 const OPEN = ["review", "owner", "approved", "claimed", "done"];
@@ -72,7 +83,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const s = d.settings(pr.repo);
   // Check names are set by whoever can push to the repo: no backtick or line break reaches a wake or the report.
   const clean = (l?: string[]) => l?.map((n) => n.replace(/[`\r\n]/g, ""));
-  f = { ...f, failing: clean(f.failing), onBase: clean(f.onBase), groupFailing: clean(f.groupFailing) };
+  f = { ...f, failing: clean(f.failing), onBase: clean(f.onBase), groupFailing: clean(f.groupFailing), redChecks: clean(f.redChecks) };
   let a = d.state.get(pr.repo, pr.number) as (Kept & { queue?: Queued }) | undefined;
   if (!a || !s) return "nothing";
   a = await retryReport(d, a, pr);
@@ -219,7 +230,41 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
   // A wait is said again when its kind (what a person is asked for) changes; every other action once per head.
   // Review findings are keyed by their digest: a new set at the same head is asked again.
-  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}` : v.do;
+  // The `policy` job's title step (and `ci-required`, the aggregate that rolls it up) is the PR's metadata, not its code: no
+  // commit can turn it green (ci.yml re-runs `policy` on `edited`), so the wake asks for the title instead of "one commit". The
+  // test is on this head's own required reds: a check that also fails on the base is pre-existing and its name must not hide the
+  // metadata case. Since branch protection may require only `ci-required`, the `policy` job's own red is read from every named
+  // check at the head (`redChecks`), and `policy` failing on the base too is not this PR's. A queue run is the merge tree's, not
+  // this head's: there the commit instruction stays.
+  const baseRed = new Set(f.onBase ?? []);
+  const headRed = [...new Set([...(f.failing ?? []), ...(f.redChecks ?? [])])];
+  const metadata = (n: string) => n === "policy" || n === GATE_CHECK;
+  // `policy` is judged by its own job's steps below, never by its base-red name alone: a base run red on the age check says
+  // nothing about whether this head's title step is the failure.
+  const ownHead = headRed.filter((n) => n !== "policy" && !baseRed.has(n));
+  const candidate = v.do === "fix_ci" && !viaQueue && headRed.includes("policy") && ownHead.every(metadata);
+  // The `policy` job also runs the lockfile age and pin checks: a title edit clears only the title step. Its own steps are read on
+  // every pass a metadata-only red sits at the head, not only the first: a title edit re-runs the job at the same SHA, and a new
+  // run's failure (an age or pin step red now) is judged on its own instead of deduplicating against the old title diagnosis.
+  const policy = candidate && d.policyJob ? await d.policyJob(pr.repo, pr.head).catch(() => undefined) : undefined;
+  const policyStep = policy?.step;
+  const titleInvalid = pr.title !== undefined && !conventional(pr.title);
+  // A retitle is asked for on two evidences, both required: the job names its title step as the failure, and the PR's title actually
+  // fails the Conventional Commit rule. The step also fails when its own request to GitHub did, on a title the rule accepts: a
+  // retitle of that title writes nothing (the write answers "already this title") and the check never re-runs, so it is no fix.
+  const titleFix = candidate && policyStep === "title" && titleInvalid;
+  // The job blames its title step on a title that already passes the rule (the step's own GitHub request failed): a fresh attempt is
+  // the recovery, never a title edit. Unreadable steps are the same recovery with less to say: neither asks the Engineer to guess.
+  const policyUnclear = candidate && !titleFix && policyStep !== "other";
+  // Why the job's own verdict is no fix: it blamed its title step on a title the rule already accepts (`titleStep`) or on a title
+  // the view didn't carry (`titleUnread`), or its steps couldn't be read at all (`unreadable`).
+  const policyWhy: "titleStep" | "titleUnread" | "unreadable" = policyStep !== "title" ? "unreadable" : pr.title === undefined ? "titleUnread" : "titleStep";
+  // A title-only CI wake is its own action at the head: it fixes no commit, so a real red check at the same head is still woke for.
+  // The unclear case is keyed apart too, so a later confirmed diagnosis wakes as its own action.
+  const act = v.do === "fix_review" && f.findingsKey ? `fix_review:${f.findingsKey}`
+    : v.do === "fix_ci" && titleFix ? "fix_ci:title"
+    : v.do === "fix_ci" && policyUnclear ? "fix_ci:policy-unread"
+    : v.do;
   const key = v.do === "wait" ? `${pr.head}:wait:${say(waitFacts(v.why)).text}` : `${pr.head}:${act}`;
   // A wait with an App approval to dismiss (or a dismissal in flight) is followed too: its record is read each pass.
   const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true) || (v.do === "wait" && !!risk && staleApproval(a.approve, pr.head, risk));
@@ -289,10 +334,12 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "fix_ci": {
         if (!s.fix.includes("ci")) return hold("a required check is red, and this repo's `fix` setting excludes CI", HOLD.settings("fix CI"));
-        if (pr.fork && !pr.canModify) return hold(noEdits, HOLD.noEdits);
+        // A metadata-only failure is a title edit or a log read: neither touches the fork's branch, so a fork the fleet can't push to
+        // (the title is the base repo's, and the job's log needs no edit permission) gets the same wake the base repo's PR does.
+        if (!titleFix && !policyUnclear && pr.fork && !pr.canModify) return hold(noEdits, HOLD.noEdits);
         // Red while behind a green base: perhaps only the base moved. GitHub updates the branch once at this head before any wake;
         // a refusal has spent its round and the fix follows.
-        if (f.behindGreen && c.updated !== pr.head) {
+        if (!titleFix && !policyUnclear && f.behindGreen && c.updated !== pr.head) {
           c.updated = pr.head;
           try {
             await d.updateBranch(pr.repo, pr.number, pr.head);
@@ -305,20 +352,48 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         const failing = f.failing ?? [];
         const onBase = new Set(f.onBase ?? []);
         const own = failing.filter((n) => !onBase.has(n));
-        // Failing on the target branch too: likely pre-existing. The Engineer judges it with evidence; it spends no CI round.
-        if (own.length) {
+        // Failing on the target branch too: likely pre-existing. The Engineer judges it with evidence; it spends no CI round. A
+        // title-only wake spends no CI round either: it asks for no code, so a real code failure at the same head after it still
+        // has the head's rounds to fix (titleFix was computed above). The wake that only asks for the job's log spends none either.
+        if (own.length && !titleFix && !policyUnclear) {
           for (const n of own) c.red[n] = [...new Set([...(c.red[n] ?? []), pr.head])];
           const repeat = own.find((n) => over(c.red[n]!.length, caps.same_check_heads));
           if (repeat) return hold(`required check \`${repeat}\` failed on ${c.red[repeat]!.length} heads (same_check_heads)`, HOLD.cap);
           if (over(c.ci, caps.ci_rounds)) return hold(`${c.ci} CI fix rounds (ci_rounds)`, HOLD.cap);
           c.ci++;
         }
+        // The `policy` job's steps can't be read (a timed-out attempt leaves no failed step): one re-run at this head gives a fresh
+        // attempt whose steps can be, after which the round wakes the fix that matches it (a title edit, or a code fix) instead of
+        // asking for a log read forever. Asked once per head; a refusal is reported and never retried, so a job GitHub won't re-run
+        // cannot spend a wake on every pass.
+        let reran: "accepted" | "refused" | undefined;
+        if (policyUnclear && policy && d.policyRerun && c.policyRerun !== pr.head) {
+          c.policyRerun = pr.head;
+          reran = await d.policyRerun(pr.repo, pr.head, policy.job).catch(() => "refused" as const);
+          a = { ...a!, did: [...(a!.did ?? []), `asked GitHub to re-run the \`policy\` job at \`${pr.head.slice(0, 12)}\` (${reran})`] };
+          d.log("policy job re-run", { pr: pr.url, job: policy.job, reran });
+        }
         return wake("fix_ci", [
-          `${pr.url}: required checks are red at head ${pr.head}: ${failing.map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
+          `${pr.url}: required checks are red at head ${pr.head}: ${(titleFix || policyUnclear ? [...new Set([...failing, ...(f.redChecks ?? [])])] : failing).map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
           viaQueue ? "They passed on the PR's head but failed on the merge queue's run for it (the `merge_group` run): read that run's logs, the failure is in the PR merged onto the base." : "",
-          onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
-          "Fix what this PR broke as the `ship` skill says: one commit, never weaken a check.",
-          push(),
+          // A `policy` red on the base is a step of that job, not necessarily the title step: the wake says so only where the job
+          // itself named the title step as this head's failure.
+          onBase.size ? `These fail on \`${pr.base}\`'s latest run too: ${[...onBase].filter((n) => !(n === "policy" && titleFix)).map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
+          ...(titleFix ? [
+            "The red check is the PR's Conventional Commit title (the `policy` job's title step), which no commit can fix: a title edit re-runs `policy` in place.",
+            `Fix the title with \`aidenhq ship title ${pr.url} ${pr.head} ${a!.generation} "<type>(<scope>): <summary>"\` (types: feat, fix, docs, chore, test, refactor, perf, ci, build, style, revert), giving the title that describes this PR. Change nothing in the code for it: a check, test or lint rule stays as strict as you found it.`,
+          ] : policyUnclear ? [
+            policyWhy === "titleStep"
+              ? `Only metadata is red here, and the \`policy\` job blames its title step, but this PR's title already passes the Conventional Commit rule: the step failed for another reason (its own request to GitHub), and a title edit would change nothing. ${reran === "accepted" ? "Ship asked GitHub to re-run `policy` once at this head; change nothing while it runs." : `Read that job's run (${pr.url}/checks) and say on the task why it failed; no title edit is asked for.`}`
+              : policyWhy === "titleUnread"
+              ? `Only metadata is red here, and the \`policy\` job blames its title step, but the PR's title didn't reach this pass: read the title (${pr.url}) and, if it doesn't read as a Conventional Commit, re-file with \`aidenhq ship title\`; say on the task what you found either way.`
+              : reran === "accepted"
+              ? `Only metadata is red here, and the \`policy\` job's own steps at this head don't show which step failed: ship asked GitHub to re-run \`policy\` once at this head, and wakes the fix that matches the fresh run's steps (a title edit, or a code fix). Change nothing while it runs; if its steps still can't be read afterwards, say on the task what ${pr.url}/checks shows.`
+              : `Only metadata is red here, but the \`policy\` job's own steps at this head don't show which step failed, and ship can't re-run it (${reran === "refused" ? "GitHub refused the re-run" : d.policyRerun ? "no re-run was asked" : "no re-run is available here"}): read that job's run (${pr.url}/checks) and say on the task which step failed. Ship wakes the fix that matches it; nothing here asks you to guess.`,
+          ] : [
+            "Fix what this PR broke as the `ship` skill says: one commit, never weaken a check.",
+            push(),
+          ]),
         ].filter(Boolean).join("\n"));
       }
       case "fix_review": {

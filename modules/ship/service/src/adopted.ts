@@ -26,7 +26,7 @@ export type AdoptedOptions = {
   /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
    * whether the branch merges through a merge queue, the required checks red on the PR's latest merge_group run, and whether an
    * approval of the head is all it waits on. */
-  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
+  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }): Promise<Decision & { failing?: string[]; redChecks?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
   /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
   effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string, live?: { base?: string; association?: string }): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
@@ -46,7 +46,7 @@ function eventOf(n: Json): TriggerEvent | undefined {
 export function viewOf(repo: string, defaultBranch: string, pr: Json, extra: { baseOid?: string; headSeen?: string } = {}): PrView {
   return {
     ...(extra.baseOid && pr.baseRefName === defaultBranch ? { baseOid: extra.baseOid } : {}), ...(extra.headSeen ? { headSeen: extra.headSeen } : {}),
-    repo, number: pr.number, url: pr.url, head: pr.headRefOid, base: pr.baseRefName, defaultBranch,
+    repo, number: pr.number, url: pr.url, head: pr.headRefOid, base: pr.baseRefName, defaultBranch, ...(pr.title === undefined ? {} : { title: String(pr.title) }),
     author: String(pr.author?.login ?? ""), authorBot: pr.author?.__typename !== "User",
     fork: pr.isCrossRepository === true, canModify: pr.maintainerCanModify === true, ...(pr.headRepository?.nameWithOwner ? { headRepo: String(pr.headRepository.nameWithOwner) } : {}), draft: pr.isDraft === true, state: "open",
     labels: (pr.labels?.nodes ?? []).map((l: Json) => String(l.name)), assignees: (pr.assignees?.nodes ?? []).map((a: Json) => String(a.login)),
@@ -132,6 +132,29 @@ export function adoptedPass(o: AdoptedOptions) {
   };
   const rounds: RoundDeps = {
     state: o.state, settings: o.settings, paused: o.paused, kernel: o.kernel, comment: o.effects.comment, askFresh: o.effects.askFresh, log: o.log, gh: o.gh,
+    policyJob: async (repo, head) => {
+      // The `policy` job's newest run at the head, and its steps: the title step's own failure is the one a title edit clears.
+      const runs = await o.gh("GET", `/repos/${repo}/commits/${head}/check-runs?per_page=100`);
+      const run = (Array.isArray(runs.body?.check_runs) ? runs.body.check_runs : []).find((c: Json) => c.name === "policy" && /actions\/runs\/\d+\/job\/\d+/.test(String(c.details_url ?? "")));
+      const jobId = String(run?.details_url ?? "").match(/\/job\/(\d+)/)?.[1];
+      if (!jobId) return undefined;
+      const job = await o.gh("GET", `/repos/${repo}/actions/jobs/${jobId}`);
+      // A job whose steps can't be read (a timed-out or deleted attempt): `unknown`, so the round asks for a re-run rather than
+      // guessing a title. Its id is still handed back: that is what a re-run names.
+      if (job.status >= 300 || !Array.isArray(job.body?.steps)) return { job: jobId, step: "unknown" };
+      const failed = job.body.steps.filter((s: Json) => s.conclusion === "failure");
+      if (!failed.length) return { job: jobId, step: "unknown" };
+      return { job: jobId, step: failed.length === 1 && /conventional commit title/i.test(String(failed[0].name ?? "")) ? "title" : "other" };
+    },
+    policyRerun: async (repo, head, job) => {
+      try {
+        const r = await o.gh("POST", `/repos/${repo}/actions/jobs/${job}/rerun`);
+        return r.status < 300 ? "accepted" : "refused";
+      } catch (e) {
+        o.log("policy re-run failed", { repo, head, job, err: String((e as Error).message).slice(0, 200) });
+        return "refused";
+      }
+    },
     updateBranch: async (repo, n, head) => void (await must("PUT", `/repos/${repo}/pulls/${n}/update-branch`, { expected_head_sha: head })),
     assign: async (repo, n, logins) => void (await must("POST", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
   };
@@ -315,11 +338,16 @@ export function adoptedPass(o: AdoptedOptions) {
       // Red on the base too: the same required check names (on the head or the merge_group run) red on the default branch's head.
       // The base head's newest judgement per name, as the gate reads a head: a run an edit superseded is not red.
       const onBase = new Set(latestChecks(namedChecks(main.rollup)).filter((c) => !c.ok && !c.pending).map((c) => c.name));
-      const red = [...new Set([...(v.failing ?? []), ...(v.groupFailing ?? [])])];
+      // Every name red on the head, the aggregate's own roll-up included, so a red non-required check is compared with the base
+      // too (a repo requiring only `ci-required` would otherwise hand an advisory base-red name to the title-only test unmatched).
+      const red = [...new Set([...(v.failing ?? []), ...(v.redChecks ?? []), ...(v.groupFailing ?? [])])];
+      // Every name red on this head: the required ones the gate named and every other named check (a code check red beside
+      // `ci-required` keeps the commit instruction, so the title-only test must see it, base-red or not).
+      const redAtHead = [...new Set([...(v.failing ?? []), ...(v.redChecks ?? [])])];
       // Red while behind a green base: round() has GitHub update the branch once at this head before asking for a fix.
       const behindGreen = v.do === "fix_ci" && main.rollup?.state === "SUCCESS" && main.oid && a.counters?.updated !== view.head
         ? Number((await o.gh("GET", `/repos/${repo}/compare/${main.oid}...${view.head}`)).body?.behind_by) > 0 : false;
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], ...(redAtHead.length ? { redChecks: redAtHead } : {}), groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
     },
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {
