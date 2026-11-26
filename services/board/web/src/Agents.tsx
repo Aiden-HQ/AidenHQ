@@ -217,30 +217,32 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
   // Platform agents ship with AidenHQ (any module); "Your agents" are the instance's own (agents/<key>/ in its repo).
   const platform = roster.filter((a) => a.system !== false);
   const mine = roster.filter((a) => a.system === false);
+  // A list, not a table: the responsive grid (.fleet-main) and each row's click target stay as they are, and every cell
+  // labels itself inline ("Now", "Next", "Last") instead of relying on a header row read by a screen reader.
   const table = (label: string, agents: RosterAgent[], grouped: boolean) => (
     <section className="fleet-section" aria-label={label}>
       <h2 className="fleet-section-head">{label}</h2>
-      <div className="fleet" role="table" aria-label={label}>
-        <div className="fleet-cols" role="row">
-          <span role="columnheader">Agent</span>
-          <span role="columnheader">Status</span>
-          <span role="columnheader">Now</span>
-          <span role="columnheader">Next run</span>
-          <span role="columnheader">Last result</span>
+      <ul className="fleet" aria-label={label}>
+        <li className="fleet-cols" aria-hidden="true">
+          <span>Agent</span>
+          <span>Status</span>
+          <span>Now</span>
+          <span>Next run</span>
+          <span>Last result</span>
           <span />
-        </div>
+        </li>
         {grouped
           ? byDepartment(agents).map(({ dept, members }) => (
-              <div key={dept.id} role="rowgroup" className="fleet-group">
-                <div className="fleet-group-head" role="row">
+              <li key={dept.id} className="fleet-group">
+                <div className="fleet-group-head">
                   <h3>{dept.name}</h3>
                   {dept.description && <span className="hint">{dept.description}</span>}
                 </div>
-                {orgTree(workingFirst(members)).map(row)}
-              </div>
+                <ul className="fleet-rows">{orgTree(workingFirst(members)).map(row)}</ul>
+              </li>
             ))
           : orgTree(workingFirst(agents)).map(row)}
-      </div>
+      </ul>
     </section>
   );
 
@@ -317,9 +319,9 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
   const detail = `agent-detail-${a.id}`;
   const flag = st.tone === "needs" || st.tone === "failed" ? " flag" : lastSt?.tone === "bad" ? " flag-bad" : "";
   return (
-    <div role="row" aria-level={depth + 1} style={depth ? ({ "--depth": depth } as CSSProperties) : undefined} className={`fleet-row${a.running ? " busy" : ""}${open ? " open" : ""}${flag}${team ? " team" : ""}${depth ? " nested" : ""}`}>
+    <li style={depth ? ({ "--depth": depth } as CSSProperties) : undefined} className={`fleet-row${a.running ? " busy" : ""}${open ? " open" : ""}${flag}${team ? " team" : ""}${depth ? " nested" : ""}`}>
       <div className="fleet-main" onClick={(e) => fromRow(e, toggle)}>
-        <div className="fleet-who" role="cell">
+        <div className="fleet-who">
           <span className="crew-portrait">
             <AgentAvatar className="avatar" name={a.name} portrait={assignee.avatar ?? a.avatar} size={36} front={a.key === FRONT} />
           </span>
@@ -339,10 +341,10 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
             )}
           </div>
         </div>
-        <div className="fleet-status" role="cell">
+        <div className="fleet-status">
           {runsLoaded || st.tone ? <StatusDot tone={st.tone} title={a.stateNote}>{st.text}</StatusDot> : <Bone className="tag-sk" />}
         </div>
-        <div className={`fleet-now${on.length || queued.length || !runsLoaded ? "" : " is-empty"}`} role="cell">
+        <div className={`fleet-now${on.length || queued.length || !runsLoaded ? "" : " is-empty"}`}>
           <span className="fleet-label">Now</span>
           {!runsLoaded ? (
             <Bone w="60%" />
@@ -358,7 +360,7 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
             <span className="fleet-line faint">Nothing running</span>
           )}
         </div>
-        <div className={`fleet-next${next ? "" : " is-empty"}`} role="cell">
+        <div className={`fleet-next${next ? "" : " is-empty"}`}>
           <span className="fleet-label">Next</span>
           {next ? (
             <span className="fleet-line" title={next.title}>
@@ -369,7 +371,7 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
             <span className="fleet-line faint">{a.schedules.length ? "Schedules paused" : "When asked"}</span>
           )}
         </div>
-        <div className={`fleet-last${lastSt || !runsLoaded ? "" : " is-empty"}`} role="cell">
+        <div className={`fleet-last${lastSt || !runsLoaded ? "" : " is-empty"}`}>
           <span className="fleet-label">Last</span>
           {!runsLoaded ? (
             <Bone w="70%" />
@@ -444,7 +446,7 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
           {!team && <Scorecard id={a.id} />}
         </div>
       )}
-    </div>
+    </li>
   );
 }
 
