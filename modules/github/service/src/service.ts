@@ -123,7 +123,7 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
  * now, and the hold it sits on when it is. A `stalled` hold leaves the adoption in place: the push that resumes it may land, and
  * nothing else. */
-export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean }> };
+export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean; /** Ask for members' open review comments before the write goes on (member-comments.ts): the hand-off's time, and the PR author whose own comments ask nothing. */ comments?: { since: string; author?: string } }> };
 /**
  * The hold off ship's answer, when it carries one: a `stalled` one still admits the push that resumes it, so it is the plan's to
  * judge with its kind. A hold it can't read (not an object, or no kind) is still a hold: it reads as `unknown`, which no write
@@ -144,9 +144,9 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
       const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), at, ...(check ? { do: check.do, head: check.head, base: check.base, association: check.association, ...(check.policy ? { policy: check.policy } : {}) } : {}) });
       const r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/generation?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
-      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown };
+      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown; comments?: { since?: unknown; author?: unknown } };
       const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 ? (j.generation as number) : null;
-      return { generation, ...(holdOf(j.hold) ?? {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
+      return { generation, ...(holdOf(j.hold) ?? {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}), ...(typeof j.comments?.since === "string" ? { comments: { since: j.comments.since, ...(typeof j.comments.author === "string" ? { author: j.comments.author } : {}) } } : {}) };
     },
   };
 }
@@ -1051,6 +1051,8 @@ export function createService(o: Options) {
     const at = o.ship ? await o.ship.generation(repo, n, head, check).catch(() => undefined) : undefined;
     if (at?.generation === generation && at.refused) return `${at.retry ? "ship-tier-pending" : "ship-tier"}: https://github.com/${repo}/pull/${n}: ${at.refused}: nothing was done.`;
     if (at?.generation !== generation) return `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
+    // A member's comment since the record was filed: the same read the round's decision makes, once, right before the write.
+    if (check && at.comments && (await merges.openComments(repo, n, at.comments)).length) return `ship-tier-pending: https://github.com/${repo}/pull/${n}: members have open review comments: nothing was done.`;
     if (at.hold && !holdAdmits(at.hold, { push, task: push ? at.task : undefined })) return `ship-generation: https://github.com/${repo}/pull/${n} is on hold by ship (${at.hold.kind}${at.hold.kind === "stalled" ? ": only the push that resumes it may land" : ""})${at.hold.reason ? `: ${at.hold.reason}` : ""}: nothing was done.`;
     return undefined;
   }
@@ -2028,6 +2030,6 @@ export function createService(o: Options) {
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
     /** Ship's round decision for an adopted PR (merges.ts decision), for /internal/ship/decision. */
-    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number }) => merges.decision(repo, number, head, view),
+    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string; author?: string } }) => merges.decision(repo, number, head, view),
   });
 }

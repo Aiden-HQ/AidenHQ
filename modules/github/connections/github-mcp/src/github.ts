@@ -524,6 +524,22 @@ export class GitHub {
     return { url: r.html_url, id: r.id };
   }
 
+  /** Resolves the review thread `comment` is in (a repo may require resolved threads to merge), as the owner. */
+  async resolveThread(ref: Ref, comment: number): Promise<{ resolved: boolean }> {
+    const { root, owner, repo } = await this.threadRoot(ref, comment);
+    let after: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const d: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { id: string; comments: { nodes: { fullDatabaseId?: string }[] } }[] } } | null } | null } = await this.graphql("reviewThreads", { owner, name: repo, number: ref.number, after });
+      const t = d.repository?.pullRequest?.reviewThreads;
+      if (!t) break;
+      const thread = t.nodes.find((n) => String(n.comments.nodes[0]?.fullDatabaseId) === String(root));
+      if (thread) return { resolved: (await this.resolveThreads([thread.id])).length === 1 };
+      if (!t.pageInfo.hasNextPage) break;
+      after = t.pageInfo.endCursor;
+    }
+    throw new GitHubRefused(`no review thread with the root comment ${root} on ${owner}/${repo}#${ref.number}`);
+  }
+
   /**
    * Re-runs the failed jobs of a pull request's latest workflow runs, or of one workflow run.
    * Only runs that finished as failed (or were cancelled or timed out) are touched.

@@ -121,7 +121,7 @@ export type Action = "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "
  * - `required`: the check names the target branch's rules require (requiredChecks): only those are judged, and none required is green;
  * - `checks`: every check on the head, every page.
  */
-export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; /** The reviewer App's login on this repo (GraphQL's Bot login, no `[bot]`), where it is installed: its approval counts. */ app?: string; required: string[]; checks: NamedCheck[]; /** The open PR whose head branch this PR's base is (a stack): it waits on that PR. */ stackedOn?: number };
+export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; /** The reviewer App's login on this repo (GraphQL's Bot login, no `[bot]`), where it is installed: its approval counts. */ app?: string; required: string[]; checks: NamedCheck[]; /** The open PR whose head branch this PR's base is (a stack): it waits on that PR. */ stackedOn?: number; /** Members' review comments nobody has answered (member-comments.ts): open like findings. */ comments?: boolean };
 
 /**
  * The one readiness rule: what to do with one PR from `data` (PR_QUERY's answer, withGate applied) and its bound `head`.
@@ -180,6 +180,8 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
   // Code review gates the repo: its pass is the review (code review unreachable is a wait); open important findings are the PR's to fix.
   const v = ship?.verdict;
   if (v && "findings" in v && v.findings) return { do: "fix_review", why: "code review has open findings on its head" };
+  // Members' open review comments (owner, 2026-11-26) stand where findings do: the PR is fixed before it is approved or merged.
+  if (ship?.comments) return { do: "fix_review", why: "members have open review comments on it" };
   if (v && "wait" in v) return { do: "wait", why: v.wait };
   // An approval on the head is needed only where GitHub's own rules ask for a review (reviewDecision is set); elsewhere the hand-off
   // (and code review) is enough. Where they do, it must be on this exact head: GitHub keeps an earlier commit's approval as APPROVED

@@ -523,13 +523,25 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_pr_thread_reply",
     {
-      description: "Reply on a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as the owner, signed by you. Answer a code review finding: \"fixed: <what changed, commit>\" or \"disputed: <reason, file:line>\".",
+      description: "Reply on a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as the owner, signed by you. Answer a reviewer's comment: \"fixed in <commit>: <what changed>\" or \"declined: <reason, file:line>\". It does not resolve the thread (github_pr_thread_resolve does).",
       inputSchema: { ...ref, comment: z.number().int().min(1), body: z.string().min(1).max(2000) },
       annotations: write,
     },
     run(
       "github_pr_thread_reply",
       logged("github_pr_thread_reply", at, async (a: { url?: string; repo?: string; number?: number; comment: number; body: string }) => github.reply(parseRef(a), a.comment, publicText(a.body, OWNER_TERMS, "reply"), agent)),
+    ),
+  );
+  server.registerTool(
+    "github_pr_thread_resolve",
+    {
+      description: "Resolve a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as the owner: a repo may require resolved threads to merge. Only for a thread whose change was made and pushed; a declined one stays open for its reviewer. Reviewed like any write.",
+      inputSchema: { ...ref, comment: z.number().int().min(1) },
+      annotations: write,
+    },
+    run(
+      "github_pr_thread_resolve",
+      logged("github_pr_thread_resolve", at, async (a: { url?: string; repo?: string; number?: number; comment: number }) => github.resolveThread(parseRef(a), a.comment)),
     ),
   );
   server.registerTool(

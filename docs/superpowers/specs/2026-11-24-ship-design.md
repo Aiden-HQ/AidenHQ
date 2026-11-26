@@ -371,7 +371,7 @@ second. It is posted only when a person must act, or once to acknowledge a membe
 
 | When | It says |
 | --- | --- |
-| A member hands the PR over | "Ship has this PR: it will rebase, fix CI and review findings, and merge when ready." |
+| A member hands the PR over | "Ship has this PR: it will rebase, fix CI and review comments, and merge when ready." |
 | A hold or a hand-back | one fixed sentence for the cause, with what a person can do |
 | A code owner's review, a required review, an approval, a merge Ship may not make | the wait, in words |
 | A comment exists and the PR merges | "Merged by Ship." (or "Merged.") |

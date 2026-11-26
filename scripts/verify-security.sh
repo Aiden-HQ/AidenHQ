@@ -802,13 +802,15 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
 # can no longer see before a NOT_FOUND ends an approved merge; neither writes. An adopted PR's merge (ship, #1669) adds three reads,
 # none a write: every check on the head (`check-runs` / `statuses`, paged), and the target branch's required checks (its rules and
 # classic protection); decide() with ship's context judges those, stalls a PR off the default branch, and the queue reads ship's
-# generation right before the PUT. The record is the
+# generation right before the PUT. A PR handed to ship whose repo's `fix` includes review also adds one more read, never a write: its
+# review threads and conversation comments, one GraphQL query per page (member-comments.ts), so a member's open comment holds it like a
+# finding. The record is the
 # review in our own repos; a product merge is Tier 0 only on its exact-head eligibility (productMergeEligible). Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
 # instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
 rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"
-[ "$(grep -c 'd\.gh(' "$rq")" = 10 ] && grep -qF 'const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);' "$rq" && grep -qF 'await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+[ "$(grep -c 'd\.gh(' "$rq")" = 11 ] && grep -qF 'const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);' "$rq" && grep -qF 'await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: MEMBER_COMMENTS_QUERY,' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/actions/runs?event=merge_group&per_page=50`);' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);' "$rq" \
   && grep -qF 'const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);' "$rq" \

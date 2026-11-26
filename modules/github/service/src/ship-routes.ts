@@ -69,7 +69,7 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
 }`;
 
 export function shipRoutes(o: {
-  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }) => Promise<unknown>; gate: ReviewGate; cacheDir: string;
+  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; comments?: { since: string; author?: string } }) => Promise<unknown>; gate: ReviewGate; cacheDir: string;
   /** A head's latest check runs in REST's shape from the change feed's snapshot, or undefined when it has no fresh read of them. */
   checkRuns?: (repo: string, sha: string) => Json[] | undefined;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
@@ -166,7 +166,7 @@ export function shipRoutes(o: {
       if (op === "decision" && o.decision) {
         const repo = String(b.repo);
         if (!o.allowed(repo)) return send(res, 403, { error: `ship may not read ${repo.slice(0, 200)}` }), true;
-        const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup }, ...(Number.isInteger(b.stackedOn) && b.stackedOn > 0 ? { stackedOn: b.stackedOn } : {}) } : undefined;
+        const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup }, ...(Number.isInteger(b.stackedOn) && b.stackedOn > 0 ? { stackedOn: b.stackedOn } : {}), ...(typeof b.comments?.since === "string" ? { comments: { since: b.comments.since, ...(typeof b.comments.author === "string" ? { author: b.comments.author } : {}) } } : {}) } : undefined;
         return send(res, 200, await o.decision(repo, Number(b.number), String(b.head), view)), true;
       }
       return send(res, 404, { error: "no such operation" }), true;
