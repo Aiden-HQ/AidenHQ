@@ -144,16 +144,23 @@ if [ "$1" = run ]; then
   outm=""
   for a in "$@"; do case "$a" in *:/out) outm="\${a%:/out}" ;; esac; done
   for a in "$@"; do case "$a" in syft-json=/out/*) [ -n "$outm" ] && : > "$outm/\${a#syft-json=/out/}" ;; esac; done
-  # A container scan reads the extracted root from the pass's private .export directory. Its mode, and the tar beside it,
-  # are recorded as the scan starts: that is the only moment both exist.
+  # A container scan reads the extracted root from the pass's private export directory (a sibling of the /sbom mount, so a
+  # raw export is never visible to the scanner). Its mode, the tar beside it and its contents are recorded as the scan
+  # starts: that is the only moment both exist.
   for a in "$@"; do
-    case "$a" in */.export/*:/src:ro)
+    case "$a" in */sbom-exports/*:/src:ro)
       d="\${a%:/src:ro}"
-      printf 'tree %s %s\n' "\${d#"\${AIDENHQ_DATA_DIR}"/modules/security/sbom/}" "$(stat -c %a "$d")" >> "$MODES"
-      printf 'unitdir %s %s\n' "\${d#\${AIDENHQ_DATA_DIR}/modules/security/sbom/}" "$(stat -c %a "$d")" >> "$MODES"
+      sb="\${AIDENHQ_DATA_DIR}/modules/security/sbom"
+      printf 'tree %s %s\n' "\${d#\${sb%/*}/}" "$(stat -c %a "$d")" >> "$MODES"
       printf 'exportdir %s\n' "$(stat -c %a "$(dirname "$d")")" >> "$MODES"
-      for r in "$d"/rootfs-*; do [ -d "$r" ] && printf 'rootfs %s %s\n' "\${r#\${AIDENHQ_DATA_DIR}/modules/security/sbom/}" "$(stat -c %a "$r")" >> "$MODES"; done
-      printf 'tar %s\n' "$(ls "$d.tars"/*.tar 2>/dev/null | head -1)" >> "$MODES" ;;
+      for r in "$d.tars"/*.tar; do [ -f "$r" ] && printf 'tar %s %s\n' "\${r#\${sb%/*}/}" "$(stat -c %a "$r")" >> "$MODES"; done
+      for f in "$d"/etc/os-release "$d"/usr/lib/libfix.so "$d"/opt/app/dev/node_modules/pkg.json; do
+        [ -e "$f" ] || continue
+        printf 'file %s\n' "\${f#\${sb%/*}/}" >> "$MODES"
+      done
+      # A file the export dropped must not be in the scanned root: record those the test asks about.
+      for f in "$d"/dev/null "$d"/opt/app/dev/node_modules/pkg.json; do [ -e "$f" ] && printf 'present %s\n' "\${f#\${sb%/*}/}" >> "$MODES"; done
+      ;;
     esac
   done
   # The work dir the script mounted as /work: what a target leaves must be gone before the next one starts. Junk is made
@@ -379,9 +386,15 @@ case "$1" in
     done
     [ -n "$FAKE_EXPORT_SLEEP" ] && read -r -t "$FAKE_EXPORT_SLEEP" _ < <(exec perl -e "select undef, undef, undef, $FAKE_EXPORT_SLEEP")
     failed="$(awk -F '\\t' -v id="$cid" '$1 == id { print $2; found = 1 } END { exit !found }' "$EXPORT_ERRORS" 2>/dev/null)" && { echo "$failed" >&2; exit 1; }
-    d="$(mktemp -d)"; mkdir -p "$d/etc" "$d/usr/lib"
+    d="$(mktemp -d)"; mkdir -p "$d/etc" "$d/usr/lib" "$d/dev" "$d/opt/app/dev/node_modules"
     printf 'fixture' > "$d/etc/os-release"
     printf 'x' > "$d/usr/lib/libfix.so"
+    # The container root's own device directory (a real export holds device nodes; the pass leaves them out), and a
+    # nested dev inside a deployed app's dependency tree, which must survive the exclusion.
+    printf '' > "$d/dev/null"
+    printf '{}' > "$d/opt/app/dev/node_modules/pkg.json"
+    # EXPORT_DIR_MODE <mode>: a directory the container left read-only (a Go module cache), as tar would restore it.
+    [ -n "\${EXPORT_DIR_MODE:-}" ] && { mkdir -p "$d/root/.cache/go-mod" && printf 'bin' > "$d/root/.cache/go-mod/mod.zip" && chmod "$EXPORT_DIR_MODE" "$d/root/.cache/go-mod"; }
     ( cd "$d" && tar -cf "$file" $(find . -type f | sed 's|^\./||') )
     rm -rf "$d"
     # EXPORT_GROW id<TAB>bytes: a container root filesystem much larger than the daemon's size said, as a real container
@@ -568,15 +581,19 @@ test("security-sbom: a running container whose image record is gone is inventori
   assert.ok(call, `no syft run for the target:\n${calls.join("\n")}`);
   assert.match(call, / dir:\/src /, "the extracted root was scanned as a directory");
   assert.doesNotMatch(call, /docker-archive:/, "the image path was not used for a container with no image");
-  // Criterion 7: the extracted tree and its tar sit in the pass's private directory at mode 700 while scanned.
+  // Criterion 7: the extracted root and its tar sit at mode 700 while scanned, outside the scanner's /sbom mount, and the
+  // root is a real container root (os-release at ./etc), not a wrapper directory.
   const tree = modes.find((m) => m.startsWith("tree "));
   const dirMode = modes.find((m) => m.startsWith("exportdir "));
   assert.ok(tree, `the extracted root's mode was not read:\n${modes.join("\n")}`);
   assert.match(tree, / 700$/, tree);
-  const rootfs = modes.find((m) => m.startsWith("rootfs "));
-  assert.ok(rootfs && / 700$/.test(rootfs), `the extracted root is not mode 700: ${modes.join("\n")}`);
+  assert.doesNotMatch(tree, /modules\/security\/sbom\//, `the export sits inside the scanner's mount: ${tree}`);
+  assert.match(tree, /sbom-exports\//, tree);
   assert.match(dirMode ?? "", / 700$/, `the pass's private directory is not mode 700: ${dirMode}`);
-  assert.ok(modes.some((m) => m.startsWith("tar ") && m.endsWith(".tar")), `no tar beside the extracted root: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m.startsWith("file ") && m.endsWith("/etc/os-release")), `the root is not a container root: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => /^tar \S+\.tar/.test(m)), `no tar beside the extracted root: ${modes.join("\n")}`);
+  // The export never appears under the /sbom mount at any moment of the pass.
+  assert.ok(!modes.some((m) => /modules\/security\/sbom\/\.export/.test(m)), `an export sits inside the scanner mount: ${modes.join("\n")}`);
 });
 
 test("security-sbom: two containers on one gone image are both exported and scanned under its one row", { skip: NOT_LINUX }, async () => {
@@ -603,8 +620,64 @@ test("security-sbom: two containers on one gone image are both exported and scan
   const run_ = calls.filter((c) => c.startsWith("run ") && c.includes("--source-name image:sha256:1111"));
   assert.equal(run_.length, 1, `one scan of the shared target:\n${run_.join("\n")}`);
   assert.match(run_[0]!, / dir:\/src /);
-  assert.deepEqual(modes.filter((m) => m.startsWith("rootfs ")).map((m) => m.split(" ")[1]).sort(), [".export/unit-1/rootfs-c1", ".export/unit-1/rootfs-c2"].sort(), modes.join("\n"));
-  assert.ok(modes.filter((m) => m.startsWith("rootfs ")).every((m) => / 700$/.test(m)), `an extracted root is not mode 700: ${modes.join("\n")}`);
+  // One root, not one subdirectory per replica: both containers' files are in the scanned root at the container's own
+  // paths, so syft finds `/etc/os-release` where it looks for it.
+  assert.equal(modes.filter((m) => m.startsWith("tree ")).length, 1, modes.join("\n"));
+  assert.ok(modes.some((m) => m.startsWith("file ") && m.endsWith("/etc/os-release")), modes.join("\n"));
+});
+
+test("security-sbom: a nested dev directory is kept; only the container root's device nodes are left out", { skip: NOT_LINUX }, async () => {
+  // GNU tar matches an unanchored `dev/*` at any depth, so a plain exclusion would also drop `/opt/app/dev/node_modules`
+  // (a dependency tree inside a deployed app) and the row would claim a complete scan of a partial filesystem. The
+  // exclusion is anchored: the root's device nodes go, a nested `dev` stays.
+  const { status, out, targets, modes } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.equal(row?.[2], "", `the container scan errored: ${row?.[2]}`);
+  assert.ok(modes.some((m) => m.startsWith("file ") && m.endsWith("/opt/app/dev/node_modules/pkg.json")), `a nested dev/ tree was dropped: ${modes.join("\n")}`);
+  assert.ok(!modes.some((m) => m.startsWith("present ") && m.endsWith("/dev/null")), `the root's device node was extracted: ${modes.join("\n")}`);
+});
+
+test("security-sbom: a read-only directory in the exported root does not stop cleanup", { skip: NOT_LINUX }, async () => {
+  // Tar restores the container's own modes, so a read-only dependency tree (a Go module cache, say) holds directories
+  // this user cannot unlink inside. A plain `rm -rf` would fail under `set -e` before the batch is published and leave
+  // runtime data on disk; the pass grants itself owner write before removing its own tree.
+  const { status, out, dir } = await run({ EXPORT_DIR_MODE: "555" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const sbom = join(dir, "data/modules/security/sbom");
+  assert.ok(existsSync(join(sbom, "current/targets.tsv")), "the batch was not published");
+  assert.ok(!existsSync(join(sbom, "..", "sbom-exports")), "the read-only export tree was left behind");
+  assert.ok(!existsSync(join(sbom, ".export")), "an export directory was left inside the scanner's mount");
+});
+
+test("security-sbom: an inspect that fails for another reason is an error line, not a container export", { skip: NOT_LINUX }, async () => {
+  // The image still exists, but the daemon's size read fails for a reason other than the image being gone (a timeout, a
+  // refused socket, a daemon mid-restart). Exporting the live container then would publish a filesystem scan under the
+  // image's target: an inventory of the wrong thing that the absent-tag guards would read as a clean image. Only the
+  // daemon's own "No such image" takes the export path.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    sizeErrors: ["sha256:1111"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for a failed inspect:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /docker image inspect/, line[2]);
 });
 
 test("security-sbom: a container export that fails records its image id and the docker error, and the batch still lands", { skip: NOT_LINUX }, async () => {
