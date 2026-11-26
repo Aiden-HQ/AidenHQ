@@ -605,8 +605,9 @@ test("more than 50 open PRs are all seen", async (t) => {
 
 test("a live merge record at the bound head holds the fix_review wake; once the record ends, the fixer is woken", async (t) => {
   const text = "code review: 1 important finding open (a.ts:1)";
+  const head = "h1";
   let live = { state: "review", outcome: undefined };
-  const rec = { id: "r1", kind: "github.merge", state: "review", args: { prs: [{ repo: "acme/app", number: 1, head: "h1" }] } };
+  const rec = { id: "r1", kind: "github.merge", state: "review", args: { prs: [{ repo: "acme/app", number: 1, head }] } };
   const c = await rig(t, {
     reviewGate: async () => ({ wait: text, findings: text, findingsKey: "k1" }),
     records: [rec],

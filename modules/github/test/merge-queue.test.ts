@@ -73,6 +73,14 @@ function fakeGitHub(prs) {
       const p = prs[wf[1]] ?? Object.entries(prs).find(([k]) => k.startsWith(`${wf[1]}#`))?.[1];
       return { status: 200, body: { total_count: p?.noCi ? 0 : 1, workflows: [] } };
     }
+    // Every check on a head (ship's readiness reads all pages over REST): the PR's rollup, or none when the repo has no PR.
+    const runs = /^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})\/(check-runs|statuses)\?/.exec(path);
+    if (runs) {
+      const p = prs[runs[1]] ?? Object.entries(prs).find(([k]) => k.startsWith(`${runs[1]}#`))?.[1];
+      if (!p) return { status: 200, body: runs[3] === "check-runs" ? { check_runs: [] } : [] };
+      if (runs[3] === "check-runs") return { status: 200, body: { check_runs: (p.runs ?? (p.names ?? ["build"]).map((name) => ({ name, status: "completed", conclusion: "success" }))) } };
+      return { status: 200, body: [] };
+    }
     const commit = /^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})$/.exec(path);
     if (commit) {
       const one = prs[commit[1]] as { message?: string } | undefined;
@@ -422,6 +430,48 @@ test("a merge that meets code review's open findings at its head ends, so ship c
   assert.deepEqual(github.merges(), [], "never merged on findings");
   assert.equal(outcomes[0]?.ok, false);
   assert.match(outcomes[0].text, /open important findings|1 important finding open/);
+  // A record ship did not file has no fixer to wake: its text must not claim ship will ask for one.
+  assert.match(outcomes[0].text, /nothing wakes a fixer for a merge ship did not file/);
+  assert.doesNotMatch(outcomes[0].text, /ship asks for the fix/);
+});
+
+test("a merge ship filed ends on findings with ship's fix wake, and a batch keeps the failed PR's findings on its card", async (t) => {
+  const prs = {
+    "acme-agents/widget": { head: HEAD, checks: "SUCCESS" },
+    "acme-agents/gadget": { head: "d".repeat(40), checks: "SUCCESS" },
+  };
+  const github = fakeGitHub(prs);
+  const waits = [];
+  const outcomes = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    const m = /^\/v1\/writes\/([^/]+)\/(outcome|wait)$/.exec(req.url);
+    if (m) {
+      const parsed = JSON.parse(body || "{}");
+      if (m[2] === "outcome") outcomes.push({ id: m[1], ...parsed });
+      else waits.push({ id: m[1], reason: parsed.reason ?? null });
+      return res.writeHead(200).end("{}");
+    }
+    res.writeHead(404).end("{}");
+  });
+  t.after(() => kernel.s.close());
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(),
+    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    // The widget's merge is ship's (its args name a generation) and meets findings at its head; the gadget's is still classifying.
+    reviewGate: async (repo) => repo === "acme-agents/widget"
+      ? { wait: "code review: 1 important finding open (widget.ts:1)", findings: "code review: 1 important finding open (widget.ts:1)", findingsKey: "k1" }
+      : { wait: "code review: classifying: the risk tier isn't read yet", unblock: "it resumes by itself" },
+  });
+  void merges.enqueue("k-00000000000000c3", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }, { repo: "acme-agents/gadget", number: 2, head: "d".repeat(40) }], generation: 2 });
+  await merges.step();
+  const widget = merges.status("k-00000000000000c3");
+  assert.equal(widget.state, "running", "the gadget keeps the batch live");
+  const card = waits.at(-1)?.reason;
+  assert.match(String(card), /acme-agents\/widget.*important finding/, "the failed PR's findings stay on the live card");
+  assert.match(String(card), /acme-agents\/gadget.*classifying/, "and the PR still waiting is named too");
+  assert.equal(outcomes.length, 0, "the batch has not ended");
 });
 
 test("a UI PR merges with no design review", async (t) => {
