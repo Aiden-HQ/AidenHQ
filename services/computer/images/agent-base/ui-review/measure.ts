@@ -9,12 +9,24 @@ type Component = keyof Measures["signatures"];
 /** Runs in the page: one pass over the visible elements of the first three viewports. */
 const MEASURE = () => {
   const vw = innerWidth, vh = innerHeight;
+  // Any CSS colour (rgb, oklch, color(), color-mix) as [r, g, b] + alpha, through a canvas.
+  const px = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
+  px.canvas.width = px.canvas.height = 1;
+  const cache = new Map<string, { c: number[]; a: number } | null>();
   const parse = (s: string) => {
-    const m = s.match(/rgba?\(([^)]+)\)/);
-    if (!m) return null;
-    const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
-    return { c: p.slice(0, 3), a: p.length > 3 ? p[3] : 1 };
+    if (!s || s === "transparent") return s ? { c: [0, 0, 0], a: 0 } : null;
+    const hit = cache.get(s);
+    if (hit !== undefined) return hit;
+    px.clearRect(0, 0, 1, 1);
+    px.fillStyle = "#000";
+    px.fillStyle = s;
+    px.fillRect(0, 0, 1, 1);
+    const d = px.getImageData(0, 0, 1, 1).data;
+    const out = { c: d[3] ? [Math.round((d[0] * 255) / d[3]), Math.round((d[1] * 255) / d[3]), Math.round((d[2] * 255) / d[3])] : [0, 0, 0], a: d[3] / 255 };
+    cache.set(s, out);
+    return out;
   };
+  const over = (fg: { c: number[]; a: number }, bg: number[]) => fg.c.map((v, i) => Math.round(v * fg.a + bg[i] * (1 - fg.a)));
   const lum = (c: number[]) => {
     const [r, g, b] = c.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -49,10 +61,10 @@ const MEASURE = () => {
     count(fonts, `${Math.round(parseFloat(s.fontSize) * 2) / 2}|${s.fontWeight}`);
     count(colours, s.color);
     const fg = parse(s.color), bg = bgOf(e);
-    if (fg && bg && fg.a > 0.5 && checked < 400) {
+    if (fg && bg && fg.a > 0 && checked < 400) {
       checked++;
       const big = parseFloat(s.fontSize) >= 24 || (parseFloat(s.fontSize) >= 18.66 && +s.fontWeight >= 700);
-      if (ratio(fg.c, bg) < (big ? 3 : 4.5) * 0.999) contrastFails++;
+      if (ratio(over(fg, bg), bg) < (big ? 3 : 4.5) * 0.999) contrastFails++;
     }
   }
   const clear = (c: string) => c === "rgba(0, 0, 0, 0)" || c === "transparent";
@@ -102,8 +114,8 @@ const MEASURE = () => {
   const ctas = all.filter((e) => e.matches("button,[role=button],[data-slot=button],input[type=submit],a[class*=btn],a[class*=button],a[class*=Button]") && e.getBoundingClientRect().top < vh)
     .map((e) => {
       const s = cs.get(e)!, r = e.getBoundingClientRect(), bg = parse(s.backgroundColor), fg = parse(s.color);
-      const filled = !!(bg && bg.a > 0.5 && ratio(bg.c, pageBg) > 1.05);
-      return { label: ((e as HTMLElement).innerText || (e as HTMLInputElement).value || e.getAttribute("aria-label") || "").trim().slice(0, 30), filled, contrast: Math.round(ratio(filled ? bg!.c : (fg?.c ?? [0, 0, 0]), pageBg) * 100) / 100, area: Math.round(r.width * r.height) };
+      const filled = !!(bg && bg.a > 0.5 && ratio(over(bg, pageBg), pageBg) > 1.05);
+      return { label: ((e as HTMLElement).innerText || (e as HTMLInputElement).value || e.getAttribute("aria-label") || "").trim().slice(0, 30), filled, contrast: Math.round(ratio(filled ? over(bg!, pageBg) : fg ? over(fg, pageBg) : [0, 0, 0], pageBg) * 100) / 100, area: Math.round(r.width * r.height) };
     }).sort((a, b) => b.area - a.area).slice(0, 8);
 
   const set = (list: Element[], key: (e: Element) => string) => [...new Set(list.map(key))].slice(0, 12);
@@ -126,21 +138,22 @@ export async function measurePage(page: PwPage): Promise<Measures> {
   return page.evaluate(MEASURE) as Promise<Measures>;
 }
 
-/** Cross-page consistency: components whose look differs between pages. A variant that is on every page is the system's own
- *  (primary and secondary buttons); a variant on only some pages is the inconsistency the review looks at. */
+/** Cross-page consistency: components whose look differs between pages, compared within one width, theme and state (a responsive
+ *  button differs between 390 and 1512 by design). A variant that is on every page is the system's own (primary and secondary
+ *  buttons); a variant on only some pages is the inconsistency the review looks at. */
 export function crossPage(caps: Capture[]): { component: string; variants: { signature: string; pages: string[] }[] }[] {
   const out: { component: string; variants: { signature: string; pages: string[] }[] }[] = [];
-  const allPages = [...new Set(caps.map((c) => c.page))];
-  if (allPages.length < 2) return out;
-  for (const component of ["button", "card", "heading", "input"] as Component[]) {
-    const by = new Map<string, Set<string>>();
-    for (const c of caps) for (const s of c.measures.signatures[component]) (by.get(s) ?? by.set(s, new Set()).get(s)!).add(c.page);
-    // Pages that show the component at all: a page without any input is not "missing" the input signature.
-    const showing = new Set(caps.filter((c) => c.measures.signatures[component].length).map((c) => c.page));
-    if (by.size < 2 || showing.size < 2) continue;
-    const partial = [...by.values()].some((p) => p.size < showing.size);
-    if (!partial) continue;
-    out.push({ component, variants: [...by.entries()].map(([signature, pages]) => ({ signature, pages: [...pages] })).sort((a, b) => b.pages.length - a.pages.length) });
+  const groups = new Map<string, Capture[]>();
+  for (const c of caps) { const k = `${c.width} ${c.theme} ${c.state}`; groups.set(k, [...(groups.get(k) ?? []), c]); }
+  for (const [group, list] of groups) {
+    for (const component of ["button", "card", "heading", "input"] as Component[]) {
+      const by = new Map<string, Set<string>>();
+      for (const c of list) for (const s of c.measures.signatures[component]) (by.get(s) ?? by.set(s, new Set()).get(s)!).add(c.page);
+      // Pages that show the component at all: a page without any input is not "missing" the input signature.
+      const showing = new Set(list.filter((c) => c.measures.signatures[component].length).map((c) => c.page));
+      if (by.size < 2 || showing.size < 2 || ![...by.values()].some((p) => p.size < showing.size)) continue;
+      out.push({ component: `${component} (${group})`, variants: [...by.entries()].map(([signature, pages]) => ({ signature, pages: [...pages] })).sort((a, b) => b.pages.length - a.pages.length) });
+    }
   }
   return out;
 }

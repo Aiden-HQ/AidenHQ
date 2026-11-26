@@ -55,13 +55,13 @@ export async function refs(list: RefEntry[], opts: RefsOptions = {}): Promise<{ 
   const notes: string[] = [];
   const results: RefResult[] = [];
   const browser = await chromium.launch({ executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH, headless: true, args: ["--disable-dev-shm-usage"] });
-  const ctx = await browser.newContext({ viewport: { width: 1512, height: 900 }, colorScheme: "light", deviceScaleFactor: 1 });
+  const ctx = await browser.newContext({ viewport: { width: 1512, height: 900 }, colorScheme: "light", deviceScaleFactor: 1, serviceWorkers: "block" });
   // Every third-party request, sub-requests included, goes through one gate: 4 per second in total. Video and audio are not fetched.
   let next = 0, throttled = true; // the app starter's fallback page is ours: not throttled
   await ctx.route("**/*", async (route) => {
     const req = route.request();
     if (!throttled) return route.continue();
-    if (req.resourceType() === "media") return route.abort();
+    if (req.resourceType() === "media" || !["GET", "HEAD", "OPTIONS"].includes(req.method())) return route.abort(); // read-only: a page-initiated POST never goes out
     const at = Math.max(Date.now(), next);
     next = at + SPACING_MS;
     await sleep(at - Date.now());
@@ -73,6 +73,7 @@ export async function refs(list: RefEntry[], opts: RefsOptions = {}): Promise<{ 
     const origin = new URL(url).origin;
     if (source === "live") {
       if ((pages.get(origin) ?? 0) >= MAX_PAGES_PER_SITE) return `skipped, already ${MAX_PAGES_PER_SITE} pages from ${origin}`;
+      pages.set(origin, (pages.get(origin) ?? 0) + 1); // a refused page counts too
       await sleep(Math.max(0, (loadedAt.get(origin) ?? 0) + gapMs - Date.now()));
       loadedAt.set(origin, Date.now());
     }
@@ -83,7 +84,7 @@ export async function refs(list: RefEntry[], opts: RefsOptions = {}): Promise<{ 
       const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
       if (resp && resp.status() >= 400) return `HTTP ${resp.status()}`;
       await page.waitForLoadState("load", { timeout: 30000 }).catch(() => {});
-      await page.evaluate(() => document.fonts.ready).catch(() => {});
+      await Promise.race([page.evaluate(() => document.fonts.ready), sleep(5000)]).catch(() => {});
       await page.waitForTimeout(800);
       const title = await page.title().catch(() => "");
       if (WALL.test(title)) return `bot wall ("${title}")`;
@@ -97,16 +98,18 @@ export async function refs(list: RefEntry[], opts: RefsOptions = {}): Promise<{ 
         await page.screenshot({ path: f });
         shots.push(f);
       }
-      if (source === "live") pages.set(origin, (pages.get(origin) ?? 0) + 1);
       return { kind: e.kind, url, product: e.product, shots, tokens, source };
     } catch (err) {
       return String((err as Error).message ?? err).split("\n")[0].slice(0, 160);
     } finally { await page.close().catch(() => {}); }
   };
   try {
+    const seen = new Map<string, RefResult | string>(); // a URL listed under two kinds is loaded once
     for (const e of list) {
-      const r = await capture(e, "live", e.url);
-      if (typeof r === "string") notes.push(`${e.url}: ${r}`); else results.push(r);
+      const before = seen.get(e.url);
+      const r = before ?? (await capture(e, "live", e.url));
+      if (!before) { seen.set(e.url, r); if (typeof r === "string") notes.push(`${e.url}: ${r}`); }
+      if (typeof r !== "string") results.push({ ...r, kind: e.kind, product: e.product ?? r.product });
     }
     for (const kind of new Set(list.map((e) => e.kind))) {
       if (results.some((r) => r.kind === kind)) continue;

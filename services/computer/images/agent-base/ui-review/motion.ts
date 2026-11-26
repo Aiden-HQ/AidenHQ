@@ -5,7 +5,7 @@
 import type { Page as PwPage } from "playwright-core";
 import type { Motion } from "./types.ts";
 
-const SETTLE = () => {
+const SETTLE = async () => {
   const sel = (e: Element) => e.tagName.toLowerCase() + (typeof e.className === "string" && e.className.trim() ? "." + e.className.trim().split(/\s+/).slice(0, 2).join(".") : "");
   const ms = (d: string) => (d.endsWith("ms") ? parseFloat(d) : parseFloat(d) * 1000);
   // Transitions: one row per property, duration and easing; the three lists of a computed transition run in parallel.
@@ -45,22 +45,29 @@ const SETTLE = () => {
     }
   };
   for (const sheet of document.styleSheets) { try { walk(sheet.cssRules); } catch { /* cross-origin */ } }
-  const longFrames = (performance.getEntriesByType("long-animation-frame") as PerformanceEntry[]).map((e) => Math.round(e.duration)).slice(0, 20);
+  // Long animation frames reach only a PerformanceObserver; a buffered one replays those since the page loaded.
+  const longFrames: number[] = [];
+  try {
+    const po = new PerformanceObserver((l) => { for (const e of l.getEntries()) longFrames.push(Math.round(e.duration)); });
+    po.observe({ type: "long-animation-frame", buffered: true });
+    await new Promise((ok) => setTimeout(ok, 100));
+    po.disconnect();
+  } catch { /* not supported */ }
+  longFrames.splice(20);
   return { transitions, animations, hover, active, keyframes, longFrames };
 };
 
-const isLocal = (url: string) => { try { return ["127.0.0.1", "localhost"].includes(new URL(url).hostname); } catch { return false; } };
-// A click on a local build may change data; controls named like a write are never clicked.
+// Clicks are opt-in: the caller passes click only for a build it runs itself (Phase 1: a local build, 127.0.0.1 or localhost).
+// A click may still change data, so controls named like a write are never clicked.
 const RISKY = /delete|remove|destroy|pay|purchase|buy|submit|confirm|send|reset|sign out|log ?out|archive|cancel subscription/i;
 
-export async function measureMotion(page: PwPage): Promise<Motion> {
+export async function measureMotion(page: PwPage, opts: { click?: boolean } = {}): Promise<Motion> {
   const base = (await page.evaluate(SETTLE)) as Omit<Motion, "shifts">;
   await page.evaluate(() => {
     const w = window as unknown as { __shift?: number };
     w.__shift = 0;
-    new PerformanceObserver((l) => { for (const e of l.getEntries() as (PerformanceEntry & { value: number; hadRecentInput: boolean })[]) if (!e.hadRecentInput) w.__shift! += e.value; }).observe({ type: "layout-shift" });
+    new PerformanceObserver((l) => { for (const e of l.getEntries() as (PerformanceEntry & { value: number })[]) w.__shift! += e.value; }).observe({ type: "layout-shift" });
   }).catch(() => {});
-  const local = isLocal(page.url());
   const shifts: number[] = [];
   const read = () => page.evaluate(() => { const w = window as unknown as { __shift?: number }; const v = w.__shift ?? 0; w.__shift = 0; return v; });
   const controls = await page.locator("button, [role=button], a[href]").all();
@@ -75,9 +82,9 @@ export async function measureMotion(page: PwPage): Promise<Motion> {
     await page.waitForTimeout(150);
     const hovered = await read();
     if (hovered > 0) shifts.push(Math.round(hovered * 10000) / 10000);
-    // Clicks only on a local build, only on buttons (a link would navigate), never on a control named like a write.
+    // Clicks only when the caller asked for them, only on buttons (a link would navigate), never on a control named like a write.
     const label = ((await c.innerText().catch(() => "")) || (await c.getAttribute("aria-label").catch(() => "")) || "").trim();
-    if (local && (await c.evaluate((e) => e.tagName === "BUTTON" || e.getAttribute("role") === "button").catch(() => false)) && !RISKY.test(label)) {
+    if (opts.click && (await c.evaluate((e) => e.tagName === "BUTTON" || e.getAttribute("role") === "button").catch(() => false)) && !RISKY.test(label)) {
       await c.click({ timeout: 1000 }).catch(() => {});
       await page.waitForTimeout(250);
       const clicked = await read();
