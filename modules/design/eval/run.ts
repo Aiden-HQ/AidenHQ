@@ -47,7 +47,8 @@ const out = (r: Record<string, unknown>) => { console.log(JSON.stringify({ ...r,
 function cli(...args: string[]) {
   try { return execFileSync("node", [join(ENGINE, "main.ts"), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }
   catch (e) {
-    const err = e as { status?: number; stderr?: string };
+    const err = e as { status?: number; stderr?: string; stdout?: string };
+    if (err.status === 1 && args[0] === "capture") return err.stdout ?? ""; // capture's exit 1: findings; capture() checks the shots are there
     throw new Error(err.status === 2 ? `ui-review ${args[0]} is not available in this engine: ${err.stderr?.trim()}` : `ui-review ${args[0]} failed: ${err.stderr?.trim()}`);
   }
 }
@@ -169,12 +170,15 @@ const concrete = /\d+(\.\d+)?\s*(px|rem|em|%|ms)|#[0-9a-f]{3,8}\b|\b\d{2,4}\b/i;
 
 /** A page: its path, or `{ path, kind }` (a targets file may name the kind; the starter's pages have theirs in KINDS). */
 type Target = string | { path: string; kind?: string };
+/** Done when the folder holds a capture report with at least one capture. */
+const captured = (dir: string) => existsSync(join(dir, "report.json")) && (json(join(dir, "report.json")) as { coverage?: { done?: number } }).coverage?.done! > 0;
 function capture(url: string, pages: Target[], dir: string, width = 1512, theme = "light") {
-  if (existsSync(join(dir, "report.json"))) return;
+  if (captured(dir)) return;
   mkdirSync(dir, { recursive: true });
   const list = pages.map((p) => typeof p === "string" ? { path: p, kind: KINDS[p] } : p).map((p) => ({ path: p.path, ...(p.kind ? { kind: p.kind } : {}) }));
   writeFileSync(join(dir, "pages-in.json"), JSON.stringify({ pages: list }));
   cli("capture", url, "--out", dir, "--pages-file", join(dir, "pages-in.json"), "--widths", String(width), "--themes", theme);
+  if (!captured(dir)) throw new Error(`ui-review capture of ${url} captured nothing (${dir})`);
 }
 
 /** refs/fallback.json's page per kind (the catalog is dev-only: the engine serves the starter's dev server, as its refs fallback does) as a references list, written beside the work. */
@@ -198,26 +202,35 @@ async function references() {
     // The browser part (the app's captures and each variant's reference pages) is skipped when its files are in --work already,
     // so it can run where Chrome is and the reviews where the key is.
     const base = join(work, "references", t.name);
-    if (!existsSync(join(base, "report.json"))) capture(t.url || await starterUrl(), t.pages, base);
+    if (!captured(base)) capture(t.url || await starterUrl(), t.pages, base);
     for (const [v, refs] of Object.entries(refsIn)) {
       const dir = join(work, "references", `${t.name}-${v}`);
-      if (!existsSync(join(dir, "report.json"))) cpSync(base, dir, { recursive: true });
+      if (!captured(dir)) cpSync(base, dir, { recursive: true });
       // The fallback variant: the app starter's own page per kind (refs/fallback.json maps a kind to it) as the only references.
       if (!existsSync(join(dir, "refs", "refs.json"))) cli("refs", v === "fallback" ? await fallbackList(refs) : refs, "--out", join(dir, "refs"));
     }
     if (o["capture-only"]) continue;
     for (const v of Object.keys(refsIn)) {
       const dir = join(work, "references", `${t.name}-${v}`);
+      const before = (json(join(dir, "report.json")) as Report).cost_usd ?? 0;
       cli("review", dir, "--model", model, "--refs", join(dir, "refs", "refs.json"), "--top", "10");
       const rep = json(join(dir, "report.json")) as Report;
-      const tokens = (json(join(dir, "refs", "refs.json")) as { product?: string; tokens?: Record<string, unknown> }[]).flatMap((r) => [r.product, ...Object.values(r.tokens ?? {}).flat()].filter((x) => x !== undefined).map(String));
+      const kindOf = new Map(((json(join(dir, "run.json")) as { pages?: { path: string; kind?: string }[] }).pages ?? []).map((p) => [p.path, p.kind ?? "other"]));
+      const refsOf = json(join(dir, "refs", "refs.json")) as { kind: string; shots: string[]; product?: string; tokens?: Record<string, unknown> }[];
       const m = (variants[v] ??= { n: 0, specific: 0, tokens: 0, perTarget: {} });
       m.perTarget[t.name] = rep.improvements.length;
-      spend.usd += rep.cost_usd;
+      spend.usd += rep.cost_usd - before;
       for (const i of rep.improvements) {
         m.n++;
         if (i.where.page && i.where.region && concrete.test(i.change)) m.specific++;
-        if (tokens.some((k) => k.length > 1 && `${i.change} ${i.best}`.includes(k))) m.tokens++;
+        // A token counts when the change or the best-practice line names a whole value of a reference the review showed for that
+        // page (as review.ts picks them: the first two of its kind with a shot).
+        const shown = refsOf.filter((r) => r.kind === kindOf.get(i.where.page) && r.shots?.[0] && existsSync(join(dir, "refs", r.shots[0]))).slice(0, 2);
+        const tokens = shown.flatMap((r) => [r.product, ...Object.values(r.tokens ?? {}).flat()].filter((x) => x !== undefined).map((x) => String(x).toLowerCase()));
+        const text = `${i.change} ${i.best}`.toLowerCase();
+        // A number may carry its unit (14 matches 14px); a word or a value with a unit is whole (6px never matches 6 columns).
+        const names = (k: string) => new RegExp(`(?<![a-z0-9.])${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${/[0-9]$/.test(k) ? "(?![0-9.])" : "(?![a-z0-9])"}`).test(text);
+        if (tokens.some((k) => k.length > 1 && names(k))) m.tokens++;
       }
     }
   }
@@ -243,9 +256,10 @@ async function corrections() {
   const missed: string[] = [];
   for (const c of cases) {
     const d = join(work, "corrections", c.f);
+    const before = (json(join(d, "report.json")) as Report).cost_usd ?? 0;
     cli("review", d, "--model", model, "--top", "10");
     const rep = json(join(d, "report.json")) as Report;
-    spend.usd += rep.cost_usd;
+    spend.usd += rep.cost_usd - before;
     const hit = rep.improvements.some((i) => new RegExp(c.expect.where, "i").test(`${i.where.page} ${i.where.region}`) && new RegExp(c.expect.change, "i").test(`${i.change} ${i.weak} ${i.why}`));
     if (!hit) missed.push(c.f);
   }

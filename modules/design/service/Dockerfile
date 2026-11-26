@@ -15,5 +15,6 @@ RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --create-home --sh
 ENV NODE_ENV=production
 WORKDIR /app
 COPY src ./src
+RUN mkdir -p /data && chown 1000:1000 /data
 USER 1000:1000
 CMD ["node", "--disable-warning=ExperimentalWarning", "src/main.ts"]

@@ -59,10 +59,15 @@ export type ShotOptions = { width: number; theme?: "light" | "dark"; height?: nu
 
 /** Opens `url` at a width and returns the page and a screenshot function; the page loads once, so a before and an after share one load. */
 export async function open(url: string, o: ShotOptions) {
-  const ctx = await (await launch()).newContext({ viewport: { width: o.width, height: o.height ?? 900 }, colorScheme: o.theme ?? "light" });
-  if (!isLocal(url)) await ctx.route("**/*", polite);
+  const ctx = await (await launch()).newContext({ viewport: { width: o.width, height: o.height ?? 900 }, colorScheme: o.theme ?? "light", serviceWorkers: "block" });
+  if (!isLocal(url)) {
+    await ctx.route("**/*", polite);
+    await ctx.routeWebSocket(/.*/, (ws: any) => void ws.close()); // read only: no socket traffic
+  }
   const page = await ctx.newPage();
-  await page.goto(url, { waitUntil: "load", timeout: 30000 });
+  const res = await page.goto(url, { waitUntil: "load", timeout: 30000 });
+  // A refusal (403, 429, a server error) is not the product: never shot, never cached.
+  if (res && res.status() >= 400) { await ctx.close(); throw new Error(`${url} answered ${res.status()}`); }
   await page.evaluate(() => document.fonts.ready);
   await sleep(isLocal(url) ? 600 : 2500); // settle without waiting for network idle
   return {
