@@ -36,11 +36,14 @@ export function readSession(file: string): { state: StorageState; meta: SessionM
   catch { return fail(`no session at ${file} (run ui-review login first)`); }
 }
 
-/** The page is the sign-in page again: a password field shows, on the login page's path or under its title. */
+/** The page is the sign-in page again: a sign-in field on the login page's path, or a password field under its title. */
 export async function signedOut(page: PwPage, meta: SessionMeta): Promise<boolean> {
-  if (!(await page.locator("input[type=password]:visible").count().catch(() => 0))) return false;
-  const u = new URL(page.url());
-  return (u.origin === meta.origin && pathOf(u) === meta.loginPath) || (await page.title().catch(() => "")) === meta.loginTitle;
+  const shows = async (sel: string) => (await page.locator(sel).filter({ visible: true }).count().catch(() => 0)) > 0;
+  const u = new URL(page.url()), password = await shows("input[type=password]");
+  // On the login page's path with a sign-in field (a username-first page shows no password yet); a SPA that signs in
+  // without leaving that path shows neither.
+  if (u.origin === meta.origin && pathOf(u) === meta.loginPath) return password || (await shows(USER));
+  return password && (await page.title().catch(() => "")) === meta.loginTitle;
 }
 const pathOf = (u: URL) => routeOf(new URL(u.origin + u.pathname + u.hash)).replace(/\?.*$/, "");
 /** A URL's place as SessionMeta.loginPath records it (path and hash route, no query). */

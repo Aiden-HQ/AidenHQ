@@ -36,7 +36,7 @@ export function refuses(mode: Mode, method: string, url: string): boolean {
 
 const where = (url: string) => { try { const u = new URL(url); return { origin: u.origin, path: u.pathname }; } catch { return { origin: "", path: url.slice(0, 200) }; } };
 /** A page's label: its path and hash route, never a query or fragment (an auth callback's code stays out of every record). */
-const pageOf = (url: string) => { try { const u = new URL(url); return u.pathname + (u.hash.startsWith("#/") ? u.hash.replace(/[?&].*$/, "") : ""); } catch { return ""; } };
+export const pageOf = (url: string) => { try { const u = new URL(url); return u.pathname + (u.hash.startsWith("#/") ? u.hash.replace(/[?&].*$/, "") : ""); } catch { return ""; } };
 
 const WS_BINDING = "__uiReviewSocket";
 /** Read mode's stand-ins: a WebSocket that reports itself to the guard and closes unopened; no WebTransport or peer connection. */

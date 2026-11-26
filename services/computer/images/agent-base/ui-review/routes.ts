@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { Page as PwPage } from "playwright-core";
 import { launch, ready, routeOf, workerContext } from "./browser.ts";
-import { modeOf } from "./guard.ts";
+import { modeOf, pageOf } from "./guard.ts";
 import { readSession, signedOut } from "./login.ts";
 import { pageList } from "./pages.ts";
 import { readReport, splitPreexisting } from "./report.ts";
@@ -135,16 +135,16 @@ export async function routesCommand(argv: string[]): Promise<number> {
   if (!base) { console.error("usage: ui-review routes <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--baseline <dir>] [--mode read|test-write|any] [--session state.json]"); return 2; }
   const mode = modeOf(v.mode, base);
   if (!mode) { console.error("ui-review routes: --mode is read, test-write or any"); return 2; }
+  let signedIn: ReturnType<typeof readSession> | null = null;
+  try { signedIn = v.session ? readSession(v.session) : null; } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
   const out = v.out!;
   mkdirSync(out, { recursive: true });
   let paths: string[];
-  try { paths = v.paths ? v.paths.split(",") : (await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true })).map((p) => p.path); }
+  try { paths = v.paths ? v.paths.split(",") : (await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true, mode, session: signedIn?.state })).map((p) => p.path); }
   catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
   const origin = new URL(base).origin;
   if (paths.some((p) => new URL(p, base).origin !== origin)) { console.error("ui-review routes: every path must be on the app under review"); return 2; }
   const t0 = Date.now(), frozenAt = new Date().toISOString();
-  let signedIn: ReturnType<typeof readSession> | null = null;
-  try { signedIn = v.session ? readSession(v.session) : null; } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
   const b = await launch({ out, mode, session: signedIn?.state });
   const sessions: Session[] = [];
   // A session's page in its own context; `renew` replaces it (a timed-out check may still be clicking on the old one).
@@ -155,7 +155,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
     await page.emulateMedia({ colorScheme: "light" });
     s.blockedAt = b.blocked().length;
     // The app's own "Failed to fetch" for a request the live-app guard refused is the guard's doing, listed under blocked.
-    page.on("pageerror", (e) => { if (!(/Failed to fetch/.test(e.message) && b.blocked().length > s.blockedAt)) s.errs.push(String(e.message)); });
+    page.on("pageerror", (e) => { if (!(/Failed to fetch/.test(e.message) && b.blocked().slice(s.blockedAt).some((x) => x.page === pageOf(page.url())))) s.errs.push(String(e.message)); });
     s.page = page;
   };
   const session = async () => {
