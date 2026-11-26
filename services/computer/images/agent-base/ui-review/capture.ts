@@ -164,7 +164,7 @@ const unstamped = (buf: Buffer) => buf.length > 48 && buf.toString("latin1", 37,
 /**
  * Each shot against the baseline's shot of the same name, in Chrome (a canvas: no image library): the share of pixels that
  * differ (a channel off by more than 24 of 255), and for a changed shot (CHANGED_PCT, CHANGED_PX) a diff picture (changes in red over a faded after)
- * and a before|after picture side by side.
+ * and a before|after picture side by side (JPEG: a 2560px pair encodes several times faster than PNG).
  */
 export async function diffShots(dp: PwPage, baseline: string, out: string, shots: string[]): Promise<ShotDiff[]> {
   const diffs: ShotDiff[] = [];
@@ -187,7 +187,7 @@ export async function diffShots(dp: PwPage, baseline: string, out: string, shots
       }
       const pct = Math.round((1e4 * n) / (w * h)) / 100;
       if (pct < min && n < minPx) return { pct };
-      const toPng = async (c: OffscreenCanvas) => { const buf = await (await c.convertToBlob({ type: "image/png" })).arrayBuffer(); let s = ""; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
+      const toJpeg = async (c: OffscreenCanvas) => { const buf = await (await c.convertToBlob({ type: "image/jpeg", quality: 0.85 })).arrayBuffer(); let s = ""; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
       const d = new OffscreenCanvas(w, h), dx = d.getContext("2d")!;
       const img = dx.createImageData(w, h);
       for (let i = 0; i < w * h; i++) {
@@ -198,11 +198,11 @@ export async function diffShots(dp: PwPage, baseline: string, out: string, shots
       dx.putImageData(img, 0, 0);
       const s = new OffscreenCanvas(A.width + 16 + B.width, h), sx = s.getContext("2d")!;
       sx.fillStyle = "#fff"; sx.fillRect(0, 0, s.width, h); sx.drawImage(A, 0, 0); sx.drawImage(B, A.width + 16, 0);
-      return { pct, diff: await toPng(d), compare: await toPng(s) };
+      return { pct, diff: await toJpeg(d), compare: await toJpeg(s) };
     }, [a.toString("base64"), b.toString("base64"), CHANGED_PCT, CHANGED_PX] as [string, string, number, number]);
     const d: ShotDiff = { shot, pct: r.pct };
     if (r.diff && r.compare) {
-      d.diff = `diff-${shot}`; d.compare = `compare-${shot}`;
+      d.diff = `diff-${shot.replace(/\.png$/, ".jpg")}`; d.compare = `compare-${shot.replace(/\.png$/, ".jpg")}`;
       writeFileSync(join(out, d.diff), Buffer.from(r.diff, "base64"));
       writeFileSync(join(out, d.compare), Buffer.from(r.compare, "base64"));
     }
