@@ -95,6 +95,7 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
     try {
       const v = await api.addView(name, spec);
       setViews((vs) => [...(vs ?? []), v]);
+      setMine(false);
       setConflict(null);
       setSelected(v.id);
       go(`#/tasks?view=${v.id}`);

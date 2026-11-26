@@ -786,7 +786,7 @@ export function App() {
       }
       if (!p) return;
       const card = lists[p.b][p.i]!;
-      if (k === "Enter" || k === "o") return go(`#/t/${card.identifier}`);
+      if ((k === "Enter" && !el.closest("button,a")) || k === "o") return go(`#/t/${card.identifier}`);
       if (k === "m") return e.preventDefault(), document.querySelector<HTMLButtonElement>(`[data-card="${card.id}"] [aria-label="Merge into"]`)?.click();
       if (k === "e" || k === "x") {
         const next = lists[p.b][p.i + 1] ?? lists[p.b][p.i - 1];
@@ -990,7 +990,7 @@ export function App() {
 
       <ErrorBoundary resetKey={`${view}:${JSON.stringify(route)}`}>
       {view === "home" && page.kind === "welcome" && <Onboarding session={session} onSignIn={signInNeeded} />}
-      {view === "home" && page.kind !== "welcome" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} day={{ today: mine!.today, triage: mine!.triage.length, week: mine!.later.length, projects: board.projects, open: () => tb.setTab("mine") }} onDone={markDone} />}
+      {view === "home" && page.kind !== "welcome" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} day={{ today: mine!.today, triage: mine!.triage.length, week: mine!.later.length, projects: board.projects, open: () => (tb.setTab("mine"), setQuery("")) }} onDone={markDone} />}
       {view === "team" && page.kind === "teammate" && <Suspense fallback={<PageLoading />}><TeammateView key={page.key} agentKey={page.key} chat={page.chat} text={page.text} crew={mates} faces={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} /></Suspense>}
       {view === "team" && page.kind === "hire" && <Suspense fallback={<PageLoading />}><HireView key={page.setup ?? page.install ?? ""} setup={page.setup} install={page.install} chat={page.chat} owner={session?.account?.owner === true} onSignIn={signInNeeded} /></Suspense>}
       {view === "team" && page.kind !== "teammate" && page.kind !== "hire" && <Suspense fallback={<PageLoading />}><TeamView go={go} onSignIn={signInNeeded} /></Suspense>}
@@ -1026,7 +1026,7 @@ export function App() {
           onMove={(c, to) => void moveCard(c.id, to)}
           onSnooze={(c, date) => void snoozeCard(c.id, date)}
           onMerge={(c, into) => void mergeCard(c, into)}
-          onCarried={mine!.today.every((c) => !c.carried || isMine(c)) ? (action) => void carriedAction(action) : undefined}
+          onCarried={items.today.every((c) => !c.carried || isMine(c)) ? (action) => void carriedAction(action) : undefined}
           onTriage={() => setTriaging(true)}
           onDelegated={() => tb.setTab("work")}
         />
