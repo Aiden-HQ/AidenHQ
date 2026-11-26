@@ -24,11 +24,11 @@ const issue = {
 
 const answer = (body: unknown, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) });
 
-const fetchFor = () =>
+const fetchFor = (failIssue = false) =>
   vi.fn(async (path: string) => {
     if (path === "/api/session") return answer({ mode: "lan", account: { id: "u1", email: "m@example.com", name: "Mudit", role: "admin", owner: true } });
     if (path === "/api/board") return answer(board);
-    if (path === "/api/issues/WOR-790") return answer(issue);
+    if (path === "/api/issues/WOR-790") return failIssue ? answer({ error: "the kernel didn't answer" }, 502) : answer(issue);
     if (path === "/api/issues/WOR-790/lineage") return answer({ nodes: [] });
     if (path === "/api/issues/WOR-790/feature-cost") return answer({ cost: null });
     if (path === "/api/needs-you") return answer({ approvals: 0, items: [], counts: { needs_you: 0, failed: 0, unexplained_idle: 0 } });
@@ -40,8 +40,9 @@ const fetchFor = () =>
   });
 
 let root: Root | undefined;
-const mount = async (hash: string) => {
+const mount = async (hash: string, failIssue = false) => {
   location.hash = hash;
+  vi.stubGlobal("fetch", fetchFor(failIssue));
   const el = document.createElement("div");
   document.body.append(el);
   root = createRoot(el);
@@ -54,7 +55,6 @@ beforeEach(() => {
   // A 390×844 phone: the board is mobile below 860 wide.
   window.innerWidth = 390;
   window.innerHeight = 844;
-  vi.stubGlobal("fetch", fetchFor());
 });
 
 afterEach(() => {
@@ -69,6 +69,19 @@ describe("a phone's task drawer", () => {
     const el = await mount("#/t/WOR-790");
     expect(el.querySelector(".drawer")).not.toBeNull();
     expect(el.querySelector(".bottombar")).toBeNull();
+  });
+
+  // With the bar hidden, a failed read used to leave the whole screen with no way back to the board.
+  it("keeps a close control when the task fails to load, and it returns to the board", async () => {
+    const el = await mount("#/t/WOR-790", true);
+    expect(el.textContent).toContain("Couldn't load WOR-790");
+    expect(el.querySelector(".bottombar")).toBeNull();
+    const close = el.querySelector<HTMLButtonElement>('.drawer-head button[aria-label="Close"]');
+    expect(close).not.toBeNull();
+    await act(async () => close!.click());
+    for (let i = 0; i < 4; i++) await act(async () => void (await new Promise((r) => setTimeout(r, 25))));
+    expect(el.querySelector(".drawer")).toBeNull();
+    expect(location.hash).toBe("#/");
   });
 
   it("keeps the bottom tab bar on the board itself", async () => {

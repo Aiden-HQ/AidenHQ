@@ -93,7 +93,16 @@ export function Drawer({ refId, focus, board, onClose, onChanged, onMove, onSnoo
     <div className="drawer-backdrop" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
       <aside className="drawer" role="dialog" aria-label="Task">
         {!issue ? (
-          <div className="drawer-loading">{error ? `Couldn't load ${refId}: ${error}` : <SkeletonLines lines={6} />}</div>
+          <>
+            {/* Loading or a failed read: the phone has no bottom bar here, so the close control is the only way back. */}
+            <header className="drawer-head">
+              <button className="icon-btn" aria-label="Close" title="Close (Esc)" onClick={onClose}>
+                <CloseIcon />
+              </button>
+              <span className="ident">{refId}</span>
+            </header>
+            <div className="drawer-loading">{error ? `Couldn't load ${refId}: ${error}` : <SkeletonLines lines={6} />}</div>
+          </>
         ) : (
           <IssueBody issue={issue} focus={focus} board={board} busy={busy} update={update} setStatus={setStatus} onClose={onClose} onMove={onMove} onSnooze={onSnooze} reload={load} onChanged={onChanged} toast={toast} setIssue={setIssue} />
         )}
