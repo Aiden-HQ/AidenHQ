@@ -31,7 +31,7 @@ export interface Agent {
   lifecycleHolds?: string[];
   /** The agent it reports to (the org chart). */
   reportsTo?: string | null;
-  metadata?: { setupKey?: string; module?: unknown; tier?: unknown; model?: unknown; models?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown; team?: unknown; memberOf?: unknown; maxParallel?: unknown } | null;
+  metadata?: { setupKey?: string; module?: unknown; tier?: unknown; model?: unknown; models?: unknown; teammate?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown; team?: unknown; memberOf?: unknown; maxParallel?: unknown } | null;
 }
 
 export interface Issue {

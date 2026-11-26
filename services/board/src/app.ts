@@ -2637,6 +2637,17 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         res.writeHead(200, { ...SECURITY_HEADERS, "content-security-policy": FRAME_CSP, "x-frame-options": "SAMEORIGIN", "content-type": FRAME_TYPE, "cache-control": "private, no-store" });
         return void res.end(html);
       }
+      // A teammate's shipped face (compile copies it to config/faces/<key>.<ext> after its SVG check): module-supplied, so
+      // served sandboxed (no script runs even when opened directly) and only ever drawn as an <img>.
+      const face = req.method === "GET" ? /^\/api\/faces\/([a-z0-9][a-z0-9-]{0,62})$/.exec(path) : null;
+      if (face) {
+        const dir = process.env.BOARD_FACES_DIR ?? "/config/faces";
+        for (const [ext, type] of [["svg", "image/svg+xml"], ["png", "image/png"]] as const) {
+          const bytes = await readFile(join(dir, `${face[1]}.${ext}`)).catch(() => null);
+          if (bytes) return void res.writeHead(200, { ...SECURITY_HEADERS, "content-type": type, "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox", "cache-control": "private, max-age=300" }).end(bytes);
+        }
+        throw new HttpError(404, "no face");
+      }
       // Live updates (events.ts): an event stream, behind the same gate.
       if (req.method === "GET" && path === "/api/events") {
         return store.events.stream(req, res, SECURITY_HEADERS);
