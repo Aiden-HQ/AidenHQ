@@ -217,7 +217,7 @@ token:
 - `code-review-ui` (`recipe/ui.ts`, 60 minutes, spec `{ base, run, option, model }`, `keep`, no `model` line: the kernel gives it no
   OpenRouter token or address, and it runs no model). It installs the root package.json's dependencies with the lockfile's package manager (yarn
   through corepack), runs its `build` script when it declares one, then its `start` script with `PORT=8080 HOST=127.0.0.1`, up once
-  `/` answers without a 5xx (no start script: the check fails, `no start command: add a "start" script`), then the agent-base image's `ui-review` engine: `capture` (the pages: a committed `.aidenhq-ui/pages.json`, else its crawl)
+  `/` answers (a 5xx only after a minute of them) (no start script: the check fails, `no start command: add a "start" script`), then the agent-base image's `ui-review` engine: `capture` (the pages: a committed `.aidenhq-ui/pages.json`, else its crawl)
   and `routes` over the same pages (exit 1 of either means blocking findings; 2 a failed check). It keeps a bundle (a gzipped tar of
   at most 64 MB: the reports, run.json, queue.json and per page the shots the review reads, pages left out from the end when they
   don't fit, saying so) and its result is coverage only. Its failure is the option's.

@@ -8,7 +8,7 @@
 // (the workspace) and the spec at $AIDENHQ_SPEC: { repo, head, base (the head itself), run, option, model }. The steps:
 //   1. The app: the dependencies installed with the lockfile's package manager, its `build` script when it declares one, then the
 //      `start` script package.json declares, with
-//      PORT=8080 HOST=127.0.0.1, waited for (180 s, an answer that isn't a 5xx). No start script: the check fails (it never guesses).
+//      PORT=8080 HOST=127.0.0.1, waited for (180 s; a 5xx counts after a minute). No start script: the check fails (it never guesses).
 //   2. `ui-review capture` (its pages: the repo's committed `.aidenhq-ui/pages.json` when there is one, else its own crawl) and
 //      `ui-review routes` over the same pages, both from a folder outside the checkout. Exit 1 means blocking findings (the reports
 //      say which), anything else but 0 a failed check.
@@ -40,14 +40,20 @@ async function startApp([pm, ...via]: string[], ws: string, env: Record<string, 
   child.on("error", () => { exited = null; });
   const stop = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); } };
   const until = Date.now() + APP_WAIT_MS;
+  let answered: number | undefined;
   while (Date.now() < until) {
     if (exited !== undefined) throw new Error(`\`${pm} start\` ended (exit ${exited}) before the app answered on port ${PORT}`);
-    // Up means an answer that isn't a server error (an app whose build is missing answers 500).
-    try { if ((await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(2000) })).status < 500) return stop; } catch { /* not up yet */ }
+    // Up: an answer that isn't a server error, or still a 5xx a minute after its first answer (a broken home page is the capture's
+    // finding, not a start that failed; a minute covers a dev server compiling on its first request).
+    try {
+      const status = (await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(2000) })).status;
+      answered ??= Date.now();
+      if (status < 500 || Date.now() - answered >= 60_000) return stop;
+    } catch { /* not up yet */ }
     await new Promise((ok) => setTimeout(ok, 1000));
   }
   stop();
-  throw new Error(`the app didn't answer on port ${PORT} without a server error within ${APP_WAIT_MS / 1000} s`);
+  throw new Error(`the app didn't answer on port ${PORT} within ${APP_WAIT_MS / 1000} s`);
 }
 
 /** The shots the review reads of one page's captures (ui-review review.ts `pick`): 390, 1512 and 2560 light and 1512 dark, each its
