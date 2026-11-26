@@ -1,5 +1,6 @@
 import type { Lane } from "../../src/aidenhq-sdk/task-state-types";
 import type { ShownState } from "../../src/task-state";
+import type { FaceKit } from "../../src/face-kit";
 import type { IconName } from "./ui/icons";
 export type Bucket = "triage" | "today" | "tomorrow" | "later" | "backlog";
 export const BUCKETS: Bucket[] = ["triage", "today", "tomorrow", "later", "backlog"];
@@ -18,8 +19,13 @@ export interface Assignee {
   engine?: "codex" | "codex-openrouter" | "claude" | "openrouter";
   defaultModel?: string;
   efforts?: string[];
-  /** A portrait: /crew/<avatar>.svg. */
+  /** A portrait: /crew/<avatar>.svg. Gone from the API (faces replace it); removed with its consumers. */
   avatar?: string;
+  /** Its face's seed: the definition key (stable across renames), else the Paperclip id ("me" for the owner). Always sent;
+   * optional here until Task 4 moves the avatar consumers onto Face. */
+  seed?: string;
+  /** A teammate's face; none for "me" and hidden agents. */
+  face?: RosterFace;
 }
 
 export interface Card {
@@ -167,11 +173,23 @@ export interface Scorecard {
 /** From the kernel's jobs; paused is the owner's setting (activity.ts agentState). */
 export type AgentState = "working" | "queued" | "waiting" | "idle" | "failing" | "paused";
 
+/** A teammate's face (activity.ts): its shipped file the board serves, its module's kit spec, or none (drawn from the seed). */
+export type RosterFace = { src: string } | { kit: FaceKit } | null;
+/** An agent the owner sees by name (its module's `teammate:` block); without one an agent is hidden staff. */
+export interface RosterTeammate {
+  job: string;
+  sample: string;
+  staff: string[];
+  controls: string[];
+  face: RosterFace;
+}
+
 export interface AgentProfile {
   id: string;
   key: string;
   name: string;
   avatar?: string;
+  teammate?: RosterTeammate;
   title: string | null;
   state: AgentState;
   stateNote?: string;
@@ -199,6 +217,7 @@ export interface RosterAgent {
   department: { id: string; name: string; description?: string; order: number };
   key?: string;
   avatar?: string;
+  teammate?: RosterTeammate;
   model: string | null;
   reportsTo: string | null;
   team?: { name: string; members: { key: string; name: string }[] };

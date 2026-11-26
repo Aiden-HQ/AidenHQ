@@ -1,4 +1,4 @@
-// GET /api/faces/<key>: a module-shipped face, served only signed in, sandboxed (no script runs if opened directly), and only
+// GET /api/faces/<key>: a module-shipped face, served only to a signed-in admin, sandboxed (no script runs if opened directly), and only
 // for a plain key (no path escapes the faces folder).
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
@@ -18,9 +18,9 @@ writeFileSync(join(dir, "acme-bot.svg"), '<svg xmlns="http://www.w3.org/2000/svg
 writeFileSync(join(root, "secret.svg"), "<svg/>");
 process.env.BOARD_FACES_DIR = dir;
 
-let signedIn = true;
+let role: "admin" | "user" | null = "admin";
 const work = { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async () => [] };
-const app = createApp({ work, paperclip: { agents: async () => [] } as unknown as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => (signedIn ? { accountId: "owner", role: "admin" as const } : null) });
+const app = createApp({ work, paperclip: { agents: async () => [] } as unknown as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => (role ? { accountId: "owner", role } : null) });
 let port = 0;
 beforeAll(async () => {
   await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -47,6 +47,8 @@ it("serves a shipped face sandboxed, signed in only, and nothing outside the fac
   expect((await get("/api/faces/nobody")).status).toBe(404);
   expect((await get("/api/faces/..%2Fsecret")).status).toBe(404);
   expect((await get("/api/faces/../secret")).status).toBe(404);
-  signedIn = false;
+  role = "user";
+  expect((await get("/api/faces/acme-bot")).status).toBe(403);
+  role = null;
   expect((await get("/api/faces/acme-bot")).status).toBe(401);
 });
