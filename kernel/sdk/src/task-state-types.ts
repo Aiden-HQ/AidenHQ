@@ -23,6 +23,8 @@ export type TaskState = {
   grade?: "pass" | "fail";
   /** The open owner or delegator wait's question (the ask gate reads it). */
   question?: string;
+  /** What the open wait's question is about (notify's `detail`, e.g. the draft to send), beside the question. */
+  detail?: string;
   /** When the open owner or delegator wait began, whatever the representative reason (only the owner's has a `question`). */
   wait_since?: string;
   /** The open owner or delegator wait's own deadline (`until`), so a retry of its question reuses the wait instead of re-arming it. */

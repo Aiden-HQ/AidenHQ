@@ -1901,7 +1901,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const i = byId.get(state.task)!;
           const open = waitsForAnswer(state) && state.wait_since;
           const q = open ? askedQuestions(await pc.comments(i.id).catch(() => [] as Comment[]), i.assigneeAgentId) : undefined;
-          const ask = open ? { question: state.question ?? "", questions: boundQuestions(q, state.question ?? ""), waitSince: state.wait_since! } : undefined;
+          const ask = open ? { question: state.question ?? "", ...(state.detail ? { detail: state.detail } : {}), questions: boundQuestions(q, state.question ?? ""), waitSince: state.wait_since! } : undefined;
           return { identifier: i.identifier, title: i.title, agent: ctx.agents.find((a) => a.id === (i.assigneeAgentId ?? chatAgent(i)))?.name ?? "You", state, ...(ask ? { ask } : {}) };
         }));
         // Oldest first, by the obligation each row shows: its open question, else the owner's (or first) attention entry.

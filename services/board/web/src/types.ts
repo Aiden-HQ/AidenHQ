@@ -697,7 +697,7 @@ export interface NeedsYou {
   /** Open Tier 2 approval cards: the Approvals badge. */
   approvals: number;
   /** Every open task with someone to act on it, oldest first. */
-  items: { identifier: string; title: string; agent: string; state: ShownState; /** The open owner question, answered in place: its options and the wait it belongs to. */ ask?: { question: string; questions: Question[]; waitSince: string } }[];
+  items: { identifier: string; title: string; agent: string; state: ShownState; /** The open owner question, answered in place: its options and the wait it belongs to. */ ask?: { question: string; /** What the question is about (e.g. the draft to send), shown beside it. */ detail?: string; questions: Question[]; waitSince: string } }[];
 }
 
 /** A multiple-choice question an agent asks (recommended option first); the owner may answer in his own words. */

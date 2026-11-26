@@ -24,6 +24,7 @@ export function buildServer(d: Deps, caller?: Caller): McpServer {
           .max(4)
           .optional()
           .describe("multiple-choice questions for the owner, asked with this message (put the context in `text`, the questions here, not both): the recommended option first; they can always answer in their own words instead, so don't add an \"Other\" option. multi: they may pick several. On the board each becomes a form; their phone gets them spelled out."),
+        detail: z.string().min(1).max(2000).optional().describe("the text the decision is about, e.g. the draft to send; shown beside the question"),
         actions: z.array(z.string().min(1).max(40)).max(4).optional().describe("up to 4 one-tap answers. A press sends the label as the owner's own message (e.g. \"Apply WOR-184\"), so write each label as the exact words they'd type."),
       }),
       annotations: { readOnlyHint: false, openWorldHint: true },
