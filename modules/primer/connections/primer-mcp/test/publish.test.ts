@@ -14,7 +14,7 @@ describe("primer.publish executor", () => {
     const calls: [string, Record<string, unknown>][] = [];
     const ex = publisher(async (name, args) => {
       calls.push([name, args]);
-      return { text: name === "primer_create_document" ? '{"url":"https://primer.example/d/01a1-doc0"}' : '{"versionId":"v-9","versionNumber":4,"url":"https://primer.example/d/01a1-doc0/v/4","reconciliation":{"applied":2,"suggested":1}}' };
+      return { text: name === "primer_create_document" ? '{"url":"https://primer.example/d/01a1-doc0"}' : '{"versionId":"v-9","versionNumber":4,"url":"https://primer.example/d/01a1-doc0/v/4","reconciliation":[{"status":"applied"},{"status":"applied"},{"status":"suggested","suggestionId":"s1"}]}' };
     }, memory());
     // The runner's request (path is a label) and an agent's primer_create_document call plan the same way.
     const plan = await ex.plan({ kind: "primer.publish", args: { title: "Report", content: "# Report\n", format: "markdown", path: ".aidenhq/primer.md", junk: 1 }, requester, task: "T-1" });
@@ -40,7 +40,7 @@ describe("primer.publish executor", () => {
     expect([vouched.raise, (vouched.args as any).own]).toEqual([undefined, true]);
     // The agent learns the version Primer made and what became of each change.
     expect(await ex.execute({ id: "k-0000000000000002", kind: "primer.publish", args: v.args, digest: "d", idempotency_key: "k-0000000000000002" })).toEqual({
-      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\nReconciliation: {"applied":2,"suggested":1}',
+      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\n1 of the 3 changed parts became suggestions for a person to decide, because those parts changed since you read the document. Leave them to the person: publishing the same change again adds nothing. 2 changed parts went in as written.',
     });
     expect(calls.at(-1)).toEqual(["primer_add_version", { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2", baseVersionNumber: 3 }]);
   });
