@@ -34,12 +34,12 @@ describe("the fleet strip's loading frame", () => {
     expect(section!.getAttribute("aria-busy")).toBe("true");
     expect(section!.getAttribute("aria-label")).toMatch(/loading/i);
     expect(el.querySelector(".attn-title")?.textContent).toBe("Fleet attention");
-    expect(el.querySelector(".attn-list-load")).not.toBeNull();
+    expect(el.querySelector(".attn-slot-load")).not.toBeNull();
   });
 
   it("keeps the compact strip to its one line while loading", async () => {
     const el = await mount(true);
     expect(el.querySelector("section.attn.attn-compact")).not.toBeNull();
-    expect(el.querySelector(".attn-list-load")).toBeNull();
+    expect(el.querySelector(".attn-slot-load")).toBeNull();
   });
 });
