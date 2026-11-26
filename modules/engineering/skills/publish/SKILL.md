@@ -47,8 +47,9 @@ Before closing anything, read both PRs' live state (`state`, `merged`, `headRefN
 one you mean to keep — and close the duplicate by its own URL. After the close, read both again and report only what they
 show.
 Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
-When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at `refs/pull/<n>/head`: fetch that
-ref, publish it on a new `agent/<task>/…` branch, and wait on that PR instead of a merge that cannot happen.
+When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
+`refs/pull/<n>/head`: fetch that ref, publish it on a new `agent/<task>/…` branch, and wait on that PR instead of a merge
+that cannot happen.
 
 ## Finishing a cancelled task's PR (a handoff)
 
