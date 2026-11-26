@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hire a teammate (v3)</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0;background:#f6f7f9;color:#12151c;font-family:Inter,ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#3b5bdb;text-decoration:none}a:hover{color:#2f4ac0;text-decoration:underline}
+.top{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid #e1e4ea;background:#ffffff}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;margin-right:18px}
+.mark{width:22px;height:22px;border-radius:6px;background:#12151c;color:#ffffff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.nav{font-size:13.5px;color:#4a5163;padding:6px 11px;border-radius:8px;border:1px solid transparent;background:none;font-family:inherit}
+.nav.on{color:#12151c;font-weight:600;background:#ffffff;border-color:#e1e4ea;box-shadow:0 1px 2px rgba(15,23,42,.06)}
+.spacer{flex:1}
+.search{display:flex;align-items:center;gap:8px;width:220px;padding:6px 10px;border:1px solid #e1e4ea;border-radius:8px;color:#5d6477;font-size:13px;background:#ffffff}
+.kbd{margin-left:auto;font-size:11px;border:1px solid #cbd0da;border-radius:5px;padding:0 5px;color:#5d6477}
+.ask{display:flex;align-items:center;gap:8px;padding:6px 11px;border-radius:8px;background:#e8edfd;color:#2f4ac0;font-weight:600;font-size:13px;border:0;font-family:inherit}
+.badge{font-size:11px;font-weight:700;background:#e8a400;color:#2b1e00;border-radius:5px;padding:0 5px;margin-left:4px}
+.card{background:#ffffff;border:1px solid #e1e4ea;border-radius:10px;box-shadow:0 1px 2px rgba(15,23,42,.06);padding:20px;box-sizing:border-box}
+.h2{margin:0;font-size:20px;font-weight:700;letter-spacing:-.01em}
+.h3{margin:0;font-size:13px;font-weight:700;color:#5d6477;text-transform:uppercase;letter-spacing:.04em}
+.sub{margin:0;font-size:14px;line-height:1.5;color:#4a5163}
+.btn{font-family:inherit;font-size:13.5px;font-weight:600;padding:9px 16px;border-radius:8px;border:1px solid #cbd0da;background:#ffffff;color:#12151c;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{background:#f9fafb;text-decoration:none;color:#12151c}
+.btn.primary{background:#3b5bdb;border-color:#3b5bdb;color:#ffffff}
+.btn.primary:hover{background:#2f4ac0;color:#ffffff}
+.btn.sm{padding:5px 10px;font-size:12.5px}
+.chip{font-family:inherit;font-size:13px;padding:7px 11px;border-radius:8px;border:1px solid #e1e4ea;background:#ffffff;color:#4a5163;cursor:pointer;text-align:left}
+.chip:hover{border-color:#cbd0da;color:#12151c}
+.field{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-top:1px solid #e1e4ea;flex-wrap:wrap}
+.flabel{flex:0 0 150px;font-size:12.5px;font-weight:600;color:#5d6477;padding-top:2px}
+.fval{flex:1 1 320px;min-width:0;font-size:14px;line-height:1.5}
+.tag{font-size:11.5px;font-weight:600;padding:2px 7px;border-radius:5px;display:inline-block;margin:0 4px 4px 0}
+.match{display:flex;gap:14px;align-items:flex-start;padding:16px;border:1px solid #e1e4ea;border-radius:10px;background:#ffffff;flex-wrap:wrap}
+.mono{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex:none}
+.fit{font-size:12px;font-weight:600;color:#4a5163}
+/* polish: one motion vocabulary */
+:root{--instant:90ms;--fast:160ms;--medium:220ms;--slow:320ms;--out:cubic-bezier(0.16,1,0.3,1);--in:cubic-bezier(0.4,0,1,1)}
+body{font-variant-numeric:tabular-nums}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes pop{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+section,article,aside,.card,.match,.opt,.chan{animation:rise var(--slow) var(--out) both}
+:is(article,.card,.match,.opt,.chan):nth-child(2){animation-delay:35ms}
+:is(article,.card,.match,.opt,.chan):nth-child(3){animation-delay:70ms}
+:is(article,.card,.match,.opt,.chan):nth-child(4){animation-delay:105ms}
+:is(article,.card,.match,.opt,.chan):nth-child(5){animation-delay:140ms}
+:is(article,.card,.match,.opt,.chan):nth-child(6){animation-delay:175ms}
+:is(article,.card,.match,.opt,.chan):nth-child(7){animation-delay:210ms}
+:is(article,.card,.match,.opt,.chan):nth-child(n+8){animation-delay:245ms}
+[style*="grid-template-columns"]>article,.match,.opt,.chan,.lift{transition:transform var(--fast) var(--out),box-shadow var(--fast) var(--out),border-color var(--fast) var(--out),background-color var(--fast) var(--out)}
+[style*="grid-template-columns"]>article:hover,.match:hover,.opt:hover,.lift:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(15,23,42,.08)!important;border-color:#cbd0da!important}
+button,.btn,.chip,.nav,.ask,a{transition:background-color var(--fast) var(--out),border-color var(--fast) var(--out),color var(--fast) var(--out),box-shadow var(--fast) var(--out),transform var(--instant) var(--out)}
+button:active,.btn:active,.chip:active{transform:scale(.98)}
+.btn.primary:hover{background:#2f4ac0!important;border-color:#2f4ac0!important;color:#ffffff}
+.btn:not(.primary):not(.ghost):hover{background:#f9fafb;border-color:#b6bdca}
+.btn.ghost:hover{background:rgba(15,23,42,.045);color:#12151c}
+.nav:not(.on):hover{background:rgba(15,23,42,.045);color:#12151c;text-decoration:none}
+.ask:hover{background:#dbe4ff}
+:focus-visible{outline:0;box-shadow:0 0 0 2px #f6f7f9,0 0 0 4px rgba(59,91,219,.7)!important}
+.ping{animation:pop var(--slow) var(--out) both}
+@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+<nav aria-label="Mockup browser" data-mocknav="1" style="display:flex;align-items:center;gap:10px;padding:6px 12px;background:#12151c;color:#f5f5f7;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:13px;flex-wrap:wrap"><a href="V3Agent.dc.html" style="display:flex;align-items:center;justify-content:center;min-width:44px;height:32px;padding:0 12px;border-radius:8px;background:#2a2e38;color:#ffffff;font-size:13px;font-weight:600;text-decoration:none">← Prev</a><span style="flex:1;text-align:center;min-width:0"><span style="opacity:.7">Final · 7 of 8</span> · <strong>Hire a teammate: marketplaces first</strong></span><a href="V3Hiring.dc.html" style="display:flex;align-items:center;justify-content:center;min-width:44px;height:32px;padding:0 12px;border-radius:8px;background:#2a2e38;color:#ffffff;font-size:13px;font-weight:600;text-decoration:none">Next →</a></nav>
+<div style="display: flex; flex-direction: column;">
+  <header class="top">
+    <div class="brand"><span class="mark">A</span>AidenHQ</div>
+    <a class="nav" href="#">Home<span class="badge">3</span></a>
+    <a class="nav" href="#">Tasks</a>
+    <a class="nav" href="#">Apps</a>
+    <a class="nav on" href="V3Hiring.dc.html">Team</a>
+    <a class="nav" href="#">Insight</a>
+    <span class="spacer"></span>
+    <div class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>Search<span class="kbd">⌘K</span></div>
+    <button class="ask" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path></svg>Ask Aiden <span style="font-weight:500;opacity:.75">⌘J</span></button>
+  </header>
+
+  <main style="width: 100%; max-width: 1640px; margin: 0 auto; padding: 32px clamp(16px, 2.4vw, 56px) 56px; box-sizing: border-box; display: flex; flex-direction: column; gap: 22px;">
+    <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+      <a href="V3Hiring.dc.html" style="font-size: 13px; font-weight: 600;">← Team</a>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <h1 style="margin: 0; font-size: 26px; letter-spacing: -0.02em;">Hire a teammate</h1>
+        <span style="font-size: 13px; color: #5d6477;">We look for one that already exists before building anything new · about 2 minutes if one fits</span>
+      </div>
+    </div>
+
+    <ol style="list-style: none; margin: 0; padding: 0; display: flex; gap: 8px; flex-wrap: wrap;">
+      <sc-for list="{{ steps }}" as="s" hint-placeholder-count="3">
+        <li style="{{ s.wrap }}"><span style="{{ s.num }}">{{ s.n }}</span><span style="{{ s.label }}">{{ s.title }}</span></li>
+      </sc-for>
+    </ol>
+
+    <sc-if value="{{ s1 }}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: stretch;">
+      <section class="card" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px;">
+        <div style="display: flex; gap: 14px; align-items: center;">
+          <dc-import name="Face" who="aiden" state="idle" size="{{ s44 }}" hint-size="44px,44px"></dc-import>
+          <div><h2 class="h2">Who do you need?</h2><p class="sub">Say it like you would to a recruiter: the job, when it happens, and what good looks like.</p></div>
+        </div>
+        <label style="display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 12.5px; font-weight: 600; color: #5d6477;">Describe the job</span>
+          <textarea rows="4" style="font: inherit; font-size: 16px; line-height: 1.5; padding: 12px 14px; border: 1px solid #cbd0da; border-radius: 8px; resize: vertical; color: #12151c;">Someone who prepares me for every board meeting: reads the deck, past minutes and open questions, and sends me a one-page brief the day before.</textarea>
+        </label>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+          <span style="font-size: 12.5px; color: #5d6477;">Or start from:</span>
+          <button class="chip" type="button">Someone who answers customer questions in Slack</button>
+          <button class="chip" type="button">Someone who keeps the roadmap doc current</button>
+          <button class="chip" type="button">Someone who watches our costs every week</button>
+        </div>
+      </section>
+      <aside class="card" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 12px;">
+        <h3 class="h3">Where we look first</h3>
+        <ol style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; line-height: 1.45;">
+          <li style="display: flex; gap: 10px;"><span style="flex: none; width: 22px; height: 22px; border-radius: 6px; background: #e8edfd; color: #2f4ac0; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center;">1</span><span><strong>Your team (7)</strong><br><span style="color: #4a5163;">Someone you have may only need one more job.</span></span></li>
+          <li style="display: flex; gap: 10px;"><span style="flex: none; width: 22px; height: 22px; border-radius: 6px; background: #e8edfd; color: #2f4ac0; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center;">2</span><span><strong>Your marketplaces</strong><br><span style="color: #4a5163;">AidenHQ, Polygon and Community: tested teammates you install in a click.</span></span></li>
+          <li style="display: flex; gap: 10px;"><span style="flex: none; width: 22px; height: 22px; border-radius: 6px; background: #e8edfd; color: #2f4ac0; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center;">3</span><span><strong>Archie builds one</strong><br><span style="color: #4a5163;">Only if nothing fits, reusing what you already have.</span></span></li>
+        </ol>
+        <p style="margin: auto 0 0; font-size: 12.5px; color: #5d6477;">Nothing is installed or run until you confirm.</p>
+      </aside>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ s2 }}" hint-placeholder-val="{{ false }}">
+      <section style="display: flex; flex-direction: column; gap: 18px;">
+        <div class="card" style="display: flex; gap: 14px; align-items: center; padding: 16px 20px;">
+          <dc-import name="Face" who="aiden" state="working" size="{{ s44 }}" hint-size="44px,44px"></dc-import>
+          <div style="flex: 1; min-width: 0;">
+            <h2 class="h2">Looking in your marketplaces first</h2>
+            <p class="sub">Searched your team, the AidenHQ marketplace and the Polygon marketplace. Three could do this; using one is faster and already tested.</p>
+          </div>
+          <span style="font-size: 12.5px; color: #5d6477;">3 matches · 14 modules checked</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <h3 class="h3">Already on your team</h3>
+          <div class="match">
+            <dc-import name="Face" who="rhea" state="idle" size="{{ s44 }}" hint-size="44px,44px"></dc-import>
+            <div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+              <strong style="font-size: 15px;">Rhea · Researcher <span class="fit">· covers part of it</span></strong>
+              <span style="font-size: 13.5px; color: #4a5163; line-height: 1.45;">Rhea already reads Drive and writes briefs. Add a board-prep routine: the day before any event titled “Board…”, she reads the deck and minutes and sends you one page.</span>
+              <span style="font-size: 12px; color: #5d6477;">No new connections · no install · uses Rhea's existing memory of your company</span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;"><button class="btn primary" type="button" onClick="{{ pickExtend }}">Extend Rhea</button></div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <h3 class="h3">In AidenHQ marketplace</h3>
+          <div class="match">
+            <span class="mono" style="background: #dbe4ff; color: #1e3a8a;">EB</span>
+            <div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+              <strong style="font-size: 15px;">Executive briefings <span class="fit">· close match</span></strong>
+              <span style="font-size: 13.5px; color: #4a5163; line-height: 1.45;">A teammate that writes a one-page brief before any meeting you flag: attendees, open threads, decisions pending. Board meetings are one of its presets.</span>
+              <span style="font-size: 12px; color: #5d6477;">By AidenHQ · 1.2k installs · needs Calendar, Drive · about $0.12 per brief</span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;"><button class="btn" type="button" onClick="{{ pickEB }}">Install</button></div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <h3 class="h3">In Polygon marketplace</h3>
+          <div class="match">
+            <span class="mono" style="background: #e7defc; color: #46238f;">BP</span>
+            <div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+              <strong style="font-size: 15px;">Board pack <span class="fit">· built by the Finance team</span></strong>
+              <span style="font-size: 13.5px; color: #4a5163; line-height: 1.45;">Assembles the board pack from finance sheets and last quarter's minutes, and lists open questions from directors. Made for board meetings specifically.</span>
+              <span style="font-size: 12px; color: #5d6477;">Published inside Polygon · 9 installs · needs Drive (not connected yet)</span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;"><button class="btn" type="button" onClick="{{ pickBP }}">Install</button></div>
+          </div>
+        </div>
+
+        <button type="button" onClick="{{ build }}" class="match" style="font: inherit; text-align: left; cursor: pointer; border-style: dashed; border-color: #cbd0da; background: #f9fafb; align-items: center;">
+          <dc-import name="Face" who="archie" state="idle" size="{{ s44 }}" hint-size="44px,44px"></dc-import>
+          <span style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+            <strong style="font-size: 15px;">None of these: build a new teammate</strong>
+            <span style="font-size: 13.5px; color: #4a5163;">Archie, the Agent Architect, designs one from your description, reusing the modules above where it can.</span>
+          </span>
+          <span style="font-size: 13.5px; font-weight: 600; color: #3b5bdb;">Build with Archie →</span>
+        </button>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ s3 }}" hint-placeholder-val="{{ false }}">
+      <section style="display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start;">
+        <div class="card" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+          <div style="display: flex; gap: 14px; align-items: center; padding-bottom: 12px;">
+            <dc-import name="Face" who="archie" state="working" size="{{ s44 }}" hint-size="44px,44px"></dc-import>
+            <div><h2 class="h2">Archie's proposal</h2><p class="sub">Edit any line. Nothing runs until the trial looks right to you.</p></div>
+          </div>
+          <div class="field"><span class="flabel">Job</span><span class="fval">The day before each board meeting, read the deck, the last two sets of minutes and open director questions; send you a one-page brief with decisions needed and likely questions.</span><button class="btn sm" type="button">Edit</button></div>
+          <div class="field"><span class="flabel">Wakes</span><span class="fval">24 hours before calendar events titled “Board…”, and when you ask.</span><button class="btn sm" type="button">Edit</button></div>
+          <div class="field"><span class="flabel">Can read</span><span class="fval"><span class="tag" style="background:#d3f3ee;color:#0f4f45">Google Drive</span><span class="tag" style="background:#d3f3ee;color:#0f4f45">Calendar</span><span class="tag" style="background:#d3f3ee;color:#0f4f45">Slack #board</span><span class="tag" style="background:#d3f3ee;color:#0f4f45">Meeting notes</span></span><button class="btn sm" type="button">Edit</button></div>
+          <div class="field"><span class="flabel">May write</span><span class="fval"><span class="tag" style="background:#fbebc8;color:#6b4500">A doc in your Drive</span><span class="tag" style="background:#fbebc8;color:#6b4500">A message to you</span><br><span style="font-size: 12.5px; color: #5d6477;">Never emails directors. Anything else goes through Aiden.</span></span><button class="btn sm" type="button">Edit</button></div>
+          <div class="field"><span class="flabel">Cost</span><span class="fval">About $0.20 per brief, roughly $1 a month.</span><button class="btn sm" type="button">Edit</button></div>
+        </div>
+        <aside class="card" style="flex: 1 1 300px; display: flex; flex-direction: column; gap: 12px;">
+          <h3 class="h3">Built from what you already have</h3>
+          <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13.5px;">
+            <span><strong>Executive briefings</strong> <span style="color: #5d6477;">· its brief template (installed with it)</span></span>
+            <span><strong>Meeting notes</strong> <span style="color: #5d6477;">· Nora's minutes from past board meetings</span></span>
+            <span><strong>Google</strong> <span style="color: #5d6477;">· Drive and Calendar, already connected</span></span>
+          </div>
+          <p style="margin: 0; font-size: 12.5px; color: #5d6477; line-height: 1.45;">Archie settled two questions himself from your profile: briefs in English, and sent at 09:00 your time.</p>
+        </aside>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ s4 }}" hint-placeholder-val="{{ false }}">
+      <section class="card" style="display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start;">
+        <div style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px;">
+          <dc-import name="Face" who="{{ face }}" state="idle" size="{{ s140 }}" hint-size="140px,140px"></dc-import>
+          <strong style="font-size: 18px;">{{ name }} <span style="font-weight: 500; color: #4a5163;">· Board prep</span></strong>
+        </div>
+        <div style="flex: 999 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 18px;">
+          <div><h2 class="h2">Name your teammate</h2><p class="sub">We suggested a name; type your own if you like. You can rename them any time.</p></div>
+          <label style="display: flex; flex-direction: column; gap: 6px; max-width: 420px;">
+            <span style="font-size: 12.5px; font-weight: 600; color: #5d6477;">Name</span>
+            <input type="text" value="{{ name }}" onChange="{{ typed }}" style="font: inherit; font-size: 16px; padding: 10px 12px; border: 1px solid #cbd0da; border-radius: 8px; color: #12151c;">
+          </label>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <span style="font-size: 12.5px; font-weight: 600; color: #5d6477;">Face</span>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <sc-for list="{{ faces }}" as="f" hint-placeholder-count="6">
+                <button type="button" onClick="{{ f.pick }}" aria-label="{{ f.aria }}" style="{{ f.style }}">
+                  <dc-import name="Face" who="{{ f.key }}" state="idle" size="{{ s56 }}" hint-size="56px,56px"></dc-import>
+                </button>
+              </sc-for>
+            </div>
+            <span style="font-size: 12px; color: #5d6477;">More faces come with each marketplace; you can also upload one.</span>
+          </div>
+        </div>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ s5 }}" hint-placeholder-val="{{ false }}">
+      <section style="display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start;">
+        <div class="card" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; gap: 14px; align-items: center;">
+            <dc-import name="Face" who="{{ face }}" state="working" size="{{ s44 }}" hint-size="44px,44px"></dc-import>
+            <div><h2 class="h2">{{ name }}'s trial run</h2><p class="sub">On last month's board meeting (19 October). Nothing was sent.</p></div>
+          </div>
+          <article style="border: 1px solid #e1e4ea; border-radius: 8px; padding: 18px 20px; background: #f9fafb; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.55;">
+            <strong style="font-size: 16px;">Board meeting, 19 October: your one-page brief</strong>
+            <span><strong>Decisions needed (2):</strong> approve the Q4 hiring plan (+6 heads); sign off the Northwind vendor contract.</span>
+            <span><strong>Likely questions:</strong> why infra cost rose 14% quarter on quarter (answer: migration overlap, ends December); status of the security audit.</span>
+            <span><strong>Open from last time:</strong> two directors asked for a churn breakdown by segment; it is on slide 11 of the deck.</span>
+            <span style="color: #5d6477; font-size: 12.5px;">Sources: Board deck v3 (Drive), minutes 14 July and 21 September, #board thread of 15 October.</span>
+          </article>
+        </div>
+        <aside class="card" style="flex: 1 1 300px; display: flex; flex-direction: column; gap: 12px;">
+          <h3 class="h3">Does this look right?</h3>
+          <p class="sub">What you change here becomes {{ name }}'s first lessons.</p>
+          <button class="btn primary" type="button" onClick="{{ hire }}" style="justify-content: center;">Looks right, hire {{ name }}</button>
+          <button class="btn" type="button" style="justify-content: center;">Change something</button>
+        </aside>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ s6 }}" hint-placeholder-val="{{ false }}">
+      <section class="card" style="display: flex; flex-direction: column; gap: 16px; align-items: center; text-align: center; padding: 40px 20px;">
+        <dc-import name="Face" who="{{ face }}" state="working" size="{{ s96 }}" hint-size="96px,96px"></dc-import>
+        <div><h2 class="h2">{{ name }} is on your team</h2><p class="sub">First brief arrives the day before your next board meeting (11 December). {{ name }} reports to Aiden.</p></div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;">
+          <a class="btn primary" href="#">Talk to {{ name }}</a>
+          <a class="btn" href="V3Hiring.dc.html">Back to Team</a>
+        </div>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ sConfirm }}" hint-placeholder-val="{{ false }}">
+      <section class="card" style="display: flex; flex-direction: column; gap: 4px; max-width: 1040px;">
+        <div style="display: flex; gap: 14px; align-items: center; padding-bottom: 12px;">
+          <sc-if value="{{ cFace }}" hint-placeholder-val="{{ true }}"><dc-import name="Face" who="rhea" state="idle" size="{{ s44 }}" hint-size="44px,44px"></dc-import></sc-if>
+          <sc-if value="{{ cMono }}" hint-placeholder-val="{{ false }}"><span class="mono" style="{{ c.monoStyle }}">{{ c.mono }}</span></sc-if>
+          <div><h2 class="h2">{{ c.title }}</h2><p class="sub">{{ c.sub }}</p></div>
+        </div>
+        <div class="field"><span class="flabel">What it adds</span><span class="fval">{{ c.adds }}</span></div>
+        <div class="field"><span class="flabel">Connects</span><span class="fval">{{ c.connects }}</span></div>
+        <div class="field"><span class="flabel">Sends anything?</span><span class="fval">{{ c.writes }}</span></div>
+        <div style="display: flex; gap: 10px; align-items: center; padding-top: 14px; border-top: 1px solid #e1e4ea; flex-wrap: wrap;">
+          <button class="btn primary" type="button" onClick="{{ confirm }}">{{ c.cta }}</button>
+          <span style="font-size: 12.5px; color: #5d6477;">{{ c.note }}</span>
+        </div>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ sDoneShort }}" hint-placeholder-val="{{ false }}">
+      <section class="card" style="display: flex; flex-direction: column; gap: 16px; align-items: center; text-align: center; padding: 40px 20px;">
+        <sc-if value="{{ cFace }}" hint-placeholder-val="{{ true }}"><dc-import name="Face" who="rhea" state="working" size="{{ s96 }}" hint-size="96px,96px"></dc-import></sc-if>
+        <sc-if value="{{ cMono }}" hint-placeholder-val="{{ false }}"><span class="mono" style="{{ c.monoBig }}">{{ c.mono }}</span></sc-if>
+        <div><h2 class="h2">{{ c.doneTitle }}</h2><p class="sub">{{ c.doneSub }}</p></div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;">
+          <a class="btn primary" href="#">{{ c.talk }}</a>
+          <a class="btn" href="V3Hiring.dc.html">Back to Team</a>
+        </div>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ showNav }}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <sc-if value="{{ canBack }}" hint-placeholder-val="{{ false }}"><button class="btn" type="button" onClick="{{ back }}">← Back</button></sc-if>
+        <span class="spacer"></span>
+        <span style="font-size: 12.5px; color: #5d6477;">Step {{ stepNo }} of {{ stepCount }}</span>
+        <sc-if value="{{ showNext }}" hint-placeholder-val="{{ true }}"><button class="btn primary" type="button" onClick="{{ next }}">{{ nextLabel }}</button></sc-if>
+      </div>
+    </sc-if>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1080}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = Object.assign({ step: 1, name: 'Bea', face: 'nora', path: '' }, this.state || {});
+    const step = st.step;
+    const building = st.path === 'build';
+    const titles = building ? ['Describe', 'Look for existing', 'Proposal', 'Name', 'Trial run'] : ['Describe', 'Look for existing', 'Set up'];
+    const pos = step === 10 ? 3 : (step === 11 || step === 6) ? 99 : step;
+    const steps = titles.map((t, i) => {
+      const n = i + 1;
+      const cur = n === pos, done = n < pos;
+      return {
+        n: done ? '✓' : String(n),
+        title: t,
+        wrap: 'display:flex;align-items:center;gap:8px;flex:1 1 170px;padding:10px 12px;border-radius:8px;border:1px solid ' + (cur ? '#3b5bdb' : '#e1e4ea') + ';background:' + (cur ? '#ffffff' : '#f9fafb'),
+        num: 'width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;' + (done ? 'background:#d3f9d8;color:#237a35' : cur ? 'background:#3b5bdb;color:#ffffff' : 'background:#eceef2;color:#5d6477'),
+        label: 'font-size:13.5px;font-weight:' + (cur ? '650' : '500') + ';color:' + (cur || done ? '#12151c' : '#5d6477')
+      };
+    });
+    const faces = ['nora', 'iris', 'mia', 'tess', 'sam', 'vik'].map((k) => ({
+      key: k,
+      aria: 'Use this face',
+      pick: () => this.setState({ face: k }),
+      style: 'padding:4px;border-radius:12px;cursor:pointer;background:#ffffff;line-height:0;border:2px solid ' + (k === st.face ? '#3b5bdb' : '#e1e4ea')
+    }));
+    const mono = (bg, fg, px) => 'width:' + px + 'px;height:' + px + 'px;border-radius:' + (px > 60 ? 22 : 10) + 'px;display:flex;align-items:center;justify-content:center;font-size:' + (px > 60 ? 30 : 14) + 'px;font-weight:700;background:' + bg + ';color:' + fg;
+    const C = {
+      extend: { title: 'Extend Rhea with board prep', sub: 'Rhea is already on your team; this adds one job to her.',
+        adds: 'A routine: the day before any calendar event titled “Board…”, Rhea reads the deck, the last two sets of minutes and open director questions, and sends you a one-page brief.',
+        connects: 'Nothing new. Drive and Calendar are already connected.', writes: 'Only a message to you. She never emails directors.',
+        cta: 'Add to Rhea', note: 'Takes effect now · undo from Rhea’s page',
+        doneTitle: 'Rhea now preps your board meetings', doneSub: 'First brief the day before your next board meeting (11 December).', talk: 'Talk to Rhea', mono: '', monoStyle: '', monoBig: '' },
+      eb: { title: 'Install Executive briefings', sub: 'From the AidenHQ marketplace · 1.2k installs.',
+        adds: 'Eve · Executive briefings joins your team (rename any time), with a board-meeting preset turned on.',
+        connects: 'Calendar and Drive, already connected.', writes: 'Only a message to you before each flagged meeting.',
+        cta: 'Install', note: 'About $0.12 per brief · remove any time',
+        doneTitle: 'Eve is on your team', doneSub: 'Board prep is on. First brief arrives 10 December.', talk: 'Talk to Eve',
+        mono: 'EB', monoStyle: mono('#dbe4ff', '#1e3a8a', 44), monoBig: mono('#dbe4ff', '#1e3a8a', 96) },
+      bp: { title: 'Install Board pack', sub: 'From the Polygon marketplace · built by the Finance team.',
+        adds: 'Penny · Board pack joins your team (rename any time). She assembles the board pack and lists directors’ open questions.',
+        connects: 'Google Drive (read only). You sign in once on the next screen.', writes: 'A doc in your Drive and a message to you.',
+        cta: 'Connect Drive and install', note: 'Published inside Polygon · 9 installs',
+        doneTitle: 'Penny is on your team', doneSub: 'Drive connected. Your next board pack will be ready 10 December.', talk: 'Talk to Penny',
+        mono: 'BP', monoStyle: mono('#e7defc', '#46238f', 44), monoBig: mono('#e7defc', '#46238f', 96) }
+    };
+    const c = C[st.path] || C.extend;
+    const labels = { 1: 'Look for existing teammates', 3: 'Looks good, name them', 4: 'Run a trial' };
+    const stepCount = titles.length;
+    return {
+      steps, faces, c,
+      cFace: st.path !== 'eb' && st.path !== 'bp',
+      cMono: st.path === 'eb' || st.path === 'bp',
+      name: st.name || 'Bea',
+      face: st.face,
+      s28: 28, s36: 36, s44: 44, s56: 56, s96: 96, s140: 140,
+      s1: step === 1, s2: step === 2, s3: step === 3, s4: step === 4, s5: step === 5, s6: step === 6,
+      sConfirm: step === 10, sDoneShort: step === 11,
+      showNav: step < 6 || step === 10, canBack: step > 1, showNext: step === 1 || step === 3 || step === 4,
+      stepNo: Math.min(pos, stepCount), stepCount: stepCount,
+      nextLabel: labels[step] || 'Continue',
+      typed: (e) => this.setState({ name: e.target.value }),
+      next: () => this.setState({ step: Math.min(6, step + 1) }),
+      back: () => this.setState(step === 10 ? { step: 2, path: '' } : step === 3 ? { step: 2, path: '' } : { step: Math.max(1, step - 1) }),
+      build: () => this.setState({ step: 3, path: 'build' }),
+      pickExtend: () => this.setState({ step: 10, path: 'extend' }),
+      pickEB: () => this.setState({ step: 10, path: 'eb' }),
+      pickBP: () => this.setState({ step: 10, path: 'bp' }),
+      confirm: () => this.setState({ step: 11 }),
+      hire: () => this.setState({ step: 6 })
+    };
+  }
+}
+</script>
+</body>
+</html>

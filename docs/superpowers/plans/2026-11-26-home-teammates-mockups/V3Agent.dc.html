@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Max, PR reviewer (v3)</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0;background:#f6f7f9;color:#12151c;font-family:Inter,ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#3b5bdb;text-decoration:none}a:hover{color:#2f4ac0;text-decoration:underline}
+.top{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid #e1e4ea;background:#ffffff}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;margin-right:18px}
+.mark{width:22px;height:22px;border-radius:6px;background:#12151c;color:#ffffff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.nav{font-size:13.5px;color:#4a5163;padding:6px 11px;border-radius:8px;border:1px solid transparent;background:none;font-family:inherit;display:flex;align-items:center;gap:6px}
+.nav.on{color:#12151c;font-weight:600;background:#ffffff;border-color:#e1e4ea;box-shadow:0 1px 2px rgba(15,23,42,.06)}
+.badge{font-size:11px;font-weight:700;background:#e8a400;color:#2b1e00;border-radius:5px;padding:0 5px}
+.spacer{flex:1}
+.search{display:flex;align-items:center;gap:8px;width:220px;padding:6px 10px;border:1px solid #e1e4ea;border-radius:8px;color:#5d6477;font-size:13px;background:#ffffff}
+.kbd{margin-left:auto;font-size:11px;border:1px solid #cbd0da;border-radius:5px;padding:0 5px;color:#5d6477}
+.ask{display:flex;align-items:center;gap:8px;padding:6px 11px;border-radius:8px;background:#e8edfd;color:#2f4ac0;font-weight:600;font-size:13px;border:0;font-family:inherit}
+.btn{font:inherit;font-size:13px;font-weight:600;padding:7px 12px;border-radius:8px;border:1px solid #e1e4ea;background:#ffffff;color:#12151c;cursor:pointer}
+.card{background:#ffffff;border:1px solid #e1e4ea;border-radius:10px;box-shadow:0 1px 2px rgba(15,23,42,.06)}
+.h3{margin:0;font-size:13px;font-weight:700;color:#12151c}
+.small{font-size:12.5px;color:#5d6477}
+.row{display:flex;align-items:center;gap:10px;font-size:13px}
+.tag{font-size:11px;font-weight:600;padding:2px 6px;border-radius:5px}
+.msg{font-size:14px;line-height:1.5;margin:0}
+/* polish: one motion vocabulary */
+:root{--instant:90ms;--fast:160ms;--medium:220ms;--slow:320ms;--out:cubic-bezier(0.16,1,0.3,1);--in:cubic-bezier(0.4,0,1,1)}
+body{font-variant-numeric:tabular-nums}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes pop{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+section,article,aside,.card,.match,.opt,.chan{animation:rise var(--slow) var(--out) both}
+:is(article,.card,.match,.opt,.chan):nth-child(2){animation-delay:35ms}
+:is(article,.card,.match,.opt,.chan):nth-child(3){animation-delay:70ms}
+:is(article,.card,.match,.opt,.chan):nth-child(4){animation-delay:105ms}
+:is(article,.card,.match,.opt,.chan):nth-child(5){animation-delay:140ms}
+:is(article,.card,.match,.opt,.chan):nth-child(6){animation-delay:175ms}
+:is(article,.card,.match,.opt,.chan):nth-child(7){animation-delay:210ms}
+:is(article,.card,.match,.opt,.chan):nth-child(n+8){animation-delay:245ms}
+[style*="grid-template-columns"]>article,.match,.opt,.chan,.lift{transition:transform var(--fast) var(--out),box-shadow var(--fast) var(--out),border-color var(--fast) var(--out),background-color var(--fast) var(--out)}
+[style*="grid-template-columns"]>article:hover,.match:hover,.opt:hover,.lift:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(15,23,42,.08)!important;border-color:#cbd0da!important}
+button,.btn,.chip,.nav,.ask,a{transition:background-color var(--fast) var(--out),border-color var(--fast) var(--out),color var(--fast) var(--out),box-shadow var(--fast) var(--out),transform var(--instant) var(--out)}
+button:active,.btn:active,.chip:active{transform:scale(.98)}
+.btn.primary:hover{background:#2f4ac0!important;border-color:#2f4ac0!important;color:#ffffff}
+.btn:not(.primary):not(.ghost):hover{background:#f9fafb;border-color:#b6bdca}
+.btn.ghost:hover{background:rgba(15,23,42,.045);color:#12151c}
+.nav:not(.on):hover{background:rgba(15,23,42,.045);color:#12151c;text-decoration:none}
+.ask:hover{background:#dbe4ff}
+:focus-visible{outline:0;box-shadow:0 0 0 2px #f6f7f9,0 0 0 4px rgba(59,91,219,.7)!important}
+.ping{animation:pop var(--slow) var(--out) both}
+@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+<nav aria-label="Mockup browser" data-mocknav="1" style="display:flex;align-items:center;gap:10px;padding:6px 12px;background:#12151c;color:#f5f5f7;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:13px;flex-wrap:wrap"><a href="V2AskAiden.dc.html" style="display:flex;align-items:center;justify-content:center;min-width:44px;height:32px;padding:0 12px;border-radius:8px;background:#2a2e38;color:#ffffff;font-size:13px;font-weight:600;text-decoration:none">← Prev</a><span style="flex:1;text-align:center;min-width:0"><span style="opacity:.7">Final · 6 of 8</span> · <strong>Max · PR reviewer's page</strong></span><a href="V3Hire.dc.html" style="display:flex;align-items:center;justify-content:center;min-width:44px;height:32px;padding:0 12px;border-radius:8px;background:#2a2e38;color:#ffffff;font-size:13px;font-weight:600;text-decoration:none">Next →</a></nav>
+<div style="display: flex; flex-direction: column;">
+  <header class="top">
+    <div class="brand"><span class="mark">A</span>AidenHQ</div>
+    <a class="nav" href="#">Home <span class="badge">3</span></a>
+    <a class="nav" href="#">Tasks</a>
+    <a class="nav" href="#">Apps</a>
+    <a class="nav on" href="#">Team</a>
+    <a class="nav" href="#">Insight</a>
+    <span class="spacer"></span>
+    <div class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>Search<span class="kbd">⌘K</span></div>
+    <button class="ask" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path></svg>Ask Aiden <span style="font-weight:500;opacity:.75">⌘J</span></button>
+    <a class="nav" href="#" aria-label="Settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"></path></svg></a>
+  </header>
+
+  <main style="width: 100%; max-width: 1920px; margin: 0 auto; padding: 24px clamp(16px, 2.4vw, 56px) 48px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px;">
+    <a href="V2Team.dc.html" style="font-size: 13px; font-weight: 600;">← Your team</a>
+
+    <section class="card" style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; padding: 18px 20px;">
+      <dc-import name="Face" who="max" state="working" size="{{ s88 }}" hint-size="88px,88px"></dc-import>
+      <div style="flex: 999 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <h1 style="margin: 0; font-size: 26px; letter-spacing: -0.02em;">Max</h1>
+          <span style="font-size: 17px; color: #4a5163; font-weight: 500;">· PR reviewer</span>
+          <button class="btn" type="button" style="padding: 4px 9px; font-size: 12px;">Rename</button>
+        </div>
+        <div class="row" style="color: #237a35; font-weight: 600;"><span style="width: 8px; height: 8px; border-radius: 4px; background: #2f9e44;"></span>Reviewing PR #821 in aidenhq-distro · started 3 min ago</div>
+        <span class="small">Reviews every pull request on your repos, explains its findings and checks the fixes. Module: code-review</span>
+      </div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button class="btn" type="button">Pause Max</button>
+        <a class="btn" href="#" style="text-decoration: none;">Advanced: Code review settings ↗</a>
+      </div>
+    </section>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start;">
+      <section class="card" style="flex: 999 1 600px; min-width: 0; display: flex; flex-direction: column;">
+        <div style="padding: 14px 18px; border-bottom: 1px solid #e1e4ea; display: flex; align-items: center; gap: 10px;">
+          <h2 class="h3" style="font-size: 14px;">Chat with Max</h2>
+          <span class="small">Tell Max what you want; it changes its own settings and shows you exactly what changed.</span>
+        </div>
+        <div style="padding: 20px 18px; display: flex; flex-direction: column; gap: 18px;">
+
+          <div style="display: flex; justify-content: flex-end;">
+            <div style="max-width: 70%; background: #e8edfd; border-radius: 10px; padding: 10px 14px;">
+              <p class="msg">Also review PRs on aidenhq-distro, but skip docs-only ones.</p>
+              <span class="small">You · 08:02</span>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 10px; align-items: flex-start;">
+            <dc-import name="Face" who="max" state="idle" size="{{ s32 }}" hint-size="32px,32px"></dc-import>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px;">
+              <p class="msg">Done. aidenhq-distro is now reviewed like your other repos. A PR that only touches <code>.md</code> files or <code>site/</code> copy gets no review and is marked “docs only, skipped”.</p>
+              <div style="border: 1px solid #e1e4ea; border-radius: 8px; overflow: hidden; max-width: 560px;">
+                <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #f9fafb; border-bottom: 1px solid #e1e4ea;">
+                  <span class="h3" style="font-size: 12.5px;">Settings changed</span>
+                  <span class="small">code-review · 2 changes</span>
+                  <button class="btn" type="button" style="margin-left: auto; padding: 4px 9px; font-size: 12px;">Undo</button>
+                </div>
+                <div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.6;">
+                  <div style="padding: 2px 12px; background: rgba(34,197,94,0.15);">+ repos: aidenhq-distro</div>
+                  <div style="padding: 2px 12px; background: rgba(239,68,68,0.15);">- skip: (none)</div>
+                  <div style="padding: 2px 12px; background: rgba(34,197,94,0.15);">+ skip: PRs touching only *.md and site/ copy</div>
+                </div>
+              </div>
+              <span class="small">Max · 08:02</span>
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end;">
+            <div style="max-width: 70%; background: #e8edfd; border-radius: 10px; padding: 10px 14px;">
+              <p class="msg">Why did #812 take 3 rounds?</p>
+              <span class="small">You · 08:05</span>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 10px; align-items: flex-start;">
+            <dc-import name="Face" who="max" state="idle" size="{{ s32 }}" hint-size="32px,32px"></dc-import>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px;">
+              <p class="msg">Two findings were real, one was mine to fix:</p>
+              <div style="display: flex; flex-direction: column; gap: 6px; max-width: 620px;">
+                <div class="row" style="align-items: flex-start;"><span class="tag" style="background: #ffe3e3; color: #c92a2a; flex: none;">Round 1</span><span>Export skipped invoices with a zero total. Engineer fixed it in 14 min.</span></div>
+                <div class="row" style="align-items: flex-start;"><span class="tag" style="background: #fff3bf; color: #8a5d00; flex: none;">Round 2</span><span>The fix had no test for the zero case. Added.</span></div>
+                <div class="row" style="align-items: flex-start;"><span class="tag" style="background: #e7defc; color: #46238f; flex: none;">Round 3</span><span>I flagged a date format that was already correct. That round was wasted; I've noted it so I don't flag it again.</span></div>
+              </div>
+              <p class="msg" style="color: #4a5163;">Total: 41 min from open to merge, $0.38.</p>
+              <span class="small">Max · 08:05</span>
+            </div>
+          </div>
+        </div>
+        <label style="margin: 0 18px 18px; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #cbd0da; border-radius: 10px; background: #ffffff;">
+          <span style="position: absolute; left: -9999px;">Message Max</span>
+          <input type="text" placeholder="Message Max: “review only PRs from people outside the team”, “why is #821 slow?”" style="flex: 1; min-width: 0; border: 0; outline: 0; font: inherit; font-size: 14px; background: transparent; color: #12151c;">
+          <button type="button" aria-label="Send" style="width: 32px; height: 32px; border-radius: 8px; border: 0; background: #3b5bdb; color: #ffffff; display: flex; align-items: center; justify-content: center;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+        </label>
+      </section>
+
+      <aside style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 14px;">
+        <section class="card" style="padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+          <h2 class="h3">What Max does</h2>
+          <p style="margin: 0; font-size: 13.5px; line-height: 1.5; color: #4a5163;">Reviews each pull request when it opens and after each push, posts its findings on GitHub, and checks that fixes really fix them. Merging is Sam's job.</p>
+        </section>
+
+        <section class="card" style="padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+          <h2 class="h3">Recent work</h2>
+          <div class="row"><span class="tag" style="background: #dcf2d9; color: #1f5420;">Merged</span><span style="flex: 1;">#812 Invoices export v2</span><span class="small">3 rounds</span></div>
+          <div class="row"><span class="tag" style="background: #dcf2d9; color: #1f5420;">Passed</span><span style="flex: 1;">#817 Hiring pipeline filters</span><span class="small">1 round</span></div>
+          <div class="row"><span class="tag" style="background: #fff3bf; color: #8a5d00;">Findings</span><span style="flex: 1;">#818 Offsite planner rooms</span><span class="small">2 open</span></div>
+          <div class="row"><span class="tag" style="background: #e2e6ea; color: #2f3a45;">Skipped</span><span style="flex: 1;">#820 Fix typo in README</span><span class="small">docs only</span></div>
+          <a href="#" style="font-size: 13px; font-weight: 600;">All reviews →</a>
+        </section>
+
+        <section class="card" style="padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+          <h2 class="h3">How Max is set up</h2>
+          <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">Repos</span><span>AidenHQ, aidenhq-distro, invoices-app</span></div>
+          <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">When</span><span>When a PR opens, then once after the next push</span></div>
+          <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">Skips</span><span>Docs-only PRs</span></div>
+          <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">Reviewers</span><span>Two engines; the second checks the first</span></div>
+          <p class="small" style="margin: 2px 0 0;">Change any of this by asking Max.</p>
+        </section>
+
+        <details class="card" style="padding: 14px 16px;">
+          <summary style="font-size: 13px; font-weight: 600; color: #4a5163;">Team behind Max (2)</summary>
+          <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 10px;">
+            <span class="small">AI reviewer: approves Max's GitHub posts before they go out</span>
+            <span class="small">Review engines: Codex and Claude Code runs in a sealed box</span>
+            <span class="small">Module: code-review · <a href="#">open module page ↗</a></span>
+          </div>
+        </details>
+      </aside>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1200}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { s88: 88, s32: 32 };
+  }
+}
+</script>
+</body>
+</html>

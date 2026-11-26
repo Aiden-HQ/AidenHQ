@@ -248,8 +248,8 @@ to the owner, chat storage as Paperclip tasks.
    improvement path.
 2. **Teammate page side column is generic**: what it does (description), recent work (its recent tasks/timeline,
    existing endpoints), how it's set up (its controlled modules' settings rendered from their declared settings and
-   labels), staff, one Advanced link. No per-module widgets. **Pause** pauses the teammate and its staff (existing
-   agent pause); it does not stop module services, and the button says "Pause Max and his staff".
+   labels), staff, one Advanced link. No per-module widgets. **Pause** pauses only the teammate (existing agent pause; staff
+   such as the Engineer may be shared); it does not stop module services, and the button says "Pause Max".
 3. **No new `draft` kind.** Drafts are an owner question whose options are e.g. "Send" / "Not now", with an optional
    `detail` text (the draft, ≤2000 chars) added to the owner-question shape; Edit = answer with free text. Send
    answers the teammate, which then sends through the existing write gates (AI review). Sends have no Undo; the
