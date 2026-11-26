@@ -400,7 +400,8 @@ export function createMerges(d: {
       if (v.do === "fail") return fail(v.why ?? "");
       if (v.do === "wait") return wait(v.why ?? "", v.why);
       if (v.do !== "merge") return;
-      // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
+      // The live base branch goes along: a risk tier computed from another base is stale (code review: pending). The author
+      // association is not compared: the classifier and the queue read it under different identities.
       const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       if (review && "wait" in review) {
         // Why this PR still waits: the record's own reason is built from every PR still waiting after the poll (publishWait), so
@@ -741,7 +742,8 @@ export function createMerges(d: {
       // A skipped image scan is judged on the PR's files, which only the full read has.
       const listed = view && !skippedImageScan(view.pr);
       const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);
-      // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
+      // The live base branch goes along: a risk tier computed from another base is stale (code review: pending). The author
+      // association is not compared: the classifier and the queue read it under different identities.
       const g = await d.reviewGate(repo, number, head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       const rollup = data.repository.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
       // Every context by name, advisory ones included (a branch may require them), with the kind and rank the gate picks the
