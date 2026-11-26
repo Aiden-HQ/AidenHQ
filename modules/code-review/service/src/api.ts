@@ -4,7 +4,7 @@
 //                                        → { verdict: pass|wait, reasons: [{ code, text, unblock? }], requires_review, tier, policy?,
 //                                        reviewed, kind }   the github module's merge queue and ship's approval. tier: { state:
 //                                        classified, tier, rule, why } | { state: pending } (no current classification of that head,
-//                                        or the caller's live base branch or author association differ from what it came from) |
+//                                        or the caller's live base branch differs from what it came from) |
 //                                        { state: unwatched }; requires_review: the head's tier has a mandatory combo; policy: the
 //                                        head's review policy; kind: completed (the head is covered under its policy), exhausted (the
 //                                        verdict stands on `reviewed`, an earlier head), skipped, or none (its tier needs no review)

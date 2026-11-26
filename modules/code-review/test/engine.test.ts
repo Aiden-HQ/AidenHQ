@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readConfig } from "../service/src/config.ts";
-import { createEngine, DEBOUNCE } from "../service/src/engine.ts";
+import { AGAIN_MS, createEngine, DEBOUNCE } from "../service/src/engine.ts";
 import { parseCommand } from "../service/src/commands.ts";
 import { reasonOf } from "../service/src/adapters.ts";
 
@@ -1551,6 +1551,36 @@ test("risk tiers: each head runs its tier's reviewers; a pending head waits; a t
   same.snaps.down = 1; same.pr(6, sha("8")); await same.tick();
   same.later(1000); await same.tick(); same.later(DEBOUNCE + 1); await same.tick();
   assert.deepEqual(same.started.slice(2).map((x) => [x.head, x.incremental_from]), [[sha("8"), sha("7")]]);
+});
+
+test("the merge gate is never held by the caller's author association: a head classified NONE is classified when the caller sees OWNER", async () => {
+  const w = gatedWorld();
+  await w.tick(); w.later(1000);
+  w.pr(9, sha("9"), { author: "maxsam4", association: "NONE" }); // the App's read of an owner-authored PR
+  await w.tick();
+  w.finish(0, NONE); await w.tick();
+  const v = w.engine.verdict(REPO, 9, sha("9"), { association: "OWNER" }); // the merge queue's own read
+  assert.deepEqual([v.verdict, v.tier.state], ["pass", "classified"]);
+  assert.deepEqual(v.reasons, []);
+  // A retargeted base is still a reclassification, not a pass.
+  assert.deepEqual(codes(w.engine.verdict(REPO, 9, sha("9"), { base: "release", association: "OWNER" })), ["not_started"]);
+});
+
+test("a classification stored under an older rule config schedules a re-read: a later tick resolves it with no PR event", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).tier.state, "classified");
+  // A rules edit since the classification: the stored inputs name another config, so the head is pending.
+  const stored = JSON.parse(w.db.prepare("SELECT cls FROM prs WHERE repo = ? AND number = ?").get(REPO, 2).cls);
+  w.db.prepare("UPDATE prs SET cls = ? WHERE repo = ? AND number = ?").run(JSON.stringify({ ...stored, config: "0000000000000000" }), REPO, 2);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["not_started"]);
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).tier.state, "pending");
+  // No PR event at all (no resync, an empty feed): the deferred re-read alone resolves it.
+  w.later(AGAIN_MS + 1);
+  await w.tick({ github: false });
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).tier.state, "classified");
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
 });
 
 test("a bare rebase carries the review and its verdict unrun; a push on the same merge base is incremental, a rebase with changes whole", async () => {
