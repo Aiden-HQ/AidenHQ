@@ -1,5 +1,5 @@
 // GitHub as the owner, for what isn't github.ts's own: organization Projects (v2) boards (one fixed GraphQL query), the
-// src_github sync, product issues and the design-review commit status. Every call goes through the owner's client (client.ts),
+// src_github sync and product issues. Every call goes through the owner's client (client.ts),
 // so its rate limiter and typed needs apply; there is no other identity.
 import type { GitHubAccess } from "./client.js";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
@@ -96,22 +96,6 @@ export function upstreamReport(
 export class Projects {
   private accounts = new Map<string, { user: boolean; projects: boolean }>();
   constructor(private readonly access: Pick<GitHubAccess, "rest" | "graphql">) {}
-
-  /**
-   * A commit status (the design-review check) on an open PR's current head. The caller checks the org, the role and the
-   * context; this checks that `sha` is the PR's head right now, so a verdict can't land on some other commit a PR's text
-   * pointed at.
-   */
-  async commitStatus(org: string, repo: string, number: number, sha: string, status: { state: string; context: string; description: string; target_url?: string }) {
-    if (!NAME.test(org) || !NAME.test(repo) || !Number.isInteger(number) || number < 1 || !/^[0-9a-f]{40}$/.test(sha)) throw new Error("give owner/repo, the PR number and the full 40-character commit SHA");
-    const pr = await this.access.rest("GET", `/repos/${org}/${repo}/pulls/${number}`);
-    if (pr.status !== 200) throw new Error(`couldn't read ${org}/${repo}#${number} (GitHub said ${pr.status})`);
-    if (pr.body.state !== "open") throw new Error(`${org}/${repo}#${number} isn't open`);
-    if (String(pr.body.head?.sha).toLowerCase() !== sha) throw new Error(`${sha.slice(0, 12)} isn't the current head of #${number} (it is ${String(pr.body.head?.sha).slice(0, 12)}): review that head`);
-    const r = await this.access.rest("POST", `/repos/${org}/${repo}/statuses/${sha}`, status);
-    if (r.status !== 201) throw new Error(`GitHub refused the status (${r.status} ${r.body?.message ?? ""})`.trim());
-    return { repo: `${org}/${repo}`, number, sha, context: r.body.context, state: r.body.state };
-  }
 
   /** The repo's issues whose body carries the fingerprint (GitHub search is fuzzy: each hit is checked). */
   private async byFingerprint(owner: string, repo: string, fingerprint: string, open: boolean) {

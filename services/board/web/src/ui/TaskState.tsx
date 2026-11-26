@@ -18,7 +18,7 @@ export const isActive = (s: ShownState | null | undefined) =>
 const KIND_WORD = { working: "Working", waiting: "Waiting", idle: "Idle", done: "Done" } as const;
 
 /** What a module is waiting on (a module wait's `ref` is its reason, not a task). */
-const MODULE_WAIT: Record<string, string> = { checks: "CI checks", eval: "reviewer eval", retry: "retry", design_review: "design review", code_review: "code review", conflict: "merge conflict" };
+const MODULE_WAIT: Record<string, string> = { checks: "CI checks", eval: "reviewer eval", retry: "retry", code_review: "code review", conflict: "merge conflict" };
 const moduleWords = (ref: string) => MODULE_WAIT[ref] ?? ref.replace(/_/g, " ");
 
 /** After a dot: what a reason means to the person reading it. `refLabel` names a card, a blocker or how a job ended. */

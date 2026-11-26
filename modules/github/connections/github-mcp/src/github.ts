@@ -339,7 +339,7 @@ export class GitHub {
       const reviews = await this.request<GhReview[]>("GET", `${base}/pulls/${ref.number}/reviews`, { query: { per_page: 100 } });
       // The changed files' names (first 100), e.g. for the UI Reviewer to find the screens a PR touches.
       const files = await this.request<{ filename: string }[]>("GET", `${base}/pulls/${ref.number}/files`, { query: { per_page: 100 } }).catch(() => []);
-      // Commit statuses on the head (e.g. design-review pending) and the Actions check runs (CI) are separate lists:
+      // Commit statuses on the head (e.g. `aidenhq/review`) and the Actions check runs (CI) are separate lists:
       // a name missing from `statuses` may still be a check run, so both are read. A read that fails is reported
       // rather than flattened to [] (which reads as "no checks").
       const sha = /^[0-9a-f]{40}$/.test(String(pr.head?.sha)) ? pr.head!.sha! : undefined;

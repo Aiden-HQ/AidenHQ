@@ -593,9 +593,9 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.deepEqual(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, running] }), { do: "wait", why: "checks are still running on its head" });
   // A superseded cancelled twin never counts as pending: the newest run of the name decides.
   assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name: "packages (1)", kind: "run", rank: 1, ok: false, pending: false }, { name: "packages (1)", kind: "run", rank: 2, ok: true, pending: false }] }).do, "stall", "an old cancelled run is not a pending check");
-  // The design review and code review's advisory commit *statuses* are not what GitHub holds a merge for, so one pending never
+  // Code review's advisory commit *status* is not what GitHub holds a merge for, so one pending never
   // hides a stall; a check run that only shares the name is the repo's own job and still waits.
-  for (const name of ["design-review", "aidenhq/review"]) {
+  for (const name of ["aidenhq/review"]) {
     assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name, kind: "status", ok: false, pending: true }] }).do, "stall", `the advisory ${name} status is not a running check`);
     assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name, kind: "run", ok: false, pending: true }] }).do, "wait", `a check run named ${name} is still running`);
   }
@@ -689,10 +689,6 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   const unread = await run(true, false, "in_progress", 403);
   assert.equal(unread.calls.filter((c) => c.startsWith("PUT")).length, 0, unread.calls.join("\n"));
   assert.equal(unread.outcomes.length, 0, "waiting, not settled");
-  // The advisory design review alone is no CI: still waiting, never merged on it.
-  const design = await run(true, false, "in_progress", 403, [{ name: "design-review", status: "completed", conclusion: "success" }]);
-  assert.equal(design.calls.filter((c) => c.startsWith("PUT")).length, 0, design.calls.join("\n"));
-  assert.equal(design.outcomes.length, 0, "waiting, not settled");
 });
 
 test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {

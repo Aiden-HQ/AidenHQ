@@ -14,13 +14,13 @@ export function chatListForDevice(r: { chats: ChatRow[]; agents: ChatAgent[] }) 
 }
 
 /**
- * A system line that only reports progress: runner and agent notes, wake-ups and approval outcomes (the card shows
- * those too). A failure, a file the board couldn't read and someone else's opening words stay in the conversation.
+ * A system line that only reports progress: runner and agent notes and wake-ups. A failure (a card's own outcome line
+ * included), a file the board couldn't read and someone else's opening words stay in the conversation.
  */
 export function isNoise(m: ChatMessage): boolean {
   if (m.kind === "notes") return true;
   if (m.kind !== "notice") return false;
-  return !/^(Someone else opened this|I couldn't read|\*\*Failed:\*\*)/.test(m.text);
+  return !/^(Someone else opened this|I couldn't read|\*\*Failed:\*\*|\*\*Failed\*\* )/.test(m.text);
 }
 
 export type Folded<T> = T | { type: "fold"; key: string; at: string; until: string; items: T[] };
@@ -85,10 +85,36 @@ export const inFilter = (a: Approval, f: ApprovalFilter) =>
   (f === "pending" ? awaitsOwner(a) : f === "failed" ? outcomeOf(a).tone === "bad" : !awaitsOwner(a) && !awaitsReviewer(a) && !inProgress(a) && outcomeOf(a).tone !== "bad");
 
 /**
+ * Which cards a conversation shows: the ones that need the owner, are still in flight or went wrong. What the AI reviewer
+ * or code approved and applied stays on Approvals and in the agent's activity; a Tier 0 run that failed is shown (its
+ * failure's outcome line is folded once its card is here, so hiding it too would leave no sign of the failure).
+ * `seenPending`: the owner saw this card pending in the open chat, so it stays there after he decides it (until he
+ * leaves the chat) instead of vanishing under his tap; a fresh visit doesn't restore an applied card.
+ */
+export const shownInChat = (a: Approval, seenPending = false) => seenPending || (a.state !== "auto" ? awaitsOwner(a) || inProgress(a) || a.state === "rejected" || outcomeOf(a).tone === "bad" : outcomeOf(a).tone === "bad");
+
+/**
  * A card in a conversation folds to one line once it is decided; a pending one stays whole with its buttons. A card
  * the owner decides while looking at it (`seenPending`) stays open so it doesn't jump away under the tap.
  */
 export const foldsInChat = (a: Approval, seenPending: boolean) => a.state !== "pending" && a.state !== "running" && !seenPending;
+
+/**
+ * The cards a chat visit has seen waiting for the owner, which stay in it once decided. Only a pending Tier 2 card counts: a
+ * pending Tier 1 one is with the AI reviewer (chats don't show it), and a card that was never the owner's to decide must not
+ * appear in a chat just because the visit caught it mid-flight.
+ */
+export const seenByOwner = (cards: readonly Approval[]) => cards.filter(awaitsOwner).map((a) => a.id);
+
+/** The card's head after "{agent} ": what it asks, or who decided it in words. */
+export function headOf(a: Approval): string {
+  if (a.state === "auto") return "ran it at once (Tier 0)";
+  if (a.state === "running") return "is running";
+  if (awaitsOwner(a)) return "asks for your approval";
+  if (awaitsReviewer(a)) return "asks the AI reviewer";
+  const by = deciderOf(a);
+  return `${a.state === "rejected" ? "was rejected" : "was approved"}${by ? ` by ${by}` : ""}`;
+}
 
 /** Who decided a card, in words: a named admin, you (your tap or reply), code, the AI reviewer or the panel, or the stamp itself (watcher). */
 export function deciderOf(a: Pick<Approval, "decidedBy" | "decidedByName">): string {

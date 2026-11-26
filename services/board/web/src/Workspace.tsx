@@ -18,7 +18,7 @@ import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
 import { anyLive, groupChats, groupTasks, laneOf, settleableChat, taskSummary, type AgentGroup } from "./sidebar";
 import { TaskState, isActive, needsOwner, waitsForAnswer } from "./ui/TaskState";
-import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
+import { foldCount, foldNoise, isNoise, seenByOwner, shortTitle, shownInChat, type Folded } from "./conversation";
 import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, FileView, Lineage, SettledItem, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { Icon } from "./ui/icons";
@@ -573,12 +573,20 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
     [refId, toast, load],
   );
 
+  // A card the owner saw waiting for him here stays in this view after he decides it (an applied card's result is on
+  // screen rather than vanishing under his tap). The set is this chat's visit only: leaving it forgets, so a fresh visit
+  // shows exactly the cards that still need him. Only cards that were his to decide are kept: a Tier 1 card waiting on
+  // the AI reviewer is never shown, and must not appear once the reviewer approves it.
+  const seen = useRef(new Set<string>());
+  useEffect(() => {
+    for (const id of seenByOwner(chat?.approvals ?? [])) seen.current.add(id);
+  }, [chat?.approvals]);
   // Messages, cards and questions in time order; runs of progress lines (notes, wake-ups) fold to one line.
   const items: Folded<Item>[] = useMemo(() => {
     if (!chat) return [];
     const list: Item[] = [
       ...chat.messages.map((m) => ({ type: "message" as const, m, at: m.at, key: m.id })),
-      ...chat.approvals.map((a) => ({ type: "approval" as const, a, at: a.createdAt, key: a.id })),
+      ...chat.approvals.filter((a) => shownInChat(a, seen.current.has(a.id))).map((a) => ({ type: "approval" as const, a, at: a.createdAt, key: a.id })),
       ...(chat.asks ?? []).map((q) => ({ type: "ask" as const, q, at: q.at, key: q.id })),
     ];
     return foldNoise(
