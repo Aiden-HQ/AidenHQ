@@ -209,9 +209,15 @@ export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps:
         const from = new Date(Date.parse(new Date(now).toISOString().slice(0, 10)) - 13 * DAY).toISOString();
         const closed: Closed[] = [];
         for (const c of await companies()) closed.push(...((await d.kernel.read(`/api/companies/${c.id}/issues?status=done,cancelled&assigneeAgentId=${a.id}&limit=500&excludeRoutineExecutions=true&updatedSince=${encodeURIComponent(from)}`)) as Issue[]).filter((i) => i.assigneeAgentId === a.id));
+        // The ledger is read again here, after the closed set: a task that closed while the packet was being collected is
+        // then judged against a read no older than its own close, never against the runs read above. A ledger that cannot
+        // be read fails this card rather than being taken as "the agent ran nothing": an empty list would report every
+        // done task as one no agent worked on.
+        const ledger = (await d.kernel.call("GET", `/v1/work?agent=${encodeURIComponent(a.id)}`)).jobs as { state: string; started_at: string | null; task: string }[] | undefined;
+        if (!Array.isArray(ledger)) throw new Error("the job ledger answered no jobs, so a done task can't be told from one the agent never ran");
         const since = await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(from)}`);
         // The scorecard counts a done task as work only when this agent ran it: the job's task id is what matches the two.
-        return scorecard({ closed, records: since.records, usage: since.usage, jobs: jobs.map((j) => ({ state: j.state, started_at: j.started_at, task: j.task })) }, { id: a.id, key: keyOf(a) }, now);
+        return scorecard({ closed, records: since.records, usage: since.usage, jobs: ledger.map((j) => ({ state: j.state, started_at: j.started_at, task: j.task })) }, { id: a.id, key: keyOf(a) }, now);
       });
       const fixes = await part("corrections", () => corrections(now));
       const s = detectorState(d.kv);

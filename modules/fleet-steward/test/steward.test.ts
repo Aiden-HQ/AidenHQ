@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
-import { dueList } from "../service/src/coach.ts";
+import { coachReads, dueList } from "../service/src/coach.ts";
 import { checks, detectorState, failingScopes, gateActivity, reviewStalls, shortScopes, spendSpike, stewardOn, tick, unresumedWaits } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 import { scorecard } from "../service/src/scorecard.ts";
@@ -532,4 +532,45 @@ test("the scorecard counts a done task as work only when the ledger holds a job 
   const inside = [{ id: "t-inside", identifier: "WOR-10", title: "Filed after the oldest row read", status: "done", assigneeAgentId: "eng", createdAt: at(4), completedAt: at(4), updatedAt: at(4) }];
   const s2 = scorecard({ closed: inside, records: [], usage, jobs: cut }, { id: "eng", key: "eng" }, t);
   assert.deepEqual([s2.done.count, s2.done.autoClosed, s2.cost.perDone], [0, 1, null], "a task filed inside the read with no job is auto-closed, and perDone has no worked task to divide by");
+});
+
+test("the evidence scorecard reads the job ledger after the closed set, and says so when the ledger is unavailable instead of calling every done task auto-closed", async () => {
+  const t = Date.parse("2026-11-26T02:20:00Z");
+  const at = (h) => new Date(t - h * 3_600_000).toISOString();
+  const issue = (id, status, completedAt) => ({ id, identifier: id.toUpperCase(), title: id, status, assigneeAgentId: "eng", createdAt: at(40), completedAt, updatedAt: completedAt });
+  // The runs read at the top of the packet and the ledger read inside the scorecard are separate calls: only the second one
+  // carries the task that closed after the first read, which is what finding f677a49 is about.
+  const ledgerReads = [];
+  const order = [];
+  const kernel = {
+    read: async (p) => {
+      if (p === "/api/companies") return [{ id: "co" }];
+      if (p.endsWith("/agents")) return [{ id: "eng", name: "eng", status: "idle", metadata: { setupKey: "aidenhq:eng" } }];
+      if (p.includes("/issues?")) { order.push("closed"); return [issue("worked", "done", at(3)), issue("holder", "done", at(2))]; }
+      if (p.startsWith("/api/issues/")) return issue(decodeURIComponent(p.split("/")[3]), "done", at(3));
+      return [];
+    },
+    call: async (_m, p) => {
+      if (p === "/v1/agents") return { agents: { eng: { key: "eng", roles: [] } } };
+      if (p.startsWith("/v1/work?agent=")) {
+        ledgerReads.push(p);
+        order.push("ledger");
+        // Only the later read has `worked`; the earlier snapshot predates its close (finding f677a49).
+        return { jobs: ledgerReads.length > 1 ? [{ state: "done", started_at: at(4), task: "worked" }] : [] };
+      }
+      if (p.startsWith("/v1/work?since=")) return { records: [], usage: [] };
+      return { jobs: [] };
+    },
+  };
+  const card = async () => (await coachReads({ kernel, kv: kvOf(), apps: async () => [] }).evidence("coach", "eng", t)).scorecard;
+  const s = await card();
+  assert.equal(ledgerReads.length, 2, "the ledger is read once for the runs and once more inside the scorecard");
+  assert.deepEqual(order.slice(1, 3), ["closed", "ledger"], "the scorecard's ledger read comes after the closed set it classifies (finding f677a49)");
+  assert.deepEqual({ count: s.done.count, autoClosed: s.done.autoClosed }, { count: 1, autoClosed: 1 }, "a task that closed after the runs read still counts as the agent's work");
+
+  // Both ledger reads fail: the scorecard is unavailable, never "every done task is auto-closed".
+  const down = { ...kernel, call: async (_m, p) => { if (p.startsWith("/v1/work?agent=")) throw new Error("timeout"); return p === "/v1/agents" ? { agents: {} } : { records: [], usage: [] }; } };
+  const packet = await coachReads({ kernel: down, kv: kvOf(), apps: async () => [] }).evidence("coach", "eng", t);
+  assert.equal(packet.scorecard, undefined, "no scorecard is published from a ledger that could not be read");
+  assert.ok(packet.coverage.unavailable.some((u) => u.startsWith("scorecard:")), "and the packet says the scorecard is unavailable");
 });
