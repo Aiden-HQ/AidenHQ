@@ -1,8 +1,6 @@
 // One agent's 7 days against the 7 before, from facts the system already holds: tasks done (control plane), approval records and
 // billed cost (the kernel's /v1/work?since=), jobs (the kernel's ledger). A diagnostic for the Coach, not a ranking.
 const DAY = 864e5;
-/** GET /v1/work?agent= returns an agent's newest jobs, cut at this many: below it the ledger read is complete. */
-const JOB_READ = 50;
 const day = (t: number) => new Date(t).toISOString().slice(0, 10);
 
 export interface Closed { id: string; identifier: string; title: string; status: string; assigneeAgentId?: string | null; createdAt?: string | null; completedAt?: string | null; updatedAt: string }
@@ -15,7 +13,8 @@ export interface Facts {
   records: { requester: string | null; state: string; created_at: string }[];
   /** Billed cost per agent and UTC day (/v1/work?since=): rows are the calls, priced those that carried a cost. */
   usage: { agent: string | null; day: string; cost_usd: number; calls: number; priced: number }[];
-  /** The agent's jobs, newest first (/v1/work?agent=): how it ended, when it started, and the task it ran. */
+  /** The agent's jobs, newest first (/v1/work?agent=&since=): how it ended, when it started, and the task it ran. Read from before
+   * the oldest task in `closed` was filed, so every task that ran at all has its row here. */
   jobs: Job[];
 }
 
@@ -32,14 +31,12 @@ export function scorecard(f: Facts, agent: { id: string; key: string }, now = Da
   const mine = f.closed.filter((i) => i.status === "done" && i.assigneeAgentId === agentId);
   // A task the ledger holds no job for was never run by the agent: it filed itself as a holder and closed itself (a ship
   // record, a pin bump), so it is not work done — and its $0 must not dilute cost.perDone. Only a job that started makes a task
-  // worked: a queued one never ran, and one that failed or was cancelled before launching never got a shell either. The ledger
-  // read holds only the agent's newest jobs, so when it is cut, a task created before the oldest row read might have run in a
-  // row it left out: that one stays counted as work (as before) rather than be misreported as auto-closed.
+  // worked: a queued one never ran, and one that failed or was cancelled before launching never got a shell either. The read
+  // covers every job from before the oldest closed task was filed, so an absent row means the task never ran, never that it
+  // fell past the read's cut.
   const started = (j: Job) => (j.started === undefined ? j.state !== "admitted" : j.started);
   const worked = new Set(f.jobs.filter(started).map((j) => j.task));
-  const starts = f.jobs.flatMap((j) => (j.started_at ? [Date.parse(j.started_at)] : []));
-  const horizon = f.jobs.length >= JOB_READ && starts.length ? Math.min(...starts) : null;
-  const ran = (i: Closed) => worked.has(i.id) || (horizon !== null && !(i.createdAt && Date.parse(i.createdAt) > horizon));
+  const ran = (i: Closed) => worked.has(i.id);
   const done = mine.filter((i) => inWeek(doneAt(i)) && ran(i));
   const autoClosed = mine.filter((i) => inWeek(doneAt(i)) && !ran(i));
   const ofAgent = f.usage.filter((c) => c.agent === agentId);

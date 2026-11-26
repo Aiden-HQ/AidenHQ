@@ -210,10 +210,16 @@ export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps:
         const closed: Closed[] = [];
         for (const c of await companies()) closed.push(...((await d.kernel.read(`/api/companies/${c.id}/issues?status=done,cancelled&assigneeAgentId=${a.id}&limit=500&excludeRoutineExecutions=true&updatedSince=${encodeURIComponent(from)}`)) as Issue[]).filter((i) => i.assigneeAgentId === a.id));
         // The ledger is read again here, after the closed set: a task that closed while the packet was being collected is
-        // then judged against a read no older than its own close, never against the runs read above. A ledger that cannot
-        // be read fails this card rather than being taken as "the agent ran nothing": an empty list would report every
-        // done task as one no agent worked on.
-        const ledger = (await d.kernel.call("GET", `/v1/work?agent=${encodeURIComponent(a.id)}`)).jobs as { state: string; started_at: string | null; task: string; started?: boolean }[] | undefined;
+        // then judged against a read no older than its own close, never against the runs read above. It is read from before
+        // the oldest closed task was filed, uncut, so a task with no job row is one the agent never ran rather than one whose
+        // row fell past a limit. A ledger that cannot be read fails this card rather than being taken as "the agent ran
+        // nothing": an empty list would report every done task as one no agent worked on.
+        const filed = closed.flatMap((i) => (i.createdAt ? [Date.parse(i.createdAt)] : [])).filter((n) => !Number.isNaN(n));
+        // An hour of margin: the read is filterable by a job's own start time, which is never earlier than its task's filing. A
+        // closed task whose filing time is not in the answer takes the wider bound, so no task it classifies is left unread.
+        const bound = filed.length === closed.length ? Math.min(...filed) - 3_600_000 : now - 30 * DAY;
+        const ledgerSince = new Date(Math.min(bound, Date.parse(from))).toISOString();
+        const ledger = (await d.kernel.call("GET", `/v1/work?agent=${encodeURIComponent(a.id)}&since=${encodeURIComponent(ledgerSince)}&brief=1`)).jobs as { state: string; started_at: string | null; task: string; started?: boolean }[] | undefined;
         if (!Array.isArray(ledger)) throw new Error("the job ledger answered no jobs, so a done task can't be told from one the agent never ran");
         const since = await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(from)}`);
         // The scorecard counts a done task as work only when this agent ran it: the job's task id is what matches the two.
