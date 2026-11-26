@@ -245,10 +245,17 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
       return { do: "fail", why: `it conflicts with \`${def}\`: rebase it and ask for its merge again` };
     case "BEHIND":
       return { do: "fail", why: `it is behind \`${def}\`: rebase it and ask for its merge again` };
-    case "BLOCKED":
+    case "BLOCKED": {
       // With the head's approval in, a code owner (or another required review) is what GitHub still waits for.
+      // GitHub also reports BLOCKED while a check is still running on the head, even when every required check is green (a
+      // duplicate workflow run's jobs in flight): the required guard above judges only `ship.required`, so the whole head is
+      // judged here by its newest run per name, and any check still pending is a wait.
       // Any other rule (conversations to resolve, signed commits, a deployment) is one ship doesn't handle: a visible stall.
-      return ship ? (pr.reviewDecision === "REVIEW_REQUIRED" ? { do: "wait", why: reviewWait(pr) } : { do: "stall", why: "blocked by a branch rule ship doesn't handle" }) : { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
+      if (!ship) return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
+      if (pr.reviewDecision === "REVIEW_REQUIRED") return { do: "wait", why: reviewWait(pr) };
+      if (headChecks(ship.checks).some((c) => c.pending)) return { do: "wait", why: "checks are still running on its head" };
+      return { do: "stall", why: "blocked by a branch rule ship doesn't handle" };
+    }
     default:
       return { do: "wait", why: "GitHub is still working out whether it can merge" };
   }
