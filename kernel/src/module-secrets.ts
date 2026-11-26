@@ -71,10 +71,10 @@ export function createModuleSecrets(deps: {
     return field;
   };
   return {
-    /** The keys a JSON-map secret holds: names only, never a value, and only those that are valid keys with an entry (anything else in the file is never echoed). */
+    /** The keys a JSON-map secret holds: names only, never a value, and only valid keys (any other text in the file is never echoed). */
     keys(module: string, secret: string): string[] {
       mapField(module, secret);
-      return Object.entries(map(secret)).flatMap(([k, e]) => (MAP_KEY.test(k) && e && typeof e === "object" && !Array.isArray(e) ? [k] : []));
+      return Object.keys(map(secret)).filter((k) => MAP_KEY.test(k));
     },
     /**
      * Sets, replaces (`entry`: one flat object of text values) or clears (`entry` null) one key of the map. `check` sees the entry
