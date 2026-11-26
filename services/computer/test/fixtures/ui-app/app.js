@@ -10,11 +10,11 @@ const pages = {
   "": () => `<h1>Acme home</h1><div class="card">Welcome to the Acme fixture.</div>`,
   live: () => { timer = setInterval(() => get("/api/live").then((j) => { const n = document.getElementById("t"); if (n) n.textContent = String(j.t); }), 50); return `<h1>Live feed</h1><div class="card">Updated <span id="t">0</span></div>`; },
   scroll: () => `<h1>Scrolling list</h1>`,
-  planted: () => `<h1 id="pt">Planted page</h1>
+  planted: () => `<div class="planted"><h1 id="pt">Planted page</h1>
     <div class="card"><p class="odd-size">A paragraph at a stray size.</p><p class="hot">A stray colour.</p><p style="font-size:12px">Small</p><p style="font-size:14px">Body</p><p style="font-size:16px">Lead</p><p style="font-size:20px">Heading</p></div>
     <div style="display:flex;flex-direction:column"><div style="margin-top:8px">a</div><div style="margin-top:16px">b</div><div style="margin-top:24px">c</div><div class="gap13">d</div></div>
     <div class="cards"><div class="card">One</div><div class="card off">Two</div></div>
-    <button class="slow">Hover me</button>`,
+    <button class="slow">Hover me</button></div>`,
   clock: () => `<h1>Clock</h1><div class="card">Last sync <span id="ago">${Math.max(0, Math.round((Date.now() - window.__bootAt) / 60000))}m ago</span></div>`,
   danger: () => `<h1>Danger zone</h1><div class="card"><button id="del" onclick="fetch('/api/delete',{method:'POST'})">Delete</button> <button class="primary" id="pay" onclick="fetch('/api/pay',{method:'POST'})">Pay</button></div>`,
 };

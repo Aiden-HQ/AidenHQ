@@ -1,7 +1,7 @@
 // The ui-review engine's fixture app: one HTML shell, a hash router, 60 routes. Neutral copy (acme, example.com).
 //   node server.ts [port]      serves it (prints the URL)
 //   startFixture(port?)        for tests: { url, writes(), set(key, value), close() }
-// Routes (ROUTES): the generated /r01../r54 plus /live (polls every 50 ms, never settles), /scroll (scrolls inside <main>),
+// Routes (ROUTES, as /#/name): the generated r01..r54 plus live (polls every 50 ms, never settles), /scroll (scrolls inside <main>),
 // /planted (the measurement plants), /clock ("2m ago" from Date.now()), /danger (Delete and Pay POST: the server counts writes).
 import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
@@ -12,8 +12,8 @@ const shell = (title: string) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <link rel="stylesheet" href="/style.css"></head><body><div id="app"></div><script src="/app.js"></script></body></html>`;
 
-/** The 60 hash routes (app.js renders the same set). */
-export const ROUTES: string[] = ["/", "/live", "/scroll", "/planted", "/clock", "/danger", ...Array.from({ length: 54 }, (_, i) => `/r${String(i + 1).padStart(2, "0")}`)];
+/** The 60 navigable paths, relative to the fixture URL (app.js renders the same set from the hash). */
+export const ROUTES: string[] = ["/", "/#/live", "/#/scroll", "/#/planted", "/#/clock", "/#/danger", ...Array.from({ length: 54 }, (_, i) => `/#/r${String(i + 1).padStart(2, "0")}`)];
 
 export type Fixture = { url: string; port: number; writes(): number; set(key: string, value: string): void; close(): Promise<void> };
 

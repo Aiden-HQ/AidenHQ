@@ -26,3 +26,18 @@ test("the fixture app serves 60 routes and counts writes", async () => {
     assert.equal(f.writes(), 1);
   } finally { await f.close(); }
 });
+
+test("every fixture route renders its own page, and /planted carries its defects", { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" }, async () => {
+  const { chromium } = await import("../images/agent-base/ui-review/node_modules/playwright-core/index.mjs");
+  const f = await startFixture();
+  const b = await chromium.launch({ executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH });
+  try {
+    const p = await b.newPage();
+    const headings = new Set<string | null>();
+    for (const r of ROUTES) { await p.goto(f.url + r); await p.waitForTimeout(30); headings.add(await p.locator("h1").first().textContent()); }
+    assert.equal(headings.size, 60);
+    await p.goto(f.url + "/#/planted");
+    const odd = await p.evaluate(() => getComputedStyle(document.querySelector(".odd-size")!).fontSize);
+    assert.equal(odd, "15px");
+  } finally { await b.close(); await f.close(); }
+});
