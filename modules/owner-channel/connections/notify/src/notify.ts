@@ -143,8 +143,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     if (att.do === "block" || att.do === "limit") return { sent: false, reason: att.do === "block" ? "blocked" : "limit", note: att.note };
     // When the wait this question opens began: what a one-tap answer is bound to.
     let since: string | undefined;
-    // A question reaches the owner directly only from the chief of staff, or on a task the owner is talking to its agent on
-    // (the kernel decides, escalate.ts); any other goes to the Fleet Steward, which settles it (the Steward's own to the chief
+    // A question reaches the owner directly only from the chief of staff, on a task the owner is talking to its agent on, or
+    // on the agent's part of the owner's own task (the kernel decides, escalate.ts); any other goes to the Fleet Steward, which settles it (the Steward's own to the chief
     // of staff). The wait is recorded first, so a question is never sent without it.
     if (kind === "decision" && caller && !caller.roles?.includes(CHIEF)) {
       const steward = !caller.roles?.includes(SETTLER);

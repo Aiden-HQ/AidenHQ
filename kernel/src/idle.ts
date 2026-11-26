@@ -6,7 +6,7 @@
 //   ends the wait (the state, and admission drops its timed wake); a new wait replaces the last. A wait `for` the owner or the
 //   delegator is a judgement the task can't make itself: it lasts until the answer wakes the task (7 days unless `until`),
 //   and its `question` goes once to whoever settles it (escalate.ts): the owner directly (reason owner_wait) only from the
-//   chief of staff or on a task the owner is talking to its agent on; otherwise the open delegator or the chief of staff
+//   chief of staff, on a task the owner is talking to its agent on, or on its part of the owner's own task; otherwise the open delegator or the chief of staff
 //   (reason delegator_wait: an agent answers). The steward raises either left too long.
 // - sweep(): every few minutes, each open (todo, in_progress) task an agent holds (in_review: see below) that the task state reports `orphaned` (a
 //   chat is `chat_turn`, never orphaned), `unknown` (its holder's wake aged out) or `unpolled` (no enabled dispatcher runs its

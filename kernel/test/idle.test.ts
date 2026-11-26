@@ -198,6 +198,15 @@ test("an agent's owner question goes to the Fleet Steward as one task, never to 
   assert.match(w.asked.steward[1].description, /Or rename it\?/);
 });
 
+test("an agent's part of the owner's own task asks the owner directly: the follow-up chaser's sweep question reaches Needs you", async (t) => {
+  const w = world(t);
+  w.issues.t0 = { ...w.issues.t0, status: "todo", assigneeAgentId: null, assigneeUserId: "owner" };
+  const r = await w.idle.wait({ agent: AGENT, key: "open-loops", task: "t1" }, { reason: "x", for: "owner", question: "Send this chaser?", detail: "Hi Jonas" });
+  assert.deepEqual([r.to, w.asked.owner.length, w.asked.steward.length], ["owner", 1, 0]);
+  w.tick(MIN);
+  assert.ok(w.row("t1").attention.some((a) => a.who === "owner" && a.why === "owner_wait"));
+});
+
 test("an owner question's detail (the draft it is about) is in the task's state beside the question and goes to its settler; never without a question", async (t) => {
   const w = world(t);
   const detail = "Hi Jonas, any news on the signed contract?";
