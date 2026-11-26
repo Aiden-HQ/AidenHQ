@@ -216,8 +216,7 @@ export function createModuleTool({ db, whoami, decl, asserter, resolver, secret,
     asserter.begin(signed.jti, { credential: "", bearer: token, job: who.job, aud: module, kind: who.kind }, TIMEOUT_S);
     try {
       const out = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-        // One deadline for the whole answer, not an idle timer: a module trickling bytes can't hold the call (and its assertion) open.
-        const deadline = setTimeout(() => { req.destroy(); no(new JobToolError(504, "timeout", `${module} didn't answer within ${TIMEOUT_S} s`)); }, TIMEOUT_S * 1000);
+        let deadline: NodeJS.Timeout | undefined;
         const ok = (v: { status: number; body: string }) => { clearTimeout(deadline); resolve(v); };
         const no = (e: JobToolError) => { clearTimeout(deadline); reject(e); };
         const req = request({ host: to.host, port: to.port, path: to.path, method: "POST", headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": signed.jwt, "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => {
@@ -228,6 +227,8 @@ export function createModuleTool({ db, whoami, decl, asserter, resolver, secret,
           res.on("error", () => no(new JobToolError(502, "bad_upstream", `${module} broke off its answer`)));
         });
         req.on("error", (e) => { resolver.forget(d.url); no(new JobToolError(502, "bad_upstream", `${module} is unreachable (${e.message})`)); });
+        // One deadline for the whole answer, not an idle timer: a module trickling bytes can't hold the call (and its assertion) open.
+        deadline = setTimeout(() => { req.destroy(); no(new JobToolError(504, "timeout", `${module} didn't answer within ${TIMEOUT_S} s`)); }, TIMEOUT_S * 1000);
         req.end(payload);
       });
       // The module's own refusal (a 4xx with its reason) reaches the box; its failure is the kernel's 502.
