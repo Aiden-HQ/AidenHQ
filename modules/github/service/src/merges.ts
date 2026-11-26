@@ -449,6 +449,8 @@ export function createMerges(d: {
       // lifts), and treats anything else as the PR's own failure to hold on.
       if (q.ship && at?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
       if (q.ship && at?.hold) return fail(`its adoption ended or moved on: it is on hold by ship (${at.hold.kind}), and ship files a new merge when it resumes`);
+      // A member's comment since the record was filed (ship asks for the read): the merge ends, so ship's next round asks for the fix.
+      if (q.ship && at?.comments && (await memberItems(p.repo, p.number, at.comments)).length) return fail("ship-tier-pending: members have open review comments: the merge ends so ship asks for the fix");
       if (at?.refused) return fail(`${at.retry ? "ship-tier-pending: " : ""}ship's tier check refused the merge: ${at.refused}`);
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
       // A pause reports the adoption's generation with a `stopped` hold, so the hold ends it, not a null generation.
@@ -756,6 +758,8 @@ export function createMerges(d: {
   for (const [id, q] of Object.entries(s.queues)) if (q.outcome && !q.reported) deliver(id, q);
 
   return {
+    /** The open member comments on a PR (ship's write-time recheck: service.ts adoptionEnded). */
+    openComments: memberItems,
     /**
      * Ship's round decision for an adopted PR at `head` (its watch loop asks through /internal/ship/decision): decide with ship's
      * context, as an adoption's merge is judged here, and the required checks red on the head. On a merge queue branch (mergePath)

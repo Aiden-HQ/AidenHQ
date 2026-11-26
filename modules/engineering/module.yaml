@@ -47,9 +47,9 @@ agents:
     max_parallel: 4 # independent changes run side by side, each in its own task workspace
     connections:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
-      # GitHub reads, a PR's review threads, a reply on one (resolving it where it was fixed) and one comment on the PR: answering a
+      # GitHub reads, a PR's review threads, a reply on one, resolving a fixed one (a reviewed write) and one comment on the PR: answering a
       # code review finding (write-code skill, Checks) or the members' comments on a PR ship works (ship skill).
-      github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_issue_comment, github_job_log, github_pr_files, github_product_issue_status, github_pr_threads, github_pr_thread_reply ]
+      github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_issue_comment, github_job_log, github_pr_files, github_product_issue_status, github_pr_threads, github_pr_thread_reply, github_pr_thread_resolve ]
       # Closing a code review finding in code review's own store (write-code skill, Checks): no GitHub write.
       code_review?: [ code_review_findings, code_review_resolve ]
       # A ship task's generate command, proposed when discovery couldn't settle it (ship skill; role ship-admin), when ship is on.

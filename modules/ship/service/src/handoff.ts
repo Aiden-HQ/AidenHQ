@@ -49,7 +49,7 @@ export type Kept = Adoption & {
   /** The head and facts of a report that failed to post or edit: the next pass at that head posts it again (the code host finds a comment a lost answer made). */
   reportStale?: { head: string; facts: import("./report.ts").Facts };
   /** Counters for the caps: per head (wakes), per PR (rounds, ci, review) and the heads each required check was red on. */
-  counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[]; /** The head GitHub was asked to update (red while behind a green base): once per head. */ updated?: string; /** The head the `policy` job was asked to re-run (its steps unreadable): once per head. */ policyRerun?: string };
+  counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[]; /** The head GitHub was asked to update (red while behind a green base): once per head. */ updated?: string; /** The head the `policy` job was asked to re-run (its steps unreadable): once per head. */ policyRerun?: string; /** The members' comments (member-comments.ts item ids) the fixer was woken for at this head: the same ones don't wake it again there, and they still block until answered; a new head asks for any left. */ membersAsked?: string[] };
   /** The direct merge filed for a head: its kernel record and attempt (a failed one is filed again with the next attempt). */
   merge?: { head: string; attempt: number; record: string };
   /** A fork's code review was asked for (retried each pass until it was). */
@@ -62,8 +62,8 @@ export type Kept = Adoption & {
   /** The App's approval filed for a head (github's `approve`): its record and attempt, and why it ended without one (no App). */
   /** The App's approval: its record, the policy it was issued under (risk tiers §7), and `dismissed`: the record dismissing it. */
   approve?: { head: string; attempt: number; record: string; why?: string; policy?: string; dismissed?: string };
-  /** The members' comments (member-comments.ts item ids) the fixer was woken for: the same ones never wake it again, and they still block until answered. */
-  membersAsked?: string[];
+  /** What github's write-time recheck of members' comments needs (/v1/generation): the hand-off's time and the author whose own comments ask nothing; kept as the round asked for it. */
+  commentsFor?: { since: string; author?: string };
   /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
   freshAsked?: string;
   /** The repo's own steps at a stage (actions.ts): which step, at which head, and how it ended. */

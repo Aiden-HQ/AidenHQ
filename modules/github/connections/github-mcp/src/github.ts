@@ -517,28 +517,27 @@ export class GitHub {
   }
 
   /** A reply on a pull request's review thread (its first comment's id, or any comment in it), signed by the agent. */
-  async reply(ref: Ref, comment: number, body: string, agent: string, resolve = false): Promise<{ url: string; id: number; resolved?: boolean; resolve_error?: string }> {
+  async reply(ref: Ref, comment: number, body: string, agent: string): Promise<{ url: string; id: number }> {
     if (!body.trim()) throw new GitHubRefused("a reply needs text");
     const { root, owner, repo } = await this.threadRoot(ref, comment);
     const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${owner}/${repo}/pulls/${ref.number}/comments/${root}/replies`, { body: { body: withFooter(body, agent) } });
-    if (!resolve) return { url: r.html_url, id: r.id };
-    // A fixed thread is resolved (a repo may require it to merge): the thread whose opening comment is the root. The reply stands
-    // whatever happens here, so a refusal is reported, never thrown (a second reply would answer the thread twice).
-    try {
-      let after: string | null = null;
-      for (let page = 0; page < 10; page++) {
-        const d: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { id: string; comments: { nodes: { fullDatabaseId?: string }[] } }[] } } | null } | null } = await this.graphql("reviewThreads", { owner, name: repo, number: ref.number, after });
-        const t = d.repository?.pullRequest?.reviewThreads;
-        if (!t) break;
-        const thread = t.nodes.find((n) => String(n.comments.nodes[0]?.fullDatabaseId) === String(root));
-        if (thread) return { url: r.html_url, id: r.id, resolved: (await this.resolveThreads([thread.id])).length === 1 };
-        if (!t.pageInfo.hasNextPage) break;
-        after = t.pageInfo.endCursor;
-      }
-      return { url: r.html_url, id: r.id, resolved: false, resolve_error: "no such thread to resolve" };
-    } catch (e) {
-      return { url: r.html_url, id: r.id, resolved: false, resolve_error: String((e as Error).message).slice(0, 200) };
+    return { url: r.html_url, id: r.id };
+  }
+
+  /** Resolves the review thread `comment` is in (a repo may require resolved threads to merge), as the owner. */
+  async resolveThread(ref: Ref, comment: number): Promise<{ resolved: boolean }> {
+    const { root, owner, repo } = await this.threadRoot(ref, comment);
+    let after: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const d: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { id: string; comments: { nodes: { fullDatabaseId?: string }[] } }[] } } | null } | null } = await this.graphql("reviewThreads", { owner, name: repo, number: ref.number, after });
+      const t = d.repository?.pullRequest?.reviewThreads;
+      if (!t) break;
+      const thread = t.nodes.find((n) => String(n.comments.nodes[0]?.fullDatabaseId) === String(root));
+      if (thread) return { resolved: (await this.resolveThreads([thread.id])).length === 1 };
+      if (!t.pageInfo.hasNextPage) break;
+      after = t.pageInfo.endCursor;
     }
+    throw new GitHubRefused(`no review thread with the root comment ${root} on ${owner}/${repo}#${ref.number}`);
   }
 
   /**

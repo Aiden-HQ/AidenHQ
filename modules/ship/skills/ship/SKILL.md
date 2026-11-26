@@ -45,10 +45,12 @@ read with `github_pr_threads` and `github_issue_read`). Each gets an answer; the
 - Verify each against the code. A real one is fixed in the wake's one commit; decline the rest with evidence, the reason
   citing the `file:line` it does not hold at. Nits count: fix them or decline them.
 - Reply on every review thread with `github_pr_thread_reply` (`comment` = the thread's first comment id). A fixed one:
-  `fixed in <sha>: <what changed>` with `resolve: true`, after the push gives you the sha. A declined one:
-  `declined: <reason, file:line>`, left open for its reviewer. A thread that is a code review finding is answered with
-  `code_review_resolve` as above, not twice; when that tool refuses because the finding is already closed in code review (the owner
-  dismissed it), answer the thread with `github_pr_thread_reply` like any other.
+  `fixed in <sha>: <what changed>`, after the push gives you the sha, then `github_pr_thread_resolve` on it (a reviewed write; a
+  repo may require resolved threads to merge). A declined one: `declined: <reason, file:line>`, left open for its reviewer.
+- A thread that is a code review finding still open in code review is answered with `code_review_resolve` as above, which posts
+  the reply (not twice); a fixed one is then resolved with `github_pr_thread_resolve` too. When that tool refuses because the
+  finding is already closed (the owner dismissed it) or a member reopened the thread after it was closed, answer the thread
+  with `github_pr_thread_reply` like any other.
 - Answer the conversation comments with one `github_issue_comment`, always, so the wake can close: for each comment, by the
   id the wake names it with, `<id>: fixed in <sha>`, `<id>: declined: <reason>`, or `<id>: no change asked` (a thanks, a status).
   A comment whose id the reply doesn't name stays open.

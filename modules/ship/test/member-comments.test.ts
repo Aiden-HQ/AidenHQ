@@ -33,7 +33,7 @@ test("a member's open thread wakes the fixer once with places and authors, and o
   await round(w.deps, w.pr(), review, { risk: RISK, memberComments: [thread] });
   assert.equal(w.wakes.length, 1);
   assert.match(w.wakes[0]!, /src\/a\.ts:12 by maxsam4/);
-  assert.deepEqual((w.state.get("a/b", 7) as any).membersAsked, [thread.id]);
+  assert.deepEqual((w.state.get("a/b", 7) as any).counters.membersAsked, [thread.id]);
   // Still open (declined, or not yet answered) and a pass again: nothing new to ask.
   await round(w.deps, w.pr(), review, { risk: RISK, memberComments: [thread] });
   assert.equal(w.wakes.length, 1);
@@ -66,4 +66,20 @@ test("a fork that allows no maintainer edits still gets the wake for comments to
   assert.equal((w.state.get("a/b", 7) as any).hold, null);
   await round(w.deps, { ...fork, head: "2".repeat(40) }, { do: "fix_review", why: "code review has open findings on its head" }, { risk: RISK, findingsKey: "fk" });
   assert.equal((w.state.get("a/b", 7) as any).hold?.kind, "stalled");
+});
+
+test("nine open conversation comments are named eight at a time: the wake, its key and what is recorded are the same batch", async () => {
+  const w = world();
+  const nine = Array.from({ length: 9 }, (_, i) => ({ id: `comment:${100 + i}`, kind: "comment", author: "maria" }));
+  await round(w.deps, w.pr(), review, { risk: RISK, memberComments: nine });
+  assert.match(w.wakes[0]!, /100 \(maria\).*107 \(maria\)/);
+  assert.doesNotMatch(w.wakes[0]!, /108/);
+  assert.equal((w.state.get("a/b", 7) as any).counters.membersAsked.length, 8);
+  // Polling again before they are answered names only the ninth, once; the same nine again ask nothing.
+  await round(w.deps, w.pr(), review, { risk: RISK, memberComments: nine });
+  assert.equal(w.wakes.length, 2);
+  assert.match(w.wakes[1]!, /108 \(maria\)/);
+  assert.doesNotMatch(w.wakes[1]!, /100 \(maria\)/);
+  await round(w.deps, w.pr(), review, { risk: RISK, memberComments: nine });
+  assert.equal(w.wakes.length, 2);
 });

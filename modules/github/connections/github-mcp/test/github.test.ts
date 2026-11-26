@@ -221,21 +221,19 @@ describe("GitHub", () => {
       expect(post.body.body).toContain(`fixed: abc1234.\n\n${FOOTER("Aiden")}`);
     });
 
-    it("resolve: true resolves the replied thread after the reply, and a refusal never fails or repeats the reply", async () => {
+    it("resolveThread resolves the thread the comment is in, and a refusal or a missing thread throws", async () => {
       const { impl, calls } = fakeReplies({ 100: reply(100), 101: reply(101, 100) });
-      const graph = async (resolveAnswer: () => Response) => (async (input: URL | string, init?: RequestInit) => {
+      const graph = (resolveAnswer: () => Response) => (async (input: URL | string, init?: RequestInit) => {
         if (!new URL(String(input)).pathname.endsWith("/graphql")) return impl(input, init);
         const q = JSON.parse(String(init!.body)).query as string;
         calls.push({ method: "POST", path: "/graphql:" + (q.includes("resolveReviewThread") ? "resolve" : "threads") });
         if (q.includes("resolveReviewThread")) return resolveAnswer();
         return new Response(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ id: "T9", comments: { nodes: [{ fullDatabaseId: "99" }] } }, { id: "T1", comments: { nodes: [{ fullDatabaseId: "100" }] } }] } } } } }), { status: 200 });
       }) as typeof fetch;
-      const ok = await owner(await graph(() => new Response(JSON.stringify({ data: { t0: { thread: { id: "T1", isResolved: true } } } }), { status: 200 }))).reply({ owner: "a", repo: "b", number: 7 }, 101, "fixed in abc: renamed.", "Aiden", true);
-      expect(ok).toMatchObject({ id: 77, resolved: true });
+      const ok = await owner(graph(() => new Response(JSON.stringify({ data: { t0: { thread: { id: "T1", isResolved: true } } } }), { status: 200 }))).resolveThread({ owner: "a", repo: "b", number: 7 }, 101);
+      expect(ok).toEqual({ resolved: true });
       expect(calls.map((c) => c.path).filter((p) => p.startsWith("/graphql"))).toEqual(["/graphql:threads", "/graphql:resolve"]);
-      const refused = await owner(await graph(() => new Response(JSON.stringify({ errors: [{ message: "Resource not accessible" }] }), { status: 200 }))).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed in abc.", "Aiden", true);
-      expect(refused).toMatchObject({ id: 77, resolved: false });
-      expect(refused.resolve_error).toMatch(/not accessible/);
+      await expect(owner(graph(() => new Response(JSON.stringify({ errors: [{ message: "Resource not accessible" }] }), { status: 200 }))).resolveThread({ owner: "a", repo: "b", number: 7 }, 100)).rejects.toThrow(/not accessible/);
     });
 
     it("a thread root's id is used as it is", async () => {
