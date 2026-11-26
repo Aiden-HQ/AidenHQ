@@ -50,7 +50,10 @@ close nothing and work from the PR the state shows.
 When the PR that carries the work is closed and `merged`, the work has landed: close the PR you would otherwise keep and
 report the merged one as what landed, not a merge of its own to wait on — but only when that PR's head is a commit the
 merged head contains. When it holds commits the merge does not, keep it open and work from it: it is not redundant.
-Then close the duplicate by its own URL. After the close, read both again and report only what they show.
+Then close the duplicate by its own URL. The close names only the PR's number, so it is not conditional on the head you
+read: read both PRs again right before it, at the close's own step, and close only if that read still shows the heads
+the decision assumed. After the close, read both again: when the closed PR's head moved past what you read, reopen it and
+work from it, since the close took commits the kept PR does not have. Report only what those reads show.
 Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
 When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
 `refs/pull/<n>/head`, which the code host serves as a bundle (`codehost fetch` with that `ref`): fetch that bundle, publish
