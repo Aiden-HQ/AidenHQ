@@ -138,9 +138,9 @@ data: review the live app with `app_view` at `width` 1280, and add "a seed mode 
 3. **Capture.** A PR: `ui-review --commit <base sha> --no-routes` on the base into `review-<head sha7>/before`, then
    `ui-review --commit <head sha> --baseline review-<head sha7>/before` on the head into `review-<head sha7>/after`; run
    them on the screens the changed files render (`--paths`, from the repo's `AGENTS.md` map and `feature-map.json`; a
-   shared shell or header shows on every page: `/` and one other page cover it). An app: `ui-review <url> --out review` on a copy you run on seed data; for the live app add `--no-routes`. A live app (not a local build or
-   preview) is looked at only: page loads and screenshots, no clicking flows, forms or the route check, until the
-   signed-in phase's request guard exists; full flows run on a local build or preview.
+   shared shell or header shows on every page: `/` and one other page cover it). An app: `ui-review <url> --out review` on a copy you run on seed data; for the live app use `app_view` (its renderer guards requests)
+   instead of `ui-review`. A live app (not a local build or preview) is looked at only: page loads and screenshots, no
+   clicking flows, forms or the route check, until `ui-review` has a request guard; full flows run on a local build or preview.
    When the head's report names a route problem, run the route check on the base for that page alone (`--commit <base sha>
    --paths <that page> --widths 1280 --modes light`): a problem the base has too isn't the PR's.
    A named mockup: also `ui-review --baseline <the mockup's screenshots folder>` into `vs-mockup/`. Wait for a page to
