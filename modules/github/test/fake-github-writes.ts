@@ -1,6 +1,6 @@
 // GitHub's write API over bare repos, as the code host's signed writes use it: createCommitOnBranch (GitHub's own commit, bound to
 // expectedHeadOid, each file replaced in full, an existing file keeping its mode, a new one 100644), and git/refs create, read and
-// delete, git/commits, and the rules that apply to a branch. `originOf(slug)` is the bare repo GitHub holds for a repo; `refuse(input)`
+// delete (updateRefs too), git/commits, and the rules that apply to a branch. `originOf(slug)` is the bare repo GitHub holds for a repo; `refuse(input)`
 // is a repository rule's words refusing a commit; `signed(slug, branch)` says the branch's rules require signed commits. Any other
 // route answers undefined, for the test's own fake.
 import { execFileSync } from "node:child_process";
@@ -35,6 +35,15 @@ export function githubWrites(originOf, { refuse = (_input) => undefined, signed 
         git(origin, ["update-ref", ref, sha]);
         return { status: 200, body: { data: { createCommitOnBranch: { commit: { oid: sha, tree: { oid: tree } } } } } };
       } finally { rmSync(scratch, { recursive: true, force: true }); }
+    }
+    // updateRefs, bound to each ref's beforeOid (a mismatch is GitHub's generic error and changes nothing). The test's repository
+    // node_id is its slug.
+    if (path === "/graphql" && String(body?.query ?? "").includes("updateRefs")) {
+      const { repositoryId, refUpdates } = body.variables.input;
+      const origin = originOf(repositoryId);
+      if (refUpdates.some((u) => tip(origin, u.name) !== u.beforeOid)) return { status: 200, body: { errors: [{ message: "Something went wrong while executing your query." }] } };
+      for (const u of refUpdates) git(origin, /^0+$/.test(u.afterOid) ? ["update-ref", "-d", u.name] : ["update-ref", u.name, u.afterOid]);
+      return { status: 200, body: { data: { updateRefs: { clientMutationId: null } } } };
     }
     const m = /^\/repos\/([^/]+\/[^/]+)\/git\/(refs\/heads|ref\/heads|refs|commits)(?:\/(.*))?$/.exec(path);
     if (!m) return undefined;

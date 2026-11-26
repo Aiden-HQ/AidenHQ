@@ -145,7 +145,7 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
     if (path === "/graphql") return { status: 200, body: { data: { repository: { pullRequest: { id: "PR_7", state: "OPEN", headRefOid: pr.head, baseRefName: "main", isInMergeQueue: Boolean(queue.head), mergeQueueEntry: queue.head ? { headCommit: { oid: queue.head } } : null, ...queue.review } } } } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
-    if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
+    if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main", node_id: REPO } };
     // The open PR on the published task branch (`github.pr` on it): its head follows a PATCH, so a rewind would show here.
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls?state=open&head=acme-agents%3A`)) {
       // The whole query, `&base=main` and all: the branch is its `head` value, never the rest of the path.
@@ -1305,6 +1305,23 @@ test("on a signature-required branch a publish is GitHub's own commit of the box
   const gone = await run("k-00000000000000fa", "github.push", goneArgs, goneCard);
   assert.equal(gone.ok, true, gone.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/gone^{tree}"), sh(origin, "rev-parse", `${F}^{tree}`), "a branch deleted since is created again, no crash");
+
+  // A fix built on GitHub's own commit C, then a fresh publish of the older bundle R: R was already published from this branch, so
+  // it is refused although neither C nor the fix holds it.
+  sh(origin, "update-ref", "refs/heads/lease", C);
+  sh(ws, "fetch", "--quiet", origin, "+refs/heads/lease:refs/heads/signed-c");
+  sh(ws, "checkout", "--quiet", "-b", "onc", "signed-c");
+  writeFileSync(join(ws, "d.txt"), "d\n");
+  sh(ws, "add", "d.txt");
+  sh(ws, "commit", "--quiet", "-m", "fix on GitHub's commit");
+  const D = sh(ws, "rev-parse", "HEAD");
+  sh(ws, "update-ref", `refs/aidenhq/publish/${D}`, D);
+  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${D}.bundle`), `refs/aidenhq/publish/${D}`);
+  const fixed = await run("k-00000000000000fc", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: D }] });
+  assert.equal(fixed.ok, true, fixed.text);
+  const older = await run("k-00000000000000fd", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "lease", sha: R }] });
+  assert.equal(older.ok, false, older.text);
+  assert.match(older.text, /^ship-head-moved/, older.text);
 
   // A push straight to an agents-org repo's default branch (plan.ts raises it as `default-branch` rather than refusing it) moves
   // forward only: one commit on its head.

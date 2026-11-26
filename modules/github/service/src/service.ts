@@ -201,6 +201,8 @@ const slugOf = (repo: unknown) => {
 const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation labels(first: 100) { nodes { name } } isInMergeQueue reviewDecision latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
 
 /** One commit GitHub makes and signs (verified), appended to a branch only while it is at `expectedHeadOid`. */
+/** A ref update bound to the ref's current sha (beforeOid): an all-zero afterOid deletes it, only while it is still there. */
+const UPDATE_REFS = `mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }`;
 const COMMIT_ON_BRANCH = `mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid tree { oid } } } }`;
 /** GitHub's removal of a PR from its merge queue. */
 const DEQUEUE = `mutation($id: ID!) { dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { state } } }`;
@@ -843,6 +845,8 @@ export function createService(o: Options) {
             // A branch whose rules require signed commits is published as commits GitHub makes and signs (publishSigned); any other is
             // a git push of the box's own commits.
             let sha = b.sha;
+            /** GitHub's commit this publish made, named in a failure after it so the record still binds it (prBound). */
+            let landed = "";
             if (await signedOnly(s.slug, b.branch)) {
               // Where the box's commit and the published head each sit on the base: the publish keeps the branch on the base it was
               // reviewed against (publishSigned).
@@ -858,18 +862,22 @@ export function createService(o: Options) {
               const resumes = planned === null && head !== undefined && head === (await git(dir, ["rev-parse", "--verify", "--quiet", createdRef(b.branch, rec.id)]).catch(() => ""));
               if (!isDef && head !== undefined && !already && !resumes && planned !== undefined && head !== planned) throw refused(planned, head);
               // An older bundle than what the branch holds (#1775: the older bundle winning over a newer push) is refused: one the head
-              // contains (a person pushed the box's commits), or one older than the box commit this branch was last published from
-              // (GitHub holds its own commits for those, never the box's).
+              // contains (a person pushed the box's commits), or one any earlier publish of this branch already carried (GitHub holds
+              // its own commits for those, never the box's, so publishedRef keeps them all), unless it is the last one itself.
               if (head && !already && (await isAncestor(dir, b.sha, head))) throw refused(b.sha, head);
               const last = await git(dir, ["rev-parse", "--verify", "--quiet", publishedRef(b.branch)]).catch(() => "");
-              if (last && last !== b.sha && (await isAncestor(dir, b.sha, last))) throw refused(b.sha, head);
+              const lastBox = last ? await git(dir, ["rev-parse", `${last}^1`]).catch(() => "") : "";
+              if (last && lastBox !== b.sha && (await isAncestor(dir, b.sha, last))) throw refused(b.sha, head);
               const made = already ? { sha: head!, wrote: false } : await publishSigned({ s, dir, branch: b.branch, sha: b.sha, head, base: base0, isDef, record: rec.id, ...at });
               sha = made.sha;
-              await git(dir, ["update-ref", publishedRef(b.branch), b.sha]);
+              // Every box commit this branch was published from, as the parents of one bookkeeping commit (the newest first).
+              const kept = await git(dir, ["-c", "user.name=AidenHQ", "-c", "user.email=codehost@aidenhq.invalid", "commit-tree", `${b.sha}^{tree}`, "-p", b.sha, ...(last ? ["-p", last] : []), "-m", "published"]);
+              await git(dir, ["update-ref", publishedRef(b.branch), kept]);
               noteKept(o.cacheDir, { repo: s.slug, ref: publishedRef(b.branch) });
               if (made.wrote) {
                 notePushed(s.slug, sha);
                 objects.push(`${ref(s.slug)}@${sha}`);
+                landed = `${ref(s.slug)}@${sha}`;
               }
             } else {
               // The branch exists now at a head other than the one this write was planned at, and doesn't already hold the commit it
@@ -899,12 +907,17 @@ export function createService(o: Options) {
               notePushed(s.slug, b.sha);
               objects.push(`${ref(s.slug)}@${b.sha}`);
             }
-            if (action === "pr") await openOrUpdatePr(s, b, def, rec, sha, objects, done, base0, gatedOwnership && (ownership === "own" || handoff));
-            else {
-              // A push-only handoff still takes the PR over: notePrTask is what the watcher reads for the PR's task, so without it a
-              // successor's push would leave the PR looking cancelled and unworked. Any open PR on the branch moves to this task.
-              if (handoff) await adoptPrs(s, b.branch, a.workspace, base0);
-              done.push(`${s.slug} ${b.branch} at \`${sha}\``);
+            try {
+              if (action === "pr") await openOrUpdatePr(s, b, def, rec, sha, objects, done, base0, gatedOwnership && (ownership === "own" || handoff));
+              else {
+                // A push-only handoff still takes the PR over: notePrTask is what the watcher reads for the PR's task, so without it a
+                // successor's push would leave the PR looking cancelled and unworked. Any open PR on the branch moves to this task.
+                if (handoff) await adoptPrs(s, b.branch, a.workspace, base0);
+                done.push(`${s.slug} ${b.branch} at \`${sha}\``);
+              }
+            } catch (e) {
+              if (landed && e instanceof Error) e.message = `${e.message} (landed ${landed})`;
+              throw e;
             }
           });
         }
@@ -1477,9 +1490,10 @@ export function createService(o: Options) {
       // A commit that didn't answer leaves the new branch for this publish to resume. One GitHub refused (a rule, a stale head, the
       // workflow scope) takes it away again, only while it still stands where this made it, so nothing is left that a person would
       // read as published.
+      // The delete is bound to `mb` (updateRefs' beforeOid): a branch someone moved since is left where it is.
       const drop = async () => {
-        const now = await gh("GET", refPath(p.s.slug, p.branch)).catch(() => undefined);
-        if (now && now.status < 300 && now.body?.object?.sha === p.mb) await gh("DELETE", `/repos/${p.s.slug}/git/refs/heads/${p.branch.split("/").map(encodeURIComponent).join("/")}`).catch(() => undefined);
+        const repo = await gh("GET", `/repos/${p.s.slug}`).catch(() => undefined);
+        if (repo?.body?.node_id) await gh("POST", "/graphql", { query: UPDATE_REFS, variables: { input: { repositoryId: repo.body.node_id, refUpdates: [{ name: `refs/heads/${p.branch}`, beforeOid: p.mb, afterOid: "0".repeat(40) }] } } }).catch(() => undefined);
         await git(p.dir, ["update-ref", "-d", createdRef(p.branch, p.record)]).catch(() => undefined);
       };
       const r = await commitSigned(at, p.mb, await tree(p.mb), p.sha, message).catch(async (e: { need?: unknown }) => { if (e?.need) await drop(); throw e; });
@@ -1919,9 +1933,10 @@ export function createService(o: Options) {
       const records = (r as { records?: unknown }).records;
       // HTTP 200 with no whole body (a restart mid-response) is not "no records": the queue must ask again, not settle without it.
       if (!Array.isArray(records)) throw new Error("the kernel's work read answered without its records");
-      // The commit is the box's own (a person pushed it) or the one GitHub made for the publish, which its outcome names.
+      // The commit is the box's own (a person pushed it) or the one GitHub made for the publish, which its outcome names (a failure
+      // after the commit landed names it as `(landed github:<repo>@<sha>)`).
       return (records as { kind?: string; ok?: boolean | null; outcome_text?: string | null; args?: { only?: { repo?: string; sha?: string }[] } }[]).some((x) => (x.kind === "github.pr" || x.kind === "github.push")
-        && (x.args?.only ?? []).some((b) => String(b.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && (b.sha === pr.head || (x.ok === true && String(x.outcome_text ?? "").includes(`\`${pr.head}\``)))));
+        && (x.args?.only ?? []).some((b) => String(b.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && (b.sha === pr.head || (x.ok === true && String(x.outcome_text ?? "").includes(`\`${pr.head}\``)) || String(x.outcome_text ?? "").includes(`(landed github:${pr.repo.toLowerCase()}@${pr.head})`))));
     },
     asyncPolls: o.asyncPolls, asyncPollMs: o.asyncPollMs,
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected(),

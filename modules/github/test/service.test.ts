@@ -98,7 +98,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
     if (wrote) return wrote;
     const m = /^\/orgs\/([^/]+)\/repos$/.exec(path);
     if (method === "POST" && m) return (created.push(`${m[1]}/${body.name}`), { status: 201, body: {} });
-    return method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main" } } : { status: 404, body: { message: "fake GitHub: no route" } };
+    return method === "GET" && path === "/repos/acme-agents/widget" ? { status: 200, body: { default_branch: "main", node_id: "acme-agents/widget" } } : { status: 404, body: { message: "fake GitHub: no route" } };
   };
   const reported = [];
   const reportNeed = async (need, detail) => { reported.push({ need, detail }); };
