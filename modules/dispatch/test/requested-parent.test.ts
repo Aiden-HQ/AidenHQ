@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAsker, type Told } from "../service/src/asker.ts";
-import { KernelError } from "../service/src/kernel.ts";
+import { createKernel, KernelError } from "../service/src/kernel.ts";
 
 const ENGINEER = "10000000-0000-4000-8000-000000000003";
 const ARCHITECT = "10000000-0000-4000-8000-000000000002";
@@ -91,4 +91,36 @@ test("a requester's task whose list row hides its marker behind a 1200-char cut 
   assert.equal(key, 1, "WOR-6 is in the same batch: its requester is resolved from the whole brief");
   assert.match(w.seen.wakes.at(-1)!.text, /WOR-6/);
   assert.equal(w.fullReads.includes("WOR6"), true, "its list row was cut, so its whole brief was read");
+});
+
+// The batch reader itself (createKernel.children), against a control plane whose `createdFromIssueId` does not name the placed
+// tasks: a placed sibling sits under the requester's parent, so that place is read and the recorded requester decides.
+test("a placed sibling is found under the requester's parent even when the create origin does not name it", async () => {
+  const rows: Record<string, Json> = {
+    WOR1: { id: "WOR1", identifier: "WOR-1", title: "Ship it", status: "in_progress", assigneeAgentId: CHIEF },
+    WOR2: { id: "WOR2", identifier: "WOR-2", title: "Design it", status: "in_progress", assigneeAgentId: ARCHITECT, parentId: "WOR1" },
+    WOR3: { id: "WOR3", identifier: "WOR-3", title: "Build it", status: "in_progress", assigneeAgentId: ENGINEER, parentId: "WOR1", description: `${MARK("WOR2")}\n\nBuild it.` },
+    WOR6: { id: "WOR6", identifier: "WOR-6", title: "Build the other page", status: "in_progress", assigneeAgentId: ENGINEER, parentId: "WOR1", description: `${MARK("WOR2")}\n\nBuild the other page.` },
+  };
+  const asked: string[] = [];
+  const fetcher = (async (url: string | URL) => {
+    const u = new URL(String(url));
+    const path = u.pathname.replace(/^\/v1\/cp\/read/, "");
+    const single = /^\/api\/issues\/([^/]+)$/.exec(path);
+    // A list row is a preview: descriptions are cut at 1200 chars, as Paperclip's are.
+    const row = (i: Json) => (String(i.description ?? "").length > 1200 ? { ...i, description: String(i.description).slice(0, 1200), descriptionTruncated: true } : i);
+    if (single) return { ok: true, status: 200, json: async () => rows[decodeURIComponent(single[1])] ?? {} } as Response;
+    if (path.startsWith("/api/companies/")) {
+      const parentId = u.searchParams.get("parentId");
+      const from = u.searchParams.get("createdFromIssueId");
+      if (from) { asked.push(`from:${from}`); return { ok: true, status: 200, json: async () => [] } as Response; }
+      return { ok: true, status: 200, json: async () => Object.values(rows).filter((i) => i.parentId === parentId).map(row) } as Response;
+    }
+    return { ok: false, status: 404, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+  const kernel = createKernel("http://kernel.test", "t", fetcher);
+  const found = (await kernel.children("WOR2", "co")).map((i) => i.id).sort();
+  assert.deepEqual(found, ["WOR3", "WOR6"], "its batch, found by reading the place it was put in");
+  assert.equal(asked.includes("from:WOR2"), true, "the create origin was still consulted");
+  assert.deepEqual((await kernel.children("WOR1", "co")).map((i) => i.id), ["WOR2"], "the chief of staff's batch is its own child, not the two placed under it: their requester is the Architect");
 });

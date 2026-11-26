@@ -91,12 +91,15 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     routine: (id) => call("GET", `/v1/cp/read/api/routines/${e(id)}`),
     cancelRoutineRun: async (task, why, body) => void (await call("POST", "/v1/routines/cancel", { task, why, body })),
     // A child parked in backlog still counts: it is a task of this batch, and a summary that left it out would misreport the batch.
-    // A delegation the control plane placed by its origin at the top level (no structural parent) is listed by the create's
-    // origin, and kept only when it records that this task asked for it (requested-parent.ts): the placement still names it.
+    // A delegation the cap placed beside its requester sits under the requester's *parent*, not under the requester, so that
+    // place is read too: it finds a placed sibling even when the create's origin (`createdFromIssueId`) doesn't name it, as the
+    // grading and task-tool readers already do. A row counts only when it records this task as the one that asked for it.
     children: async (parent, company) => {
       const query = (f: string) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?${f}&status=todo,in_progress,in_review,blocked,backlog,done,cancelled&limit=200`) as Promise<Issue[]>;
-      const [placed, from] = await Promise.all([query(`parentId=${e(parent)}`), query(`createdFromIssueId=${e(parent)}`)]);
-      const found = new Map<string, Issue>([...placed.filter((i) => i.parentId === parent), ...from].map((i) => [i.id, i]));
+      const task = await call("GET", `/v1/cp/read/api/issues/${e(parent)}`).catch(() => undefined) as Issue | undefined;
+      const places = [...new Set([parent, typeof task?.parentId === "string" ? task.parentId : undefined].filter(Boolean) as string[])];
+      const [under, from] = await Promise.all([Promise.all(places.map((p) => query(`parentId=${e(p)}`))), query(`createdFromIssueId=${e(parent)}`)]);
+      const found = new Map<string, Issue>([...under.flat(), ...from].map((i) => [i.id, i]));
       const out: Issue[] = [];
       for (const i of found.values()) if (i.id !== parent && (await requesterOfListed(i, (id) => call("GET", `/v1/cp/read/api/issues/${e(id)}`).catch(() => undefined))) === parent) out.push(i);
       return out;
