@@ -2,13 +2,14 @@
 // `more` links to all of them ("All 9 →").
 import { safeHref } from "./Button";
 
-export function DigestList({ items, limit = 3, more }: { items: { id: string; face?: React.ReactNode; text: React.ReactNode; link?: { label: string; href: string } }[]; limit?: number; more?: { label: string; href: string } }) {
+export function DigestList({ items, limit = 3, more }: { items: { id: string; face?: React.ReactNode; text: React.ReactNode; link?: { label: string; href: string }; actions?: React.ReactNode }[]; limit?: number; more?: { label: string; href: string } }) {
   return (
     <div className="ui-digest">
       {items.slice(0, limit).map((d) => (
         <div key={d.id} className="ui-digest-row">
           {d.face}
           <span className="ui-digest-text">{d.text}</span>
+          {d.actions && <span className="ui-digest-actions">{d.actions}</span>}
           {d.link && <a href={safeHref(d.link.href)}>{d.link.label}</a>}
         </div>
       ))}

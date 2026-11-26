@@ -173,6 +173,8 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const paneOpen = !!pane && (pane.kind !== "row" || !!paneRow);
   const since = data.since && <SinceCard since={data.since} timezone={timezone} from={data.since_from} all={() => setPane({ kind: "since" })} />;
   const idea = data.idea && <IdeaCard idea={data.idea} fail={fail} reload={reload} />;
+  // Needs takes the full width when nothing sits beside it, so its edges line up with the sections below.
+  const sideEmpty = !(paneOpen && !mobile) && !data.start?.nextUp && !since && !idea;
   // The rows still open here: an answered row leaves the count at once, before the kernel catches up.
   const n = live.length;
   // On a phone the pane is a full-screen sheet: outside the animated column, whose transform would hold a fixed child.
@@ -201,7 +203,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
           Not decided: {unbatched.join("; ")}
         </Banner>
       )}
-      <div className="home-top">
+      <div className={sideEmpty ? "home-top home-top-solo" : "home-top"}>
         <div className="home-needs enter" style={{ "--i": 1 } as CSSProperties}>
           <SectionCard
             title="Needs you"
@@ -250,7 +252,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
             )}
           </SectionCard>
         </div>
-        <div className="home-side enter" style={{ "--i": 2 } as CSSProperties}>
+        {!sideEmpty && <div className="home-side enter" style={{ "--i": 2 } as CSSProperties}>
           {paneOpen && !mobile ? (
             detail
           ) : (
@@ -260,7 +262,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
               {idea}
             </>
           )}
-        </div>
+        </div>}
       </div>
       {mobile && detail}
       {paneOpen && !mobile && (since || idea) && (
@@ -270,7 +272,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
         </div>
       )}
       {data.start && <MoreTeam more={data.start.more} />}
-      <World world={data.world} />
+      <World world={data.world} reload={reload} />
       <TeamRow team={data.team} />
     </Page>
   );
@@ -428,18 +430,45 @@ function IdeaCard({ idea, fail, reload }: { idea: NonNullable<Home["idea"]>; fai
 }
 
 /** Who the owner waits on and today's calendar: each only with a source and something in it. */
-function World({ world }: { world: Home["world"] }) {
+function World({ world, reload }: { world: Home["world"]; reload: () => Promise<void> }) {
   const tz = world.today?.timezone;
-  if (!world.waiting_on?.length && !world.today?.events.length) return null;
+  // Rows the owner closed here: hidden at once, back with the error if the close is refused.
+  const [closed, setClosed] = useState<Set<string>>(new Set());
+  const [error, setError] = useState("");
+  const forget = (id: string) => setClosed((s) => (s.delete(id), new Set(s)));
+  // The row hides at once; the read after the close is the truth, so the entry is dropped then (a task reopened later
+  // shows again), and a refused close brings the row back with the error.
+  const close = (id: string, status: "done" | "cancelled") => {
+    setError("");
+    setClosed((s) => new Set(s).add(id));
+    api.update(id, { status }).then(
+      () => reload().then(() => forget(id)),
+      (e) => (forget(id), setError(`Couldn't close ${id}: ${(e as Error).message}`)),
+    );
+  };
+  const waiting = world.waiting_on?.filter((w) => !closed.has(w.identifier)) ?? [];
+  if (!waiting.length && !world.today?.events.length) return null;
   return (
     <section className="home-world enter" style={{ "--i": 3 } as CSSProperties} aria-label="Your world">
       <h2 className="home-h2">Your world</h2>
       <div className="home-world-grid">
-        {world.waiting_on && world.waiting_on.length > 0 && (
-          <SectionCard title="You're waiting on" count={undefined} meta={`${world.waiting_on.length} open`} flush>
+        {waiting.length > 0 && (
+          <SectionCard title="You're waiting on" count={undefined} meta={`${waiting.length} open`} flush>
+            {error && <Banner tone="danger">{error}</Banner>}
             <DigestList
-              items={world.waiting_on.map((w) => ({ id: w.identifier, face: <Monogram name={w.title} size={26} />, text: w.title, link: { label: w.quiet_days >= 3 ? `${w.quiet_days}d quiet` : `${w.age_days}d`, href: `#/t/${w.identifier}` } }))}
-              limit={world.waiting_on.length}
+              items={waiting.map((w) => ({
+                id: w.identifier,
+                face: <Monogram name={w.title} size={26} />,
+                text: w.title,
+                link: { label: w.quiet_days >= 3 ? `${w.quiet_days}d quiet` : `${w.age_days}d`, href: `#/t/${w.identifier}` },
+                actions: (
+                  <>
+                    <Button size="sm" variant="quiet" title="It arrived: close it" onClick={() => close(w.identifier, "done")}>Done</Button>
+                    <Button size="sm" variant="danger" title="No longer waiting on it: cancel the task" onClick={() => close(w.identifier, "cancelled")}>Drop</Button>
+                  </>
+                ),
+              }))}
+              limit={waiting.length}
             />
           </SectionCard>
         )}
@@ -456,13 +485,12 @@ function World({ world }: { world: Home["world"] }) {
   );
 }
 
-/** Teammates with something new, then Hire a teammate (#/team/hire). */
+/** The whole team (those with news first), then Hire a teammate (#/team/hire). */
 function TeamRow({ team }: { team: Home["team"] }) {
   return (
     <section className="home-team enter" style={{ "--i": 4 } as CSSProperties} aria-label="Your team">
       <header className="home-team-head">
         <h2 className="home-h2">Your team</h2>
-        {team.length > 0 && <span className="home-sub">Teammates with something new</span>}
         <a className="home-team-all" href="#/team">See the whole team →</a>
       </header>
       <div className="home-team-grid">
