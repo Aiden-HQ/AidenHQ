@@ -11,7 +11,7 @@ export type Capture = {
   measures: Measures; motion?: Motion; rules: RuleHit[];
   diffs?: ShotDiff[]; // with --baseline: each shot against the baseline's shot of the same name
 };
-/** A shot against the baseline's (`pct` of its pixels differ); `compare` (before|after) and `diff` images when it changed. */
+/** A shot against the baseline's (`pct` of its pixels differ); `compare` (before|after) and `diff` images only when it changed. */
 export type ShotDiff = { shot: string; pct: number; compare?: string; diff?: string };
 export type Measures = {
   fonts: { size: number; weight: number; n: number }[]; colours: { value: string; n: number }[]; radii: string[]; shadows: string[];

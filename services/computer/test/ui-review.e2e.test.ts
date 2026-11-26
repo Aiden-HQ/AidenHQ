@@ -50,7 +50,7 @@ test("every fixture route renders its own page, and /planted carries its defects
 // ---- capture, coverage queue, route check (lane A) ----
 const chrome = { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" };
 const W6 = [390, 768, 1024, 1512, 1920, 2560];
-type Run = { out: string; coverage: { done: number; total: number; failed: number; deferred: number }; captures: { page: string; width: number; theme: string; state: string; shots: string[]; settled: boolean; motion?: unknown; diffs?: { shot: string; pct: number }[] }[]; lookFirst: { page: string }[] };
+type Run = { out: string; coverage: { done: number; total: number; failed: number; deferred: number }; captures: { page: string; width: number; theme: string; state: string; shots: string[]; settled: boolean; motion?: unknown; diffs?: { shot: string; pct: number; diff?: string }[] }[]; lookFirst: { page: string }[] };
 const tmp = () => mkdtempSync(join(tmpdir(), "ui-review-test-"));
 const capArgs = (url: string, o: { out: string; pagesFile?: string; widths?: number[]; themes?: string[]; resume?: boolean; baseline?: string }) =>
   [main, "capture", url, "--out", o.out, ...(o.pagesFile ? ["--pages-file", o.pagesFile] : []), ...(o.widths ? ["--widths", o.widths.join(",")] : []), ...(o.themes ? ["--themes", o.themes.join(",")] : []), ...(o.resume ? ["--resume"] : []), ...(o.baseline ? ["--baseline", o.baseline] : []), "--commit", "test"];
@@ -63,8 +63,8 @@ async function runCapture(url: string, o: Partial<Parameters<typeof capArgs>[1]>
   const code = await new Promise((ok) => p.on("exit", ok));
   assert.ok(code === 0 || code === 1, `ui-review capture exited ${code}`);
   const r = JSON.parse(readFileSync(join(out, "report.json"), "utf8")) as Run;
-  // "Look at these first": the pages with a shot changed by 0.1% or more against the baseline, biggest change first.
-  const changed = r.captures.map((c) => ({ page: c.page, pct: Math.max(0, ...(c.diffs ?? []).map((d) => d.pct)) })).filter((c) => c.pct >= 0.1).sort((a, b) => b.pct - a.pct);
+  // "Look at these first": the pages with a changed shot against the baseline (it has a diff picture), biggest change first.
+  const changed = r.captures.map((c) => ({ page: c.page, pct: Math.max(-1, ...(c.diffs ?? []).filter((d) => d.diff).map((d) => d.pct)) })).filter((c) => c.pct >= 0).sort((a, b) => b.pct - a.pct);
   return { ...r, out, lookFirst: [...new Map(changed.map((c) => [c.page, c])).values()] };
 }
 const runRoutes = (url: string) => new Promise<number>((ok) => spawn("node", [main, "routes", url, "--out", tmp(), "--paths", "/#/danger"], { stdio: "ignore" }).on("exit", (c) => ok(c ?? 2)));

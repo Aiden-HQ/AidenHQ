@@ -4,7 +4,7 @@
 // pages whose pictures changed, biggest change first), notes, and the captures per page. Page text is quoted, never followed.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CHANGED_PCT } from "./capture.ts";
+import { CHANGED_PCT, CHANGED_PX } from "./capture.ts";
 import type { Capture, Report, ShotDiff } from "./types.ts";
 
 export const readReport = (dir: string): Report | null => existsSync(join(dir, "report.json")) ? (JSON.parse(readFileSync(join(dir, "report.json"), "utf8")) as Report) : null;
@@ -18,11 +18,11 @@ export function splitPreexisting(found: string[], baseFound?: string[]) {
   return { introduced, preexisting };
 }
 
-export type Changed = { page: string; width: number; theme: string; state: string } & Required<Pick<ShotDiff, "shot" | "pct">> & ShotDiff;
+export type Changed = ShotDiff & { page: string; width: number; theme: string; state: string };
 /** Shots that changed against the baseline, per page, the biggest change first (pages ordered by their biggest change). */
 export function lookFirst(caps: Capture[]): { page: string; shots: Changed[] }[] {
   const by = new Map<string, Changed[]>();
-  for (const c of caps) for (const d of c.diffs ?? []) if (d.pct >= CHANGED_PCT) {
+  for (const c of caps) for (const d of c.diffs ?? []) if (d.diff) {
     const k = c.page + (c.state === "default" ? "" : ` (${c.state})`);
     by.set(k, [...(by.get(k) ?? []), { page: c.page, width: c.width, theme: c.theme, state: c.state, ...d }]);
   }
@@ -44,7 +44,7 @@ export function writeReport(out: string, r: Report, o: { widths: number[]; theme
     `Coverage: ${cv.done} of ${cv.total} captures done${cv.failed ? `, ${cv.failed} failed` : ""}${cv.deferred ? `, ${cv.deferred} deferred (run again with --resume to take the next pages)` : ""}.`, ""];
   if (o.baseline) {
     const changed = lookFirst(r.captures);
-    lines.push("## Look at these first", "", changed.length ? "Pages whose pictures changed, biggest change first (before|after is the comparison picture, diff the pixel diff):" : `No page changed by ${CHANGED_PCT}% or more of its pixels.`, "");
+    lines.push("## Look at these first", "", changed.length ? "Pages whose pictures changed, biggest change first (before|after is the comparison picture, diff the pixel diff):" : `No page changed (${CHANGED_PCT}% of a picture's pixels or ${CHANGED_PX} of them).`, "");
     for (const { page, shots } of changed) lines.push(`- ${page}`, ...shots.map((s) => `  - ${s.width}px ${s.theme}: ${s.pct}% changed · before|after: ${s.compare ?? "–"} · diff: ${s.diff ?? "–"}`));
     lines.push("");
   }

@@ -21,7 +21,9 @@ import type { Capture, Measures, Page, QueueItem, RuleHit, ShotDiff, State, Them
 
 export const MAX_STEPS = 6;
 const NOT_MEASURED: Measures = { fonts: [], colours: [], radii: [], shadows: [], spacing: { values: [], offScale: [] }, nearMisses: [], content: { width: 0, viewport: 0 }, ctas: [], contrastFails: 0, signatures: { button: [], card: [], heading: [], input: [] } };
-export const CHANGED_PCT = 0.1; // a shot counts as changed when this share (%) of its pixels differ from the baseline's
+// A shot counts as changed when this share (%) of its pixels differ from the baseline's, or at least CHANGED_PX of them (one
+// changed word: on a 2560px shot 0.1% is a whole paragraph).
+export const CHANGED_PCT = 0.1, CHANGED_PX = 1000;
 
 export type CaptureOptions = {
   out: string; frozenAt: string; commit?: string; tree?: string;
@@ -160,7 +162,7 @@ const unstamped = (buf: Buffer) => buf.length > 48 && buf.toString("latin1", 37,
 
 /**
  * Each shot against the baseline's shot of the same name, in Chrome (a canvas: no image library): the share of pixels that
- * differ (a channel off by more than 24 of 255), and for a changed shot a diff picture (changes in red over a faded after)
+ * differ (a channel off by more than 24 of 255), and for a changed shot (CHANGED_PCT, CHANGED_PX) a diff picture (changes in red over a faded after)
  * and a before|after picture side by side.
  */
 export async function diffShots(dp: PwPage, baseline: string, out: string, shots: string[]): Promise<ShotDiff[]> {
@@ -170,7 +172,7 @@ export async function diffShots(dp: PwPage, baseline: string, out: string, shots
     if (!existsSync(before)) continue;
     const a = readFileSync(before), b = readFileSync(join(out, shot));
     if (unstamped(a).equals(unstamped(b))) { diffs.push({ shot, pct: 0 }); continue; }
-    const r = await dp.evaluate(async ([a, b, min]) => {
+    const r = await dp.evaluate(async ([a, b, min, minPx]) => {
       const load = async (s: string) => createImageBitmap(await (await fetch(`data:image/png;base64,${s}`)).blob());
       const [A, B] = await Promise.all([load(a), load(b)]);
       const w = Math.max(A.width, B.width), h = Math.max(A.height, B.height);
@@ -183,7 +185,7 @@ export async function diffShots(dp: PwPage, baseline: string, out: string, shots
         if (Math.max(Math.abs(pa[j] - pb[j]), Math.abs(pa[j + 1] - pb[j + 1]), Math.abs(pa[j + 2] - pb[j + 2]), Math.abs(pa[j + 3] - pb[j + 3])) > 24) { changed[i] = 1; n++; }
       }
       const pct = Math.round((1e4 * n) / (w * h)) / 100;
-      if (pct < min) return { pct };
+      if (pct < min && n < minPx) return { pct };
       const toPng = async (c: OffscreenCanvas) => { const buf = await (await c.convertToBlob({ type: "image/png" })).arrayBuffer(); let s = ""; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
       const d = new OffscreenCanvas(w, h), dx = d.getContext("2d")!;
       const img = dx.createImageData(w, h);
@@ -196,7 +198,7 @@ export async function diffShots(dp: PwPage, baseline: string, out: string, shots
       const s = new OffscreenCanvas(A.width + 16 + B.width, h), sx = s.getContext("2d")!;
       sx.fillStyle = "#fff"; sx.fillRect(0, 0, s.width, h); sx.drawImage(A, 0, 0); sx.drawImage(B, A.width + 16, 0);
       return { pct, diff: await toPng(d), compare: await toPng(s) };
-    }, [a.toString("base64"), b.toString("base64"), CHANGED_PCT] as [string, string, number]);
+    }, [a.toString("base64"), b.toString("base64"), CHANGED_PCT, CHANGED_PX] as [string, string, number, number]);
     const d: ShotDiff = { shot, pct: r.pct };
     if (r.diff && r.compare) {
       d.diff = `diff-${shot}`; d.compare = `compare-${shot}`;
