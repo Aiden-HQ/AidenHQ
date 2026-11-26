@@ -88,6 +88,6 @@ test("compile refuses a name that isn't addressable, a rename of a hidden agent,
   refuses({ files: { "face.svg": '<svg onload="alert(1)"/>' } }, /face face\.svg contains an on…= handler/);
   refuses({ files: { "face.svg": '<svg><image href="https://example.com/x.png"/></svg>' } }, /an href not starting #/);
   refuses({ bud: { teammate: { job: "J", sample: "S", face: { ...KIT, accessory: "monocle" } } } }, /face accessory is one of/);
-  refuses({ bud: { teammate: { job: "J", sample: "S", face: { ...KIT, wings: true } } } }, /unknown face field wings/);
-  refuses({ bud: { teammate: { job: "J", sample: "S", face: { ...KIT, skin: 12 } } } }, /face skin is a whole number, 0 to 9/);
+  refuses({ bud: { teammate: { job: "J", sample: "S", face: { ...KIT, wings: true } } } }, /a face spec has no wings/);
+  refuses({ bud: { teammate: { job: "J", sample: "S", face: { ...KIT, skin: 12 } } } }, /face skin is a whole number from 0 to 9/);
 });
