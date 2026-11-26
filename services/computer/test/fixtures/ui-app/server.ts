@@ -2,7 +2,7 @@
 //   node server.ts [port]      serves it (prints the URL)
 //   startFixture(port?)        for tests: { url, writes(), set(key, value), close() }
 // Routes (ROUTES, as /#/name): the generated r01..r54 plus live (polls every 50 ms, never settles), /scroll (scrolls inside <main>),
-// /planted (the measurement plants), /clock ("2m ago" from Date.now()), /danger (Delete and Pay POST: the server counts writes).
+// /planted (the measurement plants), /clock ("2m ago" from Date.now()), /danger (a POST on mount, and Delete and Pay POST: the server counts writes).
 import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

@@ -101,11 +101,13 @@ describe("capture", chrome, () => {
     fixture.set("planted-title", "Planted page");
     assert.deepEqual(after.lookFirst.map((c) => c.page), ["/#/planted"]); // /clock unchanged: the clock is frozen
   });
-  test("a live target is never clicked", async () => {
+  test("a live target is never clicked or written to", async () => {
     const w0 = fixture.writes();
     const r = await runCapture(liveAlias + "/#/danger", { widths: [1512], themes: ["light"] });
     assert.equal(await runRoutes(liveAlias + "/#/danger"), 2);
-    assert.equal(fixture.writes() - w0, 0); assert.ok(r.captures[0].motion); // measured passively
+    assert.equal(fixture.writes() - w0, 0); assert.ok(r.captures[0].motion); // measured passively; its POST on mount was aborted
+    await runCapture(fixtureUrl + "/#/danger", { widths: [1512], themes: ["light"] });
+    assert.ok(fixture.writes() - w0 >= 1); // the same page as a local build does write: the guard is what stopped it
   });
   test("the queue takes 120 pages and defers the rest", async () => {
     const r = await runCapture(fixtureUrl, { pagesFile: pages(300), widths: [1512], themes: ["light"] });

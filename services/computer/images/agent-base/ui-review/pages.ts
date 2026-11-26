@@ -44,7 +44,7 @@ async function crawl(base: string): Promise<Page[]> {
   const found: Page[] = [], seen = new Set<string>();
   const add = (path: string, source: Page["source"]) => { if (seen.has(path) || found.length >= CRAWL_MAX) return false; seen.add(path); found.push({ path, source }); return true; };
   add(routeOf(new URL(base)), "links");
-  const b = await launch({ politeness: { origin: new URL(base).origin, rps: 4 } });
+  const b = await launch({ politeness: { origin: new URL(base).origin, rps: 4 }, target: base });
   try {
     const page = await (await workerContext(b.browser, new Date().toISOString())).newPage();
     let level = [found[0].path];

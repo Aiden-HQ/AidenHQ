@@ -17,8 +17,9 @@ check writes its own report into `review/routes/`.
   `repo-checkout` replaces `/workspace/repos/<name>` each time, so move each aside
   (`mv /workspace/repos/<name> /workspace/base-<sha7>`, then the head's checkout to `/workspace/head-<sha7>`), install each
   as the repo says and run each server from its own folder on its own port.
-- **No repo (a URL):** review the URL as given. A live URL gets passive capture and hover only; the route check and any
-  click run only on a local build (`127.0.0.1` or `localhost`).
+- **No repo (a URL):** review the URL as given. A live URL is read only: the engine captures and hovers, never clicks, and
+  aborts every request that isn't GET, HEAD or OPTIONS (and every WebSocket) from the first page load, so the app's own code
+  writes nothing either. The route check and any click run only on a local build (`127.0.0.1` or `localhost`).
 - An app with no way to run on sample data: review the live app, and list "a seed mode for UI review" under what to add.
 
 ## Page list

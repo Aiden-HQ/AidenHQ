@@ -60,8 +60,10 @@ connections:
     auth: design_service_key
     returns: untrusted
     tools:
-      read: [ design_runs, design_run, design_image ]
-      write: [ design_run_start, design_evidence_put, design_run_finish ]
+      # design_evidence_put writes only into this module's own evidence store (the caller's own run, no outside effect): a read,
+      # so its images never enter the kernel's permanent write records or an approval's arguments.
+      read: [ design_runs, design_run, design_image, design_evidence_put ]
+      write: [ design_run_start, design_run_finish ]
 services:
   data: true
   run:
