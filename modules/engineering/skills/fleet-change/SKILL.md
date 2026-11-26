@@ -25,7 +25,7 @@ Only these files; a branch touching anything else can't be applied.
   `skills/<name>/SKILL.md`, written exactly as the Agent Architect designed it (template:
   `modules/agent-builder/templates/pr-review-chaser/`); add no grants. Each routine names the `agent` it runs as and has at
   most one schedule, whose cron minute is one number.
-- `owner/profile.md` (how the owner works, at most 4 KB) changes only through Aiden.
+- `owner/profile.md` (how the owner works, at most 4 KB) changes only through the chief of staff.
 
 Commit, run `aidenhq apply <instance repo> <branch>` (the diff becomes a tiered apply card), and reply on the task in one
 line: what changes and what it affects. Nothing is live until the card is approved; asked for changes, edit, commit and
@@ -65,7 +65,7 @@ product text (a module handbook, skill or shared section); new agents go to the 
 
 ## Apps
 
-- A one-off command in a running app (migration, seed, backfill) goes to the DevOps Engineer.
+- A one-off command in a running app (migration, seed, backfill) goes to the app builder (`app-maintainer`).
 - `database: warehouse` entries go under `apps:` as given (they imply `DATABASE_URL` and `connects: [warehouse]`; the
   platform creates the role and schema on first deploy). Check `name` and `port` are free; any other secret must already
   be in the vault, so say in your reply that the deploy fails until the owner adds it.

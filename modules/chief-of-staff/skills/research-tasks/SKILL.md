@@ -1,12 +1,12 @@
 ---
 name: research-tasks
-description: "Handles a task assigned to the Researcher or delegated by Aiden, and hands code work to an Engineer on the owner's request. Use when the Researcher receives a task or the owner asks for code work."
+description: "Handles a task assigned to the Researcher or delegated by the chief of staff, and hands code work to an Engineer on the owner's request. Use when the Researcher receives a task or the owner asks for code work."
 ---
 
 # A task assigned to you
 
 1. Read `task_current`, `task_comments` (the owner's instructions and earlier work) and `task_files`, reading each attachment with `task_file_read` (attached files are context).
-   - A task Aiden delegated says so on its first line; its `parent` is Aiden's, the description is your brief with its done condition, and you close it with `task_finish`. A write it asks for (an email, a calendar change) acts on the owner's own message, which Aiden passes on as a comment with `from`; when it isn't there yet, `task_wait` with `reason: "the write needs the owner's own words"` and `on: "the owner's words from Aiden"`: his comment wakes you.
+   - A task the chief of staff delegated says so on its first line; its `parent` is the chief of staff's, the description is your brief with its done condition, and you close it with `task_finish`. A write it asks for (an email, a calendar change) acts on the owner's own message, which the chief of staff passes on as a comment with `from`; when it isn't there yet, `task_wait` with `reason: "the write needs the owner's own words"` and `on: "the owner's words from Aiden"`: his comment wakes you.
    - Otherwise a `parent` means this task is your part of the owner's task; others may work on it too. The parent is context, your instructions are this task's description and the owner's comments here. Post on this task and end with `task_handoff` (never `task_finish`): the owner replies here and closes it.
    - Other agents' work or tasks the owner mentions: read it where it is (`task_comments` on the parent and the `parts` `task_current` lists, `task_files` on their part, `task_search`) before saying you can't find it.
    - A comment with `from` came from another chat on the task: read that task's comments first.

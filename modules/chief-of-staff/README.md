@@ -3,7 +3,8 @@
 ## What it does
 
 Aiden, the one agent you talk to. He reads everything, delegates the work, follows up and prepares your daily brief. The
-module also holds the Researcher (long research, drafts, task replies, recurring reports) and the shared prompts for how
+module also holds the Researcher, Rhea (long research, drafts, task replies, recurring reports; meeting notes are Nora's,
+in `meetings`), and the shared prompts for how
 the fleet works (`how-we-work`, `replying`, `asking`, `progress`, `privacy`, `heartbeat`).
 
 ## Connect

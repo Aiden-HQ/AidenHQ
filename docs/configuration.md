@@ -99,7 +99,7 @@ outcomes:
   takes only `name` (the folder's), `description`, `agents` and `routines`; `skills/<name>/SKILL.md` is found by folder.
   A local agent takes `name`, `description` (the routing contract), `reports_to`, `model`, `reasoning_effort`,
   `timeout_sec`, `connections`, `max_parallel`, `image`, `heartbeat`, `web_search`, `graded`, `department`, `chat`,
-  `skills` and `profile`; it cannot have roles, and its handbook (`agents/<key>/AGENTS.md`) is plain Markdown with no
+  `skills`, `profile` and `teammate` (below); it cannot have roles, and its handbook (`agents/<key>/AGENTS.md`) is plain Markdown with no
   frontmatter. A local routine takes `title`, `description`, `concurrency`, `schedules`, `agent` (required: any agent),
   `model` and `event`; it runs at most hourly (at most one schedule, its cron minute one number, checked after
   `overrides.routines`) and starts active. An agent that writes or designs code lists `engineering.write-code` in `skills`
@@ -138,6 +138,25 @@ outcomes:
   `node scripts/compile.ts --sizes` prints each crew agent's handbook bytes per section (`scripts/handbook.ts`) and
   writes nothing.
 - Disabling a module pauses its agents and routines; nothing is deleted.
+- **`teammate:`** marks an agent the owner sees by name (a product agent in its `AGENTS.md` frontmatter, a local agent in its
+  `module.yaml` entry); an agent without one is hidden staff. `{ job, sample, staff?, controls?, face?, first? }`:
+  - `job` (1–40 characters) and `sample` (1–140, one line of what it reports) are what the owner reads beside its name.
+  - `staff`: the hidden agents it speaks for (keys; never a teammate, never itself). `controls`: the modules it sets up for
+    the owner (default its own module). A trailing `?` drops an entry whose agent or module is off; one without `?` must
+    be on. Grants stay explicit: `controls` grants nothing.
+  - `face`: a kit spec the board draws, `{ hair, accessory, body, skin, hair_color, palette }` (enums and ranges in
+    `services/shared/face-kit.ts`), or the file name of an `.svg` or `.png` in the agent's own folder (at most 200 KB; an SVG
+    with a script, an event handler, `foreignObject`, an entity, `@import` or an outside `href`/`url(` fails compile).
+    Compile copies a file to `config/faces/<key>.<ext>` and the board serves it signed in, sandboxed, at
+    `/api/faces/<key>`. With no face the board draws one from the agent's key.
+  - `first`: its onboarding rank (1–99, lower first).
+  - The name: `overrides.agents.<key>.name` renames a teammate (only a teammate; the board's rename is that typed
+    settings change). Every teammate's name, its default included, is 1–24 ASCII letters, digits, spaces and `.'-`, at most 4
+    words, and differs (case and punctuation aside) from every other agent's name and key, hidden ones included: chat's
+    `@name` and the task tools address agents by either (`services/shared/teammate-name.ts`, the one rule for compile, the
+    board and the kernel). A teammate is never a team's template.
+  - The catalog (`config/modules.json`) lists every module's teammates, enabled or not (`teammates: [{key, name, job, sample,
+    description, department, face, first}]`); a module that is off and has a broken block is left out with a warning.
 - **`decisions.md`** (optional; template `config/decisions.example.md`): the owner's product decisions, including what not to
   build, one dated line each. The runner reads it from the instance repo's default branch (`apply.repo`) for every review,
   never from the change, and the AI reviewer rejects a change that brings back what an entry rules out or reverses a

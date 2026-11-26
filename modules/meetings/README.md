@@ -2,8 +2,9 @@
 
 ## What it does
 
-Meeting memory: transcripts and your Obsidian notes vault, published by the Researcher's meeting scan. Meetings and
-their full notes also land in the warehouse (`src_meetings`).
+Nora (the `meetings` agent) keeps your meeting record: transcripts and Google Meet documents become notes in your Obsidian
+notes vault, matched to the calendar (the meeting scan), and your own action items from them become one task each (meeting
+action items). Meetings and their full notes also land in the warehouse (`src_meetings`).
 
 ## Connect
 
@@ -12,7 +13,8 @@ Needs `google`. Set `VAULT_DIR` (and `KNOWLEDGE_BASES` for reference docs) in th
 
 ## What agents get
 
-The `ops_mcp` connection.
+The `ops_mcp` connection. Nora holds the scan's tools and the `ops-key` role (ops-mcp acts as her in Paperclip); the
+Researcher keeps the reads, `meeting_note_correct` and the voice-note tools.
 
 - Read: `obsidian_search`, `obsidian_read`, `obsidian_read_document_map`, `voice_note_read`, `knowledge_list`,
   `knowledge_index`, `knowledge_search`, `knowledge_read`, `source_read`, `sync_cursor_get`.
@@ -21,5 +23,5 @@ The `ops_mcp` connection.
 
 ## New installs
 
-In the default bundle. The `meeting-scan` routine (every 15 minutes, weekdays 08:00 to 20:00, or by webhook) starts
-paused under quiet start.
+In the default bundle. The `meeting-scan` routine (every 15 minutes, weekdays 08:00 to 20:00, or by webhook) and the
+`meeting-actions` routine (every 30 minutes) start paused under quiet start.

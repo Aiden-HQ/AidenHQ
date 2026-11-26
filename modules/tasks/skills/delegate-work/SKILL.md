@@ -24,7 +24,7 @@ Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them
 
 - Product-repo code goes to the holder of the `platform-engineer` role (`fleet_catalog` lists roles); its writes there go to the AI reviewer and its merge is filed once checks are green. Several product tasks may go to it at once.
 - Engineers have the repository, toolchains, package installs, the public Internet and a headless browser (`npm run screens`: changed pages at 1440 and 390, light and dark; rubric "screenshots of the changed pages attached"). They have no Docker, host, app logs or warehouse: put needed data in the task, and say "don't try to view the deployed app: the grader captures its pages".
-- Image and CVE fixes: in app repos built from the CI template the rubric says "`image-scan` green on the PR's head"; in the product repo, "`image-scan` ran to completion (not skipped) on the PR's head and reports no fixable high or critical CVE"; elsewhere the PR carries the registry's vulnerability data for the tag and digest it pins. Packages a Dockerfile `RUN` step installs aren't covered by `image-scan`: the deployed image's security scan (Security Watch) proves them after the deploy; keep that out of the PR rubric.
+- Image and CVE fixes: in app repos built from the CI template the rubric says "`image-scan` green on the PR's head"; in the product repo, "`image-scan` ran to completion (not skipped) on the PR's head and reports no fixable high or critical CVE"; elsewhere the PR carries the registry's vulnerability data for the tag and digest it pins. Packages a Dockerfile `RUN` step installs aren't covered by `image-scan`: the deployed image's security scan (the security agent, `security-watch`) proves them after the deploy; keep that out of the PR rubric.
 - One task per change; over about 2,000 changed lines, brief stacked PRs naming the slices. Files an open large rewrite replaces are held: target its branch or wait.
 
 ## UI work (with the design module)
@@ -36,7 +36,7 @@ Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them
 
 ## Graded work
 
-Work for the Engineer, DevOps Engineer and UI/UX Designer is graded however you hand it on: it closes when the grader finds it meeting its rubric, otherwise it reopens with the unmet criteria. If the grader is down, can't judge, or a third version is rejected, the task closes done with an "ungraded: <reason>" note; reopen it with what to change if it isn't.
+Work for the Engineer, the app builder (`app-maintainer`) and UI/UX Designer is graded however you hand it on: it closes when the grader finds it meeting its rubric, otherwise it reopens with the unmet criteria. If the grader is down, can't judge, or a third version is rejected, the task closes done with an "ungraded: <reason>" note; reopen it with what to change if it isn't.
 
 - **Deliverable:** `pr` (repo or PR link), `app` (name), `apply` or `file`. `report` (diagnosis, research, "no release carries the fix, park") and `none` (a question) aren't graded: read the answer and close.
 - **Rubric:** 3-8 criteria, each a fact the grader is given: the PR's diff, head and merge commit, named checks, an app repo's deploys.
@@ -52,6 +52,6 @@ Work for the Engineer, DevOps Engineer and UI/UX Designer is graded however you 
 ## Done, and after
 
 - Done means merged and, for an app, deployed and healthy. A delegated task reaching `done` is a claim: check the deployed app or repository, and reopen with the exact unmet condition and reproduction.
-- **A new app is done when it is live and whoever asked has its link.** (1) The Engineer builds it (`pr` on the app's repository, done at merge); (2) `task_delegate` to the DevOps Engineer "create and deploy `<name>` from `<repo>` at main", deliverable `app`. Then read the `url` from `app_status` and send it.
+- **A new app is done when it is live and whoever asked has its link.** (1) The Engineer builds it (`pr` on the app's repository, done at merge); (2) `task_delegate` to the app builder "create and deploy `<name>` from `<repo>` at main", deliverable `app`. Then read the `url` from `app_status` and send it.
 - A promise to report later rests on a delegated task under yours: its outcome wakes you there. A red check goes back to the Engineer.
 - Non-blocking code-review findings in an Engineer's report become one low-priority backlog task (`task_create`, `assignee` the app's owning agent per `fleet_catalog`, else you; marker `code-review:<owner/name>#<PR number>`; `deliverable` pr with that repo when graded).

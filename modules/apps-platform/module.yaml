@@ -18,7 +18,7 @@ connections:
     tool_timeout_sec: 600 # deploys are synchronous
     tools:
       # warehouse_query, source_new, source_ack: the shared warehouse's sources (modules/apps-platform/apps-mcp/src/sources.ts).
-      # source_ack only moves the caller's own cursor. finding_verdict needs the security-verdict role (Security Watch).
+      # source_ack only moves the caller's own cursor. finding_verdict needs the security-verdict role (the security agent, `security-watch`).
       read: [ app_list, app_status, app_logs, app_view, app_page_canary, app_check, web_view, warehouse_query, source_new, app_requests, app_roles ]
       write: [ app_deploy, app_restart, app_rollback, app_create, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
       # Granted only by name (the `write` shorthand never includes it): it stops an app and drops its registry entry.
@@ -28,7 +28,7 @@ providers:
   executor:
     url: http://apps-mcp:8090/aidenhq/v1/executor
     auth: apps_service_key
-# Each tool call below is filed as its kind. The plan checks the caller (an app's owner, or the DevOps Engineer during an
+# Each tool call below is filed as its kind. The plan checks the caller (an app's owner, or the app builder (`app-maintainer`) during an
 # incident) and pins the exact commit; a stateful deploy is raised to the reviewer.
 writes:
   deploy:

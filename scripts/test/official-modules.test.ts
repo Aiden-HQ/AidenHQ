@@ -29,5 +29,26 @@ test("the default bundle and every official module compile", () => {
     mkdirSync(join(dir, "agents"), { recursive: true });
     writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings }));
     assert.doesNotThrow(() => compile(product, dir), label);
+    if (label !== "every module") continue;
+    // The ten default teammates, keyed and named as the roster (each with its kit face); the meeting work is Nora's alone.
+    const r = compile(product, dir);
+    const kit = (hair, accessory, body, n, hair_color = n) => ({ hair, accessory, body, skin: n, hair_color, palette: n });
+    const roster = Object.fromEntries(Object.entries(r.paperclip.agents).filter(([, a]) => a.teammate).map(([k, a]) => [k, [a.name, a.teammate.job, a.teammate.face]]));
+    assert.deepEqual(roster, {
+      "chief-of-staff": ["Aiden", "Chief of staff", kit("short", "none", "tie", 0)],
+      "open-loops": ["Tess", "Follow-up chaser", kit("long", "headset", "none", 1)],
+      meetings: ["Nora", "Meeting notes", kit("long", "pencil", "notepad", 2)],
+      "reviewer-manager": ["Max", "PR reviewer", kit("spiky", "glasses", "none", 3)],
+      ship: ["Sam", "Release manager", kit("short", "cap", "none", 4)],
+      maintainer: ["Mia", "Repo maintainer", kit("bun", "none", "badge", 5)],
+      "app-maintainer": ["Iris", "App builder", kit("curly", "earrings", "none", 6)],
+      architect: ["Archie", "Agent Architect", kit("short", "hard-hat", "none", 7)],
+      "security-watch": ["Vik", "Security", { ...kit("short", "headband", "shield", 8), hair_color: 0 }],
+      assistant: ["Rhea", "Researcher", kit("long", "round-glasses", "none", 9, 8)],
+    });
+    assert.equal(r.paperclip.agents["open-loops"].teammate.first, 1);
+    assert.deepEqual(["meeting-scan", "meeting-actions"].map((k) => r.paperclip.routines[k].agent), ["meetings", "meetings"]);
+    assert.deepEqual(Object.keys(r.paperclip.agents).filter((k) => r.paperclip.agents[k].roles?.includes("ops-key")), ["meetings"]);
+    assert.deepEqual(r.faces, {}, "no module ships a face file yet");
   }
 });

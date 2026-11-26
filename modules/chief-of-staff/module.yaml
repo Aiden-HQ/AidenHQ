@@ -1,6 +1,6 @@
 name: chief-of-staff
 description: "Aiden (the chief of staff the owner talks to, who delegates and follows up), the Researcher (long research, drafts, task replies and recurring reports) and the daily brief."
-# Aiden and the Researcher hand code work to the Engineers (the "Handing work to an Engineer" section).
+# The chief of staff and the Researcher hand code work to the Engineers (the "Handing work to an Engineer" section).
 requires: [ engineering, owner-channel ]
 roles:
   declares:
@@ -15,7 +15,7 @@ agents:
     skills: [ tasks.delegate-work ]
     department: leadership
     # The owner's message must not queue behind a long wake on another task: on 2026-11-14 a Telegram question waited
-    # 5m48s for two runs on Aiden's notice chat (WOR-2275). Paperclip still runs one at a time per task.
+    # 5m48s for two runs on the chief of staff's notice chat (WOR-2275). Paperclip still runs one at a time per task.
     max_parallel: 2
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -60,7 +60,7 @@ agents:
       # The notes vault: reads, a correction to a meeting note the owner asks for (skill task-replies) and voice notes.
       ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, meeting_note_correct, voice_note_read, voice_note_add, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
       glean?: read
-      # HubSpot (hubspot module): reads only; changing the CRM is Aiden's.
+      # HubSpot (hubspot module): reads only; changing the CRM is the chief of staff's.
       hubspot?: [ get_user_details, get_organization_details, discover_hubspot_schema, search_crm_objects, get_crm_objects, query_crm_data, search_properties, get_properties, search_owners, tool_guidance ]
       # Jira through Atlassian's MCP server, signed in as the owner (jira module): reads only.
       # Not granted: getJiraBoardConfig, getJiraProjectVersionRelatedWork (tool-budget slimming, 2026-11-13).
