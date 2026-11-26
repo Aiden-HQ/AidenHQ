@@ -64,27 +64,81 @@ export function versionResult(documentId: string, text: string): string {
 }
 
 /**
+ * The most the per-part detail may spend: a task notice is cut at 3,000 characters (kernel/src/writes.ts), so the parts
+ * still to fix must never fall past that. Consecutive parts that share an outcome share one clause, so a long run of
+ * suggestions costs a line, not sixty-five.
+ */
+const RECEIPT_LIMIT = 1800;
+
+type Outcome = { status: "applied" | "suggested" | "conflict"; from: number; to: number; reason?: string };
+
+/**
  * What became of each changed part, in words: its place in the version the agent wrote, then whether it went in, became a
  * suggestion or conflicted, so a round of several fixes tells which one landed, which awaits a person and which failed.
  * Nothing for a shape it doesn't know and nothing when every part went in.
  */
 function reconciled(rec: any): string {
   const found: any[] = Array.isArray(rec) ? rec : Object.values(rec ?? {}).find(Array.isArray) ?? [];
-  const parts = [...found].sort((a, b) => (a?.index ?? 0) - (b?.index ?? 0));
-  if (!parts.some((p) => p?.status === "suggested" || p?.status === "conflict")) return "";
-  const said = parts
-    .map((p, i) => {
-      const at = `part ${Number.isInteger(p?.index) ? p.index + 1 : i + 1}`;
-      if (p?.status === "applied") return `${at} went in as written`;
-      if (p?.status === "suggested") return `${at} became a suggestion for a person to decide, so leave it to them (publishing it again adds nothing)`;
-      if (p?.status === "conflict") return `${at} conflicted with people's edits and was not applied (${reasonOf(p)}), so read the live document and change it from its current text`;
-      return "";
-    })
-    .filter(Boolean);
-  if (!said.length) return "";
+  const parts = [...found]
+    .filter((p) => p?.status === "applied" || p?.status === "suggested" || p?.status === "conflict")
+    .sort((a, b) => (a?.index ?? 0) - (b?.index ?? 0));
+  if (!parts.some((p) => p.status !== "applied")) return "";
+  const runs: Outcome[] = [];
+  parts.forEach((p, i) => {
+    const place = Number.isInteger(p?.index) ? p.index + 1 : i + 1;
+    const reason = p.status === "conflict" ? reasonOf(p) : undefined;
+    const last = runs[runs.length - 1];
+    if (last && last.status === p.status && last.reason === reason && last.to === place - 1) last.to = place;
+    else runs.push({ status: p.status, from: place, to: place, ...(reason ? { reason } : {}) });
+  });
   const of = `Of the ${parts.length} changed part${parts.length === 1 ? "" : "s"}`;
-  const head = parts.some((p) => p?.status === "applied") ? `${of}:` : `${of}, none was written:`;
-  return `\n${head} ${said.join("; ")}.`;
+  const said = runs.map(clause).join("; ");
+  if (`${of}: ${said}.`.length <= RECEIPT_LIMIT) return `\n${of}: ${said}.`;
+  return `\n${of}: ${bounded(runs)}`;
+}
+
+/** One outcome, in words, spanning the places it covers. */
+function clause(o: Outcome): string {
+  const many = o.to > o.from;
+  const at = many ? `parts ${o.from}–${o.to}` : `part ${o.from}`;
+  if (o.status === "applied") return `${at} went in as written`;
+  if (o.status === "suggested") return `${at} became ${many ? "suggestions" : "a suggestion"} for a person to decide, so leave ${many ? "them" : "it"} to them (publishing ${many ? "them" : "it"} again adds nothing)`;
+  return `${at} conflicted with people's edits and ${many ? "were" : "was"} not applied (${o.reason}), so read the live document and change ${many ? "them" : "it"} from its current text`;
+}
+
+/** A receipt too long for one notice: counts for what is settled, then each conflict by place while it fits, and the places left as a compact list to read. */
+function bounded(runs: Outcome[]): string {
+  const count = (s: Outcome["status"]) => runs.filter((o) => o.status === s).reduce((n, o) => n + (o.to - o.from + 1), 0);
+  const [applied, suggested, conflicts] = [count("applied"), count("suggested"), runs.filter((o) => o.status === "conflict")];
+  const said: string[] = [];
+  if (applied) said.push(`${applied} went in as written`);
+  if (suggested) said.push(`${suggested} became suggestions for a person to decide, so leave them to them (publishing them again adds nothing)`);
+  // Consecutive places as one span, so what is left reads "10–80", not eighty numbers.
+  const places = (list: Outcome[]) => {
+    const spans: string[] = [];
+    let from = 0;
+    let to = 0;
+    for (const o of list) {
+      if (from && o.from === to + 1) to = o.to;
+      else {
+        if (from) spans.push(from === to ? `${from}` : `${from}–${to}`);
+        [from, to] = [o.from, o.to];
+      }
+    }
+    if (from) spans.push(from === to ? `${from}` : `${from}–${to}`);
+    return spans.join(", ");
+  };
+  let left = RECEIPT_LIMIT - said.join("; ").length - 60;
+  const shown: string[] = [];
+  for (const o of conflicts) {
+    const line = clause(o);
+    if (line.length > left) break;
+    shown.push(line);
+    left -= line.length + 2;
+  }
+  const rest = conflicts.slice(shown.length);
+  if (rest.length) shown.push(`part${rest.reduce((n, o) => n + (o.to - o.from + 1), 0) > 1 ? "s" : ""} ${places(rest)} also conflicted and didn't apply: read the live document and change ${rest.reduce((n, o) => n + (o.to - o.from + 1), 0) > 1 ? "them" : "it"} from its current text`);
+  return `${[...said, ...shown].join("; ")}.`;
 }
 
 /** Primer's own reason a part was not applied, in words: a conflict's detail is under `refusal` (its code, fix and details), not `note` or `text`. */
