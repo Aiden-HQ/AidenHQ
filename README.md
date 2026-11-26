@@ -75,7 +75,7 @@ override them):
 A new install also starts quiet (`docs/design/quiet-start.md`): scheduled routines and heartbeats wait until the owner
 turns them on, and every model call stops at the install's spend limit (`spend_day_usd` 50 USD a day, `spend_month_usd` 1000 USD a month; one task at `task_usd`, 20 USD) until the owner raises it. Typical daily
 spend: one owner's full fleet ran about $30-50 a day before cost tuning. Most agents run on DeepSeek Flash; the expensive
-parts are GPT Sol advisor calls and the Agent Architect's max-effort reasoning. Raise both accordingly for a full fleet.
+part is GPT Sol advisor calls. Raise the limits accordingly for a full fleet.
 The board's Costs page shows the real figures. Paperclip shows OpenRouter runs as unpriced, so Paperclip budgets stay at 0 (any budget pauses the agent at
 $0); spend is limited in the kernel's gateway.
 

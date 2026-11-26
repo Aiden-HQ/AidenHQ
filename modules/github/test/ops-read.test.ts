@@ -126,11 +126,14 @@ test("a workflow run's identity is its workflow, event, head, attempt and its ow
   assert.deepEqual(noJobs.json.post_checks, []);
 });
 
-test("a commit read answers its parents in the API's order, first parent first; a 404 is no commit", async () => {
+test("a commit read answers its parents in the API's order, first parent first, and the tree it records; a 404 is no commit", async () => {
   const c = ctx();
   const parents = [{ sha: "b".repeat(40) }, { sha: "c".repeat(40) }];
-  const a = await answerOp("read", { module: "grading", repo: "acme/app", kind: "commit", ref: sha }, withRest(c, async () => ok({ sha, parents })));
-  assert.deepEqual(a.json, { sha, parents: ["b".repeat(40), "c".repeat(40)] }, "the merge commit's first parent is the base");
+  const tree = "t".repeat(40);
+  const a = await answerOp("read", { module: "grading", repo: "acme/app", kind: "commit", ref: sha }, withRest(c, async () => ok({ sha, parents, commit: { tree: { sha: tree } } })));
+  assert.deepEqual(a.json, { sha, parents: ["b".repeat(40), "c".repeat(40)], tree }, "the merge commit's first parent is the base, and its tree is the code it records");
+  const noTree = await answerOp("read", { module: "grading", repo: "acme/app", kind: "commit", ref: sha }, withRest(c, async () => ok({ sha, parents })));
+  assert.deepEqual(noTree.json, { sha, parents: ["b".repeat(40), "c".repeat(40)] }, "a read with no tree answers none, never a guess");
   const none = await answerOp("read", { module: "grading", repo: "acme/app", kind: "commit", ref: sha }, ctx());
   assert.equal(none.status, 404, "a commit GitHub has no answer for is a 404, never a guess");
   await assert.rejects(() => answerOp("read", { module: "grading", repo: "acme/app", kind: "commit", ref: sha }, withRest(c, async () => ({ status: 502, body: {}, headers: new Headers() }))), /502/, "an unreadable answer throws");
