@@ -42,14 +42,16 @@ description: "Publishes a branch with `aidenhq publish`: self-review, PR title a
 ## Closing a duplicate PR
 
 A publish from a scratch branch opens a second PR: when a PR already exists for the change, publish to that PR's own head
-branch, and treat a new PR on `ship-pr-<n>` as a duplicate, never as the task's PR.
-Before closing anything, read both PRs' live state (`state`, `merged`, `headRefName`) — the one you mean to close and the
-one you mean to keep — and close the duplicate by its own URL. After the close, read both again and report only what they
-show.
+branch, and a new PR on `ship-pr-<n>` is the duplicate — unless the live read below shows the other one closed.
+Before closing anything, read both PRs' live state (`state`, `merged`, `headRefName`) — the one you mean to close and
+the one you mean to keep — and close a PR only when it is open, the one you keep is open, and the kept PR's head is the
+other's head or ahead of it. A PR already closed, or the only live copy of a fix, is not a duplicate: close nothing and
+work from the PR the state shows.
+Then close the duplicate by its own URL. After the close, read both again and report only what they show.
 Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
 When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
-`refs/pull/<n>/head`: fetch that ref, publish it on a new `agent/<task>/…` branch, and wait on that PR instead of a merge
-that cannot happen.
+`refs/pull/<n>/head`, which the code host serves as a bundle (`codehost fetch` with that `ref`): fetch that bundle, publish
+it on a new `agent/<task>/…` branch, and wait on that PR instead of a merge that cannot happen.
 
 ## Finishing a cancelled task's PR (a handoff)
 
