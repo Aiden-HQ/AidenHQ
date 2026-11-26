@@ -32,7 +32,13 @@ const RESERVED = "/.aidenhq";
 const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"];
 const STRIP = /^(x-aidenhq-|tailscale-|cf-access-)/;
 /** Paths a test-write session never writes to: a best-effort extra on top of DELETE (an app can hide an action in a body). */
-export const DESTRUCTIVE_PATH = /(delete|destroy|remove|purge|archive|cancel|refund|pay|checkout|billing|invite|send|transfer|publish|deploy)/i;
+export const DESTRUCTIVE_PATH = /(delete|destroy|remove|purge|archive|cancel|refund|pay|checkout|billing|invite|send|transfer|publish|deploy)/gi;
+/**
+ * The one exemption: the only test-write session is app_page_canary's feedback submission, and an app's feedback route may
+ * name its verb (`POST /api/feedback/send`). A path that names feedback or intake (the canary's own words, canary.ts) may
+ * carry `send`, and only `send`: any other listed word on it (`/api/feedback/1/delete`) is still refused.
+ */
+const FEEDBACK_PATH = /feedback|intake/i;
 export type LiveMode = "read" | "test-write";
 /** Whether a session in `mode` may make this request (or, `upgrade`, open this WebSocket). Anything unknown reads. */
 export function allowedIn(mode: LiveMode, method: string, path: string, upgrade = false): boolean {
@@ -41,7 +47,9 @@ export function allowedIn(mode: LiveMode, method: string, path: string, upgrade 
     if (!upgrade && (method === "GET" || method === "HEAD")) return true;
     let decoded = path;
     try { decoded = decodeURIComponent(path); } catch { return false; }
-    return method !== "DELETE" && !DESTRUCTIVE_PATH.test(decoded);
+    if (method === "DELETE") return false;
+    const hits = (decoded.match(DESTRUCTIVE_PATH) ?? []).map((w) => w.toLowerCase());
+    return hits.every((w) => w === "send") && (!hits.length || FEEDBACK_PATH.test(decoded));
   }
   return !upgrade && (method === "GET" || method === "HEAD");
 }

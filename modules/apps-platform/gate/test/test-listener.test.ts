@@ -488,7 +488,9 @@ test("the session's live-app mode decides every request, the gate's notify and e
     kernel.state.mode = "test-write";
     assert.equal((await via("POST", "/api/items")).status, 200);
     assert.equal((await via("GET", "/assets/payload.js")).status, 200, "a read of a page or asset is never a destructive path");
-    for (const [m, p] of [["DELETE", "/api/items/1"], ["POST", "/api/items/1/publish"], ["POST", "/api/invite"], ["POST", "/api/%64elete"]]) assert.equal((await via(m!, p!)).status, 403, `${m} ${p}`);
+    for (const [m, p] of [["DELETE", "/api/items/1"], ["POST", "/api/items/1/publish"], ["POST", "/api/invite"], ["POST", "/api/%64elete"], ["POST", "/api/invite/send"], ["POST", "/api/feedback/1/delete"], ["DELETE", "/api/feedback/1"]]) assert.equal((await via(m!, p!)).status, 403, `${m} ${p}`);
+    // The canary's own submission: an app's feedback route that names its verb, and the page's notify, both pass.
+    for (const p of ["/api/feedback/send", "/api/intake", "/.aidenhq/notify"]) assert.ok([200, 204].includes((await via("POST", p)).status), p);
   } finally {
     kernel.state.mode = "test-write";
   }
