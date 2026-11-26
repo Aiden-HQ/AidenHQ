@@ -77,6 +77,7 @@
     "manifest key setup": {"state":"experimental","fp":""},
     "manifest key stages": {"state":"experimental","fp":""},
     "manifest key subscribes": {"state":"experimental","fp":""},
+    "manifest key validate": {"state":"experimental","fp":""},
     "manifest key writes": {"state":"experimental","fp":""},
     "provider engine@1": {"state":"stable","fp":""},
     "provider executor@1": {"state":"experimental","fp":""},
