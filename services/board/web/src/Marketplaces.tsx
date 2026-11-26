@@ -79,7 +79,10 @@ export function AddMarketplace() {
   };
   // Add only a pin made for exactly what the input says now, so its commit is never filed against another repository.
   const pinned = pin && pin.repo === typed.current.trim() && pin.sha ? pin : null;
-  const add = () => pinned && void run({ kind: "marketplace", op: "add", name: repo.trim().split("/")[1]!.toLowerCase().replace(/[^a-z0-9-]/g, "-"), source: { source: "github", repo: pinned.repo }, sha: pinned.sha }, () => (setRepo(""), setPin(null)));
+  // Named after the repository; one named `local` takes its owner too (`local` is the instance's own modules).
+  const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const [owner = "", base = ""] = repo.trim().split("/");
+  const add = () => pinned && void run({ kind: "marketplace", op: "add", name: slug(base) === "local" ? slug(`${owner}-local`) : slug(base), source: { source: "github", repo: pinned.repo }, sha: pinned.sha }, () => (setRepo(""), setPin(null)));
   return (
     <form className="br-add" onSubmit={(e) => (e.preventDefault(), ok && (pinned ? add() : void look()))}>
       <input className="br-search" placeholder="github owner/repo" aria-label="GitHub repository" value={repo} onChange={(e) => (typed.current = e.target.value, setRepo(e.target.value), setPin(null))} />

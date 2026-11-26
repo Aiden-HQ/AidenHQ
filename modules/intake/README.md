@@ -25,9 +25,12 @@ Needs `slack` and `google` connected, and `owner_email` set. The Slack user id i
   `gmail_search`, `gmail_read_thread`; `gmail_label` only clears `Aiden` from a thread whose task is closed) and the live
   Slack events, creates tasks and notifies you. It has no web access, since it reads untrusted text.
 - Routines: `inbox-scan` (every 30 minutes, weekdays 08:00 to 19:00), `slack-triage` (a batch of live Slack events,
-  including your 📌 reactions), and `primer-digest` (each morning, with `primer`).
+  including your 📌 reactions), `primer-digest` (each morning, with `primer`), and `inbox-lookback` (a trial: run once
+  when you set up a teammate that works from Intake's tasks, such as the follow-up chaser; it files the last 7 days of
+  email and Slack as the live scans would).
 
 ## New installs
 
 In the default bundle. Under quiet start every routine starts paused, the Slack event routine included, so nothing is
-read until you turn it on.
+read until you turn it on. Setting up a teammate that needs Intake (onboarding or hiring) turns these routines on and
+runs the look-back once.

@@ -27,6 +27,7 @@
 //   POST /v1/channel/exchange  (a module with role kernel.lane) a fast-lane turn written to its agent's chat task (lane.ts)
 //   POST /v1/notify            (the board's key, or a module with role kernel.owner-notice) a message for the owner,
 //                              queued for the owner's router (notify.ts)
+//   POST /v1/notify/test       (the board's key) {to}: the fixed push-test card to that one channel's transport, its answer back
 //   GET  /v1/notify/take, POST /v1/notify/ack, POST /v1/notify/send  (the module with role kernel.notify) the queued owner messages, each until acknowledged; one
 //                              message to a channel's transport
 //   POST /v1/wakes/events      (the paperclip-events plugin's key) a Paperclip event's ids: its task is scanned (wakes.ts)
@@ -201,6 +202,7 @@ export const ROUTES = [
   { method: "ANY", path: "/v1/cp/owner/*", auth: "board" },
   { method: "POST", path: "/v1/brake/notify", auth: "module" },
   { method: "POST", path: "/v1/notify", auth: "board" },
+  { method: "POST", path: "/v1/notify/test", auth: "board" },
   { method: "POST", path: "/v1/board-tasks", auth: "board" },
   { method: "GET", path: "/v1/notify/take", auth: "module" },
   { method: "POST", path: "/v1/notify/ack", auth: "module" },
@@ -598,6 +600,11 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (!notify) throw fail(503, "unavailable", "notify is off");
           notify.queue(notice(await json(req)));
           return send(res, 200, { queued: true });
+        }
+        case "POST /v1/notify/test": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!notify) throw fail(503, "unavailable", "notify is off");
+          return send(res, 200, await notify.test(await json(req)));
         }
         case "POST /v1/answers/claim": case "POST /v1/answers/release": {
           // The board, or a speaks-as-owner channel with its own token (as owner-message): the claimant is the caller.

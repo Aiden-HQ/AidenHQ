@@ -12,6 +12,8 @@ import { teammateNameProblem } from "./teammate-name.js";
 const KEY = z.string().regex(/^[a-z][a-z0-9_]{0,60}$/);
 const AGENT = z.string().regex(/^[a-z0-9][a-z0-9-]{0,60}$/);
 const NAME = z.string().regex(/^[a-z0-9][a-z0-9-]{0,60}$/);
+/** A module as the module change names it: `name` (official or local), or `name@marketplace` (a third-party one). */
+export const NAME_Q = /^[a-z0-9][a-z0-9-]{0,62}(@[a-z0-9][a-z0-9-]{0,62})?$/;
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
 const SCALAR = z.union([z.string().max(500), z.number().finite(), z.boolean()]);
 const MODEL = z.string().regex(/^[A-Za-z0-9~][\w./~:@-]{0,119}$/);
@@ -23,7 +25,7 @@ export const ChangeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("setting"), key: KEY, value: z.union([SCALAR, z.array(z.union([z.string().max(200), z.number().finite(), z.record(z.string(), z.unknown())])).max(50), z.record(z.string(), z.unknown())]) }).strict(),
   z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel", "name"]), value: SCALAR }).strict(),
   // A module on or off (instance.yaml modules:; the owner's, Tier 2). On for a module of a configured marketplace installs it.
-  z.object({ kind: z.literal("module"), name: NAME, on: z.boolean() }).strict(),
+  z.object({ kind: z.literal("module"), name: z.string().regex(NAME_Q), on: z.boolean() }).strict(),
   // A routine's schedules or model (overrides.routines.<key>). Pause and resume are the routine's live controls (fleet.ts).
   z.discriminatedUnion("field", [
     z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("schedules"), value: z.array(SCHEDULE).max(10) }).strict(),
@@ -52,6 +54,9 @@ export type Change = z.infer<typeof ChangeSchema>;
 interface Catalog {
   name: string;
   enabled: boolean;
+  /** Where it comes from (`aidenhq` when absent), and a third-party listing the instance doesn't install (compile's browse). */
+  marketplace?: string;
+  browse?: boolean;
   /** A per-module pin (instance.yaml modules: - { id, sha }). */
   pinned?: string;
   /** Listed in instance.yaml modules: (an enabled module that isn't chosen is on as a dependency). */
@@ -94,6 +99,24 @@ export { SETTINGS_LABEL } from "./board.js";
 
 const kindOf = (v: unknown) => (Array.isArray(v) ? "list" : v === null || v === undefined ? "none" : typeof v);
 const plain = (s: string) => !/[\x00-\x1f\x7f$]/.test(s);
+
+/**
+ * The catalog row a module change names (`name` or `name@marketplace`), by name and marketplace. A third-party module is named
+ * with its marketplace; turning one on whose bare name is already installed from elsewhere is refused (one module per name).
+ */
+export function catalogModule(catalog: Catalog[], id: string, on = true): Catalog {
+  const [bare, mkt] = id.split("@") as [string, string | undefined];
+  const from = (x: Catalog) => x.marketplace ?? "aidenhq";
+  const m = catalog.find((x) => x.name === bare && from(x) === (mkt ?? "aidenhq")) ?? catalog.find((x) => x.name === bare && !mkt && from(x) === "local");
+  if (!m) {
+    const other = catalog.find((x) => x.name === bare);
+    throw new ChangeRefused(other && !mkt && from(other) !== "aidenhq" ? `say ${bare}@${from(other)}` : `there is no module ${id}`);
+  }
+  // Installed elsewhere, or an official or local module of that name (compile reserves those names whether on or not).
+  const taken = on && !m.enabled && catalog.find((x) => x !== m && x.name === bare && (x.enabled || !x.browse));
+  if (taken) throw new ChangeRefused(`a module named ${bare} is already ${taken.enabled ? "installed" : "available"} from ${from(taken)}`);
+  return m;
+}
 
 /** The change, checked; throws ChangeRefused with a reason the owner can act on. */
 export function checkChange(ch: Change, compiled: Compiled | null, catalog: Catalog[]): Change {
@@ -149,20 +172,20 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
     return ch;
   }
   if (ch.kind === "module") {
-    const m = catalog.find((x) => x.name === ch.name);
-    if (!m) throw new ChangeRefused(`there is no module ${ch.name}`);
+    const m = catalogModule(catalog, ch.name, ch.on);
     if (ch.name === "kernel") throw new ChangeRefused("the kernel is always on");
     if (Boolean(m.chosen) === ch.on) throw new ChangeRefused(`${ch.name} is already ${ch.on ? "on" : "off"}`);
     return ch;
   }
   if (ch.kind === "pin") {
-    const m = catalog.find((x) => x.name === ch.name);
+    const m = catalog.find((x) => x.name === ch.name && !x.browse);
     if (!m || ch.name === "kernel") throw new ChangeRefused(`there is no module ${ch.name}`);
     if (!m.chosen) throw new ChangeRefused(`${ch.name} isn't turned on in instance.yaml: turn it on first`);
     if ((m.pinned ?? null) === ch.sha) throw new ChangeRefused(ch.sha ? `${ch.name} is already at that commit` : `${ch.name} already follows its marketplace`);
     return ch;
   }
   if (ch.kind === "marketplace") {
+    if (ch.op === "add" && ch.name === "local") throw new ChangeRefused("local names the instance's own modules: give the marketplace another name");
     if (ch.op === "add" ? !ch.source || !ch.sha : ch.op === "update" ? !ch.sha || ch.source : ch.source || ch.sha) throw new ChangeRefused(ch.op === "add" ? "adding a marketplace names its GitHub owner/repo and a commit" : ch.op === "update" ? "updating a marketplace names only its new commit" : "removing a marketplace names only it");
     return ch;
   }

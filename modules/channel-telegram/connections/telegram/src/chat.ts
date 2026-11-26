@@ -269,6 +269,8 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
           if (claimed !== "taken") await tg("editMessageReplyMarkup", { chat_id: answer.chatId, message_id: answer.messageId, reply_markup: { inline_keyboard: [[{ text: claimed === "sent" ? `✓ ${answer.label}` : "Already answered", callback_data: "done" }]] } });
           said = claimed === "sent" ? `Sent: ${answer.label}` : claimed === "stale" ? "Already answered, or the question changed." : "Another answer is being sent; try again in a moment.";
         }
+        // A push test's inert button (send.ts `inert`): acknowledged, nothing else.
+        if ((u as { callback_query?: { data?: string } }).callback_query?.data === "test") said = "Test received";
         const cbId = (u as { callback_query?: { id?: string } }).callback_query?.id;
         if (cbId) await tg("answerCallbackQuery", { callback_query_id: cbId, ...(said ? { text: said } : {}) });
         store.setKv("tg_offset", String(u.update_id + 1));

@@ -212,6 +212,11 @@ export class Store {
     this.db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
   }
 
+  /** Sets `key` only when it isn't set yet: true for the one caller that set it (an atomic reservation). */
+  claimMeta(key: string, value: string): boolean {
+    return this.db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING").run(key, value).changes === 1;
+  }
+
   delMeta(key: string): void {
     this.db.prepare("DELETE FROM meta WHERE key = ?").run(key);
   }

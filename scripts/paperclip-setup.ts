@@ -422,8 +422,9 @@ function writeCatalog() {
   mkdirSync(dirname(path), { recursive: true });
   // Every module found, enabled or not (scripts/compile.ts): what can be installed, and what each one brings.
   const modulesFile = join(repo, "config/modules.json");
-  // Without the board's setting docs and setup steps (Settings page only): agents' fleet_catalog stays small.
-  const modules = existsSync(modulesFile) ? JSON.parse(readFileSync(modulesFile, "utf8")).map(({ settings, setup, ...m }: Obj) => m) : [];
+  // What a module is and who it brings, nothing the board's pages alone read (settings, readme, defaults, writes, secrets,
+  // prompts): agents' fleet_catalog stays small. `browse`: a third-party listing the instance doesn't install.
+  const modules = existsSync(modulesFile) ? JSON.parse(readFileSync(modulesFile, "utf8")).map((m: Obj) => ({ name: m.name, description: m.description, marketplace: m.marketplace, tier: m.tier, enabled: m.enabled, ...(m.browse ? { browse: true } : {}), requires: m.requires ?? [], teammates: m.teammates ?? [] })) : [];
   writeFileSync(path, JSON.stringify({ agents: agentsOut, mcp_servers: mcp, modules }, null, 1));
   step("Wrote the capabilities catalog");
 }

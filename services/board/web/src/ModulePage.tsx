@@ -39,13 +39,16 @@ export function ModulePage(props: { name: string; tab: ModuleTab; go: (hash: str
 function ModuleBody({ name, tab, go, onSignIn, can }: { name: string; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; can: Can }) {
   const [d, setD] = useState<ModuleDetail | null>(null);
   const [advisory, setAdvisory] = useState<Advisory | undefined>();
+  // Installed modules' ids by bare name (one installed module per name), for the Needs and Needed by links.
+  const [ids, setIds] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState("");
   const needsSetup = useSetupNeeded();
   const needsPairing = useSetupPairing();
   const needsConnect = useConnectNeeded(can);
   useEffect(() => {
     api.module(name).then(setD, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
-    api.modules().then((r) => setAdvisory(r.advisories?.find((a) => a.module === name)), () => {});
+    // Advisories name a module by its bare name, for an installed one only.
+    api.modules().then((r) => (setAdvisory(name.includes("@") && r.modules.find((m) => m.id === name)?.browse ? undefined : r.advisories?.find((a) => a.module === name.split("@")[0])), setIds(new Map(r.modules.filter((m) => !m.browse).map((m) => [m.name, m.id])))), () => {});
   }, [name, onSignIn]);
   if (!d)
     return (
@@ -65,16 +68,18 @@ function ModuleBody({ name, tab, go, onSignIn, can }: { name: string; tab: Modul
         )}
       </main>
     );
-  return <Loaded d={d} tab={tab} go={go} onSignIn={onSignIn} setup={needsSetup.has(name)} pairing={needsPairing.has(name)} connect={needsConnect.get(name)} can={can} advisory={advisory} />;
+  // A browse listing is catalog only: an installed module of the same bare name lends it no setup or connection state.
+  const live = d.module.browse ? undefined : d.module.name;
+  return <Loaded d={d} ids={ids} tab={tab} go={go} onSignIn={onSignIn} setup={!!live && needsSetup.has(live)} pairing={!!live && needsPairing.has(live)} connect={live ? needsConnect.get(live) : undefined} can={can} advisory={advisory} />;
 }
 
-function Loaded({ d, tab, go, onSignIn, setup, pairing, connect, can, advisory }: { d: ModuleDetail; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; pairing: boolean; connect?: { c: Connectable; word: string }; can: Can; advisory?: Advisory }) {
+function Loaded({ d, ids, tab, go, onSignIn, setup, pairing, connect, can, advisory }: { d: ModuleDetail; ids: Map<string, string>; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; pairing: boolean; connect?: { c: Connectable; word: string }; can: Can; advisory?: Advisory }) {
   const m = d.module;
   const t = useModuleToggle(m);
   const [asking, setAsking] = useState(false);
   const [info, setInfo] = useState<BrowseModule | undefined>();
   useEffect(() => {
-    if (m.state === "off") api.browse(m.name, "").then((r) => setInfo(r.modules.find((b) => b.name === m.name)), () => {});
+    if (m.state === "off") api.browse(m.name, "").then((r) => setInfo(r.modules.find((b) => b.id === m.id)), () => {});
   }, [m.name, m.state]);
   const s = moduleState(m, { filed: t.filed, setup, pairing, connect: Boolean(connect), advisory });
   const locked = lockedWhy(m);
@@ -96,7 +101,7 @@ function Loaded({ d, tab, go, onSignIn, setup, pairing, connect, can, advisory }
         sub={m.description}
         actions={
           <>
-            <SetupButton module={m.name} primary={setup} word={s.action} />
+            {!m.browse && <SetupButton module={m.name} primary={setup} word={s.action} />}
             {connect && !setup && <ConnectButton c={connect.c} word={connect.word} variant="primary" />}
             {m.state === "off" && !t.busy && <button className="btn primary" onClick={() => setAsking(true)}>Turn on</button>}
             {m.state !== "off" && t.switchEl && (
@@ -128,9 +133,9 @@ function Loaded({ d, tab, go, onSignIn, setup, pairing, connect, can, advisory }
       )}
       <Pin m={m} />
       <div>
-        <Tabs<ModuleTab> label="Section" value={tab} tabs={TABS} href={(k) => `#/team/modules/${m.name}${k === "overview" ? "" : `/${k}`}`} />
+        <Tabs<ModuleTab> label="Section" value={tab} tabs={TABS} href={(k) => `#/team/modules/${m.id}${k === "overview" ? "" : `/${k}`}`} />
       </div>
-      {tab === "overview" && <Overview d={d} />}
+      {tab === "overview" && <Overview d={d} ids={ids} />}
       {tab === "contents" && <Contents d={d} onSignIn={onSignIn} can={can} />}
       {tab === "settings" && <ModuleSettings m={m} onSignIn={onSignIn} />}
       {tab === "changes" && <ModuleChanges m={m} />}
@@ -163,7 +168,7 @@ function Tasks({ rows }: { rows: TaskRow[] }) {
   );
 }
 
-const modLinks = (names: string[]) => (names.length ? <span className="mod-tags">{names.map((n) => <a key={n} className="mod-tag" href={`#/team/modules/${n}`}>{n}</a>)}</span> : <span className="mod-none">nothing</span>);
+const modLinks = (names: string[], ids: Map<string, string>) => (names.length ? <span className="mod-tags">{names.map((n) => <a key={n} className="mod-tag" href={`#/team/modules/${ids.get(n) ?? n}`}>{n}</a>)}</span> : <span className="mod-none">nothing</span>);
 const tags = (names: string[], none = "none") => (names.length ? <span className="mod-tags">{names.map((n) => <span key={n} className="mod-tag">{n}</span>)}</span> : <span className="mod-none">{none}</span>);
 
 function Agents({ d }: { d: ModuleDetail }) {
@@ -196,7 +201,7 @@ function Card({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function Overview({ d }: { d: ModuleDetail }) {
+function Overview({ d, ids }: { d: ModuleDetail; ids: Map<string, string> }) {
   const m = d.module;
   const { connections, writes, secrets } = d.authority;
   return (
@@ -219,9 +224,9 @@ function Overview({ d }: { d: ModuleDetail }) {
         <Card title="Needs and needed by">
           <dl className="mod-facts">
             <dt>Needs</dt>
-            <dd>{modLinks(d.requires)}</dd>
+            <dd>{modLinks(d.requires, ids)}</dd>
             <dt>Needed by</dt>
-            <dd>{modLinks(d.neededBy)}</dd>
+            <dd>{modLinks(d.neededBy, ids)}</dd>
           </dl>
         </Card>
         <Card title="If you turn it off">

@@ -157,6 +157,7 @@
     "route POST /v1/notify": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/notify/ack": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/notify/send": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/notify/test": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/operator/:op": {"state":"experimental","fp":"auth=operator-key"},
     "route POST /v1/owner/decide": {"state":"experimental","fp":"auth=board+mcp"},
     "route POST /v1/owner/update": {"state":"experimental","fp":"auth=board+mcp"},

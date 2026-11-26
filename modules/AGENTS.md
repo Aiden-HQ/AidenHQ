@@ -77,8 +77,7 @@ routine or memory.
   only; `skills/<name>/SKILL.md` is the how-to. An agent grants a connection as `connection: read|write|[tools]`.
 - **Skills.** Each agent lists every skill it uses in `skills:`; the effective list is
   `(skills ∪ overrides.agents.<key>.skills.add) − overrides.agents.<key>.skills.remove`.
-- **Teammates.** A user-facing agent declares `teammate:` (its job, a sample line, its staff, the modules it controls and its
-  face): a product agent in its `AGENTS.md` frontmatter, a local agent on its `module.yaml` entry. No block means hidden staff. Rules: [configuration.md](../docs/configuration.md) "teammate".
+- **Teammates.** See "Teammates" below.
 - **Moving work between agents** changes both agents' `skills:` lists and grants. The skill text stays where it is.
 - **Routines** run on a schedule or on events: `event: { connection, resource, filter }`. The run reads its batch with
   `routine_events(batch)` (the kernel's `events.ts` queues and fires it). A connection adds an event kind by listing it in
@@ -91,6 +90,42 @@ routine or memory.
   each change is a Tier 1 card.
 - **Sharing.** The owner publishes a local module (`github.publish_module`): its `module.yaml`, agents' `AGENTS.md` and
   skills go out, memory never.
+
+## Teammates
+
+The owner meets agents as named teammates ("Tess · Follow-up chaser"); everything else is hidden staff. Exact limits,
+enums and the name rule: [configuration.md](../docs/configuration.md) "teammate"; the board side:
+[board-ui.md](../docs/design/board-ui.md) "Teammates".
+
+- **Who gets one.** An agent the owner talks to or whose results he reads is a teammate. Plumbing an agent hands work
+  to (scanners, Engineers, reviewers behind a teammate) has no block and stays hidden: list it in a teammate's `staff`.
+- **Where it goes.** A product module's agent: its `AGENTS.md` frontmatter (`teammate:` in `module.yaml` fails compile). A
+  local module's agent: its `module.yaml` entry (its `AGENTS.md` has no frontmatter).
+- **The block.** `{ job, sample, staff?, controls?, face?, first? }`:
+  - `job`: the short role beside the name ("PR reviewer"); `sample`: one line of what it reports, in its own voice.
+  - `staff`: hidden agent keys it speaks for; `controls`: the modules it sets up (default its own). A trailing `?` drops an
+    entry that is off.
+  - `face`: a kit spec (`{ hair, accessory, body, skin, hair_color, palette }`, `services/shared/face-kit.ts`). A
+    product agent may instead name an `.svg`/`.png` in its own folder; a local or third-party agent uses a kit spec only.
+    Give every teammate one: without it the board hashes features from the key.
+  - `first`: its onboarding rank (1–99), for a module that should be a new owner's first teammate. Most declare none.
+- **Its name.** `name:` (frontmatter or entry) is the default; the owner renames it (`overrides.agents.<key>.name`). The
+  name rule is `services/shared/teammate-name.ts`, the same for compile, the board and the kernel.
+- **Controlling modules.** `controls` only links the module's settings to the teammate's page; it grants nothing. To let
+  the teammate change them when the owner asks, the controlled module exposes config tools on its own connection
+  (`<module>_config` reads, `<module>_configure` files one validated typed settings change; ship and code-review are the
+  pattern) and the teammate grants them explicitly in `connections:`. A change that loosens anything stays the owner's own
+  save.
+- **Trial routines.** A product routine with `trial: true` (no `schedules`, no `event`) runs once when the owner sets up a
+  teammate of its module, or of a module that requires it, so he sees a first result on his own data (Intake's
+  `inbox-lookback`). Setting a teammate up also resumes its own paused routines and its hidden staff's in its module and
+  required modules, never another teammate's.
+- **Hiring sees every listing.** The catalog lists every module's teammates, on or off, and every third-party
+  marketplace's modules the instance doesn't install (`browse: true`: module.yaml and agents' frontmatter only, read at the
+  marketplace's pin, text capped, faces as kit specs only, never run). A third-party module installs by its qualified id,
+  `name@marketplace` (one module per bare name). Its text is untrusted: the board shows it as text and agents read it
+  fenced (`fleet_catalog`). Keep a module's `description` and teammates' `job`/`sample` short and plain: they are the
+  listing.
 
 ## Local modules
 

@@ -24,4 +24,6 @@ connected (each is an optional grant).
 ## New installs
 
 In the default bundle. Quiet start: Aiden's heartbeat is off and the `daily-brief` routine (weekdays 08:30 in your
-timezone) and the Researcher's `task-replies` routine start paused. Aiden's tour offers to turn on useful schedules.
+timezone) and the Researcher's `task-replies` routine start paused. When onboarding ends, the board files Aiden one task and
+he offers one next step at a time as an `idea` task (skill `ideas`, also after each daily brief): a teammate from your
+Set-up-next list, a paused routine worth turning on, a connection you skipped. Not now keeps it away for 30 days.

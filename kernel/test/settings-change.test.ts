@@ -179,3 +179,14 @@ test("a standing decision lands in the profile as it is now: added under its hea
   assert.throws(() => withDecision(two, "x", "Short answers."), /isn't under "Owner decisions"/, "the same words outside the section are other guidance");
   assert.throws(() => withDecision(`${two}${"- filler line of owner style\n".repeat(200)}`, "One more"), /over 4096 bytes/);
 });
+
+test("a module installs by name@marketplace; the same bare name from another source is refused", () => {
+  const catalog = [{ name: "twin", marketplace: "acme", enabled: false, chosen: false, browse: true }, { name: "notes", marketplace: "aidenhq", enabled: false, chosen: false }];
+  checkTyped({ kind: "module", name: "twin@acme", on: true }, { compiled: {}, catalog });
+  assert.throws(() => checkTyped({ kind: "module", name: "twin", on: true }, { compiled: {}, catalog }), /say twin@acme/);
+  const out = YAML.parse(planFiles([{ kind: "module", name: "twin@acme", on: true }], { read: () => "product: x\nmodules:\n  - notes\n", localOf: () => undefined, teamOf: () => undefined, moduleHandbook: () => undefined, bundle: [] }).get("instance.yaml"));
+  assert.deepEqual(out.modules, ["notes", "twin@acme"]);
+  // twin already runs from another marketplace: one module per name.
+  const taken = [...catalog, { name: "twin", marketplace: "other", enabled: true, chosen: true }];
+  assert.throws(() => checkTyped({ kind: "module", name: "twin@acme", on: true }, { compiled: {}, catalog: taken }), /already installed from other/);
+});

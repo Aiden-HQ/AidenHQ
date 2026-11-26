@@ -59,7 +59,7 @@ function ModulesList({ onSignIn, onMarkets, can }: { onSignIn: () => void; onMar
       (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
     );
     // What turning one on adds, and newer marketplace commits: both optional extras.
-    api.browse("", "").then((r) => setInfo(new Map(r.modules.map((m) => [m.name, m]))), () => {});
+    api.browse("", "").then((r) => setInfo(new Map(r.modules.map((m) => [m.id, m]))), () => {});
     api.marketplaces().then((r) => setNewer(r.marketplaces.filter((m) => m.newer)), () => {});
   }, [onSignIn]);
 
@@ -107,7 +107,7 @@ function ModulesList({ onSignIn, onMarkets, can }: { onSignIn: () => void; onMar
   const grid = (list: ModuleRow[]) => (
     <TileGrid>
       {list.map((m) => (
-        <ModuleTile key={m.name} m={m} setup={needsSetup.has(m.name)} pairing={needsPairing.has(m.name)} connect={needsConnect.get(m.name)} advisory={advisoryOf.get(m.name)} info={info.get(m.name)} />
+        <ModuleTile key={m.id} m={m} setup={needsSetup.has(m.name)} pairing={needsPairing.has(m.name)} connect={needsConnect.get(m.name)} advisory={advisoryOf.get(m.name)} info={info.get(m.id)} />
       ))}
     </TileGrid>
   );
@@ -125,7 +125,7 @@ function ModulesList({ onSignIn, onMarkets, can }: { onSignIn: () => void; onMar
               Details
             </a>
           )}
-          <a className="btn primary" href={`#/team/modules/${a.module}`}>
+          <a className="btn primary" href={`#/team/modules/${mods?.find((m) => m.name === a.module && !m.browse)?.id ?? a.module}`}>
             Open {a.module}
           </a>
         </div>
@@ -175,11 +175,11 @@ function ModuleTile({ m, setup, pairing, connect, advisory, info }: { m: ModuleR
   const t = useModuleToggle(m);
   const [asking, setAsking] = useState(false);
   const s = moduleState(m, { filed: t.filed, setup, pairing, connect: Boolean(connect), advisory });
-  const href = `#/team/modules/${m.name}`;
+  const href = `#/team/modules/${m.id}`;
   // A module turned on while the owner is still here opens its setup flow (the design's "Setup flows").
   const was = useRef(t.filed?.stage);
   useEffect(() => {
-    const turnedOn = t.filed?.items.some((c) => c.kind === "module" && c.name === m.name && c.on);
+    const turnedOn = t.filed?.items.some((c) => c.kind === "module" && c.name === m.id && c.on);
     if (info?.setupFlow && turnedOn && t.filed?.stage === "applied" && was.current && IN_FLIGHT.includes(was.current)) location.hash = `#/setup/${m.name}`;
     was.current = t.filed?.stage;
   }, [t.filed, m.name, info?.setupFlow]);

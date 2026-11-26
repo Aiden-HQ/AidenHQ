@@ -4,7 +4,7 @@ import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
 import type { CatalogModel } from "../../src/model-catalog";
-import type { BrowseModule, GrantConnection, MarketplaceRow, SavedView, ViewSpec, WorkCard } from "./types";
+import type { BrowseModule, GrantConnection, MarketplaceRow, NotifyTestResult, SavedView, TeammateQueue, TeammateStart, TeammatesList, TrialView, ViewSpec, WorkCard } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown, answered?: Response): Promise<T> {
   const res = answered ?? await fetch(path, {
@@ -111,12 +111,11 @@ export interface AdvancedFlowView {
 }
 
 /** One module's setup flow as GET /api/setup-flows returns it (services/board/src/setup-flows.ts). */
-/** The first-run wizard (Welcome.tsx): what to show a new owner, from the board. */
+/** Onboarding (Welcome.tsx): whether a new owner has finished it, and the gates before it. */
 export interface WelcomeState {
   finished: boolean;
   modelReady: boolean;
   recoveryKeyWaiting: boolean;
-  wizard: string[];
 }
 
 /** One way to get a flow's paste values (board.setup_flows `ways`). */
@@ -137,7 +136,6 @@ export interface SetupFlowView {
   title: string;
   why: string;
   effort: string;
-  wizard?: boolean;
   steps: string;
   console_scopes?: string[];
   ways?: SetupWay[];
@@ -332,7 +330,16 @@ export const api = {
   setupPair: (module: string) => call<{ code: string; link?: string; minted_at: number; expires_in?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/pair`, {}),
   setupPaired: (module: string) => call<{ paired: boolean; paired_at?: string | number }>("GET", `/api/setup-flows/${encodeURIComponent(module)}/pair`),
   welcome: () => call<WelcomeState>("GET", "/api/welcome"),
-  welcomeFinish: (done: string[], skipped: string[]) => call<{ ok: boolean; identifier?: string }>("POST", "/api/welcome/finish", { done, skipped }),
+  welcomeFinish: () => call<{ ok: true }>("POST", "/api/welcome/finish", {}),
+  /** Hiring and onboarding (src/teammates.ts): every catalog teammate, the one to offer first, and who builds new ones. */
+  teammates: () => call<TeammatesList>("GET", "/api/teammates"),
+  /** After its module is applied: resume its routines and run its trial once (`trial: false` resumes only). */
+  teammateStart: (ref: string, body: { trial?: boolean } = {}) => call<TeammateStart>("POST", `/api/teammates/${encodeURIComponent(ref)}/start`, body),
+  teammateTrial: (ref: string) => call<TrialView>("GET", `/api/teammates/${encodeURIComponent(ref)}/trial`),
+  teammateQueue: () => call<TeammateQueue>("GET", "/api/teammates/queue"),
+  setTeammateQueue: (q: TeammateQueue) => call<TeammateQueue>("PUT", "/api/teammates/queue", q),
+  /** One fixed test card through one transport only; its answer as the transport gave it. */
+  notifyTest: (transport: "channel-telegram" | "slack") => call<NotifyTestResult>("POST", "/api/notify/test", { transport }),
   modules: () => call<{ modules: ModuleRow[]; advisories: Advisory[] }>("GET", "/api/modules"),
   pages: () => call<{ pages: PageRow[] }>("GET", "/api/pages"),
   /** A module view's tool call (ModuleView.tsx): the module's JSON-RPC answer, `result` or `error`. */

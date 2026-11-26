@@ -2,12 +2,17 @@
 // "front" server stands in for Paperclip, the board, apps-mcp and the gateway; each test gives it its own handler.
 import { createServer } from "node:http";
 import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const DIRECTORY = ["key", "roles", "description", "delegate_to", "review_log", "graded", "feedback_for", "profile"];
 const SERVICE_KEY = "tasks-service-key";
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const jwks = { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] };
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+
+/** The capabilities catalog fleet_catalog reads (a test writes it). */
+export const catalogFile = join(tmpdir(), `tasks-mcp-catalog-${process.pid}.json`);
 
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok(s)); });
 const url = (s) => `http://127.0.0.1:${s.address().port}`;
@@ -73,7 +78,7 @@ const kernel = await listen(async (req, res) => {
   send(404, {});
 });
 
-Object.assign(process.env, { AIDENHQ_KERNEL_URL: url(kernel), MCP_TOKEN: SERVICE_KEY, AIDENHQ_BOARD_TOKEN: "board-token", AIDENHQ_BOARD_URL: url(front), GRADING_URL: url(front), APPS_MCP_URL: url(front), AIDENHQ_GATEWAY_URL: url(front), AIDENHQ_MODULE: "tasks" });
+Object.assign(process.env, { AIDENHQ_KERNEL_URL: url(kernel), MCP_TOKEN: SERVICE_KEY, AIDENHQ_BOARD_TOKEN: "board-token", AIDENHQ_BOARD_URL: url(front), GRADING_URL: url(front), APPS_MCP_URL: url(front), AIDENHQ_GATEWAY_URL: url(front), AIDENHQ_MODULE: "tasks", AIDENHQ_CATALOG_FILE: catalogFile });
 const { server } = await import("../src/main.ts");
 const { forget } = await import("../src/tools.ts");
 await new Promise((ok) => server.listen(0, "127.0.0.1", ok));

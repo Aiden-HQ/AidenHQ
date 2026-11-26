@@ -15,7 +15,6 @@ contributes:
   # connections/google-workspace-mcp/src/google.ts).
   board.setup_flows:
     - order: 40
-      wizard: false
       title: Google
       why: "Aiden reads your calendar, Drive and Gmail to brief you and follow up, and agents can change your calendar and send email as you, each change reviewed first."
       effort: "about 5 minutes, in the Google Cloud console"

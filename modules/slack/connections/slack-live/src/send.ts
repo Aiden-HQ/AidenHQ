@@ -9,7 +9,9 @@ export interface SlackConfig {
   boardUrl?: string; // the board's https address (BOARD_LAN_URL): in-app `#/route` links resolve against it
 }
 /** What owner-channel sends (its Message): the text as the agent wrote it, and the chat it belongs to. */
-export type Message = { kind: string; text: string; head?: { agent: string; task: string; issue: string } };
+export type Message = { kind: string; text: string; head?: { agent: string; task: string; issue: string };
+  /** The push test's buttons (the kernel's /v1/notify/test): shown, and a press is acknowledged and nothing else (socket.ts). */
+  inert?: string[] };
 
 // & < > start link/mention syntax; *_~` are neutralised with a zero-width space so senders can't restyle the DM.
 export function escapeMrkdwn(s: string): string {
@@ -46,6 +48,9 @@ export async function postMessage(cfg: SlackConfig, payload: Record<string, unkn
 export async function transportSend(cfg: SlackConfig, m: Message): Promise<{ sent: boolean; off?: true }> {
   if (!cfg.botToken || !cfg.ownerId) return { sent: false, off: true };
   const head = m.head ? `*${escapeMrkdwn(m.head.agent)}* · ${m.head.task}\n` : "";
-  const payload = m.kind === "alert" ? { text: escapeMrkdwn(m.text), blocks: alertBlocks(m.text) } : { text: head + toSlackMrkdwn(m.text, cfg.boardUrl) };
+  const text = head + toSlackMrkdwn(m.text, cfg.boardUrl);
+  const payload = m.kind === "alert" ? { text: escapeMrkdwn(m.text), blocks: alertBlocks(m.text) }
+    : m.inert?.length ? { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", elements: m.inert.slice(0, 3).map((t, i) => ({ type: "button", action_id: `inert:${i}`, text: { type: "plain_text", text: String(t).slice(0, 40) } })) }] }
+    : { text };
   return { sent: await postMessage(cfg, payload).catch(() => false) };
 }

@@ -28,12 +28,19 @@ interface CatalogEntry {
   /** Where it comes from and its computed tier (spec §6.5: declared or official). */
   marketplace?: string;
   tier?: string;
+  /** A third-party listing the instance doesn't install (compile's browse): shown as Available, turned on by its `id`. */
+  browse?: boolean;
 }
+
+/** How a module change names a catalog module (D1): `name`, or `name@marketplace` for a third-party one. */
+export const moduleId = (m: { name: string; marketplace?: string }) => (m.marketplace && m.marketplace !== "aidenhq" && m.marketplace !== "local" ? `${m.name}@${m.marketplace}` : m.name);
 
 export function moduleStates(catalogJson: string) {
   const catalog = JSON.parse(catalogJson) as CatalogEntry[];
   return catalog.map((m) => ({
     name: m.name,
+    id: moduleId(m),
+    browse: Boolean(m.browse),
     description: m.description,
     agents: m.agents,
     requires: m.requires,
@@ -56,8 +63,9 @@ export function moduleStates(catalogJson: string) {
 export type ModuleRow = ReturnType<typeof moduleStates>[number];
 
 /** What a module may do, as far as the catalog says: its connections, the write kinds it declares and its secrets. */
-export function moduleAuthority(catalogJson: string, name: string) {
-  const m = (JSON.parse(catalogJson) as CatalogEntry[]).find((e) => e.name === name);
+export function moduleAuthority(catalogJson: string, row: { name: string; browse: boolean }) {
+  // A browse listing declares nothing yet (it is read for browsing only); never the same-named installed module's.
+  const m = row.browse ? undefined : (JSON.parse(catalogJson) as CatalogEntry[]).find((e) => e.name === row.name && !e.browse);
   return {
     connections: m?.connections ?? [],
     writes: Object.entries(m?.writes ?? {}).map(([kind, w]) => ({ kind, tier: w.floor, ...(w.panel ? { panel: true } : {}) })),

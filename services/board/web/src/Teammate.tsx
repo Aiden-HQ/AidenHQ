@@ -66,8 +66,8 @@ function Mate({ a, roster, chat, text, crew, faces, prefix, go, onSignIn, toast,
   // One Advanced link: the first controlled module's page, else its settings.
   const mod = t.controls[0];
   const page = mod ? pages.find((p) => p.module === mod) : undefined;
-  const modName = modules.find((m) => m.name === mod)?.name ?? mod;
-  const advanced = mod && (page ? { href: `#/team/m/${page.id}`, label: page.title } : { href: `#/team/modules/${mod}/settings`, label: modName });
+  const modRow = modules.find((m) => m.name === mod && !m.browse);
+  const advanced = mod && (page ? { href: `#/team/m/${page.id}`, label: page.title } : { href: `#/team/modules/${modRow?.id ?? mod}/settings`, label: mod });
   const state = faceStateOf(a, needs > 0);
   const tone = paused ? "idle" : state === "needs" ? "needs" : state === "working" ? "working" : a.state === "failing" ? "failed" : "idle";
   return (

@@ -11,7 +11,16 @@ import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, To
 import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData, UpdatesData } from "./types";
 import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
-import { Banner, Button, LinkButton, Segmented, StatusDot, Switch, Tag, safeHref } from "./ui";
+import { Banner, Button, LinkButton, SectionCard, Segmented, StatusDot, Switch, Tag, safeHref } from "./ui";
+import { Steps } from "./SetupFlow";
+
+// Claude Desktop and claude.ai call from Anthropic's cloud, so they need a public https address: not a tailnet name (*.ts.net) or loopback.
+const cloudReachable = (origin: string) => { const u = new URL(origin); return u.protocol === "https:" && !u.hostname.endsWith(".ts.net"); };
+const mcpSteps = (origin: string) => `**Claude Code:** \`claude mcp add --transport http aidenhq ${origin}/mcp\`, then \`/mcp\`, choose aidenhq, Authenticate, sign in and Allow.
+
+**Codex CLI:** \`codex mcp add aidenhq --url ${origin}/mcp\`
+
+${cloudReachable(origin) ? "Claude Desktop and claude.ai connectors work here too." : "claude.ai needs public mode; Claude Code works here over the tunnel/tailnet."}`;
 
 // Settings: categories in a side nav (a selector at phone width), each a page of grouped rows (#/settings/<category>).
 // Instance settings live in git (instance.yaml): a change made here is filed as the owner's task the runner writes, and lands
@@ -192,6 +201,10 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
     return (
       <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to, and how it is named. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>
         <Group>{general.length ? general.map((s) => <SettingItem key={s.key} s={s} />) : <p className="st-empty">Nothing here on this instance.</p>}</Group>
+        <SectionCard title="Connect your Claude" meta="Manage AidenHQ from your own Claude">
+          <p className="st-hint">Your own Claude can check status, talk to Aiden, change settings and decide approvals as you, and can help finish anything you skipped in setup.</p>
+          <Steps text={mcpSteps(location.origin)} />
+        </SectionCard>
       </Page>
     );
   }

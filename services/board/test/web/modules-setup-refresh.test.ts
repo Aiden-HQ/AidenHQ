@@ -41,7 +41,7 @@ class FakeEventSource {
 }
 
 const mod = (): ModuleRow => ({
-  name: "github", description: "Repos and pull requests.", agents: [], requires: [], marketplace: "official", tier: "official", state: "on",
+  name: "github", id: "github", browse: false, description: "Repos and pull requests.", agents: [], requires: [], marketplace: "official", tier: "official", state: "on",
   neededBy: [], connections: [], routines: [], apps: [], settings: {}, revision: null, pinned: null, source: null, setup: null,
 });
 const noConnections: ConnectionsData = { compiled: true, connections: [], sources: [], sourcesError: false };

@@ -9,7 +9,6 @@
     "label": { "type": "string", "minLength": 1, "maxLength": 40, "description": "basic, with an advanced flow: the basic option's short name on the page's two option cards (the advanced one's is its title)" },
     "why": { "type": "string", "minLength": 1, "maxLength": 160, "description": "one sentence: what the person gets" },
     "effort": { "type": "string", "minLength": 1, "maxLength": 80, "description": "e.g. about 2 minutes, needs the Telegram app" },
-    "wizard": { "type": "boolean", "description": "shown in the first-run wizard" },
     "mode": { "enum": ["basic", "advanced"], "description": "basic (the default): the module's own setup, usually a sign-in; done once it is connected (and paired, if it pairs). advanced: the optional second flow, 'your own app' for more, shown under the basic one; done once its secrets exist (and it is paired, if it pairs); its services start once their secrets exist" },
     "capabilities": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 160 }, "description": "what each option gives, one short phrase each (a bot people can DM, live events): required on the advanced flow; on the basic one, shown on its option card" },
     "admin": { "type": "string", "minLength": 1, "maxLength": 120, "description": "who else may need to approve, plainly (your Slack admin may need to approve the app)" },

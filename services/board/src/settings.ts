@@ -67,6 +67,8 @@ interface CompiledRoutine {
   status?: string;
   webhook?: boolean;
   event?: Wakes;
+  /** Run once when its teammate is set up (the board's teammate setup), never scheduled. */
+  trial?: boolean;
 }
 interface CompiledAgent {
   name?: string;

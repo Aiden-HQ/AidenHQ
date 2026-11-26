@@ -18,7 +18,6 @@ contributes:
       why: Agents search and read the Slack you can see, save drafts for you, and (if you allow it) post as you, each post reviewed first.
       effort: about 1 minute
       admin: a Slack workspace admin may need to approve the app
-      wizard: true
       capabilities:
         - search and read the Slack you can see
         - drafts, and reviewed posts as you when you allow it

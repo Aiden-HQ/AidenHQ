@@ -61,6 +61,7 @@ const SKILL_ID = /^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$/;
 const KEY = /^[a-z][a-z0-9_]{0,60}$/;
 const AGENT = /^[a-z0-9][a-z0-9-]{0,60}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,60}$/;
+const NAME_Q = /^[a-z0-9][a-z0-9-]{0,62}(@[a-z0-9][a-z0-9-]{0,62})?$/;
 const SHA = /^[0-9a-f]{40}$/;
 const MODEL = /^[A-Za-z0-9~][\w./~:@-]{0,119}$/;
 const plain = (s: unknown) => typeof s === "string" && !/[\x00-\x1f\x7f$]/.test(s);
@@ -132,7 +133,20 @@ export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }
     if (module && a.tier === "local") refuse(`${key} is a local agent: its handbook and grants are its modules/${a.module}/ files`);
     return a;
   };
-  const moduleOf = (name: unknown) => (NAME.test(String(name)) && catalog.find((m) => m.name === name)) || refuse(`there is no module ${name}`);
+  const moduleOf = (name: unknown) => (NAME.test(String(name)) && catalog.find((m) => m.name === name && !m.browse)) || refuse(`there is no module ${name}`);
+  // A module change names `name` (official or local) or `name@marketplace` (third-party): found by both, and one module per
+  // name, so turning one on whose bare name is installed from elsewhere is refused.
+  const qualified = (id: unknown, on: boolean) => {
+    if (!NAME_Q.test(String(id))) refuse(`there is no module ${id}`);
+    const [bare, mkt] = String(id).split("@");
+    const from = (m: Dict) => String(m.marketplace ?? "aidenhq");
+    const m = catalog.find((x) => x.name === bare && from(x) === (mkt ?? "aidenhq")) ?? (mkt ? undefined : catalog.find((x) => x.name === bare && from(x) === "local"));
+    if (!m) { const other = catalog.find((x) => x.name === bare); refuse(other && !mkt && from(other) !== "aidenhq" ? `say ${bare}@${from(other)}` : `there is no module ${id}`); }
+    // Installed elsewhere, or an official or local module of that name (compile reserves those names whether on or not).
+    const taken = on && !m!.enabled && catalog.find((x) => x !== m && x.name === bare && (x.enabled || !x.browse));
+    if (taken) refuse(`a module named ${bare} is already ${taken.enabled ? "installed" : "available"} from ${from(taken)}`);
+    return m!;
+  };
   switch (c.kind) {
     case "setting": {
       only(c, ["kind", "key", "value"]);
@@ -173,8 +187,8 @@ export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }
     }
     case "module": {
       only(c, ["kind", "name", "on"]);
-      const m = moduleOf(c.name);
       if (c.name === "kernel" || typeof c.on !== "boolean") refuse("a module is turned on or off");
+      const m = qualified(c.name, c.on);
       if (Boolean(m.chosen) === c.on) refuse(`${c.name} is already ${c.on ? "on" : "off"}`);
       return;
     }
@@ -269,6 +283,7 @@ export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }
     case "marketplace": {
       only(c, ["kind", "op", "name", "source", "sha"]);
       if (!NAME.test(String(c.name))) refuse(`${c.name} isn't a marketplace name`);
+      if (c.op === "add" && c.name === "local") refuse("local names the instance's own modules: give the marketplace another name");
       if (!["add", "update", "remove"].includes(c.op)) refuse("a marketplace is added, updated or removed");
       if (c.op === "add" && !(isMap(c.source) && Object.keys(c.source).length === 2 && c.source.source === "github" && /^[\w.-]+\/[\w.-]+$/.test(String(c.source.repo)))) refuse("a marketplace comes from a GitHub owner/repo");
       if (c.op !== "remove" && !SHA.test(String(c.sha))) refuse("a marketplace is pinned at a 40-character commit");
@@ -386,15 +401,17 @@ export function planFiles(changes: Change[], { read, localOf, teamOf, moduleHand
         else set(["overrides", "agents", ch.agent, "connections", ch.connection], ch.tools);
         break;
       case "module": {
+        // `name@marketplace` is written as given; an entry is matched by its bare name (one module per name).
+        const bare = ch.name.split("@")[0]!;
         const s = seq("modules");
-        const i = s.items.findIndex((x) => entryName(x) === ch.name);
+        const i = s.items.findIndex((x) => entryName(x) === bare);
         if (ch.on && i < 0) s.items.push(doc.createNode(ch.name));
         if (!ch.on && i >= 0) s.items.splice(i, 1);
         // modules_removed: a default module the owner turned off stays off across upgrades; turning it on takes it off the list.
         const removed = seq("modules_removed");
-        const j = removed.items.findIndex((x) => entryId(x) === ch.name);
+        const j = removed.items.findIndex((x) => entryId(x) === bare);
         if (ch.on && j >= 0) removed.items.splice(j, 1);
-        if (!ch.on && j < 0 && bundle.includes(ch.name)) removed.items.push(doc.createNode(ch.name));
+        if (!ch.on && j < 0 && bundle.includes(bare)) removed.items.push(doc.createNode(bare));
         dropEmpty("modules_removed");
         yamlTouched = true;
         break;

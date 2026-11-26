@@ -61,7 +61,7 @@ export function organisationRoutes(d: { orgs: OrganisationPoint[]; accounts: Ker
       handle: async (m, b, who) => {
         const org = d.orgs.find((o) => o.id === m[1]);
         if (!org) throw new AccountError(404, "no such organisation");
-        // A setup page applies only its own module's client; the wizard and Settings apply the organisation's whole entry.
+        // A setup page applies only its own module's client; onboarding and Settings apply the organisation's whole entry.
         const only = typeof (b as { module?: unknown } | null)?.module === "string" ? (b as { module: string }).module : undefined;
         const results: { module: string; secret: string; ok: boolean; error?: string }[] = [];
         const clients = org.clients.filter((x) => !only || x.module === only);

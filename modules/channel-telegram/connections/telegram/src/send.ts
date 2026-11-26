@@ -11,7 +11,9 @@ export interface TgConfig {
   boardUrl?: string; // the board's https address (BOARD_LAN_URL): in-app `#/route` links resolve against it
 }
 /** What owner-channel sends (its Message): the text as the agent wrote it, and the chat it belongs to. */
-export type Message = { kind: string; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: boolean; answer?: { options: string[]; since: string } };
+export type Message = { kind: string; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: boolean; answer?: { options: string[]; since: string };
+  /** The push test's buttons (the kernel's /v1/notify/test): shown, and a press only answers "Test received". */
+  inert?: string[] };
 
 // A reply sent soon after another, with no new message from the owner in between (two wakes answering the same question,
 // "working on it" then "done"), replaces the earlier Telegram message instead of stacking a second one. It goes as a
@@ -71,7 +73,8 @@ export async function transportSend(cfg: TgConfig, store: Store, m: Message, now
   const text = m.kind === "alert" ? `🚨 Needs you now\n${m.text}` : m.text;
   const chat = m.head ? { identifier: m.head.task, issueId: m.head.issue, agentName: m.head.agent } : undefined;
   let markup: unknown;
-  try {
+  if (m.inert?.length) markup = { inline_keyboard: [m.inert.slice(0, 3).map((t) => ({ text: String(t).slice(0, 40), callback_data: "test" }))] };
+  else try {
     // A one-tap answer is bound to its task's wait; actions win. A label Telegram can't show safely: the text still goes, without buttons.
     markup = m.actions?.length || !m.answer || !m.head ? buttonsMarkup(store, m.actions ?? []) : answerMarkup(store, m.head.issue, m.answer.since, m.answer.options);
   } catch {

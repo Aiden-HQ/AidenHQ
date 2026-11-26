@@ -188,6 +188,25 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   apps carry no AGPL obligations: keep AGPL-only code out of them. Keep the Pennyworth notices in `NOTICE` and
   `LICENSES/`.
 
+## Keep in sync
+
+One line per pair: when the left changes, update the right in the same PR (the rules live on the right; don't restate them).
+
+- The teammate block or agent fields (`scripts/modules.ts` `teammateOf`, `LOCAL_AGENT_FIELDS`) → `modules/AGENTS.md`
+  "Teammates", `docs/configuration.md` "teammate", `modules/agent-builder/` (the Architect's `AGENTS.md`, its skills,
+  `templates/README.md` and every template).
+- Routine fields (`trial`, `event`, schedules) or catalog/browse rows (`config/modules.json`) → `docs/configuration.md`,
+  `modules/AGENTS.md`, `fleet_catalog` (`modules/tasks/connections/tasks-mcp/src/tools.ts`).
+- The board's IA, onboarding (`Welcome.tsx`, `TeammateSetup.tsx`, `Hire.tsx`) or Home → `docs/design/board-ui.md`,
+  `docs/design/guided-setup.md`, the distro repo's site pages (`site/workspace`, `site/start`, `site/install`), and an owner
+  MCP tool for each onboarding step (the MCP finishes setup for the install prompt).
+- The owner MCP's tools (`services/board/src/mcp-tools.ts` `OWNER_TOOLS`, `mcp.ts`; onboarding's `teammates`,
+  `set_up_teammate`, `notify_test`, `finish_onboarding`, hiring through `ask`) → `docs/design/guided-setup.md` Part 3 and the
+  distro repo's `site/prompt.md` ("After the user authenticates the MCP").
+- Setup flows (`board.setup_flows`) or owner-channel transports → `site/prompt.md`'s connect step (distro repo).
+- The board's kit (`services/board/web/src/ui`) → `services/shared/page-kit.{css,js}` (then `node scripts/sync-shared.ts`),
+  `ModuleView.tsx` `TOKENS`, and the `#/design` catalogue.
+
 ## Contributing flow
 
 Contributors have read access: fork, branch, open a PR against `main`, get CI green; the maintainer reviews and

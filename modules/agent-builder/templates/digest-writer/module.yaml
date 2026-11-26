@@ -8,7 +8,10 @@ agents:
     description: Writes a scheduled digest of named sources (Slack channels, GitHub repos, a warehouse query) and posts it to its task; does not triage or act on what it reads.
     reports_to: chief-of-staff
     # The owner reads its results, so it is a teammate (docs/configuration.md "teammate"); an agent only other agents use has none.
-    teammate: { job: Writes your digest, sample: "Your digest: 4 threads worth reading, 2 PRs merged, one number moved." }
+    teammate:
+      job: Writes your digest
+      sample: "Your digest: 4 threads worth reading, 2 PRs merged, one number moved."
+      face: { hair: long, accessory: round-glasses, body: none, skin: 5, hair_color: 1, palette: 3 }
     skills: [ tasks.delegate-work ]
     model: ~deepseek/deepseek-flash-latest
     connections:

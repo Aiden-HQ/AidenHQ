@@ -57,7 +57,7 @@ export function TeamView({ onSignIn }: { go: (h: string) => void; onSignIn: () =
           );
         })}
         <div className="enter" style={{ "--i": mates.length } as CSSProperties}>
-          <Tile tone="ghost" href="#/team/architect" name="hire" title="Hire a teammate" face={<span className="team-plus" aria-hidden>+</span>}>
+          <Tile tone="ghost" href="#/team/hire" name="hire" title="Hire a teammate" face={<span className="team-plus" aria-hidden>+</span>}>
             Security, repo upkeep, or describe your own: Archie designs it with you.
           </Tile>
         </div>

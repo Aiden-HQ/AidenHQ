@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,4 +93,34 @@ test("third-party text can't start an unquoted line: every terminator splits, co
   assert.ok(lines.slice(1).every((l) => l.startsWith("| ")), text);
   assert.ok(lines.includes("| ### r") && lines.includes("| ### ff\\u202eevil\\u0007bell"), text);
   assert.doesNotMatch(text, /[\u202e\u0007\r\v\f\u0085\u2028\u2029]/);
+});
+
+test("a third-party marketplace's listing is browsable without installing it, and a broken entry is skipped", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mkt-"));
+  cpSync(join(repo, "fixtures/twin"), join(dir, "twin"), { recursive: true });
+  writeFileSync(join(dir, "twin/module.yaml"), `${YAML.stringify({ ...YAML.parse(readFileSync(join(dir, "twin/module.yaml"), "utf8")), agents: { scout: { department: "nowhere" } } })}`);
+  mkdirSync(join(dir, "twin/agents/scout"), { recursive: true });
+  writeFileSync(join(dir, "twin/agents/scout/AGENTS.md"), "---\nname: Scout\ndescription: Watches the weather.\nteammate:\n  job: Weather watcher\n  sample: Rain at 3pm, bring a coat\n  face: face.svg\n---\nWatch the weather.\n");
+  mkdirSync(join(dir, "broken"));
+  writeFileSync(join(dir, "broken/module.yaml"), "name: not-broken\ndescription: x\n");
+  writeFileSync(join(dir, "marketplace.json"), JSON.stringify({ name: "acme", plugins: [{ name: "twin", source: "./twin" }, { name: "broken", source: "./broken" }] }));
+  git(dir, "init", "-q");
+  git(dir, "add", ".");
+  git(dir, "commit", "-qm", "listing");
+  const entry = [{ name: "acme", source: { source: "url", url: dir }, sha: git(dir, "rev-parse", "HEAD") }];
+  const f = fetch();
+  const inst = instance([], entry);
+  const out = compile(mods, inst, { fetch: f });
+  const twin = out.catalog.find((x) => x.name === "twin");
+  assert.deepEqual([twin.browse, twin.enabled, twin.marketplace], [true, false, "acme"]);
+  assert.equal(twin.teammates[0].job, "Weather watcher");
+  assert.equal(twin.teammates[0].face, null, "a third-party face file is never read");
+  assert.equal(twin.teammates[0].department, "General");
+  assert.ok(!out.catalog.some((x) => x.name === "broken"));
+  assert.ok(out.warnings.some((w) => /broken not listed/.test(w)), out.warnings.join("\n"));
+  // The listing is cached by the marketplace's pin (the broken entry was its own fault, so it is cached too): gone upstream,
+  // with no fetched trees left, still listed.
+  rmSync(dir, { recursive: true, force: true });
+  for (const d of ["trees", "git"]) rmSync(join(f.cacheDir, d), { recursive: true, force: true });
+  assert.ok(compile(mods, inst, { fetch: f }).catalog.some((x) => x.name === "twin" && x.browse));
 });

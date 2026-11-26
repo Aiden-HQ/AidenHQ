@@ -9,7 +9,9 @@ Copy `template.md` here (a complete doc for an example agent, Review Chaser), ke
 replace every example value with your agent:
 
 1. Three header lines, with the agent's name.
-2. **At a glance**: name, job in one line, what wakes it, schedule, whom it reports to.
+2. **At a glance**: name (your suggestion and two alternatives), for a teammate how it shows on the team (name · job), its
+   sample line and its face in words, its job in one line, what wakes it, schedule, whom it reports to. A helper only other
+   agents use has no team line, sample or face.
 3. **How each run works**: one Mermaid `flowchart LR` from the wake through each step to output and escalation, then the same
    steps "In words". Quote every label, write decisions as `{"…?"}` with `-- "yes" -->` edges, keep labels short, connect every node.
 4. **What it can read and change**.

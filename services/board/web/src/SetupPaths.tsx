@@ -23,7 +23,8 @@ const Dash = () => (
   </svg>
 );
 
-export function SetupPaths({ flow, board, org, reload, fail, restartFor, onSaved }: { flow: SetupFlowView; board: Board; org: string | null; reload: () => Promise<void>; fail: (e: unknown) => void; restartFor?: number; onSaved: (ms: number) => void }) {
+/** `initial`: the path to open when the flow hasn't started one (a host that knows which it needs, e.g. onboarding's Slack DM). */
+export function SetupPaths({ flow, board, org, reload, fail, restartFor, onSaved, initial }: { flow: SetupFlowView; board: Board; org: string | null; reload: () => Promise<void>; fail: (e: unknown) => void; restartFor?: number; onSaved: (ms: number) => void; initial?: Path }) {
   const a = flow.advanced!;
   const app = flow.app;
   const status = app?.status ?? null;
@@ -55,7 +56,7 @@ export function SetupPaths({ flow, board, org, reload, fail, restartFor, onSaved
       /* no storage: this page only */
     }
   };
-  const [path, setPath] = useState<Path | null>(a.done || botStarted ? "advanced" : flow.done || clientReady ? "basic" : null);
+  const [path, setPath] = useState<Path | null>(a.done || botStarted ? "advanced" : initial ?? (flow.done || clientReady ? "basic" : null));
   const appUrl = status?.url ?? app?.console_url ?? "";
   // {app_url}/<page> is that page of the app made here; for an app made elsewhere (id unknown), the vendor's list of apps.
   const fill = (text: string) => text.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "").replace(/\{app_url\}(\/[\w-]+)?/g, (_, page: string | undefined) => (status?.url ? `${status.url}${page ?? ""}` : appUrl));

@@ -294,7 +294,7 @@ export function Palette({ open, onClose, go, roster, apps, onNewTask, tasks = []
       { id: "brief", kind: "Go to", label: "Today's brief", hint: "b", icon: "brief", run: nav("#/brief") },
       ...chats.map((c) => ({ id: `c-${c.identifier}`, kind: "Chat", label: c.title, hint: `${c.agent.name} · ${c.identifier}`, icon: "chat" as const, run: nav(`#/t/${c.identifier}`) })),
       ...apps.map((a) => ({ id: `p-${a.name}`, kind: "App", label: a.name, icon: "apps" as const, run: nav(`#/apps/${a.name}`) })),
-      ...modules.map((m) => ({ id: `m-${m.name}`, kind: "Module", label: m.name, hint: m.description, icon: "modules" as const, run: nav(`#/team/modules/${m.name}`) })),
+      ...modules.map((m) => ({ id: `m-${m.id}`, kind: "Module", label: m.id, hint: m.description, icon: "modules" as const, run: nav(`#/team/modules/${m.id}`) })),
       { id: "help", kind: "Go to", label: "Keyboard shortcuts", icon: "help", run: nav("#/help") },
     ];
   }, [open, roster, apps, go, onClose, onNewTask, tasks, sessions, chatsAt]);

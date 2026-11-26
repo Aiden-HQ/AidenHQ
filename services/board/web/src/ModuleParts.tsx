@@ -34,7 +34,7 @@ export function useSetupPairing(): Set<string> {
   return useSetupState().pairing;
 }
 
-type Toggled = Pick<ModuleRow, "name" | "agents" | "routines" | "neededBy" | "state">;
+type Toggled = Pick<ModuleRow, "name" | "id" | "agents" | "routines" | "neededBy" | "state">;
 
 /** A centred dialog over the page; a press outside closes it. */
 export function Dialog({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
@@ -54,7 +54,7 @@ export function Dialog({ label, onClose, children }: { label: string; onClose: (
 
 /** The switch, its confirm dialog and the change preview (in a dialog) for one module. */
 export function useModuleToggle(m: Toggled) {
-  const filed = useFiled((c) => c.kind === "module" && c.name === m.name);
+  const filed = useFiled((c) => c.kind === "module" && c.name === m.id);
   const [want, setWant] = useState<boolean | null>(null);
   const [confirmOff, setConfirmOff] = useState(false);
   const isOn = m.state !== "off";
@@ -81,14 +81,14 @@ export function useModuleToggle(m: Toggled) {
   ) : want !== null && want !== isOn ? (
     <Dialog label={`${want ? "Turn on" : "Turn off"} ${m.name}`} onClose={() => setWant(null)}>
       <h2>{want ? "Turn on" : "Turn off"} {m.name}</h2>
-      <ChangePreview items={[{ kind: "module", name: m.name, on: want }]} was={[isOn]} onCancel={() => setWant(null)} onDone={() => setWant(null)} note={want ? "A module that needs settings (a URL, a site) asks for them on its page once it is on." : "Its agents stop and its connections close."} />
+      <ChangePreview items={[{ kind: "module", name: m.id, on: want }]} was={[isOn]} onCancel={() => setWant(null)} onDone={() => setWant(null)} note={want ? "A module that needs settings (a URL, a site) asks for them on its page once it is on." : "Its agents stop and its connections close."} />
     </Dialog>
   ) : null;
   return { filed, want, setWant, isOn, fixed, busy, switchEl, dialog };
 }
 
 /** What turning it on adds, who approves, then Turn on: files the same change the switch does. */
-export function TurnOnCard({ m, info, onClose }: { m: Pick<ModuleRow, "name" | "description" | "marketplace" | "tier">; info?: BrowseModule; onClose: () => void }) {
+export function TurnOnCard({ m, info, onClose }: { m: Pick<ModuleRow, "name" | "id" | "description" | "marketplace" | "tier">; info?: BrowseModule; onClose: () => void }) {
   const { file, toast } = useChanges();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -97,7 +97,7 @@ export function TurnOnCard({ m, info, onClose }: { m: Pick<ModuleRow, "name" | "
   const go = async () => {
     setBusy(true);
     try {
-      const task = await file([{ kind: "module", name: m.name, on: true }]);
+      const task = await file([{ kind: "module", name: m.id, on: true }]);
       toast(`Turning on ${m.name}: requested (${task}).`);
       onClose();
     } catch (e) {

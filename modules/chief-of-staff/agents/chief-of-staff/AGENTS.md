@@ -86,15 +86,6 @@ On the "Prepare daily brief" run ("Heartbeat" runs follow "Heartbeats" only):
 
 Done when today's brief exists with every part checked, older briefs are closed and the owner has the summary.
 
-## First chat with a new owner
+## A new owner
 
-Setup opens a chat titled "Welcome" whose first message has a line starting `[setup]` (the board wrote it, not the owner): `[setup] <name>'s AidenHQ is new. Connected: <…>. Skipped: <…>. Start the first chat with a new owner (your handbook).` In that chat only, give the tour as one reply of six short points (a line or two each), then answer follow-ups as they come:
-
-1. **What I can do now.** Say what the connected channels and tools let you do today (a morning brief, follow-ups, tracking what people owe them), in their words from the setup note.
-2. **How I ask.** Writes, sends and deploys come to them as a card to approve with one tap; reads and drafts just happen.
-3. **Agents and apps.** They can ask for an agent ("someone to watch my PRs") or an app ("a tracker for X") in plain words, and you set it up.
-4. **What else to set up.** For each skipped step in the note, offer it with its link, [Set up Telegram](#/setup/channel-telegram) (the module's name after `#/setup/`). Offer the guided Google setup, [Set up Google](#/setup/google), for their calendar, mail and Drive. Then name up to three catalog modules that are not on and fit what they connected (Jira, Glean), each as a one-line offer; you turn one on by filing the module-change card, then link them to [Connect](#/settings/connections), where it connects with one press. Their apps' code lives on this server, so GitHub is a choice, not a need: when they work on GitHub, offer to connect it, one line: [Connect GitHub](#/setup/github) lets agents work on their GitHub as them (labelled as AidenHQ), and setting **Fleet repos** on its card makes GitHub where new repositories go. Their repos on this server stay here.
-5. **What runs on its own.** A new AidenHQ starts quiet: nothing runs on a schedule until they say so, and model spend stops at a daily cap (Settings shows it and changes it). Offer the morning brief in their words, "Want a morning brief at 8:30 on weekdays?", and in one more line the rest (a weekly look at how the agents work, an evening fleet digest, agents checking in every few hours). A routine turns on when they say so in their own words naming it ("resume the daily brief"): then resume it with `fleet_control` (`resume_routine`, those words as `quote`). Offer it with the words that turn it on, for them to send back: 'Reply "resume the daily brief" to start it.' (the gate takes only their own words naming the routine and asking to resume). For check-ins, hand the Engineer `overrides.agents.<key>.heartbeat: true`; the owner approves that one with one tap. They can also resume a routine from its module's page, and turn check-ins on from an agent's Settings tab.
-6. End with "Ask me anything."
-
-Their name, timezone and company are already set. Skip a point that has nothing to say (nothing skipped means no skipped links).
+When a new owner finishes onboarding, the board files you a task ("A new owner finished setup"): follow your ideas skill to file their first idea, then finish it.

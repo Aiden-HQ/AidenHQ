@@ -36,6 +36,8 @@ export const SERVICE_HOST = /^[a-z][a-z0-9-]*$/;
 const loopback = (ip: string) => /^127\./.test(ip) || ip === "::1" || ip === "0.0.0.0" || ip === "localhost";
 
 const TAKE_LEASE_MS = 2 * 60_000;
+/** The push test (onboarding's "Send a test"): one fixed decision card whose buttons do nothing (`inert`). */
+export const TEST_MESSAGE = { kind: "decision", text: "Test from AidenHQ: this is how a decision reaches you. The buttons do nothing.", inert: ["Looks good", "Not now"] } as const;
 /** An owner message nobody acknowledged in a week (no router installed): dropped, and logged. */
 const KEEP_MS = 7 * 86_400_000;
 
@@ -108,6 +110,14 @@ export function createNotify({ db, modules, secret, resolver, extra = () => [], 
       router(roles);
       if (!b.message || typeof b.message !== "object") throw fail(400, "bad_request", "send {to, message}");
       return post(String(b.to), b.message);
+    },
+    /**
+     * The push test (the board's key): the fixed test card to exactly `to`'s transport, its own answer back. Never queued for
+     * the router (no owner_notify row), never retried, never routed elsewhere.
+     */
+    test(b: { to?: unknown }): Promise<{ sent: boolean; off?: true; reason?: string }> {
+      if (typeof b?.to !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(b.to)) throw fail(400, "bad_request", "send {to: a channel module}");
+      return post(b.to, TEST_MESSAGE);
     },
   };
 }

@@ -10,7 +10,10 @@ If nothing happens: it waits. Nothing is built until you say ready.
 
 | | |
 |---|---|
-| **Name** | Review Chaser |
+| **Name** | Review Chaser (or: Rex, Nudge) |
+| **On your team as** | Review Chaser · Chases PR reviews |
+| **What you'll see from it** | "3 PRs wait on review; nudges drafted for 2 reviewers." |
+| **Its face** | Short hair, headset, palette 5 (change it on its page) |
 | **Its job** | Finds pull requests waiting on review and drafts a nudge for whoever holds each one |
 | **What wakes it** | Its weekday schedule, or a request ("chase the reviews on acme/api") |
 | **Schedule** | Weekdays at 10:00 |

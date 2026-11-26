@@ -7,6 +7,11 @@ agents:
     name: App Owner
     description: Owns one named app's backlog, reads its requests and usage and files improvements to the Engineer; does not run, deploy or fix the app's health (the DevOps Engineer does).
     reports_to: chief-of-staff
+    # The owner reads its results, so it is a teammate (docs/configuration.md "teammate"); an agent only other agents use has none.
+    teammate:
+      job: Owns your app's backlog
+      sample: "3 requests this week; 2 improvements filed, one waiting on you."
+      face: { hair: curly, accessory: none, body: notepad, skin: 2, hair_color: 3, palette: 1 }
     skills: [ tasks.delegate-work ]
     model: ~deepseek/deepseek-flash-latest
     graded: true

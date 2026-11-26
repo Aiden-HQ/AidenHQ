@@ -17,7 +17,6 @@ export interface SetupFlowPoint {
   title: string;
   why: string;
   effort: string;
-  wizard?: boolean;
   steps: string;
   /** The scopes `{scopes}` in the steps stands for. */
   console_scopes?: string[];
