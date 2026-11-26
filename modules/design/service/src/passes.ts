@@ -49,9 +49,9 @@ export function readApps(raw: string | undefined): { apps: App[]; errors: string
 /** The secret ui_logins (a JSON map app → login), read whole on each call; a malformed map or entry counts as no login. Its words never reach an error. */
 export function readLogins(raw: string): Record<string, Login> {
   let v: unknown;
-  try { v = JSON.parse(raw || "{}"); } catch { return {}; }
-  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
-  const out: Record<string, Login> = {};
+  try { v = JSON.parse(raw || "{}"); } catch { return Object.create(null); }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return Object.create(null);
+  const out: Record<string, Login> = Object.create(null);
   for (const [app, e] of Object.entries(v as Record<string, unknown>)) {
     const l = (e && typeof e === "object" ? e : {}) as Record<string, unknown>;
     if (![l.login_url, l.username, l.password].every((x) => typeof x === "string" && x) || (l.totp_secret !== undefined && typeof l.totp_secret !== "string")) continue;
@@ -59,6 +59,25 @@ export function readLogins(raw: string): Record<string, Login> {
     out[app] = { login_url: String(l.login_url), username: String(l.username), password: String(l.password), ...(l.totp_secret ? { totp_secret: String(l.totp_secret) } : {}) };
   }
   return out;
+}
+
+/**
+ * The module's validate hook (module.yaml `validate:`): settings.ui_testing as readApps reads it, and a pasted ui_logins as
+ * readLogins reads it. An error names the app, never a login's value.
+ */
+export function validate(input: { settings?: Record<string, unknown>; secret?: { name?: string }; value?: string }): { ok: true } | { ok: false; errors: { field: string; message: string }[] } {
+  const errors: { field: string; message: string }[] = [];
+  if (input.settings && "ui_testing" in input.settings) for (const e of readApps(JSON.stringify(input.settings.ui_testing ?? {})).errors) errors.push({ field: "ui_testing", message: e });
+  if (input.secret?.name === "ui_logins") {
+    let v: unknown;
+    try { v = JSON.parse(input.value || "{}"); } catch { v = undefined; }
+    if (!v || typeof v !== "object" || Array.isArray(v)) errors.push({ field: "ui_logins", message: "a JSON map of app name to { login_url, username, password, totp_secret? }" });
+    else {
+      const ok = readLogins(input.value ?? "");
+      for (const app of Object.keys(v)) if (!Object.hasOwn(ok, app)) errors.push({ field: "ui_logins", message: `${app.slice(0, 40)}: needs login_url (an address), username and password, and totp_secret as text if any` });
+    }
+  }
+  return errors.length ? { ok: false, errors } : { ok: true };
 }
 
 export interface PassDeps {

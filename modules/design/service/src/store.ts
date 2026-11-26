@@ -22,7 +22,7 @@ export interface Store {
   start(a: { target: string; kind: string; model: string; app?: string; task?: string; agent: string }): { run: string };
   put(run: string, agent: string, files: { name: string; data: string }[]): { stored: number };
   finish(run: string, agent: string, report: Record<string, unknown>): { url: string };
-  /** A pass's run, filed by the service itself (passes.ts): `agent` and `task` are set once its task is filed. Starting one ends the app's earlier running passes. */
+  /** A pass's run, filed by the service itself (passes.ts): `agent` and `task` are set once its task is filed (bindPass), which ends the app's earlier running passes. */
   startPass(a: { app: string; target: string; model: string; depth: string; mode: string }): { run: string };
   bindPass(run: string, task: string, agent: string, source: string): void;
   endPass(run: string, status: "failed"): void;
@@ -72,12 +72,16 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
     },
     startPass({ app, target, model, depth, mode }) {
       const id = newId(), at = new Date(now()).toISOString();
-      db.prepare("UPDATE runs SET status = 'superseded', ended = ? WHERE kind = 'pass' AND app = ? AND status = 'running'").run(at, app);
       db.prepare("INSERT INTO runs (id, target, kind, app, agent, model, status, started, depth, mode) VALUES (?,?,?,?,?,?,?,?,?,?)")
         .run(id, target, "pass", app, "", model, "running", at, depth, mode);
       return { run: id };
     },
-    bindPass(run, task, agent, source) { db.prepare("UPDATE runs SET task = ?, agent = ?, source = ? WHERE id = ? AND kind = 'pass'").run(task, agent, source, run); },
+    // Once its task is filed: the app's earlier running passes end here, never before (a refused filing leaves them running).
+    bindPass(run, task, agent, source) {
+      const r = get(run);
+      db.prepare("UPDATE runs SET status = 'superseded', ended = ? WHERE kind = 'pass' AND app = ? AND status = 'running' AND id != ?").run(new Date(now()).toISOString(), r.app, run);
+      db.prepare("UPDATE runs SET task = ?, agent = ?, source = ? WHERE id = ? AND kind = 'pass'").run(task, agent, source, run);
+    },
     endPass(run, status) { db.prepare("UPDATE runs SET status = ?, ended = ? WHERE id = ? AND kind = 'pass' AND status = 'running'").run(status, new Date(now()).toISOString(), run); },
     pass(run) {
       if (!/^[\w-]{1,40}$/.test(run)) return undefined;

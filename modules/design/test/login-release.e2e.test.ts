@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { createMcp } from "../service/src/mcp.ts";
 import { designTools } from "../service/src/tools.ts";
 import { openStore } from "../service/src/store.ts";
-import { createPasses, readApps, readLogins } from "../service/src/passes.ts";
+import { createPasses, readApps, readLogins, validate } from "../service/src/passes.ts";
 import { createJobTools, type JobCaller } from "../service/src/jobtools.ts";
 
 const RUN_TOKEN = "ahqj_run-token-of-the-job";
@@ -104,4 +104,20 @@ test("AidenHQ apps are read-only and wait for the owner's test-session decision;
     assert.equal(store.pass(r2)!.mode, "read");
     assert.equal(filed.length, 2);
   } finally { close(); }
+});
+
+test("the validate hook names a bad app or login, never a login's value; a failed filing keeps the running pass", async () => {
+  assert.deepEqual(validate({ settings: { ui_testing: { apps: [{ name: "acme", url: "https://acme.example.com", live_mode: "write" }] } } }), { ok: false, errors: [{ field: "ui_testing", message: "apps[0]: live_mode is one of read, test-write, any" }] });
+  const bad = validate({ secret: { name: "ui_logins" }, value: JSON.stringify({ acme: { username: "u", password: "hunter2" } }) });
+  assert.equal(bad.ok, false); assert.ok(!JSON.stringify(bad).includes("hunter2"));
+  assert.deepEqual(validate({ secret: { name: "ui_logins" }, value: LOGINS }), { ok: true });
+  assert.equal(readLogins("{}")["constructor" as string], undefined);
+  const store = openStore(mkdtempSync(join(tmpdir(), "design-")));
+  const { apps } = readApps(JSON.stringify({ apps: [{ name: "acme", url: "https://acme.example.com" }] }));
+  let refuse = false;
+  const passes = createPasses({ store, apps: () => apps, logins: () => ({}), fileTask: async () => { if (refuse) throw new Error("kernel down"); return { id: "t1", agent: "a" }; } });
+  const first = await passes.startPass("acme", "request", { depth: "scan" });
+  refuse = true;
+  assert.ok("refused" in (await passes.startPass("acme", "request", { depth: "scan" })));
+  assert.equal(store.pass((first as { run: string }).run)!.status, "running");
 });
