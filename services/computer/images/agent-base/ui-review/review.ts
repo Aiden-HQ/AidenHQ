@@ -75,11 +75,11 @@ function pick(caps: Capture[]): Capture[] {
   const state = (s: Capture["state"]) => at(1512, "light", s) ?? caps.find((c) => c.state === s && c.theme === "light" && c.shots.length > 0);
   const out = [at(390, "light", "default"), at(1512, "light", "default"), at(2560, "light", "default"), at(1512, "dark", "default"), state("empty"), state("error")].filter((c): c is Capture => !!c);
   // A run captured at other widths or in one theme only: review what exists, the widest and narrowest first.
-  if (out.length === 0) {
-    const have = caps.filter((c) => c.shots.length > 0).sort((a, b) => a.width - b.width);
-    return [...new Set([have[0], have[have.length - 1], ...have])].filter((c): c is Capture => !!c).slice(0, 4);
+  if (!out.some((c) => c.state === "default")) {
+    const have = caps.filter((c) => c.state === "default" && c.shots.length > 0).sort((a, b) => a.width - b.width);
+    out.push(...new Set([have[0], have[have.length - 1], ...have].filter((c): c is Capture => !!c && !out.includes(c))));
   }
-  return out;
+  return out.slice(0, 6);
 }
 
 function measuresTable(caps: Capture[]): string {
@@ -203,13 +203,14 @@ export async function runReview(dir: string, opts: ReviewOptions = {}): Promise<
   const byPage = new Map<string, Capture[]>();
   for (const c of report.captures) byPage.set(c.page, [...(byPage.get(c.page) ?? []), c]);
 
-  const cands: Candidate[] = [];
+  const perPage = new Map<string, Candidate[]>();
   let reviewed = 0;
   const skipped: string[] = [];
   await pool([...byPage], n, async ([page, caps]) => {
     if (over()) { skipped.push(page); return; }
-    try { cands.push(...(await reviewPage(x, page, caps))); reviewed++; } catch (e) { notes.push(`design review of ${page} failed: ${(e as Error).message}`); }
+    try { perPage.set(page, await reviewPage(x, page, caps)); reviewed++; } catch (e) { notes.push(`design review of ${page} failed: ${(e as Error).message}`); }
   });
+  const cands = [...byPage.keys()].flatMap((p) => perPage.get(p) ?? []); // page order, whatever order the calls finished in
   let improvements: Improvement[] = [];
   const unconsolidated = (why: string) => {
     improvements = cands.slice(0, top).map((c, i) => ({ ...c, rank: i + 1 }));
@@ -232,11 +233,12 @@ export async function runReview(dir: string, opts: ReviewOptions = {}): Promise<
       if (over()) { skipped.push(`${page} (motion)`); return; }
       try { rows.push(await motionPass(x, page, c, standards)); } catch (e) { notes.push(`motion pass of ${page} failed: ${(e as Error).message}`); }
     });
-    const seen = new Map<string, MotionRow>(); // the same CSS on several pages is one fix that lists every place
+    const places = new Map<string, { row: MotionRow; where: Set<string> }>(); // the same CSS on several pages is one fix that lists every place
     for (const r of rows.flat()) {
-      const first = seen.get(squash(r.css));
-      if (!first) { seen.set(squash(r.css), r); motion.push(r); } else if (!first.where.includes(r.where)) first.where += `; ${r.where}`;
+      const e = places.get(squash(r.css));
+      if (!e) { places.set(squash(r.css), { row: { ...r }, where: new Set([r.where]) }); } else e.where.add(r.where);
     }
+    for (const { row, where } of places.values()) motion.push({ ...row, where: [...where].join("; ") });
   }
   if (skipped.length > 0) notes.push(`stopped at the --max-usd budget; not reviewed: ${skipped.join(", ")}`);
 
