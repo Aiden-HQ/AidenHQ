@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModuleSecrets, vaultWriter } from "../src/module-secrets.ts";
@@ -11,9 +11,10 @@ import { authApiServer } from "./auth-helpers.ts";
 
 const FIELDS = [
   { module: "channel-telegram", secret: "telegram_bot_token", label: "Bot token", pattern: "^[0-9]{6,12}:[A-Za-z0-9_-]{30,50}$" },
+  { module: "design", secret: "ui_logins", label: "UI test logins", pattern: "^\\{[\\s\\S]*\\}$" },
   { module: "slack", secret: "slack_bot_token", label: "Slack bot token", pattern: "^xoxb-[A-Za-z0-9-]{20,200}$" },
 ];
-const SERVICES = { "channel-telegram": ["telegram"], "slack": ["slack-live"], google: [] };
+const SERVICES = { "channel-telegram": ["telegram"], "slack": ["slack-live"], design: ["design"], google: [] };
 // Who mounts each secret, any module's (compile: `mounts`): another module's service reads the Slack token too.
 const MOUNTS = { telegram_bot_token: ["telegram"], slack_bot_token: ["apps-mcp", "slack-live"] };
 const TOKEN = "123456789:" + "A".repeat(35);
@@ -30,6 +31,7 @@ function vault(recreate = async () => {}) {
     services: (m) => SERVICES[m],
     mounts: (s) => MOUNTS[s] ?? [],
     save: vaultWriter(dir),
+    get: (name) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), "utf8") : ""),
     has: (name) => existsSync(join(dir, name)),
     recreate: async (s, locked) => { calls.push(s); await recreate(s, locked); },
     log: (msg, o) => lines.push(JSON.stringify([msg, o])),
@@ -79,3 +81,29 @@ test("save_secret refuses an undeclared secret, another module's secret, a patte
 });
 
 // Real flock(1) (util-linux, as on the host); macOS has none, so CI judges this one.
+
+test("save_secret with a key sets one key of a JSON map in place, restarts nothing and reads no other key back", async (t) => {
+  const v = vault();
+  const post = await api(t, v);
+  const beta = { login_url: "https://beta.example.com/in", username: "b", password: "existing-beta-password" };
+  writeFileSync(join(v.dir, "ui_logins"), JSON.stringify({ beta }));
+  const ino = statSync(join(v.dir, "ui_logins")).ino;
+  const entry = (o) => JSON.stringify(o);
+  const r = await post("save_secret", { module: "design", secret: "ui_logins", key: "acme", value: entry({ username: "u", password: "p" }) });
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(JSON.parse(readFileSync(join(v.dir, "ui_logins"), "utf8")), { beta, acme: { username: "u", password: "p" } });
+  assert.equal(statSync(join(v.dir, "ui_logins")).ino, ino, "written in place");
+  assert.deepEqual(v.calls, [], "the module reads the map on each use: nothing restarts");
+  // Which keys are set is all anyone can read: names, never a value.
+  const keys = await post("secret_keys", { module: "design", secret: "ui_logins" });
+  assert.deepEqual(keys.json, { keys: ["beta", "acme"] });
+  assert.ok(!keys.body.includes("existing-beta-password") && !r.body.includes("password"));
+  assert.ok(!v.lines.join("\n").includes("existing-beta-password"));
+  // Clear removes just that key; a bad entry, a bad key and a non-owner are refused.
+  assert.equal((await post("save_secret", { module: "design", secret: "ui_logins", key: "acme", value: "" })).status, 200);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(v.dir, "ui_logins"), "utf8"))), ["beta"]);
+  for (const [body, token, status] of [
+    [{ key: "acme", value: "not json" }, "ready", 400], [{ key: "Acme Co", value: entry({ a: "b" }) }, "ready", 400], [{ key: "acme", value: entry({ a: 1 }) }, "ready", 400],
+    [{ key: "acme", value: entry({ a: "b" }) }, "admin", 403],
+  ]) assert.equal((await post("save_secret", { module: "design", secret: "ui_logins", ...body }, token)).status, status, JSON.stringify(body));
+});
