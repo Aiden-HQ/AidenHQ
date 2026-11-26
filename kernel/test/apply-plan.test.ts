@@ -229,7 +229,7 @@ test("an apply that adds or changes settings.edge.test_user plans a Tier 2 raise
   const r = await kernel({ texts: add }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
   assert.deepEqual([r.merit, r.rule], [2, "test-user-identity"], "the plan's raise");
   assert.match(r.card.reason!, /adds or changes the instance's agent sign-in identity \(settings\.edge\.test_user\)/);
-  assert.match(r.card.changes, /Adds a test sign-in identity: canary@aidenhq\.test as a member of roadmap-keeper; 15-minute sessions; every mint and revoke audited\.\nAn apply doesn't install the canary network: on an upgraded host, install ops\/vm\/canary-net\.sh and its aidenhq-canary-net\.service once/);
+  assert.match(r.card.changes, /Adds a test sign-in identity: canary@aidenhq\.test as a member of roadmap-keeper, for agents holding app-tester; read-only sessions of up to 60 minutes \(app_page_canary's one 15-minute submission writes\); every mint and revoke audited\.\nAn apply doesn't install the canary network or re-run the computers' rule: on an upgraded host, install ops\/vm\/canary-net\.sh and its aidenhq-canary-net\.service once, re-run ops\/vm\/computer-net\.sh/);
   // Changing the setting (another email, another app) raises it too, the line naming the new values.
   const changed = { base: add.head, head: edge({ email: "canary2@aidenhq.test", apps: ["roadmap-keeper", "notes"] }) };
   const c = await kernel({ texts: changed }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });

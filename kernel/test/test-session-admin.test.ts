@@ -30,7 +30,7 @@ before(async () => {
 after(() => accounts.close());
 
 test("the test user is a plain user, never an admin, and its session opens neither the admin listener nor the gate", async () => {
-  const m = await accounts.test.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await accounts.test.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   // The session row Better Auth will check is the 15-minute one, not Better Auth's default.
   const row = accounts.db.prepare("SELECT expiresAt FROM session WHERE id = ?").get(m.id) as { expiresAt: string | Date };
   assert.ok(Math.abs(new Date(row.expiresAt).getTime() - Date.parse(m.expires)) < 5_000, `${row.expiresAt} vs ${m.expires}`);

@@ -1,5 +1,5 @@
-// The test-user page canary's listener (docs/design/access.md, Test-user sign-in): the one door a headless browser reaches
-// without a person. It is deliberately not the gate:
+// The test user's listener (docs/design/access.md, Test-user sign-in): the one door a headless browser reaches without a
+// person (app_page_canary's browser, and an app-tester's box on the computers network). It is deliberately not the gate:
 //
 // - It listens on its own address (settings.edge.test_listener: a bridge gateway only the canary browser's network reaches),
 //   never on the gate's port, the front door's socket or the tailnet address. With no settings.edge.test_user nothing binds it.
@@ -9,6 +9,9 @@
 //   presented under another app's host is refused, and the cookie never reaches the app's public URL (a different host).
 // - Every request's identity is the test user as a `member` of that one app, minted per request by the gate's own signer; the
 //   page's own JavaScript runs, and its own same-origin `POST /.aidenhq/notify` is the gate's real notify handler.
+// - The session's live-app mode (the kernel's, from its check) decides every request and upgrade: `read` serves GET and HEAD
+//   only (no other method, no WebSocket, no notify); `test-write` refuses DELETE and the destructive paths. A refusal is 403
+//   `blocked by live-app mode` and never reaches the app.
 //
 // The cookie is checked with the kernel's session check through the sign-in listener's gate secret (no new shared secret), and
 // the handoff code is redeemed there once. Nothing here is trusted from the browser but the cookie it was given.
@@ -28,6 +31,29 @@ const IDENTITY_TTL_S = 300;
 const RESERVED = "/.aidenhq";
 const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"];
 const STRIP = /^(x-aidenhq-|tailscale-|cf-access-)/;
+/** Paths a test-write session never writes to: a best-effort extra on top of DELETE (an app can hide an action in a body). */
+export const DESTRUCTIVE_PATH = /(delete|destroy|remove|purge|archive|cancel|refund|pay|checkout|billing|invite|send|transfer|publish|deploy)/gi;
+/**
+ * The one exemption: the only test-write session is app_page_canary's feedback submission, and an app's feedback route may
+ * name its verb (`POST /api/feedback/send`). A path that names feedback or intake (the canary's own words, canary.ts) may
+ * carry `send`, and only `send`: any other listed word on it (`/api/feedback/1/delete`) is still refused.
+ */
+const FEEDBACK_PATH = /feedback|intake/i;
+export type LiveMode = "read" | "test-write";
+/** Whether a session in `mode` may make this request (or, `upgrade`, open this WebSocket). Anything unknown reads. */
+export function allowedIn(mode: LiveMode, method: string, path: string, upgrade = false): boolean {
+  if (mode === "test-write") {
+    // Reads (pages, assets) always pass: the list is about writes, and `/assets/payload.js` is not a payment.
+    if (!upgrade && (method === "GET" || method === "HEAD")) return true;
+    let decoded = path;
+    try { decoded = decodeURIComponent(path); } catch { return false; }
+    if (method === "DELETE") return false;
+    const hits = (decoded.match(DESTRUCTIVE_PATH) ?? []).map((w) => w.toLowerCase());
+    return hits.every((w) => w === "send") && (!hits.length || FEEDBACK_PATH.test(decoded));
+  }
+  return !upgrade && (method === "GET" || method === "HEAD");
+}
+const BLOCKED = "blocked by live-app mode";
 
 export interface TestListenerDeps {
   config: () => GateConfig;
@@ -67,7 +93,7 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
   }
 
   /** The session behind one cookie value, a refusal (401/409), or "down" when the kernel could not answer. */
-  async function sessionOf(c: GateConfig, cookie: string, app: string, host: string): Promise<{ email: VerifiedEmail; expires: string } | "other-app" | "down" | undefined> {
+  async function sessionOf(c: GateConfig, cookie: string, app: string, host: string): Promise<{ email: VerifiedEmail; expires: string; mode: LiveMode } | "other-app" | "down" | undefined> {
     if (!cookie) return undefined;
     // A kernel that can't answer is not "signed out": fail closed, but say so with 503 so a retryable blip during a page's
     // own subresources never tells the browser to sign in again (which would throw away a live session mid-page).
@@ -76,7 +102,8 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     if (r.status === 409) return "other-app";
     if (r.status >= 500 || r.status === 0) return "down";
     if (r.status !== 200 || typeof r.body?.email !== "string" || r.body?.app !== app) return undefined;
-    return { email: String(r.body.email).trim().toLowerCase() as VerifiedEmail, expires: String(r.body.expires ?? "") };
+    // A mode the kernel didn't name (an older kernel) is `read`: the least a session may do.
+    return { email: String(r.body.email).trim().toLowerCase() as VerifiedEmail, expires: String(r.body.expires ?? ""), mode: r.body.mode === "test-write" ? "test-write" : "read" };
   }
 
   /** The session behind this request's cookie, exactly one, or a refusal/"down". */
@@ -137,9 +164,11 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
       }
       const next = url.searchParams.get("next") ?? "/";
       const safe = next.startsWith("/") && !next.startsWith("//") && !/[\x00-\x20\\]/.test(next) ? next : "/";
+      // The cookie lives as long as the session it carries (15 to 60 minutes), never longer.
+      const left = Math.floor((Date.parse(String(r.body.expires ?? "")) - Date.now()) / 1000);
       return plain(res, 302, "signed in", {
         location: safe,
-        "set-cookie": [`${CANARY_COOKIE}=${r.body.token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=900`],
+        "set-cookie": [`${CANARY_COOKIE}=${r.body.token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${Number.isFinite(left) && left > 0 ? Math.min(left, 3600) : 0}`],
       });
     }
 
@@ -149,6 +178,12 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     if (who === "other-app") return plain(res, 404, "not found");
     if (who === "down") return plain(res, 503, "unavailable: the session may still be valid; try again");
     if (!who) return plain(res, 401, "sign in first");
+    // The session's live-app mode, before anything (the gate's own notify included) is reached.
+    if (!allowedIn(who.mode, String(req.method ?? "GET"), path)) {
+      req.resume();
+      log({ msg: "test request blocked by live-app mode", app, mode: who.mode, method: req.method, path });
+      return plain(res, 403, BLOCKED);
+    }
 
     // The gate's own path on an app host, as the gate serves it: the page says people sent something into the app's intake.
     if (path === RESERVED || path.startsWith(`${RESERVED}/`)) {
@@ -288,6 +323,7 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     if (who === "other-app") return refuse(socket, 404, "not found");
     if (who === "down") return refuse(socket, 503, "unavailable: the session may still be valid; try again");
     if (!who) return refuse(socket, 401, "sign in first");
+    if (!allowedIn(who.mode, String(req.method ?? "GET"), new URL(String(req.url ?? "/"), "http://x").pathname, true)) return refuse(socket, 403, BLOCKED);
     // A tunnel never outlives the session that opened it: at its expiry the socket closes, even while the listener and the
     // app's setting are unchanged. A minute timer re-checks the rest (a revoke, a closed task), so none rides an old session.
     const left = Date.parse(who.expires) - Date.now();

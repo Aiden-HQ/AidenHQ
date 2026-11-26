@@ -17,7 +17,7 @@
 // pr-<n>.<host> under each share.host, through the gate, with the parent's access: one ingress rule *.<host> per shared
 // app behind the parent's own aud (its Access application must cover *.<host> too). apps-mcp writes which previews run
 // (data/previews/previews.json); the gate takes only ports in PREVIEW_PORTS from it.
-// settings.edge.test_user ({ email, apps }): the one non-owner identity an allowlisted agent may sign in as, for page-level
+// settings.edge.test_user ({ email, apps }): the one non-owner identity an agent holding role app-tester may sign in as, for page-level
 // checks at exactly these shared apps (docs/design/access.md, Test-user sign-in). Compile validates it (its own email, at
 // least one app, no repeats, each a shared app with a host) and writes it with the test listener's own bridge address and
 // port. Naming no test user writes neither: the capability is inert, and the gate binds nothing for it.
