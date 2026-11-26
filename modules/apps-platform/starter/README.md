@@ -69,7 +69,7 @@ without anyone naming them. An explicit `--paths` still wins.
 - Every path's pathname belongs in `server.mjs` `PAGES`, so a reload of it answers 200 rather than the 404 page.
 - Sample ids and filter values are fine (`?item=search-v2`); use ones the sample data always has, and replace them
   with the app's own seed data.
-- No map is not a failure: an app without one is reviewed at `/` as before. A map that exists but isn't valid JSON, or
+- No map is not a failure: an app without one is crawled from `/` (its same-origin links, two deep). A map that exists but isn't valid JSON, or
   has no `pages` with a `path` on the app itself (a `/…` path; `//host/…` is refused), stops `ui-review` with an error so
   it gets fixed.
 

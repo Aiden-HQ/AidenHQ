@@ -45,7 +45,7 @@ import { useUrlState } from "@/lib/navigation"
 import { MoreBlocks, MoreComponents, PresetGallery, PRESETS, ShellGallery, Variants } from "./more"
 
 // Every building block and component the starter has, themed, in one page (dev-only: `npm run catalog`). ?palette= and
-// ?mode= pick the theme (the pickers set them), so `ui-review <dev url>/catalog.html --palettes neutral,crisp` covers any
+// ?mode= pick the theme (the pickers set them), so `ui-review capture <dev url>/catalog.html --palettes neutral,crisp` covers any
 // palette or preset. Nothing here is required: apps import what they need.
 
 const PALETTES = ["neutral", "warm", "contrast", "data", ...PRESETS.map(([id]) => id)] as const

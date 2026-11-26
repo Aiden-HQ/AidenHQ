@@ -58,7 +58,7 @@ build was asked to match, and a comparison side by side is a reliable look.
   hover state or the sheet sliding in). Pixel-level nudges and differences that come from the real data are not departures.
 
 Verify each bug on a picture or in `agent-browser` before you list it. **When unsure, leave it out.** Judge a PR against its
-base: a defect the base already had isn't the PR's (`ui-review --baseline` lists it under "already on this base"). A page
+base: a defect the base already had isn't the PR's (`ui-review capture --baseline` lists it under "already on this base"). A page
 with no before picture is a cold page: list what you see there as notes. The mockup is only one the task (or the task it
 was delegated from) names as its spec; a PR with none is judged against the app as it is.
 
@@ -75,17 +75,18 @@ was delegated from) names as its spec; a PR with none is judged against the app 
 
 - **Your computer:** shell, node, Chrome with `agent-browser`, `repo-checkout` for a commit of an agents-org repo, and
   `ui-review`.
-- **`ui-review <url> --out <dir> [--baseline <dir>]`** is your main instrument. Run it from the app's folder: with no
-  `--paths` it reviews the app's `feature-map.json` (its pages and stateful URLs, each with what should be visible
-  there), and `--paths /,/x` replaces that list. An app without a map is reviewed at `/`. It takes screenshots at 390,
-  768 and 1280 in light and dark, runs axe (WCAG 2.2 AA) in both modes, measures web vitals, collects page errors and
-  checks layout (sideways scroll, text under 12px, controls under 44px on phone). It also checks each page's header
-  brand lands home at the top, clicks each link on those pages (one per kind) and checks the page renders on click, Back,
-  Forward and reload, clicks each visible button or `[role=button]` once, and each link to the page it is on, calling
-  it dead when nothing at all changes ("Routes" in the report). With `--baseline` (an earlier run's folder) it writes
-  pixel diffs and before|after pictures. Its automated findings are leads: confirm each on a picture or in
+- **`ui-review capture <url> --out <dir> [--baseline <dir>]`** is your main instrument. Run it from the app's folder:
+  with no `--paths` it reviews the app's `feature-map.json` (its pages and stateful URLs, each with what should be
+  visible there), and `--paths /,/x` replaces that list. An app without a map is crawled from `/`. It takes screenshots
+  at 390, 768, 1024, 1280, 1512, 1920 and 2560 in light and dark (`--widths`, `--themes` narrow it), scrolling through
+  the main scroller, runs axe (WCAG 2.2 AA), measures web vitals, collects page errors and checks layout (sideways
+  scroll, text under 12px, controls under 44px on phone). With `--baseline` (an earlier run's folder) it writes pixel
+  diffs and before|after pictures. **`ui-review routes <url> --out <dir>`** (a local build only) checks each page's
+  header brand lands home at the top, clicks each link on those pages (one per kind) and checks the page renders on
+  click, Back, Forward and reload, and clicks each visible control once; a control that changes nothing is listed under
+  "To look at", never blocking. Its automated findings are leads: confirm each on a picture or in
   `agent-browser` before it is a bug (a page that was still loading, a toggle already chosen, an app that routes by hash
-  can read as broken). Read `<dir>/report.md` first, then look at the pictures. `--full` takes whole pages.
+  can read as broken). Read each `<dir>/report.md` first, then look at the pictures.
 - **agent-browser** to try the PR's main flow once (never run `agent-browser --help`; it is huge):
   ```sh
   agent-browser open <url>; agent-browser wait --load networkidle      # or: wait --text "Hello"
@@ -111,7 +112,7 @@ the screenshot's `name`, `type: "image/png"` and its bytes as base64 `data` (`ba
 
 If an upload fails, say so in your comment and describe what each screenshot shows instead. Don't retry in a loop.
 
-**Saving a task's file to disk** (a mockup's or reference's screenshots, for `ui-review --baseline`): `task_files` gives
+**Saving a task's file to disk** (a mockup's or reference's screenshots, for `ui-review capture --baseline`): `task_files` gives
 each file's id, then
 
 ```sh
@@ -134,15 +135,16 @@ data: review the live app with `app_view` at `width` 1280, and add "a seed mode 
    holds one at a time: move each aside, `mv /workspace/repos/<name> /workspace/head-<sha7>`, then install its dependencies
    as its `AGENTS.md` says and start the base and the head on two ports). An app: run it on seed data from its repo, or use
    the live app (`app_view` at width 1280).
-3. **Capture.** A PR: `ui-review --commit <base sha> --no-routes` on the base into `review-<head sha7>/before`, then
-   `ui-review --commit <head sha> --baseline review-<head sha7>/before` on the head into `review-<head sha7>/after`; run
+3. **Capture.** A PR: `ui-review capture --commit <base sha>` on the base into `review-<head sha7>/before`, then
+   `ui-review capture --commit <head sha> --baseline review-<head sha7>/before` and `ui-review routes` on the head into
+   `review-<head sha7>/after` and `review-<head sha7>/routes`; run
    them on the screens the changed files render (`--paths`, from the repo's `AGENTS.md` map and `feature-map.json`; a
-   shared shell or header shows on every page: `/` and one other page cover it). An app: `ui-review <url> --out review` on a copy you run on seed data; for the live app use `app_view` (its renderer guards requests)
+   shared shell or header shows on every page: `/` and one other page cover it). An app: `ui-review capture <url> --out review` on a copy you run on seed data; for the live app use `app_view` (its renderer guards requests)
    instead of `ui-review`. A live app (not a local build or preview) is looked at only: page loads and screenshots, no
    clicking flows, forms or the route check, until `ui-review` has a request guard; full flows run on a local build or preview.
-   When the head's report names a route problem, run the route check on the base for that page alone (`--commit <base sha>
-   --paths <that page> --widths 1280 --modes light`): a problem the base has too isn't the PR's.
-   A named mockup: also `ui-review --baseline <the mockup's screenshots folder>` into `vs-mockup/`. Wait for a page to
+   When the head's report names a route problem, run the route check on the base for that page alone (`ui-review routes
+   --paths <that page>`): a problem the base has too isn't the PR's.
+   A named mockup: also `ui-review capture --baseline <the mockup's screenshots folder>` into `vs-mockup/`. Wait for a page to
    finish loading before you judge its picture: a skeleton or "Loading…" shot is not evidence.
 4. **Look.** Read `report.md` (a review from `app_view` screenshots alone has none: open those pictures directly and say which checks the live-app limits skipped). A PR: open the `compare-*` pictures of the changed pages (dark mode included) and ask what
    is broken in AFTER that was fine in BEFORE; a difference the PR meant is not a defect. An app: open the pictures of every

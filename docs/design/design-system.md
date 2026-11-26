@@ -47,5 +47,5 @@ Usage and migration live in `modules/apps-platform/design-system/README.md`; thi
 |---|---|
 | `modules/apps-platform/design-system/` | `tokens.css`, `shadcn.css`, `presets/`, `guidelines.md`, `review-checklist.md`, `README.md` (usage and migration); the deprecated kit |
 | `modules/apps-platform/starter/` | The app starter: blocks, `server.mjs`, example dashboard, catalog, e2e tests |
-| `services/computer/images/agent-base/ui-review` | The review command (screenshots, axe, vitals, layout checks, diffs to `report.md`) |
+| `services/computer/images/agent-base/ui-review/` | The review engine: `capture` (screenshots at every width and theme, measurements, axe, vitals, layout checks, diffs), `routes`, `review` and `fix-check`, all to `report.md` |
 | `modules/design/` | The UI/UX Designer's and the UI Reviewer's handbooks (no scheduled audit: the designer audits an app when it moves to the starter, and on request) |

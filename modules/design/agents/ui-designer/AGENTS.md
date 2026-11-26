@@ -56,11 +56,12 @@ Apps are **shadcn/ui + Tailwind** (Vite + React) from the app starter, themed by
 
 - **Your computer:** shell, node, Chrome with `agent-browser`, `repo-checkout` for a commit of an agents-org repo, and
   `ui-review`.
-- **`ui-review <url> --paths /,/x --out <dir> [--baseline <dir>] [--no-routes]`** takes screenshots at 390, 768 and 1280 in light and
-  dark, runs axe (WCAG 2.2 AA), measures web vitals, collects page errors and checks layout. Read `<dir>/report.md`
-  first, then **open every screenshot**. `--palettes neutral,warm` loops themes on pages that read `?palette=`. It
-  also clicks the pages' links and checks each one renders on click, Back/Forward and reload; `--no-routes` skips that
-  for a mockup whose links lead nowhere yet.
+- **`ui-review capture <url> --paths /,/x --out <dir> [--widths 390,1280] [--themes light,dark] [--baseline <dir>]`** takes
+  screenshots (by default at 390, 768, 1024, 1280, 1512, 1920 and 2560 in light and dark), runs axe (WCAG 2.2 AA), measures
+  web vitals, collects page errors and checks layout. Read `<dir>/report.md` first, then **open every screenshot**.
+  `--palettes neutral,warm` loops themes on pages that read `?palette=`. **`ui-review routes <url> --paths /,/x --out
+  <dir>`** clicks the pages' links and checks each one renders on click, Back/Forward and reload (a local build only;
+  skip it for a mockup whose links lead nowhere yet).
 - **agent-browser** for states and interactions (the commands below cover the work; its `--help` is huge):
   ```sh
   agent-browser open <url>; agent-browser wait --load networkidle      # or: wait --text "Hello"
@@ -83,7 +84,7 @@ the file's `name`, its `type` and its bytes as base64 `data` (`base64 -w0 shots/
 `text` for a text file; `task_files` then lists it. If an upload fails, say so once in your comment and describe what
 each file shows instead.
 
-**Saving a task's file to disk** (a reference's screenshots, for `ui-review --baseline`): `task_files` gives each file's
+**Saving a task's file to disk** (a reference's screenshots, for `ui-review capture --baseline`): `task_files` gives each file's
 id, then
 
 ```sh
@@ -117,9 +118,9 @@ the owner. Their own answer is the pick.
    `node_modules`). The plan's palette and type go into the app's `theme.css` (light and dark), starting from the
    default palette or the closest preset. Add a page in `src/pages/` wired into `src/App.tsx` (and the server's
    `PAGES`), then `npm run build && npm start`. Include its empty, loading and error states.
-4. **Look and improve.** Capture with `ui-review` (1280 light, plus dark) and `agent-browser` for interactions, open
+4. **Look and improve.** Capture with `ui-review capture` (1280 light, plus dark) and `agent-browser` for interactions, open
    every screenshot, and lift each part until it looks rich, deep, well spaced and finished, in light and dark.
-   With a reference, put yours beside it (`ui-review --baseline <dir of its screenshots, named like yours>`) and lift
+   With a reference, put yours beside it (`ui-review capture --baseline <dir of its screenshots, named like yours>`) and lift
    every place where it is the more finished. Repeat while each round is visibly better; spend the time on the design.
 5. **Hand off.** Attach the screenshots (named as `ui-review` names them, `<page>-1280-light.png`) and every source file
    needed to rebuild it (the page's `.tsx`, and any shell, `theme.css` or block you changed; as `<file>.txt` if the
