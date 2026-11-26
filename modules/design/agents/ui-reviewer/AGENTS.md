@@ -38,7 +38,7 @@ best product in the category does, and the captures that show it. Improvements n
 
 A bug is a fact someone can reproduce: the page doesn't render, a link's page doesn't show on click, a visible control
 does nothing, data is missing, the layout is unusable at desktop width, a keyboard blocker on the main flow. List only what
-the engine's checks confirmed or you confirmed on a capture; when unsure, leave it out. For a PR, only what the PR
+the engine's checks confirmed or `ui-review repro` reproduced twice (a bug you could not reproduce is a design note, never a bug); when unsure, leave it out. For a PR, only what the PR
 introduced (the base's own defects are not the PR's). `/opt/aidenhq/design-system/review-checklist.md` lists what blocks.
 
 ## Reaching the owner

@@ -5,7 +5,7 @@
 //   { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" }
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,14 +13,15 @@ import { after, before, describe, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Capture, Report } from "../images/agent-base/ui-review/types.ts";
-import { type Fixture, ROUTES, startFixture } from "./fixtures/ui-app/server.ts";
+import { totp as totpCode } from "../images/agent-base/ui-review/totp.ts";
+import { type Fixture, ROUTES, SIGN_IN, startFixture } from "./fixtures/ui-app/server.ts";
 
 const main = fileURLToPath(new URL("../images/agent-base/ui-review/main.ts", import.meta.url));
 
-test("ui-review --help lists the six subcommands", () => {
+test("ui-review --help lists its subcommands", () => {
   const r = spawnSync("node", [main, "--help"], { encoding: "utf8" });
   assert.equal(r.status, 0);
-  for (const c of ["capture", "pages", "routes", "refs", "review", "fix-check"]) assert.match(r.stdout, new RegExp(`^  ${c} `, "m"));
+  for (const c of ["capture", "pages", "routes", "refs", "review", "fix-check", "login", "browser"]) assert.match(r.stdout, new RegExp(`^  ${c} `, "m"));
 });
 
 test("the fixture app serves 60 routes and counts writes", async () => {
@@ -50,10 +51,10 @@ test("every fixture route renders its own page, and /planted carries its defects
 
 // ---- capture, coverage queue, route check (lane A) ----
 const chrome = { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" };
-type Run = { out: string; coverage: { done: number; total: number; failed: number; deferred: number }; captures: { page: string; width: number; theme: string; state: string; shots: string[]; settled: boolean; motion?: unknown; rules: { rule: string }[]; diffs?: { shot: string; pct: number; diff?: string }[] }[]; lookFirst: { page: string }[] };
+type Run = { out: string; notes: string[]; blocked: { method: string; origin: string; path: string; page: string }[]; session?: { rung: string; relogins: number }; coverage: { done: number; total: number; failed: number; deferred: number }; captures: { page: string; width: number; theme: string; state: string; shots: string[]; settled: boolean; motion?: unknown; rules: { rule: string }[]; diffs?: { shot: string; pct: number; diff?: string }[] }[]; lookFirst: { page: string }[] };
 const tmp = () => mkdtempSync(join(tmpdir(), "ui-review-test-"));
-const capArgs = (url: string, o: { out: string; pagesFile?: string; widths?: number[]; themes?: string[]; resume?: boolean; baseline?: string }) =>
-  [main, "capture", url, "--out", o.out, ...(o.pagesFile ? ["--pages-file", o.pagesFile] : []), ...(o.widths ? ["--widths", o.widths.join(",")] : []), ...(o.themes ? ["--themes", o.themes.join(",")] : []), ...(o.resume ? ["--resume"] : []), ...(o.baseline ? ["--baseline", o.baseline] : []), "--commit", "test"];
+const capArgs = (url: string, o: { out: string; pagesFile?: string; widths?: number[]; themes?: string[]; resume?: boolean; baseline?: string; mode?: string; session?: string }) =>
+  [main, "capture", url, "--out", o.out, ...(o.pagesFile ? ["--pages-file", o.pagesFile] : []), ...(o.widths ? ["--widths", o.widths.join(",")] : []), ...(o.themes ? ["--themes", o.themes.join(",")] : []), ...(o.resume ? ["--resume"] : []), ...(o.baseline ? ["--baseline", o.baseline] : []), ...(o.mode ? ["--mode", o.mode] : []), ...(o.session ? ["--session", o.session] : []), "--commit", "test"];
 const pagesFile = (paths: string[]) => { const f = join(tmp(), "pages.json"); writeFileSync(f, JSON.stringify(paths)); return f; };
 const pages = (n: number) => pagesFile(Array.from({ length: n }, (_, i) => `/#/p${String(i + 1).padStart(3, "0")}`));
 function startCapture(url: string, o: Parameters<typeof capArgs>[1]) { return spawn("node", capArgs(url, o), { stdio: "ignore" }); }
@@ -68,6 +69,16 @@ async function runCapture(url: string, o: Partial<Parameters<typeof capArgs>[1]>
   return { ...r, out, lookFirst: [...new Map(changed.map((c) => [c.page, c])).values()] };
 }
 const runRoutes = (url: string) => new Promise<number>((ok) => spawn("node", [main, "routes", url, "--out", tmp(), "--paths", "/#/danger"], { stdio: "ignore" }).on("exit", (c) => ok(c ?? 2)));
+/** `ui-review login <rung>`: its exit code and output (stdout and stderr). */
+function login(rung: string, o: Record<string, string>, env: Record<string, string> = {}) {
+  const args = [main, "login", rung, ...Object.entries(o).flatMap(([k, v]) => [`--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`, ...(v === "" ? [] : [v])])]; // "" is a flag
+  return new Promise<{ code: number; text: string }>((ok) => {
+    const p = spawn("node", args, { env: { ...process.env, ...env } });
+    let text = "";
+    p.stdout.on("data", (d) => (text += d)); p.stderr.on("data", (d) => (text += d));
+    p.on("exit", (code) => ok({ code: code ?? 2, text }));
+  });
+}
 async function waitForDone(out: string, n: number) {
   for (;;) {
     try { if ((JSON.parse(readFileSync(join(out, "queue.json"), "utf8")) as { status: string }[]).filter((i) => i.status === "done").length >= n) return; } catch { /* not written yet */ }
@@ -101,11 +112,12 @@ describe("capture", chrome, () => {
     fixture.set("planted-title", "Planted page");
     assert.deepEqual(after.lookFirst.map((c) => c.page), ["/#/planted"]); // /clock unchanged: the clock is frozen
   });
-  test("a live target is never clicked or written to", async () => {
+  test("a live target is read only: captured, clicked by the route check, never written to", async () => {
     const w0 = fixture.writes();
     const r = await runCapture(liveAlias + "/#/danger", { widths: [1512], themes: ["light"] });
-    assert.equal(await runRoutes(liveAlias + "/#/danger"), 2);
-    assert.equal(fixture.writes() - w0, 0); assert.ok(r.captures[0].motion); // measured passively; its POST on mount was answered by the guard
+    assert.ok([0, 1].includes(await runRoutes(liveAlias + "/#/danger"))); // the route check runs on a live target now: the guard is on
+    assert.equal(fixture.writes() - w0, 0); assert.ok(r.captures[0].motion); // its POST on mount was refused by the guard
+    assert.ok(r.blocked.some((b) => b.method === "POST" && b.path === "/api/seen"));
     assert.ok(!r.captures[0].rules.some((h) => h.rule === "page-errors")); // and the guard is no page error of the app's
     await runCapture(fixtureUrl + "/#/danger", { widths: [1512], themes: ["light"] });
     assert.ok(fixture.writes() - w0 >= 1); // the same page as a local build does write: the guard is what stopped it
@@ -114,6 +126,157 @@ describe("capture", chrome, () => {
     const r = await runCapture(fixtureUrl, { pagesFile: pages(300), widths: [1512], themes: ["light"] });
     assert.equal(r.coverage.done, 120); assert.equal(r.coverage.deferred, 180);
     const next = await runCapture(fixtureUrl, { out: r.out, resume: true }); assert.equal(next.coverage.done, 240);
+  });
+});
+
+// ---- login ladder, session check, live-app guard (phase 2, lane E) ----
+describe("signed in and guarded", chrome, () => {
+  let fixture: Fixture, fx: (p: string) => string, liveAlias: string;
+  // Sessions die after 12 signed-in requests here, so one run crosses the expiry, however fast it captures.
+  before(async () => { fixture = await startFixture(0, { sessionPages: 12 }); fx = (p) => fixture.url + p; liveAlias = `http://live.localhost:${fixture.port}`; });
+  after(() => fixture.close());
+  const secrets = () => { const d = tmp(), pw = join(d, "pw"), totp = join(d, "totp"); writeFileSync(pw, SIGN_IN.password); writeFileSync(totp, SIGN_IN.totp); return { pw, totp, st: join(tmp(), "state.json") }; };
+  const files = (dir: string): string[] => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name));
+
+  test("form login captures signed-in pages and notices a dead session", async () => {
+    const { pw, totp, st } = secrets();
+    const l = await login("form", { url: fx("/login"), user: SIGN_IN.user, passwordFile: pw, totpFile: totp, out: st });
+    assert.equal(l.code, 0, l.text); assert.equal(l.text.trim(), "signed in (form) at /login"); assert.ok(!l.text.includes(SIGN_IN.password));
+    // A wrong password lands on the app's error page: refused, nothing saved as a session.
+    const bad = join(tmp(), "pw"), st2 = join(tmp(), "state.json"); writeFileSync(bad, "not-the-password");
+    const w = await login("form", { url: fx("/login"), user: SIGN_IN.user, passwordFile: bad, totpFile: totp, out: st2 });
+    assert.equal(w.code, 1, w.text); assert.ok(!existsSync(st2));
+    const r = await runCapture(fx("/app/home"), { session: st, pages: ["/app/home", "/app/orders", "/app/billing", "/app/team"], widths: [390, 768, 1024, 1280, 1512, 1920, 2560] });
+    assert.equal(r.coverage.done, r.coverage.total);
+    assert.ok(r.captures.every((c) => !c.url.endsWith("/login")));
+    assert.ok(r.notes.some((n) => /re-signed in/.test(n)), r.notes.join("\n")); // the expiry was crossed
+    assert.equal(r.session?.rung, "form"); assert.ok(r.session!.relogins >= 1);
+    const shot = readFileSync(join(r.out, r.captures.find((c) => c.page === "/app/orders")!.shots[0]));
+    assert.ok(shot.length > 0);
+    assert.ok(!files(r.out).some((f) => readFileSync(f).includes(SIGN_IN.password) || readFileSync(f).includes(SIGN_IN.totp)));
+  });
+
+  test("sign-up through Mailpit works and CAPTCHA stops the rung", async () => {
+    const st = join(tmp(), "state.json"), st2 = join(tmp(), "state.json");
+    const l = await login("signup", { url: fx("/signup"), out: st });
+    assert.equal(l.code, 0, l.text); assert.ok(existsSync(st)); assert.equal(fixture.signups(), 1);
+    const c = await login("signup", { url: fx("/signup-captcha"), out: st2 });
+    assert.equal(c.code, 1); assert.match(c.text, /CAPTCHA/); assert.ok(!existsSync(st2));
+  });
+
+  test("a supplied login comes from the design module's job tool, and a refusal carries no login", async () => {
+    // The kernel route as the box sees it: the job's token; the module answers for its own pass's app and refuses the rest.
+    let calls = 0;
+    const tool = createServer((req, res) => {
+      let body = ""; req.on("data", (d) => (body += d)); req.on("end", () => {
+        calls++;
+        const b = JSON.parse(body) as { app: string };
+        if (req.url !== "/v1/jobtools/module/design/login" || req.headers.authorization !== "Bearer run-token") return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "not a live job" }));
+        if (b.app !== "acme" || Object.keys(b).length !== 1) return void res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: "not this app's pass" }));
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ login_url: fx("/login"), username: SIGN_IN.user, password: SIGN_IN.password, totp: totpCode(SIGN_IN.totp) }));
+      });
+    });
+    await new Promise<void>((ok) => tool.listen(0, "127.0.0.1", ok));
+    const env = { AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${(tool.address() as { port: number }).port}`, AIDENHQ_RUN_TOKEN: "run-token" };
+    try {
+      const st = join(tmp(), "state.json");
+      let l = await login("supplied", { app: "acme", out: st }, env);
+      assert.equal(l.code, 0, l.text); assert.equal(l.text.trim(), "signed in (supplied) at /login");
+      assert.ok(!readFileSync(st.replace(/\.json$/, ".meta.json"), "utf8").includes(SIGN_IN.password));
+      l = await login("supplied", { app: "acme", out: st }, env); // a re-login asks again
+      assert.equal(l.code, 0, l.text); assert.equal(calls, 2);
+      l = await login("supplied", { app: "other", out: join(tmp(), "state.json") }, env);
+      assert.equal(l.code, 1); assert.match(l.text, /refused \(403\)/); assert.ok(!l.text.includes(SIGN_IN.password) && !l.text.includes(SIGN_IN.user));
+    } finally { tool.closeAllConnections(); tool.close(); }
+  });
+
+  test("an AidenHQ app signs in through the test listener, read-only, and signs in again when its session dies", async () => {
+    // The design job tool (app-session) and the gate's test listener as the box sees them: a one-time code and state, redeemed
+    // at http://<app>.canary.localhost:<port>/.auth/handoff for the listener's host-only __Host- cookie.
+    const codes = new Map<string, string>(), live = new Set<string>();
+    let minted = 0, served = 0, writes = 0;
+    const tool = createServer((req, res) => {
+      let body = ""; req.on("data", (d) => (body += d)); req.on("end", () => {
+        if (req.url !== "/v1/jobtools/module/design/app-session" || req.headers.authorization !== "Bearer run-token" || body !== JSON.stringify({ app: "roadmap" })) return void res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: "not this app's pass" }));
+        const code = `code-${++minted}-${"x".repeat(40)}`;
+        codes.set(code, `tok-${minted}`);
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ app: "roadmap", code, state: "st4te", mode: "read", expires: new Date(Date.now() + 3_600_000).toISOString() }));
+      });
+    });
+    const COOKIE = "__Host-aidenhq-canary.session";
+    const listener = createServer((req, res) => {
+      const u = new URL(req.url ?? "/", "http://x"), plain = (status: number, msg: string, h = {}) => void res.writeHead(status, { "content-type": "text/plain", ...h }).end(`${msg}\n`);
+      if (!/^roadmap\.canary\.localhost:\d+$/.test(String(req.headers.host))) return plain(404, "not found");
+      if (u.pathname === "/.auth/handoff") {
+        const tok = codes.get(u.searchParams.get("code") ?? "");
+        codes.delete(u.searchParams.get("code") ?? "");
+        if (!tok || u.searchParams.get("state") !== "st4te") return plain(401, "this sign-in is used or expired");
+        live.add(tok);
+        return plain(302, "signed in", { location: u.searchParams.get("next") ?? "/", "set-cookie": `${COOKIE}=${tok}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=3600` });
+      }
+      const tok = /(?:^|; )__Host-aidenhq-canary\.session=([^;]+)/.exec(String(req.headers.cookie ?? ""))?.[1] ?? "";
+      if (!live.has(tok)) return plain(401, "sign in first");
+      if (req.method !== "GET" && req.method !== "HEAD") writes++;
+      // The first session dies after a few pages, as one closed or revoked mid-run would.
+      if (tok === "tok-1" && ++served >= 3) live.delete(tok);
+      res.writeHead(200, { "content-type": "text/html" }).end(`<!doctype html><title>Roadmap</title><h1>Signed in as the test user: ${u.pathname}</h1><script>fetch("/api/seen", { method: "POST" }).catch(() => {})</script>`);
+    });
+    await Promise.all([tool, listener].map((srv) => new Promise<void>((ok) => srv.listen(0, "127.0.0.1", ok))));
+    const port = (listener.address() as { port: number }).port, origin = `http://roadmap.canary.localhost:${port}`;
+    const env = { AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${(tool.address() as { port: number }).port}`, AIDENHQ_RUN_TOKEN: "run-token", AIDENHQ_TEST_LISTENER: `127.0.0.1:${port}` };
+    const saved = { ...process.env };
+    try {
+      const st = join(tmp(), "state.json");
+      const l = await login("aidenhq", { app: "roadmap", out: st }, env);
+      assert.equal(l.code, 0, l.text); assert.equal(l.text.trim(), `signed in (aidenhq, read-only): review ${origin}/`);
+      assert.equal(JSON.parse(readFileSync(st.replace(/\.json$/, ".meta.json"), "utf8")).rung, "aidenhq");
+      assert.equal((await login("aidenhq", { app: "notes", out: join(tmp(), "state.json") }, env)).code, 1);
+      Object.assign(process.env, env); // the capture's own children (re-login) read them
+      const r = await runCapture(origin + "/", { session: st, pages: ["/", "/a", "/b", "/c", "/d"], widths: [1512], themes: ["light"] });
+      assert.equal(r.coverage.done, r.coverage.total, r.notes.join("\n"));
+      assert.equal(r.session?.rung, "aidenhq"); assert.ok(r.session!.relogins >= 1, r.notes.join("\n"));
+      assert.equal(writes, 0); assert.ok(r.blocked.some((b) => b.method === "POST" && b.path === "/api/seen")); // read: the guard, then the listener
+      assert.ok(!files(r.out).some((f) => /code-\d|tok-\d/.test(readFileSync(f, "utf8"))));
+    } finally { process.env = saved; for (const srv of [tool, listener]) { srv.closeAllConnections(); srv.close(); } }
+  });
+
+  test("the guard blocks writes in read mode and destructive paths in test-write", async () => {
+    const clickAll = async (mode: string, url: string) => {
+      const { launch } = await import("../images/agent-base/ui-review/browser.ts");
+      const b = await launch({ mode: mode as "read" });
+      try {
+        const p = await (await b.browser.newContext()).newPage();
+        await p.goto(url); await p.waitForTimeout(300);
+        for (const btn of await p.locator("button").all()) { await btn.click(); await p.waitForTimeout(200); }
+        await p.waitForTimeout(300);
+        return b.blocked();
+      } finally { await b.close(); }
+    };
+    const w0 = fixture.writes();
+    const r = await clickAll("read", fx("/#/danger"));
+    assert.ok(r.some((b) => b.method === "POST")); assert.equal(fixture.writes() - w0, 0);
+    const t = await clickAll("test-write", fx("/#/danger"));
+    assert.ok(t.some((b) => /\/pay/.test(b.path)) && t.some((b) => /\/delete/.test(b.path))); assert.ok(fixture.writes() - w0 > 0); // its POST on mount went
+    const w = await runCapture(liveAlias + "/#/socket-write", { widths: [1512], themes: ["light"] }); // a live target: read by default
+    assert.ok(w.blocked.some((b) => b.method === "WS"), JSON.stringify(w.blocked)); assert.equal(fixture.socketWrites(), 0);
+  });
+
+  test("read mode blocks a write to a separate API origin, and the agent's own tab is guarded", async () => {
+    const { launch } = await import("../images/agent-base/ui-review/browser.ts");
+    const { chromium } = await import("../images/agent-base/ui-review/node_modules/playwright-core/index.mjs");
+    const b = await launch({ mode: "read" });
+    try {
+      const p = await (await b.browser.newContext()).newPage();
+      await p.goto(fx("/split")); await p.click("text=Save"); await p.waitForTimeout(500);
+      assert.ok(b.blocked().some((x) => x.method === "POST" && /api\./.test(x.origin)), JSON.stringify(b.blocked())); assert.equal(fixture.apiWrites(), 0);
+      // The clicking pass's attachment: another CDP client opens its own context and tab, and clicks Pay; that target is guarded too.
+      const w0 = fixture.writes();
+      const agent = await chromium.connectOverCDP(`http://127.0.0.1:${b.port}`);
+      const tab = await (await agent.newContext()).newPage();
+      await tab.goto(fx("/#/danger")); await tab.click("text=Pay"); await tab.waitForTimeout(500);
+      assert.ok(b.blocked().some((x) => x.method === "POST" && /\/pay/.test(x.path)), JSON.stringify(b.blocked())); assert.equal(fixture.writes() - w0, 0);
+      await agent.close();
+    } finally { await b.close(); }
   });
 });
 
@@ -231,7 +394,7 @@ function runDir(): string {
       ...(width === 1512 ? { motion: { transitions: [{ property: "all", duration: 600, easing: "ease", n: 3, examples: [".btn"] }], animations: [], hover: [".btn:hover { transform: scale(1.1) }"], active: [], keyframes: [], longFrames: [], shifts: [] } } : {}),
     });
   }
-  const report: Report = { version: 2, target: "http://127.0.0.1:1", frozenAt: "2026-01-01T00:00:00Z", model: "", coverage: { done: 9, total: 9, failed: 0, deferred: 0 }, captures, improvements: [], motion: [], bugs: [], notes: [], cost_usd: 0 };
+  const report: Report = { version: 2, target: "http://127.0.0.1:1", frozenAt: "2026-01-01T00:00:00Z", model: "", coverage: { done: 9, total: 9, failed: 0, deferred: 0 }, captures, improvements: [], motion: [], bugs: [], notes: [], cost_usd: 0, blocked: [] };
   writeFileSync(join(dir, "report.json"), JSON.stringify(report));
   writeFileSync(join(dir, "run.json"), JSON.stringify({ base: "http://127.0.0.1:1", frozenAt: "2026-01-01T00:00:00Z", widths: [390, 1512, 2560], themes: ["light"], states: ["default"], pages: [{ path: "/#/r01", kind: "list", source: "router" }, { path: "/#/r02", kind: "list", source: "router" }, { path: "/#/r03", kind: "form", source: "router" }] }));
   return dir;
@@ -287,4 +450,97 @@ test("fix-check needs AFTER in 2 of 3 in each order", async () => {
     assert.equal(bad.accepted, false); // position bias never passes a fix
     assert.equal(fake.calls("pairwise").length + biased.calls("pairwise").length, 12);
   } finally { await fake.close(); await biased.close(); }
+});
+
+// ---- clicking pass: flows, candidate bugs and reproduction (lane C) ----
+const clicksWith = (items: object[]) => { const f = join(tmp(), "clicks.json"); writeFileSync(f, JSON.stringify(items)); return f; };
+
+test("flows lists every page's key controls with a persona", async () => {
+  const dir = runDir();
+  const run = JSON.parse(readFileSync(join(dir, "run.json"), "utf8"));
+  run.pages.push({ path: "/#/settings", kind: "settings", shows: "the account settings", source: "router" });
+  writeFileSync(join(dir, "run.json"), JSON.stringify(run));
+  mkdirSync(join(dir, "routes"));
+  writeFileSync(join(dir, "routes", "checks.json"), JSON.stringify([{ page: "/#/settings", what: "Save changes" }, ...Array.from({ length: 8 }, (_, i) => ({ page: "/#/settings", what: `Toggle ${i}` }))]));
+  const { flows } = await import("../images/agent-base/ui-review/flows.ts");
+  const md = flows(dir);
+  assert.match(md, /#\/settings/); assert.match(md, /Persona:/); assert.match(md, /clicks\.json/); assert.match(md, /Save changes/);
+  for (const f of md.split("### Flow ").slice(1)) assert.ok((f.match(/\d+\. /g) ?? []).length <= 6, "a flow has at most 6 steps");
+  assert.ok((md.match(/^### Flow /gm) ?? []).length >= 4); // /#/settings alone needs two flows for its nine controls
+});
+
+test("bugs writes candidates citing the page's own captures into candidates.json, never the report", async () => {
+  const dir = runDir();
+  // On /#/r01: one candidate on its own capture, one citing another page's; elsewhere, a capture that doesn't exist.
+  const fake = await fakeModel((_n, text) => ({ candidates: /r01/.test(text) ? [
+    { title: "The table is cut off", evidence: "the last column is clipped", width: 1512, theme: "light", capture: "shots/r01-1512-light.png" },
+    { title: "Made up", evidence: "cites a picture it wasn't shown", width: 1512, theme: "light", capture: "shots/r02-1512-light.png" },
+  ] : [{ title: "Invented", evidence: "no such capture", width: 1512, theme: "light", capture: "shots/nope.png" }] }));
+  try {
+    const { bugs } = await import("../images/agent-base/ui-review/bugs.ts");
+    const r = await bugs(dir, { model: "fake/judge", base: fake.url, key: "test" });
+    assert.deepEqual(r.candidates.map((c) => `${c.page} ${c.title}`), ["/#/r01 The table is cut off"]);
+    assert.equal(JSON.parse(readFileSync(join(dir, "candidates.json"), "utf8")).length, 1);
+    assert.deepEqual((JSON.parse(readFileSync(join(dir, "report.json"), "utf8")) as Report).bugs, []);
+  } finally { await fake.close(); }
+});
+
+describe("repro", chrome, () => {
+  let fixture: Fixture;
+  before(async () => { fixture = await startFixture(); process.env.OPENROUTER_API_KEY = "test"; });
+  after(async () => { await fixture.close(); });
+  const archive = { kind: "bug", page: "/#/clicks", width: 1512, title: "Archive does nothing", saw: "Archive changes nothing", expected: "the order is archived", steps: [{ open: "/#/clicks" }, { click: "role=button[name=\"Archive\"]" }] };
+  const filter = { kind: "bug", page: "/#/clicks", width: 1512, title: "Filter lost on reload", saw: "the filter text is gone after a reload", expected: "the filter stays", steps: [{ open: "/#/clicks" }, { fill: ["#filter", "acme"] }, { open: "/#/clicks" }] };
+  const fine = { kind: "bug", page: "/#/clicks", width: 1512, title: "Save does nothing", saw: "nothing happened", expected: "Saved shows", steps: [{ open: "/#/clicks" }, { click: "#save" }] };
+  const rough = { kind: "friction", page: "/#/clicks", width: 1512, title: "No hint on the filter", saw: "the filter has no hint of what it matches", expected: "a hint names the fields it matches", steps: [{ open: "/#/clicks" }, { click: "#filter" }] };
+
+  test("repro keeps only bugs that happen twice", async () => {
+    const out = runDir();
+    const { repro } = await import("../images/agent-base/ui-review/repro.ts");
+    // The judge says "shows" for the two real bugs, and, as a flaky one, only on its first replay for "Save does nothing".
+    const seen: Record<string, number> = {};
+    const fake = await fakeModel((_n, text) => {
+      const title = ["Archive does nothing", "Filter lost on reload", "Save does nothing"].find((t) => text.includes(t)) as string;
+      seen[title] = (seen[title] ?? 0) + 1;
+      return { shows: title !== "Save does nothing" || seen[title] === 1, why: "decided from the pictures" };
+    });
+    try {
+      const r = await repro(fixture.url, clicksWith([archive, filter, fine, rough]), { out, model: "fake/judge", base: fake.url, mode: "any" });
+      assert.deepEqual(r.bugs.map((b) => b.title).sort(), ["Archive does nothing", "Filter lost on reload"]);
+      assert.ok(r.bugs.every((b) => b.verified && b.repro!.length > 0 && b.captures.length >= 2 && b.captures.every((f) => existsSync(join(out, f)))));
+      assert.ok(r.bugs.every((b) => b.kind && b.selector));
+      assert.equal(fake.calls("repro-judge").length, 6); // two replays each; the flaky one's second answer said no
+      const saved = JSON.parse(readFileSync(join(out, "report.json"), "utf8")) as Report;
+      assert.deepEqual(saved.bugs.map((b) => b.title).sort(), ["Archive does nothing", "Filter lost on reload"]);
+      assert.equal(JSON.parse(readFileSync(join(out, "friction.json"), "utf8")).length, 1); // friction is replayed once, never judged, and goes to the review
+    } finally { await fake.close(); }
+  });
+
+  test("repro --mode read replays a bug without a write reaching the app", async () => {
+    const out = runDir();
+    const pay = { kind: "bug", page: "/#/danger", width: 1512, title: "Pay does nothing", saw: "nothing happens", expected: "a receipt", steps: [{ open: "/#/danger" }, { click: "#pay" }] };
+    const fake = await fakeModel(() => ({ shows: true, why: "decided from the pictures" }));
+    try {
+      const w0 = fixture.writes();
+      // A child process (the fixture and the fake judge are served by this one, so never spawnSync).
+      const p = spawn("node", [main, "repro", clicksWith([pay]), "--out", out, "--url", fixture.url, "--mode", "read", "--model", "fake/judge"], { env: { ...process.env, OPENROUTER_BASE_URL: fake.url } });
+      let err = ""; p.stderr.on("data", (d) => (err += d));
+      assert.equal(await new Promise((ok) => p.on("exit", ok)), 0, err);
+      assert.equal(fixture.writes() - w0, 0); // the POST on mount and Pay's POST, in both replays, never reached the app
+      const saved = JSON.parse(readFileSync(join(out, "report.json"), "utf8")) as Report;
+      assert.ok(saved.blocked.some((b) => b.method === "POST" && b.path === "/api/pay"), JSON.stringify(saved.blocked));
+      // Pay "doing nothing" is the guard's doing: never judged, never a bug.
+      assert.deepEqual(saved.bugs, []); assert.equal(fake.calls("repro-judge").length, 0);
+      assert.ok(saved.notes.some((n) => /Pay does nothing: not testable in read mode/.test(n)), saved.notes.join("\n"));
+    } finally { await fake.close(); }
+  });
+
+  test("repro refuses candidates.json, which has no steps to replay", async () => {
+    const { repro } = await import("../images/agent-base/ui-review/repro.ts");
+    const f = join(tmp(), "candidates.json");
+    writeFileSync(f, JSON.stringify([{ page: "/#/clicks", width: 1512, theme: "light", title: "Archive does nothing", evidence: "x", capture: "shots/a.png" }]));
+    await assert.rejects(repro(fixture.url, f, { out: tmp(), model: "fake/judge", mode: "any" }), /candidates have no steps/);
+    const p = spawnSync("node", [main, "repro", f, "--out", tmp(), "--url", fixture.url], { encoding: "utf8" });
+    assert.equal(p.status, 2);
+  });
 });

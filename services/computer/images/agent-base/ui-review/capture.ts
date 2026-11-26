@@ -10,14 +10,16 @@ import { isAbsolute, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { crc32 } from "node:zlib";
 import type { BrowserContext, Page as PwPage, Route } from "playwright-core";
-import { heightOf, isLocal, launch, ready, workerContext } from "./browser.ts";
+import { heightOf, launch, ready, workerContext } from "./browser.ts";
+import { modeOf, pageOf as pageLabel } from "./guard.ts";
+import { pathOfUrl, readSession, relogin, signedOut } from "./login.ts";
 import { measurePage } from "./measure.ts";
 import { measureMotion } from "./motion.ts";
 import { pageList } from "./pages.ts";
 import { keyOf, openQueue } from "./queue.ts";
 import { CHANGED_PCT, CHANGED_PX, readReport, writeReport } from "./report.ts";
 import { rules } from "./rules.ts";
-import type { Capture, Measures, Page, QueueItem, RuleHit, ShotDiff, State, Theme } from "./types.ts";
+import type { Blocked, Capture, Measures, Page, QueueItem, RuleHit, ShotDiff, State, Theme } from "./types.ts";
 
 export const MAX_STEPS = 6;
 const NOT_MEASURED: Measures = { fonts: [], colours: [], radii: [], shadows: [], spacing: { values: [], offScale: [] }, nearMisses: [], content: { width: 0, viewport: 0 }, ctas: [], contrastFails: 0, signatures: { button: [], card: [], heading: [], input: [] } };
@@ -32,6 +34,7 @@ export type CaptureOptions = {
   motion?: boolean;          // measure motion (one width and theme per page)
   baseline?: string;         // a baseline run's folder: diff each shot against its shot of the same name
   diffPage?: () => Promise<PwPage>;
+  blocked?: () => Blocked[]; // the guard's blocked requests so far: a fetch it refused on this page is no page error of the app's
 };
 
 /** The shot's file name: `<page>-<width>-<mode>.png`, then `-<state>` for a state other than default, `-s<n>` for later steps. */
@@ -83,13 +86,14 @@ export async function pageOf(ctx: BrowserContext): Promise<PwPage> {
     const errs: string[] = [];
     errorsOf.set(page, errs);
     page.on("pageerror", (e) => errs.push(String(e.stack || e.message)));
-    page.on("console", (m) => { if (m.type() === "error") errs.push(`console: ${m.text()}`); });
+    // A load the live-app guard refused is listed under "Blocked requests", not as the app's error.
+    page.on("console", (m) => { if (m.type() === "error" && !m.text().includes("ERR_BLOCKED_BY_CLIENT")) errs.push(`console: ${m.text()}`); });
   }
   return page;
 }
 
 export async function capture(ctx: BrowserContext, base: string, item: QueueItem, o: CaptureOptions): Promise<Capture> {
-  const page = await pageOf(ctx), errs = errorsOf.get(page)!;
+  const page = await pageOf(ctx), errs = errorsOf.get(page)!, blocked0 = o.blocked?.().length ?? 0;
   const width = item.width, height = heightOf(width), url = urlOf(base, item.page, item.theme);
   const where = `${item.page}${item.state === "default" ? "" : ` (${item.state})`}`;
   const notes: RuleHit[] = [];
@@ -137,8 +141,11 @@ export async function capture(ctx: BrowserContext, base: string, item: QueueItem
   }
   if (loading) notes.push({ rule: "loading-visible", blocking: false, text: `${where} ${width}px ${item.theme}: ${loading} loading indicators were showing when it was shot` });
 
-  const hits = await rules(page, { where, width, theme: item.theme, widest: !!o.widest && item.state === "default", first: !!o.first, phone: !!o.phone, errors: errs });
-  const motion = o.motion && item.state === "default" ? await measureMotion(page, { click: isLocal(url) }).catch(() => undefined) : undefined;
+  // The app's own unhandled "Failed to fetch" for a request the guard refused on this page is the guard's doing.
+  const refusedHere = (o.blocked?.() ?? []).slice(blocked0).some((b) => b.page === pageLabel(page.url()));
+  const errors = refusedHere ? errs.filter((e) => !/Failed to fetch/.test(e)) : errs;
+  const hits = await rules(page, { where, width, theme: item.theme, widest: !!o.widest && item.state === "default", first: !!o.first, phone: !!o.phone, errors });
+  const motion = o.motion && item.state === "default" ? await measureMotion(page, { click: new URL(base).origin }).catch(() => undefined) : undefined;
   const c: Capture = { page: item.page, width, theme: item.theme, state: item.state, url, shots, settled, measures, ...(motion ? { motion } : {}), rules: [...notes, ...hits] };
   if (o.baseline && o.diffPage) c.diffs = await diffShots(await o.diffPage(), o.baseline, o.out, shots);
   return c;
@@ -246,9 +253,14 @@ export async function captureCommand(argv: string[]): Promise<number> {
     out: { type: "string", default: "ui-review" }, "pages-file": { type: "string" }, map: { type: "string" }, paths: { type: "string" },
     widths: { type: "string" }, themes: { type: "string" }, states: { type: "string" }, resume: { type: "boolean" }, baseline: { type: "string" },
     commit: { type: "string" }, workers: { type: "string" }, palettes: { type: "string" }, "wait-text": { type: "string" },
+    mode: { type: "string" }, session: { type: "string" },
   } });
   const base = positionals.find((a) => /^https?:\/\//.test(a));
-  if (!base) { console.error("usage: ui-review capture <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4] [--palettes a,b] [--wait-text t]"); return 2; }
+  if (!base) { console.error("usage: ui-review capture <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4] [--palettes a,b] [--wait-text t] [--mode read|test-write|any] [--session state.json]"); return 2; }
+  const mode = modeOf(v.mode, base);
+  if (!mode) { console.error("ui-review capture: --mode is read, test-write or any"); return 2; }
+  let session: ReturnType<typeof readSession> | null = null;
+  try { session = v.session ? readSession(v.session) : null; } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
   const out = v.out!;
   mkdirSync(out, { recursive: true });
   const runFile = join(out, "run.json");
@@ -262,7 +274,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
   let pages = prior?.pages;
   if (!pages) {
     try {
-      pages = v.paths ? v.paths.split(",").map((path): Page => ({ path, source: "feature-map" })) : await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true });
+      pages = v.paths ? v.paths.split(",").map((path): Page => ({ path, source: "feature-map" })) : await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true, session: session?.state, mode });
     } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
     const palettes = list(v.palettes, [] as string[], String);
     // "/" is the URL given (a /catalog.html run keeps to the catalog), so its palette pages are that page's.
@@ -273,27 +285,43 @@ export async function captureCommand(argv: string[]): Promise<number> {
   const q = openQueue(join(out, "queue.json"), pages, { widths, themes, states, max: PAGE_MAX, resume: !!v.resume });
   const slug = slugs(pages);
   const widest = Math.max(...widths), narrowest = Math.min(...widths), motionWidth = widths.includes(1512) ? 1512 : widest;
-  const b = await launch({ out, politeness: { origin: new URL(base).origin, rps: 4 }, target: base });
+  const b = await launch({ out, politeness: { origin: new URL(base).origin, rps: 4 }, mode, session: session?.state });
   const t0 = Date.now();
+  // The session check: a capture that lands on the sign-in page again is redone after one re-login (shared by the workers: the
+  // first to notice signs in again, the others take the new session); a capture still signed out after it ends the session.
+  let generation = 0, relogins = 0, relogging: Promise<boolean> | undefined, ended = false;
+  const reloginOnce = (seen: number) => {
+    if (seen < generation) return Promise.resolve(true);
+    return (relogging ??= relogin(v.session!).then((state) => { b.guard.seed(state); relogins++; generation++; return true; }, () => false).finally(() => { relogging = undefined; }));
+  };
   try {
     await Promise.all(Array.from({ length: Math.max(1, Number(v.workers ?? 4)) }, async () => {
-      let ctx = await workerContext(b.browser, frozenAt);
+      let ctx = await workerContext(b.browser, frozenAt), gen = generation;
       let dp: PwPage | undefined;
       const diffPage = async () => (dp ??= await ctx.newPage());
+      const fresh = async () => { await ctx.close().catch(() => {}); ctx = await workerContext(b.browser, frozenAt); gen = generation; dp = undefined; };
       for (let item = q.next(); item; item = q.next()) {
         const it = item;
+        if (ended) { q.failed(it, "session ended", true); continue; }
         let timer: NodeJS.Timeout | undefined;
         try {
-          const c = await Promise.race([
-            capture(ctx, base, it, { out, frozenAt, ...at, slug: slug.get(it.page) ?? "page", waitText: v["wait-text"], widest: it.width === widest, first: it.theme === themes[0], phone: it.width === narrowest && it.width < 600, motion: it.width === motionWidth && it.theme === themes[0], baseline, diffPage }),
+          const once = () => Promise.race([
+            capture(ctx, base, it, { out, frozenAt, ...at, slug: slug.get(it.page) ?? "page", waitText: v["wait-text"], widest: it.width === widest, first: it.theme === themes[0], phone: it.width === narrowest && it.width < 600, motion: it.width === motionWidth && it.theme === themes[0], baseline, diffPage, blocked: b.blocked }),
             new Promise<never>((_, no) => { timer = setTimeout(() => no(new Error(`timed out after ${CAPTURE_TIMEOUT / 1000} s`)), CAPTURE_TIMEOUT); }),
           ]);
+          let c = await once();
+          if (session && pathOfUrl(urlOf(base, it.page, it.theme)) !== session.meta.loginPath && (await signedOut(await pageOf(ctx), session.meta))) {
+            clearTimeout(timer);
+            if (!(await reloginOnce(gen))) { ended = true; q.failed(it, "session ended", true); continue; }
+            await fresh();
+            c = await once();
+            if (await signedOut(await pageOf(ctx), session.meta)) { ended = true; q.failed(it, "session ended", true); continue; }
+          }
           q.done(it, c);
         } catch (e) {
           q.failed(it, String((e as Error).message).split("\n")[0].slice(0, 200));
           // A crashed or stuck page: this worker starts over with a fresh context; the run goes on.
-          await ctx.close().catch(() => {});
-          ctx = await workerContext(b.browser, frozenAt); dp = undefined;
+          await fresh();
         } finally { clearTimeout(timer); }
       }
       await ctx.close().catch(() => {});
@@ -316,7 +344,8 @@ export async function captureCommand(argv: string[]): Promise<number> {
   });
   for (const i of q.items) if (i.status === "failed") notes.push(`${i.page} ${i.width}px ${i.theme}${i.state === "default" ? "" : ` (${i.state})`}: not captured: ${i.why}`);
   const counts = q.counts();
-  const r = writeReport(out, { version: 2, target: base, ...(at.commit ? { commit: at.commit } : {}), frozenAt, model: "", coverage: counts, captures: caps, improvements: [], motion: [], bugs: [], notes, cost_usd: 0 });
+  if (relogins) notes.push(`the session ended during the run: re-signed in ${relogins} time${relogins > 1 ? "s" : ""} (${session!.meta.rung}) and redid those pages`);
+  const r = writeReport(out, { version: 2, target: base, ...(at.commit ? { commit: at.commit } : {}), frozenAt, model: "", coverage: counts, captures: caps, improvements: [], motion: [], bugs: [], notes, cost_usd: 0, blocked: b.blocked(), ...(session ? { session: { rung: session.meta.rung, relogins } } : {}) });
   console.log(`${join(out, "report.md")}: ${counts.done}/${counts.total} captures in ${secs} s, ${r.blocking!.length} blocking, ${r.preexisting!.length} already on this base, ${caps.reduce((n, c) => n + c.shots.length, 0)} screenshots${counts.failed ? `, ${counts.failed} failed` : ""}${counts.deferred ? `, ${counts.deferred} deferred` : ""}`);
   if (!counts.done) { console.error("ui-review: nothing was captured (is the app up?)"); return 2; }
   return r.blocking!.length ? 1 : 0;

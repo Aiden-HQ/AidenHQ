@@ -33,11 +33,21 @@ export type Improvement = {
   fix?: { status: "shown" | "rejected" | "failed"; diff?: string; before?: string; after?: string; wins?: [number, number]; why?: string; collateral?: string[] };
 };
 export type MotionRow = { where: string; before: string; after: string; why: string; css: string };
-export type Bug = { page: string; width: number; theme: Theme; title: string; evidence: string; captures: string[]; verified: boolean; repro?: string[] };
+export type Bug = {
+  page: string; width: number; theme: Theme; title: string; evidence: string; captures: string[]; verified: boolean; repro?: string[];
+  kind?: "friction" | "bug"; selector?: string; // a bug `repro` verified: what the agent filed it as, and its last step's target (the issue marker's inputs)
+};
+/** One step of a clicking-pass finding; selectors are Playwright locators (`role=button[name="Save"]`, `text=...`, CSS). */
+export type Step = { open: string } | { click: string } | { fill: [string, string] } | { press: string } | { wait: string };
+/** A clicking-pass finding, as the agent writes it to clicks.json. */
+export type Click = { kind: "friction" | "bug"; page: string; width: number; title: string; steps?: Step[]; saw: string; expected: string };
 export type Report = {
   version: 2; target: string; commit?: string; frozenAt: string; model: string;
   coverage: { done: number; total: number; failed: number; deferred: number };
   captures: Capture[]; improvements: Improvement[]; motion: MotionRow[]; bugs: Bug[]; notes: string[]; cost_usd: number;
   blocking?: string[]; preexisting?: string[]; // the rule checks' blocking findings: this run's own, and those its baseline also had
   candidates?: string[]; // the route check's generic heuristics (a control that changed nothing, a link that shows the same page): to look at, never blocking
+  blocked: Blocked[]; // requests the live-app guard refused (guard.ts); a socket's method is "WS"
+  session?: { rung: "supplied" | "form" | "signup" | "aidenhq" | "patch"; relogins: number }; // a signed-in run: how it signed in, how often again
 };
+export type Blocked = { method: string; origin: string; path: string; page: string };

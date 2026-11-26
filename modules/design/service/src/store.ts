@@ -1,5 +1,6 @@
 // The design service's store: runs in SQLite (DESIGN_DB), each run's evidence (the report's cited captures, fixes and notes)
-// as files under <data>/evidence/<run>/. One store for every kind of run (review now; scan and pass in later phases).
+// as files under <data>/evidence/<run>/. One store for every kind of run: a review an agent starts, and a pass (passes.ts) the
+// service files for an app.
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,12 +13,19 @@ const NAME = /^[\w-][\w.-]{0,119}\.(png|jpg|webp|json|md|diff)$/;
 const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", json: "application/json", md: "text/markdown", diff: "text/x-diff" };
 const KINDS = new Set(["review", "scan", "pass"]);
 
-type Row = { id: string; target: string; kind: string; app: string | null; task: string | null; agent: string; model: string; status: string; started: string; ended: string | null; cost_usd: number | null; report: string | null };
+type Row = { id: string; target: string; kind: string; app: string | null; task: string | null; agent: string; model: string; status: string; started: string; ended: string | null; cost_usd: number | null; report: string | null; depth: string | null; mode: string | null; source: string | null };
+/** A pass's run as passes.ts and jobtools.ts read it. */
+export type PassRow = Omit<Row, "report">;
 
 export interface Store {
   start(a: { target: string; kind: string; model: string; app?: string; task?: string; agent: string }): { run: string };
   put(run: string, agent: string, files: { name: string; data: string }[]): { stored: number };
   finish(run: string, agent: string, report: Record<string, unknown>): { url: string };
+  /** A pass's run, filed by the service itself (passes.ts): `agent` and `task` are set once its task is filed (bindPass), which ends the app's earlier running passes. */
+  startPass(a: { app: string; target: string; model: string; depth: string; mode: string }): { run: string };
+  bindPass(run: string, task: string, agent: string, source: string): void;
+  endPass(run: string, status: "failed"): void;
+  pass(run: string): PassRow | undefined;
   runs(q: { app?: string; limit?: number }): { runs: Omit<Row, "report">[] };
   run(run: string): { run: Omit<Row, "report">; report: unknown; files: string[] };
   image(run: string, name: string): { data: string; type: string };
@@ -30,6 +38,9 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
   db.exec(`CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY, target TEXT NOT NULL, kind TEXT NOT NULL, app TEXT, task TEXT, agent TEXT NOT NULL, model TEXT NOT NULL,
     status TEXT NOT NULL, started TEXT NOT NULL, ended TEXT, cost_usd REAL, report TEXT)`);
+  // data_version 1: a pass's depth (scan | signed-in | tester), live-app mode and task source.
+  const cols = new Set((db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name));
+  for (const c of ["depth", "mode", "source"]) if (!cols.has(c)) db.exec(`ALTER TABLE runs ADD COLUMN ${c} TEXT`);
   const evidence = (run: string) => join(dir, "evidence", run);
   const get = (run: string): Row => {
     if (!/^[\w-]{1,40}$/.test(run)) throw new Error(`no run ${run}`);
@@ -43,15 +54,35 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
     return r;
   };
   const head = ({ report: _r, ...r }: Row) => r;
+  const newId = () => `r-${now().toString(36)}-${randomBytes(4).toString("hex")}`;
 
   return {
     start({ target, kind, model, app, task, agent }) {
       if (!target || !model) throw new Error("target and model are required");
       if (!KINDS.has(kind)) throw new Error(`kind is one of ${[...KINDS].join(", ")}`);
-      const id = `r-${now().toString(36)}-${randomBytes(4).toString("hex")}`;
+      const id = newId();
       db.prepare("INSERT INTO runs (id, target, kind, app, task, agent, model, status, started) VALUES (?,?,?,?,?,?,?,?,?)")
         .run(id, target, kind, app ?? null, task ?? null, agent, model, "running", new Date(now()).toISOString());
       return { run: id };
+    },
+    startPass({ app, target, model, depth, mode }) {
+      const id = newId(), at = new Date(now()).toISOString();
+      db.prepare("INSERT INTO runs (id, target, kind, app, agent, model, status, started, depth, mode) VALUES (?,?,?,?,?,?,?,?,?,?)")
+        .run(id, target, "pass", app, "", model, "running", at, depth, mode);
+      return { run: id };
+    },
+    // Once its task is filed: the app's earlier filed passes end here, never before (a refused filing leaves them running, and
+    // a filing still in flight is not ended by another).
+    bindPass(run, task, agent, source) {
+      const r = get(run);
+      db.prepare("UPDATE runs SET status = 'superseded', ended = ? WHERE kind = 'pass' AND app = ? AND status = 'running' AND source IS NOT NULL AND id != ?").run(new Date(now()).toISOString(), r.app, run);
+      db.prepare("UPDATE runs SET task = ?, agent = ?, source = ? WHERE id = ? AND kind = 'pass'").run(task, agent, source, run);
+    },
+    endPass(run, status) { db.prepare("UPDATE runs SET status = ?, ended = ? WHERE id = ? AND kind = 'pass' AND status = 'running'").run(status, new Date(now()).toISOString(), run); },
+    pass(run) {
+      if (!/^[\w-]{1,40}$/.test(run)) return undefined;
+      const r = db.prepare("SELECT * FROM runs WHERE id = ? AND kind = 'pass'").get(run) as Row | undefined;
+      return r && head(r);
     },
     put(run, agent, files) {
       if (own(run, agent).status !== "running") throw new Error(`run ${run} is finished`);
