@@ -120,6 +120,11 @@ describe("notify", () => {
     // A bare label prefix is no more readable than punctuation; "A" or "1" on its own is text and stays legal.
     for (const option of ["A)", "A.", "1)", "1.", "--", "..."])
       expect(await notify(d, ask([{ question: "Which layout?", options: ["Wide", option] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 2 has no visible text[^]*Nothing was sent\./ });
+    // A label in brackets is still only a label; "A" and "1" alone stay legal.
+    for (const option of ["(A)", "(1)", "(b)"])
+      expect(await notify(d, ask([{ question: "Which layout?", options: [option, "Wide"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 1 has no visible text[^]*Nothing was sent\./ });
+    // The chat renders markdown: a marker hidden in markup would show twice to the owner.
+    expect(await notify(d, ask([{ question: "Which layout?", options: ["Wait", "Publish (**recommended**)"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 2 writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./ });
     // The tool marks the first option itself, so a caller writing the marker shows two recommendations.
     expect(await notify(d, ask([{ question: "Which layout?", options: ["Wide (recommended)", "Narrow"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 1 writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./ });
     expect(await notify(d, ask([{ question: "Which layout? (recommended)", options: ["Wide", "Narrow"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's text writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./ });
@@ -127,7 +132,9 @@ describe("notify", () => {
     // A form the owner can read still sends, "A" and "1" included.
     expect(await notify(d, ask([{ question: "Ship?", options: ["Wait", "Publish"] }], "Context."), agent("a1"))).toEqual({ sent: true, onChat: true });
     expect(await notify(d, ask([{ question: "Ship?", options: ["A", "1"] }], "Labels as options."), agent("a1"))).toEqual({ sent: true, onChat: true });
-    expect([sent.length, posted.length]).toEqual([2, 2]);
+    // Markdown that renders to plain readable words is fine.
+    expect(await notify(d, ask([{ question: "Which layout?", options: ["**Wait**", "_Publish_"] }]), agent("a1"))).toEqual({ sent: true, onChat: true });
+    expect([sent.length, posted.length]).toEqual([3, 3]);
   });
 
   it("notify's input is strict", async () => {

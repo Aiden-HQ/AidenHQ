@@ -91,10 +91,12 @@ export function spellOut(questions: Question[] = []): string {
   return `\n\n${blocks.join("\n\n")}\n\nReply like "1A, 2B", or in your own words.`;
 }
 
+/** The text as the owner's chat renders it: markdown emphasis and escapes go, so a marker or label is judged as read. */
+const plain = (s: string) => s.replace(/[*_~`\\]/g, "");
 /** The tool's own marker, appended to the first option: a caller writing it itself would show two recommendations. */
 const MARKER = /\(\s*recommended\s*\)/i;
-/** A label with no text after it ("A)", "A.", "1)", "1."): nothing the owner can read. */
-const LABEL_ONLY = /^(?:[A-Za-z]|\d+)\s*[).]$/;
+/** A label with no text after it ("A)", "A.", "1)", "1.", "(A)", "(1)"): nothing the owner can read. */
+const LABEL_ONLY = /^(?:[A-Za-z]|\d+)\s*[).]$|^\((?:[A-Za-z]|\d+)\)$/;
 
 /**
  * The first question or option the owner couldn't read, named so the caller fixes the wording: an option of only punctuation
@@ -103,10 +105,10 @@ const LABEL_ONLY = /^(?:[A-Za-z]|\d+)\s*[).]$/;
  */
 function formProblem(questions: Question[] = []): string | undefined {
   for (const [n, q] of questions.entries()) {
-    if (MARKER.test(q.question)) return `Question ${n + 1}'s text writes the tool's own "(recommended)" marker: the tool marks the first option itself. Nothing was sent.`;
+    if (MARKER.test(plain(q.question))) return `Question ${n + 1}'s text writes the tool's own "(recommended)" marker: the tool marks the first option itself. Nothing was sent.`;
     for (const [i, o] of q.options.entries()) {
-      if (MARKER.test(o)) return `Question ${n + 1}'s option ${i + 1} writes the tool's own "(recommended)" marker: the tool marks the first option itself. Nothing was sent.`;
-      const t = o.trim();
+      const t = plain(o).trim();
+      if (MARKER.test(t)) return `Question ${n + 1}'s option ${i + 1} writes the tool's own "(recommended)" marker: the tool marks the first option itself. Nothing was sent.`;
       if (!/[\p{L}\p{N}]/u.test(t) || LABEL_ONLY.test(t)) return `Question ${n + 1}'s option ${i + 1} has no visible text (send an option the owner can read, not a label or punctuation). Nothing was sent.`;
     }
   }
