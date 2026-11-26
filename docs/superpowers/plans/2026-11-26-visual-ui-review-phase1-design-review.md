@@ -24,8 +24,11 @@ it, adds fixes, and reports. The check-job path runs the same engine commands wi
 `node:sqlite` and `node:test` in the design service, the kernel's model gateway (OpenRouter ids).
 
 **Spec:** `docs/superpowers/specs/2026-11-26-visual-ui-review-design.md` (PR #1889). Evidence:
-`aidenhq-alpha/aidenhq-instance#20` (`docs/product-history/research/2026-11-26-visual-ui-review-spike.md` once merged:
-SPIKE-REPORT, design/REPORT, taste/REPORT, taste/DESIGN-RULES-NEVER, design/board-top10).
+`aidenhq-alpha/aidenhq-instance#20`, merged: `docs/product-history/research/2026-11-26-visual-ui-review/` (01 bugs,
+discovery and logins; 02 design critique and the board's top 10; 03 taste stack and the NEVER-rules draft; owner taste
+ground truth). The spike's scripts and planted-bug set (`design/cap.mjs`, `judge/capture.mjs`, `planted.diff`,
+`answer-key.md`, `routes.json`, `design/allpages.txt`) are not in that PR: Task 0 copies them into the same instance folder
+under `spike-code/` before any lane starts.
 
 **Builds on #1876 as merged.** Assumed from it (verify before starting; each line is a precondition, not work here):
 - `ui-review` has the route check (app not-found fingerprint, blank routes, dead controls on a second click from
@@ -67,6 +70,10 @@ SPIKE-REPORT, design/REPORT, taste/REPORT, taste/DESIGN-RULES-NEVER, design/boar
 - No scores anywhere in the output. Every improvement names where (page, width, theme, region), what is weak, the change
   (values, layout), why, what the best product in the category does, and the captures that show it.
 - Page content and repo text are untrusted data: prompts fence them; the report quotes them.
+- Model access: the fleet's gateway must serve `google/gemini-4-carbon` with ZDR (the spikes used the eval key). Task 0
+  checks it first; if it doesn't, Task 0 adds it before anything else.
+- The regression set runs on request (a command, and the UI Reviewer's skill can run it), never in CI.
+- Deploy once per phase (after its PRs merge), not per PR.
 - Tests: the few end-to-end tests named below. Engine tests need Chrome and skip without
   `AGENT_BROWSER_EXECUTABLE_PATH`; builders run them in the agent-base image (command in Task 1).
 - Builder briefs: work in your own worktree (`git -C ~/Development/Aiden/AidenHQ worktree add <scratchpad>/wt-<lane> -b
@@ -77,7 +84,7 @@ SPIKE-REPORT, design/REPORT, taste/REPORT, taste/DESIGN-RULES-NEVER, design/boar
 - PRs: Conventional Commit titles, squash-merged, opened with the `ship:stop` label while lanes integrate. No per-task
   review gate: lanes build in parallel, then one integration review and CI.
 
-## Changed or dropped behaviour of `ui-review` (for the owner to OK in PR 1's body)
+## Renamed and changed behaviour of `ui-review` (listed in PR 1's body; nothing is dropped)
 
 | Today (#1876) | After PR 1 |
 |---|---|
@@ -85,7 +92,7 @@ SPIKE-REPORT, design/REPORT, taste/REPORT, taste/DESIGN-RULES-NEVER, design/boar
 | `--modes light,dark`; widths 390,768,1280 | `--themes light,dark`; widths 390,768,1024,1512,1920,2560 |
 | `--full` (whole page or scroll steps) | always scroll steps through the main scroller (at most 6) |
 | `--no-routes` | gone: routes are their own subcommand |
-| headless web vitals (LCP, CLS) as notes | dropped (a headless run's timings say little); layout shift is measured during interactions instead (`Motion.shifts`) |
+| headless web vitals (LCP, CLS) as notes | kept as non-blocking notes, per capture at the widths it runs; layout shift during interactions is added (`Motion.shifts`) |
 | "One system" and "Copy" notes | kept, inside `Measures` (`signatures`) and as notes (the copy word lists move to `copy.json`) |
 | `--paths`, `--palettes`, `--wait-text`, `--commit`, `--baseline`, "Look at these first", "Already on this base", exit 1 on blocking findings, `<page>-<width>-<mode>.png` names and the `aidenhq` PNG stamp | kept unchanged (the grader reads the stamp: `modules/grading/service/src/grader/images.ts`) |
 | feature-map.json in the working folder | kept; `--map <file>` points at another file of the same shape (the router read's output) |
@@ -130,7 +137,8 @@ services/computer/images/agent-base/ui-review/        the engine package (replac
   prompts/{design,consolidate,motion,bugs,pairwise,router-read}.md
   rules/taste-never.md                                universal NEVER/INSTEAD rules (product)
   refs/{review-animations.md,krehel-polish.md,LICENSES}  MIT reference text for the motion pass, pinned
-  refs/default.json                                   default category references: the app starter's catalog blocks
+  refs/references.json                                reference URLs per page kind with their measured tokens (no screenshots)
+  refs/fallback.json                                  the app starter's catalog, used only when a kind's URLs all fail
   copy.json                                           the copy check's word lists (was ui-review-copy.json)
 services/computer/test/ui-review.e2e.test.ts          engine end-to-end tests (Chrome; skip without it)
 services/computer/test/fixtures/ui-app/               the 60-route fixture SPA (generated routes, planted defects)
@@ -144,6 +152,7 @@ modules/code-review/recipe/ui.ts                      the ui.scan check job
 
 | Lane | Tasks | Parallel with | PR |
 |---|---|---|---|
+| 0 Access and spike code | 0 (model access check, spike scripts into the instance) | first, alone (an hour) | |
 | 0 Contract | 1 (types, fixture, image wiring) | first, alone (half a day) | 1 |
 | A Capture | 2 | B, C, D, E | 1 `feat(computer): ui-review engine on Playwright: fast capture, coverage queue, design and motion measurements` |
 | B Measurements | 3 | A, C, D, E | 1 |
@@ -152,10 +161,26 @@ modules/code-review/recipe/ui.ts                      the ui.scan check job
 | E Code-review lens | 8 | A-D | 3 `feat(code-review): ui lens, ui.scan as a whole-repo check job reporting to Primer` |
 | F Evaluation set | 9 | after C's prompts exist | 2 |
 
-PR 1 updates every caller of the CLI in the same PR (Task 1 Step 6). PR 1 merges first (images rebuild on apply); PR 2 and PR 3 merge after it, in either order. Integration: one Codex review
+PR 1 updates every caller of the CLI in the same PR (Task 1 Step 6). **PR 1 merges first and alone, only after the engine
+acceptance gate (Task 2b)**, because its tests skip in CI. PR 2 and PR 3 (and phases 2 and 3) may build in parallel but
+merge only after that gate, in either order. Integration: one Codex review
 of each PR plus CI, then the manual acceptance run (Task 10).
 
 ---
+
+### Task 0: Model access and the spike's code (lane 0, before everything)
+
+- [ ] **Step 1: Check the fleet's gateway serves Carbon with ZDR.** From an agent box (a TEST task) or the host with a job
+  token: `curl -s "$AIDENHQ_GATEWAY_URL/api/v1/models?ids=google/gemini-4-carbon"` lists it, and one call
+  (`POST $AIDENHQ_GATEWAY_URL/api/v1/chat/completions` with one small image, `reasoning: {effort: "low"}`) answers 200.
+  Check the OpenRouter key's ZDR routing covers the model (the account's ZDR setting, and the provider OpenRouter picks
+  for it is on its ZDR list). Expected: both pass. If either fails, this task adds it first, in the product
+  (the gateway's model admission or provider routing, wherever the refusal comes from) or as the owner's one OpenRouter
+  setting, and nothing else starts until the call passes.
+- [ ] **Step 2:** Copy the spike's `design/cap.mjs`, `judge/capture.mjs`, `planted.diff`, `answer-key.md`, `routes.json` and
+  `design/allpages.txt` from `/private/tmp/claude-501/-Users-mgupta-Development-Aiden/63342b03-a416-4700-bdb6-9ba5751e59ce/scratchpad/uispike` into the instance repo's
+  `docs/product-history/research/2026-11-26-visual-ui-review/spike-code/` (one instance PR). The answer key is for scoring
+  the acceptance gate only, never shown to a model.
 
 ### Task 1: The report contract, the fixture app and the image wiring (lane 0)
 
@@ -228,6 +253,10 @@ export type Report = { version: 2; target: string; commit?: string; frozenAt: st
 
 ### Task 2: Capture, coverage queue, page list (lane A)
 
+Start from the spike's capture code (`spike-code/cap.mjs`: Playwright on Chrome, five widths, concurrency, pacing, the
+in-page stats; `spike-code/capture.mjs`: the board captures with the mock API) rather than from a blank file, and from
+#1876's script for readiness, the frozen clock, inner scroll and the route check.
+
 **Files:** `browser.ts`, `queue.ts`, `pages.ts`, `capture.ts`, `routes.ts`, `rules.ts`, `report.ts` (capture part);
 test `services/computer/test/ui-review.e2e.test.ts`.
 
@@ -244,6 +273,7 @@ test `services/computer/test/ui-review.e2e.test.ts`.
     with `next(): QueueItem | undefined`, `done(i, c: Capture)`, `failed(i, why)`, `counts()`; persisted to `queue.json`
     after each item; `--resume` reopens it.
   - `capture(ctx: BrowserContext, base: string, item: QueueItem, o: { out: string; frozenAt: string; commit?: string }): Promise<Capture>`.
+  - Web vitals: LCP and CLS per capture as non-blocking notes, as today.
   - CLI: `ui-review capture <url> --out <dir> [--pages-file f] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4]`
     and `ui-review routes <url> --out <dir>` (the route check, now its own subcommand so a capture never waits on it; it
     exits 2 "route checks click: a local build only" for a non-local target until phase 2's guard).
@@ -296,9 +326,29 @@ test("the queue takes 120 pages and defers the rest", async () => {
 - [ ] **Step 4:** Run. Expected: 3 pass; the timing test prints its wall time (record it in the PR body).
 - [ ] **Step 5:** Commit `feat(computer): ui-review capture on Playwright with a resumable coverage queue`.
 
+### Task 2b: Engine acceptance gate (lanes A and B, before PR 1 merges)
+
+The engine's tests skip in CI (no Chrome), so PR 1 merges only on this measured run, recorded in its body (wall times,
+counts, the scored table). Run it in the agent-base image built from the PR's head (Lima's Docker on the owner's Mac
+works, or the image built locally), at 2 CPUs and 6 GB.
+
+- [ ] **Step 1: Board matrix under 10 minutes.** The board built from `origin/main` with its mock API (the spike's setup:
+  `spike-code/capture.mjs`), every page in `spike-code/allpages.txt` (the router's pages), 6 widths × 2 themes.
+  Expected: `ui-review capture` finishes in under 600 s with `coverage.done == total`.
+- [ ] **Step 2: No loading states in the shots.** Every capture is `settled` or carries the `not settled` note; a scan of
+  the PNGs' pages for skeleton or spinner nodes at capture time (`[aria-busy=true]`, `[class*=skeleton]`, `[role=progressbar]`,
+  recorded per capture) finds none.
+- [ ] **Step 3: Planted bugs.** Apply `spike-code/planted.diff` to a second board checkout; capture it with `--baseline`
+  the clean run, then `ui-review routes` on it. Score with `spike-code/answer-key.md` (scoring only): a planted bug counts
+  when its page, width and theme are listed under "Look at these first" (B6 and B7, behaviour, when `routes` reports
+  them). Expected: at least 8 of 10.
+- [ ] **Step 4: Callers.** Every caller updated in Task 1 Step 6 runs: the starter's `test/app.test.mjs`, the build-app
+  skill's and fleet-review skill's commands as written, the grader's stamp read
+  (`modules/grading/test/app-captures.test.ts`). Expected: all pass.
+
 ### Task 3: Design and motion measurements, references (lane B)
 
-**Files:** `measure.ts`, `motion.ts`, `refs/default.json`, `refs/review-animations.md`, `refs/krehel-polish.md`,
+**Files:** `measure.ts`, `motion.ts`, `refs/references.json`, `refs/fallback.json`, `refs/review-animations.md`, `refs/krehel-polish.md`,
 `refs/LICENSES` (MIT texts, pinned upstream commits named in the file header), `main.ts` (`refs` subcommand); fixture
 `/planted` route; test in `ui-review.e2e.test.ts`.
 
@@ -306,9 +356,16 @@ test("the queue takes 120 pages and defers the rest", async () => {
 - Produces: `measurePage(page: PwPage): Promise<Measures>`, `crossPage(caps: Capture[]): { component: string; variants: { signature: string; pages: string[] }[] }[]`,
   `measureMotion(page: PwPage): Promise<Motion>` and `ui-review refs <refs.json> --out <dir>`: captures each reference
   (1512 and 390, light) under the politeness cap and writes `refs.json` with `{ kind: PageKind; url; shots; tokens: { typeScale: number[]; rowHeight: number; radius: string; maxWidth: number } }[]`.
-- `refs/default.json`: one entry per `PageKind` pointing at the app starter's catalog specimens
-  (`/opt/aidenhq/app-starter`, served by the engine on a local port): kpi/stat strip (dashboard), data table (list),
-  detail list (detail), form, settings, timeline. No third-party screenshots ship in the product.
+- `refs/references.json`: per `PageKind`, two or three public pages of well-known polished products, each
+  `{ kind, url, product, tokens }` with the tokens measured when the list is written (by `ui-review refs --measure`), so a
+  review has the numbers even when a page fails. Candidates to verify (each must load without sign-in and show that kind
+  of screen): dashboard `ui.shadcn.com/examples/dashboard`, `stripe.com/payments`; list `ui.shadcn.com/examples/tasks`,
+  `linear.app/changelog`; detail `ui.shadcn.com/examples/mail`; form and settings `ui.shadcn.com/examples/forms`,
+  `vercel.com/docs`; timeline `linear.app/changelog`, `vercel.com/changelog`; marketing `stripe.com`, `linear.app`. The
+  product ships URLs and numbers only: references are captured at run time under the politeness caps, never stored in
+  the repo.
+- `refs/fallback.json`: the app starter's catalog specimens per `PageKind` (served by the engine on a local port), used
+  only for a kind whose every reference URL fails to load; the run's notes say so.
 
 Decisions:
 - Spacing: margins, paddings and gaps of visible boxes; `offScale` = values not divisible by 4 (2 allowed under 8px).
@@ -328,9 +385,10 @@ test("measurements find the planted defects", async () => {
   assert.ok(c.motion!.transitions.some((t) => t.duration >= 600));        // the planted slow transition
   assert.ok(!c.motion!.animations.some((a) => a.playState === "finished"));
 });
-test("refs skip a refusing site and keep to 4 requests/s", async () => {
-  const r = await refs([{ kind: "list", url: thirdParty("/ok") }, { kind: "list", url: thirdParty("/429") }]);
-  assert.equal(r.refs.length, 1); assert.match(r.notes.join("\n"), /429/);
+test("refs skip a refusing site, fall back to the starter for a dead kind, and keep to 4 requests/s", async () => {
+  const r = await refs([{ kind: "list", url: thirdParty("/ok") }, { kind: "list", url: thirdParty("/429") }, { kind: "form", url: thirdParty("/403") }]);
+  assert.equal(r.refs.filter((x) => x.kind === "list").length, 1); assert.match(r.notes.join("\n"), /429/);
+  assert.equal(r.refs.find((x) => x.kind === "form")!.source, "fallback");
   assert.ok(thirdPartyServer.maxPerSecond() <= 4);
 });
 ```
@@ -481,11 +539,11 @@ test("a run's evidence round-trips and expires", async () => {
 Skill sections (positive, how-to only): Run the app (repo: its AGENTS.md/README, seed or demo data, never a real
 database; no repo: the URL); Page list (feature map, else read the router with `prompts/router-read.md` into
 `pages.json`); Capture (`ui-review capture … --workers 4`, then `ui-review routes`); References (`ui-review refs` over
-`refs/default.json` plus the owner-taste references); Review (`ui-review review --taste <owner-taste written to a file>
+`refs/references.json` plus the owner-taste references); Review (`ui-review review --taste <owner-taste written to a file>
 --model <the ask's model or the default>`); Show the fix (Task 5's loop, top 3); Report (one comment on the task: the
 ranked improvements with their before|after images attached via `task_file_upload`; one PR comment for a PR ask;
 evidence via `design_*`); Learning taste (every design correction the owner makes is distilled into `owner-taste` with
-`self_change`: the rule, its reason, `(inferred)` when the reason is a guess).
+`self_change`: the rule, its reason, `(inferred)` when the reason is a guess); Regression set (on request: `node /opt/aidenhq/design-eval/run.ts <suite>`, the eval folder copied into the image beside the engine, results posted on the asking task).
 
 - [ ] **Step 1:** In the skill, how `claude -p` and `codex exec` reach the gateway from a job box: the same base URL and
   run token the box's own harness uses (the launcher's `/api/v1/messages` route for Claude Code, `/api/v1/responses` for
@@ -527,7 +585,7 @@ Catalog entry:
    for the port (180 s cap).
 2. `ui-review capture http://127.0.0.1:8080 --map .aidenhq-ui/pages.json --out /aidenhq-out/ui`, then
    `ui-review routes http://127.0.0.1:8080 --out /aidenhq-out/ui-routes` (exit 1 means blocking findings, not a failure:
-   the recipe reads its `report.json` either way; exit 2 is a failed check), then `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/default.json` (an unattended
+   the recipe reads its `report.json` either way; exit 2 is a failed check), then `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/references.json` (an unattended
    scan carries no owner taste; agent runs do).
 3. Result: a `Review` (`version: 1`, `target: "tree"`, `engine: "ui-review"`, the spec's model, effort `low`) that the
    tree validator accepts:
@@ -561,32 +619,32 @@ test("ui.scan runs as its own whole-repo check and reports a UI section", async 
 
 **Files:** `modules/design/eval/{run.ts,README.md}`, `modules/design/eval/degrade.ts`, `modules/design/eval/fixes/<case>/{patch.css,expect.json}`
 (6 good + 6 bad fix cases on the app starter's catalog pages), `modules/design/eval/rated.example.json`;
-`.github/workflows/ci.yml` (job `ui-review-eval`, part of `ci-required`, built like the `reviewer-eval` job: only on a
-same-repo PR or a push to main touching `services/computer/images/agent-base/ui-review/{prompts,rules,review.ts,pairwise.ts,model.ts}`
-or `modules/design/eval/`; the harness (`run.ts`, `degrade.ts`) and the existing cases come from the PR's base, the
-engine and prompts under test from the head; the key is the separate, capped eval key (`openrouter_eval_key`), never the
-fleet's; a fork's PR gets no key; a pass is reused for the same content of those files. Bootstrap: when the base has no
-`modules/design/eval/run.ts` (only the PR that adds it), the job runs the head's harness and cases once; every later PR
-runs the base's)
+no CI job: the set runs on request, by the command below or by the UI Reviewer (its skill's "Regression set" section),
+whenever the prompt, a default model or the engine changes, with the capped eval key (`openrouter_eval_key`) by hand or
+the fleet's gateway from an agent box
 - Instance repo: `design/eval/rated.json` (the owner's order: Stripe ≈ shadcn > Linear > Monday ≈ Cal > Airtable ≈ Notion
   ≈ Raycast > Duolingo; the board poor; Roadmap Keeper weaker) and `design/eval/corrections/` (one case per owner correction).
 
-**Interfaces:** `node modules/design/eval/run.ts degraded|fixes|calibrate|corrections [--model m] [--rated file] [--cases dir]`
+**Interfaces:** `node modules/design/eval/run.ts degraded|fixes|references|calibrate|corrections [--model m] [--rated file] [--cases dir]`
 prints one JSON line per suite and exits 1 below its bar.
 
 Suites and bars (initial, from the spike; change only with the owner):
-- `degraded` (CI): 4 starter pages x 4 subtle degradations generated by `degrade.ts` (2-4px spacing jitter, one extra font
+- `degraded`: 4 starter pages x 4 subtle degradations generated by `degrade.ts` (2-4px spacing jitter, one extra font
   size, one off-palette colour, a 2px misalignment): the reviewer picks the original in >= 15/16 and names the change in
   >= 12/16.
-- `fixes` (CI): each case is before|after at its width through `fixCheck`: good accepted >= 16/18 sample-orders, bad
+- `fixes`: each case is before|after at its width through `fixCheck`: good accepted >= 16/18 sample-orders, bad
   accepted <= 1/18.
+- `references`: the same 7 board pages and 3 Roadmap Keeper pages reviewed twice, once with `refs/references.json` and once
+  with `refs/fallback.json` only, everything else equal: reports specificity (share of improvements naming where and a
+  concrete change), the share naming a token from the references, and, with `--rated`, rank agreement of each variant.
+  It decides whether the URL list earns its cost; no bar until the first run.
 - `calibrate` (instance, run by hand when the prompt or default model changes): the eval-only "rank these" request over
   the rated sites (2 pages each, politeness caps) and apps; Spearman rho of the reviewer's order vs `rated.json` >= 0.6, and
   the owner's own apps ranked below every reference site.
 - `corrections` (instance): each case's expected improvement (where + change) appears in the top 10.
 
-- [ ] **Step 1:** Write `run.ts` and the cases; run `degraded` and `fixes` once with the eval key on Carbon. Expected:
-  both above their bars; note cost (budget ~$2 a run).
+- [ ] **Step 1:** Write `run.ts` and the cases; run `degraded`, `fixes` and `references` once with the eval key on Carbon.
+  Expected: the first two above their bars; `references` reported in PR 2's body; note cost (budget ~$3 a run).
 - [ ] **Step 2:** Commit `feat(design): ui-review regression set (degraded copies, fix pairs, calibration)`.
 
 ### Task 10: Security review, integration and acceptance (all lanes, once)
@@ -604,7 +662,7 @@ Suites and bars (initial, from the spike; change only with the owner):
      POST).
 - [ ] **Step 1:** Merge lanes into their PR branches; `node scripts/ci-local.ts`; the engine tests in the image (Task 1
   Step 4); Codex review of each branch; fix every important finding.
-- [ ] **Step 2:** Deploy PR 1 and PR 2, then ask the UI Reviewer on a TEST task to review the board (built from `origin/main`
+- [ ] **Step 2:** Deploy once, after the phase's PRs merge, then ask the UI Reviewer on a TEST task to review the board (built from `origin/main`
   with its mock API). Expected: capture under 10 min for the board's pages; a report whose top items include the spike's
   agreed board issues (fluid grids at 2560, the Fleet attention panel at 1512, stretched answer forms); at least one
   rendered before|after accepted; cost under $5.
@@ -614,7 +672,7 @@ Suites and bars (initial, from the spike; change only with the owner):
 ## New installs
 
 The design module is in the default bundle: its service starts idle (no schedule, no spend). The UI Reviewer acts only
-when asked. With no instance taste skill it uses the product's universal rules and the starter references. Without Primer,
+when asked. With no instance taste skill it uses the product's universal rules and the product's reference URLs. Without Primer,
 `ui.scan`'s report stays on the Reviews page (code-review's existing behaviour when Primer is missing). Without GitHub,
 on-request reviews work on any URL or `local/` repo.
 
@@ -628,9 +686,10 @@ on-request reviews work on any URL or `local/` repo.
   motion in phase 1 (as the motion pass needs it) and leaves recording-derived motion to phase 3.
 - Types: `Report`, `Improvement`, `Capture` are defined once (Task 1) and used unchanged in 4, 5, 6, 8.
 - Decided here, beyond the spec: no bug judging until phase 2's reproduction (no unverified bug list); no clicks on live
-  targets until phase 2's guard; the product ships the app starter's catalog as default references (third-party
-  screenshots can't ship in the product), owners add theirs; an unattended `ui.scan` carries the universal rules only (the
+  targets until phase 2's guard; the product ships reference URLs with measured tokens and captures them at run time
+  (no third-party screenshots in the repo), the starter catalog only as a fallback, compared by the `references` suite; an unattended `ui.scan` carries the universal rules only (the
   owner's taste lives in the instance and reaches agent runs); `ui.scan` reports text to Primer (no images there).
 - Folded in from Codex's review of the plan: the `code-review-ui` profile wired through `checkSpec`, `addTree` and the tree
-  validator with a complete result contract; collateral checked by recapturing every page at the target width; the eval
-  job built like the reviewer eval (harness from the base, a capped eval key, same-repo only).
+  validator with a complete result contract; collateral checked by recapturing every page at the target width.
+- Owner decisions folded in (2026-11-26): web vitals stay as notes; the regression set runs on request, never in CI; one
+  deploy per phase; Carbon access checked first; PR 1 merges alone after a measured acceptance gate.
