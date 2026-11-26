@@ -24,11 +24,14 @@ function lastRun(store: Store, app: string) {
   const report = (store.run(row.id).report ?? {}) as Dict;
   const list = (k: string) => (Array.isArray(report[k]) ? (report[k] as Dict[]) : []);
   const cov = (report.coverage ?? {}) as Dict;
+  // A pass's design issue (report.issues.design, set by the UI Reviewer once GitHub took it): shown as a link.
+  const issue = (report.issues as Dict | undefined)?.design;
   return {
     run: row.id, ended: row.ended ?? row.started, status: row.status,
     improvements: list("improvements").length, bugs: list("bugs").filter((b) => b.verified !== false).length,
     coverage: { done: Number(cov.done ?? 0), total: Number(cov.total ?? 0) },
     cost_usd: row.cost_usd ?? 0,
+    ...(typeof issue === "string" && /^https:\/\/github\.com\//.test(issue) ? { issue_url: issue } : {}),
   };
 }
 

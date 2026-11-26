@@ -783,6 +783,8 @@ export interface SettingRow {
   pattern?: string;
   /** Shown only while these settings hold (`{ <setting>: <value> }`). */
   when?: Record<string, unknown>;
+  /** Its module's Fleet page edits it (board.pages settings): the generic settings screens leave it off. */
+  page?: string;
 }
 export interface AgentSettings {
   key: string;

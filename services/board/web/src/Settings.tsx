@@ -197,7 +197,7 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
   if (cat === "notifications") return <NotificationsPage rows={rows(["channels", "notify_transports", "notify_fyi", "slack_post_channels"])} conns={conns} />;
   if (cat === "general") {
     const elsewhere = new Set(["autonomy", "spend_day_usd", "spend_month_usd", "task_usd", "channels", "notify_transports", "notify_fyi", "slack_post_channels"]);
-    const general = data.settings.filter((s) => !s.switch && !elsewhere.has(s.key) && s.type !== "url");
+    const general = data.settings.filter((s) => !s.switch && !s.page && !elsewhere.has(s.key) && s.type !== "url");
     return (
       <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to, and how it is named. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>
         <Group>{general.length ? general.map((s) => <SettingItem key={s.key} s={s} />) : <p className="st-empty">Nothing here on this instance.</p>}</Group>

@@ -34,6 +34,7 @@ contributes:
       connection: design
       view: "ui://design/page"
       tools: [ design_overview, design_runs, design_run, design_image, design_configure, design_pass_start, design_pass_stop ]
+      settings: [ ui_testing ] # edited on this page alone: the generic settings screens leave it off
       # The board's own Sign-ins panel under the page: each app's test login, typed outside the frame and never shown back (a
       # blank field is left out, so the TOTP seed is optional).
       secret_maps:

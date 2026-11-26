@@ -178,7 +178,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   }
   return (
     <Page className="module-view">
-      <PageHeader title={page.title} sub={`From the ${page.module} module.`} />
+      <PageHeader title={page.title} />
       {proposal && (
         <div className="mv-proposal" role="region" aria-label="Proposed change">
           <div className="mv-proposal-text">

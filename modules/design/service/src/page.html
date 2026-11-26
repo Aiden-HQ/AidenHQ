@@ -41,8 +41,11 @@
   .cnt { display: inline-flex; gap: 5px; align-items: center; } .cnt i { width: 7px; height: 7px; border-radius: 2px; background: var(--tc, var(--soft)); }
   .cnt.imp { --tc: var(--imp); } .cnt.bug { --tc: var(--bad); } .cnt.cov { --tc: var(--good); } .cnt.zero { opacity: .45; }
   .lastr small { color: var(--soft); }
-  .findrun { display: flex; gap: 6px; align-items: center; } .findrun input { width: 190px; }
-  .intro { color: var(--soft); }
+  .findrun { display: flex; gap: 6px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); } .findrun input { flex: 1; min-width: 0; height: 28px; }
+  .intro { color: var(--soft); margin: 0; max-width: 820px; }
+  .capd { font-size: 12.5px; font-weight: 560; color: var(--bad); white-space: nowrap; text-align: right; }
+  .issues { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12.5px; }
+  .issues .lnk { overflow-wrap: anywhere; }
   .addf { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(180px, 1.6fr) minmax(140px, 1fr) auto auto; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 5%, transparent); }
   .addf label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12.5px; }
   .empty { display: grid; gap: 6px; padding: 22px 14px; text-align: center; }
@@ -106,7 +109,7 @@
     .app { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
     .app .nm { grid-column: 1; } .app .sch { grid-column: 2; grid-row: 1; justify-self: end; }
     .app .spend, .app .lastr { grid-column: 1 / -1; } .app .act { grid-column: 1 / -1; }
-    .addf { grid-template-columns: 1fr; } .findrun { flex: 1 1 100%; } .findrun input { width: auto; flex: 1; }
+    .addf { grid-template-columns: 1fr; }
     .pair { grid-template-columns: 1fr; }
     .mot { grid-template-columns: 1fr auto; } .mot > :nth-child(n+3) { grid-column: 1 / -1; }
     .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -222,16 +225,17 @@
     const n = (cls, k, word) => h("span", { className: `cnt ${cls}${k ? "" : " zero"}` }, h("i"), `${k} ${word}${k === 1 ? "" : "s"}`);
     const lastEl = active ? h("div", { className: "lastr" }, status("running", stopping.has(a.name) ? "Stopping…" : "Pass running"), t("small", "", ago(active.started) || "just now"))
       : last?.status === "done" ? h("div", { className: "lastr" }, n("imp", last.improvements, "improvement"), n("bug", last.bugs, "bug"),
-        h("span", { className: "cnt cov" }, h("i"), `${last.coverage.done}/${last.coverage.total} covered`), t("small", "", ago(last.ended)))
+        h("span", { className: "cnt cov" }, h("i"), `${last.coverage.done}/${last.coverage.total} covered`), last.issue_url ? link(last.issue_url, "Issue") : null, t("small", "", ago(last.ended)))
       : last ? h("div", { className: "lastr" }, status(last.status), t("small", "", ago(last.ended)))
       : h("div", { className: "lastr" }, t("small", "", "No runs yet"));
     const action = !l ? t("small", "soft", "Save to add")
       : active ? btn(stopping.has(a.name) ? "Stopping…" : "Stop", () => stop(a.name), "", { disabled: stopping.has(a.name) })
-      : btn("Run now", () => runNow(a.name), "primary", { disabled: capped, title: capped ? "Today's cap is reached" : "" });
+      : capped ? t("span", "capd", "Cap reached")
+      : btn("Run now", () => runNow(a.name), "primary");
     const row = h("div", { className: `row app${unsaved ? " unsaved" : ""}` },
       h("div", { className: "nm" }, h("b", {}, t("span", `dot ${active ? "busy" : last?.status === "failed" ? "failed" : last ? "done" : ""}`), a.name), t("small", "", a.repo ? `${a.url} · ${a.repo}` : a.url)),
       h("span", { className: `sch ${a.schedule ?? "on-request"}` }, h("i"), SCHED[a.schedule ?? "on-request"]),
-      h("div", { className: "spend" }, h("div", { className: "txt" }, h("span", {}, t("b", "num", usd(today)), ` of ${usd(cap)} today`), capped ? t("span", "", "cap reached") : null), h("div", { className: `meter${pct >= 100 ? " full" : pct >= 70 ? " mid" : ""}` }, h("i", { style: `width:${pct}%` }))),
+      h("div", { className: "spend" }, h("div", { className: "txt" }, h("span", {}, t("b", "num", usd(today)), ` of ${usd(cap)} today`)), h("div", { className: `meter${pct >= 100 ? " full" : pct >= 70 ? " mid" : ""}` }, h("i", { style: `width:${pct}%` }))),
       lastEl, h("div", { className: "act" }, action));
     return clickable(row, () => go({ page: "app", app: a.name }));
   }
@@ -252,8 +256,8 @@
     return f;
   }
   function findRun() {
-    const inp = h("input", { type: "text", placeholder: "r-…", ariaLabel: "Run id", autocomplete: "off", spellcheck: false, className: "mono" });
-    const f = h("form", { className: "findrun" }, inp, h("button", { type: "submit", textContent: "Open run" }));
+    const inp = h("input", { type: "text", placeholder: "Run id from an issue (r-…)", ariaLabel: "Run id", autocomplete: "off", spellcheck: false, className: "mono" });
+    const f = h("form", { className: "findrun" }, inp, h("button", { type: "submit", className: "sm", textContent: "Open" }));
     f.addEventListener("submit", (e) => { e.preventDefault(); const id = inp.value.trim(); if (!RUN_ID.test(id)) return say("A run id looks like r-mf3k2x9a-1a2b3c4d (an issue names it).", true); go({ page: "run", id }); });
     return f;
   }
@@ -261,7 +265,7 @@
     const apps = draft ?? ov.apps;
     const head = h("div", { className: "head" }, h("b", {}, "Apps"), t("small", "", apps.length ? `${apps.length} app${apps.length === 1 ? "" : "s"} · ${usd(ov.apps.reduce((n, a) => n + (a.today_usd ?? 0), 0))} today` : ""), btn(adding ? "Cancel" : "Add app", () => { adding = !adding; render(); }, adding ? "" : "primary"));
     return [
-      h("div", { className: "bar" }, t("p", "intro grow", "The UI Reviewer tests each app like a designer and a careful user: ranked design improvements with rendered fixes, and verified bugs. Each app runs on request unless you choose after-deploy or 24/7, within its daily cap."), findRun()),
+      t("p", "intro", "The UI Reviewer tests each app like a designer and a careful user: ranked design improvements with rendered fixes, and verified bugs. Each app runs on request unless you choose after-deploy or 24/7, within its daily cap."),
       h("div", { className: "card" }, head,
         ...(adding ? [addForm()] : []),
         ...(apps.length ? [h("div", { className: "row cols app" }, t("span", "", "App"), t("span", "", "Schedule"), t("span", "", "Spend"), t("span", "", "Last run"), t("span"))] : []),
@@ -302,7 +306,7 @@
       h("div", { className: "lock" }, t("span", `dot ${l?.login ? "done" : ""}`), a.aidenhq_app ? h("span", {}, t("b", "", "Sign-in: "), "the read-only test-user session.") : h("span", {}, t("b", "", l?.login ? "Login set. " : "No login set. "), "Passes sign in with it; set or replace it under Sign-ins below. It never reaches the model or a report.")));
   }
   function historyCard(name, runs) {
-    return card("Runs", t("small", "", runs.length ? `${runs.length} kept` : ""),
+    return card(h("span", { className: "bar" }, t("b", "", "Runs"), t("small", "soft", runs.length ? `${runs.length} kept` : "")), null, findRun(),
       ...(runs.length ? [] : [t("div", "empty soft", "No runs yet.")]),
       ...runs.map((r) => clickable(h("div", { className: "row hist" }, h("span", {}, status(r.status), " ", t("span", "mono soft", r.id)), t("span", "num", r.cost_usd == null ? "—" : usd(r.cost_usd)),
         t("span", "sub", `${r.depth ?? r.kind} · ${new Date(r.started).toLocaleString()} · ${ago(r.started) || "now"}`)), () => go({ page: "run", id: r.id }))));
@@ -311,10 +315,10 @@
     const a = appOf(route.app);
     if (!a) return [h("div", { className: "bar" }, btn("← UI testing", () => go({ page: "list" }))), card(null, null, t("div", "empty", `${route.app} isn't listed any more.`))];
     const l = live(a.name), active = l?.active, cap = a.day_cap_usd ?? 5, capped = (l?.today_usd ?? 0) >= cap;
-    const act = !l ? null : active ? btn(stopping.has(a.name) ? "Stopping…" : "Stop pass", () => stop(a.name), "", { disabled: stopping.has(a.name) }) : btn("Run now", () => runNow(a.name), "primary", { disabled: capped });
+    const act = !l || (capped && !active) ? null : active ? btn(stopping.has(a.name) ? "Stopping…" : "Stop pass", () => stop(a.name), "", { disabled: stopping.has(a.name) }) : btn("Run now", () => runNow(a.name), "primary");
     const runs = runData?.runs ?? [];
     return [
-      h("div", { className: "bar" }, btn("← UI testing", () => go({ page: "list" })), h("h2", { className: "grow" }, a.name), active ? status("running", stopping.has(a.name) ? "Stopping…" : `Pass running · ${ago(active.started) || "just now"}`) : capped ? t("span", "tag needs", "Cap reached today") : null, act),
+      h("div", { className: "bar" }, btn("← UI testing", () => go({ page: "list" })), h("h2", { className: "grow" }, a.name), active ? status("running", stopping.has(a.name) ? "Stopping…" : `Pass running · ${ago(active.started) || "just now"}`) : capped ? t("span", "capd", "Cap reached today") : null, act),
       h("div", { className: "split two" },
         h("div", { className: "split" }, runData?.run ? runCard(runData.run, "Latest run") : card("Latest run", null, t("div", "empty soft", runData ? "No finished run yet: Run now starts one." : "Loading…"))),
         h("div", { className: "split" }, settingsCard(a), historyCard(a.name, runs))),
@@ -352,6 +356,8 @@
     return card(h("span", { className: "bar" }, t("b", "", title), status(r.status), t("small", "mono soft", r.id)), t("small", "", `${r.depth ?? r.kind} · ${new Date(r.ended ?? r.started).toLocaleString()}`),
       tiles,
       ...(d.report ? [] : [t("div", "empty soft", r.status === "running" ? "The pass is running: its report lands here when it finishes." : "This run left no report.")]),
+      ...(rep.issues?.design || rep.issues?.unavailable ? [h("div", { className: "issues" }, rep.issues.design ? h("span", {}, t("b", "", "Design issue "), link(rep.issues.design)) : t("span", "soft", `No GitHub issues: ${rep.issues.unavailable}. This page is the report.`),
+        ...(rep.issues.bugs ?? []).map((u, i) => h("span", {}, t("b", "", `Bug ${i + 1} `), link(u))))] : []),
       ...(imps.length ? [h("div", { className: "sect" }, t("span", "", "Design improvements, ranked")), ...imps.map(impEl)] : []),
       ...(bugs.length ? [h("div", { className: "sect" }, t("span", "", "Verified bugs")), ...bugs.map(bugEl)] : []),
       ...(motion.length ? [h("div", { className: "sect" }, t("span", "", "Motion")), h("div", { className: "row cols mot" }, t("span", "", "Where"), t("span", "", "Now"), t("span", "", "Better"), t("span", "", "Why")),

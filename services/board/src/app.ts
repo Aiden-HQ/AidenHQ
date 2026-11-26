@@ -1495,7 +1495,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       const v = recurringView(rec, r);
       return [{ agent, title: r.title, task: r.title.replace(ROUTINE_PREFIX, ""), summary: v.summary, paused: v.paused, zone: r.triggers?.find((t) => t.kind === "schedule" && t.label === "repeats")?.timezone ?? undefined, ...(v.nextRun ? { next: v.nextRun } : {}) }];
     });
-    return settingsView({
+    const view = settingsView({
       ...readSources(settingsFiles()),
       live: byKey,
       recurring,
@@ -1503,6 +1503,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
     });
+    // A setting its own module's Fleet page lists (board.pages settings) is edited there alone: the generic screens leave it off.
+    const pages = opts.views?.pages() ?? [];
+    return { ...view, settings: view.settings.map((x) => { const p = pages.find((pg) => pg.module === x.module && (pg.settings ?? []).includes(x.key)); return p ? { ...x, page: p.id } : x; }) };
   }
 
   // Each HTTP connection's /healthz, asked at most every 20 s (the page polls); when it last answered ok, since the board started.

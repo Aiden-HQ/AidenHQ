@@ -192,7 +192,7 @@ contributes:
       connection: ship              # one of this module's own connections
       view: ui://ship/page          # served by it (resources/read, text/html;profile=mcp-app)
       tools: [ship_config, ship_configure]   # what the view calls: read or write tools of that connection, named <module>_…
-      settings: [ship, code_review]          # optional: setting keys the page may propose beyond its module's own
+      settings: [ship, code_review]          # optional: setting keys the page may propose beyond its module's own; one of its own listed here is edited on the page alone (the generic settings screens leave it off)
       secret_maps:                           # optional, at most 2: the board's own "Sign-ins" panel under the frame
         - secret: ui_logins                  # one of this module's `setup:` secrets, a JSON map key -> { field: text }
           keys_from: ui_testing.apps[].name  # the keys: one of its own settings (applied value), e.g. each app's name
