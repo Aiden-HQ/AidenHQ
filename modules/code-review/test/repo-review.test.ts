@@ -386,7 +386,8 @@ const uiReport = {
     { rank: 2, where: { page: "/", width: 1512, theme: "light", region: "attention rail" }, weak: "Compact the attention rail", change: "Tighten the rail in src/Rail.tsx to 48px rows", why: "Wasted space", best: "Linear's lists", captures: ["home-1512-light.png"] },
     { rank: 1, where: { page: "/approvals", width: 1512, theme: "dark", region: "grid" }, weak: "Widen the approvals grid", change: "Let the grid use the full width", why: "A narrow column on wide screens", best: "Stripe's tables", captures: ["approvals-1512-dark.png", "approvals-1920-dark.png"] },
   ],
-  bugs: [],
+  bugs: [{ page: "/approvals", width: 390, theme: "light", title: "Approve button does nothing", evidence: "second click", captures: ["approvals-390-light.png"], verified: false },
+    { page: "/approvals", width: 390, theme: "light", title: "Approve button does nothing", evidence: "second click", captures: ["approvals-390-light.png"], verified: true }],
 };
 
 test("ui.scan runs as its own whole-repo check and reports a UI section", async () => {
@@ -404,6 +405,7 @@ test("ui.scan runs as its own whole-repo check and reports a UI section", async 
   assert.match(md, /### UI/);
   assert.ok(md.indexOf("Widen the approvals grid") < md.indexOf("Compact the attention rail"), "ranked");
   assert.ok(md.indexOf("Compact the attention rail") < md.indexOf("page-error"), "blocking rule findings follow the improvements");
+  assert.match(md, /Approve button does nothing/); assert.equal(w.engine.batches({})[0].verdict, "concerns", "a verified bug blocks");
   assert.match(md, /Source: `src\/Rail\.tsx`/);
   await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["ui.scan"], combo: { effort: "xhigh" } }), /takes an effort of low, medium, high/);
 });

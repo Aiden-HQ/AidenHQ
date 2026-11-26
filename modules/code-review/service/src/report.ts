@@ -99,7 +99,8 @@ export function display(findings: Shown[]) {
   const groups: Group[] = [];
   for (const f of [...findings].sort((a, b) => a.lens.localeCompare(b.lens) || a.path.localeCompare(b.path) || a.line - b.line)) {
     const end = Math.max(f.line, f.end_line ?? f.line);
-    const g = groups.find((x) => x.lens === f.lens && x.path === f.path && x.severity === f.severity && x.items[0]!.title.toLowerCase() === f.title.toLowerCase() && f.line <= x.end && end >= x.line);
+    // A ui finding is its own entry (its place is a page, width and theme, never a line range).
+    const g = f.ui ? undefined : groups.find((x) => x.lens === f.lens && x.path === f.path && x.severity === f.severity && x.items[0]!.title.toLowerCase() === f.title.toLowerCase() && f.line <= x.end && end >= x.line);
     if (!g) { groups.push({ lens: f.lens, path: f.path, line: f.line, end, severity: f.severity, items: [f], options: [f.option], carried: f.carried }); continue; }
     // A finding some option found afresh is no longer only carried over, and its words are the current ones.
     if (!f.carried && g.carried) { g.items.unshift(f); g.carried = undefined; } else g.items.push(f);

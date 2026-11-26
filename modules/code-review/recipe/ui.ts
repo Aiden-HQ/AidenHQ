@@ -33,7 +33,7 @@ export interface UiReport {
   cost_usd: number;
 }
 
-/** The option's spend cap in dollars (catalog.json `run.max_cost_usd`; a check's spec carries no more than its four fields). */
+/** The option's spend cap in dollars: catalog.json `run.max_cost_usd` (a check's spec carries four fields only, so the recipe holds it; keep the two equal). */
 const MAX_USD = 10;
 /** What the result keeps (it stays under the kernel's 256 KB): the top improvements, and at most this many rule and bug findings. */
 const TOP = 10, MAX_RULES = 20;
@@ -71,9 +71,13 @@ export function toReview(report: UiReport, o: { model: string; repo?: string; he
 
   // Blocking rule hits (the capture's and the route check's: page errors, axe, dead controls, blank routes) and verified bugs are
   // important; a suspected (unverified) bug is a nit. One of each rule, page and text.
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   const rules: { severity: "important" | "nit"; title: string; why: string; evidence: string; ui: ReturnType<typeof at> }[] = [];
-  const add = (key: string, f: (typeof rules)[number]) => { if (!seen.has(key)) { seen.add(key); rules.push(f); } };
+  // A bug seen both verified and not is the verified one.
+  const add = (key: string, f: (typeof rules)[number]) => {
+    const at = seen.get(key);
+    if (at === undefined) { seen.set(key, rules.length); rules.push(f); } else if (f.severity === "important" && rules[at]!.severity === "nit") rules[at] = f;
+  };
   for (const r of [report, ...(o.routes ? [o.routes] : [])]) {
     for (const c of r.captures) for (const h of c.rules) if (h.blocking) add(`${h.rule}|${c.page}|${h.text}`, { severity: "important", title: cut(h.rule, 200), why: cut(h.text, 1500), evidence: "", ui: at(c, cut(h.rule, 200)) });
     for (const b of r.bugs) add(`bug|${b.page}|${b.title}`, { severity: b.verified ? "important" : "nit", title: cut(b.title, 300), why: cut(b.evidence, 1500), evidence: cut(b.captures.join(", "), 600), ui: at(b, "bug") });
