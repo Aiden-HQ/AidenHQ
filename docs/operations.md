@@ -444,15 +444,21 @@ through a mutable tag: the archive is exported on the platform the container its
 which on the containerd store names the platform manifest the container was created from, not the variant the daemon's own
 platform resolves — from an immutable id that holds that manifest, or from the tag itself only while it still names that
 manifest, rechecked after the save; keyed by the container's own id, or by its tag while the tag still names what runs, so
-findings already held under that id reconcile; an image nothing can read or fit is a `targets.tsv` line naming the id and
-the error, never a silent gap), the product and instance checkouts and each
+findings already held under that id reconcile; a running container whose image record the daemon no longer holds as an
+image (untagged and collected while the container kept running) is inventoried from the container itself: `docker export`
+into the pass's private `.export` directory, extracted there, and syft scans the extracted root as a directory under the
+same `image:<id>` target, with `container:<id>` in the `targets.tsv` commit column as provenance (a scan of the container's
+filesystem, not proof about the missing image); an image nothing can read or fit, and a container whose export fails, is a
+`targets.tsv` line naming the id and the error, never a silent gap), the product and instance checkouts and each
 app's deployed source, into `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
 `./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
 noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var/lib/dpkg` stay in it. `targets.tsv`
-records the checkout's git HEAD for `repo:product` and `repo:instance`, and the scanner copies it to each target's
-`src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/` and keeps each target's
-archive in `data/modules/security/sbom/.archives` until its scan. Every image is saved under the lock, from a reference
+records the checkout's git HEAD for `repo:product` and `repo:instance` (and `container:<id>` for a container-root scan),
+and the scanner copies it to each target's `src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/`,
+keeps each target's archive in `data/modules/security/sbom/.archives` until its scan, and keeps a container export and its extracted root in
+`data/modules/security/sbom/.export` (mode 700, because it can hold runtime data) only for the scan: both are removed with
+the pass, so nothing of them stays under `data/`. Every image is saved under the lock, from a reference
 resolved there on the container's own platform (an immutable id that holds its platform manifest, else the tag itself),
 sized as that same reference and platform (an index reports the whole index while a platform save writes one manifest),
 and the plan sizes every image before writing anything, then cuts the set into waves smallest first, admitting an image
