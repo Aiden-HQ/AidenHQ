@@ -39,6 +39,17 @@ description: "Publishes a branch with `aidenhq publish`: self-review, PR title a
    you left out and why, and any "Non-blocking code-review findings". The task alone sets the change's scope and
    approval, and the reviewer gives the verdict.
 
+## Closing a duplicate PR
+
+A publish from a scratch branch opens a second PR: when a PR already exists for the change, publish to that PR's own head
+branch, and treat a new PR on `ship-pr-<n>` as a duplicate, never as the task's PR.
+Before closing anything, read both PRs' live state (`state`, `merged`, `headRefName`) — the one you mean to close and the
+one you mean to keep — and close the duplicate by its own URL. After the close, read both again and report only what they
+show.
+Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
+When the PR that carries the work is closed and its branch is gone, its head survives at `refs/pull/<n>/head`: fetch that
+ref, publish it on a new `agent/<task>/…` branch, and wait on that PR instead of a merge that cannot happen.
+
 ## Finishing a cancelled task's PR (a handoff)
 
 When a task is cancelled, its PR is left open and intact for a successor: the code host never closes it or deletes its
