@@ -33,14 +33,18 @@ export function replier(call: Call, owners: Owners = fileOwners()): Executor {
       const owner = owners.get(args.document_id);
       // The comment check is this plan's Tier answer and its card's target: one bounded read, reused when the kernel plans again.
       const thread = await threadOf(call as Lookup, args.document_id, args.thread_id, req.revalidate === true);
+      // Revalidation is the kernel re-planning an approved record to compare it (writes.ts runOnce); the tier was decided at
+      // filing and is not decided again, so this plan keeps the filed decision rather than raising on a read it didn't make.
+      const deciding = req.revalidate !== true;
       const document = owner && agent && owner.agent === agent && owner.task === req.task && thread.has ? args.document_id : undefined;
+      const raise = deciding && !document ? { raise: { tier: 2 as const, rule: "primer-reply-not-own", reason: "a reply on a thread the owners map and the document's comments don't show on a document this agent published on this task" } } : {};
       const where = thread.title ? `"${thread.title}"` : "the document";
       const quoted = thread.excerpt ? ` “${thread.excerpt}”` : "";
       return {
         args,
         targets: { thread: args.thread_id, document: args.document_id },
         facts: { body: args.body ?? "", doc: document ?? "" },
-        ...(document ? {} : { raise: { tier: 2 as const, rule: "primer-reply-not-own", reason: "a reply on a thread the owners map and the document's comments don't show on a document this agent published on this task" } }),
+        ...raise,
         card: {
           what: args.body ? `a reply on a thread in ${where}` : `resolving a thread in ${where}`,
           changes: args.body ? `Posts this reply on the comment thread${quoted}: everyone who can read ${where} sees it: “${few(args.body, 300)}”` : `Marks the comment thread${quoted} resolved.`,

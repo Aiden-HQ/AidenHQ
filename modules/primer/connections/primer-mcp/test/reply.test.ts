@@ -42,8 +42,13 @@ describe("primer.reply executor", () => {
     const args = { document_id: "01a1-doc1", thread_id: "th-1" };
     const filed = await ex.plan({ kind: "primer.reply", args, requester, task: "T-1" });
     expect(calls).toBe(2);
+    expect(filed.raise).toBeUndefined();
     const again = await ex.plan({ kind: "primer.reply", args, requester, task: "T-1", revalidate: true });
     expect(calls).toBe(2);
     expect(again.card).toEqual(filed.card);
+    // The tier was decided at filing: revalidation keeps it rather than raising on a read it didn't make.
+    expect(again.raise).toBeUndefined();
+    expect(again.targets).toEqual(filed.targets);
+    expect(again.args).toEqual(filed.args);
   });
 });
