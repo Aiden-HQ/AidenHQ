@@ -838,7 +838,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       chatMessages(issue, ctx, comments),
       stateRows([...ids]),
       work.task(issue.id).catch(() => []),
-      Promise.all([...ids].map((t) => cardsOf("recent", { task: t, limit: 100 }).catch(() => [] as Approval[]))).then((p) => p.flat()),
+      // `tier0`: a Tier 0 run that failed is a card the chat shows (conversation.ts shownInChat).
+      Promise.all([...ids].map((t) => cardsOf("recent", { task: t, limit: 100, tier0: true }).catch(() => [] as Approval[]))).then((p) => p.flat()),
     ]);
     const byId = new Map<string, Approval>(cards.map((a) => [a.id, a]));
     for (const a of own) byId.set(a.id, a);
