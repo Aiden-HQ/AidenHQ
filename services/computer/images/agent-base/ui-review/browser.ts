@@ -162,8 +162,9 @@ export async function browserCommand(argv: string[]): Promise<number> {
   if (v.url) { const ctx = await b.browser.newContext({ viewport: { width: 1512, height: 900 } }); await (await ctx.newPage()).goto(v.url, { waitUntil: "domcontentloaded" }).catch(() => {}); }
   console.log(`cdp port ${b.port}`);
   await new Promise<void>((ok) => { process.once("SIGTERM", ok); process.once("SIGINT", ok); });
-  // The clips end (ffmpeg writes each one's index) before the browser goes.
-  if (rec) console.log(`${(await rec.stop()).length} recordings in ${v.record}`);
+  // The clips end (ffmpeg writes each one's index) before the browser goes. The guard lets go first: Playwright's own SIGTERM
+  // handler may take Chrome down meanwhile, which is the stop asked for, not a lost guard.
+  if (rec) { b.guard.close(); console.log(`${(await rec.stop()).length} recordings in ${v.record}`); }
   await b.close();
   return 0;
 }
