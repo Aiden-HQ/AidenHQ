@@ -45,7 +45,7 @@ export function FleetRowSkeleton({ i = 0, cells = true }: { i?: number; cells?: 
   );
 }
 
-/** The Agents table before the roster arrives: its header and two groups of rows. */
+/** The Agents list before the roster arrives: its header and two groups of rows. */
 export function FleetSkeleton({ groups = [4, 3] }: { groups?: number[] }) {
   let n = 0;
   return (
