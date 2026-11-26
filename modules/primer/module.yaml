@@ -113,7 +113,7 @@ services:
         PRIMER_DB_PASSWORD_FILE: ${secrets.primer_db_password}
     primer-db:
       when: { primer_mode: self-host }
-      image: postgres:17.12@sha256:87c8b42f423b45d5247e6aa8fdb2e7762fec164c68a50fe3eb07e7bfcaf4dbcf
+      build: ./db # postgres 17.12 with gosu rebuilt from source by Go 1.26.11 (db/Dockerfile)
       read_only: false # the image's entrypoint writes its run dir; as the owner's uid (nss_wrapper), no capabilities
       tmp: 64m
       data: ["db:/var/lib/postgresql/data"]
