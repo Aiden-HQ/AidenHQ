@@ -10,7 +10,7 @@ import { advance, discovered, stageOf, suggestLines, type Gh } from "./actions.t
 import type { Discovered } from "./discover.ts";
 import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
 import { queueNext, type QueueFacts, type QueueNext, type Queued } from "./queue.ts";
-import { HOLD, renderReport, say, waitFacts, type Facts } from "./report.ts";
+import { ACK, HOLD, renderReport, say, waitFacts, type Facts } from "./report.ts";
 import { staleApproval, type Judged, type Risk } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
@@ -96,8 +96,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     d.log("hold cleared by a new head", { pr: pr.url });
   }
   // A stall from the gate's decision (a review, a resolved thread, a label) is over once the gate no longer says stall: ship takes
-  // back its own assignment and goes on. The explicit holds and a person's own assignment stay with their stops below.
-  if (a.hold?.kind === "stalled" && a.hold.onChange && pr.state === "open" && v.do !== "stall") {
+  // back its own assignment and goes on. A pause, a draft, the stop label or a person's assignment is checked first: a stopped PR is
+  // neither resumed nor unassigned.
+  if (a.hold?.kind === "stalled" && a.hold.onChange && pr.state === "open" && v.do !== "stall" && !d.paused() && !pr.draft && !pr.labels.includes(s.stop_label) && !pr.assignees.some((x) => !(a!.assigned ?? []).includes(x))) {
     // A refused unassignment keeps the record, so ship's own assignee is never read as a person's stop.
     let undone = true;
     if (a.assigned?.length) await d.unassign(pr.repo, pr.number, a.assigned).catch((e) => { undone = false; d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }); });
@@ -156,8 +157,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const j = f.approval;
   const risk = f.risk;
   const merge = risk?.merge ?? "off";
-  // Where code review doesn't watch the repo, ship fixes no review findings: the hand-off line says so.
-  const save = async (f: Facts) => { d.state.put(a!); a = await report(d, a!, pr, risk?.state === "unwatched" ? { ...f, unwatched: true } : f); };
+  const save = async (f: Facts) => { d.state.put(a!); a = await report(d, a!, pr, f); };
   const hold = async (reason: string, plain: string, onChange = false) => {
     // Its owner is told: a task's PR wakes whoever asked for the task; a member's PR assigns its author (and the report says why).
     const assign = a!.owner?.kind === "task" || pr.authorBot || !pr.author ? [] : [pr.author];
@@ -575,7 +575,7 @@ async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts): Promise<Kept
   if (a.owner?.kind === "task" && !a.report && !s.act) return a;
   const explicit = a.trigger.kind === "label" || a.trigger.kind === "comment";
   // Nothing to say yet: no comment exists, and no person must act or was handed the PR on purpose (a merged one is never news).
-  const text = a.report || s.act ? s.text : explicit && f.kind !== "merged" ? say({ kind: "active", unwatched: f.unwatched }).text : undefined;
+  const text = a.report || s.act ? s.text : explicit && f.kind !== "merged" ? ACK : undefined;
   const { reportStale: stale, ...kept } = a;
   if (!text || (a.report && a.said === text)) {
     if (stale) d.state.put(kept);

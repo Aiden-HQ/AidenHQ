@@ -7,8 +7,6 @@ export const MARKER = "<!-- aidenhq-ship -->";
 
 /** The line that acknowledges a member's explicit hand-off (the `ship` label or a `/ship` comment). */
 export const ACK = "Ship has this PR: it will rebase, fix CI and review findings, and merge when ready.";
-/** The same where code review doesn't watch the repo: there are no review findings for Ship to fix. */
-export const ACK_UNWATCHED = "Ship has this PR: it will rebase, fix CI, and merge when ready.";
 
 const FIXED = {
   /** Ship is working, or waiting on something that needs no one. */
@@ -28,11 +26,11 @@ const ACT = new Set<Kind>(["review", "approval", "checks", "requeue", "owner_car
 
 export type Kind = keyof typeof FIXED | "owner" | "hold";
 /** What a round says about the PR: its kind, and the sentence for the kinds that carry one (owner, hold, a special merge). */
-export interface Facts { kind: Kind; text?: string; /** Code review doesn't watch this repo: what Ship says it does leaves its findings out. */ unwatched?: boolean }
+export interface Facts { kind: Kind; text?: string }
 
 /** The words, and whether a person must act on them. */
 export function say(f: Facts): { text: string; act: boolean } {
-  return { text: f.text ?? (f.kind === "active" && f.unwatched ? ACK_UNWATCHED : FIXED[f.kind as keyof typeof FIXED]), act: ACT.has(f.kind) };
+  return { text: f.text ?? FIXED[f.kind as keyof typeof FIXED], act: ACT.has(f.kind) };
 }
 
 /** What a hold says, in plain words, with what a person can do. A hold's own reason stays on the adoption and in the task's wake. */

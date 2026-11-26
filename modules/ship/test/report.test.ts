@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { retryReport, round as roundWith } from "../service/src/rounds.ts";
 import { effective } from "../service/src/settings.ts";
 import { openState } from "../service/src/state.ts";
-import { ACK, ACK_UNWATCHED, MARKER, renderReport } from "../service/src/report.ts";
+import { ACK, MARKER, renderReport } from "../service/src/report.ts";
 import { RISK } from "./risk.ts";
 import type { PrView } from "../service/src/handoff.ts";
 
@@ -57,13 +57,6 @@ test("a handoff: all PR with no human action posts nothing, and nothing when it 
   for (const v of [{ do: "wait", why: "checks are still running on its head" }, { do: "fix_review" }, { do: "merge", why: "ready" }]) await round(w.deps, w.pr(), v as any);
   await round(w.deps, w.pr({ state: "merged" }), { do: "done" });
   assert.equal(w.sent.length, 0);
-});
-
-test("where code review doesn't watch the repo, the acknowledgement leaves review findings out", async () => {
-  const w = world("label");
-  await round(w.deps, w.pr(), { do: "wait", why: "checks are still running on its head" }, { risk: { ...RISK, state: "unwatched" } });
-  assert.deepEqual(w.sent.map((s) => s.body), [renderReport(ACK_UNWATCHED)]);
-  assert.doesNotMatch(ACK_UNWATCHED, /review/);
 });
 
 test("an explicit hand-off is acknowledged by one short line, and a merge edits it to Merged", async () => {

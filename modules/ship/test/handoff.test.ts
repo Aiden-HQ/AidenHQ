@@ -182,6 +182,13 @@ test("a stall from the gate's decision clears on a later pass that no longer say
   const after = w.state.get("a/b", 7) as any;
   assert.deepEqual([after.hold, after.assigned], [null, undefined]);
   assert.deepEqual(w.of("unassign").map((c) => c.logins), [["contrib"]]);
+  // A stopped PR (the stop label) is neither resumed nor unassigned, even when the gate no longer says stall.
+  const st = world();
+  await intake(st.deps, st.pr({ events: [st.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z")] }));
+  await round(st.deps, st.pr(), stall, { decided: true });
+  await round(st.deps, st.pr({ labels: ["ship:stop"] }), { do: "wait", why: "checks running" });
+  assert.equal((st.state.get("a/b", 7) as any).hold.kind, "stalled");
+  assert.equal(st.of("unassign").length, 0);
   // A stall ship raised itself (not from the gate's decision) stays until a new head.
   const own = world();
   await intake(own.deps, own.pr({ events: [own.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z")] }));
