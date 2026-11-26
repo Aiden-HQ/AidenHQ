@@ -568,6 +568,10 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.equal(go({}, { checks: [], required: [] }).do, "merge", "none required, none run: green");
   assert.equal(go({}, { checks: [...ok, { name: "build", ok: false, pending: false }] }).do, "fix_ci", "a red status hides behind no green run of the same name");
   assert.equal(go({ mergeStateStatus: "BLOCKED" }).do, "stall", "a branch rule ship doesn't handle is a visible stall");
+  // On a merge-queue branch a ready PR is always BLOCKED (the queue is the path): it is enqueued, GitHub's enqueue the judge.
+  assert.deepEqual(go({ mergeStateStatus: "BLOCKED", reviewDecision: "APPROVED", ...approval(H) }, { queue: true }), { do: "enqueue", why: "ready" });
+  assert.equal(go({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }, { queue: true }).do, "wait", "a missing review still waits on a queue branch");
+  assert.equal(go({ mergeStateStatus: "BLOCKED" }, { queue: true, checks: [{ name: "build", ok: false, pending: false }] }).do, "fix_ci", "red checks come first");
   // Without ship's context: the merge queue's rule, unchanged.
   assert.deepEqual(decide(data({}), H), { do: "merge" });
   assert.equal(decide(data({ mergeStateStatus: "DIRTY" }), H).do, "fail");

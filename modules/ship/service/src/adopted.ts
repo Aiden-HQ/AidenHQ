@@ -299,8 +299,9 @@ export function adoptedPass(o: AdoptedOptions) {
       // default branch, brought up to date with it, and then takes the normal path (checks, review, merge). Down a chain too.
       // The relation is kept whatever holds the PR, so a parent that merged meanwhile is still known.
       if (ctx.stackedOn && (a.stack?.number !== ctx.stackedOn.number || a.stack.branch !== view.base)) { a = { ...a, stack: { number: ctx.stackedOn.number, branch: view.base } }; o.state.put(a); }
-      // A stalled hold is round()'s to clear on a new head; any other hold, or a pause, only retries a report that failed.
-      const resumes = a.hold?.kind === "stalled" && !!a.counters && a.counters.head !== view.head;
+      // A stalled hold is round()'s to clear: on a new head, or, for one the gate's decision made, once it decides otherwise (this
+      // pass's decision is read below). Any other hold, or a pause, only retries a report that failed.
+      const resumes = a.hold?.kind === "stalled" && !!a.counters && (a.counters.head !== view.head || a.hold.onChange === true);
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
       // The PR's own stops hold a retarget too: a draft, the stop label, or a person assigned.
       const stopped = isStopped(repo, view, a);
@@ -356,7 +357,7 @@ export function adoptedPass(o: AdoptedOptions) {
       // Red while behind a green base: round() has GitHub update the branch once at this head before asking for a fix.
       const behindGreen = v.do === "fix_ci" && main.rollup?.state === "SUCCESS" && main.oid && a.counters?.updated !== view.head
         ? Number((await o.gh("GET", `/repos/${repo}/compare/${main.oid}...${view.head}`)).body?.behind_by) > 0 : false;
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], ...(redAtHead.length ? { redChecks: redAtHead } : {}), groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { decided: true, dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], ...(redAtHead.length ? { redChecks: redAtHead } : {}), groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)), ...(approval ? { approval } : {}), ...(risk ? { risk } : {}), ...(v.findingsKey ? { findingsKey: v.findingsKey } : {}), ...(behindGreen ? { behindGreen } : {}) });
     },
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {

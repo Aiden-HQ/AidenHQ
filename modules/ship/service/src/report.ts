@@ -7,6 +7,8 @@ export const MARKER = "<!-- aidenhq-ship -->";
 
 /** The line that acknowledges a member's explicit hand-off (the `ship` label or a `/ship` comment). */
 export const ACK = "Ship has this PR: it will rebase, fix CI and review findings, and merge when ready.";
+/** The same where code review doesn't watch the repo: there are no review findings for Ship to fix. */
+export const ACK_UNWATCHED = "Ship has this PR: it will rebase, fix CI, and merge when ready.";
 
 const FIXED = {
   /** Ship is working, or waiting on something that needs no one. */
@@ -26,11 +28,11 @@ const ACT = new Set<Kind>(["review", "approval", "checks", "requeue", "owner_car
 
 export type Kind = keyof typeof FIXED | "owner" | "hold";
 /** What a round says about the PR: its kind, and the sentence for the kinds that carry one (owner, hold, a special merge). */
-export interface Facts { kind: Kind; text?: string }
+export interface Facts { kind: Kind; text?: string; /** Code review doesn't watch this repo: what Ship says it does leaves its findings out. */ unwatched?: boolean }
 
 /** The words, and whether a person must act on them. */
 export function say(f: Facts): { text: string; act: boolean } {
-  return { text: f.text ?? FIXED[f.kind as keyof typeof FIXED], act: ACT.has(f.kind) };
+  return { text: f.text ?? (f.kind === "active" && f.unwatched ? ACK_UNWATCHED : FIXED[f.kind as keyof typeof FIXED]), act: ACT.has(f.kind) };
 }
 
 /** What a hold says, in plain words, with what a person can do. A hold's own reason stays on the adoption and in the task's wake. */
@@ -42,6 +44,7 @@ export const HOLD = {
   repair: "Ship couldn't repair this PR on its own. A person needs to resolve it.",
   steps: "A step the repo asks Ship to run before merging didn't pass. A person needs to look at it.",
   failed: "Ship's merge or approval for the latest commit was refused or didn't go through. A person decides what happens next.",
+  refused: (why: string) => `GitHub refused to queue this PR (${why.replace(/[\r\n]+/g, " ")}). A person clears it, or pushes a fix.`,
   stall: "GitHub blocks the merge on a rule Ship doesn't handle, such as review threads to resolve. A person clears it.",
   closed: "Ship stopped: its task was closed. A person decides what happens to this PR.",
   handedBack: "Ship handed this PR back. A person takes it from here; handing it over again restarts Ship.",

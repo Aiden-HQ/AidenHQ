@@ -10,7 +10,7 @@ import { advance, discovered, stageOf, suggestLines, type Gh } from "./actions.t
 import type { Discovered } from "./discover.ts";
 import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
 import { queueNext, type QueueFacts, type QueueNext, type Queued } from "./queue.ts";
-import { ACK, HOLD, renderReport, say, waitFacts, type Facts } from "./report.ts";
+import { HOLD, renderReport, say, waitFacts, type Facts } from "./report.ts";
 import { staleApproval, type Judged, type Risk } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
@@ -40,6 +40,8 @@ export interface RoundFacts extends QueueFacts {
   approval?: Judged;
   /** The head's risk tier with its `by_tier` approve and merge (safe.ts riskOf, from code review's verdict). Without one nothing merges. */
   risk?: Risk;
+  /** The merge gate's own decision (adopted.ts), as opposed to a stall ship raised itself: a stall from it clears on any later pass that decides otherwise. */
+  decided?: boolean;
   /** Code review's findings at this head (its digest): a new set at the same head is a new fix_review. */
   findingsKey?: string;
   /** Red at a head behind a green base: GitHub's update-branch is tried once at this head before any fix_ci wake. */
@@ -93,6 +95,16 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     d.state.put(a);
     d.log("hold cleared by a new head", { pr: pr.url });
   }
+  // A stall from the gate's decision (a review, a resolved thread, a label) is over once the gate no longer says stall: ship takes
+  // back its own assignment and goes on. The explicit holds and a person's own assignment stay with their stops below.
+  if (a.hold?.kind === "stalled" && a.hold.onChange && pr.state === "open" && v.do !== "stall") {
+    if (a.assigned?.length) await d.unassign(pr.repo, pr.number, a.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
+    const { assigned: _, ...rest } = a;
+    // The hold's report is replaced by what this pass says, even when it is the line said before the stall.
+    a = { ...rest, hold: null, ...(a.counters ? { counters: { ...a.counters, lastRound: undefined } } : {}) } as typeof a;
+    d.state.put(a);
+    d.log("stall cleared: the gate no longer says stall", { pr: pr.url });
+  }
   // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.
   // Landed: a hand-off's task ends with it (a task's PR tells its task instead), whatever else holds the PR.
   if (pr.state === "merged" && v.do === "done") {
@@ -142,13 +154,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const j = f.approval;
   const risk = f.risk;
   const merge = risk?.merge ?? "off";
-  const save = async (f: Facts) => { d.state.put(a!); a = await report(d, a!, pr, f); };
-  const hold = async (reason: string, plain: string) => {
+  // Where code review doesn't watch the repo, ship fixes no review findings: the hand-off line says so.
+  const save = async (f: Facts) => { d.state.put(a!); a = await report(d, a!, pr, risk?.state === "unwatched" ? { ...f, unwatched: true } : f); };
+  const hold = async (reason: string, plain: string, onChange = false) => {
     // Its owner is told: a task's PR wakes whoever asked for the task; a member's PR assigns its author (and the report says why).
     const assign = a!.owner?.kind === "task" || pr.authorBot || !pr.author ? [] : [pr.author];
     if (assign.length) await d.assign(pr.repo, pr.number, assign).catch((e) => d.log("assign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
     if (a!.owner?.kind === "task") await tell(d, a!, pr, `**Ship stopped on ${pr.url}** at \`${pr.head.slice(0, 12)}\`: ${reason}. A new push resumes it. Decide its next step: re-scope the task, fix the cause another way, or tell the owner.`, `hold.${pr.head.slice(0, 12)}.${c.rounds}.${c.wakes}`, true);
-    a = { ...a!, hold: { kind: "stalled", reason, at: new Date().toISOString() }, assigned: assign };
+    a = { ...a!, hold: { kind: "stalled", reason, at: new Date().toISOString(), ...(onChange ? { onChange: true as const } : {}) }, assigned: assign };
     d.log("hold", { pr: pr.url, reason });
     await save({ kind: "hold", text: plain });
     return "acted" as const;
@@ -445,7 +458,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (!q || q.act === "nothing") return "nothing";
         const dismissing = await dismissStale();
         if (dismissing) return dismissing;
-        if (q.act === "hold") return hold(q.why, HOLD.failed);
+        if (q.act === "hold") return hold(q.why, q.refused ? HOLD.refused(q.refused) : HOLD.failed);
         if (q.act === "wait") { queueWait = q.why; return "nothing"; }
         if (q.attempt > 1) {
           if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`, HOLD.cap);
@@ -498,7 +511,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         return "acted";
       }
       case "stall":
-        return hold(v.why ?? "stalled", HOLD.stall);
+        return hold(v.why ?? "stalled", HOLD.stall, f.decided === true);
       default: {
         // wait: the report says what it waits on. An App approval that no longer stands for this head goes first.
         const dismissing = await dismissStale();
@@ -560,7 +573,7 @@ async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts): Promise<Kept
   if (a.owner?.kind === "task" && !a.report && !s.act) return a;
   const explicit = a.trigger.kind === "label" || a.trigger.kind === "comment";
   // Nothing to say yet: no comment exists, and no person must act or was handed the PR on purpose (a merged one is never news).
-  const text = a.report || s.act ? s.text : explicit && f.kind !== "merged" ? ACK : undefined;
+  const text = a.report || s.act ? s.text : explicit && f.kind !== "merged" ? say({ kind: "active", unwatched: f.unwatched }).text : undefined;
   const { reportStale: stale, ...kept } = a;
   if (!text || (a.report && a.said === text)) {
     if (stale) d.state.put(kept);
