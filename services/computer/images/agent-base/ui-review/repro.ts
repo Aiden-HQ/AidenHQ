@@ -74,10 +74,13 @@ async function replay(newContext: () => Promise<BrowserContext>, base: string, c
     }
     // Evidence is of the app only: a last step that left it (a click or redirect to another origin) is no replay.
     if (new URL(page.url()).origin !== new URL(base).origin) throw new Error(`the last step left the app under review (${new URL(page.url()).origin})`);
-    refused += sockets().slice(socketsBefore).filter((b) => b.page === pageOf(urlBefore) || b.page === pageOf(page.url())).length;
     const after = `repro/${tag}-after.png`;
     await page.screenshot({ path: join(out, after) });
-    return { ok: true, before, after, changed: { text: (await text()) !== textBefore, url: page.url() !== urlBefore }, writes, refused };
+    const changed = { text: (await text()) !== textBefore, url: page.url() !== urlBefore };
+    // Read after the evidence: a socket the last step opened late counts too. (Matched by page label: an overlapping replay of
+    // the same page can only drop a bug as untestable, never verify one.)
+    refused += sockets().slice(socketsBefore).filter((b) => b.page === pageOf(urlBefore) || b.page === pageOf(page.url())).length;
+    return { ok: true, before, after, changed, writes, refused };
   } catch (e) { return { ok: false, why: (e as Error).message.split("\n")[0] }; }
   finally { await ctx.close().catch(() => {}); }
 }
