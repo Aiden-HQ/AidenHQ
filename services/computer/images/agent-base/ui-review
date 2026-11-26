@@ -94,10 +94,10 @@ const frozenAt = baselineReport?.frozenAt ?? new Date().toISOString();
 const freezeFile = join(out, ".init.js");
 writeFileSync(freezeFile, `(() => {
   const T = ${Date.parse(frozenAt)};
-  window.Date = new Proxy(Date, { construct: (d, a, nt) => a.length ? Reflect.construct(d, a, nt) : new d(T), apply: (d) => new d(T).toString(), get: (d, k) => k === "now" ? () => T : Reflect.get(d, k) });
+  window.Date = new Proxy(Date, { construct: (d, a, nt) => Reflect.construct(d, a.length ? a : [T], nt), apply: (d) => new d(T).toString(), get: (d, k) => k === "now" ? () => T : Reflect.get(d, k) });
   const u = (window.__uiReview = { pending: 0, started: 0, changed: false }), end = () => { u.pending--; };
   const f = window.fetch;
-  window.fetch = function (...a) { u.pending++; u.started++; const p = f.apply(this, a); p.then(end, end); return p; };
+  window.fetch = function (...a) { u.pending++; u.started++; return f.apply(this, a).finally(end); };
   const send = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function (...a) { u.pending++; u.started++; this.addEventListener("loadend", end, { once: true }); return send.apply(this, a); };
   new MutationObserver(() => { u.changed = true; }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
@@ -421,12 +421,12 @@ async function routeChecks() {
     const home = await main.look(), homeWords = wordsOf(home.text);
     const hash = new URL(base);
     hash.hash = "#/__ui_review_missing__";
-    for (const u of [new URL("/__ui_review_missing__", base).href, hash.href]) {
+    for (const [u, stays] of [[new URL("/__ui_review_missing__", base).href, (at) => at.startsWith("/__ui_review_missing__")], [hash.href, (at) => at.endsWith("#/__ui_review_missing__")]]) {
       await main.open(u);
       await main.settle();
       const v = await main.look();
       // Redirected elsewhere (to a sign-in page, say), or the home page again: not the app's not-found view.
-      if (!v.at.includes("__ui_review_missing__") || alike(v.text, home.text) >= 0.9) continue;
+      if (!stays(v.at) || alike(v.text, home.text) >= 0.9) continue;
       missing.push({ text: v.text, only: [...wordsOf(v.text)].filter((w) => !homeWords.has(w) && !/^(ui|review|missing)$/.test(w)) });
     }
   } catch (e) { report.routesNote = `the app's not-found view wasn't fingerprinted: ${firstLine(e)}`; }
