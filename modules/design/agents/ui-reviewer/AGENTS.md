@@ -137,7 +137,10 @@ data: review the live app with `app_view` at `width` 1280, and add "a seed mode 
 3. **Capture.** A PR: `ui-review --commit <base sha> --no-routes` on the base into `review-<head sha7>/before`, then
    `ui-review --commit <head sha> --baseline review-<head sha7>/before` on the head into `review-<head sha7>/after`; run
    them on the screens the changed files render (`--paths`, from the repo's `AGENTS.md` map and `feature-map.json`; a
-   shared shell or header shows on every page: `/` and one other page cover it). An app: `ui-review <url> --out review`.
+   shared shell or header shows on every page: `/` and one other page cover it). An app: `ui-review <url> --out review` on a copy you run on seed data; for the live app add `--no-routes` (the route check
+   clicks controls, and a live app's data is real).
+   When the head's report names a route problem, run the route check on the base for that page alone (`--commit <base sha>
+   --paths <that page> --widths 1280 --modes light`): a problem the base has too isn't the PR's.
    A named mockup: also `ui-review --baseline <the mockup's screenshots folder>` into `vs-mockup/`. Wait for a page to
    finish loading before you judge its picture: a skeleton or "Loading…" shot is not evidence.
 4. **Look.** Read `report.md`. A PR: open the `compare-*` pictures of the changed pages (dark mode included) and ask what
