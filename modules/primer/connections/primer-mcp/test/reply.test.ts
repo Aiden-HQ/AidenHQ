@@ -12,6 +12,19 @@ const answer = (tool: string) =>
     ? { text: '{"documentId":"01a1-doc0","title":"Finance Plan"}' }
     : { text: '{"comments":[{"thread_id":"th-1","comment_id":"c-1","body":"Please cut section 2"}]}' };
 
+describe("primer.reply tiering", () => {
+  it("finds a thread among a version's comments or a live document's own, and only on the agent's own document", async () => {
+    const owners: Owners = { get: () => ({ agent: "a1", task: "T-1" }) as Owner, set: () => {}, documentsOf: () => [] };
+    const plan = (a: unknown, thread: string, task = "T-1") =>
+      replier(async () => ({ text: JSON.stringify(a) }), owners).plan({ kind: "primer.reply", args: { document_id: "d1", thread_id: thread, body: "ok" }, requester, task });
+    const a = { comments: [{ thread_id: "t-version" }], live: { threadCount: 1, comments: [{ thread_id: "t-live" }] } };
+    expect((await plan(a, "t-version")).raise).toBeUndefined();
+    expect((await plan(a, "t-live")).raise).toBeUndefined();
+    expect((await plan(a, "t-other")).raise).toMatchObject({ tier: 2, rule: "primer-reply-not-own" });
+    expect((await plan(a, "t-live", "T-2")).raise?.tier).toBe(2);
+  });
+});
+
 describe("primer.reply executor", () => {
   it("names the thread by its document's title and its first comment, never by ids", async () => {
     const ex = replier(async (name) => answer(name), memory());

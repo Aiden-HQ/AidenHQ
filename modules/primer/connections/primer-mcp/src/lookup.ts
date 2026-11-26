@@ -59,8 +59,8 @@ const threads = new Map<string, Omit<Thread, "has">>();
 
 /**
  * A thread's document title and first comment, from primer_get_document and primer_get_comments (both bounded, read side by
- * side). `has` is the comment check's own answer of this read: the comments array holds a comment whose `thread_id` is exactly
- * this thread. `reuse` (the kernel's revalidation plan) reads nothing, and answers `has: false` (its tier is already decided).
+ * side). `has` is the comment check's own answer of this read: the comments array (or a live document's `live.comments`) holds
+ * a comment whose `thread_id` is exactly this thread. `reuse` (the kernel's revalidation plan) reads nothing, and answers `has: false` (its tier is already decided).
  */
 export async function threadOf(call: Call, documentId: string, threadId: string, reuse = false): Promise<Thread> {
   const key = `${documentId}|${threadId}`;
@@ -72,8 +72,11 @@ export async function threadOf(call: Call, documentId: string, threadId: string,
   const j = doc && !doc.isError ? parsed(doc.text) : undefined;
   const t = j?.title ?? j?.document?.title;
   const answer = comments && !comments.isError ? parsed(comments.text) : undefined;
-  const list: any[] = Array.isArray(answer?.comments) ? answer.comments : [];
-  const first = list.find((c) => c?.thread_id === threadId);
+  // Threads on the latest version (`comments`) and a live document's own threads (`live.comments`, which belong to no version).
+  const first = [answer?.comments, answer?.live?.comments]
+    .filter(Array.isArray)
+    .flat()
+    .find((c: any) => c?.thread_id === threadId);
   const said = first?.quote ?? first?.body ?? first?.text;
   const named: Omit<Thread, "has"> = {
     ...(typeof t === "string" && t.trim() ? { title: t.trim() } : {}),

@@ -14,7 +14,7 @@ describe("primer.publish executor", () => {
     const calls: [string, Record<string, unknown>][] = [];
     const ex = publisher(async (name, args) => {
       calls.push([name, args]);
-      return { text: name === "primer_create_document" ? '{"url":"https://primer.example/d/01a1-doc0"}' : '{"versionId":"v-9","versionNumber":4,"url":"https://primer.example/d/01a1-doc0/v/4","reconciliation":{"applied":2,"suggested":1}}' };
+      return { text: name === "primer_create_document" ? '{"url":"https://primer.example/d/01a1-doc0"}' : '{"versionId":"v-9","versionNumber":4,"url":"https://primer.example/d/01a1-doc0/v/4","reconciliation":[{"status":"applied"},{"status":"applied"},{"status":"suggested","suggestionId":"s1"}]}' };
     }, memory());
     // The runner's request (path is a label) and an agent's primer_create_document call plan the same way.
     const plan = await ex.plan({ kind: "primer.publish", args: { title: "Report", content: "# Report\n", format: "markdown", path: ".aidenhq/primer.md", junk: 1 }, requester, task: "T-1" });
@@ -38,9 +38,9 @@ describe("primer.publish executor", () => {
     expect((await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", own: true }, requester: agent, task: "T-2" })).raise?.tier).toBe(2);
     const vouched = await ex.plan({ kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", own: true }, requester, task: "T-1" });
     expect([vouched.raise, (vouched.args as any).own]).toEqual([undefined, true]);
-    // The agent learns the version Primer made and what became of each change.
+    // The agent learns the version Primer made, and by its place in the version, what became of each change.
     expect(await ex.execute({ id: "k-0000000000000002", kind: "primer.publish", args: v.args, digest: "d", idempotency_key: "k-0000000000000002" })).toEqual({
-      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\nReconciliation: {"applied":2,"suggested":1}',
+      ok: true, text: 'New version v4 on Primer (document 01a1-doc0, version v-9): https://primer.example/d/01a1-doc0/v/4\nOf the 3 changed parts: parts 1–2 went in as written; part 3 became a suggestion for a person to decide, so leave it to them (publishing it again adds nothing).',
     });
     expect(calls.at(-1)).toEqual(["primer_add_version", { documentId: "01a1-doc0", content: "<h1>v2</h1>", format: "html", versionNote: "v2", baseVersionNumber: 3 }]);
   });
@@ -73,4 +73,46 @@ describe("primer.publish executor", () => {
     expect(plan.card?.what).toBe("a new version of the document");
     expect(plan.card?.changes).toContain("the latest version of the document");
   }, 10_000);
+
+  it("tells a mixed round's parts apart by place, with Primer's own reason for a conflict and no ids", async () => {
+    const made = (reconciliation: unknown) => publisher(async () => ({ text: JSON.stringify({ versionNumber: 7, versionId: "v-7", url: "https://primer.example/d/01a1-doc0/v/7", reconciliation }) }), memory());
+    const run = (ex: ReturnType<typeof publisher>) =>
+      ex.execute({ id: "k-0000000000000004", kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", format: "markdown" }, digest: "d", idempotency_key: "k-0000000000000004" });
+    const outcomes = [
+      { index: 0, status: "applied" },
+      { index: 1, status: "suggested", suggestionId: "s-1" },
+      { index: 2, status: "conflict", refusal: { code: "target_changed", message: "Block b-9 changed since you read it.", fix: "Read the block again and retry with its current version.", details: { blockId: "b-9", version: "abc" } } },
+      { index: 3, status: "conflict", refusal: { code: "invalid_op", message: "The edit would leave the document invalid.", fix: "Change the op so every block keeps a valid place." } },
+    ];
+    expect((await run(made({ docVersion: 12, outcomes }))).text).toBe(
+      "New version v7 on Primer (document 01a1-doc0, version v-7): https://primer.example/d/01a1-doc0/v/7\nOf the 4 changed parts: part 1 went in as written; part 2 became a suggestion for a person to decide, so leave it to them (publishing it again adds nothing); part 3 conflicted with people's edits and was not applied (the text changed since you read it), so read the live document and change it from its current text; part 4 conflicted with people's edits and was not applied (Change the op so every block keeps a valid place.), so read the live document and change it from its current text.",
+    );
+    // No version made: nothing was written, and a conflict is not a suggestion.
+    const gone = { code: "target_changed", message: "Block b-9 no longer exists.", fix: "Read the block again and retry with its current version.", details: { blockId: "b-9", version: null } };
+    const none = await run(publisher(async () => ({ text: JSON.stringify({ url: "https://primer.example/d/01a1-doc0", reconciliation: { docVersion: 12, outcomes: [{ index: 0, status: "conflict", refusal: gone }] } }) }), memory()));
+    expect(none.text).toBe("No new version on Primer (document 01a1-doc0): nothing was applied: https://primer.example/d/01a1-doc0\nOf the 1 changed part: part 1 conflicted with people's edits and was not applied (the text is gone from the document), so read the live document and change it from its current text.");
+    // No version made but every change became a suggestion: say that, not a failure.
+    const awaiting = await run(publisher(async () => ({ text: JSON.stringify({ url: "https://primer.example/d/01a1-doc0", reconciliation: { docVersion: 12, outcomes: [{ index: 0, status: "suggested", suggestionId: "s-1" }, { index: 1, status: "suggested", suggestionId: "s-2" }] } }) }), memory()));
+    expect(awaiting.text).toBe("No new version on Primer (document 01a1-doc0): nothing was applied: https://primer.example/d/01a1-doc0\nOf the 2 changed parts: parts 1–2 became suggestions for a person to decide, so leave them to them (publishing them again adds nothing).");
+    // Every part applied: nothing extra to say.
+    expect((await run(made({ docVersion: 12, outcomes: [{ index: 0, status: "applied" }] }))).text).toBe("New version v7 on Primer (document 01a1-doc0, version v-7): https://primer.example/d/01a1-doc0/v/7");
+  });
+
+  it("keeps a long round's receipt short enough that a conflict is never cut off", async () => {
+    const long = Array.from({ length: 65 }, (_, index) => ({ index, status: "suggested", suggestionId: `s-${index}` }));
+    long.push({ index: 65, status: "conflict", refusal: { code: "target_changed", message: "Block b-1 changed since you read it.", fix: "Read the block again and retry with its current version.", details: { blockId: "b-1", version: "abc" } } } as any);
+    const ex = publisher(async () => ({ text: JSON.stringify({ versionNumber: 7, versionId: "v-7", url: "https://primer.example/d/01a1-doc0/v/7", reconciliation: { docVersion: 12, outcomes: long } }) }), memory());
+    const text = (await ex.execute({ id: "k-0000000000000005", kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", format: "markdown" }, digest: "d", idempotency_key: "k-0000000000000005" })).text;
+    // A notice is cut at 3,000 characters; the conflict at part 66 must be inside it.
+    expect(text.length).toBeLessThan(2400);
+    expect(text).toContain("parts 1–65 became suggestions");
+    expect(text).toContain("part 66 conflicted");
+    // Enough conflicts, each with its own reason, to overflow: every place is still named inside the limit.
+    const many = Array.from({ length: 80 }, (_, index) => ({ index, status: "conflict", refusal: { code: "invalid_op", message: "The edit would leave the document invalid.", fix: `Fix the block at paragraph ${index + 1} so it keeps a valid place and content.` } }));
+    const ex2 = publisher(async () => ({ text: JSON.stringify({ url: "https://primer.example/d/01a1-doc0", reconciliation: { docVersion: 12, outcomes: many } }) }), memory());
+    const out = (await ex2.execute({ id: "k-0000000000000006", kind: "primer.publish", args: { documentId: "01a1-doc0", content: "x", format: "markdown" }, digest: "d", idempotency_key: "k-0000000000000006" })).text;
+    expect(out.length).toBeLessThan(2400);
+    expect(out).toContain("parts 10–80 also conflicted and didn't apply");
+  });
+
 });

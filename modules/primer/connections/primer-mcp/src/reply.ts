@@ -2,7 +2,7 @@
 // it resolved (primer_resolve_thread). A reply is shown to everyone who can read the document, so it is a kernel record the AI
 // reviewer decides (Tier 1) when the thread is on a document this agent published on this task (owners.ts), and the owner's
 // (Tier 2) on any other. The request names the document; Tier 1 needs the owners map to say this agent published it on this
-// task AND the document's comments (primer_get_comments' `comments` array) (parsed as data) to hold a comment whose `thread_id` field is exactly that thread; an
+// task AND the document's comments (primer_get_comments' `comments`, or `live.comments` for a live document's own threads) (parsed as data) to hold a comment whose `thread_id` field is exactly that thread; an
 // unparseable answer or no exact match is Tier 2. The document_id is for this check only: the upstream tools take just the thread. A `body` is a reply; no `body` resolves the thread.
 // The card says which thread without ids: the document's title and the thread's first comment (lookup.ts, bounded), so two
 // resolve cards on different documents, or two replies sending the same words, are told apart.
@@ -31,7 +31,8 @@ export function replier(call: Call, owners: Owners = fileOwners()): Executor {
       const args = normaliseReply(req.args);
       const agent = req.requester?.agent;
       const owner = owners.get(args.document_id);
-      // The comment check is this plan's Tier answer and its card's target: one bounded read, reused when the kernel plans again.
+      // The comment check is this plan's Tier answer and its card's target: one bounded read (comments on the latest version,
+      // and a live document's own threads), reused when the kernel plans the record again.
       const thread = await threadOf(call as Lookup, args.document_id, args.thread_id, req.revalidate === true);
       // Revalidation is the kernel re-planning an approved record to compare it (writes.ts runOnce); the tier was decided at
       // filing and is not decided again, so this plan keeps the filed decision rather than raising on a read it didn't make.

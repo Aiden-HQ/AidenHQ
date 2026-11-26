@@ -17,7 +17,7 @@ export type QueueNext =
   | { act: "enqueue"; attempt: number; retried?: boolean }
   | { act: "fix_ci"; failing: string[] }
   | { act: "wait"; why: string }
-  | { act: "hold"; why: string };
+  | { act: "hold"; why: string; /** GitHub's own refusal, in words for the report. */ refused?: string };
 
 const OPEN = ["review", "owner", "approved", "claimed"];
 
@@ -32,7 +32,7 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   // Not queued (a refusal, an unanswered call that read back as not queued): a new attempt at the same head.
   // Ended by a pause or a stop (the adoption moved on): queued again now that it is worked again. Any other end (a refusal, a veto,
   // a call that read back as not queued) holds, never queued again at this head; the outcome is on the record.
-  if (r.state !== "done") return /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}; its outcome is on record ${q.record}` };
+  if (r.state !== "done") return /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
   // Queued, and open and out of the queue again: removed.
   const onBase = new Set(f.onBase ?? []);
   const own = (f.groupFailing ?? []).filter((n) => !onBase.has(n));
