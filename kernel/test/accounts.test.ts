@@ -103,7 +103,7 @@ test("the account and TOTP sign in; an accounts file without its secret refuses"
   await signIn(b);
   assert.match(notices.join("\n"), /New admin sign-in.*owner@example\.com/); // the owner hears of every new admin session
   const list = await b("GET", "/approvals");
-  assert.deepEqual([list.status, list.headers.location], [303, "/#/approvals"]); // the board is the one approvals UI
+  assert.deepEqual([list.status, list.headers.location], [303, "/#/"]); // the board (Home) is the one approvals UI
 
   // An accounts file without its secret refuses (a new secret would void every TOTP); a fresh install makes both.
   const bare = mkdtempSync(join(tmpdir(), "kernel-auth-"));
@@ -116,7 +116,7 @@ test("the kernel's approval addresses go to the board's approvals; nothing is de
   const { url, decided, push } = await adminOn(t, dir, undefined, "https://board.example.com");
   const b = browser(url);
   await signIn(b);
-  for (const [path, to] of [["/", "/#/approvals"], ["/approvals", "/#/approvals"], [`/approvals/${push.id}`, `/#/approvals/${push.id}`]]) {
+  for (const [path, to] of [["/", "/#/"], ["/approvals", "/#/"], [`/approvals/${push.id}`, `/#/approvals/${push.id}`]]) {
     const r = await b("GET", path);
     assert.deepEqual([r.status, r.headers.location], [303, `https://board.example.com${to}`], path);
   }

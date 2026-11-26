@@ -8,7 +8,7 @@ import { Tag } from "./ui";
 //  1. Overview: today / 7 / 30 days against the period before, the OpenRouter key's limit, the install's spend limits.
 //  2. Spend over time by model (stacked bars) and the by-model table.
 //  3. By agent and by kind of call; 4. a drill-down into one agent or model (top runs and tasks).
-// The view lives in the URL (#/costs?range=7d&bucket=day&agent=…), so it can be linked.
+// The view lives in the URL (#/insight/costs?range=7d&bucket=day&agent=…), so it can be linked.
 
 /* ----------------------------------------------------------------------------- formatting */
 const DAY = 864e5;
@@ -61,7 +61,7 @@ function writeHash(s: ViewState) {
   if (s.bucket) q.set("bucket", s.bucket);
   if (s.agent) q.set("agent", s.agent);
   else if (s.model) q.set("model", s.model);
-  history.replaceState(null, "", `#/costs?${q}`);
+  history.replaceState(null, "", `#/insight/costs?${q}`);
 }
 /** The instants the server is asked for; the end is "now" for the rolling ranges. */
 function bounds(s: ViewState): { from: number; to: number } {
@@ -125,7 +125,7 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
     });
   // Back from a run page (or a pasted link) lands here with the state in the hash.
   useEffect(() => {
-    const on = () => location.hash.startsWith("#/costs") && setViewState(readHash());
+    const on = () => location.hash.startsWith("#/insight/costs") && setViewState(readHash());
     window.addEventListener("hashchange", on);
     mounted++;
     return () => {
@@ -133,7 +133,7 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
       mounted--;
       // Tabs switch without touching the hash: leaving Costs drops its link, so a later hash change doesn't bring Costs back.
       // Deferred so a remount (StrictMode) keeps a pasted link.
-      setTimeout(() => !mounted && location.hash.startsWith("#/costs") && history.replaceState(null, "", "#/"));
+      setTimeout(() => !mounted && location.hash.startsWith("#/insight/costs?") && history.replaceState(null, "", "#/insight/costs"));
     };
   }, []);
 

@@ -4,10 +4,10 @@
 // is refused (signed out) or buffered by a proxy is simply never live.
 import { useEffect, useRef } from "react";
 
-export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks" | "connections" | "setup";
+export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks" | "connections" | "setup" | "home";
 type Handler = (issue?: string) => void;
 
-const NAMES: EventName[] = ["approvals", "chat", "progress", "grades", "fleet", "tasks", "connections", "setup"];
+const NAMES: EventName[] = ["approvals", "chat", "progress", "grades", "fleet", "tasks", "connections", "setup", "home"];
 const LIVE_MS = 60_000;
 const handlers = new Map<EventName, Set<Handler>>();
 let source: EventSource | null = null;

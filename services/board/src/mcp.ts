@@ -499,7 +499,7 @@ export function createMcp(d: McpDeps) {
       // Compile keeps pages' names apart from each other and from OWNER_TOOLS.
       const opener = `${p.id.replace(/-/g, "_")}_page`;
       server.registerResource(p.id, p.view, { title: p.title, mimeType: VIEW_MIME }, async () => ({ contents: [{ uri: p.view, mimeType: VIEW_MIME, text: await d.viewHtml(p.id) }] }));
-      server.registerTool(opener, { description: `Show the owner the ${p.title} page of the ${p.module} module, where its features are configured.`, inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: p.view, visibility: ["model"] } } }, async () => ({ content: [{ type: "text" as const, text: `The ${p.title} page is open: ${ctx.origin}/#/fleet/${p.id}` }] }));
+      server.registerTool(opener, { description: `Show the owner the ${p.title} page of the ${p.module} module, where its features are configured.`, inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: p.view, visibility: ["model"] } } }, async () => ({ content: [{ type: "text" as const, text: `The ${p.title} page is open: ${ctx.origin}/#/team/m/${p.id}` }] }));
       for (const t of p.tools)
         server.registerTool(t, { description: `${p.title} page: ${t}`, inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ["app"] } } }, async (a: Record<string, unknown>) => {
           // A module's answer is its words: fenced like every other text the owner's Claude reads from an agent or a module.

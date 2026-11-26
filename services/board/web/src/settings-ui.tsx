@@ -140,11 +140,11 @@ export function ChangeProgress({ f, after }: { f: FiledChange; after?: ReactNode
       <p className="st-progress-line">
         {line}{" "}
         {f.stage === "waiting" && (
-          <a href="#/approvals" className="st-link">
-            Open Approvals
+          <a href="#/" className="st-link">
+            Open Home
           </a>
         )}{" "}
-        <a href={`#/c/${f.identifier}`} className="st-link muted">
+        <a href={`#/t/${f.identifier}`} className="st-link muted">
           {f.identifier}
         </a>
       </p>

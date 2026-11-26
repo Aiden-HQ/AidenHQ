@@ -147,6 +147,10 @@ export function askedQuestions(comments: ChatComment[], agentId: string | null |
   return undefined;
 }
 
+/** The structured choices only when every question is the one the open wait recorded (a later question can't borrow an older wait); else typed input. */
+export const boundQuestions = (q: ReturnType<typeof askedQuestions>, wait: string): Question[] =>
+  q && q.questions.every((x) => wait.includes(x.question)) ? q.questions : [{ question: wait, options: [] }];
+
 /**
  * A chat as a conversation: the owner's messages, each agent's visible replies, and everything else an agent or the
  * runner wrote during a run (status notes, outcomes, "duplicate wake") folded into one line per stretch between
@@ -204,7 +208,8 @@ export function conversation(issue: { id: string; description: string | null; cr
   return out;
 }
 
-const oneLine = (t: string) => t.replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim().slice(0, 140);
+/** One line of a message: markdown marks gone, whitespace folded, at most 140 characters (list previews, Home). */
+export const oneLine = (t: string) => t.replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim().slice(0, 140);
 
 /** The last reply or owner's message. */
 const lastSaid = (messages: Message[]) => messages.findLast((m): m is Extract<Message, { kind: "reply" | "owner" }> => m.kind === "reply" || m.kind === "owner");

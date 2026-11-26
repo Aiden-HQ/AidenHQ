@@ -25,7 +25,7 @@ test("a view calls only the tools its own page declares", async (t) => {
   const asserter = createAsserter(generateKeyPairSync("ed25519").privateKey);
   const views = createViews({
     connections: () => ({
-      notes: { url, auth_secret: "k", module: "notes", returns: "untrusted", tools, views: { "ui://notes/page": ["notes_list"] } },
+      notes: { url, auth_secret: "k", module: "notes", returns: "untrusted", tools, views: { "ui://notes/page": ["notes_list"], "read:today": ["notes_list"] } },
       other: { url, auth_secret: "k", module: "other", returns: "untrusted", tools: { read: ["other_read"], write: [], destructive: [] } },
     }),
     asserter, resolver: createResolver(), secret: () => "key",
@@ -38,4 +38,10 @@ test("a view calls only the tools its own page declares", async (t) => {
     ["other", { view: "ui://notes/page", method: "tools/call", params: { name: "notes_list" } }],
   ] as const) await assert.rejects(call(module, body), (e: Error & { type?: string }) => e.type === "view-refused");
   assert.equal(seen.length, 0);
+
+  // A board read (board.reads): its tool passes as an owner call; it has no resource to read.
+  await assert.rejects(call("notes", { view: "read:today", method: "resources/read", params: { uri: "read:today" } }), (e: Error & { status?: number; type?: string }) => e.type === "view-refused" && e.status === 403);
+  assert.equal(seen.length, 0);
+  assert.deepEqual(await call("notes", { view: "read:today", method: "tools/call", params: { name: "notes_list", arguments: {} } }), { result: { ok: { name: "notes_list", arguments: {} } } });
+  assert.deepEqual(seen, ["tools/call"]);
 });

@@ -1,12 +1,12 @@
 // No idle agent-held task: every open task an agent holds is running, finished, blocked on something named, or waiting on
 // something recorded. Two halves, both on the wake inbox (wakes.ts) and the kernel's task state (task-state.ts):
-// - wait(): an agent's own wait on its job's task (POST /v1/wait, the tasks connection's task_wait): a `work.waiting` fact
+// - wait(): an agent's own wait on its job's task, or another open task it holds (POST /v1/wait, the tasks connection's task_wait, notify): a `work.waiting` fact
 //   (subject wait:<task>, reason agent_wait, its words as `note`), so flow names the wait instead of `orphaned`, and a wake
 //   at `until` (at most 7 days; 24 hours when it names only an event), so the task resumes by itself. The task's next job
 //   ends the wait (the state, and admission drops its timed wake); a new wait replaces the last. A wait `for` the owner or the
 //   delegator is a judgement the task can't make itself: it lasts until the answer wakes the task (7 days unless `until`),
 //   and its `question` goes once to whoever settles it (escalate.ts): the owner directly (reason owner_wait) only from the
-//   chief of staff or on a task the owner is talking to its agent on; otherwise the open delegator or the chief of staff
+//   chief of staff, on a task the owner is talking to its agent on, or on its part of the owner's own task; otherwise the open delegator or the chief of staff
 //   (reason delegator_wait: an agent answers). The steward raises either left too long.
 // - sweep(): every few minutes, each open (todo, in_progress) task an agent holds (in_review: see below) that the task state reports `orphaned` (a
 //   chat is `chat_turn`, never orphaned), `unknown` (its holder's wake aged out) or `unpolled` (no enabled dispatcher runs its
@@ -315,10 +315,10 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
   }
   const api = {
     /**
-     * The job's own task waits: `reason` (its words), `until` (ISO) and/or `on` (the event it waits for); `for` owner or
+     * The job's own task waits (or, with `task`, another open task its agent holds: a sweep asking on its part of the owner's task): `reason` (its words), `until` (ISO) and/or `on` (the event it waits for); `for` owner or
      * delegator, with the `question` they answer (`asked: true`, with `for: owner`: the question went already, notify's decision or the agent's own reply, so it is recorded and not sent when it may go to them directly; `handoff: true` marks a wait on the owner's reply to a handoff).
      */
-    async wait(caller: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown; for?: unknown; question?: unknown; detail?: unknown; asked?: unknown; handoff?: unknown }) {
+    async wait(job: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown; for?: unknown; question?: unknown; detail?: unknown; asked?: unknown; handoff?: unknown }) {
       const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 300) : "";
       const on = typeof b.on === "string" ? b.on.trim().slice(0, 200) : "";
       const who = b.for === undefined ? undefined : b.for === "owner" || b.for === "delegator" ? b.for : null;
@@ -334,12 +334,19 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // when it may go to them directly; otherwise the chief of staff gets it (escalate.ts).
       const asked = b.asked === true;
       if (asked && (who !== "owner" || !question)) throw fail(400, "bad_request", "asked: true goes with for: owner and the question that was asked");
+      // The task that waits: the job's own, or one named that its agent holds and is open (the wait, its ask and its wake are
+      // that task's, and the owner's answer there wakes the agent on it). A task that is neither is refused; a read that fails
+      // now (a 5xx, a timeout) is a 503 to try again, never a refusal.
+      let task = job.task;
       if (b.task !== undefined) {
-        // A task that isn't the job's own is refused; a read that fails now (a 5xx, a timeout) is a 503 to try again, never a refusal.
         const r = await owner("GET", `/api/issues/${encodeURIComponent(String(b.task).slice(0, 100))}`).catch((e: Error) => { throw fail(503, "unavailable", `reading the task: ${e.message}`); });
         if (r.status !== 200 && r.status !== 404) throw fail(503, "unavailable", `reading the task: the control plane answered ${r.status}; try again`);
-        if (r.status === 404 || r.json?.id !== caller.task) throw fail(409, "refused", "a wait is recorded on this job's own task only");
+        const named = r.status === 200 ? (r.json as { id?: unknown; status?: unknown; assigneeAgentId?: unknown }) : undefined;
+        const own = named?.id === job.task || (typeof named?.id === "string" && named.assigneeAgentId === job.agent && !CLOSED.has(String(named.status)));
+        if (!own) throw fail(409, "refused", "a wait is recorded on this job's own task, or another open task assigned to you, only");
+        task = String(named!.id);
       }
+      const caller = { ...job, task };
       const t = now();
       // The deadline is validated before anything is sent: a question the recipient gets must arm a wait, never arrive for a call
       // that then fails. Its failure is held, though: a retry of the open question reuses that wait and its own `until`, so a

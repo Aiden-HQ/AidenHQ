@@ -134,8 +134,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       const b = await d.brake(a.task, who.id, kind === "decision").catch(() => ({ allow: true, note: undefined }));
       if (!b.allow) return { sent: false, reason: "limit", note: b.note ?? `Limit reached on ${a.task} since the owner last wrote there (or since UTC midnight). Nothing was sent; batch it into your next update.` };
     }
-    // The chat is the calling agent's own, running on it now: only then its name heads the message, the reply lands there and
-    // goes where the owner wrote. (The kernel's, the board's and the runner's messages carry the task in their text.)
+    // The task is an open one the calling agent holds (its job's, or another: a sweep's part of the owner's task): only then its
+    // name heads the message, the reply lands there and goes where the owner wrote. (The kernel's, the board's and the runner's messages carry the task in their text.)
     const resolved = a.task && caller && d.resolveTask ? await d.resolveTask(a.task).catch(() => undefined) : undefined;
     const found: Found | undefined = a.relay ? { issueId: a.relay.issueId, agentId: "", agentName: a.relay.agentName, ownerVia: a.relay.via } : a.head && !caller ? { issueId: a.head.issueId, agentId: "", agentName: a.head.agentName } : resolved?.agentId === caller?.id ? resolved : undefined;
     // Attention: a blocked or over-cap agent sends nothing; a crew agent's routine done/fyi goes to the digest (and its chat).
@@ -143,8 +143,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     if (att.do === "block" || att.do === "limit") return { sent: false, reason: att.do === "block" ? "blocked" : "limit", note: att.note };
     // When the wait this question opens began: what a one-tap answer is bound to.
     let since: string | undefined;
-    // A question reaches the owner directly only from the chief of staff, or on a task the owner is talking to its agent on
-    // (the kernel decides, escalate.ts); any other goes to the Fleet Steward, which settles it (the Steward's own to the chief
+    // A question reaches the owner directly only from the chief of staff, on a task the owner is talking to its agent on, or
+    // on the agent's part of the owner's own task (the kernel decides, escalate.ts); any other goes to the Fleet Steward, which settles it (the Steward's own to the chief
     // of staff). The wait is recorded first, so a question is never sent without it.
     if (kind === "decision" && caller && !caller.roles?.includes(CHIEF)) {
       const steward = !caller.roles?.includes(SETTLER);
@@ -181,7 +181,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
           if (!c) break;
           if (c.closed) { source = `notify-ask:${caller.key}:${now}`; d.store.setKv(srcKey, source); continue; }
           d.store.setKv(dedupe, String(now));
-          return { sent: true, to: steward ? "steward" : "chief_of_staff", note: `Your question went to ${settler}, who settles it (and has it brought to the owner only when the call is theirs). Next time ask on the task you are working on, so the answer comes back to you.` };
+          return { sent: true, to: steward ? "steward" : "chief_of_staff", note: `Your question went to ${settler}, who settles it (and has it brought to the owner only when the call is theirs). Next time ask on a task assigned to you (the one you are working on, or your part of the owner's task), so the answer comes back to you.` };
         }
         return { sent: false, reason: "error", note: `Your question didn't reach ${settler}${err ? ` (${err})` : ""}: nothing was sent; try again.` };
       }

@@ -700,6 +700,26 @@ export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}, dec
 }
 
 /**
+ * board.reads (modules/board/schemas/reads.json): a read the board makes for the owner's own view, by id. The tool is a read
+ * tool of one of the module's own connections (never write or destructive, never one a write kind routes). It goes onto
+ * that connection's `views` as `read:<id>`, so the kernel's view route passes it as an owner call (kernel/src/views.ts).
+ */
+export function moduleReads(reads: Obj[], connections: Obj, kinds: Obj = {}) {
+  const ids = new Set<string>();
+  for (const r of reads) {
+    const where = `module ${r.module}: board.reads ${r.id}`;
+    const c = Object.hasOwn(connections, r.connection) ? connections[r.connection] : undefined;
+    if (c?.module !== r.module) fail(`${where}: connection ${r.connection} isn't one of its own`);
+    if (ids.has(r.id)) fail(`${where}: another module already declares the read ${r.id}`);
+    ids.add(r.id);
+    if (!c.tools.read.includes(r.tool) || c.tools.write.includes(r.tool) || c.tools.destructive.includes(r.tool)) fail(`${where}: ${r.tool} isn't a read tool of ${r.connection}`);
+    const kind = Object.keys(kinds).find((k) => kinds[k].tools?.includes(`${r.connection}.${r.tool}`));
+    if (kind) fail(`${where}: ${r.tool} is write kind ${kind}'s, which the board can't read`);
+    c.views = { ...c.views, [`read:${r.id}`]: [r.tool] };
+  }
+}
+
+/**
  * The board calls a flow's pair_url, so it shares a network with that service: the same one a board link makes
  * (aidenhq-mod-<module>-board, internal), and `board` joins the service's aidenhq.links label (scripts/verify-security.sh).
  * The host must be one of the declaring module's own services (its compose name or alias).
@@ -1339,6 +1359,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // A page may propose a setting its module, or a module it requires, declares.
   const declaresSetting = (module: string, key: string) => [module, ...(all.get(module)?.def.requires ?? [])].some((m) => Object.hasOwn(all.get(String(m))?.def.settings ?? {}, key));
   modulePages(points.board?.pages ?? [], connections, writes, declaresSetting);
+  moduleReads(points.board?.reads ?? [], connections, writes);
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. An Engineer gets

@@ -9,7 +9,7 @@ import { agoLabel } from "./util";
 import { Icon } from "./ui/icons";
 import "./sessions.css";
 
-// Sessions (#/sessions, #/sessions/<identifier>): long-lived coding harnesses on the always-on computer, each held by one task.
+// Sessions (#/tasks/sessions, #/tasks/sessions/<identifier>): long-lived coding harnesses on the always-on computer, each held by one task.
 // The list shows what each is doing, what it waits for, who started it and what it cost; a session opens as a real terminal
 // (ttyd through the board, only for the account that started it) beside its task thread; a phone opens the same terminal.
 
@@ -47,7 +47,7 @@ export function SessionsView({ open, fresh, mobile, prefix, go, onSignIn, onChan
     return (
       <Page>
         <PageHeader title="Sessions" sub="Real coding agents that keep working while you are away." />
-        <EmptyState action={<LinkButton href="#/modules/sessions">Open the Sessions module</LinkButton>}>The sessions module isn't installed on this instance.</EmptyState>
+        <EmptyState action={<LinkButton href="#/team/modules/sessions">Open the Sessions module</LinkButton>}>The sessions module isn't installed on this instance.</EmptyState>
       </Page>
     );
   if (open) return <SessionPage ident={open} error={error} fresh={fresh} row={sessions?.find((s) => s.identifier === open)} loaded={!!data} mobile={mobile} prefix={prefix} go={go} onSignIn={onSignIn} reload={() => void reload().then(onChanged)} />;
@@ -76,7 +76,7 @@ export function SessionsView({ open, fresh, mobile, prefix, go, onSignIn, onChan
           )}
         </>
       )}
-      <StartDialog open={starting} agent={data?.agent ?? null} onClose={() => setStarting(false)} onStarted={(ident) => (setStarting(false), onChanged(), go(`#/sessions/${ident}?new=1`))} />
+      <StartDialog open={starting} agent={data?.agent ?? null} onClose={() => setStarting(false)} onStarted={(ident) => (setStarting(false), onChanged(), go(`#/tasks/sessions/${ident}?new=1`))} />
     </Page>
   );
 }
@@ -97,7 +97,7 @@ function RowSkeleton() {
 function Row({ s }: { s: SessionRow }) {
   const st = STATE[s.state];
   return (
-    <a className={`ses-row ses-${s.state}`} href={`#/sessions/${s.identifier}`}>
+    <a className={`ses-row ses-${s.state}`} href={`#/tasks/sessions/${s.identifier}`}>
       <StatusDot tone={st.tone}>{st.word}</StatusDot>
       <div className="ses-main">
         <div className="ses-title">
@@ -202,7 +202,7 @@ function SessionPage({ ident, error, fresh, row, loaded, mobile, prefix, go, onS
   const [draft, setDraft] = useState("");
   // Kept here with the draft: switching panels remounts the thread, and a send in flight must stay locked.
   const [sending, setSending] = useState(false);
-  const crumb = <><a href="#/sessions">Sessions</a> / {ident}</>;
+  const crumb = <><a href="#/tasks/sessions">Sessions</a> / {ident}</>;
   // Just started: the kernel admits the job in a moment, so the row isn't there yet.
   const [waited, setWaited] = useState(0);
   useEffect(() => {
@@ -218,14 +218,14 @@ function SessionPage({ ident, error, fresh, row, loaded, mobile, prefix, go, onS
         {error ? <Banner tone="danger" action={<Button size="sm" onClick={reload}>Try again</Button>}>Couldn't load sessions: {error}</Banner> : !loaded || (fresh && !stuck) ? (
           <div className="ses-stage" aria-busy="true"><Bone h={14} w="30%" /><Bone h={14} w="55%" /></div>
         ) : (
-          <EmptyState action={<LinkButton href="#/sessions">All sessions</LinkButton>}>{stuck ? `${ident} hasn't started a session yet. Its task is in Tasks; the session agent may be busy or paused.` : `There is no session ${ident}.`}</EmptyState>
+          <EmptyState action={<LinkButton href="#/tasks/sessions">All sessions</LinkButton>}>{stuck ? `${ident} hasn't started a session yet. Its task is in Tasks; the session agent may be busy or paused.` : `There is no session ${ident}.`}</EmptyState>
         )}
       </Page>
     );
   }
   const st = STATE[row.state];
   // The page's own address: a phone that isn't signed in signs in first, then lands on this session.
-  const phoneLink = () => void navigator.clipboard?.writeText(`${location.origin}${location.pathname}#/sessions/${row.identifier}`).then(() => (setCopied(true), setTimeout(() => setCopied(false), 2000)));
+  const phoneLink = () => void navigator.clipboard?.writeText(`${location.origin}${location.pathname}#/tasks/sessions/${row.identifier}`).then(() => (setCopied(true), setTimeout(() => setCopied(false), 2000)));
   const console_ = <Console row={row} />;
   const thread = <Thread row={row} prefix={prefix} onSignIn={onSignIn} text={draft} setText={setDraft} busy={sending} setBusy={setSending} />;
   const details = <Details row={row} go={go} />;

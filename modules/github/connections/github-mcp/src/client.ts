@@ -721,7 +721,7 @@ function statusLines(have: string[], problems: GitHubStatus["problems"], rate: G
     // A push that creates or updates `.github/workflows/` is refused without this grant (GitHub's OAuth workflow scope), and a
     // grant made before the sign-in asked for it keeps its old scopes: the row is how the owner sees the gap before a push.
     needs("Workflow files", "workflow"),
-    { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok", action: { label: "Change", href: "#/modules/github/settings" } },
+    { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok", action: { label: "Change", href: "#/team/modules/github/settings" } },
     ...(ci ? [needs("CI runners", "admin:org")] : []),
     needs("Projects boards", "project"),
     ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: p.message ? `GitHub needs you to authorize single sign-on: ${p.message.slice(0, 300)}` : "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: p.message ? `the org restricts OAuth apps: ${p.message.slice(0, 300)}` : "the org restricts OAuth apps", state: "warn", action: { label: "Grant access", href: p.url } })),

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// The Tasks page's fleet strip (web/src/Attention.tsx): one line of counts that opens its list on a click. Before the counts
+// Team › All agents' fleet strip (web/src/Attention.tsx): one line of counts that opens its list on a click. Before the counts
 // arrive it renders that same line, marked busy, so the board below lands in place instead of being pushed down.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
@@ -29,24 +29,15 @@ const mount = async () => {
   return el;
 };
 
-/** A task with an open question, so its row carries an answer form. */
-const asked = {
-  identifier: "WOR-2",
-  title: "Which one should ship?",
-  agent: "lena",
-  state: { kind: "waiting", reason: "owner_wait", attention: [{ who: "owner", why: "owner_wait", ref: "wait:t", since: "2026-11-26T05:00:00Z" }] },
-  ask: { question: "Which one should ship?", questions: [{ question: "Which one should ship?", options: [] }], waitSince: "2026-11-26T05:00:00Z" },
-};
-
 const loaded = {
-  counts: { needs_you: 1, failed: 0, unexplained_idle: 0 },
+  counts: { needs_you: 0, failed: 1, unexplained_idle: 0 },
   approvals: 0,
   items: [
     {
       identifier: "WOR-1",
-      title: "A task that needs you",
+      title: "A task that failed",
       agent: "lena",
-      state: { kind: "waiting", reason: "owner_wait", attention: [{ who: "owner", why: "owner_wait", ref: "wait:t", since: "2026-11-26T05:00:00Z" }] },
+      state: { kind: "idle", reason: "failed", since: "2026-11-26T05:00:00Z", attention: [{ who: "agent", why: "failed", ref: "job:j", since: "2026-11-26T05:00:00Z" }] },
     },
   ],
 };
@@ -62,8 +53,8 @@ describe("the fleet strip's loading frame", () => {
     expect(el.querySelector(".attn-title")?.textContent).toBe("Fleet attention");
     expect(el.querySelector(".attn-list")).toBeNull();
     expect(el.querySelector(".attn-list-load")).toBeNull();
-    // One row: the three counts share a box that never wraps onto a second line once the numbers arrive.
-    expect(el.querySelector(".attn-head > .attn-counts")?.children).toHaveLength(3);
+    // One row: the two counts share a box that never wraps onto a second line once the numbers arrive.
+    expect(el.querySelector(".attn-head > .attn-counts")?.children).toHaveLength(2);
   });
 
   it("shows the read's failure instead of a busy frame that never ends", async () => {
@@ -78,48 +69,15 @@ describe("the fleet strip's loading frame", () => {
     query.data = loaded;
     const el = await mount();
     expect(el.querySelector(".attn-list")).toBeNull();
-    expect(el.textContent).not.toContain("A task that needs you");
-    const count = el.querySelector<HTMLButtonElement>(".attn-count.attn-needs")!;
+    expect(el.textContent).not.toContain("A task that failed");
+    const count = el.querySelector<HTMLButtonElement>(".attn-count.attn-failed")!;
     expect(count.getAttribute("aria-expanded")).toBe("false");
     await act(async () => count.click());
     expect(count.getAttribute("aria-expanded")).toBe("true");
-    expect(el.textContent).toContain("A task that needs you");
+    expect(el.textContent).toContain("A task that failed");
     await act(async () => count.click());
     expect(count.getAttribute("aria-expanded")).toBe("false");
-    // Kept mounted so a drafted answer survives, but hidden: out of the page and out of the reading order.
-    expect(el.querySelector(".attn-list")?.hasAttribute("hidden")).toBe(true);
+    expect(el.querySelector(".attn-list")).toBeNull();
     expect(el.querySelector(".attn-order")).toBeNull();
-  });
-
-  it("keeps a drafted answer when the open list is collapsed and reopened", async () => {
-    query.data = { ...loaded, items: [asked] };
-    const el = await mount();
-    const count = el.querySelector<HTMLButtonElement>(".attn-count.attn-needs")!;
-    await act(async () => count.click());
-    const box = el.querySelector<HTMLInputElement>(".q-own")!;
-    expect(box).not.toBeNull();
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box, "ship the second one");
-    await act(async () => box.dispatchEvent(new Event("input", { bubbles: true })));
-    await act(async () => count.click());
-    expect(el.querySelector(".attn-list")?.hasAttribute("hidden")).toBe(true);
-    await act(async () => count.click());
-    expect(el.querySelector<HTMLInputElement>(".q-own")!.value).toBe("ship the second one");
-  });
-
-  it("keeps a drafted answer when another lane is opened instead of collapsed", async () => {
-    query.data = { ...loaded, items: [asked], counts: { needs_you: 1, failed: 1, unexplained_idle: 0 } };
-    const el = await mount();
-    const needs = el.querySelector<HTMLButtonElement>(".attn-count.attn-needs")!;
-    await act(async () => needs.click());
-    const box = el.querySelector<HTMLInputElement>(".q-own")!;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box, "answered later");
-    await act(async () => box.dispatchEvent(new Event("input", { bubbles: true })));
-    // Opening Failed does not unmount Needs you's row: its form keeps the draft while Failed's list is the visible one.
-    await act(async () => el.querySelector<HTMLButtonElement>(".attn-count.attn-failed")!.click());
-    expect(needs.getAttribute("aria-expanded")).toBe("false");
-    const lists = [...el.querySelectorAll<HTMLDivElement>(".attn-list")];
-    expect(lists.filter((l) => !l.hasAttribute("hidden"))).toHaveLength(1);
-    await act(async () => needs.click());
-    expect(el.querySelector<HTMLInputElement>(".q-own")!.value).toBe("answered later");
   });
 });

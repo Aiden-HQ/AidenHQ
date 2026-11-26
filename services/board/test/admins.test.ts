@@ -3,7 +3,10 @@
 // wrote what and shows "by <name>" on what an admin other than the owner wrote or decided, and tells the kernel the account
 // with each write. Real Paperclip client over a fake fetch standing for the kernel's /v1/cp routes; the kernel's accounts
 // routes stood in for (kernel.ts): each admin holds a board session the kernel handed off.
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -23,6 +26,12 @@ const issues = [
   issue(1, { assigneeUserId: "me", assigneeAgentId: null, createdByUserId: "me", createdByAgentId: null }), // the owner's task
   issue(3, { assigneeUserId: null, assigneeAgentId: "aiden", createdByUserId: "me", createdByAgentId: null, labels: [chatLabel] }), // the owner's chat
 ];
+// Aiden is a teammate (compiled config, keyed by the grants table): only a teammate takes the owner's chats.
+const cfg = mkdtempSync(join(tmpdir(), "admins-"));
+writeFileSync(join(cfg, "paperclip.yaml"), "agents:\n  chief-of-staff: { name: Aiden, teammate: { job: Chief of staff, sample: Ask me, staff: [], controls: [], face: null } }\n");
+writeFileSync(join(cfg, "grants.json"), JSON.stringify({ agents: { aiden: { key: "chief-of-staff" } } }));
+process.env.BOARD_PAPERCLIP_CONFIG = join(cfg, "paperclip.yaml");
+process.env.AIDENHQ_GRANTS_FILE = join(cfg, "grants.json");
 const agents = [{ id: "aiden", name: "Aiden", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } }];
 
 /** Every write the kernel got, with the credential and the admin it came with; comments are kept per task. */

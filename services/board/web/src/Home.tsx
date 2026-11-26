@@ -1,0 +1,497 @@
+// Home (#/): the board's front page. What needs the owner, answered in place (J/K, E, S); what the team did since he last
+// looked; his world (who he waits on, today's calendar); the teammates with news; one idea. One read (GET /api/home), and a
+// block with no source or no data is left out, never shown empty. #/approvals/<id> opens that card in the detail pane.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { AnswerForm } from "./AnswerForm";
+import { HttpStatusError, SignInRequired, api, type Session } from "./api";
+import { ApprovalCard, BatchBar, Decide } from "./ApprovalCard";
+import { useLive } from "./events";
+import { askForNotifications, notificationsSupported } from "./notify";
+import { doneAction, useNeedsKeys } from "./needs";
+import { QUERIES, homeFrom, useQuery } from "./queries";
+import { Bone } from "./Skeleton";
+import type { Approval, FaceRef, Home, NeedRow, SinceItem } from "./types";
+import { Banner, Button, DecisionRow, DetailPane, DigestList, Face, Kbd, Monogram, Page, SectionCard, TeammateChip, Tile, faceProps } from "./ui";
+import { ago } from "./util";
+import "./home.css";
+
+type Toast = (text: string, action?: { label: string; run: () => void }) => void;
+type Receipt = { text: string; onUndo?: () => void };
+/** A receipt's key: an answer row's task and wait (a follow-up question on the same task is a new row), else the row's id. */
+const rkey = (r: NeedRow) => (r.kind === "answer" ? `${r.id}:${r.waitSince}` : r.id);
+/** What the detail pane shows: a Needs row, every Since item, or a card that isn't in Needs (#/approvals/<id>). */
+type Pane = { kind: "row"; id: string } | { kind: "since" } | { kind: "card"; id: string } | null;
+
+const WORDS = ["Nothing", "One thing", "Two things", "Three things", "Four things", "Five things", "Six things", "Seven things", "Eight things", "Nine things", "Ten things"];
+/** "Three things need you; the rest is handled." */
+export function needsLine(n: number): string {
+  if (!n) return "Nothing needs you.";
+  return `${WORDS[n] ?? `${n} things`} need${n === 1 ? "s" : ""} you; the rest is handled.`;
+}
+const NOTIFY_KEY = "aidenhq.notify-ask";
+const hourIn = (tz: string, d = new Date()) => Number(new Intl.DateTimeFormat("en-GB", { hour: "numeric", hourCycle: "h23", timeZone: tz }).format(d));
+const dayIn = (tz: string, d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(d);
+const timeIn = (tz: string, d: Date) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz }).format(d);
+const face = (t: FaceRef, size: number, state = t.state) => <Face seed={t.key} {...faceProps(t.face)} state={state} size={size} label={t.name} />;
+const chip = (t: FaceRef, size = 24, href?: string) => <TeammateChip agent={{ key: t.key, name: t.name, teammate: { job: t.job, face: t.face } }} state={t.state} size={size} href={href} />;
+const linkOf = (task: string | null) => (task ? { label: "Open", href: `#/t/${task}` } : undefined);
+
+/** "Overnight" when the window began before 06:00 today, "Since Tue" when before today, else "Since 14:20". */
+function sinceMeta(from: string, tz: string): string {
+  const at = new Date(from);
+  const today = dayIn(tz, new Date());
+  if (dayIn(tz, at) < today) return Date.now() - at.getTime() < 36 * 3_600_000 ? "Overnight" : `Since ${at.toLocaleDateString(undefined, { weekday: "short", timeZone: tz })}`;
+  return hourIn(tz, at) < 6 ? "Overnight" : `Since ${timeIn(tz, at)}`;
+}
+
+/** `front`: Home is the page in front, no overlay (a task, a run) over it: only then do its keys work. */
+export function HomeView({ card, session, onSignIn, toast, mobile, timezone, front }: { card?: string; session: Session | null; go: (h: string) => void; onSignIn: () => void; toast: Toast; mobile: boolean; timezone: string; front: boolean }) {
+  const q = useQuery(QUERIES.home, onSignIn);
+  const data = q.data;
+  const reload = q.reload;
+  useLive(["home", "approvals"], reload, 15_000);
+  // The visit's since window: the first answer's start, sent back by every refetch while Home is open.
+  useEffect(() => () => void (homeFrom.value = undefined), []);
+  // A snapshot loaded before this visit (an earlier one's, pinned to its window) shows while this visit's own read runs; only
+  // a read of this visit is pinned or marked seen.
+  const fresh = !!data && !q.stale;
+  useEffect(() => void (fresh && !homeFrom.value && (homeFrom.value = data.since_from)), [data, fresh]);
+  // The cursor moves to a snapshot's as_of once it has been on screen (never on leaving): the visit's first snapshot, then
+  // only one that shows something newer than the last mark. (A mark emits `home`, which refetches: marking every snapshot
+  // would loop.)
+  const seen = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!data || seen.current === data.as_of || !data.since_complete || !fresh) return;
+    const last = seen.current;
+    if (last && !data.since?.items.some((i) => i.at > last)) return;
+    const asOf = data.as_of;
+    const f = requestAnimationFrame(() => {
+      if (document.visibilityState !== "visible" || seen.current === asOf) return;
+      seen.current = asOf;
+      void api.homeSeen(asOf).catch(() => {});
+    });
+    return () => cancelAnimationFrame(f);
+  }, [data?.as_of, fresh]);
+
+  // Answered and decided rows keep their receipt for this visit, even when a refetch still lists them.
+  const [receipts, setReceipts] = useState<Map<string, Receipt>>(() => new Map());
+  const receipt = useCallback((id: string, r: Receipt | null) => setReceipts((m) => { const n = new Map(m); if (r) n.set(id, r); else n.delete(id); return n; }), []);
+  const [pane, setPane] = useState<Pane>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
+  const [unbatched, setUnbatched] = useState<string[]>([]);
+  // Rows snoozed on this visit: the server leaves them out from the next read, and they stay here with their Undo.
+  const [held, setHeld] = useState<NeedRow[]>([]);
+  const rows = useMemo(() => {
+    const needs = data?.needs ?? [];
+    return [...needs, ...held.filter((h) => !needs.some((n) => n.id === h.id))];
+  }, [data?.needs, held]);
+  const live = rows.filter((r) => !receipts.has(rkey(r)));
+
+  const fail = (e: unknown, what: string) => {
+    if (e instanceof SignInRequired) return onSignIn();
+    if (e instanceof HttpStatusError && e.status === 409) toast("Already answered, or the question changed");
+    else toast(`Couldn't ${what}: ${(e as Error).message}`);
+    void reload();
+  };
+  const answer = async (row: NeedRow & { kind: "answer" }, text: string) => {
+    try {
+      await api.answer(row.task.identifier, text, row.waitSince);
+      receipt(rkey(row), { text: row.detail && text === row.options[0] ? `${row.teammate.name} is sending it` : `Sent: ${text}` });
+    } catch (e) {
+      fail(e, "answer");
+      // The form keeps what was typed for another try.
+      throw e;
+    }
+  };
+  const decided = (row: NeedRow, d: "approve" | "reject") => receipt(rkey(row), { text: d === "approve" ? "Approved" : "Rejected" });
+  const snooze = async (row: NeedRow) => {
+    try {
+      await api.homeSnooze(row.id, true);
+      setHeld((h) => [...h.filter((x) => x.id !== row.id), row]);
+      const undo = () => void api.homeSnooze(row.id, false).then(() => (receipt(rkey(row), null), setHeld((h) => h.filter((x) => x.id !== row.id)), reload()), (e) => fail(e, "undo"));
+      receipt(rkey(row), { text: "Hidden until 08:00", onUndo: undo });
+    } catch (e) {
+      fail(e, "snooze");
+    }
+  };
+  const done = async (row: NeedRow) => {
+    if (receipts.has(rkey(row))) return;
+    const act = doneAction(row);
+    if (!act) return setPane({ kind: "row", id: row.id });
+    try {
+      if (act === "approve" && row.kind === "approval") (await api.decide(row.card.id, row.card.digest, "approve"), decided(row, "approve"));
+      else if (act === "close" && row.kind === "open") (await api.update(row.task.identifier, { status: "done" }), receipt(rkey(row), { text: "Marked done" }));
+      else if (typeof act === "object" && row.kind === "answer") await answer(row, act.answer).catch(() => {});
+    } catch (e) {
+      fail(e, "do that");
+    }
+  };
+  const keys = useNeedsKeys(live, { open: (id) => setPane({ kind: "row", id }), done: (r) => void done(r), snooze: (r) => void snooze(r) }, front);
+
+  // #/approvals/<id>: that row's pane, or the card read alone when it isn't in Needs (decided, or someone else's).
+  const cardInNeeds = !!card && rows.some((r) => r.id === card);
+  useEffect(() => {
+    if (!card || !data) return;
+    setPane(cardInNeeds ? { kind: "row", id: card } : { kind: "card", id: card });
+    // When the address names a card, and when its row comes or goes (decided here or elsewhere), not on every refetch.
+  }, [card, !!data, cardInNeeds]);
+  const closePane = () => {
+    setPane(null);
+    if (card) location.replace("#/");
+  };
+
+  const [notify, setNotify] = useState(() => {
+    try {
+      return notificationsSupported() && Notification.permission === "default" && localStorage.getItem(NOTIFY_KEY) !== "no";
+    } catch {
+      return notificationsSupported() && Notification.permission === "default";
+    }
+  });
+  const dismissNotify = () => {
+    setNotify(false);
+    try {
+      localStorage.setItem(NOTIFY_KEY, "no");
+    } catch {}
+  };
+
+  const first = session?.account?.name?.split(/\s+/)[0];
+  const h = hourIn(timezone);
+  const hello = first ? `Good ${h < 12 ? "morning" : h < 18 ? "afternoon" : "evening"}, ${first}. ` : "";
+  const now = new Date();
+  const date = `${now.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", timeZone: timezone })} · ${timeIn(timezone, now)}`;
+
+  if (!data) return <HomeSkeleton error={q.error} retry={reload} />;
+  const approvals = rows.filter((r): r is NeedRow & { kind: "approval" } => r.kind === "approval" && !receipts.has(rkey(r)));
+  const chosen = approvals.filter((r) => picked.includes(r.id)).map((r) => r.card);
+  const paneRow = pane?.kind === "row" ? rows.find((r) => r.id === pane.id) : undefined;
+  const paneOpen = !!pane && (pane.kind !== "row" || !!paneRow);
+  const since = data.since && <SinceCard since={data.since} timezone={timezone} from={data.since_from} all={() => setPane({ kind: "since" })} />;
+  const idea = data.idea && <IdeaCard idea={data.idea} fail={fail} reload={reload} />;
+  // The rows still open here: an answered row leaves the count at once, before the kernel catches up.
+  const n = live.length;
+  // On a phone the pane is a full-screen sheet: outside the animated column, whose transform would hold a fixed child.
+  const detail = paneOpen && (
+    <DetailPane open title="Details" onClose={closePane}>
+      {pane?.kind === "row" && paneRow && <RowDetail row={paneRow} answer={answer} done={done} receipt={receipts.get(rkey(paneRow))} />}
+      {pane?.kind === "since" && data.since && <SinceAll items={data.since.items} total={data.since.total} />}
+      {pane?.kind === "card" && <CardAlone id={pane.id} />}
+    </DetailPane>
+  );
+
+  return (
+    <Page className="home" label="Home">
+      <header className="home-head enter">
+        <p className="home-date">{date}</p>
+        <h1>{hello}{needsLine(n)}</h1>
+      </header>
+      {notify && (
+        <Banner action={<span className="home-banner-actions"><Button size="sm" variant="primary" onClick={() => void askForNotifications().then(() => setNotify(false))}>Notify me</Button><Button size="sm" variant="quiet" onClick={dismissNotify}>Not now</Button></span>}>
+          Get a browser notification when something needs you.
+        </Banner>
+      )}
+      {unbatched.length > 0 && (
+        <Banner tone="danger" action={<Button size="sm" variant="quiet" onClick={() => setUnbatched([])}>Dismiss</Button>}>
+          Not decided: {unbatched.join("; ")}
+        </Banner>
+      )}
+      <div className="home-top">
+        <div className="home-needs enter" style={{ "--i": 1 } as CSSProperties}>
+          <SectionCard
+            title="Needs you"
+            count={live.length || undefined}
+            flush
+            action={
+              <>
+                {!mobile && live.length > 0 && (
+                  <span className="home-keys" aria-hidden>
+                    <Kbd>J</Kbd><Kbd>K</Kbd> move <Kbd>E</Kbd> done <Kbd>S</Kbd> snooze
+                  </span>
+                )}
+                {approvals.length > 1 && (
+                  <Button size="sm" variant="quiet" aria-pressed={selecting} onClick={() => (setSelecting(!selecting), setPicked([]))}>
+                    {selecting ? "Done selecting" : "Select"}
+                  </Button>
+                )}
+              </>
+            }
+          >
+            {rows.length ? (
+              <div role="listbox" aria-label="Needs you" aria-activedescendant={keys.at ? `need-${keys.at}` : undefined} tabIndex={-1}>
+                {rows.map((r, i) => (
+                  <div key={rkey(r)} id={`need-${r.id}`} role="option" aria-selected={keys.at === r.id} onClick={() => keys.setAt(r.id)}>
+                    <DecisionRow
+                      face={face(r.teammate, 40, "needs")}
+                      who={r.teammate.name}
+                      role={r.teammate.job}
+                      question={r.question}
+                      detail={r.kind === "answer" ? r.detail : undefined}
+                      meta={ago(r.since)}
+                      active={keys.at === r.id || (pane?.kind === "row" && pane.id === r.id)}
+                      onOpen={() => (keys.setAt(r.id), setPane({ kind: "row", id: r.id }))}
+                      i={i}
+                      receipt={receipts.get(rkey(r)) ?? null}
+                      actions={<RowActions row={r} answer={answer} decided={decided} snooze={snooze} done={done} open={() => setPane({ kind: "row", id: r.id })} pick={selecting && r.kind === "approval" ? { on: picked.includes(r.id), toggle: () => setPicked((p) => (p.includes(r.id) ? p.filter((x) => x !== r.id) : [...p, r.id])) } : undefined} />}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="home-clear">All clear. When a teammate needs your say, it lands here first.</p>
+            )}
+            {selecting && chosen.length > 0 && (
+              <BatchBar cards={chosen} busy={batching} setBusy={setBatching} hold={false} done={(failed) => (setUnbatched(failed), approvals.filter((r) => picked.includes(r.id) && !failed.some((f) => f.startsWith(`${r.card.identifier}:`))).forEach((r) => receipt(rkey(r), { text: "Decided" })), setPicked([]), void reload())} />
+            )}
+          </SectionCard>
+        </div>
+        <div className="home-side enter" style={{ "--i": 2 } as CSSProperties}>
+          {paneOpen && !mobile ? (
+            detail
+          ) : (
+            <>
+              {since}
+              {idea}
+            </>
+          )}
+        </div>
+      </div>
+      {mobile && detail}
+      {paneOpen && !mobile && (since || idea) && (
+        <div className="home-pair">
+          {since}
+          {idea}
+        </div>
+      )}
+      <World world={data.world} />
+      <TeamRow team={data.team} />
+    </Page>
+  );
+}
+
+/** A row's buttons by kind: the options (first is primary), Approve and Reject, or Open and Mark done; Not now snoozes. */
+function RowActions({ row, answer, decided, snooze, done, open, pick }: { row: NeedRow; answer: (r: NeedRow & { kind: "answer" }, t: string) => Promise<void>; decided: (r: NeedRow, d: "approve" | "reject") => void; snooze: (r: NeedRow) => Promise<void>; done: (r: NeedRow) => Promise<void>; open: () => void; pick?: { on: boolean; toggle: () => void } }) {
+  const [busy, setBusy] = useState(false);
+  const run = (f: () => Promise<void>) => async () => {
+    setBusy(true);
+    // A failed answer was already said (a toast); the buttons come back for another try.
+    await f().catch(() => {});
+    setBusy(false);
+  };
+  if (row.kind === "approval")
+    return (
+      <>
+        {pick && (
+          <label className="approval-pick">
+            <input type="checkbox" checked={pick.on} onChange={pick.toggle} /> <span>Select</span>
+          </label>
+        )}
+        <Decide a={row.card} onDecided={(d) => decided(row, d)} />
+        {row.card.reads && <span className="home-reads">{row.card.reads}</span>}
+      </>
+    );
+  if (row.kind === "open")
+    return (
+      <>
+        <Button variant="primary" className="press" onClick={open}>Open</Button>
+        <Button className="press" disabled={busy} onClick={run(() => done(row))}>Mark done</Button>
+      </>
+    );
+  const notNow = row.options.find((o) => /^not now$/i.test(o));
+  // Several questions are answered together, in the pane's form: an answer claims the whole wait.
+  if (row.questions.length > 1)
+    return (
+      <>
+        <Button variant="primary" className="press" onClick={open}>Answer</Button>
+        <Button variant="quiet" className="press" disabled={busy} onClick={run(() => snooze(row))}>Not now</Button>
+      </>
+    );
+  return (
+    <>
+      {row.options.map((o, i) => (
+        <Button key={o} variant={i === 0 ? "primary" : o === notNow ? "quiet" : "default"} className="press" disabled={busy} onClick={run(() => answer(row, o))}>
+          {o}
+        </Button>
+      ))}
+      <Button variant="quiet" className="press" onClick={open}>Something else…</Button>
+      {!notNow && <Button variant="quiet" className="press" disabled={busy} onClick={run(() => snooze(row))}>Not now</Button>}
+    </>
+  );
+}
+
+/** A row in the pane: the question, the full draft, the task, and every question of the ask (or the whole card). */
+function RowDetail({ row, answer, done, receipt }: { row: NeedRow; answer: (r: NeedRow & { kind: "answer" }, t: string) => Promise<void>; done: (r: NeedRow) => Promise<void>; receipt?: Receipt }) {
+  return (
+    <div className="home-detail">
+      <div className="home-detail-who">
+        {chip(row.teammate, 32)}
+        {row.task && <a href={`#/t/${row.task.identifier}`}>{row.task.title}</a>}
+      </div>
+      <h3>{row.question}</h3>
+      {row.kind === "answer" && row.detail && <blockquote className="home-draft">{row.detail}</blockquote>}
+      {receipt ? (
+        <p className="home-done" role="status">{receipt.text}</p>
+      ) : row.kind === "answer" ? (
+        <AnswerForm key={row.waitSince} questions={row.questions.length ? row.questions : [{ question: row.question, options: row.options }]} askedAbove onAnswer={(t) => answer(row, t)} />
+      ) : row.kind === "approval" ? (
+        <ul className="approval-list">
+          <ApprovalCard a={row.card} open={(id) => (location.hash = `#/t/${id}`)} unfold />
+        </ul>
+      ) : (
+        <div className="home-detail-actions">
+          <Button variant="primary" onClick={() => void done(row)}>Mark done</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A card not in Needs (#/approvals/<id>): read alone, whatever its age, with its outcome. */
+function CardAlone({ id }: { id: string }) {
+  const [a, setA] = useState<Approval | null | undefined>(undefined);
+  const [error, setError] = useState("");
+  const load = useCallback(() => api.approval(id).then((r) => (setA(r.approval), setError("")), (e: Error & { status?: number }) => (e.status === 404 ? setA(null) : setError(e.message))), [id]);
+  useLive(["approvals"], load, 15_000);
+  if (error) return <p className="alert">{error}</p>;
+  if (a === undefined) return <Bone h={120} />;
+  if (a === null) return <p className="home-clear">There is no card {id}.</p>;
+  return (
+    <ul className="approval-list">
+      <ApprovalCard a={a} open={(ref) => (location.hash = `#/t/${ref}`)} unfold />
+    </ul>
+  );
+}
+
+function SinceCard({ since, timezone, from, all }: { since: NonNullable<Home["since"]>; timezone: string; from: string; all: () => void }) {
+  return (
+    <SectionCard
+      title="Since you last looked"
+      meta={sinceMeta(from, timezone)}
+      flush
+      action={since.total > Math.min(3, since.groups.length) ? <button type="button" className="link-btn home-all" onClick={all}>All {since.total} →</button> : undefined}
+    >
+      <DigestList items={since.groups.map((g) => ({ id: g.teammate.key, face: face(g.teammate, 24, "idle"), text: g.count > 1 ? <>{g.latest.text} <span className="home-more">+{g.count - 1} more</span></> : g.latest.text, link: linkOf(g.latest.task) }))} limit={3} />
+    </SectionCard>
+  );
+}
+
+/** Every Since item the read carries (the newest 200), grouped by teammate, newest first. */
+function SinceAll({ items, total }: { items: SinceItem[]; total: number }) {
+  const groups = useMemo(() => {
+    const by = new Map<string, SinceItem[]>();
+    for (const i of items) by.set(i.teammate.key, [...(by.get(i.teammate.key) ?? []), i]);
+    return [...by.values()];
+  }, [items]);
+  return (
+    <div className="home-since-all">
+      <h3>Since you last looked</h3>
+      {items.length < total && <p className="home-sub">Showing the newest {items.length} of {total}</p>}
+      {groups.map((g) => (
+        <section key={g[0]!.teammate.key}>
+          {chip(g[0]!.teammate, 24, `#/team/${g[0]!.teammate.key}`)}
+          <DigestList items={g.map((i, n) => ({ id: `${i.at}-${n}`, text: <>{i.text} <span className="home-more">{ago(i.at)}</span></>, link: linkOf(i.task) }))} limit={g.length} />
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function IdeaCard({ idea, fail, reload }: { idea: NonNullable<Home["idea"]>; fail: (e: unknown, what: string) => void; reload: () => Promise<unknown> }) {
+  const [busy, setBusy] = useState(false);
+  const say = async (text: string) => {
+    setBusy(true);
+    try {
+      await api.answer(idea.identifier, text, idea.waitSince);
+      await reload();
+    } catch (e) {
+      fail(e, "answer");
+    }
+    setBusy(false);
+  };
+  const yes = idea.options.find((o) => !/^not now$/i.test(o));
+  return (
+    <SectionCard title="Idea for you" meta={chip(idea.teammate, 20)}>
+      <p className="home-idea">{idea.question}</p>
+      <div className="home-idea-actions">
+        {yes && <Button variant="primary" className="press" disabled={busy} onClick={() => void say(yes)}>{yes}</Button>}
+        <Button variant="quiet" className="press" disabled={busy} onClick={() => void say("Not now")}>Not now</Button>
+      </div>
+    </SectionCard>
+  );
+}
+
+/** Who the owner waits on and today's calendar: each only with a source and something in it. */
+function World({ world }: { world: Home["world"] }) {
+  const tz = world.today?.timezone;
+  if (!world.waiting_on?.length && !world.today?.events.length) return null;
+  return (
+    <section className="home-world enter" style={{ "--i": 3 } as CSSProperties} aria-label="Your world">
+      <h2 className="home-h2">Your world</h2>
+      <div className="home-world-grid">
+        {world.waiting_on && world.waiting_on.length > 0 && (
+          <SectionCard title="You're waiting on" count={undefined} meta={`${world.waiting_on.length} open`} flush>
+            <DigestList
+              items={world.waiting_on.map((w) => ({ id: w.identifier, face: <Monogram name={w.title} size={26} />, text: w.title, link: { label: w.quiet_days >= 3 ? `${w.quiet_days}d quiet` : `${w.age_days}d`, href: `#/t/${w.identifier}` } }))}
+              limit={world.waiting_on.length}
+            />
+          </SectionCard>
+        )}
+        {world.today && world.today.events.length > 0 && (
+          <SectionCard title="Today" meta={`${world.today.events.length} event${world.today.events.length === 1 ? "" : "s"}`} flush>
+            <DigestList
+              items={world.today.events.map((e) => ({ id: e.id, face: <span className="home-time">{e.all_day ? "All day" : timeIn(tz!, new Date(e.start))}</span>, text: e.title, link: e.prep ? { label: "Prep ready", href: `#/t/${e.prep}` } : undefined }))}
+              limit={world.today.events.length}
+            />
+          </SectionCard>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** Teammates with something new, then Hire a teammate (Archie's page until hiring ships). */
+function TeamRow({ team }: { team: Home["team"] }) {
+  return (
+    <section className="home-team enter" style={{ "--i": 4 } as CSSProperties} aria-label="Your team">
+      <header className="home-team-head">
+        <h2 className="home-h2">Your team</h2>
+        {team.length > 0 && <span className="home-sub">Teammates with something new</span>}
+        <a className="home-team-all" href="#/team">See the whole team →</a>
+      </header>
+      <div className="home-team-grid">
+        {team.map((t) => (
+          <Tile key={t.teammate.key} href={`#/team/${t.teammate.key}`} name={t.teammate.key} title={`${t.teammate.name} · ${t.teammate.job}`} face={face(t.teammate, 40)}>
+            {t.line}
+          </Tile>
+        ))}
+        <Tile tone="ghost" href="#/team/architect" name="hire" title="Hire a teammate" face={<span className="home-plus" aria-hidden>+</span>}>
+          Security, repo upkeep, or describe your own.
+        </Tile>
+      </div>
+    </section>
+  );
+}
+
+/** Home's shape while its one read is on its way: the grid's blocks, never a spinner. */
+function HomeSkeleton({ error, retry }: { error: string; retry: () => void }) {
+  return (
+    <Page className="home" label="Home">
+      <header className="home-head">
+        <Bone w={180} h={14} />
+        <Bone w="min(640px, 90%)" h={34} />
+      </header>
+      {error && (
+        <Banner tone="danger" action={<Button size="sm" onClick={retry}>Retry</Button>}>
+          Couldn't load Home: {error}
+        </Banner>
+      )}
+      <div className="home-top" aria-busy="true" aria-label="Loading">
+        <Bone h={340} className="home-bone" />
+        <div className="home-side">
+          <Bone h={190} className="home-bone" />
+          <Bone h={130} className="home-bone" />
+        </div>
+      </div>
+    </Page>
+  );
+}

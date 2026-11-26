@@ -15,6 +15,7 @@ import { signedIn } from "./aidenhq-sdk/needs.js";
 import { SourceStore } from "./source-store.js";
 import { InboxCursors } from "./inbox.js";
 import { startSync } from "./sources.js";
+import { calendarToday } from "./today.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "google-workspace-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 // Who is calling: the kernel's signed assertion (the kernel enforces grants).
@@ -129,6 +130,15 @@ function buildServer(caller?: Caller): McpServer {
       annotations: ro,
     },
     run("calendar_list_events", (ws, a: { start: string; end: string; max_results: number; account?: string }) => ws.listEvents(a.start, a.end, undefined, a.max_results, a.account)),
+  );
+  server.registerTool(
+    "calendar_today",
+    {
+      description: "Today's events on the primary calendar, in the owner's timezone (declined and cancelled ones left out): id, start, end, title, all_day.",
+      inputSchema: {},
+      annotations: ro,
+    },
+    run("calendar_today", (ws) => calendarToday(ws, process.env.OWNER_TIMEZONE || "UTC")),
   );
   server.registerTool(
     "calendar_search_events",

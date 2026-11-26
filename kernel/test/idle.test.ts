@@ -198,6 +198,34 @@ test("an agent's owner question goes to the Fleet Steward as one task, never to 
   assert.match(w.asked.steward[1].description, /Or rename it\?/);
 });
 
+test("a sweep running on its routine task asks the owner on its part of the owner's own task: the wait, its ask and its wake are the part's", async (t) => {
+  const w = world(t);
+  // The job runs on tA (a routine run); t1 is its part of the owner's own task t0 (task_join), open and assigned to it.
+  w.issues.tA = { id: "tA", identifier: "TA", status: "in_progress", assigneeAgentId: AGENT };
+  w.issues.t0 = { ...w.issues.t0, status: "todo", assigneeAgentId: null, assigneeUserId: "owner" };
+  const job = { agent: AGENT, key: "open-loops", task: "tA" };
+  const ask = { reason: "the answer to my question", on: "the answer", for: "owner", asked: true, question: "Send this chaser?", detail: "Hi Jonas, any news?" };
+  // Only an open task its agent holds: the owner's own task and a closed part are refused.
+  await assert.rejects(w.idle.wait(job, { ...ask, task: "t2" }), { status: 409 });
+  w.issues.t1.status = "done";
+  await assert.rejects(w.idle.wait(job, { ...ask, task: "t1" }), { status: 409 });
+  w.issues.t1.status = "todo";
+  const r = await w.idle.wait(job, { ...ask, task: "t1" });
+  assert.deepEqual([r.to, w.asked.steward.length], ["owner", 0], "the owner hears it directly (notify sends it), never the Steward");
+  w.tick(MIN);
+  assert.deepEqual([w.row("t1").reason, w.row("t1").question, w.row("t1").detail], ["owner_wait", "Send this chaser?", "Hi Jonas, any news?"]);
+  assert.ok(w.row("t1").attention.some((a) => a.who === "owner" && a.why === "owner_wait"));
+  assert.notEqual(w.row("tA")?.reason, "owner_wait", "the routine run doesn't wait");
+  assert.ok(w.db.prepare("SELECT 1 FROM wakes WHERE task = 't1' AND agent = ? AND key LIKE 'wait:t1:%' AND state = 'open'").get(AGENT), "the wait's wake is the part's, for its agent");
+  // Step 3's task_handoff comment on the part (the agent's own) leaves the question open; the owner's answer ends it.
+  w.add("task.commented", "task:t1", "t1", { kind: "comment" }, "agent:open-loops");
+  w.tick(MIN);
+  assert.equal(w.row("t1").reason, "owner_wait");
+  w.add("task.commented", "task:t1", "t1", { kind: "comment" }, "account:o1");
+  w.tick(MIN);
+  assert.notEqual(w.row("t1").reason, "owner_wait");
+});
+
 test("an owner question's detail (the draft it is about) is in the task's state beside the question and goes to its settler; never without a question", async (t) => {
   const w = world(t);
   const detail = "Hi Jonas, any news on the signed contract?";
