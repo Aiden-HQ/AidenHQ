@@ -94,7 +94,7 @@ fix; a checkout has no `.git`):
 3. `ui-review fix-check review/<shot> fix-N/<shot> --width <the width where the change shows> --taste taste.md` prints
    `{ wins, accepted }`: six calls, AFTER shown second and first, three each, judged against the product's design rules and
    the owner's taste. It is accepted only when AFTER wins at least 2 of 3 in each order, so a model's preference for one
-   position never passes a fix. Accepted: keep `git add -A && git diff --cached` as the fix (new files included) and the before|after pair (`fix.status: "shown"`, its
+   position never passes a fix. Accepted: keep `git add -A && git diff --cached` as the fix (new files included), then `git reset -q --hard && git clean -fdq` so the next fix starts from the base and the before|after pair (`fix.status: "shown"`, its
    `wins`). Rejected: revert the change and keep the improvement as text (`fix.status: "rejected"`, its `wins`). The build
    failed: revert it and record `fix.status: "failed"` with the build error's first line as `why`.
 4. Collateral, before you judge: recapture every other page at that width and at 390 with `--baseline review`; a page whose

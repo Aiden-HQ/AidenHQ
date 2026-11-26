@@ -13,7 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { degradations } from "./degrade.ts";
-import { ENGINE, open, serveStarter, shutdown, STARTER } from "./shots.ts";
+import { ENGINE, open, serveStarter, shutdown } from "./shots.ts";
 
 const here = dirname(new URL(import.meta.url).pathname);
 const { values: o, positionals } = parseArgs({
@@ -180,7 +180,8 @@ function capture(url: string, pages: Target[], dir: string, width = 1512, theme 
 /** refs/fallback.json's page per kind (the catalog is dev-only: the engine serves the starter's dev server, as its refs fallback does) as a references list, written beside the work. */
 let catalog: { url: string; stop(): void } | undefined;
 async function fallbackList(file: string): Promise<string> {
-  const base = (catalog ??= await (await eng("refs.ts")).serveStarter(STARTER)).url;
+  await starterUrl(); // the work copy of the starter, its dependencies installed
+  const base = (catalog ??= await (await eng("refs.ts")).serveStarter(join(work, "starter"))).url;
   const map = json(file) as Record<string, string>;
   const out = join(work, "references", "fallback-refs.json");
   writeFileSync(out, JSON.stringify(Object.entries(map).filter(([k]) => k !== "_" && k !== "other").map(([kind, path]) => ({ kind, url: new URL(path, base).href, product: "app starter" }))));
