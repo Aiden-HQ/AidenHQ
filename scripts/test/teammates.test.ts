@@ -75,6 +75,8 @@ test("compile refuses a name that isn't addressable, a rename of a hidden agent,
   refuses({ bud: { name: "Budster" }, overrides: { agents: { hal: { name: "bud" } } } }, /agent hal: name "bud": bud is an agent's key/);
   refuses({ overrides: { agents: { hal: { name: "Pal" } } } }, /Pal is already an agent's name/);
   refuses({ overrides: { agents: { hal: { name: "N".repeat(25) } } } }, /a name is 1 to 24 letters/);
+  refuses({ overrides: { agents: { hal: { name: "Maya  Lee" } } } }, /a name is 1 to 24 letters/);
+  refuses({ bud: { teammate: { job: "J", sample: "S", face: "bud.svg" } } }, /a local agent's teammate\.face is a kit spec/);
   refuses({ overrides: { agents: { pal: { name: "Nova" } } } }, /override agents\.pal\.name: only a teammate is renamed/);
   refuses({ hal: { staff: ["bud"] } }, /teammate\.staff names bud, a teammate/);
   refuses({ hal: { staff: ["ghost"] } }, /teammate\.staff names ghost, which is not an enabled agent/);

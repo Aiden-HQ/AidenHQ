@@ -978,7 +978,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         for (const f of ["name", "description", "model"]) if (a?.[f] == null || a[f] === "") fail(`agent ${key}: ${f} is required`);
         if (a.max_parallel != null && !(Number.isInteger(a.max_parallel) && a.max_parallel >= 1 && a.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
         const description = String(a.description).trim();
-        if (a.teammate !== undefined) teammateOf(a.teammate, `agent ${key}`);
+        // A local agent's face is a kit spec: a shared local module carries its module.yaml and handbooks, never an image.
+        if (a.teammate !== undefined && typeof teammateOf(a.teammate, `agent ${key}`).face === "string") fail(`agent ${key}: a local agent's teammate.face is a kit spec, not a file`);
         put(paperclip.agents, key, { ...a, title: description, description, instructions: file, module: name, tier, isolation: "trusted" }, "agent");
         continue;
       }
@@ -1859,7 +1860,9 @@ export function teammateOf(raw: unknown, where: string): { job: string; sample: 
 
 /** Why a shipped face file can't be served (inside the agent's own folder, at most 200 KB, a plain PNG or a script-free SVG), or undefined. */
 const SVG_BANNED: [RegExp, string][] = [[/<script/i, "<script"], [/<foreignObject/i, "<foreignObject"], [/<!ENTITY/i, "<!ENTITY"], [/javascript:/i, "javascript:"], [/\son[a-z]+\s*=/i, "an on…= handler"], [/@import/i, "@import"], [/href\s*=\s*(?!["']?#)/i, "an href not starting #"], [/url\(\s*(?!["']?#)/i, "url( not starting #"]];
-export function faceFileProblem(agentDir: string, face: string): string | undefined {
+export function faceFileProblem(agentDir: string, face: string, key: string): string | undefined {
+  // The key names the copy (config/faces/<key>.<ext>): a plain key, so the copy stays inside the faces folder.
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(key)) return `agent key ${key} can't name a face file (lowercase letters, digits and -)`;
   const file = join(agentDir, face);
   if (!existsSync(file)) return `face ${face} isn't in the agent's folder`;
   const real = realpathSync(file);
@@ -1893,7 +1896,7 @@ function compileTeammates(agents: Obj, enabled: string[], faces: Record<string, 
     const controls = t.controls ? t.controls.map((m) => m.replace(/\?$/, "")).filter((m) => enabled.includes(m)) : [a.module];
     let face: string | FaceKit | null = null;
     if (typeof t.face === "string") {
-      const bad = faceFileProblem(dirname(a.instructions), t.face);
+      const bad = faceFileProblem(dirname(a.instructions), t.face, key);
       if (bad) fail(`agent ${key}: ${bad}`);
       face = `${key}.${t.face.split(".").pop()}`;
       faces[face] = realpathSync(join(dirname(a.instructions), t.face));
@@ -1922,7 +1925,8 @@ function catalogTeammates(name: string, root: string, def: Obj, agents: Obj, dep
       const t = teammateOf(meta.teammate, `module ${name}: agent ${key}`);
       let face: string | FaceKit | null = null;
       if (typeof t.face === "string") {
-        const bad = faceFileProblem(dir, t.face);
+        // An enabled agent of another module owns this key's face address.
+        const bad = agents[key] ? `the key ${key} is an enabled agent's` : faceFileProblem(dir, t.face, key);
         if (bad) warnings.push(`module ${name}: agent ${key}: ${bad}; its face is left out`);
         else { face = `${key}.${t.face.split(".").pop()}`; faces[face] = realpathSync(join(dir, t.face)); }
       } else if (t.face) face = t.face;

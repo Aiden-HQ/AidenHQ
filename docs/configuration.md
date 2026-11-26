@@ -145,7 +145,7 @@ outcomes:
     the owner (default its own module). A trailing `?` drops an entry whose agent or module is off; one without `?` must
     be on. Grants stay explicit: `controls` grants nothing.
   - `face`: a kit spec the board draws, `{ hair, accessory, body, skin, hair_color, palette }` (enums and ranges in
-    `services/shared/face-kit.ts`), or the file name of an `.svg` or `.png` in the agent's own folder (at most 200 KB; an SVG
+    `services/shared/face-kit.ts`), or (a product agent's only) the file name of an `.svg` or `.png` in the agent's own folder (at most 200 KB; an SVG
     with a script, an event handler, `foreignObject`, an entity, `@import` or an outside `href`/`url(` fails compile).
     Compile copies a file to `config/faces/<key>.<ext>` and the board serves it signed in, sandboxed, at
     `/api/faces/<key>`. With no face the board draws one from the agent's key.
