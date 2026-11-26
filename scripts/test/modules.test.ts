@@ -442,6 +442,14 @@ test("a channel's transport is a compose service (the kernel sends the channel's
   assert.throws(() => kernelModuleTable(ch({ credentials: true })), /providers.channel.credentials is not allowed/);
 });
 
+test("a module's job tools compile with the ops it lists; anything else is refused", () => {
+  const jt = (jobtools) => ({ design: { providers: { jobtools }, generated_secrets: ["design_service_key"] } });
+  assert.deepEqual(kernelModuleTable(jt({ url: "http://design:8099/jobtools", auth: "design_service_key", ops: ["login", "app-session"] })).design.jobtools, { url: "http://design:8099/jobtools", auth_secret: "design_service_key", ops: ["login", "app-session"] });
+  for (const ops of [[], ["Login"], ["login", "login"], "login"]) assert.throws(() => kernelModuleTable(jt({ url: "http://design:8099/jobtools", auth: "design_service_key", ops })), /providers.jobtools.ops/, String(ops));
+  assert.throws(() => kernelModuleTable(jt({ url: "http://localhost:8099/j", auth: "design_service_key", ops: ["login"] })), /a compose service/);
+  assert.throws(() => kernelModuleTable(jt({ url: "http://design:8099/j", auth: "github_token", ops: ["login"] })), /its own secrets/);
+});
+
 test("journeys: the end names declared facts, a phase any fact (absent when no module records it); two modules may declare one journey only alike", () => {
   const pr = { name: "pr", label: "Pull requests", subject: "pr", phases: [{ name: "open", label: "Open", from: ["pr.opened"] }, { name: "review", label: "Review", from: ["record.filed"], where: { kind: ["acme.merge"] } }], end: ["pr.deployed"] };
   const host = (journeys) => ({ roles: { requests: ["kernel.facts"] }, facts: { "pr.opened": { subject: "pr" } }, journeys });

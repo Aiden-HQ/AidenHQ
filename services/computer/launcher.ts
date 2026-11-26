@@ -14,7 +14,8 @@
 //                             (aidenhq-kernel) with that token as the bearer: the kernel checks the grants and holds the keys
 //   POST /repo {repo, sha}    the box's `repo-checkout`: the kernel's code host snapshot (no .git, no credentials) of an agents-org
 //                             repo at a commit, into /workspace/repos/<name>; the kernel checks the repo-checkout role
-//   POST /v1/writes, GET /v1/writes/<id>, POST /v1/jobtools/<cmd>  a kernel job box's `aidenhq` commands (bearer = its job token), on to the kernel as it
+//   POST /v1/writes, GET /v1/writes/<id>, POST /v1/jobtools/<cmd>, POST /v1/jobtools/module/<module>/<op>  a kernel job box's
+//                             `aidenhq` commands and a module's job tools (bearer = its job token), on to the kernel as it
 //
 // Jobs (bearer = secret launcher_kernel_key, the kernel's; it opens nothing else).
 // A job's process runs in the box through the kernel's own `docker exec`.
@@ -560,8 +561,9 @@ const gatewayServer = http.createServer(async (req, res) => {
         (e) => deny(e.status ?? 500, e.message),
       );
     }
-    if ((req.method === "POST" && /^\/v1\/(writes|jobtools\/[a-z-]+)$/.test(req.url ?? "")) || (req.method === "GET" && /^\/v1\/writes\/[\w-]+$/.test(req.url ?? ""))) {
-      // A kernel job's `aidenhq` commands (images/engineer/bin/aidenhq): its writes and next-turn requests, to the kernel as itself.
+    if ((req.method === "POST" && /^\/v1\/(writes|jobtools\/[a-z-]+|jobtools\/module\/[a-z0-9][a-z0-9-]{0,62}\/[a-z][a-z0-9-]{0,40})$/.test(req.url ?? "")) || (req.method === "GET" && /^\/v1\/writes\/[\w-]+$/.test(req.url ?? ""))) {
+      // A kernel job's `aidenhq` commands (images/engineer/bin/aidenhq): its writes and next-turn requests, and a module's job tools
+      // (`ui-review login`), to the kernel as itself.
       const token = bearer(req);
       if (!liveBox(token)) return deny(401, "not a live computer");
       const k = new URL(req.url!, KERNEL_URL);

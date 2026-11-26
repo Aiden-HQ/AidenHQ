@@ -39,6 +39,17 @@ function ownTask(module: string, description: string) {
 }
 
 /**
+ * The module and source a task's text names, by the same rules (ownTask): one module's markers only, and exactly one source
+ * marker; null otherwise. Text anyone can type: a caller also checks the control plane's `createdByAgentId` and the kernel's
+ * own `task_filers` row beside it.
+ */
+export function markedModule(description: string): { module: string; source: string } | null {
+  const mods = [...new Set([...description.matchAll(MODULE_MARK)].map((m) => m[1]!))];
+  const sources = [...description.matchAll(SOURCE_TAG)].map((m) => m[1]!);
+  return mods.length === 1 && sources.length === 1 ? { module: mods[0]!, source: sources[0]! } : null;
+}
+
+/**
  * The release family's marker is the task's only source marker: a task that also carries another family's (`<!-- source:x -->`)
  * is one the train doesn't own, whatever else its text says, and is neither listed nor closed by it.
  */

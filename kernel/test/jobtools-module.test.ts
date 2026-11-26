@@ -1,0 +1,75 @@
+// A module's own job tools (POST /v1/jobtools/module/:module/:op): a kernel job's box reaches only the ops its module lists,
+// the module hears the caller as the kernel reads it (never the box's say-so), and the caller assertion lives only while the
+// module answers.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { createBackplane } from "../src/backplane.ts";
+import { createAsserter } from "../src/assert.ts";
+import { createIdentity } from "../src/identity.ts";
+import { createModuleTool } from "../src/jobtools.ts";
+import { createResolver } from "../src/net.ts";
+import { mintToken } from "../src/gateway/token.ts";
+import { MODULE_TASK } from "../src/modtasks.ts";
+import { readBody, serve } from "./helpers.ts";
+
+const T = "22222222-2222-4222-8222-222222222222", T2 = "33333333-3333-4333-8333-333333333333";
+
+test("module job tool forwards the caller and the task's module source", async (t) => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE task_filers (task TEXT PRIMARY KEY, filer TEXT NOT NULL)");
+  db.prepare("INSERT INTO task_filers VALUES (?, 'module:design'), (?, 'owner')").run(T, T2);
+  const passText = `Review acme.\n\n<!-- source:design:pass:acme:r1 -->\n${MODULE_TASK("design")}`;
+  // T2's text was typed to look like the module's (an agent may edit a description): its filer row is the owner's.
+  const issues: Record<string, { createdByAgentId?: string; description: string }> = { [T]: { description: passText }, [T2]: { description: passText } };
+  const jobs: Record<string, { agent: string; task: string; state: string; identifier: string; authority: { tools: {}; jobcaps: []; writes: []; roles: string[] } }> = {
+    "j-ui": { agent: "a-ui", task: T, state: "running", identifier: "ACME-1", authority: { tools: {}, jobcaps: [], writes: [], roles: ["ui-login"] } },
+    "j-forged": { agent: "a-ui", task: T2, state: "running", identifier: "ACME-2", authority: { tools: {}, jobcaps: [], writes: [], roles: ["ui-login"] } },
+  };
+  const whoami = createIdentity({ grants: () => ({ "a-ui": { key: "ui-reviewer", roles: ["ui-login"] } }), connections: () => ({}), jobcaps: () => ({}), job: (id) => jobs[id], secret: (n) => (n === "gateway_job_secret" ? "s" : "") });
+  const asserter = createAsserter(generateKeyPairSync("ed25519").privateKey);
+  const calls: { auth?: string; live: boolean; body: any }[] = [];
+  const design = await serve(async (req, res) => {
+    const body = JSON.parse(await readBody(req));
+    // The assertion opens the kernel's module+assertion routes for this job while the module answers.
+    const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), "design");
+    calls.push({ auth: req.headers.authorization, live: Boolean(live?.flight.bearer && live.caller.tool === "jobtool:design/login"), body });
+    res.writeHead(body.caller.task_source ? 200 : 403, { "content-type": "application/json" }).end(JSON.stringify(body.caller.task_source ? { ok: true } : { error: "not this app's pass" }));
+  });
+  t.after(() => design.s.close());
+  const moduleTool = createModuleTool({ db, whoami, asserter, resolver: createResolver(), secret: (n) => (n === "design_service_key" ? "dk" : ""),
+    issue: async (id) => (issues[id] ? { status: 200, json: issues[id] } : { status: 404, json: {} }),
+    decl: (m) => (m === "design" ? { url: `${design.url}/jobtools`, auth_secret: "design_service_key", ops: ["login", "app-session"] } : undefined) });
+  const bp = createBackplane({ whoami, asserter, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), moduleTool } as never);
+  const k = await serve(bp);
+  t.after(() => k.s.close());
+  const token = (job: string | null) => (job ? mintToken("s", { kind: "job", job, agentId: jobs[job]!.agent, issueId: jobs[job]!.task }) : "");
+  const post = (path: string, body: unknown, { job }: { job: string | null }) => fetch(`${k.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${token(job)}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  const r = await post("/v1/jobtools/module/design/login", { app: "acme", caller: { agent: "someone-else", task_source: "forged" } }, { job: "j-ui" });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { ok: true });
+  const last = calls.at(-1)!;
+  assert.equal(last.auth, "Bearer dk");
+  assert.equal(last.live, true);
+  assert.deepEqual(last.body.caller, { agent: "ui-reviewer", roles: ["ui-login"], task: T, task_module: "design", task_source: "design:pass:acme:r1" });
+  assert.deepEqual(last.body.body, { app: "acme", caller: { agent: "someone-else", task_source: "forged" } }, "the box's body is only the body");
+  assert.equal(asserter.size(), 0, "the assertion ends with the module's answer");
+  // An op the module doesn't list, or a module with none: 404. No job token: 401. A body over 16 KB: 413.
+  assert.equal((await post("/v1/jobtools/module/design/nope", {}, { job: "j-ui" })).status, 404);
+  assert.equal((await post("/v1/jobtools/module/other/login", {}, { job: "j-ui" })).status, 404);
+  assert.equal((await post("/v1/jobtools/module/design/login", { app: "acme" }, { job: null })).status, 401);
+  assert.equal((await post("/v1/jobtools/module/design/login", { pad: "x".repeat(17_000) }, { job: "j-ui" })).status, 413);
+  // Markers an agent typed on a task the kernel didn't record as the module's: no module, no source; the module's 403 reaches the box.
+  const forged = await post("/v1/jobtools/module/design/login", { app: "acme" }, { job: "j-forged" });
+  assert.equal(forged.status, 403);
+  assert.deepEqual(calls.at(-1)!.body.caller, { agent: "ui-reviewer", roles: ["ui-login"], task: T2, task_module: null, task_source: null });
+  // A task an agent created carries no module source, whatever its filer row and text say.
+  issues[T]!.createdByAgentId = "a-ui";
+  assert.equal((await post("/v1/jobtools/module/design/app-session", { app: "acme" }, { job: "j-ui" })).status, 403);
+  assert.equal(calls.at(-1)!.body.caller.task_module, null);
+  // An ended job's token: 401.
+  jobs["j-ui"]!.state = "done";
+  assert.equal((await post("/v1/jobtools/module/design/login", { app: "acme" }, { job: "j-ui" })).status, 401);
+});
