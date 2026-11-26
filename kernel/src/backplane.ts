@@ -88,6 +88,9 @@
 //                              filed by nothing (writes.preview, review-loop precheck), at most PRECHECKS reviewer calls a job
 //                              | clone {repo}: a repository its dispatcher's clone grant covers as a git bundle (its default
 //                              branch; every branch on this server), which the box clones, or fetches into its clone, itself
+//   POST /v1/jobtools/module/<module>/<op>  (a kernel job's own token, body ≤ 16 KB) one of the module's own job tools (module.yaml
+//                              providers.jobtools ops): the kernel POSTs {op, body, caller} to the module with its key and a caller
+//                              assertion in flight for the job; the module's status and answer (≤ 64 KB) go back (jobtools.ts createModuleTool)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/connections/:module/ok  (the board's key) a sign-in or setup flow of that module finished: its down state clears and
@@ -138,7 +141,7 @@ import type { Jobs } from "./jobs.ts";
 import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
-import type { JobTools } from "./jobtools.ts";
+import { JOBTOOL_BODY_MAX, type JobTools, type ModuleTool } from "./jobtools.ts";
 import type { Routing } from "./routing-tune.ts";
 import { CODEHOSTS, hostOf, type Answer } from "./codehost.ts";
 import { fail } from "./proxy.ts";
@@ -240,6 +243,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/checks/:check/kept", auth: "module" },
   { method: "POST", path: "/v1/receipts/verify", auth: "module" },
   { method: "POST", path: "/v1/jobtools/:cmd", auth: "job" },
+  { method: "POST", path: "/v1/jobtools/module/:module/:cmd", auth: "job" },
   { method: "POST", path: "/v1/checkout", auth: "job" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "GET", path: "/v1/connections/health", auth: "board" },
@@ -357,7 +361,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, compileCheck, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, moduleTool, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, compileCheck, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -414,6 +418,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   checkJobs?: CheckJobs;
   /** A running job's requests for its task's next turn (jobtools.ts). */
   jobTools?: JobTools;
+  /** A module's own job tools, for a kernel job's box (jobtools.ts createModuleTool). */
+  moduleTool?: ModuleTool;
   /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
   precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
   /** A session job's git token for a repo (codehost.ts appToken): the App's, narrowed to that repo. */
@@ -634,6 +640,17 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             throw e;
           }
           return await codehost(hostOf(snap.repo), "snapshot", snap, res);
+        }
+        case "POST /v1/jobtools/module/:module/:cmd": {
+          if (!moduleTool) throw fail(503, "unavailable", "module job tools are off");
+          const b = await json(req, JOBTOOL_BODY_MAX);
+          let out;
+          try { out = await moduleTool(bearer(req), m[0]!, m[1]!, b); } catch (e) {
+            const j = e as { name?: string; status?: number; code?: string; message: string };
+            if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
+            throw e;
+          }
+          return void res.writeHead(out.status, { "content-type": "application/json" }).end(out.body);
         }
         case "POST /v1/jobtools/:cmd": {
           if (!jobTools) throw fail(503, "unavailable", "job tools are off");

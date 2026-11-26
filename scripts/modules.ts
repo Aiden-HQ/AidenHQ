@@ -1642,6 +1642,20 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}, official: Set<s
       if (!/^http:\/\/[a-z][a-z0-9-]*:\d+$/.test(String(bd.url)) || /^http:\/\/localhost:/.test(String(bd.url))) fail(`module ${name}: providers.board.url must be http://<service>:<port>, a compose service`);
       if (!ownSecrets(def).includes(bd.auth)) fail(`module ${name}: providers.board.auth must name one of its own secrets`);
     }
+    // providers.jobtools: { url: http://<service>:<port>/<path>, auth: one of its own secrets, ops: [names] }: the module's own job
+    // tools, which a kernel job's box calls at POST /v1/jobtools/module/<module>/<op> (kernel/src/jobtools.ts createModuleTool);
+    // the kernel forwards only the ops listed here.
+    const jt = def.providers?.jobtools;
+    if (jt != null) {
+      if (typeof jt !== "object" || Array.isArray(jt) || Object.keys(jt).some((k) => !["url", "auth", "ops"].includes(k))) fail(`module ${name}: providers.jobtools is { url, auth, ops }`);
+      if (!/^http:\/\/[a-z][a-z0-9-]*:\d+\/[\w/.-]*$/.test(String(jt.url)) || /^http:\/\/localhost:/.test(String(jt.url))) fail(`module ${name}: providers.jobtools.url must be http://<service>:<port>/<path>`);
+      // The kernel sends the module's key and its callers' data there: only to a service this module declares (as validate's post).
+      if (!Object.keys(def.services?.run ?? {}).includes(new URL(String(jt.url)).hostname)) fail(`module ${name}: providers.jobtools.url must be one of the module's own services (services.run)`);
+      // The key the kernel sends on every box's call: one the module generates for itself, named for it, never a host credential.
+      const prefix = `${name.replace(/-/g, "_")}_`;
+      if (typeof jt.auth !== "string" || !jt.auth.startsWith(prefix) || !/^[a-z][a-z0-9_]*$/.test(jt.auth) || ![def.generated_secrets ?? [], def.secrets?.generated ?? []].flat().includes(jt.auth)) fail(`module ${name}: providers.jobtools.auth must name a secret the module generates, named ${prefix}…`);
+      if (!Array.isArray(jt.ops) || !jt.ops.length || jt.ops.some((o: unknown) => typeof o !== "string" || !/^[a-z][a-z0-9-]{0,40}$/.test(o)) || new Set(jt.ops).size !== jt.ops.length) fail(`module ${name}: providers.jobtools.ops is a list of distinct op names ([a-z][a-z0-9-]*)`);
+    }
     const { facts, stages, journeys } = flowDecls(name, def, declared);
     const subscribes = subscriptions(name, def, defs, settings, official.has(name));
     // Two modules may declare one journey (github and codehost-local both draw `pr`): only the same declaration.
@@ -1658,6 +1672,7 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}, official: Set<s
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(bd != null ? { board: { url: String(bd.url), auth_secret: String(bd.auth) } } : {}),
+      ...(jt != null ? { jobtools: { url: String(jt.url), auth_secret: String(jt.auth), ops: [...jt.ops] } } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
