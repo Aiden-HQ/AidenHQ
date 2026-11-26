@@ -69,10 +69,10 @@ const taskIsClosed = async (task: string): Promise<boolean> => {
   closedTasks.set(task, { at: Date.now(), closed });
   return closed;
 };
-const wakeTask = async (id: number, task: string, note: string, at?: number) => void (await kernel("POST", "/v1/wakes", { task, cause: note, id: `lane-${id}`, at }));
+const wakeTask = async (id: number, task: string, note: string, at?: number, agent?: string) => void (await kernel("POST", "/v1/wakes", { task, cause: note, id: `lane-${id}`, at, agent }));
 // A task wake is filed in the kernel when set (so its task state sees it); if that fails, the ticker files it when due.
-const fileWake = (id: number, task: string, note: string, at: number) =>
-  wakeTask(id, task, note, at).catch((e: Error) => log.warn({ wake: id, task, err: e.message }, "wake not filed in the kernel yet; the ticker files it when due"));
+const fileWake = (id: number, task: string, note: string, at: number, agent: string) =>
+  wakeTask(id, task, note, at, agent).catch((e: Error) => log.warn({ wake: id, task, err: e.message }, "wake not filed in the kernel yet; the ticker files it when due"));
 const laneTools = { store, lane, agents, timezone: process.env.OWNER_TIMEZONE || "UTC", taskIsClosed, fileWake };
 
 function authorized(req: IncomingMessage): boolean {

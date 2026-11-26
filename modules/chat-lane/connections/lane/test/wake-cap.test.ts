@@ -46,7 +46,7 @@ describe("the wake cap counts only wakes on open tasks", () => {
     const due = Math.ceil((Date.now() + 3600_000) / 60_000) * 60_000;
     const set = await call("wake_at", { when_local: at(due), note: "check the deploy", task: "WOR-5245" });
     expect(set).toMatchObject({ ok: true });
-    expect(fileWake).toHaveBeenCalledWith(set.id, "WOR-5245", "check the deploy", due); // filed in the kernel now, not only when due
+    expect(fileWake).toHaveBeenCalledWith(set.id, "WOR-5245", "check the deploy", due, "ag-aria"); // filed in the kernel now, not only when due
 
     // It fires at its time, and only then. takeDue hands out at most 50 per pass, and the 51 older wakes (an hour out too) come
     // due ahead of it, so each instant is drained pass by pass; one pass could cut the new wake off whenever `due` sat within a
