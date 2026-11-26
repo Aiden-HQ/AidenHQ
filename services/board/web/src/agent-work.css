@@ -157,9 +157,9 @@
 .attn.attn-compact { padding-top: 7px; padding-bottom: 7px; background: var(--surface-2); }
 .attn-compact .attn-head { gap: 6px 14px; }
 .attn-count { border: 0; background: none; padding: 2px 4px; margin: 0 -4px; border-radius: var(--radius-sm); font: inherit; font-size: var(--text-sm); color: var(--muted); cursor: pointer; white-space: nowrap; }
-/* The loading line's placeholders sit exactly where the flat count buttons land: same type size, padding and negative
-   margin (shell.css prints the count's own words), so the strip's height is the same before and after the counts arrive. */
-.attn-compact .attn-count-load { padding: 2px 4px; margin: 0 -4px; font-size: var(--text-sm); }
+/* The loading line's placeholders are the count buttons themselves, disabled, with a bone where the number goes: the same box,
+   so the strip's height is the same before and after the counts arrive. */
+.attn-count-load { display: inline-flex; align-items: center; gap: 3px; }
 .attn-count:hover { background: var(--hover); color: var(--text); }
 .attn-count:focus-visible { outline: none; box-shadow: var(--ring); }
 .attn-count[aria-expanded="true"] { background: var(--accent-soft); }

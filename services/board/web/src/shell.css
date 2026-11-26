@@ -98,9 +98,8 @@
 .attn-head { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
 .attn-order { margin-left: auto; font-size: var(--text-xs); color: var(--faint); }
 .attn-list { max-height: 32vh; overflow-y: auto; border-radius: var(--radius); }
-/* The strip before its counts arrive (Attention.tsx): the loaded line's own shape, so the board below never moves. */
-.attn-counts-load { pointer-events: none; }
-.attn-count-load { display: inline-flex; align-items: center; gap: 3px; padding: 4px 12px; font-size: var(--text-base); color: var(--muted); white-space: nowrap; }
+/* The strip before its counts arrive (Attention.tsx): the loaded buttons' own shape, so the board below never moves. */
+.attn-count-load { pointer-events: none; }
 .attn-failed { font-size: var(--text-sm); color: var(--bad-text); overflow-wrap: anywhere; }
 .attn-row { display: grid; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .attn-row:first-child { border-top: 0; }

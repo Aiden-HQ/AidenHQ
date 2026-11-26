@@ -58,14 +58,13 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
       <section className="attn attn-compact" role="status" aria-busy="true" aria-label="Loading fleet attention">
         <div className="attn-head">
           <b className="attn-title">Fleet attention</b>
-          <span className="attn-counts-load" aria-hidden>
-            {(["Needs you · ", "Failed · ", "Unexplained idle · "] as const).map((label) => (
-              <span key={label} className="attn-count-load">
-                {label}
-                <Bone w={7} h={11} />
-              </span>
-            ))}
-          </span>
+          {/* The loaded buttons themselves, disabled, with a bone where each number goes: same words, same box, so the line
+              breaks where it will once the counts arrive and is the same height at every width, a phone's two rows included. */}
+          {(["need you", "failed", "unexplained"] as const).map((label) => (
+            <button key={label} type="button" className="attn-count attn-count-load" tabIndex={-1} disabled aria-hidden>
+              <Bone w={7} h={11} /> {label}
+            </button>
+          ))}
         </div>
       </section>
     );
