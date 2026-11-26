@@ -144,6 +144,9 @@ export function sharedCopies(root = repo) {
   // A rubric criterion claiming a file's contents lack something: refused wherever a rubric is written (the grading service
   // files and amends; the task tools validate a delegation and an amendment before they send it).
   "services/shared/absence.ts": ["modules/grading/service/src/absence.ts", "modules/tasks/connections/tasks-mcp/src/absence.ts"],
+  // The task a delegation was asked to be filed under when the control plane placed it elsewhere (Paperclip's agent
+  // task-tree cap): the kernel's delegator, notices and dispatch read it, and the task tools group siblings by it.
+  "services/shared/requested-parent.ts": ["modules/tasks/connections/tasks-mcp/src/requested-parent.ts", "modules/dispatch/service/src/requested-parent.ts", "modules/grading/service/src/requested-parent.ts"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
   "scripts/supply-chain/best-version.ts": ["modules/ci/template/.github/supply-chain/best-version.ts", "modules/engineering/skills/supply-chain/best-version.ts", "modules/github/service/src/best-version.ts"],
   "scripts/supply-chain/pins.ts": ["modules/ci/template/.github/supply-chain/pins.ts"],

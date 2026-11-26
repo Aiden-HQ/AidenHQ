@@ -35,7 +35,7 @@
 //                              (idle.ts): a work.waiting fact and a wake at `until`
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
 //                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row); with
-//                              to: "asker", on the task's open parent instead when it has one; with quiet: true, a note that wakes
+//                              to: "asker", on the task's open requester instead when it has one; with quiet: true, a note that wakes
 //                              nobody and is not anyone's words
 //   GET  /v1/wakes/pending?task=  (a module with role kernel.jobs) whether a wake for the task still waits to start a job
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
@@ -131,6 +131,7 @@ import type { Lane } from "./lane.ts";
 import { INPUT_MAX, type Checks as CheckJobs } from "./checkjobs.ts";
 import type { Answers } from "./answers.ts";
 import { CP_READ_PATHS, isChannel, neutral, type Api, type Channels, type ModulesFile } from "./channels.ts";
+import { requestedParentOf } from "../../services/shared/requested-parent.ts";
 import type { Grant, Identity, Whoami } from "./identity.ts";
 import { TestSessionError, type TestSessions } from "./test-session.ts";
 import type { Jobs } from "./jobs.ts";
@@ -985,9 +986,9 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             // `to: "asker"`: whoever asked for the task hears it, its open parent (asker.tell's open-parent path), else the task itself.
             const said = async (on: string) => wakeNotice(owner, on, text, id === undefined ? undefined : `${id}@${on}`, quiet).catch((e: Error) => { throw fail(502, "upstream", e.message); });
             if (b.to === "asker") {
-              // A read that failed says nothing about the parent: retried (502), never read as "no parent" and posted on the task.
+              // A read that failed says nothing about the requester: retried (502), never read as "none" and posted on the task.
               const parent = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).then((i) => {
-                if (i.status === 200) return i.json?.parentId as string | undefined;
+                if (i.status === 200) return requestedParentOf(i.json);
                 if (i.status === 404) return undefined;
                 throw fail(502, "upstream", `the control plane answered ${i.status} reading the task`);
               }, (e: Error) => { throw fail(502, "upstream", e.message); });

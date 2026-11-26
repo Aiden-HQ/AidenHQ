@@ -6,6 +6,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { uncheckableAbsence } from "./absence.ts";
+import { recordedRequesterOf, requestedParentOf, withRequester } from "./requested-parent.ts";
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
@@ -309,10 +310,9 @@ async function requireHeld(issue: Json) {
 }
 
 /** The other parts of one of the user's tasks, with whom each is, for reading their conversations. */
-async function partsOf(parentId: string, exceptId: string) {
+async function partsOf(parent: Json, exceptId: string) {
   if (!COMPANY()) return [];
-  const q = new URLSearchParams({ parentId, status: `${OPEN_STATUSES},done,cancelled`, limit: "50" });
-  const kids = (await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`)).filter((k: Json) => k.parentId === parentId && k.id !== exceptId);
+  const kids = (await childrenOf(parent, `${OPEN_STATUSES},done,cancelled`)).filter((k: Json) => k.id !== exceptId);
   const states = await stateRows(kids.map((k: Json) => k.id));
   return Promise.all(kids.map(async (k: Json) => ({ identifier: k.identifier, title: k.title, state: states.get(k.id)?.kind, with: k.assigneeAgentId ? (await nameOf(k.assigneeAgentId)) ?? "an agent" : "the user" })));
 }
@@ -729,7 +729,7 @@ async function assignTask(me: Json, target: Json, { title, description, parent, 
     allowDuplicate: true,
     ...(src ? { idempotencyKey: idempotencyKey(src) } : {}),
   };
-  const open = p ? await openSiblings(p.id, target) : [];
+  const open = p ? await openSiblings(p, target) : [];
   const same = open.find((o) => similar(o.title, body.title) >= SAME_TITLE || similar(o.description, body.description) >= SAME_BRIEF);
   if (same && parked(same, me, hold)) return { identifier: same.identifier, created: false, assignee: target.name, ...(await startGraded(same, grade, blockers)) };
   if (same)
@@ -756,22 +756,47 @@ export function similar(a: Json, b: Json) {
   for (const w of x) if (y.has(w)) both++;
   return both / Math.max(1, x.size + y.size - both);
 }
+/**
+ * The tasks filed under `parent`, whoever holds them: its children, plus the ones a delegation asked it for that the control
+ * plane placed elsewhere — beside it under its parent (a grandchild request becomes a sibling), or at the top level when the
+ * create didn't authorize the placement (the create response's `parentAdjusted`, effective parent null). A task records the one
+ * that asked for it (requested-parent.ts), first in its description so a list row's 1200-char cut keeps it; the rows are found
+ * under the requester, under its placed parent, and among those the control plane says were created from it. A task placed
+ * under `parent` that another task asked for is not one of them.
+ */
+async function childrenOf(parent: Json, statuses = OPEN_STATUSES, assignees?: string[]) {
+  const found = new Map<string, Json>();
+  // A row is decided by the requester it records, never by the parent a list row shows: a delegation placed beside its requester
+  // sits under the placed parent, and an edit (the board keeps the marker, at the end) can put a marker past the 1200-char cut.
+  // A direct child needs no marker to resolve, but a truncated row is read whole before its requester is decided anyway.
+  const queries = [parent.id, parent.parentId].filter(Boolean).map((p) => new URLSearchParams({ parentId: String(p), status: statuses, limit: "50" }));
+  // A top-level placement no longer carries the requester in `parentId`: the create's origin still names it.
+  queries.push(new URLSearchParams({ createdFromIssueId: parent.id, status: statuses, limit: "50" }));
+  for (const base of queries) for (const agent of assignees?.length ? assignees : [undefined]) {
+    // The assignee filter goes in the query, before the limit: the check is for these agents' tasks, not the first 50 of anyone's.
+    const q = new URLSearchParams(base);
+    if (agent) q.set("assigneeAgentId", agent);
+    const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
+    for (const k of Array.isArray(kids) ? kids : []) {
+      // A cut row without a marker is read whole; the whole task is the one kept, so a caller isn't handed a preview. A failed
+      // read throws (requested-parent.ts): the row's parent is the placed one, and taking it would group the task wrongly.
+      const whole = k.descriptionTruncated === true && !recordedRequesterOf(k) && typeof k.id === "string" ? await api("GET", `/api/issues/${k.id}`) : undefined;
+      const asked = requestedParentOf(whole ?? k);
+      if (k.id !== parent.id && asked === parent.id) found.set(k.id, whole ?? k);
+    }
+  }
+  return [...found.values()];
+}
 /** The agent's open tasks under one parent; for a team record, those of any of its members too (the kernel hands a task for the team to one member). */
-async function openSiblings(parentId: string, target: Json) {
-  const ids = [target.id];
+async function openSiblings(parent: Json, target: Json) {
+  const ids = new Set([target.id]);
   const members = target.metadata?.team?.members;
   if (Array.isArray(members) && members.length) {
     const keys = new Set(members.map((m) => m.key));
     const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
-    ids.push(...all.filter((a: Json) => keys.has(keyOf(a))).map((a: Json) => a.id));
+    for (const a of all) if (keys.has(keyOf(a))) ids.add(a.id);
   }
-  const open = [];
-  for (const agentId of ids) {
-    const q = new URLSearchParams({ parentId, assigneeAgentId: agentId, status: OPEN_STATUSES, limit: "50" });
-    const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-    open.push(...(Array.isArray(kids) ? kids : []).filter((k) => k.parentId === parentId && k.assigneeAgentId === agentId));
-  }
-  return open;
+  return (await childrenOf(parent, OPEN_STATUSES, [...ids])).filter((k) => ids.has(k.assigneeAgentId));
 }
 const keyOf = (a: Json) => (a.metadata?.setupKey ?? "").replace(/^aidenhq:/, "") || a.name;
 // An Engineer (setup marks it runnerEngine in its metadata): code work goes to it with a brief.
@@ -959,8 +984,11 @@ const TOOLS: Record<string, Tool> = {
     run: async () => {
       if (!CURRENT()) return { task: null };
       const i = await api("GET", `/api/issues/${issueRef(CURRENT())}`);
-      const p = i.parentId ? await api("GET", `/api/issues/${issueRef(i.parentId)}`).catch(() => undefined) : undefined;
-      const parts = p ? await partsOf(p.id, i.id).catch(() => []) : [];
+      // The task it is part of is the one that asked for it: when Paperclip placed it beside that task, `parentId` is the
+      // placement parent (requested-parent.ts).
+      const asked = requestedParentOf(i);
+      const p = asked ? await api("GET", `/api/issues/${issueRef(asked)}`).catch(() => undefined) : undefined;
+      const parts = p ? await partsOf(p, i.id).catch(() => []) : [];
       const s = (await stateRows([i.id])).get(i.id);
       const more = "the rest is not available here; ask for the relevant part";
       return { task: { ...(await brief(i, s)), description: clip(i.description, DESC_MAX, more) }, ...(p ? { parent: { identifier: p.identifier, title: p.title, description: clip(p.description, DESC_MAX, more) }, parts } : {}) };
@@ -1610,7 +1638,11 @@ const TOOLS: Record<string, Tool> = {
       if (description !== undefined) {
         current = await api("GET", `/api/issues/${issueRef(issue)}`);
         const markers = String(current.description ?? "").match(/<!-- (?:merged-)?source:[^>]*-->/g) ?? [];
-        body.description = String(description).replace(/<!--|-->/g, "").slice(0, 60_000) + (markers.length ? `\n\n${markers.join("\n")}` : "");
+        // The requester a delegation recorded outlives the edit too (requested-parent.ts): it routes the task's delegator,
+        // notices and siblings, so an edit that dropped it would re-parent the chain.
+        // The requester goes first, as the plugin writes it (a task list cuts a long description to 1200 chars), and only the
+        // one the task already records counts: a marker in the agent's own text is stripped with its other tags above.
+        body.description = withRequester(current.description, String(description).replace(/<!--|-->/g, "").slice(0, 60_000) + (markers.length ? `\n\n${markers.join("\n")}` : ""));
       }
       if (!Object.keys(body).length) throw new Error("nothing to update");
       const i = await brief(await api("PATCH", `/api/issues/${issueRef(issue)}`, body));

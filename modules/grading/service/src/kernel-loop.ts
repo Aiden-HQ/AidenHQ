@@ -13,6 +13,7 @@ import { createGithub } from "./github.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 import { appsEvidence, type AppsCall } from "./apps-evidence.ts";
 import { rubricHash } from "./grades.ts";
+import { requestedParentOf, requesterOfListed } from "./requested-parent.ts";
 
 type Json = any;
 /** The kernel as the grading loop needs it: its calls with this module's token (kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake). */
@@ -72,7 +73,19 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     // anything on it (its work, its records, its files) is read.
     taskOnly: (ref: string) => read(`/api/issues/${encodeURIComponent(ref)}`),
     comments: (id: string) => read(`/api/issues/${encodeURIComponent(id)}/comments`),
-    children: async (parentId: string) => (await read(`/api/companies/${(await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(parentId)}`)).companyId}/issues${q({ parentId, limit: "200" })}`)).filter((i: Json) => i.parentId === parentId),
+    // The tasks filed under it: its children, and a delegation's that the control plane placed elsewhere — beside it
+    // (requested-parent.ts), or at the top level when the create didn't authorize that placement.
+    children: async (parentId: string) => {
+      const parent = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(parentId)}`);
+      const places = [...new Set([parentId, parent.parentId].filter(Boolean) as string[])];
+      const listed = new Map<string, Json>();
+      const queries = [...places.map((p) => q({ parentId: p, limit: "200" })), q({ createdFromIssueId: parentId, limit: "200" })];
+      for (const query of queries) for (const i of await read(`/api/companies/${parent.companyId}/issues${query}`)) if (i.id !== parentId) listed.set(i.id, i);
+      // A cut row without a marker is read whole; a failed read throws so the pass retries, rather than counting the task under
+      // the placed parent a preview shows (which could leave a live child out of its requester's batch).
+      const found = await Promise.all([...listed.values()].map(async (i) => ({ ...i, asked: await requesterOfListed(i, (id) => read(`/api/issues/${encodeURIComponent(id)}`)) })));
+      return found.filter((i) => i.asked === parentId);
+    },
     // The task's own agent, whatever its company (work or personal).
     agent: (id: string) => read(`/api/agents/${encodeURIComponent(id)}`).catch((e: { status?: number }) => (e.status === 404 ? undefined : Promise.reject(e))),
     // A verdict's move is the finish check's own resolve: done accepts the work, todo reopens it with the note (which wakes the agent).
@@ -87,9 +100,11 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     // One attachment's bytes, only one listed on the task (the kernel refuses another, and anything over 25 MB).
     attachmentContent: (task: string, id: string) => kernelBytes(`/v1/cp/read/attachments/${encodeURIComponent(id)}/content${q({ task })}`),
   };
+  // The task that asked for this one, not the task the control plane placed it under (requested-parent.ts).
   const tellParent = async (issue: Json, _kind: string, text: string) => {
-    if (!issue.parentId) return false;
-    return (await kernel("POST", "/v1/wakes", { task: issue.parentId, text })).posted === true;
+    const asked = requestedParentOf(issue);
+    if (!asked) return false;
+    return (await kernel("POST", "/v1/wakes", { task: asked, text })).posted === true;
   };
   const recordsOn = async (issue: Json) => ((await work(issue.id)).records ?? []).map((r: Json) => ({
     id: r.id, action: r.kind, state: r.state === "review" || r.state === "owner" ? "pending" : r.state === "done" || r.state === "failed" ? "used" : r.state,

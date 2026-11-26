@@ -3,6 +3,7 @@
 import type { Step } from "./progress.ts";
 import { KernelError, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Agent, Comment, Directory, Issue } from "./thread.ts";
+import { requesterOfListed } from "./requested-parent.ts";
 
 /** An inbox row the module claimed (kernel wakes.ts); `live_job`: a comment for that running job. */
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; live_job?: string }
@@ -90,7 +91,20 @@ export function createKernel(url: string, token: string, fetcher: typeof fetch =
     routine: (id) => call("GET", `/v1/cp/read/api/routines/${e(id)}`),
     cancelRoutineRun: async (task, why, body) => void (await call("POST", "/v1/routines/cancel", { task, why, body })),
     // A child parked in backlog still counts: it is a task of this batch, and a summary that left it out would misreport the batch.
-    children: (parent, company) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?parentId=${e(parent)}&status=todo,in_progress,in_review,blocked,backlog,done,cancelled&limit=200`).then((l: Issue[]) => l.filter((i) => i.parentId === parent)),
+    // A delegation the cap placed beside its requester sits under the requester's *parent*, not under the requester, so that
+    // place is read too: it finds a placed sibling even when the create's origin (`createdFromIssueId`) doesn't name it, as the
+    // grading and task-tool readers already do. A row counts only when it records this task as the one that asked for it.
+    children: async (parent, company) => {
+      const query = (f: string) => call("GET", `/v1/cp/read/api/companies/${e(company)}/issues?${f}&status=todo,in_progress,in_review,blocked,backlog,done,cancelled&limit=200`) as Promise<Issue[]>;
+      const task = await call("GET", `/v1/cp/read/api/issues/${e(parent)}`).catch(() => undefined) as Issue | undefined;
+      const places = [...new Set([parent, typeof task?.parentId === "string" ? task.parentId : undefined].filter(Boolean) as string[])];
+      const [under, from] = await Promise.all([Promise.all(places.map((p) => query(`parentId=${e(p)}`))), query(`createdFromIssueId=${e(parent)}`)]);
+      const found = new Map<string, Issue>([...under.flat(), ...from].map((i) => [i.id, i]));
+      const out: Issue[] = [];
+      // A cut row without a marker is read whole; a failed read throws rather than resolving to the placed parent it shows.
+      for (const i of found.values()) if (i.id !== parent && (await requesterOfListed(i, (id) => call("GET", `/v1/cp/read/api/issues/${e(id)}`))) === parent) out.push(i);
+      return out;
+    },
     wake: async (task, text, id) => void (await call("POST", "/v1/wakes", { task, text, ...(id ? { id } : {}) })),
     schedule: async (b) => void (await call("POST", "/v1/wakes", b)),
     fileTask: async (b) => await call("POST", "/v1/tasks", b),

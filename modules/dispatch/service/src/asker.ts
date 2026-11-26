@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { KernelError, type Kernel } from "./kernel.ts";
 import { agentMade, type Directory, type Issue } from "./thread.ts";
+import { requestedParentOf, requesterOfListed } from "./requested-parent.ts";
 
 const CLOSED = new Set(["done", "cancelled"]);
 const h16 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -17,9 +18,12 @@ const h16 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,
 export type Told = { heard: "parent"; } | { heard: "asker"; card: string } | { heard: "owner" } | { heard: false };
 
 export function createAsker(kernel: Kernel) {
-  /** `needs`: what the owner's line says the task needs ("was stopped"); without it only an open parent hears. */
+  /** `needs`: what the owner's line says the task needs ("was stopped"); without it only an open delegator hears. */
   async function tell(task: Issue, text: string, needs?: string, key = text): Promise<Told> {
-    const parent = task.parentId ? await kernel.task(task.parentId).catch(() => undefined) : undefined;
+    // The task that asked for this one, not the task the control plane placed it under: a grandchild request becomes a
+    // sibling of its requester, and its requester still hears it (requested-parent.ts).
+    const asked = requestedParentOf(task);
+    const parent = asked ? await kernel.task(asked).catch(() => undefined) : undefined;
     if (parent && !CLOSED.has(String(parent.status))) return (await kernel.wake(parent.id, text), { heard: "parent" });
     if (!needs || !agentMade(task)) return { heard: false };
     try {
@@ -43,7 +47,20 @@ export function createAsker(kernel: Kernel) {
    * Returns the key of the batch it reported (the newest job), or undefined while a sibling is still busy.
    */
   async function summarize(task: Issue, { ended, live, dir }: { ended: (task: string) => Promise<{ seq: number; state: string } | undefined>; live: (task: string) => Promise<boolean>; dir: Directory }) {
-    const siblings = (await kernel.children(task.parentId!, task.companyId!)).filter((c) => agentMade(c) && c.assigneeAgentId && dir[c.assigneeAgentId]);
+    // The requester's batch: the tasks filed under it, the ones a delegation asked it for but the control plane placed beside
+    // it included (requested-parent.ts), and not a task that asked for one of those.
+    const asked = requestedParentOf(task);
+    if (!asked) return undefined;
+    // The requester's tasks wherever the control plane placed them: beside it under its parent, or at the top level when the
+    // create didn't authorize the placement (kernel.children reads both). A list cuts a long description to 1200 chars, so a
+    // row that may hide the requester is read whole (requested-parent.ts). The task itself is one of the batch.
+    const listed = new Map<string, Issue>();
+    for (const place of [asked, task.parentId].filter(Boolean) as string[]) for (const c of await kernel.children(place, task.companyId!)) listed.set(c.id, c);
+    listed.set(task.id, task);
+    const found = await Promise.all([...listed.values()].map(async (c) => ({
+      ...c, asked: await requesterOfListed(c, (id) => kernel.task(id)),
+    })));
+    const siblings = found.filter((c) => c.asked === asked).filter((c) => agentMade(c) && c.assigneeAgentId && dir[c.assigneeAgentId]);
     const runs = await Promise.all(siblings.map(async (c) => ({ c, run: await ended(c.id), live: await live(c.id) })));
     if (!siblings.length || runs.some((r) => r.live || (!r.run && ["todo", "in_progress"].includes(String(r.c.status))))) return undefined;
     const rows = runs.sort((a, b) => String(a.c.identifier).localeCompare(String(b.c.identifier), undefined, { numeric: true }));

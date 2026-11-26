@@ -62,6 +62,7 @@ import { createTaskStateRead } from "./task-state-read.ts";
 import { createIdle } from "./idle.ts";
 import { createConnectionState, type ConnectionState } from "./connection-state.ts";
 import { CHIEF, CONVERSING_MS, SETTLER, createEscalate, ownerWroteAt } from "./escalate.ts";
+import { requestedParentOf } from "../../services/shared/requested-parent.ts";
 import { pidAlive, recordKernel } from "./previous.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
@@ -506,10 +507,12 @@ const wakes = createWakes({
   // A repo the instance's code hosts have (codehostRepos: the agents orgs, the product, the instance, github_orgs and the
   // maintained repos; a local/… one only once it exists). A branch, a path or a library named like owner/name is none.
   knownRepo: (repo) => (repo.startsWith(`${LOCAL_ORG}/`) ? localHost() && localRepoExists(repo) : covers(repo, KNOWN_REPOS, codehostRepos())),
-  // No member can take it: an open parent hears it as a wake notice (as asker.tell does), else the owner.
+  // No member can take it: the task that asked for it hears it as a wake notice (as asker.tell does), else the owner.
   tellBlocked: async (task, text) => {
-    // A parent that can't be read now is not a reason to lose the message: it goes to the owner, as with no parent at all.
-    if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text).catch(() => "retry")) === "posted") return;
+    // The requester, not the task the control plane placed it under (a grandchild request becomes a sibling).
+    const asked = requestedParentOf(task);
+    // A requester that can't be read now is not a reason to lose the message: it goes to the owner, as with no requester at all.
+    if (asked && (await wakeNotice(ownerApi, asked, text).catch(() => "retry")) === "posted") return;
     notify.queue({ kind: "alert", text });
   },
 });
@@ -872,7 +875,8 @@ const gw = createGateway({
   notifyOwner: (text) => toOwner("alert")(text),
   tellDelegator: async (task, text) => {
     const issue = await issueOf(task);
-    if (issue?.parentId && (await wakeNotice(ownerApi, issue.parentId, `**${issue.identifier ?? task}:** ${text}`).catch(() => "retry")) === "posted") return;
+    const asked = requestedParentOf(issue);
+    if (asked && (await wakeNotice(ownerApi, asked, `**${issue?.identifier ?? task}:** ${text}`).catch(() => "retry")) === "posted") return;
     toOwner("alert")(`${issue?.identifier ?? task}: ${text}`);
   },
   jobLive: (id) => ["admitted", "running"].includes(String(admittedJob(records.db, id)?.state)),

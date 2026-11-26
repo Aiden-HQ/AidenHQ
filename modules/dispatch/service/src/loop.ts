@@ -12,6 +12,7 @@ import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
 import { createRoutines } from "./routines.ts";
 import { progressTracker } from "./progress.ts";
 import { agentMade, freshWords, moduleMade, ownRequest, redirectNote, speaker, spoke, stripHidden, threadEntries, threadSection, type Agent, type Comment, type Directory, type Issue } from "./thread.ts";
+import { requestedParentOf } from "./requested-parent.ts";
 
 // What this module keeps is conversation state: per task, the newest comment its last job saw; comments a run took as live input;
 // tasks greeted; per parent, the batch of sub-task runs already summarized; per task, the blocked episode it last escalated. The
@@ -175,7 +176,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     // A run that ended on a refused write says so on its task; its asker (told below) decides. The task's status is left as it
     // is: Paperclip takes "blocked" only with the tasks that block it, and a refusal is not another task.
     if (!agentMade(task)) return;
-    if (v.refused && task.status !== "blocked" && task.parentId) await kernel.post(job, { kind: "notice", body: `**Blocked:** ${v.refused}` });
+    // Whether anything asked for it (requested-parent.ts): a task no one delegated has no one to tell but the owner.
+    const delegated = Boolean(requestedParentOf(task));
+    if (v.refused && task.status !== "blocked" && delegated) await kernel.post(job, { kind: "notice", body: `**Blocked:** ${v.refused}` });
     if (task.status === "blocked" || v.refused) {
       const episode = blockedEpisode(task);
       const reason = fence("AGENT", (v.refused ?? said ?? stopped ?? "its run ended without saying why.").slice(0, 600));
@@ -198,7 +201,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     }
     // A run that ends with the task unblocked ends the episode: blocked again is a new one.
     q("DELETE FROM escalated WHERE task = ?").run(task.id);
-    if (!task.parentId) {
+    if (!delegated) {
       if (stopped) await asker.tell(task, `**${task.identifier} stopped:** ${stopped}`, "was stopped");
       return;
     }
@@ -211,7 +214,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
    */
   /** `except`: the wake this call is dropping, which no longer holds the batch (a key, so only that one wake is left out). */
   async function batch(task: Issue, v: JobView, except?: string) {
-    if (!agentMade(task) || !task.parentId) return;
+    // Who asked for it, not what it was placed under: a batch is the requester's (requested-parent.ts).
+    const asked = requestedParentOf(task);
+    if (!agentMade(task) || !asked) return;
     const job = v.id;
     // The kernel's ledger: a task's runs that are done with (acknowledged, or this one) are its ended runs; any other is still busy.
     const ended = async (t: string) => {
@@ -227,10 +232,10 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       const last = t === task.id ? runs.find((j) => j.id === job) : runs[0];
       return Boolean(last && unfinished(last) && (await kernel.wakePending(t, { retry: last.id, except })));
     };
-    const last = (q("SELECT batch FROM summarized WHERE parent = ?").get(task.parentId) as { batch: number } | undefined)?.batch ?? 0;
+    const last = (q("SELECT batch FROM summarized WHERE parent = ?").get(asked) as { batch: number } | undefined)?.batch ?? 0;
     if (last >= ((await ended(task.id))?.seq ?? 0)) return;
     const key = await asker.summarize(task, { ended, live, dir: await kernel.directory() });
-    if (key) q("INSERT INTO summarized (parent, batch) VALUES (?, ?) ON CONFLICT DO UPDATE SET batch = excluded.batch").run(task.parentId, key);
+    if (key) q("INSERT INTO summarized (parent, batch) VALUES (?, ?) ON CONFLICT DO UPDATE SET batch = excluded.batch").run(asked, key);
   }
 
   /**
@@ -393,7 +398,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         // The child has nothing left running now: its parent's summary, held while this retry was pending, is said (once per
         // batch) before the retry goes, so a parent whose children all finished still hears its batch. Said first: a transient
         // failure keeps the wake for its lease, and the next attempt says it then, rather than losing it with the dropped wake.
-        if (task.parentId && jobs[0]) await batch(task, jobs[0], w.key);
+        if (requestedParentOf(task) && jobs[0]) await batch(task, jobs[0], w.key);
         await kernel.drop(w.key, `nothing to retry: ${dropped}`);
         return;
       }
@@ -463,7 +468,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       return kernel.drop(w.key, "the task has no request");
     }
 
-    const parent = task.parentId ? await kernel.task(task.parentId).catch(() => undefined) : undefined;
+    // The task it is part of, for the prompt's context: the one that asked for it (requested-parent.ts).
+    const asked = requestedParentOf(task);
+    const parent = asked ? await kernel.task(asked).catch(() => undefined) : undefined;
     const assignee = agents.get(w.agent);
     const entries = threadEntries(comments, task, { owner, agents, skip: new Set(fresh.map((f) => f.id)) });
     // A hint, never a gate: a failed read lists nothing.
