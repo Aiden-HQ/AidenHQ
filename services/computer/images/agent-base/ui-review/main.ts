@@ -6,7 +6,7 @@ const COMMANDS: Record<string, string> = {
   capture: "capture <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4] [--palettes a,b] [--wait-text t]",
   pages: "pages <url> --out <dir> [--map feature-map.json] [--pages-file f]",
   routes: "routes <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--baseline <dir>]   (clicks: a local build only)",
-  refs: "refs <refs.json> --out <dir>",
+  refs: "refs <refs.json> --out <dir> [--measure]",
   review: "review <run dir> [--model id]",
   "fix-check": "fix-check <run dir> --before <dir> --after <dir>",
 };
@@ -16,6 +16,7 @@ const BUILT: Record<string, () => Promise<(args: string[]) => Promise<number>>> 
   capture: async () => (await import("./capture.ts")).captureCommand,
   pages: async () => (await import("./pages.ts")).pagesCommand,
   routes: async () => (await import("./routes.ts")).routesCommand,
+  refs: async () => (await import("./refs.ts")).refsCommand,
 };
 
 function help(): string {

@@ -1,0 +1,11 @@
+{
+  "_": "The app starter's catalog page (static: no API), per page kind, served by the engine from /opt/aidenhq/app-starter. Used only for a kind whose reference URLs all failed; the run's notes say so.",
+  "dashboard": "/catalog.html?specimen=sidebar",
+  "list": "/catalog.html",
+  "detail": "/catalog.html",
+  "form": "/catalog.html",
+  "settings": "/catalog.html",
+  "timeline": "/catalog.html",
+  "marketing": "/catalog.html?specimen=bare-centered",
+  "other": "/"
+}

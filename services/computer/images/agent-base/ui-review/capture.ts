@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { crc32 } from "node:zlib";
 import type { BrowserContext, Page as PwPage, Route } from "playwright-core";
-import { heightOf, launch, ready, workerContext } from "./browser.ts";
+import { heightOf, isLocal, launch, ready, workerContext } from "./browser.ts";
 import { measurePage } from "./measure.ts";
 import { measureMotion } from "./motion.ts";
 import { pageList } from "./pages.ts";
@@ -138,7 +138,7 @@ export async function capture(ctx: BrowserContext, base: string, item: QueueItem
   if (loading) notes.push({ rule: "loading-visible", blocking: false, text: `${where} ${width}px ${item.theme}: ${loading} loading indicators were showing when it was shot` });
 
   const hits = await rules(page, { where, width, theme: item.theme, widest: !!o.widest && item.state === "default", first: !!o.first, phone: !!o.phone, errors: errs });
-  const motion = o.motion && item.state === "default" ? await measureMotion(page).catch(() => undefined) : undefined;
+  const motion = o.motion && item.state === "default" ? await measureMotion(page, { click: isLocal(url) }).catch(() => undefined) : undefined;
   const c: Capture = { page: item.page, width, theme: item.theme, state: item.state, url, shots, settled, measures, ...(motion ? { motion } : {}), rules: [...notes, ...hits] };
   if (o.baseline && o.diffPage) c.diffs = await diffShots(await o.diffPage(), o.baseline, o.out, shots);
   return c;
