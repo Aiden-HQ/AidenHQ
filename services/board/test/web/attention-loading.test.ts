@@ -17,6 +17,8 @@ let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
+  // A shared mock: the failure one test sets must not leak into the next, which asserts the loading frame.
+  query.error = "";
 });
 
 const mount = async (compact?: boolean) => {
@@ -49,6 +51,7 @@ describe("the fleet strip's loading frame", () => {
   it("keeps the compact strip to its one line while loading", async () => {
     const el = await mount(true);
     expect(el.querySelector("section.attn.attn-compact")).not.toBeNull();
+    expect(el.querySelector("section.attn[aria-busy]")).not.toBeNull();
     expect(el.querySelector(".attn-list-load")).toBeNull();
   });
 });
