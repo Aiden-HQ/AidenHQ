@@ -157,6 +157,8 @@ export function adoptedPass(o: AdoptedOptions) {
     },
     updateBranch: async (repo, n, head) => void (await must("PUT", `/repos/${repo}/pulls/${n}/update-branch`, { expected_head_sha: head })),
     assign: async (repo, n, logins) => void (await must("POST", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
+    /** The route's own DELETE (ship-routes.ts): the logins ship assigned on a hold, taken back when a gate stall clears. */
+    unassign: async (repo, n, logins) => void (await must("DELETE", `/repos/${repo}/issues/${n}/assignees`, { assignees: logins })),
   };
   /** The PR's own change from its merge base with `base` (GitHub's compare files). */
   const changed = async (repo: string, base: string, head: string) => ((await must("GET", `/repos/${repo}/compare/${base}...${head}`))?.files ?? []) as ChangedFile[];

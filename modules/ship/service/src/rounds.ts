@@ -59,6 +59,8 @@ export interface RoundDeps {
   /** GitHub's update-branch bound to the head (expected_head_sha): a clean merge of the base, no conflict. */
   updateBranch(repo: string, number: number, head: string): Promise<void>;
   assign(repo: string, number: number, logins: string[]): Promise<void>;
+  /** Removes the logins ship itself assigned when it raised a hold; a person's own assignment is never one of them. */
+  unassign(repo: string, number: number, logins: string[]): Promise<void>;
   /** The code host's comment op (POST /v1/codehost/comment): posts, or edits comment `id`; answers the comment's id. */
   comment(repo: string, number: number, body: string, id?: number): Promise<number>;
   log(msg: string, f?: Record<string, unknown>): void;

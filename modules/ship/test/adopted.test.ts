@@ -469,3 +469,24 @@ test("a closed PR reopened clears its settled marker, so a second close's failed
   assert.deepEqual(closes, ["R29", "R29"], "the refusal is retried rather than skipped as settled");
   assert.equal(state.get("acme/app", 29).tasksClosed, true);
 });
+
+test("clearing a gate stall unassigns through adopted's own deps (the crash a fixture hid)", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "a".repeat(40);
+  state.put({ repo: "acme/app", number: 15, generation: 1, trigger: { kind: "label", event: "e15", actor: "maria", at: "2026-11-24T09:00:00Z", head: H }, task: "T15", hold: { kind: "stalled", reason: "blocked by a branch rule ship doesn't handle", at: "2026-11-24T09:10:00Z", onChange: true }, assigned: ["dev"], counters: { head: H, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} } });
+  const ghCalls = [];
+  const pass = adoptedPass({
+    gh: async (method, path) => (ghCalls.push({ method, path }), { status: 200, body: {} }), state,
+    kernel: { call: async (_m, path) => (path.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}) },
+    settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: "wait", why: "waiting on code owner @acme/api", failing: [] }),
+    effects: { comment: async () => 1, askReview: async () => {}, verdict: async () => verdict() },
+  });
+  const pr = { number: 15, url: "https://github.com/acme/app/pull/15", headRefOid: H, baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [{ login: "dev" }] }, timelineItems: { nodes: [] } };
+  const main = { name: "main", rollup: { contexts: { nodes: [] } } };
+  // The gate no longer says stall: the clear takes back ship's assignment. Without the dep it throws before anything else.
+  await pass.open("acme/app", main, pr, new Set([15]));
+  assert.equal(state.get("acme/app", 15).hold, null);
+  assert.deepEqual(state.get("acme/app", 15).assigned, undefined);
+  assert.deepEqual(ghCalls.filter((c) => c.method === "DELETE").map((c) => c.path), ["/repos/acme/app/issues/15/assignees"]);
+});
