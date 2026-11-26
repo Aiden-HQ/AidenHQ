@@ -46,7 +46,7 @@ export function overviewTools(d: OverviewDeps): Tool[] {
           return {
             name: a.name, url: a.url, ...(a.repo ? { repo: a.repo } : {}), aidenhq_app: a.aidenhq_app,
             schedule: a.schedule, spend: a.spend, live_mode: a.live_mode, day_cap_usd: a.day_cap_usd, models: a.models, recording: a.recording,
-            today_usd: Math.round((await d.spentToday(a.name)) * 100) / 100, login: Boolean(logins[a.name]),
+            today_usd: await d.spentToday(a.name), login: Boolean(logins[a.name]),
             ...(active ? { active: { run: active.id, started: active.started } } : {}),
             ...(last ? { last } : {}),
           };

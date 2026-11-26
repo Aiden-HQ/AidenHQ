@@ -189,7 +189,7 @@
   }
   // Passes under way are followed.
   setInterval(() => {
-    if (!ov) return;
+    if (!ov || adding || document.activeElement?.matches?.("input, textarea, select")) return;
     if (ov.apps.some((a) => a.active)) loadOverview().then(() => { if (route.page === "app") loadLast(); }).catch(() => {});
     else if (route.page === "run" && runData?.run?.run?.status === "running") loadRun(route.id);
   }, 8000);
@@ -206,16 +206,18 @@
     }
     return e;
   };
-  const propose = (apps, what) => inOrder(async () => {
+  // change(list) builds the next list inside the queue, from the latest accepted draft, so quick edits never overwrite each other.
+  const propose = (change, what) => inOrder(async () => {
+    const apps = change(draft ?? ov.apps);
     try { const r = await tool("design_configure", { apps: apps.map(entry) }); draft = apps; proposed({ changes: [what ?? (r.changes ?? []).join("; ")] }); render(); }
     catch (e) { fail(e); }
   });
-  const edit = (name, patch, what) => propose((draft ?? ov.apps).map((a) => (a.name === name ? { ...a, ...patch } : a)), what);
+  const edit = (name, patch, what) => propose((list) => list.map((a) => (a.name === name ? { ...a, ...(typeof patch === "function" ? patch(a) : patch) } : a)), what);
   const dirty = (name) => { if (!draft) return false; const a = draft.find((x) => x.name === name), b = ov.apps.find((x) => x.name === name); return !a || !b || JSON.stringify(entry(a)) !== JSON.stringify(entry(b)); };
 
   /* -------------------------------------------------------------------------------- the list */
   function appRow(a) {
-    const l = live(a.name), active = l?.active, cap = a.day_cap_usd ?? 5, today = l?.today_usd ?? 0, pct = cap > 0 ? Math.min(100, (today / cap) * 100) : 100;
+    const l = live(a.name), active = l?.active, cap = a.day_cap_usd ?? 5, today = l?.today_usd ?? 0, capped = today >= cap, pct = cap > 0 ? Math.min(100, (today / cap) * 100) : 100;
     const last = l?.last, unsaved = !l || dirty(a.name);
     const n = (cls, k, word) => h("span", { className: `cnt ${cls}${k ? "" : " zero"}` }, h("i"), `${k} ${word}${k === 1 ? "" : "s"}`);
     const lastEl = active ? h("div", { className: "lastr" }, status("running", stopping.has(a.name) ? "Stopping…" : "Pass running"), t("small", "", ago(active.started) || "just now"))
@@ -225,11 +227,11 @@
       : h("div", { className: "lastr" }, t("small", "", "No runs yet"));
     const action = !l ? t("small", "soft", "Save to add")
       : active ? btn(stopping.has(a.name) ? "Stopping…" : "Stop", () => stop(a.name), "", { disabled: stopping.has(a.name) })
-      : btn("Run now", () => runNow(a.name), "primary", { disabled: cap > 0 && today >= cap, title: cap > 0 && today >= cap ? "Today's cap is reached" : "" });
+      : btn("Run now", () => runNow(a.name), "primary", { disabled: capped, title: capped ? "Today's cap is reached" : "" });
     const row = h("div", { className: `row app${unsaved ? " unsaved" : ""}` },
       h("div", { className: "nm" }, h("b", {}, t("span", `dot ${active ? "busy" : last?.status === "failed" ? "failed" : last ? "done" : ""}`), a.name), t("small", "", a.repo ? `${a.url} · ${a.repo}` : a.url)),
       h("span", { className: `sch ${a.schedule ?? "on-request"}` }, h("i"), SCHED[a.schedule ?? "on-request"]),
-      h("div", { className: "spend" }, h("div", { className: "txt" }, h("span", {}, t("b", "num", usd(today)), ` of ${usd(cap)} today`), cap > 0 && today >= cap ? t("span", "", "cap reached") : null), h("div", { className: `meter${pct >= 100 ? " full" : pct >= 70 ? " mid" : ""}` }, h("i", { style: `width:${pct}%` }))),
+      h("div", { className: "spend" }, h("div", { className: "txt" }, h("span", {}, t("b", "num", usd(today)), ` of ${usd(cap)} today`), capped ? t("span", "", "cap reached") : null), h("div", { className: `meter${pct >= 100 ? " full" : pct >= 70 ? " mid" : ""}` }, h("i", { style: `width:${pct}%` }))),
       lastEl, h("div", { className: "act" }, action));
     return clickable(row, () => go({ page: "app", app: a.name }));
   }
@@ -244,7 +246,7 @@
       const n = name.value.trim().toLowerCase();
       if ((draft ?? ov.apps).some((a) => a.name === n)) return say(`${n} is already listed.`, true);
       adding = false;
-      propose([...(draft ?? ov.apps), { name: n, url: url.value.trim(), ...(repo.value.trim() ? { repo: repo.value.trim() } : {}), aidenhq_app: own.checked }], `add ${n}`);
+      propose((list) => [...list, { name: n, url: url.value.trim(), ...(repo.value.trim() ? { repo: repo.value.trim() } : {}), aidenhq_app: own.checked }], `add ${n}`);
     });
     setTimeout(() => name.focus(), 0);
     return f;
@@ -280,11 +282,11 @@
     const text = (k, ph) => { const i = h("input", { type: "text", value: a[k] ?? "", placeholder: ph ?? "", ariaLabel: k, autocomplete: "off", spellcheck: false }); i.addEventListener("change", () => set(k)(i.value.trim() || undefined)); return i; };
     const cap = h("input", { type: "text", inputMode: "decimal", value: String(a.day_cap_usd ?? 5), ariaLabel: "Daily cap in USD", className: "num" });
     cap.addEventListener("change", () => { const n = Number(cap.value); if (!Number.isFinite(n) || n < 0 || n > 100) return say("The daily cap is a number of dollars from 0 to 100.", true); set("day_cap_usd")(n); });
-    const model = (k, what) => { const i = h("input", { type: "text", value: a.models?.[k] ?? "", placeholder: "the UI Reviewer's own", ariaLabel: `${what} model`, autocomplete: "off", spellcheck: false, className: "mono" }); i.addEventListener("change", () => set("models")({ ...(a.models ?? {}), [k]: i.value.trim() || undefined })); return h("label", {}, what, i); };
-    const rec = toggle(a.recording, "Record clicking flows", () => set("recording")(!a.recording));
-    const own = toggle(a.aidenhq_app, "An app on this AidenHQ", () => set("aidenhq_app")(!a.aidenhq_app));
+    const model = (k, what) => { const i = h("input", { type: "text", value: a.models?.[k] ?? "", placeholder: "the UI Reviewer's own", ariaLabel: `${what} model`, autocomplete: "off", spellcheck: false, className: "mono" }); i.addEventListener("change", () => edit(a.name, (cur) => ({ models: { ...(cur.models ?? {}), [k]: i.value.trim() || undefined } }), `${a.name}: ${what.toLowerCase()} model`)); return h("label", {}, what, i); };
+    const rec = toggle(a.recording, "Record clicking flows", () => edit(a.name, (cur) => ({ recording: !cur.recording }), `${a.name}: recording`));
+    const own = toggle(a.aidenhq_app, "An app on this AidenHQ", () => edit(a.name, (cur) => ({ aidenhq_app: !cur.aidenhq_app }), `${a.name}: AidenHQ app`));
     const l = live(a.name);
-    return card("Settings", h("span", { className: "bar" }, dirty(a.name) ? t("span", "tag needs", "Unsaved") : t("span", "tag ok", "Saved"), btn("Remove app", () => { propose((draft ?? ov.apps).filter((x) => x.name !== a.name), `remove ${a.name}`); go({ page: "list" }); })),
+    return card("Settings", h("span", { className: "bar" }, dirty(a.name) ? t("span", "tag needs", "Unsaved") : t("span", "tag ok", "Saved"), btn("Remove app", () => { propose((list) => list.filter((x) => x.name !== a.name), `remove ${a.name}`); go({ page: "list" }); })),
       h("div", { className: "form" },
         fld("Address", "Where a pass opens the app.", {}, text("url", "https://")),
         fld("Repository", "owner/name: a pass may build its default branch, never a PR head. Pushes to the default branch start an after-deploy pass.", {}, text("repo", "owner/name (optional)")),
@@ -308,7 +310,7 @@
   function appPage() {
     const a = appOf(route.app);
     if (!a) return [h("div", { className: "bar" }, btn("← UI testing", () => go({ page: "list" }))), card(null, null, t("div", "empty", `${route.app} isn't listed any more.`))];
-    const l = live(a.name), active = l?.active, cap = a.day_cap_usd ?? 5, capped = cap > 0 && (l?.today_usd ?? 0) >= cap;
+    const l = live(a.name), active = l?.active, cap = a.day_cap_usd ?? 5, capped = (l?.today_usd ?? 0) >= cap;
     const act = !l ? null : active ? btn(stopping.has(a.name) ? "Stopping…" : "Stop pass", () => stop(a.name), "", { disabled: stopping.has(a.name) }) : btn("Run now", () => runNow(a.name), "primary", { disabled: capped });
     const runs = runData?.runs ?? [];
     return [
