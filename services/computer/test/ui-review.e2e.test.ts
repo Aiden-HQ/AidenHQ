@@ -50,7 +50,7 @@ test("every fixture route renders its own page, and /planted carries its defects
 
 // ---- capture, coverage queue, route check (lane A) ----
 const chrome = { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" };
-type Run = { out: string; coverage: { done: number; total: number; failed: number; deferred: number }; captures: { page: string; width: number; theme: string; state: string; shots: string[]; settled: boolean; motion?: unknown; diffs?: { shot: string; pct: number; diff?: string }[] }[]; lookFirst: { page: string }[] };
+type Run = { out: string; coverage: { done: number; total: number; failed: number; deferred: number }; captures: { page: string; width: number; theme: string; state: string; shots: string[]; settled: boolean; motion?: unknown; rules: { rule: string }[]; diffs?: { shot: string; pct: number; diff?: string }[] }[]; lookFirst: { page: string }[] };
 const tmp = () => mkdtempSync(join(tmpdir(), "ui-review-test-"));
 const capArgs = (url: string, o: { out: string; pagesFile?: string; widths?: number[]; themes?: string[]; resume?: boolean; baseline?: string }) =>
   [main, "capture", url, "--out", o.out, ...(o.pagesFile ? ["--pages-file", o.pagesFile] : []), ...(o.widths ? ["--widths", o.widths.join(",")] : []), ...(o.themes ? ["--themes", o.themes.join(",")] : []), ...(o.resume ? ["--resume"] : []), ...(o.baseline ? ["--baseline", o.baseline] : []), "--commit", "test"];
@@ -105,7 +105,8 @@ describe("capture", chrome, () => {
     const w0 = fixture.writes();
     const r = await runCapture(liveAlias + "/#/danger", { widths: [1512], themes: ["light"] });
     assert.equal(await runRoutes(liveAlias + "/#/danger"), 2);
-    assert.equal(fixture.writes() - w0, 0); assert.ok(r.captures[0].motion); // measured passively; its POST on mount was aborted
+    assert.equal(fixture.writes() - w0, 0); assert.ok(r.captures[0].motion); // measured passively; its POST on mount was answered by the guard
+    assert.ok(!r.captures[0].rules.some((h) => h.rule === "page-errors")); // and the guard is no page error of the app's
     await runCapture(fixtureUrl + "/#/danger", { widths: [1512], themes: ["light"] });
     assert.ok(fixture.writes() - w0 >= 1); // the same page as a local build does write: the guard is what stopped it
   });

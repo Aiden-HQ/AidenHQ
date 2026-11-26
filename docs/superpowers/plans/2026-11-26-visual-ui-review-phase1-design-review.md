@@ -505,7 +505,7 @@ test("fix-check needs AFTER in 2 of 3 in each order", async () => {
 
 **Interfaces (Produces; phases 2 and 3 extend these, never add a second store):**
 - SQLite `/data/design.sqlite`: `runs (id TEXT PK, target TEXT, kind TEXT /* review|scan|pass */, app TEXT, task TEXT, model TEXT, status TEXT, started TEXT, ended TEXT, cost_usd REAL, report TEXT /* report.json */)`; files under `/data/evidence/<run>/`.
-- Tools (read: `design_runs`, `design_run`, `design_image`, `design_evidence_put` (it writes only into the module's own evidence store, so it is no write record: its images stay out of the kernel's records and approval arguments; owner, 2026-11-26); write: `design_run_start`, `design_run_finish`):
+- Tools (read: `design_runs`, `design_run`, `design_image`, `design_evidence_put` and `design_run_finish` (both write only into the module's own store, so neither is a write record: the images and the report stay out of the kernel's records and approval arguments; owner, 2026-11-26); write: `design_run_start`):
   - `design_run_start { target: string; kind: "review"; model: string; app?: string } → { run: string }` (the caller's task from its assertion)
   - `design_evidence_put { run; files: { name: string; data: string /* base64 */ }[] }`: at most 8 MB per call, names
     `[\w.-]{1,120}\.(png|webp|json|md|diff)`, only the run's own caller agent

@@ -178,15 +178,19 @@ const concrete = /\d+(\.\d+)?\s*(px|rem|em|%|ms)|#[0-9a-f]{3,8}\b|\b\d{2,4}\b/i;
 
 /** A page: its path, or `{ path, kind }` (a targets file may name the kind; the starter's pages have theirs in KINDS). */
 type Target = string | { path: string; kind?: string };
-/** Done when the folder holds a capture report with at least one capture. */
-const captured = (dir: string) => existsSync(join(dir, "report.json")) && (json(join(dir, "report.json")) as { coverage?: { done?: number } }).coverage?.done! > 0;
+/** Done when the folder holds a capture report with every capture it asked for (none failed, none deferred). */
+const captured = (dir: string) => {
+  if (!existsSync(join(dir, "report.json"))) return false;
+  const c = (json(join(dir, "report.json")) as { coverage?: { done?: number; total?: number } }).coverage;
+  return !!c && !!c.total && c.done === c.total;
+};
 function capture(url: string, pages: Target[], dir: string, width = 1512, theme = "light") {
   if (captured(dir)) return;
   mkdirSync(dir, { recursive: true });
   const list = pages.map((p) => typeof p === "string" ? { path: p, kind: KINDS[p] } : p).map((p) => ({ path: p.path, ...(p.kind ? { kind: p.kind } : {}) }));
   writeFileSync(join(dir, "pages-in.json"), JSON.stringify({ pages: list }));
   cli("capture", url, "--out", dir, "--pages-file", join(dir, "pages-in.json"), "--widths", String(width), "--themes", theme);
-  if (!captured(dir)) throw new Error(`ui-review capture of ${url} captured nothing (${dir})`);
+  if (!captured(dir)) throw new Error(`ui-review capture of ${url} did not capture every page (${dir}/report.md says which)`);
 }
 
 /** refs/fallback.json's page per kind (the catalog is dev-only: the engine serves the starter's dev server, as its refs fallback does) as a references list, written beside the work. */
@@ -215,7 +219,12 @@ async function references() {
       const dir = join(work, "references", `${t.name}-${v}`);
       if (!captured(dir)) cpSync(base, dir, { recursive: true });
       // The fallback variant: the app starter's own page per kind (refs/fallback.json maps a kind to it) as the only references.
-      if (!existsSync(join(dir, "refs", "refs.json"))) cli("refs", v === "fallback" ? await fallbackList(refs) : refs, "--out", join(dir, "refs"));
+      // Reused only for the same input list: a changed --refs or --fallback takes its pages again.
+      const input = readFileSync(refs, "utf8"), was = join(dir, "refs", "input.json");
+      if (!existsSync(join(dir, "refs", "refs.json")) || !existsSync(was) || readFileSync(was, "utf8") !== input) {
+        cli("refs", v === "fallback" ? await fallbackList(refs) : refs, "--out", join(dir, "refs"));
+        writeFileSync(was, input);
+      }
     }
     if (o["capture-only"]) continue;
     for (const v of Object.keys(refsIn)) {
@@ -268,7 +277,7 @@ async function corrections() {
     cli("review", d, "--model", model, "--top", "10");
     const rep = reviewed(join(d, "report.json"), prior.notes?.length ?? 0);
     spend.usd += rep.cost_usd - before;
-    const hit = rep.improvements.some((i) => new RegExp(c.expect.where, "i").test(`${i.where.page} ${i.where.region}`) && new RegExp(c.expect.change, "i").test(`${i.change} ${i.weak} ${i.why}`));
+    const hit = rep.improvements.some((i) => new RegExp(c.expect.where, "i").test(`${i.where.page} ${i.where.region}`) && new RegExp(c.expect.change, "i").test(i.change));
     if (!hit) missed.push(c.f);
   }
   return out({ suite: "corrections", pass: missed.length === 0, found: `${cases.length - missed.length}/${cases.length}`, missed });

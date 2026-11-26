@@ -1,5 +1,5 @@
-// The design connection's tools. Reads: design_runs, design_run, design_image. Writes: design_run_start, design_evidence_put,
-// design_run_finish. A run belongs to the agent that started it (the caller's signed assertion), and only that agent writes to it.
+// The design connection's tools. Reads: design_runs, design_run, design_image, and design_evidence_put and design_run_finish (they
+// write only into this module's own store). Write: design_run_start. A run belongs to the agent that started it (the caller's signed assertion), and only that agent writes to it.
 import type { Tool } from "./mcp.ts";
 import type { Store } from "./store.ts";
 
