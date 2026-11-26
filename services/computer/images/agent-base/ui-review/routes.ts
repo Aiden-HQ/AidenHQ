@@ -277,14 +277,14 @@ export async function routesCommand(argv: string[]): Promise<number> {
       await settle(s);
       const clicked = await look(s);
       if (clicked.route === start.route) c.problems.push(`clicking it leaves the URL at ${start.route}`);
-      else if (clicked.all === start.all) c.problems.push(`clicking it changes the URL to ${clicked.route} but the page stays the same`);
+      const stays = clicked.route !== start.route && clicked.all === start.all;
       const bad = await brokenView(s);
       if (bad) c.problems.push(`clicking it: ${bad}`);
       await s.page.goBack({ timeout: 10_000 }).catch(() => {});
       await settle(s);
       const back = await look(s);
       if (back.route !== start.route) c.problems.push(`Back goes to ${back.route}, not ${start.route}`);
-      else if (alike(back.all, start.all) < 0.8) c.problems.push(`Back to ${start.route} doesn't show that page again`);
+      else if (alike(back.all, start.all) < 0.8) c.problems.push(alike(back.all, clicked.all) >= 0.8 ? `Back to ${start.route} changes the address, but the page it left stays on screen` : `Back to ${start.route} doesn't show that page again`);
       await s.page.goForward({ timeout: 10_000 }).catch(() => {});
       await settle(s);
       const fwd = await look(s);
@@ -294,7 +294,9 @@ export async function routesCommand(argv: string[]): Promise<number> {
       const fresh = await look(s);
       if (fresh.status >= 400) c.problems.push(`a reload of ${clicked.route} answers ${fresh.status}`);
       else if (fresh.blank || isNotFound(fresh.text)) c.problems.push(`a reload of ${clicked.route} shows ${fresh.blank ? "an empty page" : "the app's own not-found view"}`);
-      else if (alike(fresh.all, clicked.all) < 0.8) c.problems.push(`a reload of ${clicked.route} shows a different page than the click did`);
+      else if (!stays && alike(fresh.all, clicked.all) < 0.8) c.problems.push(`a reload of ${clicked.route} shows a different page than the click did`);
+      // The click left the page as it was: a broken route, unless the target opened afresh is that same page (an alias).
+      if (stays && alike(fresh.all, start.all) < 0.8) c.problems.push(`clicking it changes the URL to ${clicked.route} but the page stays the same`);
     });
     await fingerprint();
     // Links first (the navigation bugs), then brands and controls in page order; the budget cuts what is left.
@@ -306,7 +308,8 @@ export async function routesCommand(argv: string[]): Promise<number> {
         const t = tasks[next++];
         if (Date.now() - t0 > BUDGET_MS) { t.c.skipped = "not checked: the route check's 300 s ran out"; cut++; continue; }
         let timer: NodeJS.Timeout | undefined;
-        try { await Promise.race([t.run(s), new Promise((_, no) => { timer = setTimeout(() => no(new Error(`timed out after ${CHECK_MS / 1000} s`)), CHECK_MS); })]); }
+        // Each check in a fresh context: what an earlier check left in storage (an app's remembered last view) never shows.
+        try { await renew(s); await Promise.race([t.run(s), new Promise((_, no) => { timer = setTimeout(() => no(new Error(`timed out after ${CHECK_MS / 1000} s`)), CHECK_MS); })]); }
         catch (e) { t.c.skipped = `couldn't check it: ${firstLine(e)}`; await renew(s); }
         finally { clearTimeout(timer); }
       }
@@ -315,11 +318,18 @@ export async function routesCommand(argv: string[]): Promise<number> {
     if (!missing.length) notes.push("the app's not-found view wasn't fingerprinted (unknown routes show home or redirect)");
   } finally { await b.close(); }
 
-  // A click that changed nothing is a generic heuristic, so it is a review candidate, never blocking; the rest block.
-  const found = checks.flatMap((c) => c.problems.filter((p) => p !== DEAD).map((p) => `${c.from} ${c.what}: ${p}`));
-  const candidates = checks.flatMap((c) => c.problems.filter((p) => p === DEAD).map((p) => `${c.from} ${c.what}: ${p}`));
-  const { introduced, preexisting } = splitPreexisting(found, v.baseline ? readReport(v.baseline)?.blocking : undefined);
-  const bugs: Bug[] = checks.flatMap((c) => c.problems.filter((p) => introduced.includes(`${c.from} ${c.what}: ${p}`)).map((p): Bug => ({ page: c.from, width: WIDTH, theme: "light", title: `${c.what}: ${p.split(":")[0]}`, evidence: p, captures: [], verified: true, repro: [`open ${c.from}`, `click ${c.what}`] })));
+  // One finding per page and problem, naming every link or control that shows it (seven nav links with the same broken
+  // Back are one bug). A click that changed nothing is a generic heuristic, so it is a review candidate, never blocking.
+  type Hit = { from: string; what: string[]; problem: string };
+  const hits = new Map<string, Hit>();
+  for (const c of checks) for (const p of c.problems) {
+    const h = hits.get(`${c.from}\n${p}`);
+    if (h) h.what.push(c.what); else hits.set(`${c.from}\n${p}`, { from: c.from, what: [c.what], problem: p });
+  }
+  const text = (h: Hit) => `${h.from} ${h.what.join(", ")}: ${h.problem}`;
+  const found = [...hits.values()].filter((h) => h.problem !== DEAD), candidates = [...hits.values()].filter((h) => h.problem === DEAD).map(text);
+  const { introduced, preexisting } = splitPreexisting(found.map(text), v.baseline ? readReport(v.baseline)?.blocking : undefined);
+  const bugs: Bug[] = found.filter((h) => introduced.includes(text(h))).map((h): Bug => ({ page: h.from, width: WIDTH, theme: "light", title: `${h.what.join(", ")}: ${h.problem.split(":")[0]}`, evidence: h.problem, captures: [], verified: true, repro: [`open ${h.from}`, `click ${h.what[0]}`] }));
   const done = checks.filter((c) => !c.skipped).length;
   const r: Report = { version: 2, target: base, frozenAt, model: "", coverage: { done, total: checks.length, failed: checks.filter((c) => c.skipped && !c.skipped.startsWith("not checked")).length, deferred: checks.filter((c) => c.skipped?.startsWith("not checked")).length },
     captures: [], improvements: [], motion: [], bugs, notes, cost_usd: 0, blocking: introduced, preexisting, candidates };

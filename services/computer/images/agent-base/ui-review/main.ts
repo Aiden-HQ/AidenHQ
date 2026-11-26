@@ -30,6 +30,8 @@ if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
   process.stdout.write(help());
 } else if (cmd in BUILT) {
   process.exitCode = await (await BUILT[cmd]())(rest);
+  // Done: a call still in flight (a sibling of a failed model call, a page's open socket) never keeps the command alive.
+  setTimeout(() => process.exit(), 1000).unref();
 } else {
   process.stderr.write(`ui-review: unknown command "${cmd}"\n\n${help()}`);
   process.exit(2);
