@@ -65,9 +65,9 @@ test("a supplied login reaches only the app's own pass, once per nonce", async (
     // A spent nonce and the run token are refused; the nonce the answer carried works (a dead session's re-login).
     assert.equal((await jobtoolRaw("login", { app: "acme", nonce: first }, caller({ source: src }))).status, 403);
     assert.equal((await jobtoolRaw("login", { app: "acme", nonce: RUN_TOKEN }, caller({ source: src }))).status, 403);
-    const again = await jobtoolRaw("login", { app: "acme", nonce: ok.json.next_nonce }, caller({ source: src }));
+    const again = await jobtoolRaw("login", { app: "acme", nonce: ok.json.nonce }, caller({ source: src }));
     assert.equal(again.status, 200, again.text);
-    const nonce = again.json.next_nonce;
+    const nonce = again.json.nonce;
     for (const c of [caller({ source: null, module: null }),                      // an on-request or PR task
                      caller({ source: `design:pass:other:${run}` }),              // another app's pass
                      caller({ source: src, module: "code-review" }),              // another module's task

@@ -6,7 +6,7 @@
 //   the caller holds role ui-login; its task is the design module's own pass for that app (task_module design, task_source
 //   design:pass:<app>:<run>); that run is the app's running pass at depth signed-in or tester; the app is not an AidenHQ app
 //   (those sign in through the test-user session, read-only); a login is set; and `nonce` is the run's current login nonce.
-// Each answer spends that nonce and carries the next one (`next_nonce`), which the engine writes back where the agent can't
+// Each answer spends that nonce and carries the next one (`nonce`), which the engine writes back where the agent can't
 // read it, so a dead session's re-login works and a replay doesn't. Every refusal is 403 with its reason and nothing else.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -50,7 +50,7 @@ export function createJobTools(d: { passes: Passes; store: Store; logins: () => 
     let code: string | undefined;
     try { code = l.totp_secret ? totp(l.totp_secret, now()) : undefined; } catch { return refuse(`the login for ${p.app!.name} has a TOTP seed that isn't base32`); }
     const next = d.store.issueNonce(p.run!.id);
-    return { status: 200, body: { login_url: l.login_url, username: l.username, password: l.password, ...(code ? { totp: code } : {}), next_nonce: next } };
+    return { status: 200, body: { login_url: l.login_url, username: l.username, password: l.password, ...(code ? { totp: code } : {}), nonce: next } };
   }
   const ops: Record<string, (b: Record<string, unknown>, c: JobCaller) => Answer> = { login };
 
