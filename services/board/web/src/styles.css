@@ -355,8 +355,22 @@ kbd {
 .app.mobile .head-chips { display: none; }
 .app.mobile .drawer { width: 100%; border-left: 0; }
 .app.mobile .drawer-scroll { padding: 14px 16px 20px; }
+/* A task's head stays on one row on a phone: no wrap, tighter padding, and every item able to give up width (a menu's
+   wrapper included, which otherwise holds its button's intrinsic width) so Done and Details keep their labels. Scoped to
+   the task drawer: a run's head labels the run with its own .ident, which must stay. */
+.app.mobile .task-drawer .drawer-head { flex-wrap: nowrap; gap: 3px; padding: 10px 8px; padding-top: max(10px, env(safe-area-inset-top)); }
+.app.mobile .task-drawer .drawer-head .btn { padding: 5px 7px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.app.mobile .task-drawer .drawer-head .menu-wrap { min-width: 0; }
+.app.mobile .task-drawer .drawer-head .ident { flex: none; }
+.app.mobile .task-drawer .drawer-head .spacer { min-width: 0; }
 .app.mobile .props { grid-template-columns: 80px 1fr; }
 .app.mobile .prop-value select, .app.mobile .prop-value input { min-width: 0; width: 100%; }
+/* Below 380 wide a task's five actions no longer fit beside its identifier: the title right under it names the task,
+   so the identifier goes and the buttons keep their labels. */
+@media (max-width: 380px) {
+  .app.mobile .task-drawer .drawer-head .ident { display: none; }
+  .app.mobile .task-drawer .drawer-head .btn { padding: 5px 5px; }
+}
 .app.mobile input, .app.mobile select, .app.mobile textarea { font-size: var(--text-input); } /* no zoom on focus (iOS) */
 
 /* ------------------------------------------------------------ sign-in screens */
