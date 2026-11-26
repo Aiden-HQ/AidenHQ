@@ -29,7 +29,16 @@ export type Kind = "health" | "identity" | "render" | "agent";
  */
 export interface Finding { hard: boolean; what: string; untrusted_page_text?: string; verdict?: "open" | "errored" | "unconfirmed" }
 /** `probe_ms` and `live`: app_check's own health probe (deploy.ts check) and how long it took; a deploy's health result has neither. */
-export interface ProbeResult { probe: Kind; path: string; ok: boolean; findings: Finding[]; probe_ms?: number; live?: boolean }
+export interface ProbeResult {
+  probe: Kind; path: string; ok: boolean; findings: Finding[]; probe_ms?: number; live?: boolean;
+  /**
+   * The identity gate proved the app serves no HTTP: every socket it probed was skipped by the one rule as neither HTTP nor
+   * TLS, no process was unreadable, and no door expected HTTP. Absent means "not proven" (a missing, denied or inconclusive
+   * probe, or an app expected to serve), which is never read as "there is no page". A registry declaration alone proves
+   * nothing: this is what the running app's own sockets answered.
+   */
+  noHttpProven?: true;
+}
 export interface Declared { render?: string[]; agent?: string[] }
 
 export const MAX_PAGES = 5;
@@ -244,6 +253,9 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
   const name = (p: { service: string; port: number | string }) => `${p.service}:${p.port}`;
   const at = (p: PortAnswers) => `${name(p)} on ${p.host}`;
   const findings: Finding[] = [];
+  // Whether every socket took the one non-HTTP/non-TLS skip: any other outcome (an HTTP or TLS answer, an unprobed or refused
+  // socket, a hard finding) clears it, so the verdict below is only ever positive on a complete, unambiguous probe.
+  let allSkipped = ports.length > 0;
   // A process no scan could read may hold a listener nobody probed: fail closed, naming it.
   if (denied.length) findings.push({ hard: true, verdict: "unconfirmed", what: `${UNCONFIRMED}: couldn't read the sockets of process ${denied.join(", ")}` });
   for (const d of required) if (!ports.some((p) => p.listening && name(p) === name(d))) findings.push({ hard: true, verdict: "unconfirmed", what: `${UNCONFIRMED}: nothing listens on ${name(d)}` });
@@ -253,21 +265,25 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
     const hard = (what: string) => findings.push({ hard: true, verdict: "unconfirmed", what: `${at(p)}: ${what}` });
     // An HTTP answer is judged, counted or not, before any skip can apply.
     if (p.answers.some((a) => a.status > 0)) {
+      allSkipped = false;
       findings.push(...judgeIdentity(p.answers).findings.map((f) => ({ ...f, what: `${at(p)}: ${f.what}` })));
       continue;
     }
     if (p.raw === "http") {
+      allSkipped = false;
       hard("answers HTTP (a plaintext GET got an HTTP reply), so it isn't a database speaking its own protocol: not skipped");
       continue;
     }
     // A TLS record in answer to a ClientHello is an HTTPS listener on any app shape: never skipped, whatever the plaintext
     // look read its alert as.
     if (p.tls === "tls") {
+      allSkipped = false;
       hard("answers HTTPS (a TLS ClientHello got a TLS record), so it isn't a database speaking its own protocol: not skipped");
       continue;
     }
     // A port nothing listens on on an exposed app is a skip, on any app shape, before the app-level rule.
     if (p.raw === "refused" && !p.listening && !req) {
+      allSkipped = false;
       findings.push({ hard: false, what: `${at(p)} is exposed but nothing listens: not probed` });
       continue;
     }
@@ -279,14 +295,21 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
       : p.raw === "banner" && p.tls === "no" ? "speaks something other than HTTP"
       : undefined;
     if (why) {
+      // Only the app-level skip (the registry expects no HTTP, and this socket answered neither HTTP nor TLS) supports the
+      // no-HTTP verdict. A single non-HTTP banner on an app that otherwise serves pages proves nothing about the app.
+      if (!(noHttp && p.tls === "no")) allSkipped = false;
       findings.push({ hard: false, what: `${at(p)}: not probed: ${why}` });
       continue;
     }
+    allSkipped = false;
     if (noHttp) findings.push({ hard: true, verdict: "unconfirmed", what: `${at(p)}: ${UNCONFIRMED}: the TLS probe didn't answer, so a listener that serves HTTPS can't be ruled out (no HTTP answer: ${p.raw ?? "none"})` });
     else findings.push({ hard: true, verdict: "unconfirmed", what: `${at(p)}: ${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})` });
   }
   // Hard findings first, so the deploy's summary keeps the sentence.
-  return probeResult("identity", [...new Set(ports.map(name))].join(" ") || "*", [...findings.filter((f) => f.hard), ...findings.filter((f) => !f.hard)]);
+  const result = probeResult("identity", [...new Set(ports.map(name))].join(" ") || "*", [...findings.filter((f) => f.hard), ...findings.filter((f) => !f.hard)]);
+  // Proven only from a complete probe of a real socket: every finding a non-hard skip, nothing denied, no door expecting HTTP.
+  if (allSkipped && !denied.length && !required.length && !findings.some((f) => f.hard)) return { ...result, noHttpProven: true };
+  return result;
 }
 
 export const PORT_PROBE_MS = 3_000;
