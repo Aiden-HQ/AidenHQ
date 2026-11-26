@@ -48,8 +48,9 @@ the one you mean to keep — and close a PR only when it is open, the one you ke
 other's head or ahead of it. A PR already closed and not merged, or the only live copy of a fix, is not a duplicate:
 close nothing and work from the PR the state shows.
 When the PR that carries the work is closed and `merged`, the work has landed: close the PR you would otherwise keep and
-report the merged one as what landed, not a merge of its own to wait on — but only when that PR's head is a commit the
-merged head contains. When it holds commits the merge does not, keep it open and work from it: it is not redundant.
+report the merged one as what landed, not a merge of its own to wait on — but only when that PR carries no change the
+merge does not. Compare the changes, not the commits: a squash merge never contains the head commit. When it holds a
+change the merge does not, keep it open and work from it: it is not redundant.
 Then close the duplicate by its own URL. The close names only the PR's number, so it is not conditional on the head you
 read: read both PRs again right before it, at the close's own step, and close only if that read still shows the heads
 the decision assumed. After the close, read both again: when the closed PR's head moved past what you read, its commits
