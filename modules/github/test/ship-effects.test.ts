@@ -911,6 +911,13 @@ test("the tree construction carries git's own mode: a symlink's 120000 and a fil
   assert.equal(mode("link"), "120000", "a symlink is 120000");
   assert.equal(tree.find((e) => e.path === "link")?.sha, g("rev-parse", "HEAD:link"), "and the symlink's own blob sha");
   assert.equal(tree.find((e) => e.path === "link")?.type, "blob");
+  // A deletion's mode is the base's own for that path, never a default: git's base tree has the executable as 100755.
+  g("rm", "--quiet", "run.sh");
+  g("add", "-A");
+  g("commit", "--quiet", "-m", "drop the executable");
+  const dropped = g("rev-parse", "HEAD");
+  const del = (await treeWrites(raw, after, dropped)).tree.find((e) => e.path === "run.sh");
+  assert.deepEqual([del?.mode, del?.sha, del?.type], ["100755", null, "blob"], `got ${JSON.stringify(del)}`);
 });
 
 test("ship's repair's refusal text names the tree diff and the entry GitHub refused, never a bare 422", async (t) => {
