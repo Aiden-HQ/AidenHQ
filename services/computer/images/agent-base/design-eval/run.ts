@@ -190,18 +190,22 @@ async function references() {
   const targets = o.targets ? json(o.targets) as { name: string; url: string; pages: Target[] }[] : null;
   const refsIn = { references: o.refs ?? join(ENGINE, "refs/references.json"), fallback: o.fallback ?? join(ENGINE, "refs/fallback.json") };
   const rated = o.rated ? (json(o.rated) as Rated).items : [];
-  const list = targets ?? [{ name: "starter", url: await starterUrl(), pages: PAGES }];
+  const list = targets ?? [{ name: "starter", url: "", pages: PAGES }];
   const variants: Record<string, { n: number; specific: number; tokens: number; perTarget: Record<string, number> }> = {};
   for (const t of list) {
+    // The browser part (the app's captures and each variant's reference pages) is skipped when its files are in --work already,
+    // so it can run where Chrome is and the reviews where the key is.
     const base = join(work, "references", t.name);
-    capture(t.url, t.pages, base);
-    if (o["capture-only"]) continue;
+    if (!existsSync(join(base, "report.json"))) capture(t.url || await starterUrl(), t.pages, base);
     for (const [v, refs] of Object.entries(refsIn)) {
       const dir = join(work, "references", `${t.name}-${v}`);
       if (!existsSync(join(dir, "report.json"))) cpSync(base, dir, { recursive: true });
       // The fallback variant: the app starter's own page per kind (refs/fallback.json maps a kind to it) as the only references.
-      const list = v === "fallback" ? await fallbackList(refs) : refs;
-      cli("refs", list, "--out", join(dir, "refs"));
+      if (!existsSync(join(dir, "refs", "refs.json"))) cli("refs", v === "fallback" ? await fallbackList(refs) : refs, "--out", join(dir, "refs"));
+    }
+    if (o["capture-only"]) continue;
+    for (const v of Object.keys(refsIn)) {
+      const dir = join(work, "references", `${t.name}-${v}`);
       cli("review", dir, "--model", model, "--refs", join(dir, "refs", "refs.json"), "--top", "10");
       const rep = json(join(dir, "report.json")) as Report;
       const tokens = (json(join(dir, "refs", "refs.json")) as { product?: string; tokens?: Record<string, unknown> }[]).flatMap((r) => [r.product, ...Object.values(r.tokens ?? {}).flat()].filter((x) => x !== undefined).map(String));
