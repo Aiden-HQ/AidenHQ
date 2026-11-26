@@ -79,6 +79,8 @@ export type Kept = Adoption & {
   fork?: true;
   /** Tasks a hold still has to close (a close the kernel refused is tried again each pass). */
   closing?: string[];
+  /** The tasks this record leaves are closed (`gone` never reconciles it again). */
+  tasksClosed?: true;
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
 };

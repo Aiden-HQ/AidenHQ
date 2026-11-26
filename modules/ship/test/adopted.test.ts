@@ -375,3 +375,73 @@ test("a closed-unmerged adoption's records task is closed, and a kernel refusal 
   await pass.gone("acme/app", "main", new Set());
   assert.deepEqual(closes, ["R22", "R22"], "an ended record is not read again");
 });
+
+test("a pending close left by a hold is cleared when the PR merges, so nothing keeps polling it", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "d".repeat(40);
+  state.put({ repo: "acme/app", number: 24, generation: 1, trigger: { kind: "label", event: "e24", actor: "maria", at: "2026-11-24T09:00:00Z", head: H }, owner: { kind: "member", login: "maria" }, holder: "R24", hold: { kind: "handed_back", reason: "handed back by @maria" }, closing: ["R24"] });
+  const closes = [];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: { merged_at: "2026-11-24T10:00:00Z", html_url: "https://github.com/acme/app/pull/24", head: { sha: H }, base: { ref: "main" }, user: { login: "dev", type: "User" } } }),
+    state, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path) => (path.endsWith("/close") && closes.push(path.split("/")[3]), {}) },
+    decision: async () => ({ do: "wait" }), effects: { comment: async () => 1, askReview: async () => {}, askFresh: async () => {}, verdict: async () => verdict() },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes, ["R24"], "closed once by the merged round");
+  const kept = state.get("acme/app", 24);
+  assert.equal(kept.closing, undefined, "the queue does not outlive the merge");
+  assert.equal(kept.tasksClosed, true);
+});
+
+test("records that ended before this change are reconciled from their own holder, then left alone", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const counters = { head: "", wakes: 0, rounds: 0, ci: 0, review: 0, red: {} };
+  state.put({ repo: "acme/app", number: 25, generation: 1, trigger: { kind: "label", event: "e25", actor: "maria", at: "2026-11-24T09:00:00Z", head: "a".repeat(40) }, owner: { kind: "member", login: "maria" }, holder: "R25", hold: { kind: "handed_back", reason: "its PR was closed" }, counters: { ...counters, lastRound: "closed" } });
+  state.put({ repo: "acme/app", number: 26, generation: 1, trigger: { kind: "all", event: "all:x", actor: "dev", at: "2026-11-24T09:00:00Z", head: "b".repeat(40) }, holder: "R26", hold: null, counters: { ...counters, head: "b".repeat(40), lastRound: `${"b".repeat(40)}:done` } });
+  const closes = [];
+  let reads = 0;
+  const pass = adoptedPass({
+    gh: async () => (reads++, { status: 200, body: {} }), state, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path) => (path.endsWith("/close") && closes.push(path.split("/")[3]), {}) },
+    decision: async () => ({ do: "wait" }), effects: { comment: async () => 1, askReview: async () => {}, verdict: async () => verdict() },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes.sort(), ["R25", "R26"], "a closed record and one merged without closing its holder");
+  assert.equal(reads, 0, "their own holder ids are enough: no PR read");
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes.sort(), ["R25", "R26"], "settled: never read or closed again");
+});
+
+test("a PR merged into the wrong base is left to a person: neither the landed round nor the reconciler closes its task", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "c".repeat(40);
+  state.put({ repo: "acme/app", number: 27, generation: 1, trigger: { kind: "fleet", event: "all:x", actor: "dev", at: "2026-11-24T09:00:00Z", head: H }, holder: "R27", hold: null, queue: { base: "release", attempt: 1, record: "m1" } });
+  const closes = [];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: { merged_at: "2026-11-24T10:00:00Z", html_url: "https://github.com/acme/app/pull/27", head: { sha: H }, base: { ref: "main" }, user: { login: "dev", type: "User" } } }),
+    state, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path) => (path.endsWith("/close") && closes.push(path.split("/")[3]), {}) },
+    decision: async () => ({ do: "wait" }), effects: { comment: async () => 1, askReview: async () => {}, askFresh: async () => {}, verdict: async () => verdict() },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes, [], "a person decides what a wrong-base merge means");
+});
+
+test("a wrong-base merge recorded before this change is settled without closing its task", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "9".repeat(40);
+  state.put({ repo: "acme/app", number: 28, generation: 1, trigger: { kind: "fleet", event: "all:x", actor: "dev", at: "2026-11-24T09:00:00Z", head: H }, holder: "R28", hold: null, queue: { base: "release", attempt: 1, record: "m1" }, counters: { head: H, wakes: 0, rounds: 0, ci: 0, review: 0, red: {}, lastRound: `${H}:done` } });
+  const closes = [];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: { merged_at: "2026-11-24T10:00:00Z", base: { ref: "main" } } }), state,
+    settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path) => (path.endsWith("/close") && closes.push(path.split("/")[3]), {}) },
+    decision: async () => ({ do: "wait" }), effects: { comment: async () => 1, askReview: async () => {}, verdict: async () => verdict() },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes, [], "a person checks the mismatch");
+});

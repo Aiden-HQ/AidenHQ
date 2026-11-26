@@ -236,6 +236,14 @@ export function adoptedPass(o: AdoptedOptions) {
     o.log("stacked PR retargeted", { pr: view.url, from: view.base, to });
     return true;
   };
+  /** Closes a record's leftover tasks (`closing`, then the ones `tasksOf` names) and marks it settled once none are left. */
+  const settle = async (a: Kept, url: string, why: string): Promise<void> => {
+    const queued: Kept = a.closing?.length ? a : { ...a, closing: tasksOf(a) };
+    if (!queued.closing?.length) { o.state.put({ ...a, tasksClosed: true }); return; }
+    o.state.put(queued);
+    const next = await closeHeld(handoff, { url }, queued, why);
+    if (!next.closing?.length) o.state.put({ ...next, tasksClosed: true });
+  };
   return {
     /** A new pass: roles are read again. */
     begin() { roles.clear(); },
@@ -352,7 +360,23 @@ export function adoptedPass(o: AdoptedOptions) {
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {
       for (const a of o.state.all() as Kept[]) {
-        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || (ended(a) && !a.closing?.length)) continue;
+        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || (ended(a) && a.tasksClosed)) continue;
+        // An adoption that ended before its tasks were settled (a record kept from before this path existed): its own `holder`
+        // says which tasks to close, so no PR read is needed. Its `lastRound` says whether it merged or was closed.
+        if (ended(a)) {
+          const url = `https://github.com/${repo}/pull/${a.number}`;
+          // A queued merge's base is only known from the PR: one into another base is a person's to judge (a wrong-base record
+          // before this change is marked settled without closing, so it is not read again).
+          if (a.queue) {
+            const q = await o.gh("GET", `/repos/${repo}/pulls/${a.number}`);
+            if (q.status >= 300) continue;
+            if (q.body?.merged_at && q.body?.base?.ref !== a.queue.base) { o.state.put({ ...a, tasksClosed: true }); continue; }
+          }
+          await settle(a, url, a.counters?.lastRound === "closed"
+            ? `${url} was closed, so ship stopped working on it.`
+            : `${url} is merged.`);
+          continue;
+        }
         const r = await o.gh("GET", `/repos/${repo}/pulls/${a.number}`);
         if (r.status >= 300) continue;
         // A held adoption is still finished when someone merges its PR (round closes the hand-off's task). A closed one is handed
@@ -361,11 +385,12 @@ export function adoptedPass(o: AdoptedOptions) {
           if (r.body?.state !== "closed") continue;
           if (!a.hold) handBack(o.state, repo, a.number, "its PR was closed");
           const b = o.state.get(repo, a.number) as Kept;
+          const url = String(r.body.html_url ?? `https://github.com/${repo}/pull/${a.number}`);
           // The tasks a close leaves are queued the way a hand-back does, and closed now (a refusal is kept for the next pass,
           // which `gone` reads again although the record has ended).
-          const closing: Kept = { ...b, closing: tasksOf(b), counters: { ...(b.counters ?? { head: "", wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: "closed" } };
-          o.state.put(closing);
-          await closeHeld(handoff, { url: String(r.body.html_url ?? `${repo}#${a.number}`) }, closing, `${String(r.body.html_url ?? `${repo}#${a.number}`)} was closed, so ship stopped working on it.`);
+          const endedRecord: Kept = { ...b, counters: { ...(b.counters ?? { head: "", wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: "closed" } };
+          o.state.put(endedRecord);
+          await settle(endedRecord, url, `${url} was closed, so ship stopped working on it.`);
           continue;
         }
         const view: PrView = { repo, number: a.number, url: String(r.body.html_url), head: String(r.body.head?.sha), base: String(r.body.base?.ref), defaultBranch, author: String(r.body.user?.login ?? ""), authorBot: r.body.user?.type !== "User", fork: false, canModify: false, draft: false, state: "merged", labels: [], assignees: [], events: [] };

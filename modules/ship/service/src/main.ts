@@ -86,8 +86,8 @@ const effects = shipEffects(kernel, { codeReview: "http://code-review:8098", key
 const loop = startLoop({
   repos: [...repos].map(([repo, v]) => ({ repo, ...v })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, paused,
   // An open PR's adoption that isn't held (a cancelled task's kept PR too: its task may resume) or whose report is still to post, or a
-  // closed one gone() hasn't ended, or one whose task close the kernel refused (closing).
-  busy: (repo, open) => (state.all() as Kept[]).some((a) => a.repo.toLowerCase() === repo.toLowerCase() && (open.has(a.number) ? !a.hold || !!a.reportStale || !!a.closing?.length : !ended(a) || !!a.closing?.length)),
+  // closed one gone() hasn't ended or settled (a task close the kernel refused is retried until it lands).
+  busy: (repo, open) => (state.all() as Kept[]).some((a) => a.repo.toLowerCase() === repo.toLowerCase() && (open.has(a.number) ? !a.hold || !!a.reportStale || !!a.closing?.length : !ended(a) || !!a.closing?.length || !a.tasksClosed)),
   openers: () => github("GET", "openers"),
   recover: ciRecover({ gh, log }),
   // Every PR but Dependabot's: the hand-off (or a task's own PR) and its rounds (handoff.ts, rounds.ts), on GitHub through the same routes.
