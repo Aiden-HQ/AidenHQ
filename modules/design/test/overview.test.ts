@@ -28,10 +28,10 @@ function seed(o: { apps: object[]; todayUsd: Record<string, number> }) {
 test("overview reports each app's state and configure returns one typed change", async () => {
   const { store, call } = seed({ apps: [acme, beta], todayUsd: { acme: 1.2 } });
   const { run } = store.start({ target: acme.url, kind: "review", model: "m", app: "acme", agent: "reviewer" });
-  store.finish(run, "reviewer", { improvements: Array(7).fill({}), bugs: [{ verified: true }, { verified: true }], coverage: { done: 12, total: 40 }, cost_usd: 1.2 });
+  store.finish(run, "reviewer", { improvements: Array(7).fill({}), bugs: [{ verified: true }, { verified: true }], coverage: { done: 12, total: 40 }, cost_usd: 1.2, issues: { design: "https://github.com/acme/app/issues/41", bugs: [] } });
   const o = (await call("design_overview", {})).structuredContent;
   assert.deepEqual(pick(o.apps[0], ["name", "today_usd", "login", "schedule", "spend", "day_cap_usd"]), { name: "acme", today_usd: 1.2, login: false, schedule: "on-request", spend: "standard", day_cap_usd: 5 });
-  assert.deepEqual(pick(o.apps[0].last, ["run", "improvements", "bugs", "coverage", "cost_usd"]), { run, improvements: 7, bugs: 2, coverage: { done: 12, total: 40 }, cost_usd: 1.2 });
+  assert.deepEqual(pick(o.apps[0].last, ["run", "improvements", "bugs", "coverage", "cost_usd", "issue_url"]), { run, improvements: 7, bugs: 2, coverage: { done: 12, total: 40 }, cost_usd: 1.2, issue_url: "https://github.com/acme/app/issues/41" });
   assert.equal(o.apps[1].last, undefined);
   const c = (await call("design_configure", { apps: [{ ...acme, schedule: "after-deploy" }, beta] })).structuredContent;
   const [change] = c._aidenhq.settings_change;

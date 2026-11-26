@@ -117,6 +117,41 @@ test("a filing whose answer was lost is filed again under its source; a refusal 
   assert.equal(store.active("acme")!.task, k.filed[0]!.id);
 });
 
+test("a pass stopped before its task was bound ends stopped and is never filed again; a task its lost filing made is closed", async () => {
+  const { passes, tick, k, clock, store } = setup([{ name: "acme", url: U }]);
+  k.refuse(0);
+  const r = await passes.startPass("acme", "request");
+  assert.match((r as { refused: string }).refused, /isn't filed yet/);
+  const run = store.active("acme")!;
+  assert.deepEqual(await passes.stopPass("acme"), { stopping: run.id });
+  // The lost filing did reach the kernel: its task exists, unbound.
+  k.refuse(undefined);
+  const made = await k.passes.fileTask({ title: "UI review pass: acme", description: "", role: "ui-login", source: `design:pass:acme:${run.id}` });
+  clock.t += 3 * 60_000;
+  await tick();
+  assert.equal(store.pass(run.id)!.status, "stopped");
+  assert.equal(k.byId(made.id).status, "cancelled");
+  assert.equal(k.filed.length, 1, "never filed again");
+  assert.equal(store.active("acme"), undefined);
+});
+
+test("a filing tried again checks the app's limits as they are now: a lowered live mode or a reached cap fails it", async () => {
+  const { passes, tick, k, clock, store, settings, today } = setup([{ name: "acme", url: U, live_mode: "test-write" }, { name: "beta", url: U2 }]);
+  k.refuse(0);
+  await passes.startPass("acme", "request");
+  await passes.startPass("beta", "request");
+  const [acme, beta] = [store.active("acme")!, store.active("beta")!];
+  assert.equal(acme.mode, "test-write");
+  settings({ apps: [{ name: "acme", url: U, live_mode: "read" }, { name: "beta", url: U2, day_cap_usd: 1 }] });
+  k.charge(`design:pass:beta:earlier`, today(), 1.5);
+  k.refuse(undefined);
+  clock.t += 3 * 60_000;
+  await tick();
+  assert.equal(k.filed.length, 0, "neither is filed");
+  assert.deepEqual([store.pass(acme.id)!.status, store.pass(acme.id)!.why], ["failed", "its mode test-write is above acme's live_mode now"]);
+  assert.deepEqual([store.pass(beta.id)!.status, store.pass(beta.id)!.why], ["failed", "cap reached today"]);
+});
+
 test("Stop holds the app until the job has ended; a Run now meanwhile is refused, and a 24/7 app rests for the day", async () => {
   const { passes, tick, k, settings, runOf, store } = setup();
   settings({ apps: [{ name: "acme", url: U, schedule: "always" }] });
