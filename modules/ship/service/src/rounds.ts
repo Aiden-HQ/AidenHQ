@@ -288,7 +288,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // Members' comments key the fix by the ones not asked about yet; the same ones still open at this head are not asked again
   // (answering one of two threads wakes nobody), and a new head asks again for any left.
   const open = f.memberComments ?? [];
-  const fresh = open.filter((i) => !(a!.asked ?? []).includes(i.id));
+  const fresh = open.filter((i) => !(a!.membersAsked ?? []).includes(i.id));
   const reviewKey = [f.findingsKey, fresh.length ? createHash("sha256").update(fresh.map((i) => i.id).join(",")).digest("hex").slice(0, 12) : ""].filter(Boolean).join(":") || (open.length ? "comments" : "");
   const act = v.do === "fix_review" && reviewKey ? `fix_review:${reviewKey}`
     : v.do === "fix_ci" && titleFix ? "fix_ci:title"
@@ -427,7 +427,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "fix_review": {
         if (!s.fix.includes("review")) return hold("review findings are open, and this repo's `fix` setting excludes review", HOLD.settings("fix review findings"));
-        if (pr.fork && !pr.canModify) return hold(noEdits, HOLD.noEdits);
+        // Answering a comment needs no push: only a fork with nothing open to answer needs its edits (replies go on without them).
+        const replyOnly = pr.fork && !pr.canModify;
+        if (replyOnly && !f.memberComments?.length) return hold(noEdits, HOLD.noEdits);
         // How many review and fix cycles a PR gets is code review's (its push_rounds): ship fixes what each review finds.
         c.review++;
         const threads = open.filter((i) => i.kind === "thread"), comments = open.filter((i) => i.kind === "comment");
@@ -438,11 +440,11 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           // Authors and places only (a path is the PR's own text: bounded to plain path characters): the comments' own text is untrusted
           // and the wake keeps 2,000 characters.
           threads.length ? `Open review threads (read them with github_pr_threads): ${threads.slice(0, 8).map((t) => `${(t.path ?? "?").replace(/[^\w./@+-]/g, "?").slice(0, 80)}:${t.line ?? "?"} by ${t.author.replace(/[^\w-]/g, "?").slice(0, 40)}`).join("; ")}${threads.length > 8 ? `; and ${threads.length - 8} more` : ""}.` : "",
-          comments.length ? `Conversation comments from ${[...new Set(comments.map((x) => x.author.replace(/[^\w-]/g, "?").slice(0, 40)))].slice(0, 8).join(", ")} (github_issue_read): act on those that ask for a change, and answer them all in one comment.` : "",
-          push(),
+          comments.length ? `Conversation comments (github_issue_read), by id: ${comments.slice(0, 8).map((x) => `${x.id.replace("comment:", "")} (${x.author.replace(/[^\w-]/g, "?").slice(0, 40)})`).join(", ")}${comments.length > 8 ? `, and ${comments.length - 8} more` : ""}: act on those that ask for a change, and answer them all in one comment that names each id.` : "",
+          replyOnly ? "This fork takes no pushes from ship: answer each comment on GitHub; one that needs a change is declined, saying the fork allows no maintainer edits." : push(),
         ].filter(Boolean).join("\n"));
         // What was asked is recorded unless the wake held the PR: those items wait, blocking, for their answers.
-        if (open.length && !a!.hold) { a = { ...a!, asked: open.map((i) => i.id) }; c.acted = [...(c.acted ?? []), "fix_review:comments", ...(f.findingsKey ? [`fix_review:${f.findingsKey}`] : [])]; }
+        if (open.length && !a!.hold) { a = { ...a!, membersAsked: open.map((i) => i.id) }; c.acted = [...(c.acted ?? []), "fix_review:comments", ...(f.findingsKey ? [`fix_review:${f.findingsKey}`] : [])]; }
         return did;
       }
       case "merge": {

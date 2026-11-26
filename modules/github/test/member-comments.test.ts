@@ -33,13 +33,13 @@ test("open member threads and conversation comments: answered, resolved, outside
       note("5", "stranger", "2026-11-24T02:03:00Z", "an outsider"),
       note("6", "coderabbit", "2026-11-24T02:04:00Z", "a bot", true),
       note("7", "maria", "2026-11-24T03:00:00Z", "and move it"),
-      note("8", "me", "2026-11-24T03:30:00Z", `fixed in abc: renamed${FOOTER}`),
+      note("8", "me", "2026-11-24T03:30:00Z", `7: fixed in abc: renamed${FOOTER}`),
       note("9", "maria", "2026-11-24T04:00:00Z", "one more"),
       note("10", "stranger", "2026-11-24T05:00:00Z", `an outsider's copy of the footer${FOOTER}`),
     ] },
   };
   const items = await openMemberComments(pr, { since: "2026-11-24T01:00:00Z", author: "me", isMember });
-  assert.deepEqual(items.map((i) => i.id), ["thread:open:open-last", "thread:forged:forged-last", "thread:signed-finding:signed-finding-last", "thread:followup:followup-last", "comment:9"], "an outsider's copy of the footer answers nothing");
+  assert.deepEqual(items.map((i) => i.id), ["thread:open:open-last", "thread:forged:forged-last", "thread:signed-finding:signed-finding-last", "thread:followup:followup-last", "comment:2", "comment:9"], "an outsider's copy of the footer answers nothing, and a reply answers only the ids it names");
   // The author's own comment asks nothing on a member's PR, but on a PR the code host opened as the owner it is the owner's word.
   const own = { reviewThreads: { nodes: [] }, comments: { nodes: [note("3", "me", "2026-11-24T02:01:00Z", "please rename it")] } };
   assert.deepEqual([(await openMemberComments(own, { since: "2026-11-24T01:00:00Z", author: "me", isMember })).length, (await openMemberComments(own, { since: "2026-11-24T01:00:00Z", isMember })).length], [0, 1]);

@@ -63,7 +63,7 @@ export type Kept = Adoption & {
   /** The App's approval: its record, the policy it was issued under (risk tiers §7), and `dismissed`: the record dismissing it. */
   approve?: { head: string; attempt: number; record: string; why?: string; policy?: string; dismissed?: string };
   /** The members' comments (member-comments.ts item ids) the fixer was woken for: the same ones never wake it again, and they still block until answered. */
-  asked?: string[];
+  membersAsked?: string[];
   /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
   freshAsked?: string;
   /** The repo's own steps at a stage (actions.ts): which step, at which head, and how it ended. */

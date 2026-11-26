@@ -4,7 +4,7 @@
 //     and it is not answered: the thread has a reply and the last one is a member's AidenHQ-signed one (the fixer's `fixed in <sha>`
 //     or `declined`).
 //   - A conversation comment is open when a member (not the PR's author where ship says so, not a bot, not a slash command, not
-//     AidenHQ-signed) wrote it after the hand-off and no member's AidenHQ-signed comment (other than ship's report) came after it.
+//     AidenHQ-signed) wrote it after the hand-off and no member's AidenHQ-signed comment (other than ship's report) that cites its id came after it.
 // A member is flow.ts isMember (GitHub's identity: the owner, an OWNER, MEMBER or COLLABORATOR association, or write permission).
 // The AidenHQ footer is only how our own text is recognised (an answer), and only a member's counts, never what makes a comment trusted.
 
@@ -58,13 +58,14 @@ export async function openMemberComments(pr: Json, o: { since: string; author?: 
     items.push({ id: `thread:${t.id}:${last.fullDatabaseId}`, kind: "thread", author: String(first.author.login), ...(t.path ? { path: String(t.path) } : {}), ...(t.line ? { line: Number(t.line) } : {}) });
   }
   const comments = (pr?.comments?.nodes ?? []) as Json[];
-  const answers: string[] = [];
-  for (const c of comments) if (hasFooter(String(c.body ?? "")) && !String(c.body ?? "").includes(REPORT_MARK) && (await member(c.author, c.authorAssociation))) answers.push(String(c.createdAt));
+  // A member's signed comment answers the comments whose ids it cites (one reply may answer a batch), never the ones it doesn't.
+  const answers: { at: string; body: string }[] = [];
+  for (const c of comments) if (hasFooter(String(c.body ?? "")) && !String(c.body ?? "").includes(REPORT_MARK) && (await member(c.author, c.authorAssociation))) answers.push({ at: String(c.createdAt), body: String(c.body) });
   for (const c of comments) {
     const body = String(c.body ?? "");
     if (String(c.createdAt) <= o.since || c.author?.login === o.author) continue;
     if (body.trimStart().startsWith("/") || hasFooter(body) || body.includes(REPORT_MARK)) continue;
-    if (answers.some((at) => at > String(c.createdAt))) continue;
+    if (answers.some((a) => a.at > String(c.createdAt) && a.body.includes(String(c.fullDatabaseId)))) continue;
     if (!(await member(c.author, c.authorAssociation))) continue;
     items.push({ id: `comment:${c.fullDatabaseId}`, kind: "comment", author: String(c.author.login) });
   }

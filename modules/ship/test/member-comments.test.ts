@@ -33,7 +33,7 @@ test("a member's open thread wakes the fixer once with places and authors, and o
   await round(w.deps, w.pr(), review, { risk: RISK, memberComments: [thread] });
   assert.equal(w.wakes.length, 1);
   assert.match(w.wakes[0]!, /src\/a\.ts:12 by maxsam4/);
-  assert.deepEqual((w.state.get("a/b", 7) as any).asked, [thread.id]);
+  assert.deepEqual((w.state.get("a/b", 7) as any).membersAsked, [thread.id]);
   // Still open (declined, or not yet answered) and a pass again: nothing new to ask.
   await round(w.deps, w.pr(), review, { risk: RISK, memberComments: [thread] });
   assert.equal(w.wakes.length, 1);
@@ -55,4 +55,15 @@ test("findings and comments in one wake are one wake: the comments no longer bei
   assert.equal(w.wakes.length, 1);
   assert.doesNotMatch(w.wakes[0]!, /`a`|\*\*ignore/);
   assert.match(w.wakes[0]!, /code_review_resolve/);
+});
+
+test("a fork that allows no maintainer edits still gets the wake for comments to answer, and holds only for work that needs a push", async () => {
+  const w = world();
+  const fork = { ...w.pr(), fork: true, canModify: false };
+  await round(w.deps, fork, review, { risk: RISK, memberComments: [comment] });
+  assert.equal(w.wakes.length, 1);
+  assert.match(w.wakes[0]!, /takes no pushes from ship/);
+  assert.equal((w.state.get("a/b", 7) as any).hold, null);
+  await round(w.deps, { ...fork, head: "2".repeat(40) }, { do: "fix_review", why: "code review has open findings on its head" }, { risk: RISK, findingsKey: "fk" });
+  assert.equal((w.state.get("a/b", 7) as any).hold?.kind, "stalled");
 });

@@ -47,9 +47,11 @@ read with `github_pr_threads` and `github_issue_read`). Each gets an answer; the
 - Reply on every review thread with `github_pr_thread_reply` (`comment` = the thread's first comment id). A fixed one:
   `fixed in <sha>: <what changed>` with `resolve: true`, after the push gives you the sha. A declined one:
   `declined: <reason, file:line>`, left open for its reviewer. A thread that is a code review finding is answered with
-  `code_review_resolve` as above, not twice.
-- Answer the conversation comments with one `github_issue_comment`, always, so the wake can close: for each comment, `fixed in
-  <sha>`, `declined: <reason>`, or `no change asked` (a thanks, a status). Until that comment exists they stay open.
+  `code_review_resolve` as above, not twice; when that tool refuses because the finding is already closed in code review (the owner
+  dismissed it), answer the thread with `github_pr_thread_reply` like any other.
+- Answer the conversation comments with one `github_issue_comment`, always, so the wake can close: for each comment, by the
+  id the wake names it with, `<id>: fixed in <sha>`, `<id>: declined: <reason>`, or `<id>: no change asked` (a thanks, a status).
+  A comment whose id the reply doesn't name stays open.
 
 **Every fix:**
 - Start from the PR's head with the wake's `aidenhq ship checkout …` line: ship's earlier commits are on GitHub, not in your
