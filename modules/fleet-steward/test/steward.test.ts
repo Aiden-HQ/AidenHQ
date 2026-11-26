@@ -33,6 +33,40 @@ test("the run check reads the kernel's jobs: stuck past twice the timeout, three
   assert.deepEqual(found.map((i) => i.key).sort(), ["a2:stuck", "a3:failing", "a4:silent"]);
 });
 
+test("the last-three failing check treats a SIGTERM stop (failed, exit 143) as no evidence: three stops raise nothing, and a stop in the window does not hide real failures", async () => {
+  const t = Date.parse("2026-11-20T12:00:00Z");
+  const jobs = {
+    // Three SIGTERM stops (a restart, a box replaced): a stop is neither a failure nor a reset.
+    a1: [1, 2, 3].map((n) => ({ id: `st${n}`, agent: "a1", state: "failed", exit: 143, started_at: ago(n), ended_at: ago(n) })),
+    // A newer stop does not hide the three real failures behind it: the stop is skipped and the window is the last three
+    // real outcomes, all failures, so `failing` is raised.
+    a2: [
+      { id: "r1", agent: "a2", state: "failed", exit: 143, started_at: ago(1), ended_at: ago(1) },
+      { id: "r2", agent: "a2", state: "failed", exit: 1, started_at: ago(2), ended_at: ago(2) },
+      { id: "r3", agent: "a2", state: "failed", exit: 1, started_at: ago(3), ended_at: ago(3) },
+      { id: "r4", agent: "a2", state: "failed", exit: 1, started_at: ago(4), ended_at: ago(4) },
+    ],
+    // A job still waiting for its box (`admitted`) has not finished: with two real failures it fills no third slot.
+    a4: [
+      { id: "q1", agent: "a4", state: "admitted", started_at: ago(0), ended_at: null },
+      { id: "q2", agent: "a4", state: "failed", exit: 1, started_at: ago(1), ended_at: ago(1) },
+      { id: "q3", agent: "a4", state: "failed", exit: 1, started_at: ago(2), ended_at: ago(2) },
+    ],
+    // Skipping the stop leaves only two real outcomes: not three real failures, so no key (the stop is not a reset either).
+    a3: [
+      { id: "m1", agent: "a3", state: "failed", exit: 1, started_at: ago(1), ended_at: ago(1) },
+      { id: "m2", agent: "a3", state: "failed", exit: 143, started_at: ago(2), ended_at: ago(2) },
+      { id: "m3", agent: "a3", state: "failed", exit: 1, started_at: ago(3), ended_at: ago(3) },
+    ],
+  };
+  const kernel = {
+    read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : Object.keys(jobs).map((id) => ({ id, name: id, status: "idle" }))),
+    call: async (_m, p) => ({ jobs: jobs[decodeURIComponent(p.split("agent=")[1])] ?? [] }),
+  };
+  const found = await checks({ kernel, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => t }).run();
+  assert.deepEqual(found.map((i) => i.key).sort(), ["a2:failing"]);
+});
+
 // One fake control plane and kernel for the stuck-work checks: tasks by id, jobs by agent, the kernel's records, comments by task.
 function world({ tasks, jobs = {}, records = [], work = {}, comments = {}, chatLabel = false, inReview = [], todo = [], prs = [], grading = [], finals = {} }) {
   return {
