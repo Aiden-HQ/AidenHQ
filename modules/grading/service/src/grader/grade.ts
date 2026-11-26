@@ -137,9 +137,12 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   // why one was not sent); a rubric-named file is ranked first (fileEvidence).
   let files: any = { facts: [], data: {}, images: [] };
   if (rubric.length && w.files.length && deps.content) {
-    // A pr's screenshots are judged against its own heads: a capture stamped at other code is left out (fileEvidence).
+    // A capture is judged against the code it claims to show: a pr's against its own heads, an app's against the commit the
+    // app runs (an attached screenshot from an earlier iteration is not this deploy's page), and one showing other code is
+    // left out (fileEvidence).
     const heads = kind === "pr" && ev ? ev.prs.map((p: any) => p.shows).filter((h: any) => h?.commits.length) : [];
-    files = await fileEvidence(w.files, deps.content, { rubric: rubric.join("\n"), comments: w.data.TASK_COMMENTS, heads });
+    const deployed = kind === "app" && app?.sha && !heads.length ? app.sha : "";
+    files = await fileEvidence(w.files, deps.content, { rubric: rubric.join("\n"), comments: w.data.TASK_COMMENTS, heads, ...(deployed ? { deployed } : {}) });
     if (files.awaiting) return { awaiting: files.awaiting };
   }
   // Another task the rubric or the ref names ("put the accepted mockups onto ACME-12"): its file list, read-only.

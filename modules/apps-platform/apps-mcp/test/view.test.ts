@@ -126,8 +126,8 @@ describe("the grader's live view", () => {
     expect(await graderView(app(warehouse), {}, d)).toEqual({ ...bare, noHttp: true });
     // A restricted app is a page the grader may not look at, never a page that doesn't exist.
     expect(await graderView(app({ access: { roles: ["finance"] }, health: {} }), {}, d)).toEqual({ unavailable: expect.stringMatching(/restricted/) });
-    // The fact is the app's own shape, not where it runs: the same database on a remote docker context has no page either.
-    expect(await graderView(app({ ...warehouse, host: "vps" }), {}, d)).toEqual({ ...bare, noHttp: true });
+    // A remote app is out of the renderer's reach: its registry shape is not proof of no HTTP, so it is not flagged.
+    expect(await graderView(app({ ...warehouse, host: "vps" }), {}, d)).toEqual({ unavailable: expect.stringMatching(/docker context vps/) });
     // An exposed app with no health.url is a page this registry knows no address for: not captured, not not-applicable.
     expect(await graderView(app({ health: {}, expose: true, port: 8080 }), {}, d)).toEqual(bare);
     // Nor does a shared or an api-bearing app count as having no HTTP surface.

@@ -1136,9 +1136,11 @@ function fitPng(buf: Buffer, info: ImageInfo): Buffer | null {
  * pixel size, what was cut or left out), so a file left out reads as not sent, not as missing work. `content(id)` resolves
  * with the file's bytes. `heads` (a pr's): the code under review, each PR's { commits, trees } (prEvidence's `shows`); a
  * screenshot stamped (aidenhq-browse, ui-review) with a commit and tree that are none of them shows other code, so it is
- * not sent, and the facts say so. An unstamped image (a mockup, a reference) is sent as before.
+ * not sent, and the facts say so. `deployed` (an app's): the commit the app runs, so a capture stamped at any other commit
+ * — an earlier iteration, before the page broke — is not sent either, and the fact says which code it shows. An unstamped
+ * image (a mockup, a reference) is sent as before.
  */
-export async function fileEvidence(files: any[], content: (id: string) => Promise<Buffer>, { rubric = "", comments = "", heads = [] }: { rubric?: string; comments?: string; heads?: { commits: string[]; trees: string[] }[] } = {}): Promise<any> {
+export async function fileEvidence(files: any[], content: (id: string) => Promise<Buffer>, { rubric = "", comments = "", heads = [], deployed = "" }: { rubric?: string; comments?: string; heads?: { commits: string[]; trees: string[] }[]; deployed?: string } = {}): Promise<any> {
   const facts: string[] = [];
   const images: { url: string; label: string }[] = [];
   const texts: string[] = [];
@@ -1182,10 +1184,17 @@ export async function fileEvidence(files: any[], content: (id: string) => Promis
         continue;
       }
       const real = `${info.width}x${info.height}`;
-      const st = heads.length ? pngStamp(buf) : null;
+      const st = heads.length || deployed ? pngStamp(buf) : null;
       const at = (v: unknown) => (typeof v === "string" && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(v) ? v : "");
-      if (st && (at(st.commit) || at(st.tree)) && !heads.some((h) => h.commits.includes(at(st.commit)) || h.trees.includes(at(st.tree)))) {
-        facts.push(`${f.label}: a screenshot stamped as taken at commit ${at(st.commit).slice(0, 12) || "?"} (tree ${at(st.tree).slice(0, 12) || "?"}), which is not the code under review (${heads.map((h) => h.commits[0]!.slice(0, 12)).join(", ")}): not sent to the grader, as it shows other code`);
+      // A capture shows the code it was stamped at, never the code under review just because it was attached here.
+      const stampedAt = st ? at(st.commit) : "";
+      if (heads.length && st && (stampedAt || at(st.tree)) && !heads.some((h) => h.commits.includes(stampedAt) || h.trees.includes(at(st.tree)))) {
+        facts.push(`${f.label}: a screenshot stamped as taken at commit ${stampedAt.slice(0, 12) || "?"} (tree ${at(st.tree).slice(0, 12) || "?"}), which is not the code under review (${heads.map((h) => h.commits[0]!.slice(0, 12)).join(", ")}): not sent to the grader, as it shows other code`);
+        continue;
+      }
+      // An app's own capture is judged against the commit the app runs: an older iteration's screenshot is not this deploy.
+      if (!heads.length && deployed && stampedAt && stampedAt !== deployed) {
+        facts.push(`${f.label}: a screenshot stamped as taken at commit ${stampedAt.slice(0, 12)} (tree ${at(st.tree).slice(0, 12) || "?"}), which is not the deployed commit ${deployed.slice(0, 12)}: not sent to the grader, as it shows other code`);
         continue;
       }
       let sent = buf;
