@@ -9,6 +9,8 @@ const signedOut = (e: unknown) => e instanceof Error && e.message === "sign in";
 
 const PREFIX = "aidenhq.cache.";
 const ACCOUNT_KEY = `${PREFIX}account`;
+/** The shape of what is kept: an entry written by a board whose responses had another shape is never painted. Bump it when a cached response changes shape. */
+const SCHEMA = 2;
 /** Per entry: a larger response just isn't persisted (memory still holds it). */
 const MAX_BYTES = 1_500_000;
 /** A response the server marked stale is asked for again after this. */
@@ -86,8 +88,8 @@ export function peek<T>(key: string): { data: T; at: number } | undefined {
   try {
     const raw = storage()?.getItem(PREFIX + key);
     if (!raw) return undefined;
-    const saved = JSON.parse(raw) as { account: string; at: number; data: T };
-    if (saved.account !== account) return undefined;
+    const saved = JSON.parse(raw) as { account: string; at: number; data: T; schema?: number };
+    if (saved.account !== account || saved.schema !== SCHEMA) return undefined;
     const e: Entry = { data: saved.data, at: saved.at };
     mem.set(key, e);
     return e as { data: T; at: number };
@@ -130,7 +132,7 @@ export function put(key: string, data: unknown, persist: Persist = true) {
     const body = JSON.stringify(kept);
     if (written.get(key) === body) return;
     written.set(key, body);
-    const raw = JSON.stringify({ account, at, data: kept });
+    const raw = JSON.stringify({ account, at, data: kept, schema: SCHEMA });
     if (raw.length > MAX_BYTES) return s?.removeItem(PREFIX + key);
     s?.setItem(PREFIX + key, raw);
   } catch {

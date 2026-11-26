@@ -102,7 +102,7 @@ button:active,.btn:active,.chip:active{transform:scale(.98)}
 
           <div style="display: flex; justify-content: flex-end;">
             <div style="max-width: 70%; background: #e8edfd; border-radius: 10px; padding: 10px 14px;">
-              <p class="msg">Also review PRs on aidenhq-distro, but skip docs-only ones.</p>
+              <p class="msg">Also review PRs on aidenhq-distro, with a second round after pushes.</p>
               <span class="small">You · 08:02</span>
             </div>
           </div>
@@ -110,7 +110,7 @@ button:active,.btn:active,.chip:active{transform:scale(.98)}
           <div style="display: flex; gap: 10px; align-items: flex-start;">
             <dc-import name="Face" who="max" state="idle" size="{{ s32 }}" hint-size="32px,32px"></dc-import>
             <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px;">
-              <p class="msg">Done. aidenhq-distro is now reviewed like your other repos. A PR that only touches <code>.md</code> files or <code>site/</code> copy gets no review and is marked “docs only, skipped”.</p>
+              <p class="msg">Done. aidenhq-distro is now reviewed like your other repos, and every repo now gets up to two rounds after pushes.</p>
               <div style="border: 1px solid #e1e4ea; border-radius: 8px; overflow: hidden; max-width: 560px;">
                 <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #f9fafb; border-bottom: 1px solid #e1e4ea;">
                   <span class="h3" style="font-size: 12.5px;">Settings changed</span>
@@ -119,8 +119,8 @@ button:active,.btn:active,.chip:active{transform:scale(.98)}
                 </div>
                 <div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.6;">
                   <div style="padding: 2px 12px; background: rgba(34,197,94,0.15);">+ repos: aidenhq-distro</div>
-                  <div style="padding: 2px 12px; background: rgba(239,68,68,0.15);">- skip: (none)</div>
-                  <div style="padding: 2px 12px; background: rgba(34,197,94,0.15);">+ skip: PRs touching only *.md and site/ copy</div>
+                  <div style="padding: 2px 12px; background: rgba(239,68,68,0.15);">- push_rounds: 1</div>
+                  <div style="padding: 2px 12px; background: rgba(34,197,94,0.15);">+ push_rounds: 2</div>
                 </div>
               </div>
               <span class="small">Max · 08:02</span>
@@ -166,15 +166,14 @@ button:active,.btn:active,.chip:active{transform:scale(.98)}
           <div class="row"><span class="tag" style="background: #dcf2d9; color: #1f5420;">Merged</span><span style="flex: 1;">#812 Invoices export v2</span><span class="small">3 rounds</span></div>
           <div class="row"><span class="tag" style="background: #dcf2d9; color: #1f5420;">Passed</span><span style="flex: 1;">#817 Hiring pipeline filters</span><span class="small">1 round</span></div>
           <div class="row"><span class="tag" style="background: #fff3bf; color: #8a5d00;">Findings</span><span style="flex: 1;">#818 Offsite planner rooms</span><span class="small">2 open</span></div>
-          <div class="row"><span class="tag" style="background: #e2e6ea; color: #2f3a45;">Skipped</span><span style="flex: 1;">#820 Fix typo in README</span><span class="small">docs only</span></div>
+          <div class="row"><span class="tag" style="background: #dcf2d9; color: #1f5420;">Passed</span><span style="flex: 1;">#820 Fix typo in README</span><span class="small">1 round</span></div>
           <a href="#" style="font-size: 13px; font-weight: 600;">All reviews →</a>
         </section>
 
         <section class="card" style="padding: 16px; display: flex; flex-direction: column; gap: 10px;">
           <h2 class="h3">How Max is set up</h2>
           <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">Repos</span><span>AidenHQ, aidenhq-distro, invoices-app</span></div>
-          <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">When</span><span>When a PR opens, then once after the next push</span></div>
-          <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">Skips</span><span>Docs-only PRs</span></div>
+          <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">When</span><span>When a PR opens, then after up to two pushes</span></div>
           <div class="row" style="align-items: flex-start;"><span class="small" style="width: 92px; flex: none;">Reviewers</span><span>Two engines; the second checks the first</span></div>
           <p class="small" style="margin: 2px 0 0;">Change any of this by asking Max.</p>
         </section>

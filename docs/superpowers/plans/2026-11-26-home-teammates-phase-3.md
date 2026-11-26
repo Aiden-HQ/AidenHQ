@@ -1,7 +1,7 @@
 # Phase 3: Onboarding, hiring, push test
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (owner rule: native execution, one review
-> at the end of the phase) to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (native execution) to implement this plan
+> task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A new owner meets one teammate (Tess by default), sets it up and sees a first result on their own data. They see
 everyone else Aiden can bring in, choose where the team reaches them (with a real test message) and land on Home. A
@@ -98,7 +98,9 @@ line in the files this phase touches. Re-find each symbol on main before editing
   compiled, so the onboarding card's rename field holds its value (component state + sessionStorage) and files it
   once the module change reads `applied`. One extra apply, only when the name differs from the default.
 - **D11. Set up next / Later** are stored per account in the board store's `meta` table under key
-  `teammates:<accountId>`, as JSON `{next: string[], later: string[]}` (agent keys). The welcome pre-queues one
+  `teammates:<accountId>`, as JSON `{first?: string, next: string[], later: string[]}` (agent keys). `first` is the
+  teammate the owner chose to set up first, written when they press "Set up <name>", so a reload mid-setup reopens that
+  teammate's setup even once it is on the team. The welcome pre-queues one
   suggestion (marked "Suggested for you"): the first catalog teammate that is neither the one being set up nor already
   on the team.
 - **D12. Welcome finish lands on Home** (`#/`). Instead of Aiden's welcome chat, it files one chief-of-staff task
@@ -180,8 +182,10 @@ line in the files this phase touches. Re-find each symbol on main before editing
       yet is skipped with one warning ("browse ran out of time: <n> entries not listed") and nothing is cached for
       that marketplace, so an apply is never held by dead remotes. Skip the entry, with `warn("marketplace <m>: <name> not
       listed: <reason>")`, when: the read throws, `def.name` ≠ entry name, or the module has `apps` or a service
-      `build` (the same rule `remoteModules` refuses). For each `agents.<key>`, read its `agents/<key>/AGENTS.md`
-      frontmatter with the phase 1 parser. A teammate block that fails validation, or text over the caps (D3), drops
+      `build` (the same rule `remoteModules` refuses). For each `agents.<key>`, first check the key against the
+      agent-key pattern (`AGENT`) and that the resolved `agents/<key>/AGENTS.md` path stays inside that entry's
+      checkout (a key that fails either is dropped with a warning, its file never opened), then read its frontmatter
+      with the phase 1 parser. A teammate block that fails validation, or text over the caps (D3), drops
       that teammate with a warning. A `face` file is never read or copied. A `FaceKit` face is enum data: keep it
       when it validates against phase 1's enums, and drop it otherwise.
 - [ ] A marketplace whose checkout or `marketplace.json` fails gets `warn(...)` and is skipped whole.
@@ -320,7 +324,7 @@ export function teammateRoutes(d: { pc: Paperclip; store: Store; sources: () => 
   State comes from each run's task (kernel task state). `found` = open tasks created by the trial routines' agents
   since `at` (Paperclip issue list filtered by `createdByAgentId` and `createdAt`), at most 10. Confirm in Paperclip's
   `routines/:id/run` answer which field carries the run's issue, and use that one.
-- `GET /api/teammates/queue` → `{ next: string[]; later: string[] }`. `PUT` with the same body (each ≤ 20 keys,
+- `GET /api/teammates/queue` → `{ first?: string; next: string[]; later: string[] }`. `PUT` with the same body (each ≤ 20 keys,
   `AGENT` regex). Stored per account (D11).
 - `homeStart(accountId): Home["start"]` (Task 9).
 
@@ -402,7 +406,8 @@ screens). Create `GettingStarted.tsx`, `onboarding.css`. Modify the phase 2 Home
 
 Screen **first** (V3NewInstall-1512): `Stepper` (`steps` = the 3 onboarding steps, `current` 0) "Step 1 of 3 · Your first teammate"; the right-hand note "Nothing runs
 on its own until you say so." when `quiet_start` is on.
-- [ ] Heading "Start with <name>.", from `GET /api/teammates` `first`. The recommended `SectionCard` shows: `Face`
+- [ ] Heading "Start with <name>.": the queue's `first` once a selection was made (D11; Set up writes it before the module
+      apply starts), else `GET /api/teammates` `first`. The recommended `SectionCard` shows: `Face`
       (96), an inline rename `Input` (1–24), job, Does = description, Connects = `row.connections` titles + "read-only
       until you say otherwise", "First result you'll see" = `sample`, and the primary button "Set up <name>".
 - [ ] Set up mounts `TeammateSetup` in the card's place. When it finishes: the trial `found` list, rows like V3NewInstall-home
@@ -609,7 +614,7 @@ skill). Modify `services/shared/page-kit.css`, `services/board/web/src/ModuleVie
       review"): third-party browse text into the board and the Architect, the board-keyed `/v1/notify/test`, the
       qualified install, and `teammateStart` resuming routines as the owner. Each finding gets a fix with a test.
 
-## Mockup vs spec (the spec wins; noted for the reviewer)
+## Mockup vs spec (the spec wins)
 
 - V3NewInstall's HTML still has the "What eats most of your week?" screen: dropped by the owner, not built.
 - V3NewInstall's roster shows "Aiden · Morning brief" and "Aiden · Inbox triage" cards. Those aren't catalog

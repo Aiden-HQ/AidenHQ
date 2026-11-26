@@ -1,7 +1,7 @@
 # Home and Named Teammates Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (owner rule: native execution, one review
-> at the end of each phase) to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (native execution) to implement this plan
+> task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the chat-first board with a Home (needs you, since you last looked, your world, your team), named
 teammates (user-facing vs hidden agents, faces, rename), a Team area with marketplace-first hiring, onboarding that

@@ -151,9 +151,9 @@ outcomes:
     `/api/faces/<key>`. With no face the board draws one from the agent's key.
   - `first`: its onboarding rank (1–99, lower first).
   - The name: `overrides.agents.<key>.name` renames a teammate (only a teammate; the board's rename is that typed
-    settings change). Every teammate's name, its default included, is 1–24 ASCII letters, digits, spaces and `.'-`, at most 4
-    words, and differs (case and punctuation aside) from every other agent's name and key, hidden ones included: chat's
-    `@name` and the task tools address agents by either (`services/shared/teammate-name.ts`, the one rule for compile, the
+    settings change). Every teammate's name, its default included, is 1–24 ASCII letters, digits, spaces and `-`, at most 4
+    words, and differs (case, spaces and punctuation aside) from every other agent's name and key, hidden ones included: chat's
+    `@name`, a task comment's `@handle` (the name without spaces) and the task tools address agents by either (`services/shared/teammate-name.ts`, the one rule for compile, the
     board and the kernel). A teammate is never a team's template.
   - The catalog (`config/modules.json`) lists every module's teammates, enabled or not (`teammates: [{key, name, job, sample,
     description, department, face, first}]`); a module that is off and has a broken block is left out with a warning.

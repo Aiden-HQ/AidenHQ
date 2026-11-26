@@ -65,7 +65,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   /** A task as the control plane has it now; undefined when it is gone. Throws when it can't be read now. */
   issue: (id: string) => Promise<Issue | undefined>;
   /** A task's state (task-state-read.ts): its open wait's question and start, and who it needs; no row fails an ask closed. */
-  state: (task: string) => Pick<StateRow, "attention" | "question" | "wait_since" | "wait_until"> | undefined;
+  state: (task: string) => Pick<StateRow, "attention" | "question" | "detail" | "wait_since" | "wait_until"> | undefined;
   /** An agent as the owner channel's attention reads it: its name, key and roles. */
   asker: (id: string) => Promise<{ name: string; key: string; roles: string[] }>;
   /** A durable kernel notice on a task (notices.ts queue). */
@@ -109,7 +109,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
    * open ask either: nobody it was sent to can answer it. `undefined`: no open ask; `"unknown"`: unreadable; `"ambiguous"`: a
    * legacy marker whose recipient can't be told.
    */
-  async function openAsk(t: Issue): Promise<{ to: AskTo; question: string; until?: string } | "ambiguous" | "unknown" | undefined> {
+  async function openAsk(t: Issue): Promise<{ to: AskTo; question: string; detail?: string; until?: string } | "ambiguous" | "unknown" | undefined> {
     const task = t.id;
     const row = state(task);
     if (!row) return "unknown";
@@ -140,7 +140,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
     // row that disagrees with its own wait is not this ask's destination either.
     if (answeredBy === "owner" ? to !== "owner" : to === "owner") return "ambiguous";
     // The deadline reported for this ask is the one on the row that proved it open, never a fresh or re-read one.
-    return { to, question: row.question, ...(row.wait_until ? { until: row.wait_until } : {}) };
+    return { to, question: row.question, ...(row.detail ? { detail: row.detail } : {}), ...(row.wait_until ? { until: row.wait_until } : {}) };
   }
 
   async function toOwner(t: Issue, text: string, dedupe = `escalate:${t.id}`) {
@@ -211,7 +211,11 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       if (open) {
         // A retry of the question already open is idempotent: nothing is sent twice and the recorded wait stands as it is. The
         // wait fact holds the question as the caller sent it; the comparison normalises both the same way `q` was.
-        if (neutral(open.question).trim().slice(0, 1500) === q) return { sent: "same", to: open.to, ...(open.until ? { until: open.until } : {}) };
+        const sameQuestion = neutral(open.question).trim().slice(0, 1500) === q;
+        if (sameQuestion && (!detail || open.detail === detail)) return { sent: "same", to: open.to, ...(open.until ? { until: open.until } : {}) };
+        // A retry without the draft is the same ask. The same question about a revised draft is a new ask, never a retry: the open one stands with the draft its
+        // recipient sees, so the caller is refused (nothing sent) rather than having its answer bound to the old text.
+        if (sameQuestion) return { sent: "open", to: open.to };
         // An `asked` replay that may go to the owner directly was already delivered (notify): refusing it would fail a call whose
         // question the owner has, and recording it would replace the live ask. The live ask stands and the caller is told the
         // owner has the newer question too, so the agent can read that reply rather than lose it.
@@ -230,8 +234,9 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       const kind = `chief-ask:${asker}`;
       if (asker && (db.prepare("SELECT COUNT(*) AS n FROM escalations WHERE kind = ? AND at > ?").get(kind, now() - DAY) as { n: number }).n >= CHIEF_ASKS) return { sent: "limit", to };
       const id = t.identifier ?? t.id;
-      // The question's `detail` (the draft it is about) goes with it to whoever answers, as a quoted block within the cap.
-      const told = detail ? `${q}\n\n${neutral(detail).trim().split("\n").map((l) => `> ${l}`).join("\n")}`.slice(0, 1500) : q;
+      // The question's `detail` (the draft it is about, at most 2000 characters: idle.ts) goes with it whole to whoever
+      // answers, as a quoted block: the question is capped on its own, never the draft.
+      const told = detail ? `${q}\n\n${neutral(detail).trim().split("\n").map((l) => `> ${l}`).join("\n")}` : q;
       const ownerText = `**${id} waits on your answer:**\n\n${told}\n\nReply here (or on ${id} on the board): your answer goes to the task and wakes it.`;
       const episode = (db.prepare("SELECT COUNT(*) AS n FROM escalations WHERE key LIKE ?").get(`asked:${t.id}:%`) as { n: number }).n;
       const source = `ask:${t.id}:${episode}`;

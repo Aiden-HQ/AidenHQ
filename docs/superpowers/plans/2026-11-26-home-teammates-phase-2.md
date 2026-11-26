@@ -1,7 +1,7 @@
 # Phase 2: IA, Home, Team pages, Ask Aiden
 
-> **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:executing-plans (native execution, one review at the end of
-> the phase). Steps use checkbox (`- [ ]`) syntax.
+> **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:executing-plans (native execution). Steps use checkbox
+> (`- [ ]`) syntax.
 
 **Goal:** The board opens on Home. Home shows what needs the owner (answered in place), what the team did since the
 owner last looked, the owner's world and the teammates with news. Team holds named teammates with their own pages and
@@ -280,7 +280,8 @@ V2Team, V2AskAiden, V2PhoneHome.
   - Without `agent` the route is unchanged.
 
 - [ ] Implement the filter inside the existing handler (one route, one row builder). Serve it under
-  `served("chats:"+key, …)`.
+  `served("chats:"+key+":"+state+":"+offset, …)` (the normalized state and the offset are part of the cache key, so Active,
+  Settled and each "Show older" page are cached apart).
 - [ ] Delete `GET /api/settled` and `store.settledList`. Keep `settle`/`unsettle`: `state=settled` reads them.
 
 ## Task 5: `GET /api/home`, `POST /api/home/seen`, snooze
@@ -543,7 +544,7 @@ Routes:
 - `export function HomeView(props: { card?: string; session: Session; go: (h: string) => void; onSignIn: () => void; toast: Toast })`.
 - `needs.ts`:
   - `export function useNeedsKeys(rows: NeedRow[], opts: { open: (id) => void; done: (row) => void; snooze: (row) => void }): { at: string | null; setAt }`.
-    J/K move, Enter opens, E runs `done`, S runs `snooze`. Scope (spec: the Needs list):
+    J/K move, Enter opens, E runs `done` (a row's primary action; on a wait that asks several questions it opens the pane's full form, like Enter), S runs `snooze`. Scope (spec: the Needs list):
     - It is bound on `window` only while Home is mounted.
     - Enter, E and S are **inert until J/K (or a click) has selected a row**. The selection shows a `--ring` outline
       and is announced (`aria-activedescendant` on the list).
@@ -572,8 +573,9 @@ Routes:
 - NeedRow rendering: `DecisionRow` with `face` = `<Face seed={key} src kit state="needs" size={40} label={name}/>`,
   `who` = name, `role` = job, `question`, `detail` (the draft), `meta` = `ago(since)`, `active` = keyboard selection,
   `onOpen` = open the pane, `i` = index (stagger), `receipt` (below), and `actions` by kind:
-  - **answer:** one button per option (first `primary`), then "Something else…" (opens the pane with the free-text
-    answer). A row whose options include "Not now" shows it as an option; otherwise a quiet "Not now" button snoozes.
+  - **answer:** for a single-question wait, one button per option (first `primary`), then "Something else…" (opens the
+    pane with the free-text answer). A wait that asks several questions shows "Answer" only, which opens the pane with the
+    full form: an answer claims the whole wait, so every question is answered together. A row whose options include "Not now" shows it as an option; otherwise a quiet "Not now" button snoozes.
     `detail` (a draft) shows as a quoted block under the question, two lines clamped.
   - **approval:** Approve (`primary`) / Reject… (reason inline, as `Decide` does today), plus the card's `reads`
     line in small text.

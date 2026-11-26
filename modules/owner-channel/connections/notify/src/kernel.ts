@@ -31,6 +31,8 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
      */
     wait: async (task: string, assertion: string, question: string, detail?: string): Promise<{ to?: string; open?: boolean; since?: string }> => {
       const r = await raw("POST", "/v1/wait", { task, reason: "the answer to my question", on: "the answer", for: "owner", asked: true, question, ...(detail ? { detail } : {}) }, { "x-aidenhq-caller": assertion });
+      // The task's earlier question is still open (idle.ts, escalate.ask): nothing was recorded or sent.
+      if (r.status === 409 && r.json?.error?.type === "conflict") return { open: true };
       if (r.status !== 200) throw new Error(`POST /v1/wait -> ${r.status}`);
       return { to: typeof r.json?.to === "string" ? r.json.to : undefined, ...(r.json?.asked === false ? { open: true } : {}), ...(typeof r.json?.since === "string" ? { since: r.json.since } : {}) };
     },

@@ -1,7 +1,6 @@
 # Phase 1: Kit and teammates data
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans (native execution, one review at the end of
-> the phase). Steps use checkbox (`- [ ]`) syntax. Build in your own worktree from `origin/main`; never `git stash`.
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans (native execution). Steps use checkbox (`- [ ]`) syntax. Build in your own worktree from `origin/main`; never `git stash`.
 
 **Goal:** Ship the board's new design kit (motion and layout tokens, Face, TeammateChip and nine more components, all on
 `#/design`) and the data behind named teammates: the `teammate:` block from the module format through compile, Paperclip,
@@ -56,8 +55,8 @@ V3NewInstall, V3Hire and V2Team show the components in use).
   - A teammate's name must not match, case- and punctuation-insensitively (the `norm` in
     `services/board/src/chats.ts`), any other agent's name or key, hidden agents included.
   - The reason: today `pickAgent` and tasks-mcp's `assignee`/`to` lookups match every agent by name or key.
-  - Names are ASCII letters, digits, space and `.'-`, 1–24 characters and at most 4 words, which is what `pickAgent` can
-    address.
+  - Names are ASCII letters, digits, space and `-`, 1–24 characters and at most 4 words, which is what `pickAgent` and a
+    task comment's handle (the name without spaces) can address.
 - **C7. Pause (decided; phase 2).** Pause stops only the teammate itself, never its staff, and the button says "Pause
   Max". Staff such as `engineer` are shared, so pausing them would stop other teammates' work. Phase 2 builds it this
   way.
@@ -342,9 +341,9 @@ Modify `scripts/compile.ts` (~105, ~161).
 ```ts
 // services/shared/teammate-name.ts
 export function teammateNameProblem(name: unknown, key: string, agents: Record<string, { name: string }>): string | undefined;
-//   agents: every compiled agent (hidden ones included). undefined = ok. Rules (C6): string; /^[A-Za-z][A-Za-z0-9 .'-]{0,23}$/;
+//   agents: every compiled agent (hidden ones included). undefined = ok. Rules (C6): string; /^[A-Za-z][A-Za-z0-9 -]{0,23}$/;
 //   ≤4 words; norm(name) (lowercase, non-alnum → space, trimmed: chats.ts norm) differs from norm(name) and norm(key) of every
-//   other agent. Messages: "a name is 1 to 24 letters, digits, spaces, . ' or -", "Tess is already an agent's name",
+//   other agent, and so does its handle (spaces removed, lowercase). Messages: "a name is 1 to 24 letters, digits, spaces or -", "Tess is already an agent's name",
 //   "open loops is an agent's key".
 
 // scripts/modules.ts
