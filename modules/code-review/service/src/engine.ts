@@ -56,8 +56,8 @@ import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 const REOPENED = { title: "Reopened, its answer found unsafe: ", why: "The recheck found the answer to this finding unsafe: its fix or reason hides the problem or adds one.\n\n" };
 
 export const DEBOUNCE = 60_000;
-/** A PR head whose tier couldn't be classified (its files unreadable, or the head moved during the read) is read again after this. */
-const AGAIN_MS = 60_000;
+/** A PR head whose tier couldn't be classified (its files unreadable, the head moved during the read, or the rule config changed) is read again after this. */
+export const AGAIN_MS = 60_000;
 /** The idle pass (every open PR's triggers from its row: a run settling or failing can change them) and the status mirror's
  * retries run at least this often, with no GitHub read. */
 const IDLE_MS = 60_000;
@@ -313,18 +313,20 @@ export function createEngine(d: EngineDeps) {
   type Inputs = { head: string; base: string; ref: string; author: string; association: string; config: string };
   const inputsOf = (p: PullRequest, cfg: Entry): Inputs => ({ head: p.head, base: p.base, ref: p.base_ref, author: authorKind(p.author, p.association, p.own, p.fork), association: String(p.association ?? ""), config: cfg.hash });
   /** A PR head's tier as code review serves it: classified (current inputs), pending (none yet, or stale), or unwatched. `live` is a
-   * caller's own read of the PR (its base branch and author association): one that differs from what the tier came from is pending. */
+   * caller's own read of the PR's base branch: one that differs from what the tier came from is pending. Its author association is
+   * never compared: the caller and the classifier read it under different GitHub identities (a PR's owner reads as NONE through the
+   * App), while the tier depends on the author's kind, which the classification itself fixes. */
   type TierState = { state: "unwatched" } | { state: "pending" } | { state: "classified"; tier: Tier; rule: number; why: string; facts: Facts | null; c: Repo; policy: string; at: number };
   function tierState(repo: string, n: number, head: string, live: { base?: string; association?: string } = {}): TierState {
     const cfg = repoCfg(repo);
     if (!cfg) return { state: "unwatched" };
     const p = prRow(repo, n);
     const i = p?.cls ? (JSON.parse(p.cls) as Inputs) : undefined;
-    // A caller's live read that differs (a PR retargeted or its author's role changed, which the feed doesn't announce): the PR is
-    // read again on the next tick.
-    const moved = !!p?.open && !!i && i.head === head && ((live.base !== undefined && live.base !== i.ref) || (live.association !== undefined && live.association !== i.association));
-    if (moved && !again.has(`${repo}#${n}`)) again.set(`${repo}#${n}`, 0);
-    if (!p || !i || !p.tier || p.head !== head || i.head !== head || i.config !== cfg.hash || moved) return { state: "pending" };
+    // A caller's live base branch that differs (a PR retargeted, which the feed doesn't announce), or a classification stored under
+    // another rule config: the PR is read again on the next tick.
+    const stale = !!p?.open && !!i && i.head === head && ((live.base !== undefined && live.base !== i.ref) || i.config !== cfg.hash);
+    if (stale && !again.has(`${repo}#${n}`)) again.set(`${repo}#${n}`, 0);
+    if (!p || !i || !p.tier || p.head !== head || i.head !== head || stale) return { state: "pending" };
     const policy = policyOf(cfg, p.tier, i.ref);
     // A policy the watcher hasn't started its run of heads for yet (a settings edit since): nothing reviewed under it counts.
     return { state: "classified", tier: p.tier, rule: p.rule ?? -1, why: p.why ?? "", facts: p.facts ? JSON.parse(p.facts) : null, c: tierCfg(cfg, p.tier), policy, at: p.policy === policy ? (p.policy_at ?? 0) : Infinity };
@@ -1718,9 +1720,9 @@ export function createEngine(d: EngineDeps) {
   }
 
   /**
-   * A head's risk tier, when any input changed since its last classification (head, base, author kind or association, the repo's
-   * class and rules): one consistent read of its files (the snapshot), the repo's rules, stored on its row with those inputs. A read
-   * that fails or a PR that moved meanwhile leaves it pending; it is read again after AGAIN_MS.
+   * A head's risk tier, when any input changed since its last classification (head, base, author kind, the repo's class and rules):
+   * one consistent read of its files (the snapshot), the repo's rules, stored on its row with those inputs. A read that fails or a PR
+   * that moved meanwhile leaves it pending; it is read again after AGAIN_MS.
    */
   async function classifyPr(cfg: Entry, p: PullRequest) {
     const row = prRow(p.repo, p.number);
@@ -2291,8 +2293,8 @@ export function createEngine(d: EngineDeps) {
    * no important finding a mandatory run made is open on the PR; else wait, with each reason in plain words and how it unblocks. A
    * tier with no mandatory combo needs no review (`requires_review` false): it passes unless an earlier mandatory run's important
    * finding is still open. A head not classified yet waits. There is no fail: the merge queue asks again until it passes, the PR
-   * moves or it closes. `live`: the caller's own read of the PR (base branch, author association); one that differs from what the
-   * tier came from is pending.
+   * moves or it closes. `live`: the caller's own read of the PR's base branch; one that differs from what the tier came from is
+   * pending (its author association is not compared: see tierState).
    */
   function verdict(repo: string, n: number, head: string, live: { base?: string; association?: string } = {}): Verdict {
     const t = tierState(repo, n, head, live);

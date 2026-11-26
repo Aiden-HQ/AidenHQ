@@ -95,6 +95,7 @@ export function planParts(action: string, s: State) {
   if (action === "close") return (s.prs ?? []).map((p) => [closePart(p, s)]);
   if (action === "create_repo") return [[createRepoPart(s)]];
   if (action === "publish_module") return [[publishModulePart(s)]];
+  if (action === "retitle") return (s.prs ?? []).map((p) => [retitlePart(p, s)]);
   if (action === "approve" || action === "enqueue" || action === "repair" || action === "retarget") return (s.prs ?? []).map((p) => shipEffectParts(action, p, s));
   return [];
 }
@@ -159,6 +160,24 @@ function shipEffectPart(action: "approve" | "enqueue" | "repair" | "retarget", p
   if (refused) return refused;
   if (action === "approve" && p.ship.noApp) return REJECT("ship-no-app", `${ref}: approval needs a human (${p.ship.noApp})`);
   return T(0, `ship-${action}`, `${ref}: adopted at generation ${p.ship.generation}, at its head \`${p.ship.expected.slice(0, 12)}\``);
+}
+
+/**
+ * retitle: an adopted PR's title, replaced so the `policy` job's Conventional Commit check can pass (no commit can fix it). The
+ * same adoption, generation and head binding as the other effects, but filed by the Engineer's `aidenhq ship title` (a title is
+ * a judgement: ship never invents one), so it is not `byShip`.
+ */
+function retitlePart(p: Pr, s: State): Part {
+  const ref = `${p.repo}#${p.number ?? "?"}`;
+  if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
+  if (!same(p.repo, s.productRepo) && !inAgentsOrg(p.repo, s) && !inMaintained(p.repo, s)) return REJECT("outside-merge", `${ref} is outside the agents org, the product repo and maintainer_repos`);
+  if (!p.ship) return REJECT("ship-generation", `${ref}: a retitle names an adoption`);
+  // A job files a retitle on the adoption's own task (the Engineer ship woke): an adoption with no task yet belongs to nobody,
+  // and no job may write a PR it wasn't handed.
+  if (!p.ship.task) return REJECT("ship-scope", `${ref}: no task owns the adoption yet, so no job may retitle it`);
+  const refused = shipRefusal(p.ship, ref);
+  if (refused) return refused;
+  return T(0, "ship-retitle", `${ref}: adopted at generation ${p.ship.generation}, at its head \`${p.ship.expected.slice(0, 12)}\``);
 }
 
 /**
@@ -376,7 +395,7 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
   const refused = parts.find((p) => p.reject);
   if (refused) throw Object.assign(new Error(refused.reason), { rule: refused.rule });
   const top = parts.reduce((a, b) => (b.tier > a.tier ? b : a));
-  const targets = action === "merge" || action === "close" || action === "approve" || action === "enqueue" || action === "repair" || action === "retarget"
+  const targets = action === "merge" || action === "close" || action === "approve" || action === "enqueue" || action === "repair" || action === "retarget" || action === "retitle"
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
     : action === "publish_module" ? { [`${state.repo} ${state.ref}`]: { repo: state.repo, ref: state.ref, commit: state.base } }

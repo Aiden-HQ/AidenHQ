@@ -162,6 +162,93 @@ const REPAIR_WAIT_MS = 40 * 60_000;
 const REPAIR_LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 /** A glob (`**` any folders, `*` within one) as a whole-path pattern. */
 const globRe = (glob: string) => new RegExp(`^${String(glob).split("**/").map((part) => part.split("**").map((p) => p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*")).join("(?:.*/)?")}$`);
+/** One path of a tree: its mode and object sha, as git's own tree has them (never a diff's). */
+export type TreeEntry = { path: string; mode: string; sha: string };
+/** An entry of `POST /git/trees`: a blob or gitlink by sha, or a deletion (`sha: null`). */
+type TreeWrite = { path: string; mode: string; type: string; sha: string | null };
+/** What a `POST /git/trees` call was asking for, kept for its refusal's evidence. */
+type TreeTry = { diff: string; tree: TreeWrite[] };
+/** How many paths one `ls-tree` lookup names: the output stays proportional to the change, never the repository's size. */
+const TREE_CHUNK = 200;
+/** A git run that keeps stdout as git wrote it: a tree path may start with whitespace, which a trim would eat. */
+export type Raw = (args: string[]) => Promise<string>;
+const NUL = (out: string) => out.split("\0").filter(Boolean);
+/** The paths that differ between two trees (`git diff-tree --name-only`): a change's size, not the tree's. */
+const changedPaths = async (raw: Raw, a: string, b: string) => [...new Set(NUL(await raw(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b])))];
+
+/**
+ * The paths among `paths` that `<tree>` holds as a directory, at any depth (`git ls-tree -d`): `x` is a directory in the result
+ * whether it holds `x/y` or only `x/y/z`. These are the paths a tree write must never name as a `sha:null` deletion.
+ * Both lookups pass `--literal-pathspecs`: a changed path is looked up as itself. `--` ends option parsing, not pathspec
+ * parsing, so without it a file named `:(draft).md` is read as pathspec magic (`fatal: Invalid pathspec magic 'draft'`) and
+ * `*.md`/`a[1].txt` are read as patterns that match other paths.
+ */
+const dirsAt = async (raw: Raw, tree: string, paths: string[]) => {
+  const dirs = new Set<string>();
+  for (let i = 0; i < paths.length; i += TREE_CHUNK) {
+    for (const rec of NUL(await raw(["--literal-pathspecs", "ls-tree", "-d", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
+      const [meta, ...rest] = rec.split("\t");
+      if (String(meta).split(" ")[1] === "tree") dirs.add(rest.join("\t"));
+    }
+  }
+  return dirs;
+};
+/** What `<tree>` holds at exactly each of `paths`: its mode and sha as git's own tree has them (a tree entry is skipped). */
+const entriesAt = async (raw: Raw, tree: string, paths: string[]) => {
+  const files = new Map<string, TreeEntry>();
+  for (let i = 0; i < paths.length; i += TREE_CHUNK) {
+    for (const rec of NUL(await raw(["--literal-pathspecs", "ls-tree", "-z", tree, "--", ...paths.slice(i, i + TREE_CHUNK)]))) {
+      const [meta, ...rest] = rec.split("\t");
+      const [mode, kind, sha] = String(meta).split(" ");
+      if (kind !== "blob" && kind !== "commit") continue;
+      const path = rest.join("\t");
+      files.set(path, { path, mode: mode!, sha: sha! });
+    }
+  }
+  return files;
+};
+/**
+ * The `POST /git/trees` entries that turn `base` into `want`: the tree write that repairs a PR (and `apiCommits` makes for each
+ * commit). They come from the result's own tree for every path the two differ on — git's own mode and sha at that path — never
+ * from a raw diff pair. `git diff-tree --no-renames` pairs a file at the head (`D x`) with a path under it (`A x/y`), and a
+ * `sha:null` entry for `x` next to `x/y` is a tree GitHub refuses whole (`422 Invalid tree info`): `x` is a directory in the
+ * resulting tree. Here `x` is probed in `want` and, found to be a directory at any depth, left out — adding `x/y` over the base's
+ * file replaces it. Deletions are the changed paths `want` does not hold, at the mode git's own base tree reports for them.
+ */
+export const treeWrites = async (raw: Raw, base: string, want: string) => {
+  const paths = await changedPaths(raw, base, want);
+  const present = await entriesAt(raw, want, paths);
+  const dirs = await dirsAt(raw, want, paths.filter((p) => !present.has(p)));
+  const gone = paths.filter((p) => !present.has(p) && !dirs.has(p));
+  const before = await entriesAt(raw, base, gone);
+  const tree: TreeWrite[] = [];
+  for (const p of paths) {
+    const e = present.get(p);
+    // A path `want` holds as a directory gets no entry at all (its contents are the entries that changed); adding one under it
+    // over the base's file replaces that file.
+    if (e) tree.push({ path: p, mode: e.mode, type: e.mode === "160000" ? "commit" : "blob", sha: e.sha });
+    else if (dirs.has(p)) continue;
+    else {
+      const b = before.get(p);
+      if (b) tree.push({ path: p, mode: b.mode, type: b.mode === "160000" ? "commit" : "blob", sha: null });
+    }
+  }
+  return { tree, dirs };
+};
+/**
+ * GitHub's refusal of a `POST /git/trees`, saying what it refused: the entry first (its path and sha, so ship's hold, which keeps
+ * the first 300 characters of the first line, still names it), then the diff and GitHub's own words. The entry is the one GitHub
+ * points at (`errors[].index`) when it says which; otherwise the first sent, said as such.
+ */
+const treeRefusal = (where: string, status: number, body: { message?: unknown; errors?: unknown } | undefined, { diff, tree }: TreeTry) => {
+  const errors = Array.isArray(body?.errors) ? (body!.errors as { index?: unknown; message?: unknown }[]) : [];
+  const named = errors.find((e) => typeof e.index === "number" && tree[e.index as number]);
+  const entry = named ? tree[named.index as number] : undefined;
+  const why = errors.map((e) => String(e.message ?? "")).filter(Boolean).join("; ").slice(0, 200);
+  return `GitHub refused tree entry ${JSON.stringify(entry ?? tree[0] ?? null)}${entry ? "" : " (the first sent: GitHub named none)"}`
+    + ` — ${where} ${diff}: ${status} ${String(body?.message ?? "").slice(0, 200)}${why ? ` (${why})` : ""}`
+    + `; carried ${tree.length} change(s): ${tree.slice(0, 20).map((e) => `${e.sha === null ? "-" : "+"}${e.path}@${e.mode}`).join(", ")}${tree.length > 20 ? ", …" : ""}`;
+};
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -210,6 +297,36 @@ export function createService(o: Options) {
     const full = [...SAFE_GIT_ARGS, ...(token ? CREDENTIAL_ARGS : []), "--git-dir", dir, ...args];
     return (await run("git", full, { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
   }
+  /**
+   * The same clone, read for tree data: git's own bytes, never trimmed (a tree path may start with whitespace).
+   * `--literal-pathspecs` is on every run: a changed path is looked up as itself, never as a pathspec, so a file named
+   * `:(draft).md`, `*.md` or `a[1].txt` resolves to that file (`--` ends option parsing, not pathspec parsing).
+   */
+  const rawGit = (dir: string, env: NodeJS.ProcessEnv = ENV): Raw => async (args) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout;
+  /**
+   * Which of `wanted` shas `<tree>` reaches: `git ls-tree -r` is read as a stream, one path a line, and only a sha in `wanted` is
+   * kept. Those are the blobs GitHub holds because it holds that tree, so each is reused by its sha whatever path it sat at, and
+   * one the merge brings from another path (a rename, the base's own copy) is never read here just to be uploaded again.
+   * Memory is the candidates' own size — the entries of this write, bounded by the change — never the repository's, so a repo
+   * of any size stays inside the runner's buffer. Called only when there is a candidate to look for.
+   */
+  const heldIn = async (dir: string, tree: string, wanted: Set<string>, env: NodeJS.ProcessEnv = ENV) => {
+    const found = new Set<string>();
+    if (!wanted.size) return found;
+    const p = spawn("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, "ls-tree", "-r", "--format=%(objectname)", tree], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let buf = "", err = "";
+    p.stderr.on("data", (d) => { if (err.length < 4000) err += String(d); });
+    p.stdout.on("data", (d) => {
+      buf += String(d);
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) if (wanted.has(line)) found.add(line);
+    });
+    const code = await new Promise<number | null>((ok) => p.on("close", (c) => ok(c)));
+    if (wanted.has(buf)) found.add(buf);
+    if (code !== 0) throw new Error(`git ls-tree ${tree.slice(0, 12)}: ${err.trim().slice(0, 300)}`);
+    return found;
+  };
   const initBare = async (dir: string) => void (await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", dir], { env: ENV }));
   const access = o.access;
   /** The owner's token, for one git child's env only. */
@@ -471,9 +588,14 @@ export function createService(o: Options) {
         current: at ? at.generation : undefined, ...(at?.hold ? { hold: at.hold } : {}), ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
       };
     };
-    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget")) {
+    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair") || kind.endsWith(".retarget") || kind.endsWith(".retitle")) {
       const s = slugOf(a.repo);
       const n = Number(a.number);
+      // Outside our own repos a PR's text names none of our tooling: the title is public text on the PR, exactly as a `.pr`'s is.
+      if (kind.endsWith(".retitle") && !ownRepo(s.slug, o.fleetOrg, o.productRepo)) {
+        const leak = leakIn(a.title);
+        if (leak) throw fail(422, `Not done: the PR title mentions "${leak}". ${s.slug}'s reviewers mustn't see internal names, tools or local paths; reword it and ask again.`);
+      }
       const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
       const ship = await adoption(s.slug, n, a.generation, a.head, pr, a.base);
       // An enqueue is a merge by the queue: the reviewer reads the PR's diff at its head when the head isn't the runner's own.
@@ -493,8 +615,8 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
-      return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
+      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : kind.endsWith(".retitle") ? `Retitle ${url} ${at} to \`${String(a.title).replace(/`/g, "")}\` (only the title: the PR's head, base and body stay as they are)` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
+      return { ...(kind.endsWith(".retitle") ? { from: String(pr.title ?? "") } : {}), state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha), { base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? "") }) } : {}),
         ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))) }] }, facts: { target: url, sentence: `${what} (generation ${a.generation}).`, diff } };
@@ -639,14 +761,17 @@ export function createService(o: Options) {
   const executor: Executor = {
     async plan(req: PlanRequest) {
       if (req.kind.endsWith(".setup")) return setupWrite.plan(api, req.args, (text) => (ownRepo(String(req.args?.repo), o.fleetOrg, o.productRepo) ? undefined : leakIn(text)));
-      const { state, facts, reads, changed, bases, heads, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; heads?: Record<string, string | null>; own?: Set<string>; task?: string };
+      const { state, facts, reads, changed, bases, heads, own, task, from } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; heads?: Record<string, string | null>; own?: Set<string>; task?: string; from?: string };
       // The head each published branch had when this plan read it rides in the record's own args: the kernel stores the plan's
       // args (never the caller's) and its digest covers them, so a card can only ever rewrite the branch from the head it was
       // filed at -- and a later plan of the same request, at a head that has moved, is its own record instead of widening this
       // one. A revalidation gets the record's stored args back, `heads` included, unchanged. The caller's args are stripped
       // first: a requester can't name a head.
-      const { heads: _asked, ...asked } = (req.args ?? {}) as { heads?: unknown };
-      const bound = req.revalidate ? (req.args ?? {}) : !heads || !Object.keys(heads).length ? asked : { ...asked, heads };
+      // A caller can name neither a bound head nor the title a retitle was planned against (both are the plan's own read).
+      const { heads: _asked, from: _from, ...asked } = (req.args ?? {}) as { heads?: unknown; from?: unknown };
+      // A retitle also binds the title it read: an author's own correction while the record waits is refused, never overwritten.
+      const title = !req.revalidate && from !== undefined ? { from } : {};
+      const bound = req.revalidate ? (req.args ?? {}) : { ...(!heads || !Object.keys(heads).length ? asked : { ...asked, heads }), ...title };
       const planned = planRules({ kind: req.kind, args: bound }, state, facts);
       // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
       // does): a write held while GitHub is disconnected is re-checked as them, and its PR is signed with their name.
@@ -751,6 +876,7 @@ export function createService(o: Options) {
       if (action === "enqueue") return enqueue(a);
       if (action === "repair") return repairPr(a);
       if (action === "retarget") return retarget(a);
+      if (action === "retitle") return retitle(a);
       if (action === "push" && a.pr) return pushOnto(a);
       if (action === "push" || action === "pr") {
         for (const b of a.only) {
@@ -879,7 +1005,29 @@ export function createService(o: Options) {
     const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
     return r.status < 300 ? { ok: true, text: `${url} now targets \`${a.to}\`.` } : { ok: false, text: `GitHub refused the retarget of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
-  /** Why this write may not go on, or undefined. `push`: this is the push onto the PR's branch, the one write a `stalled` hold admits
+  /**
+   * An adopted PR's title, replaced with a Conventional Commit one (ship's `retitle`): the `policy` job's title check is red and no
+   * commit can make it pass. Only the title is written (never the body, base or state), only at the bound head and generation, and
+   * only while the PR is open and still says what the record read. Already that title is done.
+   */
+  async function retitle(a: any): Promise<{ ok: boolean; text: string }> {
+    const s = slugOf(a.repo);
+    const n = Number(a.number);
+    const url = `https://github.com/${s.slug}/pull/${n}`;
+    const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    if (pr.state !== "open") return { ok: false, text: `${url} is ${pr.state}: not retitled.` };
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not retitled.` };
+    const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head));
+    if (ended) return { ok: false, text: ended };
+    // Already the title this write asks for: it landed (a replay after a lost answer), so there is nothing to send.
+    if (pr.title === a.title) return { ok: true, text: `${url} is titled \`${a.title}\`.` };
+    // The title the plan read: an author's own correction while the record waited is theirs, not overwritten.
+    if (pr.title !== a.from) return { ok: false, text: `ship-scope: ${url}'s title changed since the write was filed (it now reads ${JSON.stringify(String(pr.title).slice(0, 80))}): read it again.` };
+    const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { title: a.title });
+    return r.status < 300 ? { ok: true, text: `${url} is now titled \`${a.title}\`.` } : { ok: false, text: `GitHub refused the retitle of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+  }
+  /**
+   * Why this write may not go on, or undefined. `push`: this is the push onto the PR's branch, the one write a `stalled` hold admits
    * (ship clears such a hold on a new head, so the push is what resumes the adoption). Approve, enqueue, a repair and a retarget keep
    * `push` false: any hold refuses them, and a hand-back, a stop or a pause refuses the push too. Whether a hold admits the write is
    * the plan's own rule (`holdAdmits`), with the adoption's task as ship reports it, so the two never disagree.
@@ -1000,7 +1148,8 @@ export function createService(o: Options) {
     let final: string, made: string;
     try {
       const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await access.identity()) };
-      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+      const raw = rawGit(dir, env);
       const blobAt = async (tree: string, p: string) => (await g(["ls-tree", "-z", tree, "--", p])).split("\0")[0]?.split(/[ \t]/) ?? [];
       // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
       const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", a.head, baseSha], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
@@ -1037,32 +1186,36 @@ export function createService(o: Options) {
       final = await g(["write-tree"]);
       made = await g(["commit-tree", final, "-p", a.head, "-p", baseSha, "-m", String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000)]);
       if (!fork) {
-        // Through the API as the code host's sign-in: the files that differ from the head; a blob the base or the head has is
-        // named by its sha, any other (git's clean merge of both sides, a regenerated file) is uploaded.
+        // Through the API as the code host's sign-in: the files that differ from the head; a blob the head's or the base's tree
+        // already reaches is named by its sha, any other (git's clean merge of both sides, a regenerated file) is uploaded.
         const post = async (path: string, body: unknown) => {
           const r = await who.rest("POST", `/repos/${into}/git/${path}`, body);
           if (r.status >= 300) throw Object.assign(new Error(`GitHub refused the ${path.replace(/s$/, "")} on ${into}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
           return r.body;
         };
-        const known = new Set((await g(["ls-tree", "-r", "--format=%(objectname)", baseSha])).split("\n").concat((await g(["ls-tree", "-r", "--format=%(objectname)", a.head])).split("\n")));
-        const f = (await g(["diff-tree", "-r", "-z", "--no-renames", a.head, final])).split("\0");
-        const tree = [];
+        // The entries come from the merge tree itself, never the raw diff pair: a path that is a file at the head and a directory
+        // in the merge (`x` -> `x/y`) is one added path, and sending the diff's `D x` as a `sha:null` deletion next to `x/y` is
+        // what GitHub refuses (422 Invalid tree info: `x` is a directory in the resulting tree).
+        const baseTree = await g(["rev-parse", `${a.head}^{tree}`]);
+        const { tree } = await treeWrites(raw, a.head, final);
+        const diff = `${String(a.head).slice(0, 12)}..${final.slice(0, 12)}`;
+        // An empty entry list is a head the merge leaves as it is (a base already merged, or a conflict the kept set resolves to
+        // the head's own side): there is nothing to record, so it is a clean "nothing was changed", never an empty tree (GitHub
+        // refuses one with 422 Invalid tree info).
+        if (!tree.length) return refuse("changed nothing: the merge and the kept files leave every path at the head's");
         try {
-          for (let i = 0; i + 1 < f.length; i += 2) {
-            const [, mode, , sha] = f[i]!.split(" ");
-            const path = f[i + 1]!;
-            if (/^0+$/.test(sha!)) { tree.push({ path, mode: "100644", type: "blob", sha: null }); continue; }
-            if (mode !== "160000" && !known.has(sha!)) {
-              const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", sha!], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
-              await post("blobs", { content: content.toString("base64"), encoding: "base64" });
-            }
-            tree.push({ path, mode: mode!, type: mode === "160000" ? "commit" : "blob", sha: sha! });
+          // GitHub holds every blob its head's and its base's trees reach, so only a blob neither has is read and uploaded: one
+          // the merge brings from another path (a rename, the base's own copy) is reused by its sha, whatever path it sat at.
+          const candidates = new Set(tree.filter((e) => e.sha !== null && e.type !== "commit").map((e) => e.sha!));
+          const held = new Set([...(await heldIn(dir, a.head, candidates, env)), ...(await heldIn(dir, baseSha, candidates, env))]);
+          for (const e of tree) {
+            if (e.sha === null || e.type === "commit" || held.has(e.sha)) continue;
+            const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", e.sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
+            await post("blobs", { content: content.toString("base64"), encoding: "base64" });
           }
-          // An empty entry list is a head the merge leaves as it is (a base already merged, or a conflict the kept set resolves
-          // to the head's own side): there is nothing to record, so it is a clean "nothing was changed", never an empty tree
-          // (GitHub refuses one with 422 Invalid tree info).
-          if (!tree.length) return refuse("changed nothing: the merge and the kept files leave every path at the head's");
-          const t = await post("trees", { base_tree: await g(["rev-parse", `${a.head}^{tree}`]), tree });
+          const r = await who.rest("POST", `/repos/${into}/git/trees`, { base_tree: baseTree, tree });
+          if (r.status >= 300) throw Object.assign(new Error(treeRefusal(into, r.status, r.body, { diff, tree })), { refused: true });
+          const t = r.body;
           if (t.sha !== final) return refuse(`built a tree on GitHub (${String(t.sha).slice(0, 12)}) that isn't the merge's (${final.slice(0, 12)})`);
           made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000), tree: final, parents: [a.head, baseSha] })).sha);
         } catch (e) {
@@ -1120,9 +1273,10 @@ export function createService(o: Options) {
     if (!(await git(dir, ["merge-base", "--is-ancestor", from, to]).then(() => true, () => false))) return { refused: `ship-scope: \`${to.slice(0, 12)}\` doesn't build on the PR's head \`${from.slice(0, 12)}\`` };
     const list = (await git(dir, ["rev-list", "--reverse", "--first-parent", `${from}..${to}`])).split("\n").filter(Boolean);
     if (!list.length || list.length > 20) return { refused: `ship-scope: ${list.length} commits to write (1 to 20)` };
-    const post = async (path: string, body: unknown) => {
+    const post = async (path: string, body: unknown, tried?: TreeTry) => {
       const r = await rest("POST", `/repos/${repo}/git/${path}`, body);
-      if (r.status >= 300) throw Object.assign(new Error(`${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
+      // A refused tree names what was rejected (its diff and the entry), so the hold says which path failed.
+      if (r.status >= 300) throw Object.assign(new Error(tried ? treeRefusal(repo, r.status, r.body, tried) : `${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
       return r.body;
     };
     let parent = from;
@@ -1135,37 +1289,36 @@ export function createService(o: Options) {
         const [, first, ...others] = (await git(dir, ["rev-list", "--parents", "-n", "1", c])).split(" ");
         if (first !== expected) return { refused: `ship-scope: \`${c.slice(0, 12)}\` builds on \`${String(first).slice(0, 12)}\`, not the head's own chain \`${expected.slice(0, 12)}\`: not replayed` };
         expected = c;
-        // Entries changed against the first parent; a path another parent has unchanged is already on GitHub (a base merge's files).
-        const diff = (p: string) => git(dir, ["diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", p!, c]).then((out) => {
-          const f = out.split("\0"), m = new Map<string, { mode: string; sha: string }>();
-          for (let i = 0; i + 1 < f.length; i += 2) { const [, mode, , sha] = f[i]!.split(" "); m.set(f[i + 1]!, { mode: mode!, sha: sha! }); }
-          return m;
-        });
-        const changed = await diff(first!);
-        const elsewhere = await Promise.all(others.map(diff));
-        const tree: { path: string; mode: string; type: string; sha: string | null }[] = [];
+        // The entries come from the commit's own tree (`ls-tree`), never a diff pair: a path that is a file in the first parent and
+        // a directory here (`x` -> `x/y`) is one added path, and the diff's `D x` sent as a `sha:null` deletion next to `x/y` is
+        // what GitHub refuses (422 Invalid tree info).
+        const baseTree = await git(dir, ["rev-parse", `${first}^{tree}`]);
+        const wantSha = await git(dir, ["rev-parse", `${c}^{tree}`]);
+        // The changed paths, then git's own entry at each (and each deletion's mode): proportional to the change, not the tree.
+        const { tree } = await treeWrites(rawGit(dir), first!, c);
+        // GitHub holds every blob its parents' trees reach, so only a blob none of them has is read and uploaded: one a parent has
+        // at another path (a rename from the base's own copy) is reused by its sha, never read just to be sent again. Each parent
+        // is scanned only for the blobs still in question, and not at all when the commit adds none.
+        const held = new Set<string>();
+        const candidates = new Set(tree.filter((e) => e.sha !== null && e.type !== "commit").map((e) => e.sha!));
+        for (const p of [first!, ...others]) for (const sha of await heldIn(dir, p!, candidates)) held.add(sha);
+        const diff = `${String(first).slice(0, 12)}..${String(c).slice(0, 12)}`;
         let uploads = 0;
-        for (const [path, e] of changed) {
-          if (/^0+$/.test(e.sha)) { tree.push({ path, mode: "100644", type: "blob", sha: null }); continue; }
-          const type = e.mode === "160000" ? "commit" : "blob";
-          const onGithub = type === "commit" || elsewhere.some((m) => !m.has(path));
-          if (!onGithub) {
-            if (++uploads > MAX_FILES) return { refused: `ship-scope: more than ${MAX_FILES} new files in one commit` };
-            const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", e.sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
-            const blob = await post("blobs", { content: content.toString("base64"), encoding: "base64" });
-            if (blob.sha !== e.sha) return { refused: `GitHub stored ${path} as ${String(blob.sha).slice(0, 12)}, not ${e.sha.slice(0, 12)}` };
-          }
-          tree.push({ path, mode: e.mode, type, sha: e.sha });
+        for (const e of tree) {
+          if (e.sha === null || e.type === "commit" || held.has(e.sha)) continue;
+          if (++uploads > MAX_FILES) return { refused: `ship-scope: more than ${MAX_FILES} new files in one commit` };
+          const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", e.sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
+          const blob = await post("blobs", { content: content.toString("base64"), encoding: "base64" });
+          if (blob.sha !== e.sha) return { refused: `GitHub stored ${e.path} as ${String(blob.sha).slice(0, 12)}, not ${e.sha.slice(0, 12)}` };
         }
-        const want = await git(dir, ["rev-parse", `${c}^{tree}`]);
         // An empty changed set is a commit whose tree is its first parent's (an "ours" merge): the commit carries that tree as it
         // is, with no tree written (GitHub refuses an empty tree array).
         if (tree.length) {
-          const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
-          if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+          const t = await post("trees", { base_tree: baseTree, tree }, { diff, tree });
+          if (t.sha !== wantSha) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${wantSha.slice(0, 12)})` };
         }
         const message = await git(dir, ["log", "-1", "--format=%B", c]);
-        const made = await post("commits", { message, tree: want, parents: [parent, ...others] });
+        const made = await post("commits", { message, tree: wantSha, parents: [parent, ...others] });
         parent = String(made.sha);
       }
     } catch (e) {
@@ -1289,7 +1442,9 @@ export function createService(o: Options) {
   const askersFile = join(o.cacheDir, "askers.json");
   const readAskers = (): Record<string, Asker> => { try { return JSON.parse(readFileSync(askersFile, "utf8")); } catch { return {}; } };
   /** A request without the head its plan bound (`heads`, carried in the record's own args): who asked is the same request either way. */
-  const askedOf = (args: unknown) => { const { heads: _heads, ...rest } = (args ?? {}) as Record<string, unknown>; return rest; };
+  // The caller's own words of a request: the heads the plan bound and the title a retitle bound are the plan's reads, stripped
+  // from both the note and the lookup so a held write finds the requester that filed it.
+  const askedOf = (args: unknown) => { const { heads: _heads, from: _from, ...rest } = (args ?? {}) as Record<string, unknown>; return rest; };
   const askerOf = (kind: string, args: unknown): Asker | undefined => { const all = readAskers(); return all[askerKey(kind, askedOf(args))]; };
   function noteAsker(kind: string, args: unknown, who: Asker) {
     const all = readAskers();

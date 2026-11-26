@@ -9,7 +9,7 @@ license: MIT
 # one typed settings change filed as the calling job; a change that loosens anything is the owner's, made from the Fleet page
 # (the Fleet page).
 requires:
-  - github # the covered repos' reads (/internal/ship/*) and the effects ship files (github.merge, approve, enqueue, repair, retarget)
+  - github # the covered repos' reads (/internal/ship/*) and the effects ship files (github.merge, approve, enqueue, repair, retarget, retitle)
   - code-review # the risk tier and verdict ship's merge gate reads; a repo it doesn't watch merges by `unwatched` (adding a repo to Ship leaves code review alone)
   - board # contributes.board.pages
 contributes:
