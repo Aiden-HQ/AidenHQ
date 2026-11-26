@@ -46,12 +46,15 @@ export function headChecks<T extends NamedCheck>(checks: T[]): T[] {
   return latestChecks(checks);
 }
 
+/** The label that holds a PR from every automatic merge (ship's default stop label; `aidenhq publish --hold` puts it on). */
+export const HOLD_LABEL = "ship:stop";
+
 export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $pullRef: String!) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name }
     squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed
     pullRequest(number: $number) {
-      id number title body url state isDraft reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName authorAssociation
+      id number title body url state isDraft labels(first: 30) { nodes { name } } reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName authorAssociation
       mergedAt mergedBy { login } mergeCommit { oid message }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } }
@@ -180,6 +183,7 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
   const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r: Json) => r.state);
   if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: ship ? "fix_review" : "fail", why: "changes are requested on it" };
   if (pr.isDraft) return { do: ship ? "wait" : "fail", why: "it is a draft" };
+  if (pr.labels?.nodes?.some((l: Json) => l.name === HOLD_LABEL)) return { do: "wait", why: `it carries the \`${HOLD_LABEL}\` label: merged once the label is removed` };
   if (ship && pr.isInMergeQueue) return { do: "wait", why: "in the merge queue" };
   // A conflict or a branch behind comes first for ship: checks on a conflicted PR may never run until it is repaired.
   if (ship && (pr.mergeStateStatus === "DIRTY" || pr.mergeStateStatus === "BEHIND")) return { do: "repair", why: pr.mergeStateStatus === "DIRTY" ? `it conflicts with \`${def}\`` : `it is behind \`${def}\`` };

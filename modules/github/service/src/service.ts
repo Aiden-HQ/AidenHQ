@@ -29,7 +29,7 @@ import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
 import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
-import { approvedAt } from "./merge-gate.ts";
+import { approvedAt, HOLD_LABEL } from "./merge-gate.ts";
 import { contextRank } from "./aidenhq-sdk/checks.ts";
 import { createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
@@ -850,8 +850,17 @@ export function createService(o: Options) {
     // old owner would meet the next publish as mixed ownership and refuse it. A sibling into another base is a different
     // proposal whose diff was not what the reviewer read, so it stays where it is.
     for (const p of onBranch as { html_url?: string; base?: { ref?: string } }[]) if (p?.html_url && String(p.base?.ref ?? def) === targetBase) notePrTask(o.cacheDir, String(p.html_url), { task: a.workspace, branch: b.branch });
-    if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch works the PR for the task that published it
     if (!pr.number) return;
+    // A hold is the stop label every automatic merge respects (merge-gate decide, ship's rounds): put on with this write, and lifted
+    // by the next publish without `hold`, but only when it was this path that put it on (a person's label stays).
+    const url = String(pr.html_url ?? "").toLowerCase();
+    if (a.hold) {
+      await api("POST", `/repos/${s.slug}/issues/${Number(pr.number)}/labels`, { labels: [HOLD_LABEL] });
+    } else if (url && prTasks()[url]?.held) {
+      const r = await gh("DELETE", `/repos/${s.slug}/issues/${Number(pr.number)}/labels/${encodeURIComponent(HOLD_LABEL)}`);
+      if (r.status >= 300 && r.status !== 404) throw fail(502, `GitHub could not lift the hold on ${pr.html_url}: ${r.status} ${r.body?.message ?? ""}`.trim());
+    }
+    if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: a.hold === true }); // the PR watch works the PR for the task that published it
     // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
     const n = Number(pr.number);
     if (!open[0]) flow.opened(s.slug, n, sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), author: String(pr.user?.login ?? (await ownerLogin()) ?? "ghost"), author_kind: "agent" });

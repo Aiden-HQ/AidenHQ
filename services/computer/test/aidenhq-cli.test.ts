@@ -72,6 +72,10 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   await aidenhq("publish", "acme/app", "fix-login");
   assert.deepEqual(seen.at(-1).body.args.text, { title: "fix(login): stop the loop" });
   assert.equal("body" in seen.at(-1).body.args.text, false);
+  // --hold asks the code host for the hold; without it the args carry none (a republish lifts it).
+  assert.equal("hold" in seen.at(-1).body.args, false);
+  await aidenhq("publish", "acme/app", "fix-login", "--hold");
+  assert.equal(seen.at(-1).body.args.hold, true);
   // A flag with no value is refused instead of silently taking the next flag or nothing.
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", "--title", "fix(login): x"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
