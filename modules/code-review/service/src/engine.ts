@@ -1476,7 +1476,9 @@ export function createEngine(d: EngineDeps) {
    */
   function cover(r: RunRow) {
     if (!repoCfg(r.repo) || !r.mandatory) return;
-    const at = reviewers(r.repo, r.number, r.head);
+    // A reviewer the tier no longer names (the owner dropped it) never holds coverage back, unless it ran in this run's own batch.
+    const t = current(r.repo, r.number, r.head);
+    const at = reviewers(r.repo, r.number, r.head).filter((x) => x.batch === r.batch || !t || (x.moment === "push" ? t.c.on_push : t.c.on_open).some((c) => c.mandatory && sameCombo(c, x)));
     if (!at.length || !at.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from)))) return;
     run("INSERT OR REPLACE INTO covered (repo, number, head, base, at) VALUES (?, ?, ?, ?, ?)", r.repo, r.number, r.head, r.base, iso());
   }
