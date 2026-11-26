@@ -22,6 +22,7 @@ const CATALOG = [
   { id: "sec.cloudflare", model: "openai/gpt-6.2-sol", effort: "medium", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code", skills: [{ skill: "cloudflare/security-audit-skill:security-audit", args: "{base}..HEAD" }] }, when: [], output: "findings", runs_code: false, cost: "low" },
   { id: "sec.deepsec", model: "anthropic/claude-haiku-5.5", effort: "medium", lens: "security", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "vercel-labs/deepsec", version: "1.0.0", licence: "Apache-2.0" }, run: { engine: "deepsec", max_cost_usd: 150 }, when: [], output: "findings", runs_code: true, cost: "high", scope: "repo" },
   { id: "ui.scan", model: "google/gemini-4-carbon", effort: "low", lens: "ui", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "Aiden-HQ/AidenHQ", version: "ui-review@2", licence: "AGPL-3.0-only" }, run: { engine: "ui-review", max_cost_usd: 10 }, when: ["**/package.json"], output: "findings", runs_code: true, cost: "high", scope: "repo" },
+  { id: "ui.scan-signed-in", model: "google/gemini-4-carbon", effort: "low", lens: "ui", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "Aiden-HQ/AidenHQ", version: "ui-review@2", licence: "AGPL-3.0-only" }, run: { engine: "ui-review", max_cost_usd: 10 }, when: ["**/package.json"], output: "findings", runs_code: true, cost: "high", scope: "repo" },
   { id: "maint.vulture", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "jendrikseipp/vulture", version: "2.0", licence: "MIT" }, run: {}, when: ["**/*.py"], output: "vulture", runs_code: false, cost: "free" },
 ];
 
@@ -456,6 +457,17 @@ test("ui.scan captures in a token-free box, then reviews the text in a model box
   assert.ok(md.indexOf("Widen the approvals grid") < md.indexOf("Compact the attention rail"), "ranked");
   assert.match(md, /\/broken/, "a page not captured is a gap, never a clean review");
   await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["ui.scan"], combo: { effort: "xhigh" } }), /takes an effort of low, medium, high/);
+});
+
+test("ui.scan-signed-in runs the same two checks, and its spec carries no login", async () => {
+  const w = world();
+  await w.engine.repoReview({ target: { repo: REPO }, options: ["ui.scan-signed-in"] });
+  const { capture, review } = await captureThenReview(w, routesClean);
+  assert.equal(capture.profile, "code-review-ui");
+  assert.equal(checkSpec(capture).option, "ui.scan-signed-in");
+  assert.deepEqual(Object.keys(checkSpec(capture)).sort(), ["base", "model", "option", "run"]);   // phase 1's keys: no login, no session
+  assert.equal(review.profile, "code-review-ui-review");
+  assert.deepEqual(Object.keys(checkSpec(review)).sort(), ["base", "effort", "model", "option", "run", "ui"]);
 });
 
 test("ui.scan carries a blocking route finding as an important ui-rule finding", async () => {

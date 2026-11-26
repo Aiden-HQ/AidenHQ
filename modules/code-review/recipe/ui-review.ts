@@ -92,7 +92,8 @@ function sourceOf(change: string, page: string, root?: string) {
  * (the engine's queue); `routes`: the route check's report, whose blocking hits and verified bugs are findings too; `root`: the
  * checkout, to confirm a source file a change names (its existence only: read as data, never run).
  */
-export function toReview(report: UiReport, o: { model: string; effort?: string; repo?: string; head?: string; listed?: string[]; routes?: UiReport; root?: string }) {
+export function toReview(report: UiReport, o: { model: string; effort?: string; repo?: string; head?: string; listed?: string[]; routes?: UiReport; root?: string; option?: string }) {
+  const option = o.option ?? "ui.scan";
   // A page the model's review failed on or the spend cap skipped (the engine's notes say which) is not reviewed: a gap.
   const notes = Array.isArray(report.notes) ? report.notes.filter((n): n is string => typeof n === "string") : [];
   const unreviewed = new Set([...(report.dropped ?? []), ...notes.flatMap((n) => /^design review of (.+?) failed: /.exec(n)?.[1] ?? /^stopped at the --max-usd budget; not reviewed: (.+)$/.exec(n)?.[1]?.split(", ").filter((p) => !p.endsWith(" (motion)")) ?? [])]);
@@ -107,7 +108,7 @@ export function toReview(report: UiReport, o: { model: string; effort?: string; 
   const improvements = [...report.improvements].sort((a, z) => a.rank - z.rank);
   const top = improvements.slice(0, TOP).map((i) => ({
     id: `ui-${i.rank}`, severity: "nit" as const, path: sourceOf(i.change, i.where.page, o.root), line: 0, title: cut(i.weak, 300), why: cut(i.why, 1500),
-    evidence: cut(i.captures.join(", "), 600), fix_brief: cut(i.change, 1500), option: "ui.scan", lens: "ui", ui: at(i.where, cut(i.where.region, 200), cut(i.change, 1500), cut(i.best, 800)),
+    evidence: cut(i.captures.join(", "), 600), fix_brief: cut(i.change, 1500), option, lens: "ui", ui: at(i.where, cut(i.where.region, 200), cut(i.change, 1500), cut(i.best, 800)),
   }));
 
   // Blocking rule hits (the capture's and the route check's: page errors, axe, blank routes) and verified bugs are important; a
@@ -126,7 +127,7 @@ export function toReview(report: UiReport, o: { model: string; effort?: string; 
   rules.sort((a, z) => Number(z.severity === "important") - Number(a.severity === "important"));
   const keptRules = rules.slice(0, MAX_RULES);
   const lostRules = rules.slice(MAX_RULES);
-  const ruleFindings = keptRules.map((f, n) => ({ id: `ui-rule-${n + 1}`, severity: f.severity, path: f.ui.page, line: 0, title: f.title, why: f.why, evidence: f.evidence, fix_brief: "", option: "ui.scan", lens: "ui", ui: f.ui }));
+  const ruleFindings = keptRules.map((f, n) => ({ id: `ui-rule-${n + 1}`, severity: f.severity, path: f.ui.page, line: 0, title: f.title, why: f.why, evidence: f.evidence, fix_brief: "", option, lens: "ui", ui: f.ui }));
 
   const cov = report.coverage;
   const gaps = [
@@ -183,12 +184,12 @@ export async function review({ spec, ui, ws, env = process.env }: { spec: UiRevi
   for (const c of captured.captures) c.shots ??= [];
   writeFileSync(join(dir, "report.json"), JSON.stringify(captured));
   // Nothing to show the model (every page left out to fit): the rule checks' findings still make the Review, every page a gap.
-  if (!captured.captures.some((c) => c.shots!.length)) return toReview({ ...captured, improvements: [], cost_usd: 0 }, { model: spec.model, effort: spec.effort || "low", repo: spec.repo, head: spec.head, listed: listedPages(dir), routes: readReport(join(dir, "routes", "report.json")), root: ws });
+  if (!captured.captures.some((c) => c.shots!.length)) return toReview({ ...captured, improvements: [], cost_usd: 0 }, { model: spec.model, effort: spec.effort || "low", repo: spec.repo, head: spec.head, listed: listedPages(dir), routes: readReport(join(dir, "routes", "report.json")), root: ws, option: spec.option });
   const r = await run("ui-review", ["review", dir, "--model", spec.model, "--effort", spec.effort || "low", "--max-usd", String(MAX_USD)], { cwd: dir, env: modelEnv, minutes: 18 });
   if (r.code !== 0) throw new Error(`ui-review review: ${stopped(r)}${r.stderr.trim() ? `; ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 200)}` : ""}`);
   const report = readReport(join(dir, "report.json"));
   if (!report) throw new Error("ui-review review left no report.json");
-  return toReview(report, { model: spec.model, effort: spec.effort || "low", repo: spec.repo, head: spec.head, listed: listedPages(dir), routes: readReport(join(dir, "routes", "report.json")), root: ws });
+  return toReview(report, { model: spec.model, effort: spec.effort || "low", repo: spec.repo, head: spec.head, listed: listedPages(dir), routes: readReport(join(dir, "routes", "report.json")), root: ws, option: spec.option });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
