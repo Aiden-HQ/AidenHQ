@@ -37,7 +37,7 @@ a.ses-row:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accen
   .ses-by { grid-area: by; font-size: var(--text-sm); color: var(--faint); }
   .ses-cost { grid-area: cost; font-size: var(--text-sm); }
   .ses-when { grid-area: when; align-self: start; }
-  .ses-doing { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .ses-doing-under { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 }
 
 /* ---- first session */

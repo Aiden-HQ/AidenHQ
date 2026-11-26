@@ -190,8 +190,8 @@ export function BoardTabs({ tb, ready, mobile, saveSignal }: { tb: TaskBoard; re
               </button>
             </span>
           ))}
-          <button type="button" className="tt-tab tt-add" onClick={() => setDialog("save")}>+ Save board</button>
         </div>
+          <button type="button" className="tt-tab tt-add" onClick={() => setDialog("save")}>+ Save board</button>
           {rest.length > 0 && (
             <div className="tt-more" ref={moreRef}>
               <button type="button" className="tt-tab" aria-haspopup="menu" aria-expanded={more} onClick={() => setMore(!more)}>More</button>

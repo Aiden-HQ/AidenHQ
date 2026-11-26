@@ -799,6 +799,26 @@ test("more than 50 open PRs are all seen", async (t) => {
   assert.equal(m.tasks.length, 60);
 });
 
+test("a live merge record at the bound head holds the fix_review wake; once the record ends, the fixer is woken", async (t) => {
+  const text = "code review: 1 important finding open (a.ts:1)";
+  const head = "h1";
+  let live = { state: "review", outcome: undefined };
+  const rec = { id: "r1", kind: "github.merge", state: "review", args: { prs: [{ repo: "acme/app", number: 1, head }] } };
+  const c = await rig(t, {
+    reviewGate: async () => ({ wait: text, findings: text, findingsKey: "k1" }),
+    records: [rec],
+    record: () => live,
+  });
+  c.set([c.agentPr(1)]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "a live merge record is followed, not re-decided");
+  live = { state: "failed", outcome: { text: "Not merged: acme/app#1: code review has open important findings" } };
+  rec.state = "failed";
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the record ended, so the findings wake the fixer");
+  assert.match(c.woke[0].text, /open important findings/);
+});
+
 test("code review's open findings wake the task once per set of findings at a head; a running review wakes nobody", async (t) => {
   let text = "code review: finding one (a.ts:1)";
   const c = await rig(t, { reviewGate: async () => ({ wait: text, findings: text, findingsKey: text }), merge: () => [200, { id: "r1" }] });

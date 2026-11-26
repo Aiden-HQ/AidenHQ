@@ -1,6 +1,7 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { WelcomeGate } from "./Welcome";
 import { preloadBoot } from "./queries";
 // Tokens, then the components, then the older page styles (which may refine a component in place).
@@ -20,11 +21,29 @@ window.addEventListener("vite:preloadError", (e) => {
   location.reload();
 });
 
+/**
+ * The last resort around the app. It reads the route itself: when App throws, it unmounts with App's own hashchange
+ * listener, so the reset key has to come from outside it, or a caught error would stay until a reload.
+ */
+function Root() {
+  const [route, setRoute] = useState(location.hash);
+  useEffect(() => {
+    const changed = () => setRoute(location.hash);
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, []);
+  return (
+    <WelcomeGate>
+      <ErrorBoundary resetKey={route}>
+        <App />
+      </ErrorBoundary>
+    </WelcomeGate>
+  );
+}
+
 preloadBoot();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <WelcomeGate>
-      <App />
-    </WelcomeGate>
+    <Root />
   </StrictMode>,
 );
