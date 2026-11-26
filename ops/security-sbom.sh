@@ -919,7 +919,7 @@ declare -A defer_seen=()
 # line, never a gap.
 save_wave() { # <wave>
   local w="$1" idx sz szb key pin ref plat archive root top top_gb avail_now why cap_bytes written=0 written_big=0
-  local unitdir tarsdir cont_err cont_space cont_bytes cid ctarchive ctbytes
+  local unitdir tarsdir cont_err cont_space cont_bytes cont_tars cid ctarchive ctbytes
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   while IFS=$'\t' read -r szb idx; do
     [ -n "$idx" ] || continue
@@ -967,7 +967,7 @@ save_wave() { # <wave>
       # exported or extracted leaves the unit a line with its daemon error rather than a gap, and no half-built tree is
       # ever scanned.
       unitdir="$exportdir/unit-$archive_seq"; tarsdir="$unitdir.tars"; rootfs="$unitdir"
-      cont_err=""; cont_space=0; cont_bytes=0
+      cont_err=""; cont_space=0; cont_bytes=0; cont_tars=0
       # Each tar goes beside the root in `<unit>.tars`, so the scan never reads an export's bytes a second time as a file
       # in the tree.
       if ! mkdir -p -m 700 "$rootfs" "$tarsdir" 2>/dev/null; then
@@ -993,7 +993,7 @@ save_wave() { # <wave>
             cont_err="container $cid's export outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor"
             break
           fi
-          cont_bytes=$(( cont_bytes + ctbytes ))
+          cont_tars=$(( cont_tars + ctbytes ))
           # Extracted here, under the same apply-lock hold: the tree is a second write of the container's filesystem and
           # must not outlive the lock or the snapshot budget. The scan reads only the extracted root, after the lock is
           # released like every other scan. A replica's files overlay the first one's, exactly as a second container of the
@@ -1004,15 +1004,19 @@ save_wave() { # <wave>
             [ "$export_space" = 1 ] && cont_space=1
             break
           fi
-          cont_bytes=$(( $(du -sb "$rootfs" 2>/dev/null | awk '{ print $1 }' || echo 0) ))
+          # Every tar written so far plus the whole extracted root are resident until the scan ends, so both are charged:
+          # counting only the root would let a later unit's extraction take room an earlier tar already holds, and the
+          # second extraction would then hit the floor and be a line on every pass though each unit fits alone. The root
+          # is measured once at the end (below), because each replica's extraction overlays the same tree.
+          cont_bytes=$(( cont_tars + $(du -sb "$rootfs" 2>/dev/null | awk '{ print $1 }' || echo 0) ))
         done
       fi
       if [ -z "$cont_err" ]; then
         # The tar and the root stay until the scan ends; scan_wave removes the whole unit directory, tars included, so
         # neither outlives its scan.
         plan_add "image:$key" "$rootfs" "$pin" "$ref" "$sz" "$idx" "${p_bytes[$idx]}" "${p_cid[$idx]}"
-        # Both copies are resident until the scan ends: each tar and the trees unpacked from them. Charging only the tars
-        # would let a later save in this wave use room the extraction has already taken.
+        # Both copies are resident until the scan ends: every tar and the root unpacked from them (`cont_bytes` is both,
+        # accumulated above). Charging only one would let a later save in this wave use room the other already holds.
         written=$(( written + cont_bytes )); [ "$cont_bytes" -gt "$written_big" ] && written_big="$cont_bytes"
       elif [ "$cont_space" = 1 ]; then
         discard_tree "$unitdir" "$tarsdir"
