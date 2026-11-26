@@ -90,4 +90,31 @@ test("removed from the queue: a conflict is repaired and queued again; its own r
   assert.match(x.of("comment").at(-1)!.body, /Ship won't queue this PR again\. A person queues it again, or pushes a fix\./);
 });
 
+// GitHub accepted the async merge request for a stacked PR and it is still being processed: that is not a hold. Ship asks
+// again next round at the same head, and the repeat finds the request GitHub already holds.
+test("an async enqueue GitHub accepted but has not settled asks again next round, never a hold", async () => {
+  const w = world();
+  const ready = { do: "enqueue" as const, why: "ready" };
+  await round(w.deps as any, w.pr(), ready, { queue: true });
+  w.records["rec-1"] = { state: "failed", outcome: { ok: false, text: "ship-enqueue-pending: https://github.com/a/b/pull/7: GitHub accepted the async merge request u-1 for `111111111111` and is still processing it: not merged." } };
+  await round(w.deps as any, w.pr(), ready, { queue: true });
+  assert.equal(w.of("POST /v1/writes").length, 2, "one fresh attempt at the same head");
+  assert.deepEqual(w.of("POST /v1/writes")[1]!.body.args, { repo: "a/b", number: 7, head: H1, base: "main", generation: 1, attempt: 2 });
+  assert.doesNotMatch(w.of("comment").at(-1)?.body ?? "", /Ship blocked/);
+  // A repeat is the same request, not a second one: github answers it with a 409 naming that request's uuid, which it reads.
+  // So a still-pending answer never cycles a PR back into a queue on its own.
+});
+
+// `groupFailing` names the PR's latest merge_group run, which may be an earlier head's: a pending request is never read as a
+// removal from it, and is asked again instead (its kept id returns the terminal result).
+test("a pending async enqueue is never turned into a removal by another head's merge_group failure", async () => {
+  const w = world();
+  const ready = { do: "enqueue" as const, why: "ready" };
+  await round(w.deps as any, w.pr(), ready, { queue: true });
+  w.records["rec-1"] = { state: "failed", outcome: { ok: false, text: "ship-enqueue-pending: https://github.com/a/b/pull/7: GitHub accepted the async merge request u-1 for `111111111111` and is still processing it: not merged." } };
+  await round(w.deps as any, w.pr(), ready, { queue: true, failing: ["test"], groupFailing: ["test"], onBase: [] });
+  assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.enqueue").length, 2, "asked again, never a CI fix on another head's run");
+  assert.equal(w.of("POST /v1/writes")[1]!.body.kind, "github.enqueue");
+});
+
 const of = (w: ReturnType<typeof world>, what: string) => w.of(what);

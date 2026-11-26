@@ -29,10 +29,16 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   // A veto is final for this head; a head that moved meanwhile is the next round's.
   if (r.state === "rejected") return { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})` };
   if (/^ship-head-moved/.test(text)) return { act: "nothing" };
+  // `ship-enqueue-pending`: GitHub accepted the async merge request (or one is already pending) and its result is not terminal
+  // yet — neither a refusal nor a hold. It is asked again at the same head, and the repeat reads the request that head already
+  // has by its kept id (and names the same one on a 409 while it is pending), so a terminal `failed` or `enqueued` is never
+  // lost and no second request is made. A queue removal is never read from here: `groupFailing` names the PR's latest
+  // merge_group run, which may belong to an earlier head, so it is no evidence about this one.
+  const pending = /^ship-enqueue-pending/.test(text);
   // Not queued (a refusal, an unanswered call that read back as not queued): a new attempt at the same head.
   // Ended by a pause or a stop (the adoption moved on): queued again now that it is worked again. Any other end (a refusal, a veto,
   // a call that read back as not queued) holds, never queued again at this head; the outcome is on the record.
-  if (r.state !== "done") return /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
+  if (r.state !== "done") return pending || /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
   // Queued, and open and out of the queue again: removed.
   const onBase = new Set(f.onBase ?? []);
   const own = (f.groupFailing ?? []).filter((n) => !onBase.has(n));
