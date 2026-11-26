@@ -26,6 +26,7 @@
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
 //   modules/apps-platform/design-system/      the design system, in the app starter and the agent computers
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
+//   modules/design/eval/                the UI review's regression set, in the agent computers (/opt/aidenhq/design-eval)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
 //   modules/engine-opencode/{plugins.json,package.json,package-lock.json}  opencode's curated, locked plugin set, in the session image
 //   modules/github/checks/{tests,history}.sh  a change's tests, in codehost-local's `change` check job
@@ -195,6 +196,8 @@ export function sharedCopies(root = repo) {
   const dirs = {
     // The app starter, so the UI/UX Designer, the UI Reviewer and Engineers in agent computers scaffold from /opt/aidenhq/app-starter.
     "modules/apps-platform/starter": ["services/computer/images/agent-base/app-starter"],
+    // The UI review's regression set, so the UI Reviewer runs `node /opt/aidenhq/design-eval/run.ts <suite>` in its computer.
+    "modules/design/eval": ["services/computer/images/agent-base/design-eval"],
   };
   return { files, dirs };
 }
