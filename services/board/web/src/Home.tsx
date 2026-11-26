@@ -11,7 +11,9 @@ import { doneAction, formOnly, useNeedsKeys } from "./needs";
 import { QUERIES, homeFrom, useQuery } from "./queries";
 import { MoreTeam, NextUp, WelcomeStepper } from "./GettingStarted";
 import { Bone } from "./Skeleton";
-import type { Approval, FaceRef, Home, NeedRow, SinceItem } from "./types";
+import { TaskCheck, useCheckOff } from "./MyTasks";
+import { chipOf } from "./own-tasks";
+import type { Approval, Board, Card, FaceRef, Home, NeedRow, SinceItem } from "./types";
 import { Banner, Button, DecisionRow, DetailPane, DigestList, Face, Kbd, Monogram, Page, SectionCard, TeammateChip, Tile, faceProps } from "./ui";
 import { ago } from "./util";
 import "./home.css";
@@ -46,8 +48,12 @@ function sinceMeta(from: string, tz: string): string {
   return hourIn(tz, at) < 6 ? "Overnight" : `Since ${timeIn(tz, at)}`;
 }
 
-/** `front`: Home is the page in front, no overlay (a task, a run) over it: only then do its keys work. */
-export function HomeView({ card, session, onSignIn, toast, mobile, timezone, front }: { card?: string; session: Session | null; go: (h: string) => void; onSignIn: () => void; toast: Toast; mobile: boolean; timezone: string; front: boolean }) {
+/** The owner's own tasks as Tasks counts them (mytasks.ts): today's, and the sizes of the Inbox and of This week. */
+export type Day = { today: Card[]; triage: number; week: number; projects: Board["projects"]; /** Opens Tasks on My tasks (the list these counts come from). */ open: () => void };
+
+/** `front`: Home is the page in front, no overlay (a task, a run) over it: only then do its keys work. `day`: the owner's tasks
+ * (Your day); `onDone` checks one off, as Tasks does. */
+export function HomeView({ card, session, onSignIn, toast, mobile, timezone, front, day, onDone }: { card?: string; session: Session | null; go: (h: string) => void; onSignIn: () => void; toast: Toast; mobile: boolean; timezone: string; front: boolean; day?: Day; onDone?: (c: Card) => void }) {
   const q = useQuery(QUERIES.home, onSignIn);
   const data = q.data;
   const reload = q.reload;
@@ -272,9 +278,56 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
         </div>
       )}
       {data.start && <MoreTeam more={data.start.more} />}
+      {day && onDone && <YourDay day={day} onDone={onDone} />}
       <World world={data.world} reload={reload} />
       <TeamRow team={data.team} />
     </Page>
+  );
+}
+
+/** Today's tasks, checked off in place, beside what waits in the Inbox and this week; both tiles open Tasks. Left out when there is nothing. */
+const DAY_ROWS = 6;
+function YourDay({ day, onDone }: { day: Day; onDone: (c: Card) => void }) {
+  if (!day.today.length && !day.triage && !day.week) return null;
+  return (
+    <section className="home-day enter" style={{ "--i": 3 } as CSSProperties} aria-label="Your day">
+      <div className="home-day-tasks">
+        <header className="home-day-head">
+          <h2 className="home-h2">Your day</h2>
+          <span className="home-sub">{day.today.length === 1 ? "1 task" : `${day.today.length} tasks`} for today</span>
+          <a className="home-day-open" href="#/tasks" onClick={day.open}>Open Tasks →</a>
+        </header>
+        {day.today.slice(0, DAY_ROWS).map((c) => (
+          <DayRow key={c.id} card={c} chip={chipOf(c, day.projects)} onDone={onDone} />
+        ))}
+        {!day.today.length && <p className="home-clear">Nothing planned for today.</p>}
+        {day.today.length > DAY_ROWS && <a className="home-day-more" href="#/tasks" onClick={day.open}>{day.today.length - DAY_ROWS} more in Tasks →</a>}
+      </div>
+      <div className="home-day-stats">
+        <a className="home-stat" href="#/tasks" onClick={day.open} style={{ "--v": "var(--warn)" } as CSSProperties}>
+          <span className="home-stat-k"><i />To triage</span>
+          <b>{day.triage}</b>
+          <span className="home-stat-go">Triage →</span>
+        </a>
+        <a className="home-stat" href="#/tasks" onClick={day.open} style={{ "--v": "var(--later)" } as CSSProperties}>
+          <span className="home-stat-k"><i />This week</span>
+          <b>{day.week}</b>
+          <span className="home-stat-go">Plan the week →</span>
+        </a>
+      </div>
+    </section>
+  );
+}
+
+function DayRow({ card, chip, onDone }: { card: Card; chip?: string; onDone: (c: Card) => void }) {
+  const { done, check } = useCheckOff(card, onDone);
+  return (
+    <div className={`home-day-row${done ? " done" : ""}`}>
+      <TaskCheck card={card} done={done} onCheck={check} />
+      <a className="home-day-ttl" href={`#/t/${card.identifier}`} title={card.title}>{card.title}</a>
+      {chip && <span className="home-day-chip">{chip}</span>}
+      {card.carried ? <span className="home-day-when">Carried {card.carried}d</span> : null}
+    </div>
   );
 }
 

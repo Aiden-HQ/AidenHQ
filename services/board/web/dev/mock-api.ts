@@ -176,13 +176,33 @@ function viewRoute(method: string, url: URL, body: any): [number, unknown] | und
   return [200, v];
 }
 const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], labelIds: [] as string[], projectId: null as string | null, assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), state: CARD_STATES[n] ? named(`WOR-${n}`, CARD_STATES[n]) : null, ...extra });
+// The owner's own tasks (assignee "me") fill My tasks; the agent-assigned ones are Delegated and never listed there.
+const mine = (n: number, title: string, extra: Record<string, unknown> = {}) => card(n, title, { assignee: "me", ...extra });
+const src = (name: string, color: string) => ({ labels: [{ name, color }] });
 const board = () => ({
   buckets: mock.empty ? { triage: [], today: [], tomorrow: [], later: [], backlog: [] } : {
-    triage: [card(812, "Reply to Acme's renewal question", { unread: true, assignee: "open-loops" }), card(815, "Weekly metrics digest looks off", { priority: "high", assignee: "me" })],
-    today: [card(790, "Ship the invoices app's export", { assignee: "engineer", working: { agent: "Engineer", since: ago(12), queued: false, said: "Running the export tests" }, crew: [{ agent: "engineer", state: "working", issues: [{ id: "id-791", identifier: "WOR-791", title: "Add CSV export", state: "working" }], since: ago(12) }] }), card(801, "Prep notes for the design review", { carried: 1 }), card(802, "Chase the vendor contract", { assignee: "open-loops", priority: "critical" })],
-    tomorrow: [card(770, "Plan the Q1 offsite agenda")],
-    later: [card(700, "Try the new calendar agent"), card(705, "Tidy the warehouse schemas")],
-    backlog: [card(600, "Someday: voice notes into tasks")],
+    triage: [
+      mine(815, "Weekly metrics digest looks off", { priority: "high", ...src("email", "#e8590c") }),
+      mine(816, "Northwind asks for revised SLA terms", { unread: true, ...src("needs-response", "#3b5bdb") }),
+      mine(817, "Invoice dispute from Acme Freight", src("email", "#e8590c")),
+      mine(818, "Omar flagged a gap in the hiring budget", src("needs-response", "#3b5bdb")),
+      mine(819, "Own the vendor shortlist (Leadership sync)", src("meeting-action", "#0f9d8a")),
+      mine(820, "Speaker invite for a Zurich conference", src("email", "#e8590c")),
+      mine(821, "Renew the domain portfolio", src("todo", "#868e96")),
+      mine(822, "Intro request from a recruiter", src("email", "#e8590c")),
+      card(812, "Reply to Acme's renewal question", { unread: true, assignee: "open-loops" }),
+    ],
+    today: [
+      mine(801, "Prep notes for the design review", { carried: 1, projectId: "p-launch" }),
+      mine(803, "Review Northwind vendor contract redlines", { projectId: "p-aidenhq", priority: "high" }),
+      mine(804, "Send Q1 budget sign-off to Omar Haddad", { projectId: "p-infra" }),
+      mine(805, "Decide on Lena Park's offer band", { projectId: "p-hiring" }),
+      card(790, "Ship the invoices app's export", { assignee: "engineer", working: { agent: "Engineer", since: ago(12), queued: false, said: "Running the export tests" }, crew: [{ agent: "engineer", state: "working", issues: [{ id: "id-791", identifier: "WOR-791", title: "Add CSV export", state: "working" }], since: ago(12) }] }),
+      card(802, "Chase the vendor contract", { assignee: "open-loops", priority: "critical" }),
+    ],
+    tomorrow: [mine(770, "Plan the Q1 offsite agenda", { projectId: "p-hiring" }), mine(771, "Follow up on Jonas Weber's signed contract", { projectId: "p-aidenhq" })],
+    later: ["Draft Q1 engineering priorities", "Approve conference travel for the platform team", "Read the vendor security questionnaire", "Debrief the hiring loop with Lena Park", "Shortlist offsite venues", "Write a reference for Priya Nair", "Try the new calendar agent"].map((t, i) => mine(700 + i, t, { projectId: PROJECTS[i % 4]!.id })),
+    backlog: ["Someday: voice notes into tasks", "Evaluate the Postgres 18 upgrade window", "Redesign the leadership update format", "Explore EU entity options", "Tidy the warehouse schemas", "Archive the 2023 vendor folders"].map((t, i) => mine(600 + i, t, i % 2 ? { projectId: PROJECTS[i % 4]!.id } : {})),
   },
   brief: null, done: [], recurring: [],
   work: mock.empty ? [] : WORK(), asOf: new Date().toISOString(), incomplete: false, projects: mock.empty ? [] : PROJECTS,

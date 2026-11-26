@@ -48,7 +48,7 @@ const server = (routes: Record<string, unknown>) =>
 
 const savedBoard = () =>
   ({
-    layout: "day", setLayout: () => {}, filters: {}, setFilters: () => {}, groupBy: "none", setGroupBy: () => {},
+    tab: "day", setTab: () => {}, layout: "day", setLayout: () => {}, filters: {}, setFilters: () => {}, groupBy: "none", setGroupBy: () => {},
     views: [{ id: "v1", name: "Mine", rev: 1, spec: { layout: "day", filters: {}, groupBy: "none" } }],
     view: null, select: () => {}, dirty: false, saveNew: async () => {}, update: async () => {}, rename: async () => {},
     remove: async () => {}, conflict: null, reload: () => {}, spec: { layout: "day", filters: {}, groupBy: "none" },
@@ -76,7 +76,7 @@ const expectTableSemanticsHonest = (el: HTMLElement) => {
 
 describe("the board's page structure", () => {
   it("a tablist holds only tabs: + Save board sits beside the strip, inside the boards row", async () => {
-    const el = await mount(createElement(BoardTabs, { tb: savedBoard(), ready: true, mobile: false, saveSignal: 0 }));
+    const el = await mount(createElement(BoardTabs, { tb: savedBoard(), ready: true, mobile: false, saveSignal: 0, counts: { mine: 0, work: 0 } }));
     const tablist = el.querySelector('[role="tablist"]')!;
     expect(tablist).not.toBeNull();
     // Every child is a tab, whether the tab is the element itself or sits inside a wrapper.

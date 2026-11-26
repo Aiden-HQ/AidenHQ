@@ -1,4 +1,4 @@
-// The Tasks page's tools, shared by both layouts: the layout switch, saved boards as tabs (a draft until saved; a stale write
+// The Tasks page's tools, shared by Delegated and All: the page's tabs (My tasks, Delegated, All), saved boards as tabs (a draft until saved; a stale write
 // keeps the draft), and the filter bar (one chip per filter, `+ Filter` to add one). What the page shows is one spec,
 // `{layout, filters, groupBy}`; a saved board stores it (api.views), the unsaved default ("All tasks") keeps its layout here.
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -21,6 +21,9 @@ const savedLayout = (): Layout => {
   }
 };
 
+/** The page's tabs: My tasks (the owner's own list, MyTasks.tsx), Delegated (the "work" layout) and All (the "day" layout, every bucket). */
+export type Tab = "mine" | Layout;
+
 export type Conflict = { view: SavedView; current: SavedView | null };
 
 /**
@@ -30,6 +33,8 @@ export type Conflict = { view: SavedView; current: SavedView | null };
  */
 export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; routed: string | null | undefined; toast: (t: string) => void; go: (hash: string) => void }) {
   const [layout, setLayoutState] = useState<Layout>(savedLayout);
+  // My tasks is the page's own list: no layout, no saved boards. Any saved board or layout picked leaves it.
+  const [mine, setMine] = useState(true);
   const [filters, setFilters] = useState<Filters>({});
   const [groupBy, setGroupBy] = useState<"none" | "agent">("none");
   const [views, setViews] = useState<SavedView[] | null>(null);
@@ -41,14 +46,21 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
   selectedRef.current = selected;
 
   const setLayout = useCallback((l: Layout) => {
+    setMine(false);
     setLayoutState(l);
     if (!selected) try { localStorage.setItem(LAYOUT_KEY, l); } catch {}
   }, [selected]);
-  const apply = useCallback((spec: ViewSpec) => (setLayoutState(spec.layout), setFilters(spec.filters), setGroupBy(spec.groupBy)), []);
+  // My tasks leaves any saved board (its search must not edit that board's draft).
+  const setTab = useCallback((t: Tab) => {
+    if (t !== "mine") return setLayout(t);
+    setMine(true);
+    if (selected) (setSelected(null), setFilters({}), setGroupBy("none"), go("#/tasks"));
+  }, [setLayout, selected, go]);
+  const apply = useCallback((spec: ViewSpec) => (setMine(false), setLayoutState(spec.layout), setFilters(spec.filters), setGroupBy(spec.groupBy)), []);
   const load = useCallback(() => api.views().then((r) => (setViews(r.views), r.views), (e) => (toast(`Couldn't load saved boards: ${(e as Error).message}`), null)), [toast]);
   useEffect(() => void (ready && load()), [ready, load]);
 
-  /** Show a saved board (null: All tasks, the unsaved default, in `layout` when given). Any draft is dropped. */
+  /** Show a saved board (null: the unsaved default ("All tasks"), in `layout` when given). Any draft is dropped. */
   const select = useCallback((id: string | null, list = views, layout?: Layout) => {
     const v = id ? list?.find((x) => x.id === id) : undefined;
     setConflict(null);
@@ -56,6 +68,7 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
     if (v) apply(v.spec);
     else {
       if (layout) try { localStorage.setItem(LAYOUT_KEY, layout); } catch {}
+      if (layout) setMine(false);
       setFilters({}), setGroupBy("none"), setLayoutState(layout ?? savedLayout());
     }
     go(v ? `#/tasks?view=${v.id}` : "#/tasks");
@@ -125,7 +138,7 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
     setConflict(null);
     if (c?.current && c.view.id === selectedRef.current) apply(c.current.spec);
   };
-  return { layout, setLayout, filters, setFilters, groupBy, setGroupBy, views, view, select, dirty, saveNew, update, rename, remove, conflict, reload, spec };
+  return { tab: (mine ? "mine" : layout) as Tab, setTab, layout, setLayout, filters, setFilters, groupBy, setGroupBy, views, view, select, dirty, saveNew, update, rename, remove, conflict, reload, spec };
 }
 export type TaskBoard = ReturnType<typeof useTaskBoard>;
 
@@ -155,8 +168,8 @@ function NameDialog({ title, action, initial, onSave, onClose }: { title: string
   );
 }
 
-/** The layout switch and the saved boards' tabs (only once the session is confirmed). */
-export function BoardTabs({ tb, ready, mobile, saveSignal }: { tb: TaskBoard; ready: boolean; mobile: boolean; /** Bumped to open Save board from elsewhere (the Save button, the palette). */ saveSignal: number }) {
+/** The page's tabs (with what My tasks and Delegated hold) and the saved boards' tabs beside Delegated and All (only once the session is confirmed). */
+export function BoardTabs({ tb, ready, mobile, saveSignal, counts }: { tb: TaskBoard; ready: boolean; mobile: boolean; /** Bumped to open Save board from elsewhere (the Save button, the palette). */ saveSignal: number; counts: { mine: number; work: number } }) {
   const [dialog, setDialog] = useState<"save" | "rename" | "delete" | null>(null);
   useEffect(() => void (saveSignal && setDialog("save")), [saveSignal]);
   const [more, setMore] = useState(false);
@@ -174,8 +187,17 @@ export function BoardTabs({ tb, ready, mobile, saveSignal }: { tb: TaskBoard; re
   const rest = views.filter((v) => !shown.includes(v));
   return (
     <>
-      <Segmented label="Layout" value={tb.layout} onChange={tb.setLayout} options={[["day", "My day"], ["work", "Agent work"]] as const} />
-      {ready && tb.views && (
+      <Segmented
+        label="Tasks"
+        value={tb.tab}
+        onChange={tb.setTab}
+        options={[
+          ["mine", <>My tasks <span className="tt-n">{counts.mine}</span></>],
+          ["work", <>Delegated <span className="tt-n">{counts.work}</span></>],
+          ["day", "All"],
+        ] as const}
+      />
+      {ready && tb.views && tb.tab !== "mine" && (
         // The strip scrolls sideways; its menus sit beside it, outside the scroller, so they never clip.
         <div className={`tt-boards${mobile ? " phone" : ""}`}>
         <div className="tt-tabs" role="tablist" aria-label="Saved boards">

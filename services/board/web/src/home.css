@@ -56,3 +56,31 @@
 .home-team-grid > * { height: 100%; }
 .home-team-grid .ui-tile-desc { min-height: 0; }
 .home-plus { display: inline-grid; place-items: center; width: 40px; height: 40px; flex: none; border: 1px dashed var(--border-strong); border-radius: 50%; color: var(--muted); font-size: var(--text-xl); }
+
+/* Your day (Home.tsx): today's tasks beside the Inbox and This week counts, between Needs you and Your world. */
+.home-day { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+@media (min-width: 1100px) { .home-day { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
+.home-day-tasks { display: flex; flex-direction: column; min-width: 0; }
+.home-day-head { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.home-day-open, .home-day-more { font-size: var(--text-sm); font-weight: 600; text-decoration: none; }
+.home-day-open { margin-left: auto; }
+.home-day-more { padding: 10px 16px; border-top: 1px solid var(--border); }
+.home-day-open:hover, .home-day-more:hover { text-decoration: underline; }
+.home-day-row { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 6px 16px; border-top: 1px solid var(--border); font-size: var(--text-row); transition: background-color var(--fast) var(--ease), opacity 260ms var(--ease-in); }
+.home-day-head + .home-day-row { border-top: 0; }
+.home-day-row:hover { background: color-mix(in srgb, var(--hover) 70%, transparent); }
+.home-day-row.done { opacity: 0.45; }
+.home-day-row.done .home-day-ttl { text-decoration: line-through; color: var(--faint); }
+.home-day-ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; text-decoration: none; }
+.home-day-chip { flex: none; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; height: 20px; line-height: 20px; padding: 0 7px; border-radius: var(--radius-sm); background: var(--hover); color: var(--muted); font-size: var(--text-2xs); font-weight: 550; }
+.home-day-when { flex: none; color: var(--warn-text); font-size: var(--text-sm); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.home-day-tasks > .home-clear { border-top: 0; }
+.home-day-stats { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--border); min-width: 0; }
+@media (min-width: 1100px) { .home-day-stats { border-top: 0; border-left: 1px solid var(--border); } }
+.home-stat { display: flex; flex-direction: column; justify-content: center; gap: 4px; min-width: 0; padding: 16px 20px; color: var(--text); text-decoration: none; transition: background-color var(--fast) var(--ease); }
+.home-stat + .home-stat { border-left: 1px solid var(--border); }
+.home-stat:hover { background: var(--hover); }
+.home-stat-k { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
+.home-stat-k i { width: 8px; height: 8px; border-radius: 50%; background: var(--v); }
+.home-stat b { font-size: calc(var(--text-3xl) * 1.4); line-height: 1; font-weight: 700; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.home-stat-go { margin-top: 4px; font-size: var(--text-sm); font-weight: 600; color: var(--accent); }
