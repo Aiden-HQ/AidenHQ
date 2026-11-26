@@ -1546,7 +1546,12 @@ export function createService(o: Options) {
     // A wait blocks a new enqueue, not the confirmation that an earlier attempt already queued (or merged) this head.
     // `ship-tier-pending`: a gate that waits (or can't be reached) at the first read is asked again at this head next round. A
     // plain "not queued" would hold the PR for good, so a gate that closed between ship's decision and this call never recovers.
-    if (review && "wait" in review) return settled(await read()) ?? { ok: false, text: `ship-tier-pending: not queued: ${review.wait}${review.unblock ? ` (${review.unblock})` : ""}` };
+    // The confirmation read is best-effort: a transient failure there must not replace the retryable answer with a thrown error,
+    // which ship would hold at this head even after the gate passes.
+    if (review && "wait" in review) {
+      const back = await read().catch(() => undefined);
+      return (back && settled(back)) ?? { ok: false, text: `ship-tier-pending: not queued: ${review.wait}${review.unblock ? ` (${review.unblock})` : ""}` };
+    }
     const pr = await read();
     const now = settled(pr);
     if (now) return now;
@@ -1574,7 +1579,9 @@ export function createService(o: Options) {
         const out = await enqueueAsync(s, n, a, url, async () => { const back = await read().catch(() => undefined); return back && settled(back); }, async () => {
           // The refusal came back after this write's own checks: every gate that authorized it is read again now, because the
           // REST request that follows binds the head alone — never the approval, the code-review pass, the base or the hold.
-          const now = await read();
+          const now = await read().catch(() => undefined);
+          // Can't read it, can't authorize it: the head is asked again next round, never held on a transient failure.
+          if (!now) return `ship-tier-pending: ${url} couldn't be read again before the enqueue: not queued.`;
           if (now.state !== "OPEN") return `${url} is ${String(now.state).toLowerCase()}: not queued.`;
           if (now.headRefOid !== a.head) return `ship-head-moved: ${url} is at \`${String(now.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.`;
           if (now.baseRefName !== a.base) return `ship-scope: ${url}'s base changed: it now targets \`${now.baseRefName}\`, not \`${a.base}\`: not queued.`;
