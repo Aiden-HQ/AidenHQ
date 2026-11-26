@@ -246,9 +246,15 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
     case "BEHIND":
       return { do: "fail", why: `it is behind \`${def}\`: rebase it and ask for its merge again` };
     case "BLOCKED":
+      if (!ship) return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
       // With the head's approval in, a code owner (or another required review) is what GitHub still waits for.
+      if (pr.reviewDecision === "REVIEW_REQUIRED") return { do: "wait", why: reviewWait(pr) };
+      // On a merge-queue branch a direct merge is always blocked (the queue is the path), and everything above has passed: the
+      // enqueue is the judge, and GitHub's refusal (a thread to resolve, a signature) is a hold with its reason (queue.ts). The
+      // queue tests the merged tree itself, so the base's CI is no wait here.
+      if (ship.queue) return { do: "enqueue", why: "ready" };
       // Any other rule (conversations to resolve, signed commits, a deployment) is one ship doesn't handle: a visible stall.
-      return ship ? (pr.reviewDecision === "REVIEW_REQUIRED" ? { do: "wait", why: reviewWait(pr) } : { do: "stall", why: "blocked by a branch rule ship doesn't handle" }) : { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
+      return { do: "stall", why: "blocked by a branch rule ship doesn't handle" };
     default:
       return { do: "wait", why: "GitHub is still working out whether it can merge" };
   }
