@@ -132,8 +132,8 @@ describe("capture", chrome, () => {
 // ---- login ladder, session check, live-app guard (phase 2, lane E) ----
 describe("signed in and guarded", chrome, () => {
   let fixture: Fixture, fx: (p: string) => string, liveAlias: string;
-  // Sessions die 8 s after sign-in here (30 s by default), so one run crosses the expiry more than once.
-  before(async () => { fixture = await startFixture(0, { sessionSeconds: 8 }); fx = (p) => fixture.url + p; liveAlias = `http://live.localhost:${fixture.port}`; });
+  // Sessions die after 12 signed-in requests here, so one run crosses the expiry, however fast it captures.
+  before(async () => { fixture = await startFixture(0, { sessionPages: 12 }); fx = (p) => fixture.url + p; liveAlias = `http://live.localhost:${fixture.port}`; });
   after(() => fixture.close());
   const secrets = () => { const d = tmp(), pw = join(d, "pw"), totp = join(d, "totp"); writeFileSync(pw, SIGN_IN.password); writeFileSync(totp, SIGN_IN.totp); return { pw, totp, st: join(tmp(), "state.json") }; };
   const files = (dir: string): string[] => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name));

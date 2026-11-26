@@ -40,13 +40,14 @@ function sendMail(to: string, text: string): Promise<void> {
   });
 }
 
-export async function startFixture(port = 0, o: { sessionSeconds?: number } = {}): Promise<Fixture> {
+/** `sessionPages`: a session also ends after that many signed-in requests (a run then crosses an expiry however fast it is). */
+export async function startFixture(port = 0, o: { sessionSeconds?: number; sessionPages?: number } = {}): Promise<Fixture> {
   let writes = 0, apiWrites = 0, socketWrites = 0, signups = 0;
   const state: Record<string, string> = { "planted-title": "Planted page" };
-  const sessions = new Map<string, { user: string; until: number }>(), pending = new Map<string, string>(), verify = new Map<string, string>();
+  const sessions = new Map<string, { user: string; until: number; left: number }>(), pending = new Map<string, string>(), verify = new Map<string, string>();
   const ttl = (o.sessionSeconds ?? 30) * 1000;
-  const who = (req: import("node:http").IncomingMessage) => { const sid = /(?:^|; )sid=([^;]+)/.exec(req.headers.cookie ?? "")?.[1]; const s = sid ? sessions.get(sid) : undefined; return s && s.until > Date.now() ? s.user : undefined; };
-  const signIn = (res: import("node:http").ServerResponse, user: string) => { const sid = randomBytes(12).toString("hex"); sessions.set(sid, { user, until: Date.now() + ttl }); res.writeHead(302, { location: "/app/home", "set-cookie": `sid=${sid}; Path=/; HttpOnly` }).end(); };
+  const who = (req: import("node:http").IncomingMessage) => { const sid = /(?:^|; )sid=([^;]+)/.exec(req.headers.cookie ?? "")?.[1]; const s = sid ? sessions.get(sid) : undefined; return s && s.until > Date.now() && s.left-- > 0 ? s.user : undefined; };
+  const signIn = (res: import("node:http").ServerResponse, user: string) => { const sid = randomBytes(12).toString("hex"); sessions.set(sid, { user, until: Date.now() + ttl, left: o.sessionPages ?? Infinity }); res.writeHead(302, { location: "/app/home", "set-cookie": `sid=${sid}; Path=/; HttpOnly` }).end(); };
   const server: Server = createServer(async (req, res) => {
     const path = (req.url ?? "/").split("?")[0];
     let body = "";
