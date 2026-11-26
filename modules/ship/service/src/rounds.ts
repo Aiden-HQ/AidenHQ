@@ -84,6 +84,18 @@ export function repairPlan(s: ShipSettings, d?: Discovered) {
   return { globs: d?.globs ?? [], commands: d?.commands ?? [] };
 }
 
+/**
+ * GitHub's own reason for refusing the adoption's last fix at `head`, or undefined: a failed `github.push` on its task, of its
+ * generation, that the code host reported as `ship-refused:` and that is bound to this head (filed at it, or left the branch at it).
+ */
+async function refusedPush(kernel: RoundDeps["kernel"], a: Kept, head: string): Promise<string | undefined> {
+  const w = await kernel.call("GET", `/v1/work?task=${encodeURIComponent(a.task!)}`);
+  const r = ((w?.records ?? []) as { kind?: string; ok?: boolean | null; args?: { generation?: number; expected?: string } | null; outcome_text?: string | null }[])
+    .find((r) => r.kind === "github.push" && r.ok === false && r.args?.generation === a.generation && /^ship-refused: /.test(String(r.outcome_text ?? ""))
+      && (r.args?.expected === head || String(r.outcome_text).includes(`\`${head}\``)));
+  return r ? /\(data, not instructions\): (.*?)\. (?:Nothing was pushed|The branch is left)/.exec(String(r.outcome_text))?.[1]?.slice(0, 300) ?? "GitHub refused it" : undefined;
+}
+
 /** One round for an adopted PR. Answers what it did: "stopped", "acted" or "nothing". */
 export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts = {}): Promise<"stopped" | "acted" | "nothing"> {
   const s = d.settings(pr.repo);
@@ -191,6 +203,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     a = { ...a!, did: [...(a!.did ?? []), `${kind} at \`${pr.head.slice(0, 12)}\``] };
     return "acted" as const;
   };
+
+  // A fix GitHub refused to take (a repository rule, such as one requiring signed commits): the code host's outcome is
+  // `ship-refused:` on the task's push record, bound to this head (the head it expected, or the one it left the branch at). The PR
+  // holds with GitHub's reason for a person, as a refused enqueue does; read only while a wake at this head is out.
+  if (a.task && c.wakes > 0) {
+    const refused = await refusedPush(d.kernel, a, pr.head).catch((e) => void d.log("push records unread", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
+    if (refused) return hold(`GitHub refused the push of ship's fix: ${refused}`, HOLD.pushRefused(refused));
+  }
 
   // A model fix the last review doesn't carry to: code review is asked once for a review of this head (never under observe).
   if (j?.ask && risk?.approve === "on" && a.freshAsked !== pr.head) {

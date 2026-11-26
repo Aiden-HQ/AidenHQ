@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -99,13 +99,10 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   const outcomes = [];
   // A contributor's push while ship's repair runs (`duringRepair`), so the head lease it read before the run is tested.
   let duringRepair;
-  // A ref update GitHub refuses for its own reasons (a rule), never a moved head: the branch reads back at the expected head.
+  // A write GitHub refuses for its own reasons (a repository rule), never a moved head: the branch reads back at the expected head.
   let refuseRef = false;
-  // A tree GitHub refuses (as it does on a null entry for a path that is a directory in the result): the repair's failure text.
-  let refuseTree = false;
-  const treePosts = [];
-  // A PR closed after ship's first read and before its ref update (`duringPush`), so the recheck before the branch moves is tested.
-  let duringPush;
+  // GitHub's signed commits (createCommitOnBranch inputs) and update-branch calls, as sent.
+  const signed = [], updates = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
@@ -125,6 +122,28 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   const bare = (args) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   const gh = async (method, path, body) => {
     calls.push({ method, path, body, as: body?.as });
+    const git = (args, o = {}) => execFileSync("git", args, { cwd: origin, encoding: "utf8", ...o, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_COMMITTER_NAME: "GitHub", GIT_COMMITTER_EMAIL: "noreply@github.com", GIT_AUTHOR_NAME: "owner1", GIT_AUTHOR_EMAIL: "owner1@example.com", ...o.env } }).trim();
+    // GitHub's signed commit (createCommitOnBranch) over the bare origin: bound to expectedHeadOid, files replaced in full (an
+    // existing file keeps its mode, a new one is 100644), committed by GitHub. `refuseRef` is a repository rule refusing it.
+    if (path === "/graphql" && body.query.includes("createCommitOnBranch")) {
+      const { branch, expectedHeadOid, message, fileChanges } = body.variables.input;
+      signed.push(body.variables.input);
+      if (refuseRef) return { status: 200, body: { data: { createCommitOnBranch: null }, errors: [{ type: "UNPROCESSABLE", message: "Repository rule violations found\n\nCommits must have verified signatures.\n\n" }] } };
+      const ref = `refs/heads/${branch.branchName}`;
+      if (git(["rev-parse", ref]) !== expectedHeadOid) return { status: 200, body: { data: { createCommitOnBranch: null }, errors: [{ type: "STALE_DATA", message: `Expected branch to point to "${expectedHeadOid}" but it did not. Pull and try again.` }] } };
+      const env = { GIT_INDEX_FILE: join(root, `idx-${Math.random()}`) };
+      git(["read-tree", expectedHeadOid], { env });
+      for (const d of fileChanges.deletions ?? []) git(["update-index", "-z", "--index-info"], { env, input: `0 ${"0".repeat(40)}\t${d.path}\0` });
+      for (const f of fileChanges.additions ?? []) {
+        const mode = git(["ls-files", "-s", "--", f.path], { env }).split(" ")[0] || "100644";
+        git(["update-index", "--add", "--cacheinfo", `${mode},${git(["hash-object", "-w", "--stdin"], { input: Buffer.from(f.contents, "base64") })},${f.path}`], { env });
+      }
+      const tree = git(["write-tree"], { env });
+      const sha = git(["commit-tree", tree, "-p", expectedHeadOid, "-m", [message.headline, message.body].filter(Boolean).join("\n\n")]);
+      git(["update-ref", ref, sha]);
+      if (branch.branchName === "contrib") pr.head = sha;
+      return { status: 200, body: { data: { createCommitOnBranch: { commit: { oid: sha, tree: { oid: tree } } } } } };
+    }
     if (path === "/graphql" && body.query.includes("enqueuePullRequest")) return enqueueAnswer(queue);
     // The asynchronous merge REST API: a stacked PR's only way into the queue (the stack refusal below is the GraphQL enqueue's).
     if (asyncMerge && method === "PUT" && path === `/repos/${REPO}/pulls/7/merge-async`) return asyncMerge.put(body);
@@ -149,7 +168,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "PATCH" && path === `/repos/${REPO}/pulls/8`) return { status: 200, body: { number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } } };
     // A new PR the publish opens (a branch with none yet): its head is whatever the branch holds when it asks.
     if (method === "POST" && path === `/repos/${REPO}/pulls`) return { status: 201, body: { number: 9, html_url: `https://github.com/${REPO}/pull/9`, head: { sha: bare(["rev-parse", `refs/heads/${body.head}`]), ref: body.head }, base: { ref: body.base, sha: main }, user: { login: "owner1" } } };
-    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", title: pr.title ?? "wip", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
+    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", title: pr.title ?? "wip", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: bare(["rev-parse", "refs/heads/main"]) }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
     // The title write: only the title changes; the fake keeps the rest as it read it (a body, base or state sent would show here).
     if (method === "PATCH" && path === `/repos/${REPO}/pulls/7`) { pr.title = body?.title ?? pr.title; return { status: 200, body: { number: 7, title: pr.title, state: "open", head: { sha: pr.head }, base: { ref: pr.base ?? "main" } } }; }
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
@@ -157,58 +176,26 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "GET" && path === `/repos/${REPO}/pulls/7/files?per_page=100`) return { status: 200, body: [{ filename: "b.txt" }] };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
-    // GitHub's git data API over the bare origin: blobs, trees, commits, and a ref update that refuses a non-fast-forward. The
-    // review App's manifest carries no contents: write, so its answer is the real one, 403 Resource not accessible by integration.
-    if (body?.as === "app" && path.startsWith(`/repos/${REPO}/git/`)) return { status: 403, body: { message: "Resource not accessible by integration" } };
-    const git = (args, o = {}) => execFileSync("git", args, { cwd: origin, encoding: "utf8", ...o, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_COMMITTER_NAME: "app", GIT_COMMITTER_EMAIL: "app@example.com", GIT_AUTHOR_NAME: "app", GIT_AUTHOR_EMAIL: "app@example.com", ...o.env } }).trim();
-    if (method === "POST" && path === `/repos/${REPO}/git/blobs`) return { status: 201, body: { sha: git(["hash-object", "-w", "--stdin"], { input: Buffer.from(body.content, "base64") }) } };
-    // The blob store's own answer, which is how the writes find a blob they need not upload (a GET is a read, never a write).
-    if (method === "GET" && new RegExp(`^/repos/${REPO}/git/blobs/[0-9a-f]{40}$`).test(path)) {
-      const sha = path.split("/").pop();
-      try { git(["cat-file", "-e", `${sha}^{blob}`]); return { status: 200, body: { sha } }; } catch { return { status: 404, body: { message: "Not Found" } }; }
-    }
-    if (method === "POST" && path === `/repos/${REPO}/git/trees`) {
-      treePosts.push(body);
-      if (refuseTree) return { status: 422, body: { message: "Invalid tree info", ...(typeof refuseTree === "object" ? { errors: refuseTree.errors } : {}) } };
-      // GitHub's own validation: a `sha:null` entry names a path to delete, and it refuses the whole tree (422 Invalid tree info)
-      // when that path is a directory in the resulting tree, as a diff's `D tools` next to an added `tools/run` is. The base's
-      // own entries play no part: the result is the base with the entries applied, so a deletion the base also lists is still a
-      // deletion, and what makes it a directory is a path *added* under it.
-      const added = body.tree.filter((e) => e.sha !== null).map((e) => e.path);
-      for (const e of body.tree) if (e.sha === null && added.some((p) => p.startsWith(`${e.path}/`))) return { status: 422, body: { message: "Invalid tree info" } };
-      const env = { GIT_INDEX_FILE: join(root, `idx-${Math.random()}`) };
-      git(["read-tree", body.base_tree], { env });
-      for (const e of body.tree) {
-        // A deletion is a null-sha entry: the index drops the path (its own mode bytes go with it).
-        if (e.sha === null) { execFileSync("git", ["update-index", "-z", "--index-info"], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", ...env }, input: `0 ${"0".repeat(40)}\t${e.path}\0` }); continue; }
-        // A path under a file at the base replaces that file with a directory, as GitHub's tree write does.
-        for (const dir of e.path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))) {
-          if (!git(["ls-files", "--", dir], { env })) continue;
-          execFileSync("git", ["update-index", "-z", "--index-info"], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", ...env }, input: `0 ${"0".repeat(40)}\t${dir}\0` });
-        }
-        git(["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`], { env });
-      }
-      return { status: 201, body: { sha: git(["write-tree"], { env }) } };
-    }
-    // GitHub signs a commit as the identity whose token made it: the owner's login, or the reviewer App's bot.
-    if (method === "POST" && path === `/repos/${REPO}/git/commits`) {
-      // The upload reached its commit: whatever the test wants to happen next does, before the ref moves.
-      const hooked = duringPush; duringPush = undefined; hooked?.();
-      const who = body.as === "app" ? "app" : "owner1";
-      const env = { GIT_COMMITTER_NAME: who, GIT_COMMITTER_EMAIL: `${who}@example.com`, GIT_AUTHOR_NAME: who, GIT_AUTHOR_EMAIL: `${who}@example.com` };
-      return { status: 201, body: { sha: git(["commit-tree", body.tree, ...body.parents.flatMap((p) => ["-p", p]), "-m", body.message], { env }) } };
+    // GitHub's update-branch: its own merge commit of the base into the head, only without a conflict, bound to expected_head_sha.
+    if (method === "PUT" && path === `/repos/${REPO}/pulls/7/update-branch`) {
+      updates.push(body);
+      if (refuseRef) return { status: 422, body: { message: "Repository rule violations found" } };
+      const cur = git(["rev-parse", "refs/heads/contrib"]);
+      if (body.expected_head_sha !== cur) return { status: 422, body: { message: "expected head sha didn't match current head ref." } };
+      const tip = git(["rev-parse", "refs/heads/main"]);
+      let tree;
+      try { tree = git(["merge-tree", "--write-tree", cur, tip]).split("\n")[0]; } catch { return { status: 422, body: { message: "merge conflict between base and head" } }; }
+      const sha = git(["commit-tree", tree, "-p", cur, "-p", tip, "-m", "Merge branch 'main' into contrib"]);
+      git(["update-ref", "refs/heads/contrib", sha]);
+      pr.head = sha;
+      return { status: 202, body: { message: "Updating pull request branch." } };
     }
     if (method === "GET" && path.startsWith(`/repos/${REPO}/compare/`)) return { status: 200, body: { merge_base_commit: { sha: main } } };
-    if (method === "GET" && path.startsWith(`/repos/${REPO}/git/commits/`)) return { status: 200, body: { tree: { sha: git(["rev-parse", `${path.split("/").pop()}^{tree}`]) } } };
-    if (method === "PATCH" && path === `/repos/${REPO}/git/refs/heads/contrib`) {
-      // A ruleset refusal of GitHub's own (contents: write is there, but a rule refuses the update): its reason, not head movement.
-      if (refuseRef) return { status: 422, body: { message: "refusing to allow a GitHub App to create or update workflow" } };
-      const cur = git(["rev-parse", "refs/heads/contrib"]);
-      try { git(["merge-base", "--is-ancestor", cur, body.sha]); } catch { return { status: 422, body: { message: "Update is not a fast forward" } }; }
-      git(["update-ref", "refs/heads/contrib", body.sha]);
-      return { status: 200, body: {} };
+    if (method === "GET" && path.startsWith(`/repos/${REPO}/git/commits/`)) {
+      const sha = path.split("/").pop();
+      return { status: 200, body: { sha, tree: { sha: git(["rev-parse", `${sha}^{tree}`]) }, parents: git(["rev-list", "--parents", "-n", "1", sha]).split(" ").slice(1).map((p) => ({ sha: p })) } };
     }
-    if (method === "GET" && path === `/repos/${REPO}/git/ref/heads/contrib`) return { status: 200, body: { object: { sha: git(["rev-parse", "refs/heads/contrib"]) } } };
+    if (method === "GET" && path.startsWith(`/repos/${REPO}/git/ref/heads/`)) return { status: 200, body: { object: { sha: git(["rev-parse", `refs/heads/${decodeURIComponent(path.slice(`/repos/${REPO}/git/ref/heads/`.length))}`]) } } };
     return { status: 404, body: { message: "fake GitHub: no route" } };
   };
   const access = {
@@ -254,11 +241,11 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { memberPr, root, ws, origin, base, c1, cacheDir: join(root, "cache"), fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, treePosts, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; }, refuseTree: (v) => { refuseTree = v; } };
+  return { memberPr, root, ws, origin, base, c1, cacheDir: join(root, "cache"), fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, signed, updates, duringRepair: (fn) => { duringRepair = fn; }, refuseRef: (v) => { refuseRef = v; } };
 }
 
-test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
-  const { ws, origin, c1, fix, pr, calls, call, run, duringPush } = await setup(t);
+test("a push onto an adopted PR's branch is one commit GitHub makes and signs, bound to the head it expects; a contributor's push in between wins", async (t) => {
+  const { ws, origin, c1, fix, pr, calls, call, run, signed } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -273,7 +260,7 @@ test("a push onto an adopted PR's branch is written through the API as the code 
   assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).json.error, /fork/);
   pr.fork = false;
 
-  // A contributor pushes after the read: GitHub's API still says c1 (it lags), the fast-forward update refuses, and their commit stays.
+  // A contributor pushes after the read: GitHub's API still says c1 (it lags), the commit bound to c1 refuses, and their commit stays.
   const scratch = `${ws}-contrib`;
   sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, scratch);
   writeFileSync(join(scratch, "c.txt"), "c\n");
@@ -286,68 +273,72 @@ test("a push onto an adopted PR's branch is written through the API as the code 
   assert.match(lost.text, /^ship-head-moved/);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), theirs, "the contributor's push is never overwritten");
 
-  // Back at c1, the leased push lands, but never after the contributor closed the PR.
+  // Back at c1, the push lands, but never after the contributor closed the PR.
   sh(scratch, "push", "--quiet", "--force", origin, `${c1}:refs/heads/contrib`);
   pr.state = "closed";
   const closed = await run("k-00000000000000b3", "github.push", args);
   assert.match(closed.text, /^ship-scope: .* is closed/);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1);
-  // Closed after the first read, while the upload is under way: the recheck before the ref moves refuses it, and the branch stays.
   pr.state = "open";
-  duringPush(() => { pr.state = "closed"; });
-  const closedLate = await run("k-00000000000000b6", "github.push", args);
-  assert.match(closedLate.text, /^ship-scope: .* is closed/, closedLate.text);
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "a PR closed during the upload never gets its branch moved");
-  pr.state = "open";
-  // Retargeted during the upload: the commit was built against the base the plan read, so the branch stays put too.
-  duringPush(() => { pr.base = "release"; });
-  const retargeted = await run("k-00000000000000b7", "github.push", args);
-  assert.match(retargeted.text, /^ship-scope: .*retargeted during the push/, retargeted.text);
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "a PR retargeted during the upload never gets its branch moved");
-  pr.base = "main";
+  const before = signed.length;
   const ok = await run("k-00000000000000b2", "github.push", args);
   assert.equal(ok.ok, true, ok.text);
-  // The code host's commit: the repair's tree on top of c1, written as the owner's sign-in (never the reviewer App), not the box's commit.
+  // One commit GitHub made (and signs) on top of c1, holding the box commit's tree, sent as the code host's sign-in (never the App).
+  assert.equal(signed.length - before, 1, "one createCommitOnBranch");
+  assert.equal(signed.at(-1).expectedHeadOid, c1, "bound to the head the write expects");
+  assert.deepEqual(signed.at(-1).fileChanges.additions.map((f) => f.path), ["gen.txt"]);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^{tree}"), sh(ws, "rev-parse", `${fix}^{tree}`));
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^"), c1);
-  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "owner1");
-  const written = calls.filter((c) => c.path.startsWith(`/repos/${REPO}/git/`) && c.method === "POST").map((c) => c.as);
-  assert.ok(written.length >= 3, "a blob, a tree and a commit");
-  assert.ok(written.every((as) => as === undefined), "every write is the code host's, none the reviewer App's");
-  assert.match(ok.text, / as owner1\.$/);
+  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "GitHub");
+  assert.ok(calls.filter((c) => c.path === "/graphql" && c.body?.query?.includes("createCommitOnBranch")).every((c) => c.as === undefined), "every write is the code host's, none the reviewer App's");
+  assert.equal(calls.filter((c) => c.method !== "GET" && c.path.includes("/git/")).length, 0, "no unsigned git-data write");
+  assert.match(ok.text, / as owner1 \(commits GitHub signs\)\.$/);
 });
 
-test("a push carrying a commit whose tree is its first parent's lands with the commit's own tree and no tree POST", async (t) => {
-  const { ws, origin, c1, pr, calls, call, run } = await setup(t);
-  // An "ours" merge on top of the head: its tree is the head's own (nothing changes), as a base merge that keeps every path does.
+test("a push that merges the base after a conflict lands as GitHub's own merge between two signed commits: the base's side, then the resolution", async (t) => {
+  const { ws, origin, c1, pr, run, signed, updates } = await setup(t);
+  // main adds `b.txt` too, so it conflicts with the PR's own `b.txt` (add/add).
   const mainMove = join(dirname(ws), "main-move");
   sh(dirname(ws), "clone", "--quiet", "-b", "main", origin, mainMove);
+  writeFileSync(join(mainMove, "b.txt"), "b from main\n");
   writeFileSync(join(mainMove, "m.txt"), "m\n");
-  sh(mainMove, "add", "m.txt");
+  sh(mainMove, "add", "b.txt", "m.txt");
   sh(mainMove, "commit", "--quiet", "-m", "main moves");
   sh(mainMove, "push", "--quiet", origin, "main");
-  const ours = join(dirname(ws), "ours");
-  sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, ours);
-  // The base merge that keeps every path the head has: its tree is the head's own, so no diff against the first parent.
-  sh(ours, "merge", "--quiet", "-s", "ours", "--no-edit", "origin/main");
-  const oursSha = sh(ours, "rev-parse", "HEAD");
-  assert.equal(sh(ours, "rev-parse", `${oursSha}^{tree}`), sh(ours, "rev-parse", `${c1}^{tree}`), "the merge's tree is the first parent's");
-  // The box bundle the push reads, as ship's own commit is bundled.
-  sh(ours, "update-ref", `refs/aidenhq/publish/${oursSha}`, oursSha);
-  sh(ours, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${oursSha}.bundle`), `refs/aidenhq/publish/${oursSha}`);
-  const before = calls.length;
-  const ok = await run("k-00000000000000aa", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: oursSha }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
+  const tip = sh(mainMove, "rev-parse", "HEAD");
+  // The fixer merges the base into the PR's head and resolves the conflict, then commits one more fix on top.
+  const fixer = join(dirname(ws), "fixer");
+  sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, fixer);
+  try { sh(fixer, "merge", "--quiet", "--no-edit", "origin/main"); } catch {}
+  writeFileSync(join(fixer, "b.txt"), "resolved\n");
+  sh(fixer, "add", "b.txt");
+  sh(fixer, "commit", "--quiet", "--no-edit");
+  writeFileSync(join(fixer, "c.txt"), "after the merge\n");
+  sh(fixer, "add", "c.txt");
+  sh(fixer, "commit", "--quiet", "-m", "fix: after the merge");
+  const done = sh(fixer, "rev-parse", "HEAD");
+  sh(fixer, "update-ref", `refs/aidenhq/publish/${done}`, done);
+  sh(fixer, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${done}.bundle`), `refs/aidenhq/publish/${done}`);
+  const ok = await run("k-00000000000000aa", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
   assert.equal(ok.ok, true, ok.text);
-  const posted = calls.slice(before).filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/trees`);
-  assert.equal(posted.length, 0, "no empty tree is POSTed");
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^{tree}"), sh(ours, "rev-parse", `${oursSha}^{tree}`), "the commit lands with its own tree");
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^"), c1);
+  // Three steps, every commit GitHub's own: the base's side of `b.txt` on c1, GitHub's merge of main's tip, the resolution on top.
+  assert.equal(signed.length, 2, JSON.stringify(signed.map((x) => x.message)));
+  assert.equal(signed[0].expectedHeadOid, c1);
+  assert.deepEqual(signed[0].fileChanges.additions.map((f) => [f.path, Buffer.from(f.contents, "base64").toString()]), [["b.txt", "b from main\n"]]);
+  assert.equal(updates.length, 1);
+  const merge = sh(origin, "rev-parse", "refs/heads/contrib^");
+  assert.equal(sh(origin, "rev-parse", `${merge}^2`), tip, "GitHub's merge of the base's tip");
+  assert.equal(sh(origin, "rev-parse", `${merge}^1^`), c1, "on top of the base's side, on top of the head");
+  assert.equal(signed[1].expectedHeadOid, merge);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^{tree}"), sh(fixer, "rev-parse", `${done}^{tree}`), "the branch ends at the fixer's exact tree");
+  assert.equal(sh(origin, "show", "refs/heads/contrib:b.txt"), "resolved");
+  assert.equal(pr.head, sh(origin, "rev-parse", "refs/heads/contrib"));
 });
 
 test("a push whose box commit is a merge made on the base is refused, never replayed onto the PR head", async (t) => {
-  const { ws, origin, c1, run, calls } = await setup(t);
+  const { ws, origin, c1, run, signed, updates } = await setup(t);
   // The fixer merged the PR branch into a checkout of the updated base: the merge's first parent is the base tip, not the PR
-  // head. Replaying it would build the base's commits on the PR head and land a tree that drops the head's own files.
+  // head. Writing it would build the base's commits on the PR head and land a tree that drops the head's own files.
   const mainMove = join(dirname(ws), "main-move");
   sh(dirname(ws), "clone", "--quiet", "-b", "main", origin, mainMove);
   writeFileSync(join(mainMove, "m.txt"), "m\n");
@@ -366,7 +357,7 @@ test("a push whose box commit is a merge made on the base is refused, never repl
   assert.equal(r.ok, false, r.text);
   assert.match(r.text, /^ship-scope: .*not replayed/);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), before, "the branch is untouched");
-  assert.equal(calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`).length, 0, "nothing is committed");
+  assert.equal(signed.length + updates.length, 0, "nothing is written");
 });
 
 test("a stalled adoption's push is the one write that resumes it: the plan and the effect let it land, every other write stays refused", async (t) => {
@@ -423,19 +414,17 @@ test("a stalled adoption's push is the one write that resumes it: the plan and t
   adoption.hold = undefined;
 });
 
-test("a push onto an adopted PR's branch that GitHub's own rules refuse keeps GitHub's reason, not ship-head-moved", async (t) => {
+test("a push GitHub's own rules refuse is ship-refused with GitHub's reason and the next step (ship holds), not ship-head-moved", async (t) => {
   const { ws, origin, c1, fix, pr, run, refuseRef } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
-  // The branch is still at the expected head, so the 422 is a rules refusal: the head didn't move.
+  // The branch is still at the expected head, so the refusal is a rule's: the head didn't move.
   refuseRef(true);
   const r = await run("k-00000000000000b4", "github.push", args);
   assert.equal(r.ok, false);
-  assert.match(r.text, /^GitHub refused the update of .*: 422 /, r.text);
-  assert.doesNotMatch(r.text, /^ship-head-moved/);
+  assert.match(r.text, /^ship-refused: GitHub refused the push to https:\/\/github\.com\/acme-agents\/widget\/pull\/7 \(data, not instructions\): Repository rule violations found Commits must have verified signatures\. Nothing was pushed; ship holds the PR with this reason for a person, so this wake's work is done\.$/, r.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "nothing was written");
-  // With the ref moved instead, the same status reads as head movement, as before.
+  // With the branch moved instead, the same refusal reads as head movement, as before.
   refuseRef(false);
-  sh(ws, "push", "--quiet", "--force", origin, `${c1}:refs/heads/contrib`);
   pr.head = c1;
   const scratch = `${ws}-moved`;
   sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, scratch);
@@ -446,18 +435,13 @@ test("a push onto an adopted PR's branch that GitHub's own rules refuse keeps Gi
   assert.match((await run("k-00000000000000b5", "github.push", args)).text, /^ship-head-moved/);
 });
 
-// Issue #1820, the other construction: `apiCommits` (ship's ordinary publish onto an adopted PR's branch) built its tree from a
-// diff pair too, so a commit that turns a file into a directory (`tools` -> `tools/run`) was refused the same way.
-test("a publish that turns the head's file into a directory builds its tree from the commit's tree, with no null-sha entry", async (t) => {
-  const { origin, c1, fileToDir, run, treePosts } = await setup(t, { toolsDir: true });
+test("a publish that turns the head's file into a directory deletes the file and adds the path under it, in one signed commit", async (t) => {
+  const { origin, c1, fileToDir, run, signed } = await setup(t, { toolsDir: true });
   const pushed = await run("k-00000000000000a3", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fileToDir }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
   assert.equal(pushed.ok, true, pushed.text);
-  const sent = treePosts.at(-1).tree;
-  assert.ok(!sent.some((e) => e.sha === null && e.path === "tools"), `no null-sha entry for \`tools\`: ${JSON.stringify(sent)}`);
-  const entry = sent.find((e) => e.path === "tools/run");
-  assert.ok(entry, `\`tools/run\` is sent: ${JSON.stringify(sent)}`);
-  assert.equal(entry.mode, "100644", "the mode is git's own");
-  assert.equal(entry.sha, sh(origin, "rev-parse", "refs/heads/contrib:tools/run"));
+  const sent = signed.at(-1).fileChanges;
+  assert.deepEqual(sent.deletions, [{ path: "tools" }]);
+  assert.deepEqual(sent.additions.map((f) => f.path), ["tools/run"]);
   assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "the published branch has the directory");
 });
 
@@ -956,8 +940,8 @@ test("with no App on the repo, approve is refused as needing a human; nothing is
   assert.equal(calls.filter((c) => c.method !== "GET" && c.path !== "/graphql").length, 0);
 });
 
-test("ship's repair: github runs ship's check job and writes what it kept as the code host's sign-in, a merge commit on the head; leftovers and a fork without edits write nothing", async (t) => {
-  const { origin, c1, main, pr, call, run, checks, repairResult } = await setup(t);
+test("ship's repair: github runs ship's check job, GitHub merges the base and the kept files land on top, every commit GitHub's own; leftovers and a fork without edits write nothing", async (t) => {
+  const { origin, c1, main, pr, call, run, checks, repairResult, updates } = await setup(t);
   const args = { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"], commands: [{ dir: ".", cmd: "make gen" }] } };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.repair", args, requester: SHIP, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -967,10 +951,11 @@ test("ship's repair: github runs ship's check job and writes what it kept as the
   const ok = await run("k-00000000000000c1", "github.repair", args);
   assert.equal(ok.ok, true, ok.text);
   assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: main, base_ref: "main", plan: JSON.stringify(args.plan), attempt: "1" } });
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^1"), c1);
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^2"), main);
+  assert.deepEqual(updates, [{ expected_head_sha: c1 }], "GitHub's update-branch, bound to the head");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^1"), c1);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^2"), main);
   assert.equal(sh(origin, "show", "refs/heads/contrib:gen.txt"), "regenerated");
-  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "owner1", "written as the code host's sign-in, never the reviewer App");
+  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "GitHub", "a commit GitHub made and signs");
 
   // Conflicts no generator rewrites: the outcome lists them and the branch stays.
   pr.head = sh(origin, "rev-parse", "refs/heads/contrib");
@@ -1041,188 +1026,39 @@ test("a fork that allows maintainer edits: the fix and the repair are pushed to 
   assert.equal(sh(fork, "show", "refs/heads/contrib:b.txt"), "b", "the contributor's own file stays");
 });
 
-// Issue #1820: a path that is a file at the PR's head and a directory in the merge (`tools` -> `tools/run`). The raw diff pairs
-// `D tools` with `A tools/run`, and a `sha:null` entry for `tools` next to `tools/run` is a tree GitHub refuses (422 Invalid tree
-// info). The entries come from the merge tree instead: no null-sha entry for a path the result holds as a directory, and every
-// mode is git's own.
-test("ship's repair builds the tree from the merge tree: a path that is a file at the head and a directory in the merge has no null-sha entry, and the tree lands", async (t) => {
-  const { origin, c1, main, run, treePosts } = await setup(t, { toolsDir: true });
+test("ship's repair over a path that is a file at the head and a directory in the base lands GitHub's merge with the directory", async (t) => {
+  const { origin, c1, main, run, signed } = await setup(t, { toolsDir: true });
   assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools"), "blob", "the head holds `tools` as a file");
-  assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/main", "tools/"), "tools/run", "main holds `tools` as a directory");
   const r = await run("k-00000000000000a1", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
   assert.equal(r.ok, true, r.text);
-  // The entries the repair sent: no null-sha entry for `tools` (a directory in the merge), and `tools/run` at git's own mode/sha.
-  const sent = treePosts.at(-1).tree;
-  assert.deepEqual(sent.filter((e) => e.sha === null), [], `no deletion is needed: ${JSON.stringify(sent)}`);
-  assert.ok(!sent.some((e) => e.path === "tools"), "no entry names `tools`, which the merge holds as a directory");
-  assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/contrib", "tools/"), "tools/run", "the branch holds `tools` as the merge's directory, never the head's file");
-  const tools = sent.find((e) => e.path === "tools/run");
-  assert.ok(tools, `\`tools/run\` is sent: ${JSON.stringify(sent)}`);
-  assert.equal(tools.mode, sh(origin, "ls-tree", "refs/heads/contrib", "tools/run").split(/\s+/)[0], "the mode is git's own for that path");
-  assert.equal(tools.sha, sh(origin, "rev-parse", "refs/heads/contrib:tools/run"), "and its sha");
-  // The branch moved to the repair's merge commit, whose tree is git's, and `tools` is the directory main made it.
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^1"), c1);
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^2"), main);
-  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "the repair's tree has `tools/run`");
-  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "owner1");
+  assert.deepEqual(signed.at(-1).fileChanges.additions.map((f) => f.path), ["gen.txt"], "only the kept file is written on top of GitHub's merge");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^1"), c1);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^2"), main);
+  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "`tools` is the directory main made it");
 });
 
-// A deletion in the same repair is still an entry — the head's own path, at git's own mode for it — so the fix does not trade the
-// 422 for a lost deletion.
 test("ship's repair's deletion is the head's own path, next to a path that became a directory", async (t) => {
-  const { origin, c1, run, repairResult, treePosts } = await setup(t, { toolsDir: true });
+  const { origin, c1, run, repairResult, signed } = await setup(t, { toolsDir: true });
   repairResult.keep.entries = [{ path: "b.txt", mode: "100644", sha: null }];
   const r = await run("k-00000000000000a7", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["b.txt"] } });
   assert.equal(r.ok, true, r.text);
-  assert.deepEqual(treePosts.at(-1).tree.filter((e) => e.sha === null), [{ path: "b.txt", mode: "100644", type: "blob", sha: null }], "the delete is the head's own path, never `tools`");
+  assert.deepEqual(signed.at(-1).fileChanges.deletions, [{ path: "b.txt" }], "the delete is the head's own path, never `tools`");
   assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/contrib", "b.txt"), "", "the deleted file is gone");
   assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "and `tools` is still the merge's directory");
 });
 
-// The same defect one level down: `tools` becomes `tools/bin/run`, so nothing sits directly under `tools`. A probe that only reads
-// `tools/`'s direct children sees the tree `tools/bin` and can still send `D tools` beside it — the same 422.
-test("ship's repair treats a path as a directory at any depth: `tools` -> `tools/bin/run` sends no null-sha entry for it", async (t) => {
-  const { origin, c1, run, treePosts } = await setup(t, { toolsDir: "deep" });
-  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools"), "blob", "the head holds `tools` as a file");
-  assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/main", "tools/"), "tools/bin", "main holds `tools` with only a directory under it");
-  const r = await run("k-00000000000000a5", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
-  assert.equal(r.ok, true, r.text);
-  const sent = treePosts.at(-1).tree;
-  assert.deepEqual(sent.filter((e) => e.path === "tools"), [], `no entry names \`tools\`: ${JSON.stringify(sent)}`);
-  const entry = sent.find((e) => e.path === "tools/bin/run");
-  assert.ok(entry, `\`tools/bin/run\` is sent: ${JSON.stringify(sent)}`);
-  assert.equal(entry.mode, "100644");
-  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/bin/run"), "blob");
-});
 
-// A blob at another path: the head holds `big.bin`, and the repair keeps the same bytes under `copy.bin` (a rename both sides
-// agree on). The blob is already on GitHub as the head's copy, so it is reused by its sha and never read here — a lookup by the
-// destination path alone would miss it, and a large enough blob would exceed the read limit and abort the repair.
-test("ship's repair reuses a blob GitHub already holds at another path instead of uploading it again", async (t) => {
-  const { origin, ws, pr, run, calls, repairResult } = await setup(t);
-  const big = Buffer.alloc(5000, 7);
-  sh(ws, "checkout", "--quiet", "contrib");
-  writeFileSync(join(ws, "big.bin"), big);
-  sh(ws, "add", "big.bin");
-  sh(ws, "commit", "--quiet", "-m", "contributor: a binary");
-  sh(ws, "push", "--quiet", origin, "contrib");
-  const head = sh(ws, "rev-parse", "HEAD");
-  pr.head = head;
-  const sha = sh(ws, "hash-object", "big.bin");
-  repairResult.keep.entries = [{ path: "copy.bin", mode: "100644", sha }];
-  const before = calls.filter((c) => c.method === "POST" && c.path.endsWith("/git/blobs")).length;
-  const r = await run("k-00000000000000a6", "github.repair", { repo: REPO, number: 7, head, generation: 2, base: "main", plan: { globs: ["copy.bin"] } });
-  assert.equal(r.ok, true, r.text);
-  assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/git/blobs")).length, before, "the blob GitHub already held at the head is not uploaded again");
-  assert.equal(calls.filter((c) => c.method === "GET" && c.path.includes("/git/blobs/")).length, 0, "and no blob is downloaded just to test whether GitHub has it");
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib:copy.bin"), sha);
-});
 
-// The mirror of #1820, as a unit check of the shared construction: the base holds `tools/run` (a directory) and the result makes
-// `tools` a file again. Both entries are right here (the file added, `tools/run` deleted), and no entry may name a path the result
-// keeps as a directory.
-test("the tree construction handles the mirror too: a directory that becomes a file sends the file and deletes only its own paths", async () => {
-  const { treeWrites } = await import("../service/src/service.ts");
-  const dir = mkdtempSync(join(tmpdir(), "tree-writes-"));
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@b", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@b" };
-  const g = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env }).trim();
-  const raw = async (args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env });
-  g("init", "--quiet", "-b", "main", ".");
-  mkdirSync(join(dir, "tools"));
-  writeFileSync(join(dir, "tools", "run"), "run\n");
-  g("add", "-A");
-  g("commit", "--quiet", "-m", "dir");
-  const before = g("rev-parse", "HEAD");
-  g("rm", "--quiet", "-r", "tools");
-  writeFileSync(join(dir, "tools"), "a file\n");
-  g("add", "-A");
-  g("commit", "--quiet", "-m", "file");
-  const after = g("rev-parse", "HEAD");
-  const { tree } = await treeWrites(raw, before, after);
-  assert.deepEqual(tree.map((e) => [e.path, e.sha === null ? "-" : "+", e.mode]), [["tools", "+", "100644"], ["tools/run", "-", "100644"]], `got ${JSON.stringify(tree)}`);
-  // And the base is the one the diff pairs from: nothing in it is named by a path the result holds as a directory.
-  assert.equal(tree.filter((e) => e.sha === null).length, 1, "only `tools/run`, the base's own file");
-});
 
-test("the tree construction looks a changed path up as itself, never as a pathspec: `:(draft).md`, `*.md` and `a[1].txt`", async () => {
-  const { treeWrites } = await import("../service/src/service.ts");
-  const dir = mkdtempSync(join(tmpdir(), "tree-literal-"));
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@b", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@b" };
-  const g = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env }).trim();
-  // A raw runner with no GIT_LITERAL_PATHSPECS in its env: the construction itself must ask git for literal paths.
-  const raw = async (args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env: Object.fromEntries(Object.entries(env).filter(([k]) => k !== "GIT_LITERAL_PATHSPECS")) });
-  g("init", "--quiet", "-b", "main", ".");
-  writeFileSync(join(dir, "plain.md"), "plain\n");
-  g("add", "-A");
-  g("commit", "--quiet", "-m", "before");
-  const before = g("rev-parse", "HEAD");
-  // Paths that a pathspec would read as magic, a glob or a character class; plus decoys each pattern would otherwise match.
-  writeFileSync(join(dir, ":(draft).md"), "magic\n");
-  writeFileSync(join(dir, "*.md"), "star\n");
-  writeFileSync(join(dir, "a[1].txt"), "class\n");
-  writeFileSync(join(dir, "other.md"), "decoy-one\n");
-  writeFileSync(join(dir, "a1.txt"), "decoy-two\n");
-  g("add", "-A");
-  g("commit", "--quiet", "-m", "hostile names");
-  const after = g("rev-parse", "HEAD");
-  const { tree } = await treeWrites(raw, before, after);
-  assert.deepEqual(tree.map((e) => e.path).sort(), ["*.md", ":(draft).md", "a1.txt", "a[1].txt", "other.md"].sort(), `got ${JSON.stringify(tree)}`);
-  assert.equal(new Set(tree.map((e) => e.sha)).size, 5, "each path carries its own blob, never a decoy's");
-  // Each path carries its own blob, never a decoy's: a pattern lookup would have paired them wrongly.
-  const sha = (p) => g("rev-parse", `HEAD:${p}`);
-  for (const p of [":(draft).md", "*.md", "a[1].txt", "other.md", "a1.txt"]) {
-    assert.equal(tree.find((e) => e.path === p)?.sha, sha(p), p);
-    assert.equal(tree.find((e) => e.path === p)?.mode, "100644", p);
-  }
-});
 
-test("the tree construction carries git's own mode: a symlink's 120000 and a file's 100644, never a mode it invented", async () => {
-  const { treeWrites } = await import("../service/src/service.ts");
-  const dir = mkdtempSync(join(tmpdir(), "tree-modes-"));
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@b", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@b" };
-  const g = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env }).trim();
-  const raw = async (args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env });
-  g("init", "--quiet", "-b", "main", ".");
-  writeFileSync(join(dir, "target.txt"), "target\n");
-  g("add", "-A");
-  g("commit", "--quiet", "-m", "before");
-  const before = g("rev-parse", "HEAD");
-  writeFileSync(join(dir, "run.sh"), "#!/bin/sh\n");
-  chmodSync(join(dir, "run.sh"), 0o755);
-  symlinkSync("target.txt", join(dir, "link"));
-  g("add", "-A");
-  g("commit", "--quiet", "-m", "executable and symlink");
-  const after = g("rev-parse", "HEAD");
-  const { tree } = await treeWrites(raw, before, after);
-  const mode = (p) => tree.find((e) => e.path === p)?.mode;
-  assert.equal(mode("run.sh"), "100755", "an executable keeps git's 100755, not a default 100644");
-  assert.equal(mode("link"), "120000", "a symlink is 120000");
-  assert.equal(tree.find((e) => e.path === "link")?.sha, g("rev-parse", "HEAD:link"), "and the symlink's own blob sha");
-  assert.equal(tree.find((e) => e.path === "link")?.type, "blob");
-  // A deletion's mode is the base's own for that path, never a default: git's base tree has the executable as 100755.
-  g("rm", "--quiet", "run.sh");
-  g("add", "-A");
-  g("commit", "--quiet", "-m", "drop the executable");
-  const dropped = g("rev-parse", "HEAD");
-  const del = (await treeWrites(raw, after, dropped)).tree.find((e) => e.path === "run.sh");
-  assert.deepEqual([del?.mode, del?.sha, del?.type], ["100755", null, "blob"], `got ${JSON.stringify(del)}`);
-});
 
-test("ship's repair's refusal text names the tree diff and the entry GitHub refused, never a bare 422", async (t) => {
-  const { c1, run, refuseTree } = await setup(t);
-  refuseTree(true);
+test("ship's repair GitHub's rules refuse is ship-refused with GitHub's words, and nothing is written", async (t) => {
+  const { origin, c1, run, refuseRef } = await setup(t);
+  refuseRef(true);
   const r = await run("k-00000000000000a2", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
   assert.equal(r.ok, false);
-  // The entry leads (ship's hold keeps the first 300 characters of the first line, so it must name the path), then the diff,
-  // GitHub's words and the whole entry list — never a bare 422.
-  assert.match(r.text, /^ship-refused: GitHub refused tree entry \{"path":"gen\.txt","mode":"100644","type":"blob","sha":"[0-9a-f]{40}"\} \(the first sent: GitHub named none\) — acme-agents\/widget [0-9a-f]{12}\.\.[0-9a-f]{12}: 422 Invalid tree info; carried 1 change\(s\): \+gen\.txt@100644/);
-  assert.match(r.text, /\(https:\/\/github\.com\/acme-agents\/widget\/pull\/7\): nothing was changed\.$/);
-  // GitHub pointing at the entry (`errors[].index`) is used as is, with its reason.
-  refuseTree({ errors: [{ index: 0, message: "tools is a tree in this result, not a file to delete" }] });
-  const named = await run("k-00000000000000a4", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
-  assert.equal(named.ok, false);
-  assert.match(named.text, /^ship-refused: GitHub refused tree entry \{"path":"gen\.txt"/);
-  assert.match(named.text, /422 Invalid tree info \(tools is a tree in this result, not a file to delete\)/);
+  assert.match(r.text, /^ship-refused: GitHub refused the push to .*: merging `main` \(update-branch\): 422 Repository rule violations found\. Nothing was pushed; ship holds the PR/, r.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1);
 });
 
 test("ship's repair takes the box's files only on generated paths and conflicted lockfiles: never a workflow, a gitlink, a source file, an untouched lockfile or a new symlink", async (t) => {
@@ -1245,7 +1081,7 @@ test("ship's repair takes the box's files only on generated paths and conflicted
   }
 });
 
-test("ship's repair whose merge and kept files leave every path at the head's is refused as nothing changed, with no tree POSTed", async (t) => {
+test("ship's repair whose merge and kept files leave every path at the head's is refused as nothing changed, with nothing written", async (t) => {
   const { origin, ws, c1, run, calls, repairResult } = await setup(t);
   // The head already contains the base (main is its parent), so git's merge-tree is the head's own tree, and the kept entry is
   // that same content: the diff against the head is empty.
@@ -1254,8 +1090,7 @@ test("ship's repair whose merge and kept files leave every path at the head's is
   const r = await run("k-00000000000000a1", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["b.txt"] } });
   assert.equal(r.ok, false, r.text);
   assert.match(r.text, /^ship-refused: the repair of .*: nothing was changed/);
-  assert.equal(calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/trees`).length, 0, "no empty tree is POSTed");
-  assert.equal(calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`).length, 0, "no commit is made");
+  assert.equal(calls.filter((c) => c.method !== "GET" && (c.path.includes("update-branch") || c.body?.query?.includes("createCommitOnBranch"))).length, 0, "nothing is written");
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch stays where it was");
 });
 

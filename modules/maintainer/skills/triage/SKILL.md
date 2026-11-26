@@ -54,6 +54,10 @@ Read the repo's `settings` in `github_issue_list` first; they are the owner's ru
 Under 150 words, in a maintainer's voice: thank the reporter once, then short labelled lines giving the cause with
 `path:line`, the fix, and what happens next.
 
+Write it for the issue's readers, in plain words: its reasons are the code's and the product's, and a repo setting behind
+the verdict is said by its effect ("it stays open for a maintainer to decide"), so a reader who never saw the settings
+follows it.
+
 The comment is complete on its own. Where it needs something from the reporter (which issue a page belongs to, a version, a
 log line), it names exactly what to add and where, so the reporter can give it by editing the issue or replying, and the next
 maintainer who reads the reply acts on it. "What happens next" is a change the issue itself will show: a label, a linked PR,

@@ -60,6 +60,9 @@ read with `github_pr_threads` and `github_issue_read`). Each gets an answer; the
   clone.
 - One commit per wake, pushed with the wake's `aidenhq ship push …` line. If it is refused because the PR moved, stop: ship
   wakes you on the new head if work is left.
+- A push GitHub refuses for its own reason (`ship-refused:`, such as a repository rule) ends the wake: post the refusal's
+  reason on the task in one line and stop. Ship holds the PR with GitHub's reason and assigns a person, who takes it from
+  there.
 - Get green by fixing the code. A check, test or lint rule stays as strict as you found it.
 - A fix that needs a protected path (lockfiles, `.github/**`, test and lint config, CODEOWNERS): stop and say so on the task.
   Ship holds the PR for a person.

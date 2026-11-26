@@ -114,3 +114,24 @@ test("a merge waiting on the owner's card is said; a stale report is retried at 
   await round(t.deps, t.pr({ state: "merged" }), { do: "done" });
   assert.match(t.sent.at(-1)!.body, /Merged\./);
 });
+
+test("a fix GitHub refused to take (a repository rule) holds the PR with GitHub's reason and assigns its author, once per head", async () => {
+  const w = world("label");
+  const assigned: string[][] = [];
+  w.deps.assign = async (_r: string, _n: number, logins: string[]) => void assigned.push(logins);
+  const text = "ship-refused: GitHub refused the push to https://github.com/a/b/pull/7 (data, not instructions): Repository rule violations found Commits must have verified signatures. Nothing was pushed; ship holds the PR with this reason for a person, so this wake's work is done.";
+  const records = [{ kind: "github.push", ok: false, args: { generation: 1, expected: H1 }, outcome_text: text }];
+  w.deps.kernel = { call: async (_m: string, path: string) => (path.startsWith("/v1/work?task=task-1") ? { records } : {}) };
+  // A wake is out at this head: the round reads the task's push records.
+  w.state.put({ ...w.state.get("a/b", 7)!, counters: { head: H1, wakes: 1, rounds: 1, ci: 0, review: 0, red: {}, acted: ["fix_ci"], membersAsked: [] } } as any);
+  assert.equal(await round(w.deps, w.pr(), { do: "fix_ci", why: "red" }, { failing: ["build"] }), "acted");
+  const a = w.state.get("a/b", 7)!;
+  assert.equal(a.hold?.kind, "stalled");
+  assert.match(String(a.hold?.reason), /Commits must have verified signatures$/);
+  assert.deepEqual(assigned, [["me"]]);
+  assert.equal(w.sent.at(-1)!.body, renderReport("GitHub refused Ship's fix for this PR (Repository rule violations found Commits must have verified signatures). A person pushes the fix, or changes the rule that refused it."));
+  // Held: the next pass at the same head stops, and nothing is said again.
+  const n = w.sent.length;
+  assert.equal(await round(w.deps, w.pr(), { do: "fix_ci", why: "red" }, { failing: ["build"] }), "stopped");
+  assert.equal(w.sent.length, n);
+});
