@@ -928,7 +928,9 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .fleet-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fleet-name p { margin: 0; font-size: var(--text-sm); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fleet-now, .fleet-next, .fleet-last { display: grid; gap: 2px; font-size: var(--text-base); }
-.fleet-label { display: none; font-size: var(--text-xs); color: var(--faint); }
+/* A cell's name ("Now", "Next", "Last"): drawn above the value only where the header row is gone (narrow screens), and always
+   in the accessibility tree, since the header line above is decorative. */
+.fleet-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; font-size: var(--text-xs); color: var(--faint); }
 /* A cell's name for a screen reader only (the header line above is decorative): never drawn, at any width. */
 .fleet-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .fleet-line { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
@@ -969,7 +971,7 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
   .fleet-next { grid-area: next; }
   .fleet-last { grid-area: last; padding-right: 40px; }
   .fleet-now, .fleet-next, .fleet-last { align-self: start; font-size: var(--text-sm); }
-  .fleet-label { display: block; }
+  .fleet-label { position: static; width: auto; height: auto; overflow: visible; clip: auto; white-space: normal; }
   /* Placeholders (nothing running, no schedule, no runs) only stand in table columns: here they are left out. */
   .fleet-main > .is-empty { display: none; }
   .fleet-line .time { margin-left: 0; }

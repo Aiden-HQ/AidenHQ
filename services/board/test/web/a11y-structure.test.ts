@@ -122,13 +122,19 @@ describe("the board's page structure", () => {
     await settle();
     const fleet = el.querySelector(".fleet")!;
     expect(fleet).not.toBeNull();
-    expect(fleet.getAttribute("role")).toBeNull();
+    // A list, stated explicitly: Safari drops a list's semantics for `list-style: none` (finding 27059ec3).
+    expect(fleet.getAttribute("role")).toBe("list");
     expect([...fleet.querySelectorAll('[role="row"], [role="cell"], [role="columnheader"], [role="rowgroup"], [aria-level]')]).toEqual([]);
     // The rows are a list's items, so each is a direct child of a list (the fleet itself or a group's rows).
     for (const row of fleet.querySelectorAll(".fleet-row")) {
       expect(row.tagName).toBe("LI");
       expect(row.parentElement?.tagName).toBe("UL");
+      expect(row.parentElement?.getAttribute("role")).toBe("list");
     }
+    // Every value keeps its column's name in the accessibility tree at a wide viewport too (finding 901ac839).
+    expect([...fleet.querySelectorAll(".fleet-row .fleet-label")].map((l) => l.textContent)).toEqual(
+      expect.arrayContaining(["Now", "Next", "Last"]),
+    );
     expectTableSemanticsHonest(el);
   });
 });

@@ -222,7 +222,8 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
   const table = (label: string, agents: RosterAgent[], grouped: boolean) => (
     <section className="fleet-section" aria-label={label}>
       <h2 className="fleet-section-head">{label}</h2>
-      <ul className="fleet" aria-label={label}>
+      {/* role="list": Safari drops a list's semantics for `list-style: none` outside navigation (VoiceOver then can't walk it). */}
+      <ul className="fleet" role="list" aria-label={label}>
         <li className="fleet-cols" aria-hidden="true">
           <span>Agent</span>
           <span>Status</span>
@@ -238,7 +239,7 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
                   <h3>{dept.name}</h3>
                   {dept.description && <span className="hint">{dept.description}</span>}
                 </div>
-                <ul className="fleet-rows">{orgTree(workingFirst(members)).map(row)}</ul>
+                <ul className="fleet-rows" role="list">{orgTree(workingFirst(members)).map(row)}</ul>
               </li>
             ))
           : orgTree(workingFirst(agents)).map(row)}
