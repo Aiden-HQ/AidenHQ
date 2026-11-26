@@ -6,7 +6,17 @@
 import { existsSync, readFileSync } from "node:fs";
 
 /** One compiled page (modules/board/schemas/pages.json) and its module. */
-export interface PagePoint { id: string; title: string; icon: string; order: number; module: string; connection: string; view: string; tools: string[]; settings?: string[] }
+export interface SecretMap { secret: string; keys_from: string; fields: { name: string; label: string; kind: "text" | "password" | "totp" }[] }
+export interface PagePoint { id: string; title: string; icon: string; order: number; module: string; connection: string; view: string; tools: string[]; settings?: string[]; secret_maps?: SecretMap[] }
+
+/** The keys a secret map may hold: `keys_from` ("ui_testing.apps[].name") read from the setting's applied value, strings only, in order, once each. */
+export function mapKeys(keysFrom: string, settings: Record<string, unknown>): string[] {
+  const [path, field] = keysFrom.split("[].") as [string, string];
+  let v: unknown = settings;
+  for (const k of path.split(".")) v = v && typeof v === "object" && Object.hasOwn(v, k) ? (v as Record<string, unknown>)[k] : undefined;
+  const out = (Array.isArray(v) ? v : []).flatMap((e) => (e && typeof e === "object" && typeof (e as Record<string, unknown>)[field] === "string" ? [(e as Record<string, string>)[field]!] : []));
+  return [...new Set(out)];
+}
 
 export const VIEW_MIME = "text/html;profile=mcp-app";
 /** How the frame route sends a module's view (never HTML of the board's own). */

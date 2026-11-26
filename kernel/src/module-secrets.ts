@@ -27,6 +27,8 @@ export function createModuleSecrets(deps: {
   /** Every compose service that mounts the secret, any module's. */
   mounts: (secret: string) => string[];
   save: (name: string, value: string) => void;
+  /** The vault's value ("" when unset). */
+  get: (name: string) => string;
   has: (name: string) => boolean;
   /** Recreates the services; calls `locked` once it holds the apply lock (from then on it may have read the files). */
   recreate: (services: string[], locked: () => void) => Promise<void>;
@@ -49,7 +51,54 @@ export function createModuleSecrets(deps: {
     void p.catch(() => {}).finally(() => { if (waiting.get(k) === p) waiting.delete(k); });
     return p;
   };
+  // One key of a JSON-map secret (a module page's secret_maps): read, merged and written in place whole, one at a time so two
+  // saves can't lose each other's key. The module reads the map on each use, so nothing restarts.
+  const MAP_KEY = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+  let mapLock: Promise<unknown> = Promise.resolve();
+  const map = (name: string): Record<string, Record<string, string>> => {
+    const raw = deps.get(name).trim();
+    if (!raw) return {};
+    try {
+      const v = JSON.parse(raw);
+      if (v && typeof v === "object" && !Array.isArray(v)) return v;
+    } catch {}
+    throw fail(409, "conflict", "the stored value isn't a JSON map, so no key is merged into it");
+  };
+  const mapField = (module: string, secret: string) => {
+    on(module);
+    const field = deps.fields().find((f) => f.module === module && f.secret === secret);
+    if (!field) throw fail(400, "bad_request", "this module asks for no such secret");
+    return field;
+  };
   return {
+    /** The keys a JSON-map secret holds: names only, never a value. */
+    keys(module: string, secret: string): string[] {
+      mapField(module, secret);
+      return Object.keys(map(secret));
+    },
+    /**
+     * Sets, replaces (`entry`: one flat object of text values) or clears (`entry` null) one key of the map. `check` sees the entry
+     * (as { key: entry }) before anything is written and throws to refuse.
+     */
+    saveKey(module: string, secret: string, key: string, entry: Record<string, string> | null, check: (only: string) => Promise<void> = async () => {}): Promise<void> {
+      const run = async () => {
+        const field = mapField(module, secret);
+        if (!MAP_KEY.test(key)) throw fail(400, "bad_request", "that isn't a valid key");
+        if (entry && (Object.keys(entry).length === 0 || Object.keys(entry).length > 8 || Object.entries(entry).some(([k, v]) => !/^[a-z][a-z0-9_]{0,31}$/.test(k) || typeof v !== "string" || !v || v.length > 300))) throw fail(400, "bad_request", "an entry is up to 8 named, non-empty texts of 300 characters at most");
+        const current = map(secret);
+        if (entry) await check(JSON.stringify({ [key]: entry }));
+        else if (!Object.hasOwn(current, key)) return;
+        const next = { ...current };
+        if (entry) next[key] = entry; else delete next[key];
+        const text = JSON.stringify(next);
+        if (!new RegExp(field.pattern).test(text)) throw fail(400, "bad_request", `that doesn't look like a ${field.label}`);
+        deps.save(secret, text);
+        deps.log("module secret key saved", { module, secret, key, cleared: !entry });
+      };
+      const p = mapLock.then(run, run);
+      mapLock = p.catch(() => {});
+      return p;
+    },
     async save(module: string, secret: string, raw: string): Promise<{ restarted: string[] }> {
       const own = on(module);
       const field = deps.fields().find((f) => f.module === module && f.secret === secret);

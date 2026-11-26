@@ -9,7 +9,7 @@
 //   POST /v1/owner/update    (the board's key + an MCP client's bearer) {to: "main" | sha}: the release updater moves this
 //              release install to that main commit once it verified it (updates.ts requestMain), as the bearer's account.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
-//              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting, model_ready (a model key is in the vault), save_secret
+//              revoke_session, invite, role, disable, enable, link, app_admins, app_admin_set, recovery_key_waiting, model_ready (a model key is in the vault), save_secret (with `key`: one key of a JSON-map secret), secret_keys
 //              (the owner's) and setup_status (a module's declared `setup:` secrets: module-secrets.ts); `names` and `owner_request` (the
 //              owner's chat words Aiden relays as his in-app request) with the key alone.
 //   POST /v1/apps/<op>       (the apps-platform module's own token) in-app requests and roles for agents: requests, reply,
@@ -174,12 +174,29 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
           case "app_admin_set": return send(res, 200, await a.apps.assign(by.email, need(b, "app", APP), need(b, "email", EMAIL), need(b, "admin", (v) => typeof v === "boolean") ? "admin" : null));
           // A module's declared secrets: any ready admin sees which are set; only the owner replaces one (a channel's token
           // decides approvals). The kernel picks the file and the services.
-          case "save_secret": case "setup_status": {
+          case "save_secret": case "setup_status": case "secret_keys": {
             if (!secrets) throw fail(503, "unavailable", "module secrets are off");
             const module = need(b, "module", MODULE);
             if (op === "setup_status") return send(res, 200, { secrets: secrets.status(module) });
+            if (op === "secret_keys") return send(res, 200, { keys: secrets.keys(module, need(b, "secret", SECRET)) });
             if (!by.owner) throw fail(403, "forbidden", "only the owner");
             const name = need(b, "secret", SECRET), value = need(b, "value", (v) => typeof v === "string" && v.length <= 1000);
+            // One key of a JSON-map secret (a module page's secret_maps): `value` is that key's entry as JSON, or "" to clear it.
+            // The module's own check sees the entry alone, never the other keys.
+            if (b.key !== undefined) {
+              let entry: Record<string, string> | null = null;
+              if (value !== "") {
+                try { entry = JSON.parse(value); } catch {}
+                if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw fail(400, "bad_request", "an entry is a JSON object of texts");
+              }
+              let unchecked: unknown;
+              await secrets.saveKey(module, name, need(b, "key", (v) => typeof v === "string"), entry, async (only) => {
+                const checked = await validate?.(module, { secret: { name, value: only } });
+                if (checked && !checked.ok) throw fail(400, "bad_request", checked.errors.map((e) => e.message).join(" "));
+                if (checked?.ok && checked.unchecked) unchecked = checked.unchecked;
+              });
+              return send(res, 200, { ok: true, ...(unchecked ? { unchecked } : {}) });
+            }
             // The module's own check, before the value is written (module-validate.ts): its refusal is the field's error.
             const checked = await validate?.(module, { secret: { name, value: value.trim() } });
             if (checked && !checked.ok) throw fail(400, "bad_request", checked.errors.map((e) => e.message).join(" "));

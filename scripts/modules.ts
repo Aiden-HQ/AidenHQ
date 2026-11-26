@@ -675,7 +675,7 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
  * under their own names). What each view may reach goes onto its connection in the kernel's table (`views`: view -> tools),
  * where the kernel's view route enforces it (kernel/src/views.ts).
  */
-export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}, declares: (module: string, key: string) => boolean = () => true) {
+export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}, declares: (module: string, key: string) => boolean = () => true, own: { setting: (module: string, key: string) => boolean; secret: (module: string, name: string) => boolean } = { setting: () => true, secret: () => true }) {
   // One page per view, and one page per MCP name (the owner MCP serves each page's tools and its `<id>_page` opener side by side).
   const views = new Set<string>(), names = new Map<string, string>(OWNER_TOOLS.map((t) => [t, "the owner MCP"]));
   const name = (n: string, p: Obj) => (names.has(n) ? fail(`module ${p.module}: board.pages ${p.id}: the name ${n} is already ${names.get(n)}'s`) : names.set(n, `page ${p.id}`));
@@ -688,6 +688,14 @@ export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}, dec
     views.add(p.view);
     for (const k of p.settings ?? []) if (!declares(p.module, k)) fail(`${where}: setting ${k} isn't declared by ${p.module} or a module it requires`);
     name(`${p.id.replace(/-/g, "_")}_page`, p);
+    // secret_maps: the Sign-ins panel writes one key of the module's own setup secret; the keys come from one of its own settings.
+    for (const m of p.secret_maps ?? []) {
+      if (!own.secret(p.module, m.secret)) fail(`${where}: secret_maps ${m.secret} isn't a \`setup:\` secret of ${p.module}`);
+      const setting = String(m.keys_from).split(/[.[]/)[0]!;
+      if (!own.setting(p.module, setting)) fail(`${where}: secret_maps keys_from ${m.keys_from} isn't a setting of ${p.module}`);
+      if ((p.secret_maps as Obj[]).filter((x) => x.secret === m.secret).length > 1) fail(`${where}: secret_maps lists ${m.secret} twice`);
+      if (new Set(m.fields.map((f: Obj) => f.name)).size !== m.fields.length) fail(`${where}: secret_maps ${m.secret} lists a field twice`);
+    }
     for (const t of p.tools) {
       if (![...c.tools.read, ...c.tools.write].includes(t) || c.tools.destructive.includes(t)) fail(`${where}: ${t} isn't a read or write tool of ${p.connection}`);
       // The view route calls a tool directly; a tool routed into a write kind goes through its record, tier and executor instead.
@@ -1365,7 +1373,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }]));
   // A page may propose a setting its module, or a module it requires, declares.
   const declaresSetting = (module: string, key: string) => [module, ...(all.get(module)?.def.requires ?? [])].some((m) => Object.hasOwn(all.get(String(m))?.def.settings ?? {}, key));
-  modulePages(points.board?.pages ?? [], connections, writes, declaresSetting);
+  const ownSetting = (module: string, key: string) => Object.hasOwn(all.get(module)?.def.settings ?? {}, key);
+  const ownSecret = (module: string, name: string) => [all.get(module)?.def.secrets?.provided ?? []].flat().some((x: Obj) => x?.name === name && x.setup != null);
+  modulePages(points.board?.pages ?? [], connections, writes, declaresSetting, { setting: ownSetting, secret: ownSecret });
   moduleReads(points.board?.reads ?? [], connections, writes);
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and

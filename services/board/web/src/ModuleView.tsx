@@ -8,6 +8,7 @@ import { api, SignInRequired } from "./api";
 import type { PageRow } from "./types";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
+import { SecretMaps } from "./SecretMaps";
 import { Button, Page, PageHeader } from "./ui";
 import "./modules.css";
 
@@ -184,6 +185,8 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       ) : (
         <iframe ref={frame} className="mv-frame" key={`${page.id}-${attempt}`} title={page.title} src={`/api/pages/${page.id}/frame`} sandbox="allow-scripts allow-forms" style={{ height }} onLoad={loaded} />
       )}
+      {/* The page's sign-in keys (board.pages secret_maps), the board's own panel: values go to the vault from here, never through the frame. */}
+      <SecretMaps page={page.id} reload={attempt} onSignIn={onSignIn} />
     </Page>
   );
 }

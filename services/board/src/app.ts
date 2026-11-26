@@ -49,7 +49,7 @@ import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { Swr } from "./swr.js";
 import { CLOSED_WINDOW_MS, OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
 import { createMcp, WRITE_TOOLS } from "./mcp.js";
-import { FRAME_CSP, FRAME_TYPE, ViewError, mayPropose, type ViewHost } from "./module-views.js";
+import { FRAME_CSP, FRAME_TYPE, ViewError, mapKeys, mayPropose, type ViewHost } from "./module-views.js";
 import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
@@ -2713,6 +2713,45 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const { secret, value } = parse(z.object({ secret: z.string().max(64), value: z.string().min(1).max(1000) }).strict(), body);
         if (!s?.fields.some((f) => f.secret === secret)) throw new HttpError(400, "not one of this sign-in's values");
         return opts.accounts!.call("save_secret", who, { module: s.id, secret, value });
+      },
+    },
+    // A page's Sign-ins panel (board.pages secret_maps): which keys are set, never a value, and the owner's own Set / Replace / Clear
+    // of one key. The values go to the kernel as the signed-in admin (its save_secret with `key`) and are never read back.
+    {
+      method: "GET",
+      path: /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/secrets$/,
+      handle: async (m, _b, who) => {
+        const page = await viewCall(async () => opts.views!.page(m[1]!));
+        const settings = readSources(settingsFiles()).compiled?.settings ?? {};
+        const maps = await Promise.all((page.secret_maps ?? []).map(async (sm) => {
+          const stored = (await opts.accounts!.call<{ keys: string[] }>("secret_keys", who, { module: page.module, secret: sm.secret })).keys;
+          const wanted = mapKeys(sm.keys_from, settings);
+          // Every key the setting names, then any stored one it no longer names (an app taken off the list): that one can only be cleared.
+          return { secret: sm.secret, fields: sm.fields, keys: [...wanted.map((key) => ({ key, set: stored.includes(key), listed: true })), ...stored.filter((k) => !wanted.includes(k)).map((key) => ({ key, set: true, listed: false }))] };
+        }));
+        return { maps };
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/secrets\/([a-z][a-z0-9_]{1,63})\/([a-z0-9][a-z0-9_-]{0,62})$/,
+      handle: async (m, body, who) => {
+        if (!who.ready || who.account.role !== "admin") throw new HttpError(403, "totp");
+        const page = await viewCall(async () => opts.views!.page(m[1]!));
+        const sm = (page.secret_maps ?? []).find((x) => x.secret === m[2]);
+        if (!sm) throw new HttpError(404, "this page keeps no such sign-ins");
+        const { values } = parse(z.object({ values: z.record(z.string(), z.string().max(300)).nullable() }).strict(), body);
+        let value = "";
+        if (values) {
+          // Only the declared fields, blank ones dropped: Set and Replace write the whole entry.
+          const entry = Object.fromEntries(sm.fields.flatMap((f) => (values[f.name]?.trim() ? [[f.name, values[f.name]!.trim()]] : [])));
+          if (Object.keys(values).some((k) => !sm.fields.some((f) => f.name === k))) throw new HttpError(400, "not one of this page's fields");
+          if (!Object.keys(entry).length) throw new HttpError(400, "give at least one value");
+          // A new entry only for a key the setting names; Clear works for any stored one.
+          if (!mapKeys(sm.keys_from, readSources(settingsFiles()).compiled?.settings ?? {}).includes(m[3]!)) throw new HttpError(400, "that isn't one of the keys this page lists");
+          value = JSON.stringify(entry);
+        }
+        return opts.accounts!.call("save_secret", who, { module: page.module, secret: sm.secret, key: m[3]!, value });
       },
     },
     ...(opts.accounts && opts.organisations?.length ? organisationRoutes({ orgs: opts.organisations, accounts: opts.accounts, store, onApplied: () => store.events.emit("connections") }) : []),

@@ -439,6 +439,14 @@ export interface PageRow {
   module: string;
 }
 
+/** GET /api/pages/<id>/secrets: a page's secret maps (board.pages secret_maps): which keys are set, never a value. */
+export interface SecretMapView {
+  secret: string;
+  fields: { name: string; label: string; kind: "text" | "password" | "totp" }[];
+  /** `listed`: the page's setting still names the key; a stored key it no longer names can only be cleared. */
+  keys: { key: string; set: boolean; listed: boolean }[];
+}
+
 export interface ModuleRow {
   name: string;
   /** How a module change names it: `name`, or `name@marketplace` for a third-party module (the key for a row). */

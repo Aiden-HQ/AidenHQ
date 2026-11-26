@@ -654,7 +654,7 @@ const model = createModelStep({
 // A module's declared setup secrets from the board (save_secret, setup_status): the same vault writes, then that module's
 // services and every other one mounting the secret recreated in the checkout under the apply lock.
 const moduleSecrets = createModuleSecrets({
-  fields: firstRun.fields, has: firstRun.has, save: firstRun.save,
+  fields: firstRun.fields, has: firstRun.has, save: firstRun.save, get: secret,
   services: (module) => { const s = modulesFile().services ?? {}; return Object.hasOwn(s, module) ? s[module] : undefined; },
   mounts: (secret) => { const m = modulesFile().mounts ?? {}; return Object.hasOwn(m, secret) ? m[secret]! : []; },
   recreate: composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") }),
