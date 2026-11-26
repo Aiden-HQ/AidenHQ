@@ -26,7 +26,7 @@ export function TileGrid({ children }: { children: React.ReactNode }) {
   return <div className="ui-tiles">{children}</div>;
 }
 
-export function Tile({ href, onOpen, name, title, status, children, facts, foot, action, tone: t, face }: { href?: string; onOpen?: () => void; face?: React.ReactNode; name: string; title: string; status?: React.ReactNode; children?: React.ReactNode; facts?: React.ReactNode; foot?: React.ReactNode; action?: React.ReactNode; tone?: "needs" | "failed" }) {
+export function Tile({ href, onOpen, name, title, status, children, facts, foot, action, tone: t, face }: { href?: string; onOpen?: () => void; face?: React.ReactNode; name: string; title: string; status?: React.ReactNode; children?: React.ReactNode; facts?: React.ReactNode; foot?: React.ReactNode; action?: React.ReactNode; /** needs, failed: a coloured edge; ghost: a dashed invitation ("Hire a teammate"). */ tone?: "needs" | "failed" | "ghost" }) {
   return (
     <article className={`ui-tile ${hueClass(name)}${t ? ` ui-tile-${t}` : ""}`}>
       <div className="ui-tile-head">

@@ -4,3 +4,4 @@ points:
   setup_flows: { schema: schemas/setup_flows.json }
   signins: { schema: schemas/signins.json }
   pages: { schema: schemas/pages.json }
+  reads: { schema: schemas/reads.json }

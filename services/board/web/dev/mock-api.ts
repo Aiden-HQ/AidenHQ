@@ -1,7 +1,7 @@
 // A fixture-backed stand-in for the board's API, for working on the web UI without a kernel or Paperclip:
 //   node web/dev/mock-api.ts & npm run dev:web     (vite proxies /api to :3120)
 // Neutral sample data only. Writes answer ok and change nothing (an answer to WOR-821 is refused 409, the "already answered" case). GET /__mock?welcome=1|0 shows or hides the first-run wizard;
-// GET /__mock?empty=1 empties every list (empty states); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
+// GET /__mock?empty=1 empties every list (empty states, Home's fresh install); ?nocal=1 drops Home's calendar block; ?slow=<ms> delays every answer (loading states); ?search=keyword|down
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
 // ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
 // Slack setup page's state (nothing yet, sign-in only, an organisation's sign-in, sign-in and bot, a bot app that predates the manifest).
@@ -67,10 +67,10 @@ const kit = (hair: string, accessory: string, body: string, n: number, hairColor
 const mate = (job: string, sample: string, face: unknown, staff: string[] = [], controls: string[] = []) => ({ job, sample, staff, controls, face });
 const idle = { running: 0, queued: 0, workingSince: null, schedules: [] as { title: string; paused: boolean; nextRunAt: string | null }[], lastRunAt: ago(90), lastRunStatus: "succeeded" };
 const roster = [
-  { id: "a1", key: "aiden", name: "Aiden", title: "Chief of staff", system: false, department: OPS, teammate: mate("Chief of staff", "Four things need you. The rest is handled.", kit("short", "none", "tie", 0), ["inbox-agent"], ["chief-of-staff", "owner-channel"]), model: "deepseek-flash", reportsTo: null, state: "working", running: 1, queued: 0, workingSince: ago(3), schedules: [{ title: "Morning brief", paused: false, nextRunAt: ahead(600) }], lastRunAt: ago(3), lastRunStatus: "succeeded" },
+  { id: "a1", key: "chief-of-staff", name: "Aiden", title: "Chief of staff", system: false, department: OPS, teammate: mate("Chief of staff", "Four things need you. The rest is handled.", kit("short", "none", "tie", 0), ["inbox-agent"], ["chief-of-staff", "owner-channel"]), model: "deepseek-flash", reportsTo: null, state: "working", running: 1, queued: 0, workingSince: ago(3), schedules: [{ title: "Morning brief", paused: false, nextRunAt: ahead(600) }], lastRunAt: ago(3), lastRunStatus: "succeeded" },
   { id: "a2", key: "open-loops", name: "Tess", title: "Follow-ups and promises", system: false, department: OPS, teammate: mate("Follow-up chaser", "Jonas Weber still owes you the signed contract (5 days). Chaser drafted for you to send.", kit("long", "headset", "none", 1)), model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Sweep", paused: false, nextRunAt: ahead(25) }], lastRunAt: ago(35), lastRunStatus: "succeeded" },
   { id: "a7", key: "meetings", name: "Nora", title: "Notes from every meeting", system: false, department: DESK, teammate: mate("Meeting notes", "Leadership sync: 4 actions, 2 are yours, due Friday.", kit("long", "pencil", "notepad", 2)), model: "deepseek-flash", reportsTo: "a1", state: "working", running: 1, queued: 0, workingSince: null, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
-  { id: "a10", key: "reviewer-manager", name: "Max", title: "Reviews pull requests", system: false, department: ENG, teammate: mate("PR reviewer", "PR #812: 2 findings, one real bug. Fix suggested.", kit("spiky", "glasses", "none", 3), [], ["code-review"]), model: "deepseek-flash", reportsTo: "a1", state: "working", ...idle, running: 1, workingSince: ago(6) },
+  { id: "a10", key: "reviewer-manager", name: "Max", title: "Reviews pull requests", system: false, department: ENG, teammate: mate("PR reviewer", "“review only PRs from people outside the team”, “why is #821 slow?”", kit("spiky", "glasses", "none", 3), ["ai-reviewer"], ["code-review"]), model: "deepseek-flash", reportsTo: "a1", state: "working", ...idle, running: 1, workingSince: ago(6), stateNote: "Reviewing PR #821 in aidenhq-distro" },
   { id: "a11", key: "ship", name: "Sam", title: "How your pull requests ship", system: false, department: ENG, teammate: mate("Release manager", "Invoices export v2 merged at 06:10.", kit("short", "cap", "none", 4), [], ["ship"]), model: "deepseek-flash", reportsTo: "a1", state: "idle", ...idle },
   { id: "a12", key: "maintainer", name: "Mia", title: "Keeps your repos tidy", system: false, department: ENG, teammate: mate("Repo maintainer", "3 bugs triaged, 1 fix merged this week.", kit("bun", "none", "badge", 5)), model: "deepseek-flash", reportsTo: "a1", state: "idle", ...idle },
   { id: "a13", key: "app-maintainer", name: "Iris", title: "Builds and runs your apps", system: false, department: ENG, teammate: mate("App builder", "Hiring pipeline board, fed by recruiter emails.", kit("curly", "earrings", "none", 6), ["engineer", "ui-designer"], ["apps-platform"]), model: "deepseek-flash", reportsTo: "a1", state: "queued", ...idle, queued: 1 },
@@ -95,35 +95,35 @@ const w = (n: number, title: string, who: string | null, state: Record<string, u
   parent: null, crewIds: [], closedAt: null, ...o,
 });
 const WORK = () => [
-  w(7812, "Pick the payments vendor for the refund API", "aiden", st("waiting", "owner_wait", { question: "Stripe or Adyen? Adyen is cheaper at our volume but needs a 3-week review.", since: ago(120), attention: [A("owner", "owner_wait", "wait:t")] }), { priority: "high", projectId: "p-launch", age: 120 }),
+  w(7812, "Pick the payments vendor for the refund API", "chief-of-staff", st("waiting", "owner_wait", { question: "Stripe or Adyen? Adyen is cheaper at our volume but needs a 3-week review.", since: ago(120), attention: [A("owner", "owner_wait", "wait:t")] }), { priority: "high", projectId: "p-launch", age: 120 }),
   w(7820, "Approve push: release 0.9 notes", "engineer", st("waiting", "card_owner", { ref: "record:k-00000000000000a2", since: ago(25), attention: [A("owner", "card", "record:k-00000000000000a2")], refs: { "record:k-00000000000000a2": "push to docs/release-0.9" } }), { projectId: "p-launch", age: 25 }),
   w(7790, "Fix the flaky checkout test on CI", "engineer", st("working", "job_running", { ref: "job:j-e101000000000001", stage: "Testing", since: ago(3.2) }), { priority: "high", projectId: "p-launch", labelIds: ["l-code"], age: 40 }),
   w(7791, "Add retry to the checkout flow", "platform-engineer", st("working", "job_running", { ref: "job:j-e102000000000002", stage: "Coding", since: ago(8) }), { projectId: "p-launch", parent: "WOR-7790", age: 20 }),
-  w(7795, "Weekly fleet digest", "aiden", st("working", "job_running", { ref: "job:j-77fa000000000003", stage: "Digest", since: ago(1) }), { projectId: "p-aidenhq", age: 6 }),
+  w(7795, "Weekly fleet digest", "chief-of-staff", st("working", "job_running", { ref: "job:j-77fa000000000003", stage: "Digest", since: ago(1) }), { projectId: "p-aidenhq", age: 6 }),
   w(7801, "Migrate the warehouse ingest to the new schema, including backfill of 2023 and the long tail of partner tables", "platform-engineer", st("working", "job_running", { ref: "job:j-0b3c000000000004", stage: "Migrating", since: ago(12.6) }), { projectId: "p-infra", crewIds: ["engineer"], age: 60 }),
   w(7788, "Release 0.9 candidate", "engineer", st("waiting", "card_review", { ref: "record:k-00000000000000a5", refLabel: "reviewer is reading the diff", since: ago(18) }), { projectId: "p-launch", labelIds: ["l-review"], age: 18 }),
-  w(7765, "Ask legal about the data-retention clause", "aiden", st("waiting", "delegator_wait", { since: ago(180), waits_on: "a8", waits_on_name: "Research Lead", attention: [A("agent", "delegator_wait", "wait:t")] }), { projectId: "p-hiring", age: 180 }),
+  w(7765, "Ask legal about the data-retention clause", "chief-of-staff", st("waiting", "delegator_wait", { since: ago(180), waits_on: "a8", waits_on_name: "Research Lead", attention: [A("agent", "delegator_wait", "wait:t")] }), { projectId: "p-hiring", age: 180 }),
   w(7770, "Deploy marketing site", "platform-engineer", st("waiting", "module_wait", { ref: "checks", since: ago(50) }), { projectId: "p-infra", age: 50 }),
   w(7744, "Refund API: wire up the webhook handler", "engineer", st("idle", "failed", { ref: "job:j-d002000000000005", since: ago(300), attention: [A("agent", "failed", "job:j-d002000000000005")], refs: { "job:j-d002000000000005": "the job timed out after 120 min" } }), { priority: "critical", projectId: "p-launch", age: 300 }),
   w(7751, "Backfill invoices", "platform-engineer", st("waiting", "job_queued", { since: ago(300), blocker: "task:id-7744", lane: "blocked", note: "Waits for the webhook handler.", refs: { "task:id-7744": "WOR-7744" } }), { projectId: "p-infra", age: 300 }),
   w(7756, "Answer the partner's API question", "open-loops", st("idle", "failed", { ref: "no_reply", since: ago(90), attention: [A("agent", "failed", "no_reply")] }), { age: 90 }),
-  w(7702, "Tidy the Notion roadmap", "aiden", st("waiting", "backlog", { since: ago(5760) }), { age: 5760 }),
-  w(7733, "Prepare Thursday's board pre-read", "aiden", st("waiting", "scheduled", { since: ago(1440), scheduled_for: TOMORROW_8 }), { age: 1440 }),
+  w(7702, "Tidy the Notion roadmap", "chief-of-staff", st("waiting", "backlog", { since: ago(5760) }), { age: 5760 }),
+  w(7733, "Prepare Thursday's board pre-read", "chief-of-staff", st("waiting", "scheduled", { since: ago(1440), scheduled_for: TOMORROW_8 }), { age: 1440 }),
   w(7690, "Review vendor security questionnaire", "me", st("waiting", "owner_task", { since: ago(2880) }), { age: 2880 }),
   w(7686, "Old import task", null, null, { age: 9000 }),
   w(7781, "Rotate the staging database credentials", "platform-engineer", st("done", "closed", { grade: "pass", since: ago(180) }), { status: "done", closedAt: ago(180), age: 180 }),
-  w(7776, "Summarise the Monday leads call", "aiden", st("done", "closed", { grade: "pass", since: ago(540) }), { status: "done", closedAt: ago(540), age: 540 }),
+  w(7776, "Summarise the Monday leads call", "chief-of-staff", st("done", "closed", { grade: "pass", since: ago(540) }), { status: "done", closedAt: ago(540), age: 540 }),
   w(7760, "Stale PR cleanup", "engineer", st("done", "cancelled", { since: ago(1440) }), { status: "cancelled", closedAt: ago(1440), age: 1440 }),
   // A long Idle lane: 25 cards, then "Show N more".
-  ...Array.from({ length: 32 }, (_, i) => w(6900 + i, i === 1 ? "A very long title that should clamp to two lines and never push the card wider, with https://example.com/a/very/long/path/that/keeps/going" : `Archive the Q${(i % 4) + 1} vendor threads`, "aiden", st("waiting", "backlog", { since: ago(9000 + i) }), { age: 9000 + i })),
+  ...Array.from({ length: 32 }, (_, i) => w(6900 + i, i === 1 ? "A very long title that should clamp to two lines and never push the card wider, with https://example.com/a/very/long/path/that/keeps/going" : `Archive the Q${(i % 4) + 1} vendor threads`, "chief-of-staff", st("waiting", "backlog", { since: ago(9000 + i) }), { age: 9000 + i })),
 ];
 // Task search (GET /api/search): any work card or old closed task sharing a word with the query (4+ letters, or a prefix of
 // one), and "review" also finds what is about review without the word (the meaning half). Old closed tasks are months back.
 const OLD_DONE = () => [
-  [7012, "Add a code-review lens for module repos", "engineer", 60], [6950, "Critique checklist for pull requests", "aiden", 95], [6870, "Reviewer eval: planted cases for false rejects", "engineer", 120],
+  [7012, "Add a code-review lens for module repos", "engineer", 60], [6950, "Critique checklist for pull requests", "chief-of-staff", 95], [6870, "Reviewer eval: planted cases for false rejects", "engineer", 120],
   [6801, "Tune the AI reviewer's malice-only rule", "platform-engineer", 150], [6744, "PR review comments land as one thread", "engineer", 180], [6702, "Second opinion on the checkout PR", "engineer", 210],
-  [6650, "Review the vendor security questionnaire", "me", 240], [6601, "Retire the old review dashboard", "aiden", 270], [6555, "Reviewer timeouts on large diffs", "platform-engineer", 300],
-  [6500, "Code review summary in the morning brief", "aiden", 330], [6444, "Lint rule for review comments", "engineer", 365], [6400, "Warehouse backups to the storage box", "platform-engineer", 400],
+  [6650, "Review the vendor security questionnaire", "me", 240], [6601, "Retire the old review dashboard", "chief-of-staff", 270], [6555, "Reviewer timeouts on large diffs", "platform-engineer", 300],
+  [6500, "Code review summary in the morning brief", "chief-of-staff", 330], [6444, "Lint rule for review comments", "engineer", 365], [6400, "Warehouse backups to the storage box", "platform-engineer", 400],
   // A long tail, so Done pages ("Show more").
   ...Array.from({ length: 30 }, (_, i) => [6300 - i, `Weekly review of the ${["billing", "export", "ingest"][i % 3]} PRs`, "engineer", 420 + i * 7]),
 ].map(([n, title, who, days]) => w(n as number, title as string, who as string, st("done", "closed", { since: ago((days as number) * 1440) }), { status: "done", closedAt: ago((days as number) * 1440), age: (days as number) * 1440, projectId: (n as number) % 2 ? "p-launch" : null }));
@@ -140,7 +140,7 @@ function search(q: string, after: string | null): [number, unknown] {
 // Saved boards (GET/POST/PUT/DELETE /api/views): in memory, revisioned like the board's.
 let views = [
   { id: "00000000-0000-4000-8000-0000000000a1", name: "Needs review", rev: 1, spec: { layout: "work", groupBy: "none", filters: { label: ["l-review"] } } },
-  { id: "00000000-0000-4000-8000-0000000000a2", name: "Engineering", rev: 1, spec: { layout: "work", groupBy: "none", filters: { agent: ["engineer", "aiden", "platform-engineer"], updated: "7d" } } },
+  { id: "00000000-0000-4000-8000-0000000000a2", name: "Engineering", rev: 1, spec: { layout: "work", groupBy: "none", filters: { agent: ["engineer", "chief-of-staff", "platform-engineer"], updated: "7d" } } },
 ];
 // A module's Fleet page (board.pages): the example view (web/dev/example-view.html) and its two tools, as the kernel would relay them.
 const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }, { id: "code-review", title: "Reviews", icon: "reviews", order: 5, module: "code-review" }];
@@ -207,13 +207,13 @@ const sessionChat = (ref: string) => {
   ] };
 };
 const chatRows = () => mock.empty ? [] : [
-  { identifier: "WOR-820", title: "Can you find a time with Sam next week?", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-820", STATES.running), updatedAt: ago(1), preview: { text: "Looking at both calendars now.", at: ago(1), from: "agent" }, unread: true },
-  { identifier: "WOR-818", title: "Build a small app that tracks invoices", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-818", CARD), updatedAt: ago(9), preview: { text: "The app is ready; the deploy waits on your approval.", at: ago(9), from: "agent" }, unread: true },
-  { identifier: "WOR-815", title: "Weekly metrics digest looks off", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-815", ASK), updatedAt: ago(40), preview: { text: "Which week should I compare against?", at: ago(40), from: "agent" }, unread: false },
+  { identifier: "WOR-820", title: "Can you find a time with Sam next week?", open: true, agent: { key: "chief-of-staff", name: "Aiden" }, state: named("WOR-820", STATES.running), updatedAt: ago(1), preview: { text: "Looking at both calendars now.", at: ago(1), from: "agent" }, unread: true },
+  { identifier: "WOR-818", title: "Build a small app that tracks invoices", open: true, agent: { key: "chief-of-staff", name: "Aiden" }, state: named("WOR-818", CARD), updatedAt: ago(9), preview: { text: "The app is ready; the deploy waits on your approval.", at: ago(9), from: "agent" }, unread: true },
+  { identifier: "WOR-815", title: "Weekly metrics digest looks off", open: true, agent: { key: "chief-of-staff", name: "Aiden" }, state: named("WOR-815", ASK), updatedAt: ago(40), preview: { text: "Which week should I compare against?", at: ago(40), from: "agent" }, unread: false },
   { identifier: "WOR-803", title: "Ship the invoices app's export", open: true, agent: { key: "engineer", name: "Engineer" }, state: named("WOR-803", STATES.running), updatedAt: ago(5), preview: { text: "Running the export tests.", at: ago(5), from: "agent" }, unread: false },
   { identifier: "WOR-811", title: "Summarise yesterday's leadership sync", open: true, agent: { key: "meetings", name: "Nora" }, state: named("WOR-811", STATES.done), updatedAt: ago(180), preview: { text: "Summary posted with 4 action items.", at: ago(180), from: "agent" }, unread: false },
   { identifier: "WOR-806", title: "Why did the health check fail?", open: true, agent: { key: "platform-engineer", name: "Platform Engineer" }, state: named("WOR-806", FAILED), updatedAt: ago(52), preview: { text: "Timed out after 30 minutes.", at: ago(52), from: "agent" }, unread: false },
-  { identifier: "WOR-799", title: "Draft a reply to the hiring agency", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-799", STATES.chatTurn), updatedAt: ago(1500), preview: { text: "Sent.", at: ago(1500), from: "you" }, unread: false },
+  { identifier: "WOR-799", title: "Draft a reply to the hiring agency", open: true, agent: { key: "chief-of-staff", name: "Aiden" }, state: named("WOR-799", STATES.chatTurn), updatedAt: ago(1500), preview: { text: "Sent.", at: ago(1500), from: "you" }, unread: false },
 ];
 
 const approval = (id: string, over = {}) => ({ id, identifier: "WOR-818", action: "deploy", target: "invoices", digest: "sha256:9f2c", sentence: "Deploy the invoices app at 4e1a9c2", reads: "The warehouse schema app_invoices", changes: "Starts a new container; the app's door opens to admins", cost: "No spend", details: "Commit 4e1a9c2 on acme-agents/invoices: adds CSV export and a monthly total.", requestedBy: "Engineer", state: "pending", tier: 2, reason: "First deploy of a new app", review: "The diff is small and touches only the app's own repo. Sent to you because it is a first deploy.", decidedBy: null, outcome: null, outcomeText: null, createdAt: ago(9), replaced: false, ...over });
@@ -222,21 +222,31 @@ const approvals = () => mock.empty ? [] : [
   approval("k-00000000000000a2", { identifier: "WOR-806", action: "push", target: "acme-agents/aidenhq-instance", sentence: "Raise the Platform Engineer's run timeout to 45 minutes", changes: "One line in instance.yaml", tier: 2, reason: "Changes an agent's limits", review: null, createdAt: ago(50) }),
   approval("k-00000000000000a3", { identifier: "WOR-790", action: "merge", target: "acme-agents/invoices#14", sentence: "Merge “Add CSV export” into main", tier: 1, state: "approved", decidedBy: "reviewer:gpt-luna", review: "Tests pass, change is scoped to the export.", outcome: "applied", outcomeText: "Merged as 4e1a9c2", createdAt: ago(70) }),
   approval("k-00000000000000a4", { identifier: "WOR-777", action: "send", target: "slack:#general", sentence: "Post the weekly update in #general", tier: 1, state: "rejected", decidedBy: "reviewer:gpt-luna", review: "The draft names a customer that isn't public yet.", createdAt: ago(300) }),
+  approval("k-00000000000000d1", { identifier: "WOR-770", action: "send", target: "slack:#leads", sentence: "Post the hiring update in #leads", tier: 2, state: "rejected", decidedBy: "account:u1", reason: "Names a candidate", createdAt: ago(900) }),
   approval("k-00000000000000a5", { identifier: "WOR-792", action: "push", target: "acme-agents/invoices", sentence: "Push the CSV export fix to a branch", tier: 1, reason: null, review: null, createdAt: ago(2) }),
 ];
 
 const chatDetail = (ref: string) => {
-  const row = chatRows().find((c) => c.identifier === ref) ?? chatRows()[0] ?? { identifier: ref, title: "New chat", open: true, agent: { key: "aiden", name: "Aiden" }, state: null };
+  const mine = ["chief-of-staff", "reviewer-manager"].flatMap((k) => [...(agentChats(k, "active")?.chats ?? []), ...(agentChats(k, "settled")?.chats ?? [])]);
+  const row = chatRows().find((c) => c.identifier === ref) ?? mine.find((c) => c.identifier === ref) ?? chatRows()[0] ?? { identifier: ref, title: "New chat", open: true, agent: { key: "chief-of-staff", name: "Aiden" }, state: null };
+  // Max's chats talk about reviews (a hidden Engineer adds a note under him); everyone else's about scheduling.
+  const max = row.agent.key === "reviewer-manager";
   return {
     id: `id-${ref}`, identifier: row.identifier, title: row.title, open: true, agent: row.agent, state: row.state,
-    messages: [
+    messages: max ? [
+      { kind: "owner", id: "m1", text: row.title, at: ago(15) },
+      { kind: "reply", id: "m2", agent: row.agent.name, text: "On it. I'll add **aidenhq-distro** to the reviewed repos with the same rules:\n\n- review on open\n- one push round\n- skip docs-only PRs", at: ago(12), run: { id: "j-bbbbbbbbbbbbbbbb", seconds: 372, trigger: "Your comment" } },
+      { kind: "reply", id: "m3", agent: "Engineer", text: "Repo settings updated; the change is waiting for Max's check.", at: ago(10) },
+      { kind: "owner", id: "m4", text: "Skip the site/ folder there too.", at: ago(6) },
+      { kind: "reply", id: "m5", agent: row.agent.name, text: "Done: aidenhq-distro is reviewed like your other repos, site/ left out. Apply it now?", at: ago(2), run: { id: "j-cccccccccccccccc", seconds: 41, trigger: "Your comment" }, questions: [{ question: "Apply the change", options: ["Apply now", "Tonight"] }] },
+    ] : [
       { kind: "owner", id: "m1", text: row.title, at: ago(15) },
       { kind: "reply", id: "m2", agent: row.agent.name, text: "On it. I'll check both calendars and propose **three slots** that avoid your focus blocks.\n\n- Tuesday 10:00\n- Wednesday 14:30\n- Thursday 09:00", at: ago(12), run: { id: "j-bbbbbbbbbbbbbbbb", seconds: 372, trigger: "Your comment" } },
       { kind: "notes", id: "m3", agent: row.agent.name, at: ago(10), notes: [{ by: "Aiden", text: "Asked Tess whether Sam has a pending thread.", at: ago(10) }] },
       { kind: "owner", id: "m4", text: "Wednesday works best, but keep it to 30 minutes.", at: ago(6) },
       { kind: "reply", id: "m5", agent: row.agent.name, text: "Got it: Wednesday 14:30 for 30 minutes. Which title should the invite carry?", at: ago(2), run: { id: "j-cccccccccccccccc", seconds: 41, trigger: "Schedule: daily-brief" }, questions: [{ question: "Invite title", options: ["Sam / sync", "Q1 planning", "Catch-up"] }] },
     ],
-    working: row.state?.kind === "working" ? { agent: row.agent.name, since: ago(1), queued: false, said: "Checking Sam's calendar", plan: [{ text: "Read both calendars", state: "done" }, { text: "Pick slots", state: "doing" }, { text: "Send the invite", state: "todo" }] } : null,
+    working: row.state?.kind === "working" ? { agent: row.agent.name, since: ago(1), queued: false, said: max ? "Reading the repo's settings" : "Checking Sam's calendar", plan: [{ text: "Read both calendars", state: "done" }, { text: "Pick slots", state: "doing" }, { text: "Send the invite", state: "todo" }] } : null,
     files: [], approvals: ref === "WOR-818" ? [approval("k-00000000000000a1")] : [], handedOut: ref === "WOR-818" ? [{ identifier: "WOR-819", title: "Build the invoices app", agent: "Engineer", state: named("WOR-819", WORKING_CARD), updatedAt: ago(5), working: { agent: "Engineer", since: ago(5), queued: false } }, { identifier: "WOR-821", title: "Design the invoice screens", agent: "UI Designer", state: named("WOR-821", ASK), updatedAt: ago(20), working: null }, { identifier: "WOR-822", title: "Write the export tests", agent: "Engineer", state: named("WOR-822", STATES.blocked), updatedAt: ago(40), working: null }, { identifier: "WOR-823", title: "Seed the demo data", agent: "Engineer", state: named("WOR-823", STATES.done), updatedAt: ago(100), working: null }] : [],
     parent: null, runs: [], asks: [],
   };
@@ -274,7 +284,7 @@ const apps = () => mock.empty ? [] : [
 
 const moduleRow = (name: string, description: string, state: string, over = {}) => ({ name, description, agents: [], requires: [], marketplace: "aidenhq", tier: "official", state, neededBy: [], connections: [], routines: [], apps: [], settings: {}, revision: "a1b2c3d", pinned: null, source: null, setup: null, ...over });
 const modules = () => [
-  moduleRow("core", "The chief of staff and the pieces every install needs.", "core", { agents: ["aiden"] }),
+  moduleRow("core", "The chief of staff and the pieces every install needs.", "core", { agents: ["chief-of-staff"] }),
   moduleRow("open-loops", "Tracks promises and follow-ups across Slack and email.", "on", { agents: ["open-loops"], connections: ["slack"] }),
   moduleRow("engineering", "Engineers that build and fix code in your repos.", "on", { agents: ["engineer", "ui-designer"], connections: ["github"] }),
   moduleRow("apps-platform", "Runs the apps agents build, each in its own sandbox.", "dependency", { neededBy: ["engineering"] }),
@@ -291,11 +301,14 @@ const settingsData = () => ({
     { key: "spend_day_usd", module: "core", value: 50, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a UTC day." },
     { key: "task_usd", module: "core", value: 20, set: true, known: true, switch: false, doc: "The most one task may spend on models, whichever agents work on it." },
     { key: "spend_month_usd", module: "core", value: 1000, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a UTC calendar month." },
+    { key: "review_repos", module: "code-review", value: ["AidenHQ", "aidenhq-distro", "invoices-app"], set: true, known: true, switch: false, doc: "Repos. The repositories reviewed when a pull request opens." },
+    { key: "review_when", module: "code-review", value: "When a PR opens, then once after the next push", set: false, known: true, switch: false, doc: "When. When a review runs." },
+    { key: "review_skip", module: "code-review", value: ["Docs-only PRs"], set: true, known: true, switch: false, doc: "Skips. Pull requests that get no review." },
     { key: "quiet_start", module: "core", value: false, set: true, known: true, switch: true, doc: "Nothing runs on a schedule until you turn it on." },
   ],
   agents: [{
     recurring: [],
-    key: "aiden", name: "Aiden", module: "core", model: "deepseek-flash", models: [], effort: "high", heartbeatHours: 4, canHeartbeat: true, efforts: ["low", "medium", "high"], department: OPS, graded: false, roles: [], connections: [], defaults: {},
+    key: "chief-of-staff", name: "Aiden", module: "core", model: "deepseek-flash", models: [], effort: "high", heartbeatHours: 4, canHeartbeat: true, efforts: ["low", "medium", "high"], department: OPS, graded: false, roles: [], connections: [], defaults: {},
     // A schedule with its next run, a paused one, an event routine and one setup hasn't applied yet.
     routines: [
       { key: "morning-brief", title: "Morning brief", schedules: [{ cron: "0 9 * * 1-5", timezone: "Asia/Dubai", label: "" }], id: "r1", paused: false, next: ahead(600), defaults: {} },
@@ -317,7 +330,7 @@ const settingsData = () => ({
 const connections = () => ({
   compiled: true, sourcesError: false,
   connections: [
-    { name: "google_workspace", module: "google", kind: "connection", transport: "http", tools: { read: 14, write: 6 }, grants: [{ agent: "aiden", name: "Aiden", access: "write", tools: 20 }], setup: "google", probe: { ok: true, checkedAt: ago(2) }, signIn: null, google: { accounts: [{ email: "alex@example.com", primary: true, state: "ok", since: ago(5000) }] } },
+    { name: "google_workspace", module: "google", kind: "connection", transport: "http", tools: { read: 14, write: 6 }, grants: [{ agent: "chief-of-staff", name: "Aiden", access: "write", tools: 20 }], setup: "google", probe: { ok: true, checkedAt: ago(2) }, signIn: null, google: { accounts: [{ email: "alex@example.com", primary: true, state: "ok", since: ago(5000) }] } },
     { name: "slack", module: "open-loops", kind: "connection", transport: "http", tools: { read: 9, write: 3 }, grants: [{ agent: "open-loops", name: "Tess", access: "read", tools: 9 }], setup: null, probe: { ok: true, checkedAt: ago(2) }, signIn: { state: "ok", configured: true, since: ago(9000) } },
     { name: "github", module: "engineering", kind: "connection", transport: "http", tools: { read: 22, write: 11 }, grants: [], setup: null, probe: { ok: false, status: 401, detail: "Token expired", checkedAt: ago(2) }, signIn: { state: "expired", configured: true, since: ago(60) } },
     { name: "jira", module: "engineering", kind: "connection", transport: "http", tools: { read: 7, write: 2 }, grants: [], setup: null, probe: null, signIn: { state: "missing", configured: false, since: ago(60) } },
@@ -526,6 +539,72 @@ const catalog = () => ({ sha: "6018f7c2f0b7d".padEnd(40, "0"), options: CATALOG_
 const ENGINES = { codex: { label: "Codex", accepts: { tools: true }, efforts: ["low", "medium", "high"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "deepseek/deepseek-v4-pro", "z-ai/glm-5.3"], run_usd: 5 }, "claude-code": { label: "Claude Code", accepts: { provider: "anthropic" }, efforts: ["low", "medium", "high"], models: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"], run_usd: 5 }, codegenie: { label: "Codegenie", accepts: { tools: true }, efforts: ["low", "medium"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"], run_usd: 5 }, "codex-native": { label: "Codex native", accepts: { tools: true }, efforts: ["low", "medium"], models: ["openai/gpt-6.2-sol", "~openai/gpt-sol-latest"], run_usd: 5 } };
 const REPORT = "# Repo review: acme/payments\n\n**Verdict:** concerns, at `4e1a9c2`\n\n## Security\n\n- **Important** `src/billing/charge.ts:88`: a retried charge can post twice.\n  - Evidence: the idempotency key is written after the provider call.\n  - Found by: sec.quick-scan\n\n## Coverage\n\n| Option | Result |\n| --- | --- |\n| sec.quick-scan | done |\n| maint.knip | done |\n\nCost $6.80.";
 
+
+// Home (GET /api/home), as V3Home shows it. Snoozed rows leave the next read; `nocal` drops the calendar block.
+let lastBody: any = {};
+const homeMock = { snoozed: new Set<string>(), nocal: false };
+const fref = (key: string, state: "idle" | "working" | "needs" = "idle") => {
+  const a = roster.find((r) => r.key === key)!;
+  return { key, name: a.name, job: a.teammate?.job ?? "", face: a.teammate?.face ?? null, state };
+};
+const sinceItem = (key: string, text: string, min: number, task: string | null, kind = "done") => ({ teammate: fref(key), text, at: ago(min), task, kind });
+const homeData = () => {
+  if (mock.empty) return { as_of: new Date().toISOString(), since_from: ago(1440), since_complete: true, greeting: { needs: 0 }, needs: [], since: null, world: { waiting_on: null, today: null }, team: [], idea: null };
+  const needs = [
+    { id: "id-841", kind: "answer", teammate: fref("open-loops", "needs"), since: ago(7200), task: { identifier: "WOR-841", title: "Chase Jonas Weber for the signed contract" }, question: "Send a chaser to Jonas Weber about the Northwind contract?", detail: "Hi Jonas, checking in on the signed vendor contract. Is anything holding it up on your side? We're speaking at 16:30 today, happy to cover it then.", options: ["Send", "Edit", "Not now"], questions: [{ question: "Send a chaser to Jonas Weber about the Northwind contract?", options: ["Send", "Edit", "Not now"] }], waitSince: ago(7200) },
+    { id: "id-815", kind: "answer", teammate: fref("researcher", "needs"), since: ago(40), task: { identifier: "WOR-815", title: "Weekly metrics digest" }, question: "Weekly metrics digest: compare against last week, or the same week last month?", detail: undefined, options: ["Last week", "Same week last month"], questions: [{ question: "Which week should the digest compare against?", options: ["Last week", "Same week last month"] }], waitSince: ago(40) },
+    { id: "k-00000000000000a2", kind: "approval", teammate: fref("ship", "needs"), since: ago(50), task: { identifier: "WOR-806", title: "Runner timeout" }, question: "Raise the Platform Engineer's run timeout to 45 minutes?", card: approval("k-00000000000000a2", { identifier: "WOR-806", action: "push", sentence: "Raise the Platform Engineer's run timeout to 45 minutes", reads: "instance.yaml", requestedBy: "Sam" }) },
+    { id: "k-00000000000000a1", kind: "approval", teammate: fref("app-maintainer", "needs"), since: ago(120), task: { identifier: "WOR-818", title: "Hiring pipeline app" }, question: "Let the Hiring pipeline app read your “Recruiting” Gmail label?", card: approval("k-00000000000000a1", { sentence: "Let the Hiring pipeline app read your “Recruiting” Gmail label", reads: "Read only · that one label", requestedBy: "Iris" }) },
+  ].filter((n) => ![...homeMock.snoozed].some((k) => k === n.id || k.startsWith(`${n.id}:`))); // an answer row's key carries its wait
+  const items = [
+    sinceItem("ship", "Invoices export v2 shipped. PR #812 merged at 06:10 after review.", 140, "WOR-812"),
+    sinceItem("open-loops", "6 chasers sent overnight; Priya and Omar replied.", 200, "WOR-842", "digest"),
+    sinceItem("meetings", "Leadership sync notes: 4 actions, 2 of them yours.", 300, "WOR-811", "fyi"),
+    sinceItem("reviewer-manager", "2 PRs ready to merge.", 320, "WOR-819"),
+    sinceItem("app-maintainer", "Offsite planner deploying now.", 360, "WOR-823", "fyi"),
+    sinceItem("ship", "CI runners upgraded.", 400, "WOR-801", "closed"),
+    sinceItem("open-loops", "Lena Park acknowledged the hiring loop feedback.", 420, null, "fyi"),
+    sinceItem("meetings", "Board prep brief ready for Thursday.", 500, "WOR-733"),
+    sinceItem("reviewer-manager", "Findings on PR #817 fixed and re-checked.", 560, "WOR-817"),
+  ];
+  const groups = [...new Set(items.map((i) => i.teammate.key))].map((k) => ({ teammate: fref(k), latest: items.find((i) => i.teammate.key === k)!, count: items.filter((i) => i.teammate.key === k).length }));
+  return {
+    as_of: new Date().toISOString(), since_from: ago(600), since_complete: true, greeting: { needs: needs.length }, needs,
+    since: { groups, items, total: items.length },
+    world: {
+      waiting_on: [
+        { identifier: "WOR-843", title: "Jonas Weber · signed contract", age_days: 9, quiet_days: 5 },
+        { identifier: "WOR-844", title: "Priya Nair · design doc review", age_days: 2, quiet_days: 2 },
+        { identifier: "WOR-845", title: "Lena Park · hiring loop feedback", age_days: 1, quiet_days: 1 },
+        { identifier: "WOR-846", title: "Omar Haddad · Q1 budget numbers", age_days: 3, quiet_days: 0 },
+      ],
+      today: homeMock.nocal ? null : { timezone: "Asia/Dubai", events: [
+        { id: "ev1", start: `${new Date().toISOString().slice(0, 10)}T06:00:00Z`, title: "Leadership sync", all_day: false, prep: "WOR-811" },
+        { id: "ev2", start: `${new Date().toISOString().slice(0, 10)}T10:00:00Z`, title: "1:1 Priya", all_day: false },
+        { id: "ev3", start: `${new Date().toISOString().slice(0, 10)}T12:30:00Z`, title: "Northwind call · Jonas", all_day: false, prep: "WOR-843" },
+      ] },
+    },
+    team: [
+      { teammate: fref("open-loops", "needs"), line: "Priya and Omar replied overnight · Jonas 5 days quiet" },
+      { teammate: fref("reviewer-manager", "working"), line: "2 PRs ready to merge" },
+      { teammate: fref("app-maintainer", "needs"), line: "Offsite planner deploying now" },
+    ],
+    idea: { identifier: "WOR-850", teammate: fref("open-loops"), question: "You chase Jonas almost every week. Want Tess to draft a Monday check-in with Northwind for you to approve?", options: ["Show me the draft", "Not now"], waitSince: ago(300) },
+  };
+};
+/** One agent's chats (GET /api/chats?agent=): Aiden has three, Max two, a settled page for each. */
+const agentChats = (key: string, state: string, offset = 0) => {
+  const a = roster.find((r) => r.key === key);
+  if (!a) return undefined;
+  const mk = (n: number, title: string, min: number, preview: string, s: ReturnType<typeof st> = STATES.chatTurn) => ({ identifier: `WOR-${n}`, title, open: state !== "settled", agent: { key, name: a.name }, state: named(`WOR-${n}`, s), updatedAt: ago(min), preview: { text: preview, at: ago(min), from: "agent" }, unread: false, ...(state === "settled" ? { settled: true } : {}) });
+  const rows: Record<string, ReturnType<typeof mk>[]> = state === "settled"
+    ? { "chief-of-staff": [mk(760, "Plan the offsite agenda", 3000, "Agenda sent to the leads.")], "reviewer-manager": [mk(761, "Review the docs repo too?", 5000, "Done: docs repo added.")] }
+    : { "chief-of-staff": [mk(820, "Why is the invoices release stuck?", 2, "Sam owns this, so I asked Sam.", STATES.running), mk(815, "Weekly metrics digest looks off", 40, "Which week should I compare against?"), mk(799, "Draft a reply to the hiring agency", 1500, "Sent.")], "reviewer-manager": [mk(830, "Also review PRs on aidenhq-distro", 6, "Done. aidenhq-distro is now reviewed like your other repos."), mk(831, "Why did #812 take 3 rounds?", 30, "Two findings were real, one was mine to fix.")] };
+  // Settled lists have a next page (offset 100: one older chat each), so "Show older" is exercised.
+  if (state === "settled" && offset >= 100) return { chats: offset === 100 ? [mk(700 + offset / 100, "Rotate the review key", 9000, "Rotated.")] : [], agents: [{ key, name: a.name }], more: false, next_offset: offset + 1 };
+  return { chats: rows[key] ?? [], agents: [{ key, name: a.name }], more: state === "settled", next_offset: 100 };
+};
+
 function route(method: string, url: URL): [number, unknown] {
   const one = /^\/api\/approvals\/(k-[0-9a-f]{16})$/.exec(url.pathname)?.[1];
   if (one && method === "GET") { const a = approvals().find((x) => x.id === one); return a ? [200, { approval: a }] : [404, { error: "no such card" }]; }
@@ -533,6 +612,9 @@ function route(method: string, url: URL): [number, unknown] {
   if (method === "POST" && /^\/api\/issues\/[^/]+\/answer$/.test(p)) return p.split("/")[3] === "WOR-821" ? [409, { error: "Already answered, or the question changed." }] : [200, { identifier: p.split("/")[3], message: "m-1" }];
   const opened = method === "POST" ? /^\/api\/sessions\/(id-93\d)\/open$/.exec(p) : null;
   if (opened) { const tok = `${"mock".repeat(6)}.${"sig".repeat(15)}`; return [200, { term: `/sessions/${opened[1]}/${tok}/term/` }]; }
+  if (method === "POST" && p === "/api/home/seen") return [200, { seen: lastBody.as_of }];
+  if (method === "POST" && p === "/api/home/snooze") { if (lastBody.on) homeMock.snoozed.add(lastBody.id); else homeMock.snoozed.delete(lastBody.id); return [200, lastBody.on ? { until: TOMORROW_8 } : {}]; }
+  if (method === "POST" && p === "/api/chats") { const to = /^@(\w+)/.exec(String(lastBody.text ?? ""))?.[1]?.toLowerCase(); const mate = lastBody.agent === "reviewer-manager" || (to && roster.find((r) => r.teammate && r.name.toLowerCase() === to)); return [200, { identifier: mate ? "WOR-830" : "WOR-820" }]; }
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   if (p.startsWith("/api/models/")) return [200, { default: "openrouter/~deepseek/deepseek-flash-latest", models: ["openrouter/~deepseek/deepseek-flash-latest", "openrouter/~openai/gpt-luna-latest", "openrouter/z-ai/glm-5.3"], efforts: ["low", "medium", "high"] }];
   const m = (re: RegExp) => re.exec(p);
@@ -545,7 +627,8 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/welcome": return [200, welcome()];
     case "/api/organisations": return [200, mock.slack === "org" ? { organisations: [{ id: "acme", name: "Acme", domains: ["acme.example"], connections: ["slack"] }], suggested: "acme", chosen: "acme", applied: { slack: "acme" } } : mock.org ? { organisations: [{ id: "example", name: "Example Inc", domains: ["example.com"], connections: ["google", "github"] }], suggested: mock.email.endsWith("@example.com") ? "example" : null, chosen: null, applied: {} } : { organisations: [], suggested: null, chosen: null, applied: {} }];
     case "/api/setup-flows": return [200, flows()];
-    case "/api/chats": return [200, { chats: chatRows(), agents: [{ key: "aiden", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
+    case "/api/home": return [200, homeData()];
+    case "/api/chats": if (url.searchParams.get("agent")) { const r = agentChats(url.searchParams.get("agent")!, url.searchParams.get("state") ?? "active", Number(url.searchParams.get("offset")) || 0); return r ? [200, r] : [404, { error: "no such agent" }]; } return [200, { chats: chatRows(), agents: [{ key: "chief-of-staff", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];
     case "/api/needs-you": return [200, mock.empty ? { counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, approvals: 0, items: [] } : { counts: { needs_you: 6, failed: 1, unexplained_idle: 3 }, approvals: 2, items: [
       { identifier: "WOR-801", title: "Chase Jonas for the signed contract", agent: "Tess", state: named("WOR-801", ASK), ask: { question: "Send this chaser to Jonas?", detail: "Hi Jonas, a quick nudge on the signed contract from last week. Could you send it over by Friday? Thanks!", waitSince: ago(120), questions: [{ question: "Send this chaser to Jonas?", options: ["Send", "Not now"] }] } },
@@ -572,7 +655,6 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/settings/connections": return [200, connections()];
     case "/api/accounts": return [200, { accounts: [{ id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true, twoFactorEnabled: true, disabled: false, lockedUntil: null, createdAt: ago(40000) }], me: "u1" }];
     case "/api/accounts/sessions": return [200, { sessions: [{ id: "s1", userAgent: "Safari on macOS", ipAddress: "192.0.2.10", createdAt: ago(2000), updatedAt: ago(1), current: true }] }];
-    case "/api/settled": return [200, { settled: [] }];
     case "/api/costs/features": return [200, { features: [], unattributed: { usd: 0, calls: 0 } }];
   }
   let x: RegExpExecArray | null;
@@ -643,6 +725,7 @@ createServer((req, res) => {
     if (url.searchParams.has("email")) mock.email = url.searchParams.get("email") ?? mock.email;
     if (url.searchParams.has("slow")) mock.slow = Number(url.searchParams.get("slow"));
     if (url.searchParams.has("search")) mock.search = url.searchParams.get("search") ?? "ok";
+    if (url.searchParams.has("nocal")) homeMock.nocal = url.searchParams.get("nocal") === "1";
     if (url.searchParams.has("slack")) mock.slack = url.searchParams.get("slack") ?? "none";
     return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(mock));
   }
@@ -669,6 +752,7 @@ createServer((req, res) => {
   let text = "";
   req.on("data", (c) => (text += c));
   req.on("end", () => {
+    lastBody = text ? JSON.parse(text) : {};
     const [status, body] = pageRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? viewRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? route(req.method!, url);
     setTimeout(() => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)), url.pathname === "/api/sessions" ? mock.slowSessions || mock.slow : mock.slow);
   });

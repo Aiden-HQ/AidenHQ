@@ -25,8 +25,8 @@ export type Conflict = { view: SavedView; current: SavedView | null };
 
 /**
  * The page's spec and its saved boards. `ready`: the session is confirmed (tabs render only then); `routed`: the board the
- * address names, followed once the boards have loaded: an id (#/board?view=<id>; an unknown one falls back to All tasks), null
- * for #/board (All tasks), undefined for any other address (the selection stays, e.g. while a task's drawer is open).
+ * address names, followed once the boards have loaded: an id (#/tasks?view=<id>; an unknown one falls back to All tasks), null
+ * for #/tasks (All tasks), undefined for any other address (the selection stays, e.g. while a task's drawer is open).
  */
 export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; routed: string | null | undefined; toast: (t: string) => void; go: (hash: string) => void }) {
   const [layout, setLayoutState] = useState<Layout>(savedLayout);
@@ -58,7 +58,7 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
       if (layout) try { localStorage.setItem(LAYOUT_KEY, layout); } catch {}
       setFilters({}), setGroupBy("none"), setLayoutState(layout ?? savedLayout());
     }
-    go(v ? `#/board?view=${v.id}` : "#/board");
+    go(v ? `#/tasks?view=${v.id}` : "#/tasks");
   }, [views, apply, go]);
   // The address names a board (a link, Back and Forward): show it once the boards are known.
   useEffect(() => {
@@ -84,7 +84,7 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
       setViews((vs) => [...(vs ?? []), v]);
       setConflict(null);
       setSelected(v.id);
-      go(`#/board?view=${v.id}`);
+      go(`#/tasks?view=${v.id}`);
       toast(`Saved “${v.name}”`);
     } catch (e) {
       toast(`Couldn't save the board: ${(e as Error).message}`);

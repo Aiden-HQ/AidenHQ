@@ -1,5 +1,5 @@
-// An agent's page (#/agents/<key>/<tab>): who it is and what it is doing, what waits on you, its tasks (each opens its
-// thread), its week, what it did run by run (Activity), its general chats and its settings. Reads: agent-page.ts; writes: the settings editor's (SettingsAgents AgentDetails).
+// An agent's page (#/team/agents/<key>/<tab>): who it is and what it is doing, what waits on you, its tasks (each opens its
+// thread), its week, what it did run by run (Activity), its handbook and its settings. A teammate's chats are on its own page. Reads: agent-page.ts; writes: the settings editor's (SettingsAgents AgentDetails).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentActivity } from "./AgentActivity";
 import { SignInRequired, api } from "./api";
@@ -24,8 +24,8 @@ import "./settings.css";
 import "./agent-page.css";
 import { Face, Tabs, faceProps } from "./ui";
 
-export type AgentTab = "overview" | "activity" | "chats" | "handbook" | "settings";
-const TABS: [AgentTab, string][] = [["overview", "Overview"], ["activity", "Activity"], ["chats", "Chats"], ["handbook", "Handbook"], ["settings", "Settings"]];
+export type AgentTab = "overview" | "activity" | "handbook" | "settings";
+const TABS: [AgentTab, string][] = [["overview", "Overview"], ["activity", "Activity"], ["handbook", "Handbook"], ["settings", "Settings"]];
 
 /** When the agent last finished a task (the newest done task), for the idle status line. */
 const lastDoneQuery = (key: string) => ({ key: `agents.${key}.last-done`, fetch: () => api.agentHistory(key, { status: "done" }).then((r) => r.rows.reduce<string | null>((a, x) => (!a || x.updatedAt > a ? x.updatedAt : a), null)), persist: false as const });
@@ -40,7 +40,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
     if (profileQ.error)
       return (
         <main className="page wide agp">
-          <EmptyState action={<a className="btn" href="#/agents">Back to Agents</a>}>{/no such agent/.test(profileQ.error) ? `No agent called ${agentKey}.` : `Couldn't load this agent: ${profileQ.error}`}</EmptyState>
+          <EmptyState action={<a className="btn" href="#/team/agents">Back to All agents</a>}>{/no such agent/.test(profileQ.error) ? `No agent called ${agentKey}.` : `Couldn't load this agent: ${profileQ.error}`}</EmptyState>
         </main>
       );
     return <main className="page wide agp" aria-busy="true"><SkeletonLines lines={6} /></main>;
@@ -63,8 +63,9 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
       <span className="agp-ctx">{ongoing.length ? `${ongoing.length} open task${ongoing.length === 1 ? "" : "s"} waiting to start` : lastDone ? `last finished a task ${agoLabel(lastDone)}` : ""}</span>
     </>
   );
-  const chat = `#/c/?to=${encodeURIComponent(profile.id)}`;
-  const task = <a className="btn primary" href={chat}>Give it a task</a>;
+  // Only a teammate takes chats and tasks from the owner (on its own page); a hidden agent works through its teammate.
+  const mate = profile.teammate ? `#/team/${agentKey}` : null;
+  const task = mate ? <a className="btn primary" href={mate}>Give it a task</a> : null;
   const pause = async (body: { paused: boolean; stop?: boolean }) => {
     try {
       await api.pauseAgent(agentKey, body);
@@ -80,21 +81,21 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
   return (
     <main className={`page wide agp ${hueClass(profile.name)}`}>
       <PageHeader
-        crumb={<><a href="#/agents">Agents</a> / {profile.name}</>}
+        crumb={<><a href="#/team/agents">All agents</a> / {profile.name}</>}
         face={<Face seed={profile.key} {...faceProps(profile.teammate?.face)} state={profile.state === "working" || profile.state === "queued" ? "working" : "idle"} size={56} label={profile.name} />}
         title={profile.name}
         status={status}
         sub={profile.title}
         actions={
           <>
-            <a className="btn" href={chat}>Chat</a>
+            {mate && <a className="btn" href={mate}>Chat</a>}
             {task}
             <Menu label={`More for ${profile.name}`} items={[paused ? { label: `Resume ${profile.name}`, onSelect: () => void pause({ paused: false }) } : { label: `Pause ${profile.name}`, onSelect: () => void pause({ paused: true }) }, ...(paused ? [] : [{ label: `Pause and stop ${profile.name} now`, onSelect: () => void pause({ paused: true, stop: true }) }])]} />
           </>
         }
       />
       {note && <p className="agp-note" role="status">{note}</p>}
-      <Tabs label={`${profile.name} sections`} tabs={TABS} value={tab} href={(t) => `#/agents/${agentKey}${t === "overview" ? "" : `/${t}`}`} />
+      <Tabs label={`${profile.name} sections`} tabs={TABS} value={tab} href={(t) => `#/team/agents/${agentKey}${t === "overview" ? "" : `/${t}`}`} />
       {tab === "overview" && (
         <div className="agp-grid">
           <div className="agp-main">
@@ -106,7 +107,6 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
         </div>
       )}
       {tab === "activity" && <AgentActivity agentKey={agentKey} onSignIn={onSignIn} />}
-      {tab === "chats" && <ChatsTab profile={profile} onSignIn={onSignIn} />}
       {tab === "handbook" && <AgentHandbook agentKey={agentKey} onSignIn={onSignIn} />}
       {tab === "settings" && <AgentSettings agentKey={agentKey} profile={profile} onSignIn={onSignIn} />}
     </main>
@@ -211,22 +211,3 @@ function Week({ id }: { id: string }) {
 }
 const usd = (n: number) => `$${n > 0 && n < 1 ? n.toFixed(3) : n.toFixed(2)}`;
 
-function ChatsTab({ profile, onSignIn }: { profile: AgentProfile; onSignIn: () => void }) {
-  const { data } = useQuery(QUERIES.chats, onSignIn);
-  // A chat's agent `key` is the Paperclip id; `from` marks work handed out of a chat, which is a task, not a chat.
-  const mine = (data?.chats ?? []).filter((c) => c.agent.key === profile.id && !c.from).sort((a, b) => Number(b.open) - Number(a.open));
-  const start = <a className="btn" href={`#/c/?to=${encodeURIComponent(profile.id)}`}>New chat</a>;
-  return (
-    <Section title="Chats" count={mine.length || undefined} aside={start}>
-      {!data ? (
-        <SkeletonLines lines={2} />
-      ) : !mine.length ? (
-        <EmptyState>No chats with {profile.name} yet.</EmptyState>
-      ) : (
-        <ListRows>
-          {mine.map((c) => <ListRow key={c.identifier} href={`#/c/${c.identifier}`} status={<TaskState state={c.state} />} title={c.title} id={c.identifier} time={ago(c.updatedAt)} timeTitle={new Date(c.updatedAt).toLocaleString()} />)}
-        </ListRows>
-      )}
-    </Section>
-  );
-}

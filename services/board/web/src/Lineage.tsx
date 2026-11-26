@@ -3,7 +3,7 @@
 // a question about a task, answered by a model, never posted on the task and never waking its agent.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
-import { ApprovalCard } from "./Chat";
+import { ApprovalCard } from "./ApprovalCard";
 import { AgentFace, CloseIcon } from "./components";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
@@ -62,7 +62,7 @@ export function DelegatedList({ lineage, go }: { lineage: Lineage | null; go: (h
   if (!rows.length) return null;
   const row = (r: LineageRow, grand: boolean) => (
     <li key={r.identifier}>
-      <a className={`handed-row${grand ? " lin-sub" : ""}`} href={`#/c/${r.identifier}`} title={`${r.agent}: ${r.title}`} onClick={(e) => (e.preventDefault(), go(`#/c/${r.identifier}`))}>
+      <a className={`handed-row${grand ? " lin-sub" : ""}`} href={`#/t/${r.identifier}`} title={`${r.agent}: ${r.title}`} onClick={(e) => (e.preventDefault(), go(`#/t/${r.identifier}`))}>
         <span className="handed-title">{r.title}</span>
         <span className="handed-agent">
           {r.agent} · {took(r)}

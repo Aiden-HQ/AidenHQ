@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { AppAdmins } from "./api";
+import { openAsk } from "./AskAiden";
 import { QUERIES, useQuery } from "./queries";
 import { Updating } from "./Skeleton";
 import type { AppRow } from "./types";
@@ -78,7 +79,7 @@ export function AppsView({ app, onSignIn }: { app?: string; onSignIn: () => void
       {!data ? (
         !error && <TileGrid>{[0, 1, 2].map((i) => <div key={i} className="apps-skeleton" aria-hidden />)}</TileGrid>
       ) : !apps.length ? (
-        !data.error && <EmptyState action={<LinkButton variant="primary" href="#/c/">Ask in Chat</LinkButton>}>No apps yet. Ask the Architect for one in Chat; it shows here once it is deployed.</EmptyState>
+        !data.error && <EmptyState action={<Button variant="primary" onClick={() => openAsk({ chat: "" })}>Ask Aiden</Button>}>No apps yet. Ask Aiden for one; it shows here once it is deployed.</EmptyState>
       ) : (
         <TileGrid>
           {apps.map((a) => <AppTile key={a.name} a={a} admins={admins(a.name)} />)}

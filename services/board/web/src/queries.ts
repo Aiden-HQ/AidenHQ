@@ -4,14 +4,16 @@ import { accountsApi, api } from "./api";
 import { adoptStoredAccount, load, prefetch, useCached, type Persist } from "./cache";
 import { chatListForDevice } from "./conversation";
 
-/** The URL hash without its `#/`, percent-decoded; a malformed escape stays raw. */
+/** The address after `#/`: its path decoded, its query (after the first `?`) left encoded for URLSearchParams to read (an encoded `&` or `?` in a value stays in it); a malformed escape stays raw. */
 export function hashPath(): string {
   const raw = location.hash.replace(/^#\/?/, "");
+  const q = raw.indexOf("?");
+  const path = q < 0 ? raw : raw.slice(0, q);
+  let decoded = path;
   try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
+    decoded = decodeURIComponent(path);
+  } catch {}
+  return q < 0 ? decoded : `${decoded}${raw.slice(q)}`;
 }
 
 export interface Query<T> {
@@ -22,7 +24,13 @@ export interface Query<T> {
 }
 const q = <T,>(key: string, fetch: () => Promise<T>, persist: Persist = true): Query<T> => ({ key, fetch, persist });
 
+/** Home's since window for this visit (its first response's `since_from`): refetches during the visit keep it, so the
+ * block never empties while the owner reads it. Home sets it and clears it on leaving; the badge's polls send none. */
+export const homeFrom = { value: undefined as string | undefined };
+
 export const QUERIES = {
+  // The one Home entry: Home, the top bar's badge and the notifications read it (one event, one server build). Memory only.
+  home: q("home", () => api.home(homeFrom.value), false),
   roster: q("agents.roster", api.roster),
   agents: q("agents", api.agents),
   apps: q("apps", api.apps),
@@ -38,8 +46,11 @@ export const QUERIES = {
   // The chat list is kept on the device without any message text (titles, states, times, unread), so a reload paints it
   // at once; the preview of the last message and the failure reason come only from the network. Chats stay memory only.
   lane: q("lane", api.lane, false),
-  chats: q("chats", api.chats, chatListForDevice),
+  chats: q("chats", () => api.chats(), chatListForDevice),
 };
+
+/** One agent's chats (its teammate page, Ask Aiden): the active ones, or the settled ones. */
+export const agentChatsQuery = (key: string, state: "active" | "settled" = "active") => q(`chats.${key}.${state}`, () => api.chats(key, { state }), chatListForDevice);
 
 export const scorecardQuery = (id: string) => q(`agents.${id}.scorecard`, () => api.scorecard(id));
 export const agentProfileQuery = (key: string) => q(`agents.${key}.profile`, () => api.agentProfile(key).then((r) => r.profile));
@@ -59,12 +70,13 @@ export const useQuery = <T,>(query: Query<T>, onSignIn?: () => void) => useCache
 
 /** What each tab reads first, warmed when the tab is hovered or focused. */
 const VIEW_QUERIES: Record<string, Query<unknown>[]> = {
-  chat: [QUERIES.chats],
+  home: [QUERIES.home],
+  team: [QUERIES.roster],
   agents: [QUERIES.roster, QUERIES.agents],
   apps: [QUERIES.apps],
   modules: [QUERIES.modules],
   sessions: [QUERIES.sessions],
-  approvals: [QUERIES.approvals, QUERIES.needsYou],
+  decisions: [QUERIES.approvals],
 };
 
 /** Pages split off the first download (App.tsx loads them lazily); a hover, or an idle moment after boot, fetches them. */
@@ -80,6 +92,9 @@ export const VIEW_CHUNKS = {
   moduleView: () => import("./ModuleView"),
   run: () => import("./Run"),
   design: () => import("./Design"),
+  team: () => import("./Team"),
+  teammate: () => import("./Teammate"),
+  decisions: () => import("./Decisions"),
 };
 
 export function prefetchView(view: string) {
@@ -90,13 +105,7 @@ export function prefetchView(view: string) {
 /** The page this device opens on is Tasks (or a task over it): the only one that needs the board's inventory at once. */
 export function landsOnBoard(): boolean {
   const h = hashPath();
-  if (h === "board" || h.startsWith("board?") || h.startsWith("t/")) return true;
-  if (h) return false;
-  try {
-    return localStorage.getItem("aidenhq.view") === "board";
-  } catch {
-    return false;
-  }
+  return h === "tasks" || h.startsWith("tasks?") || h.startsWith("t/");
 }
 
 /**
@@ -109,13 +118,7 @@ export function preloadBoot() {
   quiet(load("session", api.session, false));
   if (landsOnBoard()) quiet(load("board", api.board));
   const h = hashPath();
-  let view = "chat";
-  try {
-    view = localStorage.getItem("aidenhq.view") ?? "chat";
-  } catch {}
-  if (h === "c" || h.startsWith("c/") || (!h && view === "chat")) quiet(load(QUERIES.chats.key, QUERIES.chats.fetch, QUERIES.chats.persist));
-  const ref = h.startsWith("c/") ? h.slice(2).split("?")[0] : "";
-  if (ref) quiet(load(chatQuery(ref).key, chatQuery(ref).fetch, false));
+  if (!h || h.startsWith("approvals/")) quiet(load(QUERIES.home.key, QUERIES.home.fetch, false));
   // The other pages' code once the first screen is up, so a tab never waits on a download.
   const idle = globalThis.requestIdleCallback ?? ((f: () => void) => setTimeout(f, 2_000));
   setTimeout(() => idle(() => Object.values(VIEW_CHUNKS).forEach((f) => void f().catch(() => {}))), 3_000);

@@ -54,7 +54,9 @@ import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
-import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, foldOutcomeLines, lastWord, pickAgent, type Message, type Question } from "./chats.js";
+import { grantsKeyOf, isTeammate, teammateFor, teammateKeys } from "./teammates.js";
+import { buildHome, nextEight, type HomeDeps } from "./home.js";
+import { NOTICE_MARKER, askedQuestions, boundQuestions, chatAgent, chatAgentMarker, conversation, foldOutcomeLines, lastWord, pickAgent, type Message, type Question } from "./chats.js";
 import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
 import type { StateRow } from "./aidenhq-sdk/task-state-types.js";
 import { addDays, nextWorkday, type Weekday } from "./dates.js";
@@ -626,6 +628,19 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     }
   };
   const served = <T extends object>(page: string, load: () => Promise<T>, waitMs?: number) => swr.serve(`${page}:${viewer()}`, load, waitMs);
+  /** What Home is built from (home.ts): the board's own reads and helpers. */
+  const homeCache: HomeDeps["cache"] = {};
+  const homeDeps = async (): Promise<HomeDeps> => {
+    const names = await bylines();
+    return {
+      pc, taskStates, records, views: opts.views, store, log, cache: homeCache,
+      compiled: () => readSources(settingsFiles()).compiled,
+      roster: async () => { const [agents, routines, act] = await Promise.all([pc.agents(), pc.routines().catch(() => []), kernelActivity()]); return roster(agents, routines, new Map(), act); },
+      shownRows: (rows) => shownRows(rows),
+      named,
+      shownApproval: (a) => shownApproval(names, a),
+    };
+  };
   const savedViews = (): View[] => store.views(viewer()).map((r) => ({ ...r, spec: ViewSpecSchema.parse(JSON.parse(r.spec)) }));
   const viewConflict = (id: string) => new ViewConflict(savedViews().find((x) => x.id === id) ?? null);
 
@@ -813,6 +828,20 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     return messages;
   }
 
+  /** Unassigned chats' agents from their whole description (the marker at its end never changes), by chat id. */
+  const markers = new Map<string, string | undefined>();
+  /** A listed chat's agent: lists truncate descriptions, so an unassigned chat whose marker was cut is read whole, once. */
+  async function chatAgentOf(i: Issue): Promise<string | undefined> {
+    if (i.assigneeAgentId || !i.descriptionTruncated) return chatAgent(i);
+    // A row gone since the list was read (deleted) has no agent here; the next list leaves it out.
+    if (!markers.has(i.id)) {
+      const whole = await pc.issue(i.id).catch(() => undefined);
+      if (!whole) return undefined;
+      markers.set(i.id, chatAgent(whole));
+    }
+    return markers.get(i.id);
+  }
+
   /**
    * One chat, as the conversation view shows it: messages, the live run, files, approvals, and the work handed out from it.
    * `peek` (a prefetch from a hovered row) leaves it unread.
@@ -891,6 +920,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       open: !["done", "cancelled"].includes(issue.status),
       agent: agent ? { key: agent.id, name: agent.name } : { key: "", name: "You" },
       state: states.get(issue.id) ?? null,
+      // Settled as the chat lists show it (GET /api/chats): until something happens on it, or work handed out from it runs again.
+      settled: stillSettled(store.settledAt().get(issue.id), issue, states.get(issue.id)) && !kids.some((k) => isActive(states.get(k.id))),
       // The owner's side of the chat: an admin other than the owner wrote it gets their name on it (the opening is the task's).
       messages: messages.map((m) => (m.kind === "owner" ? { ...m, ...byOf(names, m.id === `${issue.id}:opening` ? issue.id : m.id) } : m)),
       working: liveWork,
@@ -908,6 +939,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    * the wait's), with the options of the agent's newest reply that offered some. Only work the chat's own agent or the owner put
    * under it counts: another agent can't hang a task under his chat to collect his words.
    */
+  /** The compiled teammates by key, and whether an agent is one (by its grants-table key, never metadata). */
+  const teammates = () => {
+    const keys = teammateKeys(readSources(settingsFiles()).compiled);
+    return { keys, is: (a: { id: string }) => isTeammate(a, keys) };
+  };
   /**
    * A new chat with the agent named (an id, setup key or name) or the best fit for the text, else Aiden. It is the board's own
    * task (the owner's key, no agent made it), so the owner counts as writing there. `owned`: the text is the owner's own typing
@@ -915,9 +951,18 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    */
   async function startChat(text: string, agentRef: string | undefined, req: IncomingMessage | undefined, owned: boolean) {
     const ctx = await context();
-    const crew = ctx.agents;
-    const named = agentRef ? crew.find((a) => a.id === agentRef) ?? crew.find((a) => a.metadata?.setupKey === `aidenhq:${agentRef}` || a.name.toLowerCase() === agentRef.toLowerCase()) : undefined;
-    const { agent, note } = named && !agentPaused(named) ? { agent: named, note: undefined } : pickAgent(text, crew);
+    // Only a teammate takes a chat; hidden agents work through their teammate (teammates.ts).
+    const { keys, is } = teammates();
+    const crew = ctx.agents.filter(is);
+    const named = agentRef ? ctx.agents.find((a) => a.id === agentRef) ?? ctx.agents.find((a) => a.metadata?.setupKey === `aidenhq:${agentRef}` || a.name.toLowerCase() === agentRef.toLowerCase()) : undefined;
+    if (named && !is(named)) {
+      const front = agentIdByKey(teammateFor(grantsKeyOf(named.id) ?? "", keys));
+      const name = ctx.agents.find((a) => a.id === front)?.name ?? "Aiden";
+      throw new HttpError(400, `${named.name} works behind ${name}; ask ${name} instead`);
+    }
+    // A paused teammate named outright is refused, never quietly sent to someone else.
+    if (named && agentPaused(named)) throw new HttpError(409, `${named.name} is paused; resume ${named.name} to chat`);
+    const { agent, note } = named ? { agent: named, note: undefined } : pickAgent(text, crew);
     // A fast-lane agent answers in the lane, not in a task: the board opens its lane chat (`lane:<key>`).
     const lane = (await laneAgents(pc, opts.lane)).find((l) => l.id === agent.id);
     if (lane) {
@@ -959,9 +1004,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   }
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
-  /** The structured choices only when every question is the one the open wait recorded (a later question can't borrow an older wait); else typed input. */
-  const boundQuestions = (q: ReturnType<typeof askedQuestions>, wait: string): Question[] =>
-    q && q.questions.every((x) => wait.includes(x.question)) ? q.questions : [{ question: wait, options: [] }];
   async function asksOf(chat: Issue, kids: Issue[], states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>) {
     const asking = kids.filter((k) => k.assigneeAgentId && handedOutBy(chat, k, ctx.me) && waitsForAnswer(states.get(k.id)));
     return Promise.all(
@@ -1253,6 +1295,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const id = agentIdByKey(agent);
           const to = id ? ctx.agents.find((a) => a.id === id) : undefined;
           if (!to || to.id === cos.id) throw new Refused("refused: agent must be another agent's key");
+          if (!teammates().is(to)) throw new Refused(`refused: ${agent} isn't a teammate; hidden agents work through their teammate`);
           if (agentPaused(to)) throw new Refused("refused: that agent is paused");
           if (store.meta(`relayed:${comment_id}`) || store.hasMetaPrefix(`relayed:${comment_id}:`)) throw new Refused("refused: that message was already passed on");
           store.setMeta(`relayed:${comment_id}`, new Date().toISOString());
@@ -1831,19 +1874,54 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     },
     { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, store, records, grading), m[1]!) },
     {
-      // Chats: open ones first, then the 20 newest finished ones; each with its agent and state.
+      // Chats: open ones first, then the 20 newest finished ones; each with its agent and state. With `agent` (a key), that
+      // agent's chats only (by the chat's own agent, handed-back ones included), no fleet-wide cap: `state=active` its open,
+      // unsettled chats; `state=settled` its settled and finished ones, newest first, a page of finished ones from `offset`.
       method: "GET",
       path: /^\/api\/chats$/,
-      handle: () => served("chats", async () => {
+      handle: (_m, _b, url) => {
+        const key = url.searchParams.get("agent");
+        const offset = Math.max(0, Math.floor(Number(url.searchParams.get("offset")) || 0));
+        const want = url.searchParams.get("state") === "settled" ? "settled" : "active";
+        return served(key ? `chats:${key}:${want}:${offset}` : "chats", async () => {
         const ctx = await context();
+        const id = key ? agentIdByKey(key) : undefined;
+        if (key && (!id || !ctx.agents.some((a) => a.id === id))) throw new HttpError(404, `no agent ${key}`);
+        // Each chat's agent; an unassigned one's is the marker at the end of its description (chatAgentOf reads it whole).
+        const agentIds = new Map<string, string | undefined>();
+        const resolve = (rows: Issue[]) => Promise.all(rows.map(async (i) => void agentIds.set(i.id, await chatAgentOf(i))));
+        const ours = (i: Issue) => !id || agentIds.get(i.id) === id;
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         // The open chats are among the open tasks (the snapshot, which also gives the work handed out from them); only the newest finished ones are read.
-        const [closed, openTasks] = await Promise.all([pc.labelled(label.id, "done,cancelled", "20"), pc.openIssues()]);
-        const finished = new Set(closed.map((i) => i.id));
-        const open = openTasks.filter((i) => isChat(i, ctx) && !finished.has(i.id));
+        // One agent's settled list reads whole pages of 100 from `offset` until it holds 25 of that agent's chats or a page
+        // comes back short, so other agents' newer chats never hide this one's older ones; `next_offset` is the raw offset after.
+        const readFinished = async () => {
+          if (!key || want === "active") {
+            const p = await pc.labelled(label.id, "done,cancelled", key ? "100" : "20", offset);
+            await resolve(p);
+            return p;
+          }
+          const rows: Issue[] = [];
+          for (let at = offset, full = true; full && rows.filter(ours).length < 25; ) {
+            const p = await pc.labelled(label.id, "done,cancelled", "100", at);
+            await resolve(p);
+            rows.push(...p);
+            at += p.length;
+            full = p.length === 100;
+          }
+          return rows;
+        };
+        const [finishedPage, openTasks] = await Promise.all([readFinished(), pc.openIssues()]);
+        const finished = new Set(finishedPage.map((i) => i.id));
+        const closed = finishedPage.filter(ours);
+        // A later page of one agent's chats is finished ones only: its open chats are on the first.
+        const openChats = offset ? [] : openTasks.filter((i) => isChat(i, ctx) && !finished.has(i.id));
+        await resolve(openChats);
+        const open = openChats.filter(ours);
         const newest = (a: Issue, b: Issue) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt);
-        const all = [...open.sort(newest), ...closed.sort(newest)];
-        // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent.
+        const all = [...open.sort(newest), ...(key && want === "active" ? [] : closed.sort(newest))];
+        // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent (the fleet-wide list
+        // only), and read for every list, since it running again brings a settled chat back.
         const chatIds = new Map(open.map((i) => [i.id, i.identifier]));
         const kids = chatIds.size ? openTasks.filter((i) => i.parentId && chatIds.has(i.parentId) && !all.some((c) => c.id === i.id)) : [];
         const states = await stateRows([...all, ...kids].map((i) => i.id));
@@ -1864,7 +1942,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const chats = await Promise.all(
           all.map(async (i) => {
             const messages = knownMessages(i) ?? [];
-            const r = row(i, agentOf(chatAgent(i)));
+            const r = row(i, agentOf(agentIds.get(i.id)));
             const said = lastWord(messages);
             // Settled: out of the active list until something happens on it (then it comes back on its own).
             const settled = stillSettled(settledAt.get(i.id), i, r.state);
@@ -1874,8 +1952,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           }),
         );
         const handedOut = kids.map((i) => ({ ...row(i, agentOf(i.assigneeAgentId)), from: chatIds.get(i.parentId!)!, unread: false }));
+        const { is } = teammates();
         const agents = ctx.agents
-          .filter((a) => !agentPaused(a))
+          .filter((a) => !agentPaused(a) && is(a))
           .map((a) => ({ key: a.id, name: a.name, front: a.metadata?.setupKey === "aidenhq:chief-of-staff" }));
         // A settled chat whose handed-out work runs or waits on the owner is active again.
         for (const c of chats) {
@@ -1883,8 +1962,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           delete (c as { settled?: boolean }).settled;
           store.unsettle(all.find((i) => i.identifier === c.identifier)!.id);
         }
+        if (key) {
+          const rows = chats.filter((c) => (want === "settled" ? c.settled || !c.open : c.open && !c.settled));
+          // The last page read was full when the rows read are a whole number of pages (every page but the last is full).
+          const more = want === "settled" && finishedPage.length > 0 && finishedPage.length % 100 === 0;
+          return { chats: rows, agents, more, next_offset: offset + finishedPage.length, ...(stillCold ? { stale: true as const } : {}) };
+        }
         return { chats: [...chats, ...handedOut], agents, ...(stillCold ? { stale: true as const } : {}) };
-      }),
+        });
+      },
     },
     {
       // Everything that needs someone, from the kernel (task-state.ts): each open task with attention, oldest first, and the
@@ -1917,6 +2003,43 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // approvals: the Tier 2 cards the owner decides in Approvals.
         return { counts, items, approvals: (await records.list("owner", { strict: true })).length };
       }),
+    },
+    // Home (home.ts): one snapshot per account; `from` pins the since window to the one this visit started with.
+    {
+      method: "GET",
+      path: /^\/api\/home$/,
+      handle: (_m, _b, url) => {
+        const from = url.searchParams.get("from") ?? undefined;
+        if (from !== undefined && Number.isNaN(Date.parse(from))) throw new HttpError(400, "from is an ISO time");
+        return served(`home:${from ?? ""}`, async () => buildHome(await homeDeps(), { accountId: viewer() }, from), 2_000);
+      },
+    },
+    {
+      // The account looked at Home up to `as_of`: the next visit's since window starts there (never moves back).
+      method: "POST",
+      path: /^\/api\/home\/seen$/,
+      handle: async (_m, body) => {
+        const { as_of } = parse(z.object({ as_of: z.string().datetime({ offset: true }) }).strict(), body);
+        const seen = store.markHomeSeen(viewer(), as_of);
+        swr.forget("home:");
+        store.events.emit("home");
+        return { seen };
+      },
+    },
+    {
+      // Not now: a needs row is hidden for this account until the next 08:00 in the board's timezone; `on: false` brings it back.
+      method: "POST",
+      path: /^\/api\/home\/snooze$/,
+      handle: async (_m, body) => {
+        // `id`: a row's snooze key (an answer row's is its task and wait, home.ts).
+        const { id, on } = parse(z.object({ id: z.string().min(1).max(120), on: z.boolean() }).strict(), body);
+        const until = nextEight(Date.now(), opts.timezone);
+        if (on) store.snooze(viewer(), id, until);
+        else store.unsnooze(viewer(), id);
+        swr.forget("home:");
+        store.events.emit("home");
+        return { until };
+      },
     },
     // Approvals: the cards, open ones first, then the newest decided ones with their outcome, and the newest Tier 0 runs (made
     // at once, shown after the fact; read apart so they never crowd the cards out). A card is decided by its own
@@ -1956,13 +2079,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       },
     },
     // The fast chat lane's agents and their chats (lane.ts): each agent's chat task.
-    { method: "GET", path: /^\/api\/lane$/, handle: async () => ({ agents: await laneAgents(pc, opts.lane) }) },
+    { method: "GET", path: /^\/api\/lane$/, handle: async () => { const { is } = teammates(); return { agents: (await laneAgents(pc, opts.lane)).filter(is) }; } },
     { method: "GET", path: /^\/api\/lane\/([^/]+)\/messages$/, handle: async (m, _b, url) => laneMessages(pc, opts.lane, dec(m[1]!), url.searchParams.get("after") ?? "") },
     {
       method: "POST",
       path: /^\/api\/lane\/([^/]+)\/messages$/,
       handle: async (m, body, _u, req) => {
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(8000) }).strict(), body);
+        if (!teammates().keys.has(dec(m[1]!))) throw new HttpError(400, `${dec(m[1]!)} isn't a teammate; hidden agents work through their teammate`);
         return { ok: true, message: await laneSend(pc, opts.lane, dec(m[1]!), text, await laneByline(req)) };
       },
     },
@@ -2276,7 +2400,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // @-mentions: the agents named, other than the one this chat is with, get the message on their part.
         const task = await userTaskOf(issue, ctx);
         const own = issue.id === task?.id ? ctx.assignees.find((a) => a.kind === "assistant")?.key : issue.assigneeAgentId;
-        const named = task ? mentionedAgents(text, ctx.assignees) : [];
+        // Only teammates are @-mentioned: a hidden agent's name is plain text.
+        const { is } = teammates();
+        // A message to a finished or handed-back chat goes back to the chat's agent (below): only a teammate takes chats.
+        const back = isChat(issue, ctx) && (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") ? chatAgent(issue) : undefined;
+        if (back && !is({ id: back })) throw new HttpError(409, `${ctx.agents.find((a) => a.id === back)?.name ?? "This agent"} isn't a teammate: hidden agents work through their teammate, so start a chat with that teammate instead`);
+        const named = task ? mentionedAgents(text, ctx.assignees.filter((a) => a.kind !== "me" && is({ id: a.key }))) : [];
         const others = named.filter((a) => a.key !== own);
         // Hidden markers are machine-only: the runner ignores comments that carry its marker.
         let posted;
@@ -2287,8 +2416,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // A message to a finished chat reopens it.
         // A chat keeps its agent: a message to a chat the agent handed back goes to that agent again.
         if (isChat(issue, ctx) && (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled")) {
-          const agentId = chatAgent(issue);
-          await pc.updateIssue(issue.id, { status: "todo", ...(agentId && !issue.assigneeAgentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) });
+          await pc.updateIssue(issue.id, { status: "todo", ...(back && !issue.assigneeAgentId ? { assigneeAgentId: back, assigneeUserId: null } : {}) });
         }
         const where = issue.id === task?.id ? "the team chat" : `${ctx.assignees.find((a) => a.key === issue.assigneeAgentId)?.name ?? "another agent"}'s chat`;
         const parts = [];
@@ -2392,8 +2520,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "GET", path: /^\/api\/issues\/([^/]+)\/lineage$/, handle: async (m) => lineage(dec(m[1]!)) },
     { method: "POST", path: /^\/api\/issues\/([^/]+)\/settle$/, handle: async (m, body) => settle(dec(m[1]!), body) },
     { method: "POST", path: /^\/api\/issues\/([^/]+)\/aside$/, maxBody: 100_000, handle: async (m, body) => aside(dec(m[1]!), body) },
-    // The Settled view: what the owner settled, searchable by identifier, title or agent.
-    { method: "GET", path: /^\/api\/settled$/, handle: async (_m, _b, url) => ({ settled: store.settledList((url.searchParams.get("q") ?? "").slice(0, 200)) }) },
     {
       method: "PUT",
       path: /^\/api\/buckets\/([a-z]+)$/,

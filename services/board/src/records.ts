@@ -122,7 +122,7 @@ export type Records = {
   live(): Promise<Approval[]>;
   /** Every page of a state (`live` is every state a record can still act in), for one task and optionally one kind: a card
    * moving between states mid-read is never missed, and it is never behind the page cap, however many records follow it. */
-  allOf(state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages?: number): Promise<Approval[]>;
+  allOf(state: "owner" | "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages?: number): Promise<Approval[]>;
   /** One record by its id, whatever its age (a card's own page): undefined when the kernel has no such record. */
   one(id: string): Promise<Approval | undefined>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
@@ -180,7 +180,7 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
    * Every page of a state, walked with `after`: a bounded read that must not lose a record behind the page cap. `live` is the
    * kernel's own read of every approved and claimed record, one query, so a card moving between the states mid-read is not missed.
    */
-  const allOf = async (state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages = PAGES_MAX): Promise<Approval[]> => {
+  const allOf = async (state: "owner" | "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages = PAGES_MAX): Promise<Approval[]> => {
     const out: Approval[] = [];
     const seen = new Set<string>();
     let after = "";

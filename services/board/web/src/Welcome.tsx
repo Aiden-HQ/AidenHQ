@@ -2,6 +2,7 @@
 // summary that ends in Aiden's welcome chat. It wraps the app (main.tsx), so every board route sits behind the model gate.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SignInRequired, admin, api, type SetupFlowView, type WelcomeState } from "./api";
+import { openAsk } from "./AskAiden";
 import { OrganisationPicker } from "./Organisation";
 import { Page } from "./settings-ui";
 import { SetupFlow, Steps } from "./SetupFlow";
@@ -90,7 +91,8 @@ function Wizard({ state, onFinished }: { state: WelcomeState & { orgs: boolean }
       const fresh = await api.setupFlows().then((r) => r.flows.filter((f) => state.wizard.includes(f.module)), () => flows);
       const r = await api.welcomeFinish(fresh.filter((f) => f.done).map((f) => f.module), fresh.filter((f) => !f.done).map((f) => f.module));
       onFinished();
-      go(r.identifier ? `#/c/${r.identifier}` : "#/");
+      go("#/");
+      if (r.identifier) openAsk({ chat: r.identifier });
     } catch (e) {
       finishing.current = false;
       setError(e instanceof SignInRequired ? "Sign in again to continue." : (e as Error).message);

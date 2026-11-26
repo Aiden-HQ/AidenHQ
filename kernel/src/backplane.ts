@@ -477,7 +477,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         case "GET /v1/jwks": return send(res, 200, asserter.jwks);
         case "POST /v1/wait": {
           // A module with role kernel.wake serving a kernel job's task_wait, task_handoff or notify call in flight: the job is
-          // read from its own token (never the assertion's or the body's say-so), and the wait is on that job's own task.
+          // read from its own token (never the assertion's or the body's say-so), and the wait is on that job's own task or, named
+          // in the body, another open task its agent holds (idle.ts checks it against the control plane).
           const w = await moduleOf(req);
           if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${w.module} may not record waits (role kernel.wake)`);
           if (!idle) throw fail(503, "unavailable", "waits are off");

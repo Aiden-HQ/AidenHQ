@@ -171,7 +171,7 @@ export function createAdmin(d: Deps) {
   }
   const doc = (title: string, body: string, s?: AdminSession | null, head = "") =>
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}<title>${esc(title)} · AidenHQ</title><style>${CSS}</style></head><body>` +
-    (s?.ready ? `<header><b>AidenHQ</b><a href="${esc(`${d.boardUrl?.() ?? ""}/#/approvals`)}">Approvals</a><a href="/owner/message">Message</a>${d.updates?.view().current ? `<a href="/updates">Updates</a>` : ""}<a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
+    (s?.ready ? `<header><b>AidenHQ</b><a href="${esc(`${d.boardUrl?.() ?? ""}/#/`)}">Home</a><a href="/owner/message">Message</a>${d.updates?.view().current ? `<a href="/updates">Updates</a>` : ""}<a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
     `<main>${body}</main></body></html>`;
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
@@ -474,7 +474,7 @@ export function createAdmin(d: Deps) {
         }
         // The board is the one approvals UI (its Approvals page and #/approvals/<id>, deciding through /v1/owner/decide): an
         // old link or bookmark to this listener's approvals goes there.
-        case "GET /": case "GET /approvals": return redirect(res, `${d.boardUrl?.() ?? ""}/#/approvals`);
+        case "GET /": case "GET /approvals": return redirect(res, `${d.boardUrl?.() ?? ""}/#/`);
         case "GET /approvals/:id": return redirect(res, `${d.boardUrl?.() ?? ""}/#/approvals/${id}`);
         case "GET /owner/message": return send(res, 200, doc("Message", form("/owner/message", `<label>Task (optional, e.g. WOR-12)<input name="task" maxlength="100" value="${esc(url.searchParams.get("task") ?? "")}"></label><label>Message<textarea name="text" rows="4" maxlength="8000" required></textarea></label><button class="b">Send</button>`, s)), d.frameOrigins());
         case "POST /owner/message": {
