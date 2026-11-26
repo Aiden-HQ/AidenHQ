@@ -409,6 +409,21 @@ test("a Tier 0 product merge fails at merge once its eligibility is lost: file t
   assert.match(outcomes[0].text, /eligibility lost at merge: file the merge again/);
 });
 
+test("a merge that meets code review's open findings at its head ends, so ship can ask for the fix", async (t) => {
+  const prs = { "acme/aidenhq": { head: HEAD, checks: "SUCCESS", names: ["build", "ci-required"] } };
+  const verdict = { v: { wait: "code review: classifying: the risk tier of deadbee isn't read yet", unblock: "it resumes by itself within a minute or two" } };
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, reviewGate: async () => verdict.v });
+  await merge("k-00000000000000a7", [{ repo: "acme/aidenhq", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual([github.merges(), outcomes.length], [[], 0], "a classifying head waits, it does not end");
+  verdict.v = { wait: "code review: 1 important finding open: look up paths literally (service.ts:200, id f1)", unblock: "fix and push, or record it with code_review_resolve", findings: "code review: 1 important finding open: look up paths literally (service.ts:200, id f1)", findingsKey: "abc123" };
+  await handle.stepMerges();
+  await settle();
+  assert.deepEqual(github.merges(), [], "never merged on findings");
+  assert.equal(outcomes[0]?.ok, false);
+  assert.match(outcomes[0].text, /open important findings|1 important finding open/);
+});
+
 test("a UI PR merges with no design review", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
   const tasks = [];
@@ -1463,7 +1478,7 @@ test("a merge waiting on its checks publishes why to the record", async () => {
 test("a code review wait posts its reason to the kernel once per distinct reason, never per poll, and keeps its no-time-limit wait", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
-  let verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "fix and push" }] } };
+  let verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "running", text: "the review is running", unblock: "it resumes by itself" }] } };
   const fetchFn = async () => new Response(JSON.stringify(verdict.body), { status: verdict.status });
   const waits = [];
   const clock = { t: Date.now() };
@@ -1476,7 +1491,7 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   await merges.step();
   await merges.step();
   await merges.step();
-  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3) (fix and push)"], "once per distinct reason, not per poll");
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: the review is running (it resumes by itself)"], "once per distinct reason, not per poll");
   assert.equal(merges.status("k-00000000000000h1").state, "running");
   // A week later the same reason: still no second post, and the gate's Infinity limit never stops the wait.
   clock.t += 7 * 24 * 3600_000;
@@ -1484,12 +1499,12 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   assert.equal(waits.length, 1);
   assert.equal(merges.status("k-00000000000000h1").state, "running");
   // A materially changed reason is posted once more.
-  verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "2 important findings open: t, u", unblock: "fix and push" }] } };
+  verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "classifying", text: "the risk tier of deadbee isn't read yet", unblock: "it resumes by itself within a minute or two" }] } };
   await merges.step();
   await merges.step();
   assert.deepEqual(waits.map((w) => w.reason), [
-    "code review: 1 important finding open: t (a.ts:3) (fix and push)",
-    "code review: 2 important findings open: t, u (fix and push)",
+    "code review: the review is running (it resumes by itself)",
+    "code review: the risk tier of deadbee isn't read yet (it resumes by itself within a minute or two)",
   ]);
   assert.equal(github.merges().length, 0, "never merged while the gate waits");
   verdict = { status: 200, body: { verdict: "pass", reasons: [] } };
@@ -1519,7 +1534,7 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" }, "acme-agents/other": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
   const asked = [];
-  let answer = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "fix and push" }] } };
+  let answer = { status: 200, body: { verdict: "wait", reasons: [{ code: "running", text: "the review is running", unblock: "it resumes by itself" }] } };
   const fetchFn = async (url, init) => {
     asked.push([String(url), init.headers.authorization]);
     if (answer === "down") throw new Error("connect ECONNREFUSED");
@@ -1538,8 +1553,8 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
   await merges.step();
   assert.deepEqual(asked, [[`http://code-review:8098/v1/verdict?repo=acme-agents%2Fwidget&pr=1&head=${HEAD}&base=main`, "Bearer github-module-token"]], "only the gated repo asks, with its live base branch");
   assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge"]);
-  assert.match(logs.find(([m]) => m === "merge waits for code review")[1].why, /1 important finding open: t \(a\.ts:3\) \(fix and push\)/);
-  clock.t += 7 * 24 * 3600_000; // a week of waiting on findings: still waiting
+  assert.match(logs.find(([m]) => m === "merge waits for code review")[1].why, /the review is running \(it resumes by itself\)/);
+  clock.t += 7 * 24 * 3600_000; // a week of waiting on the review: still waiting
   await merges.step();
   assert.equal(merges.status("k-00000000000000g1").state, "running");
   answer = "down"; // the service goes down: a wait for as long as it lasts, never a merge without its verdict

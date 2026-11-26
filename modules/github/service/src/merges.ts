@@ -403,6 +403,9 @@ export function createMerges(d: {
       // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
       const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       if (review && "wait" in review) {
+        // Open important findings at the bound head are the author's to fix, not a wait that can pass at this head: ending the
+        // record takes the live merge off ship's task, so its next round asks for the fix and wakes the fixer (rounds.ts fix_review).
+        if (review.findings) return fail(`code review has ${review.findings} at \`${p.head.slice(0, 12)}\`: the merge ends so ship asks for the fix; a fixer's next push files a new merge`);
         // Why this PR still waits: the record's own reason is built from every PR still waiting after the poll (publishWait), so
         // one PR leaving its wait never clears another's.
         // The card is read by the owner and agents: it carries how to unblock; ship's decision (merge-gate.ts) carries the wait alone.
