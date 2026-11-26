@@ -26,6 +26,10 @@ import type { Bug, Report } from "./types.ts";
 const WIDTH = 1512, HEIGHT = 900, WORKERS = 4, BUDGET_MS = 300_000, CHECK_MS = 45_000, LINK_KINDS = 60;
 const MISSING = "ui-review-missing"; // letters and hyphens: what route params usually accept
 const DEAD = "clicking it changes nothing, even on a second click after a fresh load: same address, same page, same focus, nothing opens, no request";
+// A link whose URL changes while the page stays, and whose target opened afresh is that same page: an alias of this page, or a
+// route the app doesn't know and falls back from. Both read the same to the check, so it is one to look at, never blocking.
+const SAME = "clicking it changes the URL but the same page shows, also when the new URL is opened afresh: an alias of this page, or a route the app doesn't know";
+const LOOK = new Set([DEAD, SAME]);
 
 type View = { route: string; status: number; blank: boolean; text: string; all: string }; // text: the main region's (else the page's); all: the page's
 type Snap = { origin: string; route: string; scrollY: number; focus: string; html: string; live: string; reqs: number };
@@ -295,8 +299,8 @@ export async function routesCommand(argv: string[]): Promise<number> {
       if (fresh.status >= 400) c.problems.push(`a reload of ${clicked.route} answers ${fresh.status}`);
       else if (fresh.blank || isNotFound(fresh.text)) c.problems.push(`a reload of ${clicked.route} shows ${fresh.blank ? "an empty page" : "the app's own not-found view"}`);
       else if (!stays && alike(fresh.all, clicked.all) < 0.8) c.problems.push(`a reload of ${clicked.route} shows a different page than the click did`);
-      // The click left the page as it was: a broken route, unless the target opened afresh is that same page (an alias).
-      if (stays && alike(fresh.all, start.all) < 0.8) c.problems.push(`clicking it changes the URL to ${clicked.route} but the page stays the same`);
+      // The click left the page as it was: a broken route when the target opened afresh is another page; else an alias or an unknown route.
+      if (stays) c.problems.push(alike(fresh.all, start.all) < 0.8 ? `clicking it changes the URL to ${clicked.route} but the page stays the same` : SAME);
     });
     await fingerprint();
     // Links first (the navigation bugs), then brands and controls in page order; the budget cuts what is left.
@@ -319,7 +323,8 @@ export async function routesCommand(argv: string[]): Promise<number> {
   } finally { await b.close(); }
 
   // One finding per page and problem, naming every link or control that shows it (seven nav links with the same broken
-  // Back are one bug). A click that changed nothing is a generic heuristic, so it is a review candidate, never blocking.
+  // Back are one bug). A click that changed nothing and a link that shows the same page are generic heuristics: candidates
+  // to look at, never blocking.
   type Hit = { from: string; what: string[]; problem: string };
   const hits = new Map<string, Hit>();
   for (const c of checks) for (const p of c.problems) {
@@ -327,7 +332,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
     if (h) h.what.push(c.what); else hits.set(`${c.from}\n${p}`, { from: c.from, what: [c.what], problem: p });
   }
   const text = (h: Hit) => `${h.from} ${h.what.join(", ")}: ${h.problem}`;
-  const found = [...hits.values()].filter((h) => h.problem !== DEAD), candidates = [...hits.values()].filter((h) => h.problem === DEAD).map(text);
+  const found = [...hits.values()].filter((h) => !LOOK.has(h.problem)), candidates = [...hits.values()].filter((h) => LOOK.has(h.problem)).map(text);
   const { introduced, preexisting } = splitPreexisting(found.map(text), v.baseline ? readReport(v.baseline)?.blocking : undefined);
   const bugs: Bug[] = found.filter((h) => introduced.includes(text(h))).map((h): Bug => ({ page: h.from, width: WIDTH, theme: "light", title: `${h.what.join(", ")}: ${h.problem.split(":")[0]}`, evidence: h.problem, captures: [], verified: true, repro: [`open ${h.from}`, `click ${h.what[0]}`] }));
   const done = checks.filter((c) => !c.skipped).length;
@@ -337,7 +342,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
   const md = [`# Route check of ${base}`, "", `${checks.length} checks at ${WIDTH}px light, ${Math.round((Date.now() - t0) / 1000)} s`, "",
     introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found", "", ...introduced.map((x) => `- ${x}`), "",
     ...(preexisting.length ? [`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((x) => `- ${x}`), ""] : []),
-    ...(candidates.length ? [`## To look at (${candidates.length}): not blocking`, "", "Controls a click didn't visibly change anything with; some do act (a copy, a download, a dialog the check can't see). Look before filing:", "", ...candidates.map((x) => `- ${x}`), ""] : []),
+    ...(candidates.length ? [`## To look at (${candidates.length}): not blocking`, "", "Controls a click didn't visibly change and links that show the same page; some do act (a copy, a download, a dialog the check can't see, an alias). Look before filing:", "", ...candidates.map((x) => `- ${x}`), ""] : []),
     ...(notes.length ? ["## Notes", "", ...notes.map((n) => `- ${n}`), ""] : []),
     "## Checks (brand, links with Back, Forward and reload, controls)", "", ...checks.map((c) => `- ${c.from} ${c.what}: ${c.skipped ?? (c.problems.join("; ") || (c.to ? "renders" : "acts"))}`), ""];
   writeFileSync(join(out, "report.md"), md.join("\n"));
