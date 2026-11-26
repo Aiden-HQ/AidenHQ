@@ -18,7 +18,7 @@ import { bound } from "./review.ts";
 import { toolEnv } from "./tools.ts";
 
 /** The spec ($AIDENHQ_SPEC) of the `code-review-ui-review` check (`ui`: the bundle's sha256; the file is at /aidenhq-out/ui). */
-export interface UiReviewSpec { repo?: string; head: string; base: string; run?: string; option: string; model: string; ui?: string }
+export interface UiReviewSpec { repo?: string; head: string; base: string; run?: string; option: string; model: string; effort?: string; ui?: string }
 /** The part of the engine's report.json (ui-review's types.ts `Report`, version 2) this recipe reads. */
 export interface UiReport {
   coverage?: { done: number; total: number; failed: number; deferred: number };
@@ -90,7 +90,7 @@ function sourceOf(change: string, page: string, root?: string) {
  * (the engine's queue); `routes`: the route check's report, whose blocking hits and verified bugs are findings too; `root`: the
  * checkout, to confirm a source file a change names (its existence only: read as data, never run).
  */
-export function toReview(report: UiReport, o: { model: string; repo?: string; head?: string; listed?: string[]; routes?: UiReport; root?: string }) {
+export function toReview(report: UiReport, o: { model: string; effort?: string; repo?: string; head?: string; listed?: string[]; routes?: UiReport; root?: string }) {
   // A page the model's review failed on or the spend cap skipped (the engine's notes say which) is not reviewed: a gap.
   const notes = Array.isArray(report.notes) ? report.notes.filter((n): n is string => typeof n === "string") : [];
   const unreviewed = new Set(notes.flatMap((n) => /^design review of (.+?) failed: /.exec(n)?.[1] ?? /^stopped at the --max-usd budget; not reviewed: (.+)$/.exec(n)?.[1]?.split(", ").filter((p) => !p.endsWith(" (motion)")) ?? []));
@@ -136,7 +136,7 @@ export function toReview(report: UiReport, o: { model: string; repo?: string; he
     ...(lostRules.some((f) => f.severity === "important") ? [`${lostRules.filter((f) => f.severity === "important").length} blocking findings left out to fit the result`] : []),
   ];
   const result = {
-    version: 1, ...(o.repo !== undefined ? { repo: o.repo } : {}), ...(o.head !== undefined ? { head: o.head, base: o.head } : {}), target: "tree", engine: "ui-review", model: o.model, effort: "low", pr: 0, incremental_from: null, full: true, addressed: false,
+    version: 1, ...(o.repo !== undefined ? { repo: o.repo } : {}), ...(o.head !== undefined ? { head: o.head, base: o.head } : {}), target: "tree", engine: "ui-review", model: o.model, effort: o.effort ?? "low", pr: 0, incremental_from: null, full: true, addressed: false,
     coverage: { reviewed: captured, excluded, incomplete: gaps.join("; ").slice(0, 500) || null, counts: { eligible: listed.length, reviewed: captured.length } },
     findings: [...ruleFindings, ...top], fixed: [] as string[],
     withheld: { important: 0, nit: improvements.length - top.length + lostRules.filter((f) => f.severity === "nit").length, pre_existing: 0 },
@@ -165,11 +165,11 @@ export async function review({ spec, ui, ws, env = process.env }: { spec: UiRevi
   if (captured.captures.some((c) => !Array.isArray(c.shots) || c.shots.some((s) => typeof s !== "string" || !SHOT.test(s)))) throw new Error("the capture's report names a shot that isn't a file of its bundle");
   // The engine gets the tool allowlist's environment and the run's model token, and works in the bundle's folder only.
   const modelEnv = { ...toolEnv(env, tmp), OPENROUTER_API_KEY: String(env.OPENROUTER_API_KEY ?? ""), OPENROUTER_BASE_URL: String(env.OPENROUTER_BASE_URL ?? "") };
-  const r = await run("ui-review", ["review", dir, "--model", spec.model, "--max-usd", String(MAX_USD)], { cwd: dir, env: modelEnv, minutes: 18 });
+  const r = await run("ui-review", ["review", dir, "--model", spec.model, "--effort", spec.effort || "low", "--max-usd", String(MAX_USD)], { cwd: dir, env: modelEnv, minutes: 18 });
   if (r.code !== 0) throw new Error(`ui-review review: ${stopped(r)}${r.stderr.trim() ? `; ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 200)}` : ""}`);
   const report = readReport(join(dir, "report.json"));
   if (!report) throw new Error("ui-review review left no report.json");
-  return toReview(report, { model: spec.model, repo: spec.repo, head: spec.head, listed: listedPages(dir), routes: readReport(join(dir, "routes", "report.json")), root: ws });
+  return toReview(report, { model: spec.model, effort: spec.effort || "low", repo: spec.repo, head: spec.head, listed: listedPages(dir), routes: readReport(join(dir, "routes", "report.json")), root: ws });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

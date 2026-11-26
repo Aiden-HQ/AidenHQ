@@ -436,7 +436,8 @@ test("ui.scan captures in a token-free box, then reviews the text in a model box
   assert.equal(capture.profile, "code-review-ui");
   assert.deepEqual(Object.keys(checkSpec(capture)).sort(), ["base", "model", "option", "run"]);
   assert.equal(review.profile, "code-review-ui-review");
-  assert.deepEqual(Object.keys(checkSpec(review)).sort(), ["base", "model", "option", "run", "ui"]);   // the bundle, not code
+  assert.deepEqual(Object.keys(checkSpec(review)).sort(), ["base", "effort", "model", "option", "run", "ui"]);   // the bundle, not code
+  assert.equal(checkSpec(review).effort, "low");   // the catalog's effort, passed to the engine
   assert.equal(checkSpec(review).ui, `${w.inputs.length}`.padStart(64, "0"));
   // The bundle: the reports, and per page only the shots the review reads (a later scroll step and other widths stay out).
   assert.equal(JSON.parse(readFileSync(join(dir, "run.json"), "utf8")).pages[1].kind, "list");

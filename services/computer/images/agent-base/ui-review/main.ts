@@ -7,7 +7,7 @@ const COMMANDS: Record<string, string> = {
   pages: "pages <url> --out <dir> [--map feature-map.json] [--pages-file f]",
   routes: "routes <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--baseline <dir>]   (clicks: a local build only)",
   refs: "refs <refs.json> --out <dir> [--measure]",
-  review: "review <capture dir> [--model id] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n (stops starting calls once reached)]",
+  review: "review <capture dir> [--model id] [--effort low|medium|high] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n (stops starting calls once reached)]",
   "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id] [--taste file]",
 };
 

@@ -15,6 +15,8 @@ export type AskOptions = {
   base?: string; key?: string;
   /** True once the run's budget is spent: no retry is sent after that. */
   over?: () => boolean;
+  /** The reasoning effort: low (the default), medium or high. */
+  effort?: "low" | "medium" | "high";
 };
 
 /** The run's spend, added up from each answer's usage.cost. */
@@ -36,7 +38,7 @@ async function once(o: AskOptions, messages: Message[]): Promise<string> {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
       body: JSON.stringify({
-        model: o.model, messages, max_tokens: 32000, reasoning: { effort: "low" }, usage: { include: true },
+        model: o.model, messages, max_tokens: 32000, reasoning: { effort: o.effort ?? "low" }, usage: { include: true },
         response_format: { type: "json_schema", json_schema: { name: "answer", strict: true, schema: o.schema } },
       }),
       signal: ac.signal,

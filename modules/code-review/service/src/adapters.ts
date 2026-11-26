@@ -95,7 +95,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   // `run` keeps two reviews of one commit with one spec apart (the kernel reuses a check for an identical spec): empty for a PR run.
   if (s.profile === "code-review-tools") return { base, options: JSON.stringify(s.tools ?? {}), run: s.run ?? "" };
   if (s.profile === "code-review-ui") return { base, run: s.run ?? "", option: s.option ?? "", model: s.combo.model };
-  if (s.profile === "code-review-ui-review") return { base, run: s.run ?? "", option: s.option ?? "", model: s.combo.model, ui: s.ui ?? "" };
+  if (s.profile === "code-review-ui-review") return { base, run: s.run ?? "", option: s.option ?? "", model: s.combo.model, effort: s.combo.effort || "low", ui: s.ui ?? "" };
   if (s.profile === "code-review-plan") return { base, run: s.run ?? "", model: s.combo.model, stacks: JSON.stringify(s.stacks ?? {}) };
   return {
     base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",

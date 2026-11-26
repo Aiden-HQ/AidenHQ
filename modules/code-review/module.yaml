@@ -96,7 +96,7 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/ui-review.ts ]
     timeout_min: 20
     title: the UI design review
-    spec: { base: sha, run: text, option: text, model: text, ui: input }
+    spec: { base: sha, run: text, option: text, model: text, effort: text, ui: input }
     model: true
     result: true
 # The change feed's PR and comment events on the watched repos (service/src/engine.ts feed(); kernel events.ts log, read with the
