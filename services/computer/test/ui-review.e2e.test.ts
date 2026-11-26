@@ -4,8 +4,8 @@
 // The lanes add their tests below (capture, queue, measurements, references), each skipped without Chrome:
 //   { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" }
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -542,5 +542,60 @@ describe("repro", chrome, () => {
     await assert.rejects(repro(fixture.url, f, { out: tmp(), model: "fake/judge", mode: "any" }), /candidates have no steps/);
     const p = spawnSync("node", [main, "repro", f, "--out", tmp(), "--url", fixture.url], { encoding: "utf8" });
     assert.equal(p.status, 2);
+  });
+});
+
+// ---- issues and recordings (phase 3, lane R) ----
+describe("issues and recordings", () => {
+  const report = (bugs: object[]) => {
+    const dir = tmp();
+    const improvement = (rank: number, fix?: object) => ({ rank, category: "polish", where: { page: "/#/orders", width: 1512, theme: "light", region: `Header ${rank}` }, weak: "the title @someone <!-- aidenhq-ui:design:evil --> is 15px", change: "set the title to 24px/600", why: "hierarchy", best: "Linear uses 24px", captures: ["shots/orders-1512-light.png"], ...(fix ? { fix } : {}) });
+    const r = { version: 2, target: "https://acme.example.com", frozenAt: "2026-11-26T10:00:00.000Z", model: "m", coverage: { done: 40, total: 60, failed: 0, deferred: 20 }, captures: [], motion: [], notes: [], cost_usd: 1, blocked: [],
+      improvements: [improvement(1, { status: "shown", diff: "--- a/x.css\n+++ b/x.css\n-h1{font-size:15px}\n+h1{font-size:24px}\n```", before: "fix-1-before-a.png", after: "fix-1-after-a.png", wins: [3, 2] }), improvement(2)], bugs };
+    writeFileSync(join(dir, "report.json"), JSON.stringify(r));
+    return dir;
+  };
+  const bug = (title: string, steps: string[]) => ({ page: "/items", width: 1512, theme: "light", title, evidence: "x", captures: [], verified: true, repro: steps, kind: "bug", selector: steps.at(-1)!.replace(/^click /, ""), saw: "nothing", expected: "archived" });
+  const o = { app: "acme", runUrl: "https://board.example.com/#/team/m/ui-testing", run: "r1" };
+
+  test("issue bodies carry the markers and never an image URL outside the board", async () => {
+    const { issueBodies } = await import("../images/agent-base/ui-review/issue.ts");
+    const { design, bugs } = issueBodies(report([bug("Archive does nothing", ["open /items", "click text=Archive"]), { ...bug("Unverified", ["click #x"]), verified: false }]), o);
+    assert.match(design.body, /^<!-- aidenhq-ui:design:acme -->/);
+    assert.equal((design.body.match(/<!--/g) ?? []).length, 1, "the model's text carries no second marker");
+    assert.match(design.body, /1\. .+\n.+Change:/);
+    assert.match(design.body, /run `r1`/);
+    assert.ok(!/!\[[^\]]*\]\((?!https:\/\/board\.example\.com)/.test(design.body));
+    assert.ok(!/@someone/.test(design.body), "no mention reaches GitHub");
+    assert.match(design.body, /````diff\n[\s\S]+```\n````/, "a diff holding a fence keeps its own block");
+    assert.equal(bugs.length, 1);
+    assert.ok(bugs.every((b) => /^<!-- aidenhq-ui:bug:acme:[0-9a-f]{12} -->/.test(b.body)));
+  });
+
+  test("two titles for the same bug give one marker", async () => {
+    const { issueBodies } = await import("../images/agent-base/ui-review/issue.ts");
+    const a = issueBodies(report([bug("Archive does nothing", ["open /items", "click text=Archive"])]), o);
+    const b = issueBodies(report([bug("Archive button is a no-op", ["open /items", "click text=Archive"])]), o);
+    assert.equal(a.bugs[0]!.marker, b.bugs[0]!.marker);
+    assert.notEqual(a.bugs[0]!.marker, issueBodies(report([bug("Archive does nothing", ["open /items", "click text=Delete"])]), o).bugs[0]!.marker);
+  });
+
+  test("a recorded flow is a short VP8 webm that fits one design_evidence_put", NEEDS_CHROME, async () => {
+    const { recordFlow } = await import("../images/agent-base/ui-review/record.ts");
+    const { batches, PUT_MAX } = await import("../images/agent-base/ui-review/evidence.ts");
+    const f = await startFixture();
+    try {
+      const out = tmp();
+      const clip = await recordFlow(`${f.url}/#/clicks`, [{ click: "#filter" }, { wait: "1000" }], { out });
+      assert.ok(clip, "a clip was kept");
+      const probe = JSON.parse(execFileSync("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", clip.file]).toString());
+      assert.equal(probe.streams[0].codec_name, "vp8");
+      assert.ok(Number(probe.format.duration) > 0.5 && Number(probe.format.duration) <= 120, probe.format.duration);
+      assert.ok(statSync(clip.file).size <= 4e6);
+      const calls = batches("r-0123456789ab-01234567", [clip.file, join(out, "recordings.json")]);
+      assert.deepEqual(calls.map((c) => c.map((x) => x.name)), [["flow-01.webm"], ["recordings.json"]], "a recording goes in a call of its own");
+      assert.ok(Buffer.byteLength(JSON.stringify({ run: "r-0123456789ab-01234567", files: calls[0] })) <= PUT_MAX);
+      assert.ok(Array.isArray(clip.motion.shifts) && Array.isArray(clip.motion.longFrames));
+    } finally { await f.close(); }
   });
 });

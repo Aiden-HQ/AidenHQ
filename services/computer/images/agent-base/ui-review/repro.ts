@@ -41,7 +41,8 @@ const validStep = (s: unknown): s is Step => {
   return keys[0] === "fill" ? Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === "string") : ["open", "click", "press", "wait"].includes(keys[0]) && typeof v === "string" && v.length > 0;
 };
 
-async function run(page: PwPage, base: string, s: Step): Promise<void> {
+/** One step on `page`, kept on the app at `base` (an `open` elsewhere, or a step after the page left it, throws). */
+export async function runStep(page: PwPage, base: string, s: Step): Promise<void> {
   if ("open" in s) {
     const url = new URL(s.open, base);
     if (url.origin !== new URL(base).origin) throw new Error(`open ${s.open}: not on the app under review`);
@@ -77,7 +78,7 @@ async function replay(newContext: () => Promise<BrowserContext>, base: string, c
       if (i === last) { socketsBefore = sockets().length; before = `repro/${tag}-before.png`; await page.screenshot({ path: join(out, before) }); textBefore = await text(); urlBefore = page.url(); }
       acting = "click" in s || "fill" in s || "press" in s;
       if (acting) sockets0 = sockets().length;
-      await run(page, base, s);
+      await runStep(page, base, s);
       if (acting && i !== last) refused += sockets().slice(sockets0).filter((b) => b.page === pageOf(page.url())).length;
       acting = false;
     }
@@ -171,7 +172,7 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
             why: "A person working this flow meets it as friction while clicking through the app.", best: `The best products show the expected result at once: ${c.expected}`, captures,
           });
         } else {
-          bugs.push({ page: c.page, width: c.width, theme: "light", title: c.title, evidence: `${c.saw} (expected: ${c.expected})`, captures, verified: true, repro: steps.map(stepText), kind: "bug", selector: targetOf(last) });
+          bugs.push({ page: c.page, width: c.width, theme: "light", title: c.title, evidence: `${c.saw} (expected: ${c.expected})`, captures, verified: true, repro: steps.map(stepText), kind: "bug", selector: targetOf(last), saw: c.saw, expected: c.expected });
         }
       }
     };
