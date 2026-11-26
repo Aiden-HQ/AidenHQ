@@ -46,7 +46,8 @@ agent-browser snapshot -i                      # interactive elements with refs 
 agent-browser click @e1; agent-browser screenshot flow-1.png; agent-browser errors
 ```
 
-Pass `--pages-file pages.json` when you wrote one (a `feature-map.json` in the app folder is read by itself).
+Pass `--pages-file pages.json` when you wrote one, else `--map <the app's folder>/feature-map.json` when the app has one (the
+engine reads a `feature-map.json` by itself only from the folder it runs in).
 `--widths 360,…` adds a width, `--states empty,error,loading` the states the app can show, `--pages-file <f>` a subset of
 pages, `--resume` continues a run that stopped (a big app queues at most 120 pages per run and records the rest as
 `deferred`). A page that never settles is captured with a `not settled` note: read the note before judging it.

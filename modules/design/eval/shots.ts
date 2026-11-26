@@ -35,10 +35,15 @@ export async function serveStarter(work: string, port: number): Promise<string> 
   const run = (...a: string[]) => execFileSync("npm", a, { cwd: dir, stdio: "pipe" });
   if (!existsSync(join(dir, "node_modules"))) run("ci", "--ignore-scripts", "--no-audit", "--no-fund");
   if (!existsSync(join(dir, "dist"))) run("run", "build");
-  children.push(spawn("node", ["server.mjs"], { cwd: dir, stdio: "ignore", env: { ...process.env, HOST: "127.0.0.1", PORT: String(port) } }));
+  const child = spawn("node", ["server.mjs"], { cwd: dir, stdio: "ignore", env: { ...process.env, HOST: "127.0.0.1", PORT: String(port) } });
+  children.push(child);
+  // Another server on the port would answer the health check too: a child that exits (it couldn't bind) fails the run.
+  let exited = false;
+  child.on("exit", () => { exited = true; });
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 50; i++) {
-    if (await fetch(`${base}/api/health`).then((r) => r.ok, () => false)) return base;
+    if (exited) throw new Error(`the app starter exited: is port ${port} taken? (--port picks another)`);
+    if (await fetch(`${base}/api/health`).then((r) => r.ok, () => false)) { await sleep(300); if (!exited) return base; }
     await sleep(200);
   }
   throw new Error(`the app starter did not come up on ${base}`);

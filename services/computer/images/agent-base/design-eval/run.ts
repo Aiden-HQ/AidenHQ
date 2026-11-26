@@ -165,7 +165,14 @@ async function calibrate() {
 }
 
 // ---- references and corrections run the engine's own commands over a captured app ---------------------------------------------
-type Report = { improvements: { where: { page: string; region: string }; weak: string; change: string; why: string; best: string }[]; cost_usd: number };
+type Report = { improvements: { where: { page: string; region: string }; weak: string; change: string; why: string; best: string }[]; cost_usd: number; notes?: string[] };
+/** A review whose page reviews failed (the model or the gateway) scores nothing: the suite stops with the reason. */
+function reviewed(file: string): Report {
+  const rep = json(file) as Report;
+  const failed = (rep.notes ?? []).filter((n) => /^design review of .+ failed: |^stopped at the --max-usd budget/.test(n));
+  if (failed.length) throw new Error(`${file}: ${failed.length} page reviews failed or were skipped (${failed[0]})`);
+  return rep;
+}
 const concrete = /\d+(\.\d+)?\s*(px|rem|em|%|ms)|#[0-9a-f]{3,8}\b|\b\d{2,4}\b/i;
 
 /** A page: its path, or `{ path, kind }` (a targets file may name the kind; the starter's pages have theirs in KINDS). */
@@ -214,7 +221,7 @@ async function references() {
       const dir = join(work, "references", `${t.name}-${v}`);
       const before = (json(join(dir, "report.json")) as Report).cost_usd ?? 0;
       cli("review", dir, "--model", model, "--refs", join(dir, "refs", "refs.json"), "--top", "10");
-      const rep = json(join(dir, "report.json")) as Report;
+      const rep = reviewed(join(dir, "report.json"));
       const kindOf = new Map(((json(join(dir, "run.json")) as { pages?: { path: string; kind?: string }[] }).pages ?? []).map((p) => [p.path, p.kind ?? "other"]));
       const refsOf = json(join(dir, "refs", "refs.json")) as { kind: string; shots: string[]; product?: string; tokens?: Record<string, unknown> }[];
       const m = (variants[v] ??= { n: 0, specific: 0, tokens: 0, perTarget: {} });
@@ -258,7 +265,7 @@ async function corrections() {
     const d = join(work, "corrections", c.f);
     const before = (json(join(d, "report.json")) as Report).cost_usd ?? 0;
     cli("review", d, "--model", model, "--top", "10");
-    const rep = json(join(d, "report.json")) as Report;
+    const rep = reviewed(join(d, "report.json"));
     spend.usd += rep.cost_usd - before;
     const hit = rep.improvements.some((i) => new RegExp(c.expect.where, "i").test(`${i.where.page} ${i.where.region}`) && new RegExp(c.expect.change, "i").test(`${i.change} ${i.weak} ${i.why}`));
     if (!hit) missed.push(c.f);
