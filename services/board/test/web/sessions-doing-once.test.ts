@@ -1,4 +1,5 @@
 // @vitest-environment node
+/// <reference types="node" />
 // The sessions list shows "what it is doing" once: the under-the-title copy on a phone, the column copy on a wide
 // screen. Below 760px a bare .ses-doing rule here would un-hide the column copy too, printing the line twice.
 import { readFileSync } from "node:fs";
@@ -23,7 +24,7 @@ function phoneBlock(text: string): string | undefined {
 function selectors(block: string): string[] {
   const out: string[] = [];
   const rule = /([^{}]+)\{[^{}]*\}/g;
-  for (const m of block.matchAll(rule)) out.push(...m[1].split(",").map((s) => s.replace(/\/\*[\s\S]*?\*\//g, "").trim()));
+  for (const m of block.matchAll(rule)) out.push(...(m[1] ?? "").split(",").map((s) => s.replace(/\/\*[\s\S]*?\*\//g, "").trim()));
   return out.filter(Boolean);
 }
 
