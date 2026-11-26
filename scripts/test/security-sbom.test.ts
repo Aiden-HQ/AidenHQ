@@ -82,6 +82,9 @@ async function run(env = {}, {
   // The Docker socket's group for `stat -c %g /var/run/docker.sock`; everything else is the real stat, so a size read on
   // an archive (`stat -c %s`) is the archive's own, as on the host.
   writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\nif [ \"$1\" = -c ] && [ \"$2\" = %g ]; then echo 0; exit 0; fi\nexec /usr/bin/stat \"$@\"\n");
+  // `find` for the merge's walk of a replica root: FAKE_FIND_SLEEP holds it open, as a tree with millions of entries
+  // does, so a test can prove the walk is bounded by the snapshot deadline.
+  writeFileSync(join(dir, "bin/find"), "#!/usr/bin/env bash\nif [ -n \"\\${FAKE_FIND_SLEEP:-}\" ] && [[ \"$*\" == *-print0* ]]; then read -r -t \"$FAKE_FIND_SLEEP\" _ < <(exec perl -e \"select undef, undef, undef, $FAKE_FIND_SLEEP\"); fi\nexec /usr/bin/find \"$@\"\n");
   // `tar -xOf <archive> <member>` for the archive check: with FAKE_ARCHIVE_SLEEP it stops answering, as a multi-GB archive
   // on slow storage does, so a test can prove the read is bounded by the snapshot deadline. Otherwise the real tar runs.
   writeFileSync(join(dir, "bin/tar"), `#!/usr/bin/env bash
@@ -165,7 +168,7 @@ if [ "$1" = run ]; then
         [ -f "$f" ] && printf 'content %s %s\n' "$f" "$(tr -d '\n' < "$f")" >> "$MODES"
       done
       for f in etc/os-release bin opt/app/plugins .replicas/c2/opt/app/plugins/installed.txt \
-               app .replicas/probe .replicas-2/c2/app/.bash_profile; do
+               app 'd*' .replicas/probe .replicas-2/c2/app/.bash_profile .replicas/c2/d*/app/.bash_profile; do
         if [ -L "$f" ]; then printf 'link %s %s\n' "$f" "$(readlink "$f")" >> "$MODES"
         elif [ -f "$f" ]; then printf 'regular %s\n' "$f" >> "$MODES"; fi
       done
@@ -360,6 +363,11 @@ case "$1" in
       tmpl=""
       if [ "$1" = -f ]; then tmpl="$2"; shift 2; fi
       if [ "$#" -eq 0 ]; then cut -f"$col" "$TAGS"; exit 0; fi
+      # FAKE_TAG_NOISE <ref>: the daemon prints a warning ahead of the id, as a daemon that logs to stdout does.
+      if [ -n "\${FAKE_TAG_NOISE:-}" ] && [ "$1" = "\${FAKE_TAG_NOISE}" ] && [ "$tmpl" = '{{.Id}}' ]; then
+        printf 'WARNING: deprecated image store\n'
+        awk -F '\\t' -v ref="$1" '$1 == ref { print $'"$col"'; found = 1 } END { exit !found }' "$TAGS"; exit 0
+      fi
       # A reference the fixture says the daemon cannot answer for (a timeout, a refused socket) fails even when the tag
       # table names it: the table is what the daemon holds, not a promise it will answer this read.
       if grep -qxF -- "$1" "$BROKEN"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
@@ -429,18 +437,18 @@ case "$1" in
     # EXPORT_SYMLINKS "id:link=target;...": symlinks the container has, as a distro keeps /etc/os-release ->
     # ../usr/lib/os-release and /bin -> usr/bin.
     if [ -n "\${EXPORT_SYMLINKS:-}" ]; then
-      oldifs="$IFS"; IFS=';'
+      oldifs="$IFS"; IFS=';'; set -f
       for e in $EXPORT_SYMLINKS; do
         IFS="$oldifs"
         [ "\${e%%:*}" = "$cid" ] || continue
         elink="\${e#*:}"; etarget="\${elink#*=}"; elink="\${elink%%=*}"
         mkdir -p "$d/$(dirname "$elink")"; rm -f "$d/$elink"; ln -s "$etarget" "$d/$elink"
       done
-      IFS="$oldifs"
+      IFS="$oldifs"; set +f
     fi
     # EXPORT_DIR_MODE <mode>: a directory the container left read-only (a Go module cache), as tar would restore it.
     [ -n "\${EXPORT_DIR_MODE:-}" ] && { mkdir -p "$d/root/.cache/go-mod" && printf 'bin' > "$d/root/.cache/go-mod/mod.zip" && chmod "$EXPORT_DIR_MODE" "$d/root/.cache/go-mod"; }
-    ( cd "$d" && tar -cf "$file" $(find . -type f -o -type l | sed 's|^\./||') )
+    ( cd "$d" && set -f && tar -cf "$file" $(find . -type f -o -type l | sed 's|^\./||') )
     rm -rf "$d"
     # EXPORT_GROW id<TAB>bytes: a container root filesystem much larger than the daemon's size said, as a real container
     # whose runtime data has grown since it was sized. The ulimit -f ceiling stops the write, as a real one would.
@@ -460,7 +468,7 @@ case "$1" in
 esac
 exit 0
 `);
-  for (const f of ["stat", "docker", "df", "tar"]) chmodSync(join(dir, "bin", f), 0o755);
+  for (const f of ["stat", "docker", "df", "tar", "find"]) chmodSync(join(dir, "bin", f), 0o755);
   // The label column is a dash when absent, as the script's with-block else renders it: an empty field would collapse
   // when the script splits the inspect output on whitespace.
   writeFileSync(containersFile, containers.map((c) => `${c.id}\t${c.image}\t${c.config}\t${c.label ?? "-"}\t${c.descriptor === undefined ? "null" : JSON.stringify(c.descriptor)}`).join("\n") + "\n");
@@ -742,6 +750,31 @@ test("security-sbom: a replica that has a directory where the other has a file k
   assert.ok(modes.some((m) => m === "regular .replicas/c2/opt/app/plugins/installed.txt"), `c2's plugin was lost: ${modes.join("\n")}`);
 });
 
+test("security-sbom: a container path with a glob character is still checked for a symlink ancestor", { skip: NOT_LINUX }, async () => {
+  // A container names its own paths, so one can be `d*` or `lib[1]`. The pass runs from the checkout root, where `d*`
+  // expands to `data`. A walk that let the shell expand the ancestor would test the merged root's `data` (an ordinary
+  // directory), not the container's own `d*` entry, so the link would go unnoticed and c2's `d*/app/.bash_profile` would
+  // be written through it, outside the staged root.
+  const { status, out, targets, modes } = await run({
+    EXPORT_SYMLINKS: "c1:d*=../../../../../../home/service",
+    EXPORT_EXTRAS: "c2:d*/app/.bash_profile=evil",
+  }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.equal(row?.[2], "", `the unit errored: ${row?.[2]}\n${modes.join("\n")}`);
+  assert.ok(!modes.some((m) => m === "regular d*/app/.bash_profile"), `the merge wrote through a glob-named link: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "link d* ../../../../../../home/service"), `c1's link was dropped: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "regular .replicas/c2/d*/app/.bash_profile"), `c2's file was not kept beside the link: ${modes.join("\n")}`);
+});
+
 test("security-sbom: a replica's symlink is never followed, so no file is written outside the staged root", { skip: NOT_LINUX }, async () => {
   // A container controls its own tree. One replica holds `app -> /home/service` (the service user's home on the host) and
   // the other has `app/.bash_profile`: a merge that followed the link through `-d` would write that file to the host as the
@@ -794,6 +827,25 @@ test("security-sbom: a nested dev directory is kept; only the container root's d
   assert.equal(row?.[2], "", `the container scan errored: ${row?.[2]}`);
   assert.ok(modes.some((m) => m.startsWith("file ") && m.endsWith("/opt/app/dev/node_modules/pkg.json")), `a nested dev/ tree was dropped: ${modes.join("\n")}`);
   assert.ok(!modes.some((m) => m.startsWith("present ") && m.endsWith("/dev/null")), `the root's device node was extracted: ${modes.join("\n")}`);
+});
+
+test("security-sbom: a slow listing of a replica root is cut off by the snapshot deadline", { skip: NOT_LINUX }, async () => {
+  // A dependency-heavy root can hold millions of entries, and the merge walks it while the apply lock is held. The walk
+  // is bounded like the rest of the merge: a budget that runs out during it is a per-target line, not an apply waiting.
+  const started = Date.now();
+  const { status, out, targets } = await run({ AIDENHQ_SBOM_SNAPSHOT_SECS: "3", FAKE_FIND_SLEEP: "40" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  const took = (Date.now() - started) / 1000;
+  assert.equal(status, 0, out);
+  assert.ok(took < 25, `the pass held the lock for ${took}s on a 3s budget`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "a root whose listing was cut off was scanned");
+  assert.match(line[2], /docker export|snapshot deadline/, line[2]);
 });
 
 test("security-sbom: a read-only directory in the exported root does not stop cleanup", { skip: NOT_LINUX }, async () => {
@@ -851,6 +903,24 @@ test("security-sbom: a reference probe that fails for another reason is an error
   assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
   assert.equal(line[1], "-", "the target was recorded as scanned");
   assert.match(line[2], /unexpected EOF/, line[2]);
+});
+
+test("security-sbom: a tag probe's warning ahead of the id is an unanswered probe, not a moved tag", { skip: NOT_LINUX }, async () => {
+  // A daemon that logs to stdout prints a warning before the id. Taken as the tag's answer, the warning is "not the
+  // running manifest", the tag is read as moved off the image, and the bare pin's "No such image" then passes for proof
+  // that the image is gone. The probe's answer is only an answer when it is one image id.
+  const { status, out, targets, calls } = await run({ FAKE_TAG_NOISE: "aidenhq/board:local" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for a noisy probe:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0].startsWith("image:"));
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /WARNING|did not answer/, line[2]);
 });
 
 test("security-sbom: a probe killed before it prints is not read as the image being gone", { skip: NOT_LINUX }, async () => {

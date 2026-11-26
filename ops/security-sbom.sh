@@ -330,7 +330,14 @@ resolve_ref() { # <pin manifest> <container .Image> [platform]
     # A tag: the id it names on the container's platform. A tag pin_of cannot read is asked once more keeping its error,
     # so one that did not answer (a timeout, a refused socket) is not mistaken for a tag that has moved off the image.
     if out="$(pin_of "$candidate" "$plat")" && [ -n "$out" ]; then
-      [ "$out" = "$pin" ] && { printf '%s\n' "$candidate"; return 0; }
+      # Only a single id answers which image the tag names; anything with whitespace in it (a warning printed ahead of
+      # the id, a half-written reply) says nothing. Reading such an answer as "the tag moved off this image" would let
+      # the bare pin's "No such image" pass for proof that the image is gone, and export a live container under it.
+      if [[ "$out" == sha256:?* ]] && [[ "$out" != *[[:space:]]* ]]; then
+        [ "$out" = "$pin" ] && { printf '%s\n' "$candidate"; return 0; }
+        continue
+      fi
+      unsure="$out"
       continue
     fi
     if ! out="$(docker_call 5 image inspect -f '{{.Id}}' "$candidate" 2>&1)"; then
@@ -579,15 +586,20 @@ same_entry() { # <a> <b>
 # `app/.bash_profile` in another would otherwise write that file to the host instead of the staged root, and a link into
 # another container's tree would put one target's files under another's. Such an entry is kept aside instead.
 ancestor_blocked() { # <root> <rel>
-  local root="$1" rel="$2" rest part acc="$1"
+  local root="$1" rel="$2" rest part acc="$1" noglob=""
   case "$rel" in */*) rest="${rel%/*}" ;; *) return 1 ;; esac
+  # A container names its own paths, so one can be `o*s` or `app[1]`. With pathname expansion on, the walk would test
+  # whatever those match in the current directory (this checkout's `ops`, say) instead of the entry itself, and a link or
+  # file ancestor would then go unnoticed. Expansion is off for the walk and put back as it was found.
+  case $- in *f*) noglob=1 ;; *) set -f ;; esac
   local oldifs="$IFS"; IFS='/'
   for part in $rest; do
     acc="$acc/$part"
-    if [ -L "$acc" ]; then IFS="$oldifs"; return 0; fi
-    if [ -e "$acc" ] && [ ! -d "$acc" ]; then IFS="$oldifs"; return 0; fi
+    if [ -L "$acc" ]; then IFS="$oldifs"; [ -n "$noglob" ] || set +f; return 0; fi
+    if [ -e "$acc" ] && [ ! -d "$acc" ]; then IFS="$oldifs"; [ -n "$noglob" ] || set +f; return 0; fi
   done
   IFS="$oldifs"
+  [ -n "$noglob" ] || set +f
   return 1
 }
 # The directory conflicting entries are kept under. A container controls its own tree, so it can hold a `/.replicas` of its
@@ -620,11 +632,19 @@ place_entry() { # <src> <dst>
 # is a file, or a symlink the merge will not follow, goes there too. Symlinks are carried as symlinks, so a distro's
 # `/etc/os-release -> ../usr/lib/os-release` and `/bin -> usr/bin` are where syft looks for them. Returns 1 with export_err.
 merge_replica_root() { # <replica root> <merged root> <container id>
-  local repodir="$1" rootfs="$2" cid="$3" f rel src dst keep n
+  local repodir="$1" rootfs="$2" cid="$3" f rel src dst keep n rc
   export_err=""
   # Sorted, so one replica's files always merge in the same order: a merge that failed halfway must not depend on the
-  # order the filesystem happened to list a container's tree in.
-  if ! ( cd "$repodir" && find . -mindepth 1 \( -type f -o -type l \) -print0 | LC_ALL=C sort -z ) > "$exportdir/merge-$cid.list" 2>/dev/null; then
+  # order the filesystem happened to list a container's tree in. The walk itself is bounded like the rest of the merge:
+  # a dependency-heavy root can hold millions of entries, and it runs while the apply lock is held.
+  run_watched 900 bash -c 'set -o pipefail; cd "$1" && find . -mindepth 1 \( -type f -o -type l \) -print0 | LC_ALL=C sort -z' _ "$repodir" \
+    > "$exportdir/merge-$cid.list" 2>/dev/null; rc=$?
+  if [ "$rc" -eq 124 ]; then
+    rm -f "$exportdir/merge-$cid.list"
+    export_err="the snapshot deadline reached while listing the replica root"; return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$exportdir/merge-$cid.list"
     export_err="could not list the extracted root"; return 1
   fi
   while IFS= read -r -d '' f; do
