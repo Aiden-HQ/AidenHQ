@@ -856,8 +856,9 @@ export function createService(o: Options) {
             // The branch exists now at a head other than the one this write was planned at: its head is not the one the diff was read
             // against, so nothing may land on it. A branch that is gone (deleted since) has no head to rewind: it is the ordinary
             // missing-branch publish, created only where it is still absent.
-            // A branch this publish created at the base point before its commit failed (a crash between the two) is its own: it resumes.
-            if (!isDef && head !== undefined && !already && planned !== undefined && head !== planned && !(planned === null && head === at?.mb)) throw refused(planned, head);
+            // A branch this host created at the base point for a publish whose commit didn't answer (createdRef) resumes from there.
+            const resumes = planned === null && head !== undefined && head === (await git(dir, ["rev-parse", "--verify", "--quiet", createdRef(b.branch)]).catch(() => ""));
+            if (!isDef && head !== undefined && !already && !resumes && planned !== undefined && head !== planned) throw refused(planned, head);
             // An older bundle than what the branch holds (#1775: the older bundle winning over a newer push) is refused: one the head
             // contains (a person pushed the box's commits), or one older than the box commit this branch was last published from
             // (GitHub holds its own commits for those, never the box's).
@@ -866,6 +867,7 @@ export function createService(o: Options) {
             if (last && last !== b.sha && (await isAncestor(dir, b.sha, last))) throw refused(b.sha, head);
             const sha = already ? head! : await publishSigned({ s, dir, branch: b.branch, sha: b.sha, head, base: base0, isDef, ...at });
             await git(dir, ["update-ref", publishedRef(b.branch), b.sha]);
+            noteKept(o.cacheDir, { repo: s.slug, ref: publishedRef(b.branch) });
             if (!already) {
               notePushed(s.slug, sha);
               objects.push(`${ref(s.slug)}@${sha}`);
@@ -1370,8 +1372,14 @@ export function createService(o: Options) {
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   }
 
-  /** The ws-cache ref holding the box commit a branch was last published from: GitHub holds its own commits, never the box's. */
-  const publishedRef = (branch: string) => `refs/published/${createHash("sha256").update(branch).digest("hex")}`;
+  /**
+   * The ws-cache refs a publish keeps per branch (under refs/ws/, so tidy.ts prunes them with the jobs' heads): the box commit the
+   * branch was last published from (GitHub holds its own commits, never the box's), and the base point this host created the
+   * branch at for a publish whose commit didn't answer, the one leftover a later run of that publish may resume from.
+   */
+  const branchKey = (branch: string) => createHash("sha256").update(branch).digest("hex");
+  const publishedRef = (branch: string) => `refs/ws/_published/${branchKey(branch)}`;
+  const createdRef = (branch: string) => `refs/ws/_created/${branchKey(branch)}`;
   /**
    * Where a publish stands on its base: the base's tip on GitHub (fetched into the same cache), the commit the box's branch forked
    * from on it (`mb`), and the one the published head did (`headBase`). Empty where they share no commit (a repo with none yet).
@@ -1407,6 +1415,8 @@ export function createService(o: Options) {
     if (p.isDef) {
       const head = await publishHead(p.dir, p.s.slug, p.branch);
       if (!head) throw fail(409, `${label} has no commit yet: GitHub's signed commits build on one, so it can't be published to.`);
+      // Already holding this tree (a retry after a lost answer, a repeat): nothing to write.
+      if ((await tree(head)) === (await tree(p.sha))) return head;
       if (!(await isAncestor(p.dir, head, p.sha))) throw fail(409, `ship-head-moved: ${label} is at \`${head.slice(0, 12)}\`, which \`${p.sha.slice(0, 12)}\` doesn't build on: nothing was pushed; fetch it, build on it and publish again.`);
       return landed(await commitSigned(at, head, await tree(head), p.sha, message));
     }
@@ -1420,14 +1430,21 @@ export function createService(o: Options) {
       if (made.status === 422 && /exist/i.test(said)) throw fail(409, `ship-head-moved: ${label} appeared since the write read it absent: nothing was pushed to it; read it again.`);
       if (made.status >= 500 || made.status === 429) throw fail(502, `GitHub didn't answer creating ${label}: ${said.slice(0, 200)}`);
       if (made.status >= 300) throw fail(409, refusedPush(at, `GitHub refused creating the branch: ${said}`));
-      // A commit that doesn't land takes the new branch away again (only while it still stands where this made it), so nothing is
-      // left that a person would read as published.
+      await git(p.dir, ["update-ref", createdRef(p.branch), p.mb]);
+      noteKept(o.cacheDir, { repo: p.s.slug, ref: createdRef(p.branch) });
+    }
+    if (p.head === undefined || p.head === p.mb && (await git(p.dir, ["rev-parse", "--verify", "--quiet", createdRef(p.branch)]).catch(() => "")) === p.mb) {
+      // A commit that didn't answer leaves the new branch for this publish to resume. One GitHub refused (a rule, a stale head, the
+      // workflow scope) takes it away again, only while it still stands where this made it, so nothing is left that a person would
+      // read as published.
       const drop = async () => {
         const now = await gh("GET", refPath(p.s.slug, p.branch)).catch(() => undefined);
         if (now && now.status < 300 && now.body?.object?.sha === p.mb) await gh("DELETE", `/repos/${p.s.slug}/git/refs/heads/${p.branch.split("/").map(encodeURIComponent).join("/")}`).catch(() => undefined);
+        await git(p.dir, ["update-ref", "-d", createdRef(p.branch)]).catch(() => undefined);
       };
-      const r = await commitSigned(at, p.mb, await tree(p.mb), p.sha, message).catch(async (e) => { await drop(); throw e; });
-      if (!("sha" in r)) await drop();
+      const r = await commitSigned(at, p.mb, await tree(p.mb), p.sha, message).catch(async (e: { need?: unknown }) => { if (e?.need) await drop(); throw e; });
+      if ("sha" in r) await git(p.dir, ["update-ref", "-d", createdRef(p.branch)]).catch(() => undefined);
+      else await drop();
       return landed(r);
     }
     if (p.headBase === p.mb) return landed(await commitSigned(at, p.head, await tree(p.head), p.sha, message));
@@ -1436,7 +1453,14 @@ export function createService(o: Options) {
     const prs = await api("GET", `/repos/${p.s.slug}/pulls?state=open&head=${encodeURIComponent(`${p.s.org}:${p.branch}`)}&base=${encodeURIComponent(p.base)}`);
     const n = Number((Array.isArray(prs) ? prs[0] : undefined)?.number);
     if (!n) throw fail(409, `${label} builds on a newer \`${p.base}\` than its published head, and no open PR into \`${p.base}\` is there for GitHub to merge it through: nothing was pushed; publish it on a new branch.`);
-    return landed(await mergeSigned({ ...at, n }, { head: p.head, baseSha: p.mb, base: p.base, want: p.sha, message, still: async () => undefined }));
+    // The PR read again before each write: GitHub's merge goes into whatever base the PR has then.
+    const still = async () => {
+      const again = await api("GET", `/repos/${p.s.slug}/pulls/${n}`);
+      if (again.state !== "open") return `ship-scope: ${label}'s PR #${n} is ${again.state}: nothing was pushed.`;
+      if (again.base?.ref !== p.base) return `ship-scope: ${label}'s PR #${n} now targets \`${String(again.base?.ref)}\`, not \`${p.base}\`: nothing was pushed; publish again.`;
+      return undefined;
+    };
+    return landed(await mergeSigned({ ...at, n }, { head: p.head, baseSha: p.mb, base: p.base, want: p.sha, message, still }));
   }
 
   /**
@@ -1885,8 +1909,8 @@ export function createService(o: Options) {
       // HTTP 200 with no whole body (a restart mid-response) is not "no records": the queue must ask again, not settle without it.
       if (!Array.isArray(records)) throw new Error("the kernel's work read answered without its records");
       // The commit is the box's own (a person pushed it) or the one GitHub made for the publish, which its outcome names.
-      return (records as { kind?: string; outcome_text?: string | null; args?: { only?: { repo?: string; sha?: string }[] } }[]).some((x) => (x.kind === "github.pr" || x.kind === "github.push")
-        && (x.args?.only ?? []).some((b) => String(b.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && (b.sha === pr.head || String(x.outcome_text ?? "").includes(`\`${pr.head}\``))));
+      return (records as { kind?: string; ok?: boolean | null; outcome_text?: string | null; args?: { only?: { repo?: string; sha?: string }[] } }[]).some((x) => (x.kind === "github.pr" || x.kind === "github.push")
+        && (x.args?.only ?? []).some((b) => String(b.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && (b.sha === pr.head || (x.ok === true && String(x.outcome_text ?? "").includes(`\`${pr.head}\``)))));
     },
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,

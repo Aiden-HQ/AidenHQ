@@ -239,9 +239,10 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
   // A count, never the path: a file name is repo-controlled text, and the reviewer reads this reason as code's own account.
   if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir", `it changes ${b.files.filter((f) => GITHUB.test(f)).length} file(s) under .github/`));
   if (inAgents) {
-    if (b.empty) parts.push(T(1, "empty-repo", `${b.repo} is empty: the first push lands on its default branch`));
+    // GitHub's signed commits build on a commit: a repository with none takes its first one from `aidenhq create-repo` (a README).
+    if (b.empty) return [REJECT("empty-repo", `${b.repo} has no commit yet, and a publish builds on one: create it with \`aidenhq create-repo\` (it starts with a README), or have a person push its first commit`)];
     // Straight onto the branch apps deploy from or merge into, past the PR and its checks: weakens the merge gate.
-    else if (b.branch === b.defaultBranch || (b.deployBranch && b.branch === b.deployBranch)) parts.push(T(1, "default-branch", `\`${b.branch}\` is ${b.repo}'s default or deploy branch, past its PR checks`));
+    if (b.branch === b.defaultBranch || (b.deployBranch && b.branch === b.deployBranch)) parts.push(T(1, "default-branch", `\`${b.branch}\` is ${b.repo}'s default or deploy branch, past its PR checks`));
     else parts.push(T(0, workflow ? "ci-template-copy" : "agents-org-branch", workflow ? `${b.repo}'s \`.github/\` is exactly the product's CI template` : `an ordinary branch of ${b.repo} in the agents org`));
     return parts;
   }

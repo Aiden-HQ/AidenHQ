@@ -154,6 +154,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
       const branch = decodeURIComponent(String(q.get("head") ?? "")).replace(/^acme-agents:/, "");
       return { status: 200, body: branch === "lease" ? [{ number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } }] : [] };
     }
+    if (method === "GET" && path === `/repos/${REPO}/pulls/8`) return { status: 200, body: { number: 8, state: "open", head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } } };
     if (method === "PATCH" && path === `/repos/${REPO}/pulls/8`) return { status: 200, body: { number: 8, html_url: `https://github.com/${REPO}/pull/8`, head: { sha: bare(["rev-parse", "refs/heads/lease"]) }, base: { ref: "main" } } };
     // A new PR the publish opens (a branch with none yet): its head is whatever the branch holds when it asks.
     if (method === "POST" && path === `/repos/${REPO}/pulls`) return { status: 201, body: { number: 9, html_url: `https://github.com/${REPO}/pull/9`, head: { sha: bare(["rev-parse", `refs/heads/${body.head}`]), ref: body.head }, base: { ref: body.base, sha: main }, user: { login: "owner1" } } };
