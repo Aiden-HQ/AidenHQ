@@ -1566,6 +1566,43 @@ test("the merge gate is never held by the caller's author association: a head cl
   assert.deepEqual(codes(w.engine.verdict(REPO, 9, sha("9"), { base: "release", association: "OWNER" })), ["not_started"]);
 });
 
+test("a head classified as a collaborator is pending when the caller's live association shows the access was lost", async () => {
+  const w = gatedWorld();
+  await w.tick(); w.later(1000);
+  w.pr(9, sha("9"), { author: "carol", association: "COLLABORATOR" });
+  await w.tick();
+  w.finish(0, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 9, sha("9")).tier.state, "classified");
+  // The author lost collaborator access: the stored member association against the caller's non-member one is a loss, so the tier
+  // rules keyed on `author` re-run on the next tick.
+  const v = w.engine.verdict(REPO, 9, sha("9"), { association: "NONE" });
+  assert.deepEqual([v.verdict, v.tier.state], ["wait", "pending"]);
+  assert.deepEqual(codes(v), ["not_started"]);
+  // Any move out of member access counts, not only to NONE: CONTRIBUTOR is an outsider too.
+  assert.equal(w.engine.verdict(REPO, 9, sha("9"), { association: "CONTRIBUTOR" }).tier.state, "pending");
+  // A caller that reads the author as a member still is (a case variant) needs no re-read.
+  assert.equal(w.engine.verdict(REPO, 9, sha("9"), { association: "collaborator" }).tier.state, "classified");
+  // The loss is real, so the watcher's own read now says the same thing: the deferred re-read classifies the head as an outsider,
+  // and the caller's live NONE agrees with it, so the merge gate is released rather than left pending.
+  w.pr(9, sha("9"), { author: "carol", association: "NONE" });
+  w.later(AGAIN_MS + 1);
+  await w.tick({ github: false });
+  const after = w.engine.verdict(REPO, 9, sha("9"), { association: "NONE" });
+  assert.deepEqual([after.tier.state, after.tier.state === "classified" && after.tier.tier], ["classified", "sensitive"]);
+  assert.equal(after.verdict, "pass");
+});
+
+test("a head the instance's own App opened is never pending on the caller's non-member association: its member kind comes from own", async () => {
+  const w = gatedWorld();
+  await w.tick(); w.later(1000);
+  w.pr(9, sha("9"), { author: "aidenhq-app", own: true, association: "NONE" }); // the App's own PR: stored member, association NONE
+  await w.tick();
+  w.finish(0, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 9, sha("9")).tier.state, "classified");
+  // The caller's read is NONE as well: the stored association says nothing about access, so no re-read fires.
+  assert.equal(w.engine.verdict(REPO, 9, sha("9"), { association: "NONE" }).tier.state, "classified");
+});
+
 test("a classification stored under an older rule config schedules a re-read: a later tick resolves it with no PR event", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));
