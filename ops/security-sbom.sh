@@ -322,7 +322,9 @@ resolve_ref() { # <pin manifest> <container .Image> [platform]
         if out="$(docker_call 5 image inspect -f '{{.Id}}' "$candidate" 2>&1)"; then
           printf '%s\n' "$candidate"; return 0
         fi
-        image_absent "$out" || unsure="$out"
+        # A killed probe (docker_call 124, a timeout) prints nothing at all: an empty answer is not the daemon saying
+        # "no such image", and must not be read as one.
+        image_absent "$out" || unsure="${out:-the probe for $candidate did not answer}"
         continue ;;
     esac
     # A tag: the id it names on the container's platform. A tag pin_of cannot read is asked once more keeping its error,
@@ -331,7 +333,9 @@ resolve_ref() { # <pin manifest> <container .Image> [platform]
       [ "$out" = "$pin" ] && { printf '%s\n' "$candidate"; return 0; }
       continue
     fi
-    if ! out="$(docker_call 5 image inspect -f '{{.Id}}' "$candidate" 2>&1)"; then image_absent "$out" || unsure="$out"; fi
+    if ! out="$(docker_call 5 image inspect -f '{{.Id}}' "$candidate" 2>&1)"; then
+      image_absent "$out" || unsure="${out:-the probe for $candidate did not answer}"
+    fi
   done < <(platform_refs "$pin" "$image")
   printf '%s\n' "$pin"
   # A probe that did not answer proves nothing about the image: it may be held, only the read timed out. The caller runs

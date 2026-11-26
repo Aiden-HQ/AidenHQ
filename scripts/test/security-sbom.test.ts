@@ -55,6 +55,7 @@ async function run(env = {}, {
   psFails = false,
   psFailsFrom = 0,
   inspectFails = [],
+  inspectSilent = "@@none@@",
   drift = {},
   scriptPath,
 } = {}) {
@@ -320,6 +321,12 @@ case "$1" in
       shift
       col=2; plat_req=""
       if [ "$1" = --platform ]; then plat_req="$2"; shift 2; fi
+      # A probe the kernel killed prints nothing at all: a timeout or a connection dropped mid-read. Only the id probe
+      # (-f .Id, what resolve_ref reads to find a reference) is silenced, so the size read on the bare pin still
+      # answers the daemon's "No such image" — the exact shape the guard has to tell apart.
+      case "$*" in
+        *'{{.Id}}'*"\${INSPECT_SILENT:-@@none@@}"*) exit 1 ;;
+      esac
       if [ "$1" = -f ] && [ "$2" = '{{.Size}}' ]; then
         # An image's size on disk, for the room its save and unpack need.
         shift 2
@@ -494,6 +501,7 @@ exit 0
       env: {
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
         AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, HELD_IDS: heldIdsFile, BROKEN: brokenFile,
+        INSPECT_SILENT: inspectSilent,
         SAVE_ERRORS: saveErrorsFile, SAVE_GROW: growFile, TAKE_AFTER_SAVE: takeFile, FREE_TAKEN: freeTakenFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, CONTAINER_SIZES: containerSizesFile, EXPORT_ERRORS: exportErrorsFile, EXPORT_GROW: exportGrowFile, MODES: modesFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
         DIR: dir, ...env,
       },
@@ -843,6 +851,24 @@ test("security-sbom: a reference probe that fails for another reason is an error
   assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
   assert.equal(line[1], "-", "the target was recorded as scanned");
   assert.match(line[2], /unexpected EOF/, line[2]);
+});
+
+test("security-sbom: a probe killed before it prints is not read as the image being gone", { skip: NOT_LINUX }, async () => {
+  // `docker_call` bounds every probe with `timeout`, and a killed process writes nothing: its output is empty. Read as an
+  // answer, that is "not No such image" but also not a resolved reference, and the bare pin's own "No such image" would
+  // then send the pass down the container-export path for an image the daemon may still hold.
+  const { status, out, targets, calls } = await run({ INSPECT_SILENT: "sha256:1111" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for a silent probe:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /did not answer/, line[2]);
 });
 
 test("security-sbom: a tag whose probe fails is not read as a moved tag, so the container is not exported", { skip: NOT_LINUX }, async () => {
