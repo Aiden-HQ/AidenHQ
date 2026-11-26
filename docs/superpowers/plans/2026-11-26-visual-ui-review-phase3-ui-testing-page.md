@@ -1,6 +1,6 @@
 # Visual UI review, phase 3: the "UI testing" Fleet page Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Suggested workflow:** superpowers:subagent-driven-development (recommended) or superpowers:executing-plans, one task at a time, the steps tracked as checkboxes (`- [ ]`).
 
 **Goal:** The owner lists apps on one Fleet page, picks per app how it is tested (URL or repo, login, models, spend mode,
 live-app mode, schedule), and gets each app's design review as one refreshed GitHub issue with verified bugs as their own
@@ -45,12 +45,19 @@ the `login` job tool, the engine's `--resume`, `browser start`, `flows`, `repro`
   change; the page is their only editor.
 - Board UI follows `docs/design/board-ui.md`; screenshots at 1512x982, 1920x1080, 2560x1440, 1024, 768 and 390, both themes.
 - Issues: one "design improvements" issue per app, refreshed in place (marker `<!-- aidenhq-ui:design:<app> -->`), never a
-  second; one issue per verified bug (marker `<!-- aidenhq-ui:bug:<app>:<sha256(page + "\n" + title) first 12> -->`), never
-  refiled while one with its marker is open. The design store remembers each issue's number by marker; a known number is
-  updated (and reopened if closed), never searched for again. Images live on the board (the fleet has no image host on
-  GitHub, and a page view can't be deep-linked): each issue names the run (`run r-…`) and points at the UI testing page,
-  where runs are listed and found by id, and carries the fix diffs as text.
-- Recordings: opt-in per app (`recording: true`), only of clicking-pass flows, VP8 webm, at most 2 minutes and 8 MB each.
+  second; one issue per verified bug, never refiled while one with its marker is open, its marker
+  `<!-- aidenhq-ui:bug:<app>:<sha256(page + "\n" + kind + "\n" + selector) first 12> -->` built from the page, the bug's
+  kind and its repro's last step's selector, never the model's free-text title (so rewording the title refiles nothing).
+  The design store remembers each issue's number by marker; a known number is updated (and reopened if closed), never
+  searched for again. Images live on the board (the fleet has no image host on GitHub, and a page view can't be
+  deep-linked): each issue names the run (`run r-…`) and points at the UI testing page, where runs are listed and found by
+  id, and carries the fix diffs as text.
+- Recordings: opt-in per app (`recording: true`), only of clicking-pass flows, VP8 webm, at most 2 minutes, and **at most
+  6 MB as a file**, so its base64 (×4/3, plus padding) is at most 8 MB, the size `design_evidence_put` takes per call: the
+  encoder targets ~320 kbps (`-b:v 320k`, a 2-minute flow ≈ 4.8 MB) and the recorder stops encoding and cuts the flow's clip
+  when the file passes 6 MB, so `--record`'s output always fits one `design_evidence_put`. A recording put in its own
+  call, never bundled with the other evidence. Test: a 2-minute flow yields a webm whose file is ≤ 6 MB and whose base64
+  length is ≤ 8 MB.
 
 ## Review Focus
 
@@ -90,7 +97,9 @@ phase 1 is still in review.
   - `ui_testing.apps[]` entries gain `schedule: on-request|after-deploy|always` (default `on-request`), `day_cap_usd` (default 5),
     `spend: scan|standard|thorough` (default `standard`), `models: { design?, fixes?, clicking? }`,
     `live_mode: read|test-write|any` (default `read`), `recording: false`; `depth` and `mode` of `design_pass_start` default from them;
-  - roles requests `kernel.work-read` (billed cost per task);
+  - roles requests `kernel.work-read` (billed cost per task), and `kernel.tasks` reading lists closed tasks too
+    (`GET /v1/tasks?source=…&status=closed`, `kernel/src/modtasks.ts` `list`): the cap sums a day's closed passes, not only
+    the open ones;
   - `subscribes: { apps: { kinds: [app.deployed], resources: { setting: ui_testing, path: "apps[].name" } }, "github?": { kinds: [push], resources: { setting: ui_testing, path: "apps[].repo" } } }`
     (`github?`: optional, so the module compiles on an install without GitHub; a compile test without it);
   - `requires: [board]` (for the page).
@@ -100,8 +109,11 @@ phase 1 is still in review.
   (the event log dedupes on `(connection, id)`: a retry of one deploy is one event, a redeploy of the same sha another); a failed
   send is logged, never the deploy's failure)
 - Modify: `kernel/src/modtasks.ts` (`GET /v1/tasks?source=` lists a module's own source family too: a source starting
-  `<that module>:`, beside the release module's `release:instance:`; test in `kernel/test/modtasks.test.ts`: design lists
-  `design:pass:` tasks and is refused `github:` ones)
+  `<that module>:`, beside the release module's `release:instance:`, with `status=closed` covering done and cancelled tasks
+  as well as the open set; test in `kernel/test/modtasks.test.ts`: design lists `design:pass:` tasks open and closed, and is
+  refused `github:` ones)
+- Modify: `kernel/src/work.ts` (`GET /v1/work?task=` answers `billed: { day, cost_usd }[]`, the confirmed `calls` rows by
+  `task_subject` and UTC day; test in `kernel/test/work.test.ts`: a closed task's job costs still appear)
 - Create: `modules/design/service/src/schedule.ts`; modify `passes.ts`, `store.ts` (unique partial index
   `runs_active ON runs(app) WHERE kind = 'pass' AND status = 'running'`), `main.ts` (a 60 s tick; the feed cursor as code-review's)
 - Test: `modules/design/test/schedule.e2e.test.ts`
@@ -110,12 +122,25 @@ phase 1 is still in review.
 - `startPass(app: string, why: "request" | "deploy" | "always", o?: { depth?; mode?; model? }): { run: string; task: string } | { refused: "already running" | "cap reached today" | "unknown app" }`
   (the one entry: `design_pass_start`, the tick and the feed all call it); files the module task with
   source `design:pass:<app>:<run>` (so a day's pass tasks of an app are listed by source).
-- `design_pass_stop { app }`: cancels the pass task (kernel `/v1/tasks/:task/close`) and marks the run `stopped`.
+- `design_pass_stop { app }`: **stops the job, then closes the task, and only then frees the slot.** `POST /v1/tasks/:task/close`
+  alone only writes the control plane's task record (`kernel/src/modtasks.ts:75–85`); it stops no box, so marking the run
+  `stopped` on that call would free the unique slot while the pass still clicks and spends. The stop is the kernel's job-stop
+  path (`DELETE /v1/jobs/:job`, the run's live job, as the module that dispatches it: `kernel/src/jobs.ts` `stop`), awaited
+  until the job's state is `cancelled`/`done`; then the task is closed as `cancelled`; only then does the `runs_active` row
+  leave `running` (`stopped`). If the job has not exited within 60 s the run stays `running` (slot held, "stopping") and the
+  next tick tries again; the slot is never freed while a job of the pass is live. Test: Stop during a clicking pass files no
+  second pass on Run now, and `fixtureServer.writes` stops growing.
 - Resume: `design_run_finish` stores the pass's `queue.json` in its evidence; the task text names the previous run so the
   skill runs `ui-review capture --resume` from it; a queue with nothing left starts a new cycle.
-- Cap: `startPass` lists the app's pass tasks filed today (`GET /v1/tasks?source=design:pass:<app>:`), sums their jobs'
-  `cost_usd` (`GET /v1/work?task=<id>`), and refuses with `"cap reached today"` once the sum reaches `day_cap_usd`, until
-  the UTC day changes; nothing depends on the agent reporting it.
+- Cap: `startPass` reads the **gateway ledger**, not the task's jobs: the kernel's `GET /v1/work?task=<id>` gains
+  `billed: { day: string; cost_usd: number }[]`, the confirmed spend of that task's jobs from the `calls` table by
+  `task_subject` and UTC day (the same `settled` rows `work.ts` `since()` sums, `kernel/src/work.ts:130–136`). A task's job
+  rows carry no cost (`work.ts:42,76–79`), and `/v1/tasks?source=` lists only open tasks (`kernel/src/modtasks.ts:110–123`),
+  so a job-row sum would miss every closed pass: the ledger read has neither gap, a closed task's `calls` rows included.
+  `startPass` lists the app's pass tasks filed today **and closed today** (the module's own source family, closed ones
+  included: `GET /v1/tasks?source=design:pass:<app>:&status=closed`), reads each one's `billed` for the current UTC day, and
+  refuses with `"cap reached today"` once the sum reaches `day_cap_usd`, until the UTC day changes; nothing depends on the
+  agent reporting it. Test: a pass bills $5.10 (the ledger's `calls`), its task closes, and the next tick files none.
 - Reconcile: each tick lists the module's open pass tasks (`GET /v1/tasks?source=design:pass:`); a `running` run whose task
   is closed, cancelled or gone, or whose filing failed, becomes `failed: <why>` and frees the app. The queue a dead pass
   left is the last one `design_evidence_put` stored; the next pass resumes from it.
@@ -132,8 +157,8 @@ test("triggers follow each app's schedule", async () => {
   assert.deepEqual(tasks.filed.map((t) => t.source.split(":")[2]), ["acme"]);
 });
 test("always runs back to back until the cap, then waits a day", async () => {
-  settings({ apps: [{ name: "acme", url: U, schedule: "always" }] }); await tick(); finishRun(last());
-  kernel.work(tasks.filed[0].id, [{ cost_usd: 3.0 }, { cost_usd: 2.1 }]);                  // the ledger's billed cost of its jobs
+  settings({ apps: [{ name: "acme", url: U, schedule: "always" }] }); await tick(); finishRun(last()); closeTask(last());
+  kernel.billed(tasks.filed[0].id, [{ day: today(), cost_usd: 3.0 }, { day: today(), cost_usd: 2.1 }]);   // the ledger's confirmed spend
   await tick(); assert.equal(tasks.filed.length, 1); clock.nextUtcDay(); await tick(); assert.equal(tasks.filed.length, 2);
 });
 test("a pass whose worker died frees the app, and the next one resumes", async () => {
@@ -217,6 +242,12 @@ test("a secret map sets one key without reading the others back", async () => {
 **Files:**
 - Modify: `modules/design/module.yaml` (ui-reviewer grants `github?: [github_whoami, github_issue_read, github_search_issues, github_issue_create, github_issue_update]`
   and `design: [..., design_issue_note]`; the `design` connection lists `design_issue_note` as a write tool),
+  `modules/github/connections/github-mcp/src/{github.ts,main.ts}` (`github_issue_update` gains `body`, a whole-issue body
+  replacement: the tool's input schema and its `updateIssue` send `PATCH base { body }` when `body` is given. Today the tool
+  takes state, labels and assignees only, `modules/github/connections/github-mcp/src/main.ts:476–493`, so a refreshed
+  design issue could not have its report replaced, only commented; the plan's "refreshed in place" needs the write. The body
+  goes through `withFooter(body, agent)` as `create`'s does, so the refresh keeps the agent's signature and no stale report
+  survives. Test: a second pass's `github_issue_update` changes the issue body and creates no second issue),
   `modules/design/skills/ui-review/SKILL.md` (section "A UI testing pass": read the pass task; resume; run at the app's
   spend mode, models, live mode; publish evidence; issues as below; finish the task), `modules/design/README.md`
 - Modify: `services/computer/images/agent-base/ui-review/browser.ts` and `main.ts` (`browser start --record <dir>`: CDP
@@ -232,12 +263,14 @@ test("a secret map sets one key without reading the others back", async () => {
 Issue identity is kept by the design store: table `issues (app TEXT, repo TEXT, marker TEXT, number INTEGER, PRIMARY KEY (app, repo, marker))` (a changed repo
 finds no number and starts afresh there),
 written by the write tool `design_issue_note { app, marker, repo, number }` and listed in the pass task's text and
-`design_run`. Skill's issue steps (positive how-to): a known number for the marker → `github_issue_update` its body (and
+`design_run`. Skill's issue steps (positive how-to): a known number for the marker → `github_issue_update` its `body` (and
 state `open`); no known number → search once for the marker (`github_search_issues repo:<r> is:issue "<marker>"`, open or
-closed) and adopt what it finds, else `github_issue_create` (label `ui-design`, or `ui-bug` for a bug); then
-`design_issue_note` at once, before anything else. No repo, or GitHub
-not connected, or a refused write: the run's page is the report (`design_run_finish` stores it) and the pass task's
-comment links it.
+closed) and adopt what it finds, else `github_issue_create`; then `design_issue_note` at once, before anything else. Labels
+are optional and never a prerequisite: create asks for `ui-design` (or `ui-bug` for a bug) **only when the repo has that
+label** (the tool refuses a missing label, `modules/github/connections/github-mcp/src/github.ts:418–426`, and a create
+without `labels` posts fine, `github.ts:612–614`), else creates the issue with no label and says so in the run's notes.
+No repo, or GitHub not connected, or a refused write: the run's page is the report (`design_run_finish` stores it) and the
+pass task's comment links it.
 
 - [ ] **Step 1: Write the failing tests:**
 ```ts
@@ -247,10 +280,16 @@ test("issue bodies carry the markers and never an image URL outside the board", 
   assert.ok(bugs.every((b) => /<!-- aidenhq-ui:bug:acme:[0-9a-f]{12} -->/.test(b)));
   assert.ok(!/!\[[^\]]*\]\((?!https:\/\/board\.example\.com)/.test(design));
 });
+test("two titles for the same bug give one marker", async () => {
+  const a = issueBodies(runWith(bug({ page: "/items", title: "Archive does nothing", steps: [{ click: "text=Archive" }] })));
+  const b = issueBodies(runWith(bug({ page: "/items", title: "Archive button is a no-op", steps: [{ click: "text=Archive" }] })));
+  assert.equal(markerOf(a.bugs[0]), markerOf(b.bugs[0]));
+});
 test("a recorded flow is a short VP8 webm", async () => {
   const f = await recordFlow(fx("/"), [{ click: "text=Settings" }, { wait: "1000" }], { out });
   const probe = JSON.parse(execFileSync("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", f]).toString());
-  assert.equal(probe.streams[0].codec_name, "vp8"); assert.ok(Number(probe.format.duration) <= 120); assert.ok(statSync(f).size <= 8e6);
+  assert.equal(probe.streams[0].codec_name, "vp8"); assert.ok(Number(probe.format.duration) <= 120);
+  assert.ok(statSync(f).size <= 6e6); assert.ok(readFileSync(f).toString("base64").length <= 8e6);   // fits one design_evidence_put
 });
 test("a noted issue number wins over search", async () => {   // modules/design/test/issues.test.ts
   await call("design_issue_note", { app: "acme", marker: "aidenhq-ui:design:acme", repo: "acme/app", number: 41 });

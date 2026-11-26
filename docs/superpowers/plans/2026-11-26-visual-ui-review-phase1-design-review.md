@@ -1,6 +1,6 @@
 # Visual UI review, phase 1: design review on request Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Suggested workflow:** superpowers:subagent-driven-development (recommended) or superpowers:executing-plans, one task at a time, the steps tracked as checkboxes (`- [ ]`).
 
 **Goal:** The UI Reviewer, asked by the owner, Aiden or another agent, opens an app at every width and theme, measures it,
 and returns a ranked design review, with a rendered before|after for each of the top fixes that a pairwise check confirms.
@@ -95,7 +95,7 @@ under `spike-code/` before any lane starts.
 | headless web vitals (LCP, CLS) as notes | kept as non-blocking notes, per capture at the widths it runs; layout shift during interactions is added (`Motion.shifts`) |
 | "One system" and "Copy" notes | kept, inside `Measures` (`signatures`) and as notes (the copy word lists move to `copy.json`) |
 | `--paths`, `--palettes`, `--wait-text`, `--commit`, `--baseline`, "Look at these first", "Already on this base", exit 1 on blocking findings, `<page>-<width>-<mode>.png` names and the `aidenhq` PNG stamp | kept unchanged (the grader reads the stamp: `modules/grading/service/src/grader/images.ts`) |
-| feature-map.json in the working folder | kept; `--map <file>` points at another file of the same shape (the router read's output) |
+| feature-map.json in the working folder | kept; `--pages-file <file>` takes a `{"pages": [{path, shows}]}` page list in its place (the router read's output), and a same-shape `feature-map.json` beside it is what `--map <file>` pointed at |
 
 ## Review Focus
 
@@ -162,8 +162,9 @@ modules/code-review/recipe/ui.ts                      the ui.scan check job
 | F Evaluation set | 9 | after C's prompts exist | 2 |
 
 PR 1 updates every caller of the CLI in the same PR (Task 1 Step 6). **PR 1 merges first and alone, only after the engine
-acceptance gate (Task 2b)**, because its tests skip in CI. PR 2 and PR 3 (and phases 2 and 3) may build in parallel but
-merge only after that gate, in either order. Integration: one Codex review
+acceptance gate (Task 2b)**, because its tests skip in CI. After it, **PR 2 merges before PR 3**: PR 3's `ui.scan` recipe
+runs `ui-review review`, which Task 4 builds in PR 2 (PR 1 ships its stub, which exits 2). PR 2 and PR 3 (and phases 2 and
+3) may build in parallel, but PR 3 merges only once PR 2 is on `main`. Integration: one Codex review
 of each PR plus CI, then the manual acceptance run (Task 10).
 
 ---
@@ -276,7 +277,9 @@ test `services/computer/test/ui-review.e2e.test.ts`.
   - Web vitals: LCP and CLS per capture as non-blocking notes, as today.
   - CLI: `ui-review capture <url> --out <dir> [--pages-file f] [--widths ..] [--themes ..] [--states ..] [--resume] [--baseline <dir>] [--commit sha] [--workers 4]`
     and `ui-review routes <url> --out <dir>` (the route check, now its own subcommand so a capture never waits on it; it
-    exits 2 "route checks click: a local build only" for a non-local target until phase 2's guard).
+    exits 2 "route checks click: a local build only" for a non-local target until phase 2's guard). `--pages-file` is the
+    only page-list flag: the router read's `{"pages": [{path, shows}]}` file, whose `shows` is the page's `shows`; the
+    package has no `--map`.
 
 Decisions the code must follow:
 - Workers: `--workers` (default 4) Playwright contexts on one Chrome; one context per (width, theme), reused across pages.
@@ -562,7 +565,8 @@ evidence via `design_*`); Learning taste (every design correction the owner make
 - Modify: `modules/code-review/service/src/catalog.json` (one entry, below)
 - Create: `modules/code-review/recipe/ui.ts`
 - Modify: `modules/code-review/module.yaml` (`check_jobs.code-review-ui`: `dir: recipe`, `argv: [node, /aidenhq-out/recipe/ui.ts]`,
-  `timeout_min: 60`, `spec: { base: sha, run: text, option: text, model: text }`, `model: true`, `result: true`)
+  `timeout_min: 60`, `title: the UI design scan`, `spec: { base: sha, run: text, option: text, model: text }`,
+  `model: true`, `result: true`: `title` is required, `checkJobs` refuses a recipe without one, `scripts/modules.ts:1724`)
 - Modify: `modules/code-review/service/src/engine.ts`:
   - `repoReview`: the effort check takes `UI_EFFORTS = ["low", "medium", "high"]` for `run.engine === "ui-review"`, as it
     takes `DEEPSEC_EFFORTS` for deepsec (`ui-review` is **not** added to `config.ts` `ENGINES`, so no PR combo can name it);
@@ -583,12 +587,18 @@ Catalog entry:
 1. `codex exec` (Sol, low) with `prompts/router-read.md` plus "start this app on 127.0.0.1:8080 with its seed or demo
    data; write the command to `.aidenhq-ui/run.sh` and the pages to `.aidenhq-ui/pages.json`"; then run `run.sh` and wait
    for the port (180 s cap).
-2. `ui-review capture http://127.0.0.1:8080 --map .aidenhq-ui/pages.json --out /aidenhq-out/ui`, then
-   `ui-review routes http://127.0.0.1:8080 --out /aidenhq-out/ui-routes` (exit 1 means blocking findings, not a failure:
-   the recipe reads its `report.json` either way; exit 2 is a failed check), then `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/references.json` (an unattended
-   scan carries no owner taste; agent runs do).
+2. `ui-review capture http://127.0.0.1:8080 --pages-file .aidenhq-ui/pages.json --out /aidenhq-out/ui`, then
+   `ui-review routes http://127.0.0.1:8080 --out /aidenhq-out/ui/routes` (its `report.json` lands inside the capture folder,
+   beside the captures' `report.json`; exit 1 means blocking findings, not a failure, exit 2 is a failed check), then
+   `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/references.json` (an unattended
+   scan carries no owner taste; agent runs do). `review` reads `/aidenhq-out/ui/routes/report.json` when it is there and
+   folds each blocking route finding into the capture report's `rules` as a `RuleHit` (`blocking: true`), so
+   `toReview` maps them like axe's and the page's own errors. A route the check could not run is a note, never a rule hit.
 3. Result: a `Review` (`version: 1`, `target: "tree"`, `engine: "ui-review"`, the spec's model, effort `low`) that the
-   tree validator accepts:
+   tree validator accepts. `toReview(report, spec)` fills `repo` and `head` from the kernel-provided spec
+   (`/aidenhq-out/spec.json` carries `repo` and `head` beside the recipe's fields, `kernel/src/checkjobs.ts:529` as
+   `kernel/src/checkjobs.ts:50` says): the service refuses a result whose `repo` or `head` differ from the run's
+   (`modules/code-review/service/src/engine.ts:823–826`), so both are always set, never left to the box:
    - `coverage: { reviewed: <captured page paths>, excluded: <failed or deferred page paths>, incomplete: null | "<why>", counts: { eligible: <pages listed>, reviewed: <pages captured> } }`,
      `withheld: { important: 0, nit: <improvements beyond the top 10>, pre_existing: 0 }`;
    - each improvement → `{ id: "ui-<rank>", severity: "nit", path: <the source file the change names, else the page path>, line: 0, title: weak, why, evidence: <the captures' names joined with ", ">, fix_brief: change, option: "ui.scan", lens: "ui", ui: {...} }`;
@@ -598,18 +608,27 @@ Catalog entry:
    markdown and carries no images).
 
 - [ ] **Step 1: Write the failing test** (fake kernel as `test/repo-review.test.ts` uses; `uiReview` is produced by
-  `recipe/ui.ts`'s own `toReview(report)` mapper from a fixture `report.json`, not written by hand):
+  `recipe/ui.ts`'s own `toReview(report, spec)` mapper from a fixture `report.json` and the spec the check's box gets
+  (`{ repo, head }` beside the recipe's fields, which is what the mapper binds the result to), not written by hand):
 ```ts
 test("ui.scan runs as its own whole-repo check and reports a UI section", async () => {
   const b = await svc.repoReview({ target: { repo: "acme/app", commit: SHA }, options: ["ui.scan"] });
   const req = kernel.posts.find((p) => p.path === "/v1/checks")!;
   assert.equal(req.body.run, "code-review-ui");
   assert.deepEqual(Object.keys(req.body.spec).sort(), ["base", "model", "option", "run"]);
-  kernel.finishCheck(req, { result: toReview(fixtureReport, { model: "google/gemini-4-carbon" }) }); await svc.tick();
+  const spec = { ...req.body.spec, repo: "acme/app", head: SHA };   // /aidenhq-out/spec.json adds these two
+  kernel.finishCheck(req, { result: toReview(fixtureReport, spec) }); await svc.tick();
   assert.equal(runOf(b.batch).status, "done");                     // the tree validator accepted it
   const md = await reportOf(b.batch);
   assert.match(md, /## UI/); assert.ok(md.indexOf("Widen the approvals grid") < md.indexOf("Compact the attention rail"));
   await assert.rejects(svc.repoReview({ target: { repo: "acme/app", commit: SHA }, options: ["ui.scan"], combo: { effort: "xhigh" } }), /takes an effort of low, medium, high/);
+});
+test("ui.scan carries a blocking route finding as an important ui-rule finding", async () => {
+  const b = await svc.repoReview({ target: { repo: "acme/app", commit: SHA }, options: ["ui.scan"] });
+  const req = kernel.posts.find((p) => p.path === "/v1/checks")!;
+  kernel.finishCheck(req, { result: toReview(fixtureReportWithRouteFail, { ...req.body.spec, repo: "acme/app", head: SHA }) }); await svc.tick();
+  assert.equal(runOf(b.batch).status, "done");
+  assert.match(await reportOf(b.batch), /ui-rule-/);
 });
 ```
 - [ ] **Step 2-4:** FAIL, implement, PASS (`cd modules/code-review && npm test && npm run typecheck`).

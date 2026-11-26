@@ -1,6 +1,6 @@
 # Visual UI review, phase 2: signed-in review, clicking pass and verified bugs Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Suggested workflow:** superpowers:subagent-driven-development (recommended) or superpowers:executing-plans, one task at a time, the steps tracked as checkboxes (`- [ ]`).
 
 **Goal:** The UI Reviewer reviews apps behind a sign-in (any stack, and AidenHQ's own apps), works their flows by clicking
 like a person, and reports only bugs it reproduced, without login material ever reaching the model or a fork's code.
@@ -143,8 +143,10 @@ test("module job tool forwards the caller and the task's module source", async (
   - `design_apps {} → { apps: { name, url, repo?, aidenhq_app, live_mode, login: boolean }[] }` (whether a login is set, never its value).
   - Job tool `login { app }` → `{ login_url, username, password, totp?: string /* the current code, never the seed */ }`,
     released only when: the caller holds `ui-login`; `task_module === "design"` and `task_source === "design:pass:<app>:<run>"`
-    for that `app`; that run is the app's active pass (status `running`); the app has a login. Every other case: 403 with
-    the reason, nothing else.
+    for that `app`; that run is the app's active pass (status `running`); the app has a login; **and the call presents that
+    run's single-use login nonce** (Task 3's `/aidenhq-out/login-nonce`, consumed on the first answer), never the run token
+    alone. Every other case, including a second call with the same nonce: 403 with the reason, nothing else. Test: a call with
+    `AIDENHQ_RUN_TOKEN` in place of the nonce, and a replay of a used nonce, are both 403.
   - Until PR 2 lands, a pass for an app with `aidenhq_app: true` at depth `signed-in` or `tester` is refused with
     "signed-in review of AidenHQ apps waits for the owner's decision on test-user sessions"; its `scan` depth works.
 
@@ -182,19 +184,38 @@ test("a supplied login reaches only the app's own pass", async () => {
 
 **Interfaces (Produces):**
 - `ui-review login supplied --app <app> --out state.json`: calls `POST $AIDENHQ_GATEWAY_URL/v1/jobtools/module/design/login`
-  with `AIDENHQ_RUN_TOKEN` (the launcher forwards it to the kernel, Task 1), signs in, writes Playwright storage state; stdout is only `signed in (supplied) at <login path>`.
+  (the launcher forwards it to the kernel, Task 1) with a **single-use login nonce in the body, never `AIDENHQ_RUN_TOKEN`**:
+  at the pass's start the kernel mints one nonce, binds it to that run, and the launcher writes it to `/aidenhq-out/login-nonce`;
+  `login.ts` reads the file, calls the tool once and unlinks it before it returns. It signs in and writes Playwright storage
+  state; stdout is only `signed in (supplied) at <login path>`. The tool accepts the nonce and marks it used, so the agent's
+  own shell (which holds only the run token, and finds the file already gone) can neither fetch the credential nor replay the
+  call. This is what keeps the guarantee "login material is read only by the box's `ui-review` processes, never printed" true
+  when page text tries to steer the agent to fetch it. Test: the login call with `AIDENHQ_RUN_TOKEN` in place of the nonce,
+  or with a used nonce, is 403 and returns no credential.
 - `ui-review login form --url <login url> --user <u> --password-file <f> [--totp-file <f>] --out state.json` (the repo-aware
   rung: the agent found or created the user).
 - `ui-review login signup --url <signup url> --out state.json`: starts Mailpit on `127.0.0.1:1025` (SMTP) and `:8025` (API)
   unless running, signs up as `ui-review+<run>@example.test`, follows the link or enters the code from the newest mail;
   stops with the reason on a CAPTCHA (`iframe[src*=captcha]`, `[class*=captcha]`, `g-recaptcha`, `h-captcha`) or a phone field.
 - Every login writes `state.json` plus `state.meta.json` `{ rung, loginPath, loginTitle, origin }` (no secret).
-- `Report` (phase 1's `types.ts`) gains `blocked: { method: string; path: string; page: string }[]` and
+- `Report` (phase 1's `types.ts`) gains `blocked: { method: string; origin: string; path: string; page: string }[]` and
   `session?: { rung: "supplied" | "form" | "signup" | "aidenhq" | "patch"; relogins: number }`.
-- Guard: `--mode read|test-write|any` (default `read` unless the target is `127.0.0.1`/`localhost`); CDP `Fetch.enable` for the
-  target origins (requests; `Fetch` doesn't see WebSockets), and `context.routeWebSocket` installed before the first
-  navigation: in `read` mode every WebSocket to a target origin is refused; in `test-write` and `any` it passes. A refused
-  request fails with `BlockedByClient` and is recorded `{ method, path, page }` (a socket as `{ method: "WS", … }`). With the guard on, `ui-review routes` and motion clicks accept a live target.
+- Guard: `--mode read|test-write|any` (default `read` unless the target is `127.0.0.1`/`localhost`). It covers **every
+  request the guarded browser makes**, not a list of origins: in `read` mode a request with a method other than `GET`/`HEAD`
+  is refused whatever its origin (the app's own origin, a separate API origin, a CDN), so a click that writes through
+  another host is blocked as surely as one on the page's origin. CDP `Fetch.enable` with `{"urlPattern": "*"}` intercepts
+  requests (`Fetch` doesn't see WebSockets), and `context.routeWebSocket` installed before the first navigation covers
+  sockets: in `read` mode every WebSocket upgrade is refused; in `test-write` and `any` it passes. `test-write` refuses
+  `DELETE` and the destructive path list above across all origins alike. A refused request fails with `BlockedByClient` and
+  is recorded `{ method, origin, path, page }` (a socket as `{ method: "WS", … }`). With the guard on, `ui-review routes`
+  and motion clicks accept a live target.
+- The guard is installed on **the browser, not one context**: `browser.ts`'s `launch({ mode })` auto-attaches to every
+  target of the Chrome it starts (CDP `Target.setAutoAttach` with `waitForDebuggerOnStart`, flattened, the default context
+  and every context or tab an attached client opens later), and applies the `Fetch`/`routeWebSocket` rules to each one
+  before its first request. This covers the clicking pass, where the agent attaches to the same Chrome over CDP with
+  agent-browser and opens a new tab in the default context: that tab is guarded too, so a click on Delete or Pay on the live
+  app is blocked in `read` mode and listed under "Blocked requests", never a write. The page list, `--session` and an agent's
+  attached tab all go through these targets; no unguarded target exists.
 - Session check: after each capture, a final URL whose path is `loginPath`, or a visible password input with the login
   title, means the session is gone: one re-login with the same rung (supplied, form, aidenhq), then `failed: session ended`.
 
@@ -218,6 +239,15 @@ test("the guard blocks writes in read mode and destructive paths in test-write",
   assert.ok(t.blocked.some((b) => /\/pay/.test(b.path))); assert.ok(fixtureServer.writes > 0);
   const w = await runCapture(liveAlias + "/#/socket-write", { mode: "read", clickAll: true });   // a non-AidenHQ target writing over a WebSocket
   assert.ok(w.blocked.some((b) => b.method === "WS")); assert.equal(fixtureServer.socketWrites, 0);
+});
+test("read mode blocks a write to a separate API origin, and the agent's own tab is guarded", async () => {
+  // /split serves its UI from the app origin and POSTs to apiAlias (a second origin on the fixture server): a read pass blocks it.
+  const r = await runCapture(fx("/split"), { mode: "read", clickAll: true });
+  assert.ok(r.blocked.some((b) => b.method === "POST" && /api\./.test(b.origin))); assert.equal(fixtureServer.apiWrites, 0);
+  // the clicking pass's attachment: a CDP client opens a tab in the default context and POSTs /pay; the guard covers that target too.
+  const s = await startBrowser({ mode: "read", url: fx("/danger") });
+  await cdpNewTabAndClick(s.cdpPort, "text=Pay");   // agent-browser's own path: Browser.newContext, then the click
+  assert.ok(s.blocked().some((b) => b.method === "POST" && /\/pay/.test(b.path))); assert.equal(fixtureServer.writes, 0);
 });
 ```
 - [ ] **Step 2-4:** FAIL, implement, PASS (phase 1's Task 1 Step 4 command).
@@ -246,10 +276,13 @@ test("the guard blocks writes in read mode and destructive paths in test-write",
   - `type Step = { open: string } | { click: string } | { fill: [string, string] } | { press: string } | { wait: string }`
     (selectors are Playwright locators: `role=button[name="Save"]`, `text=…`, CSS).
   - `ui-review bugs <dir> [--model m]`: candidate bugs from the captures into `candidates.json` (never into the report).
-  - `ui-review repro <clicks.json|candidates.json> --out <dir> [--session state.json] [--mode m]`: each `bug` replayed twice, each in a
-    fresh context, before|after captures around its last step, one judging call (`prompts/repro-judge.md`, Carbon) per
-    replay; `verified = both replays show it`; writes `bugs` into `report.json` (only verified ones) and `friction` items
-    into the design review's input for the consolidation step.
+  - `ui-review repro <clicks.json> --out <dir> [--session state.json] [--mode m]`: each `bug` **with `steps`** replayed
+    twice, each in a fresh context, before|after captures around its last step, one judging call
+    (`prompts/repro-judge.md`, Carbon) per replay; `verified = both replays show it`; writes `bugs` into `report.json` (only
+    verified ones) and `friction` items into the design review's input for the consolidation step. `candidates.json` is
+    never an input: a candidate from `ui-review bugs` has no steps to replay, so it is a candidate for the clicking pass to
+    turn into steps in `clicks.json`, and a candidate that never gets steps stays out of the report (`bugs` is verified-only).
+    `repro` refuses a candidates-shaped file with `candidates have no steps: replay needs clicks.json` and exits 2.
 - The skill's clicking pass: `ui-review browser start --session state.json --mode <m>` (prints the CDP port), then
   `codex exec -m openai/gpt-6.2-sol -c model_reasoning_effort=low -C <workdir> "<dogfood skill> + flows.md + attach with agent-browser --cdp <port>" < /dev/null`
   for at most 20 minutes, then once more on unvisited flows; then `ui-review repro`.
@@ -263,6 +296,9 @@ test("repro keeps only bugs that happen twice", async () => {
 });
 test("flows lists every page's key controls with a persona", async () => {
   const md = await flows(capturedFixtureDir); assert.match(md, /#\/settings/); assert.match(md, /Persona:/);
+});
+test("repro refuses candidates.json, which has no steps to replay", async () => {
+  await assert.rejects(repro(fx("/"), candidatesFile, { model: "fake/judge" }), /candidates have no steps/);
 });
 ```
 - [ ] **Step 2-4:** FAIL, implement, PASS.
