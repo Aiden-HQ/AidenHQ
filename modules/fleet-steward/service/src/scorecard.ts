@@ -7,7 +7,7 @@ const day = (t: number) => new Date(t).toISOString().slice(0, 10);
 
 export interface Closed { id: string; identifier: string; title: string; status: string; assigneeAgentId?: string | null; createdAt?: string | null; completedAt?: string | null; updatedAt: string }
 /** One row of the kernel's job ledger (/v1/work?agent=): the shape the scorecard reads. */
-export interface Job { state: string; started_at: string | null; task: string }
+export interface Job { state: string; started_at: string | null; task: string; started?: boolean }
 export interface Facts {
   /** Tasks closed (done or cancelled) over the last 14 days. */
   closed: Closed[];
@@ -31,11 +31,12 @@ export function scorecard(f: Facts, agent: { id: string; key: string }, now = Da
   const inPrior = (t: number) => t >= prior && t < week;
   const mine = f.closed.filter((i) => i.status === "done" && i.assigneeAgentId === agentId);
   // A task the ledger holds no job for was never run by the agent: it filed itself as a holder and closed itself (a ship
-  // record, a pin bump), so it is not work done — and its $0 must not dilute cost.perDone. An `admitted` job is only queued
-  // (never started), so it does not make a task worked either. The ledger read holds only the agent's newest jobs, so when it
-  // is cut, a task created before the oldest row read may have run in a row it left out: that one stays counted as work (as
-  // before) rather than be misreported as auto-closed.
-  const worked = new Set(f.jobs.filter((j) => j.state !== "admitted").map((j) => j.task));
+  // record, a pin bump), so it is not work done — and its $0 must not dilute cost.perDone. Only a job that started makes a task
+  // worked: a queued one never ran, and one that failed or was cancelled before launching never got a shell either. The ledger
+  // read holds only the agent's newest jobs, so when it is cut, a task created before the oldest row read might have run in a
+  // row it left out: that one stays counted as work (as before) rather than be misreported as auto-closed.
+  const started = (j: Job) => (j.started === undefined ? j.state !== "admitted" : j.started);
+  const worked = new Set(f.jobs.filter(started).map((j) => j.task));
   const starts = f.jobs.flatMap((j) => (j.started_at ? [Date.parse(j.started_at)] : []));
   const horizon = f.jobs.length >= JOB_READ && starts.length ? Math.min(...starts) : null;
   const ran = (i: Closed) => worked.has(i.id) || (horizon !== null && !(i.createdAt && Date.parse(i.createdAt) > horizon));

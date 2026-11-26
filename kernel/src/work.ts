@@ -7,7 +7,8 @@
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
 //   GET /v1/work?record=<id> one write record (an approval card) by its id: state, kind, task, identifier, ok and outcome text
 //                            (the grader resolves a card a report cites; never the card's args or its requester)
-//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended and the routine its task traces to,
+//   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended (and `started`: whether the run got a
+//                            shell, false for one that failed or was cancelled before launching) and the routine its task traces to,
 //                            and for the board's timeline the wake that started it, why it ended, its billed cost, whether
 //                            it was a quiet routine run and the records the agent filed while it ran: { jobs }
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
@@ -28,13 +29,15 @@ import type { Records } from "./records.ts";
 /** Job duration buckets, seconds: a quick reply to a two-hour build. */
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
 /** The columns job() reads, and enough of a job's final words for its first line (cut to 200). */
-const JOB_COLS = "id, agent, task, engine, state, at, ended, session, saw";
+const JOB_COLS = "id, agent, task, engine, state, pid, at, ended, session, saw";
 const FINAL_HEAD = "substr(final, 1, 400) AS final";
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
 export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = async () => [], sessionAgents = () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; /** The agents whose grants have profile `session` (grants table): their tasks are the board's Sessions. */ sessionAgents?: () => string[]; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
-  const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null, saw: r.saw ? JSON.parse(r.saw) : [] });
+  // `started`: whether the run got a shell. A row is written `admitted` with pid 0 and only `start()` sets the pid, so a job
+  // that failed or was cancelled before launching is `failed`/`cancelled` with pid 0, and nothing about it ran.
+  const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), started: r.state !== "admitted" && Number(r.pid) > 0, session: r.session ?? null, saw: r.saw ? JSON.parse(r.saw) : [] });
   /** A rejection the AI reviewer judged malicious (tier.ts MALICE), not code's refusal. */
   const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && MALICE.includes(r.review_code ?? "");
   /** One row, or undefined when its table isn't there (a kernel without the wake inbox or the fact log). */
