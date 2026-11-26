@@ -313,7 +313,13 @@ function workRead(work: Work, p: URLSearchParams) {
   if (record) return work.record(record.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no record ${record.slice(0, 40)}`); })();
   if (job) return work.job(job.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no job ${job.slice(0, 40)}`); })();
   // `shown=1` (the board's Activity tab): quiet routine runs left out before the limit; detectors read every run.
-  if (agent) return work.agent(agent.slice(0, 100), { shown: p.get("shown") === "1" });
+  // `since` with `agent`: every job of that agent from that instant on, uncut, for a caller classifying a window of its tasks.
+  if (agent) {
+    const from = since ? Date.parse(since) : NaN;
+    if (since && Number.isNaN(from)) throw fail(400, "bad_request", "since is an ISO timestamp");
+    // `brief=1` alone: the rows without the timeline, for the caller classifying a window (fleet-steward's scorecard).
+    return work.agent(agent.slice(0, 100), { shown: p.get("shown") === "1", ...(since ? { since: from } : {}), ...(p.get("brief") === "1" ? { brief: true } : {}) });
+  }
   if (since) {
     const to = p.get("to") ?? undefined;
     if (Number.isNaN(Date.parse(since)) || (to && Number.isNaN(Date.parse(to)))) throw fail(400, "bad_request", "since and to are ISO timestamps");
