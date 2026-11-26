@@ -12,14 +12,16 @@ const DOWN_MS = 15 * MIN; // an app incident open this long (the app-incident lo
 const STALE_MS = 60 * MIN; // a source with no good pass this long
 /** Sources on their own cadence: the security scanner runs daily; the GitHub change feed records a run every 5 minutes. */
 const STALE_FOR: Record<string, number> = { security: 26 * 60 * MIN, github_feed: 15 * MIN };
+/** Sources whose passes are far apart: a single failed pass is not a source-down while the next pass may still land. */
+const FAILING_FOR: Record<string, number> = { slack: 60 * MIN };
 const age = (t: string | null | undefined, now: number) => (t ? now - Date.parse(t) : Infinity);
 const mins = (ms: number) => `${Math.round(ms / MIN)} min`;
 
 type SourceRow = { source: string; last_ok: string | null; failing: boolean };
-/** The sources to raise: no good pass within their allowance, or failing with the last good pass over 15 minutes old. */
+/** The sources to raise: no good pass within their allowance, or failing with the last good pass over its failing allowance. */
 export function staleSources(rows: SourceRow[], t: number): { key: string; reason: string }[] {
   return rows
-    .filter((x) => age(x.last_ok, t) > (STALE_FOR[x.source] ?? STALE_MS) || (x.failing && age(x.last_ok, t) > DOWN_MS))
+    .filter((x) => age(x.last_ok, t) > (STALE_FOR[x.source] ?? STALE_MS) || (x.failing && age(x.last_ok, t) > (FAILING_FOR[x.source] ?? DOWN_MS)))
     .map((x) => ({ key: x.source, reason: `source src_${x.source}: last good pass ${x.last_ok ? `${mins(age(x.last_ok, t))} ago` : "never"}${x.failing ? "; its latest pass failed" : ""}` }));
 }
 /** Sources whose scope is one scanned target and whose error column carries that target's finding ("image not inventoried"), not a failed pass. */
