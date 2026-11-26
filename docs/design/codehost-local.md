@@ -102,9 +102,7 @@ Afterwards it writes the `merged` ref and deletes the task branch. The merge's r
 grader reads. The apps platform deploys `main` of a registered app as it does today.
 
 **Not carried over locally:** merge trains and Actions re-runs, Dependabot (GitHub services), the image scan (a later build;
-owner), and a design-review gate. The UI Reviewer's handbook has a local section (verdict comment
-`design-review: success|failure <head sha>` on its review task), but the merge does not read it today: the only required
-check is the `change` job.
+owner). The only required check is the `change` job.
 
 ## 6. Apps platform reads through the role
 

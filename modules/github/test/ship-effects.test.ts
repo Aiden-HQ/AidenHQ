@@ -120,11 +120,13 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     res.writeHead(404).end("{}");
   });
   const calls = [];
+  const memberPr = { v: { reviewThreads: { nodes: [] }, comments: { nodes: [] } } };
   /** git against the bare origin, as GitHub's side would hold it (no hooks from the host's own environment). */
   const bare = (args) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   const gh = async (method, path, body) => {
     calls.push({ method, path, body, as: body?.as });
     if (path === "/graphql" && body.query.includes("enqueuePullRequest")) return enqueueAnswer(queue);
+    if (path === "/graphql" && body.query.includes("MemberComments") === false && body.query.includes("reviewThreads(last")) return { status: 200, body: { data: { repository: { pullRequest: memberPr.v } } } };
     if (path === "/graphql") return { status: 200, body: { data: { repository: { pullRequest: { id: "PR_7", state: "OPEN", headRefOid: pr.head, baseRefName: "main", isInMergeQueue: Boolean(queue.head), mergeQueueEntry: queue.head ? { headCommit: { oid: queue.head } } : null, ...queue.review } } } } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
@@ -207,7 +209,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
     graphql: async () => ({}),
   };
-  const adoption = { generation, refused: undefined, hold: undefined, task: "t1" };
+  const adoption = { generation, refused: undefined, hold: undefined, task: "t1", comments: undefined };
   // Ship's answer, and its final tier check where github passes the write and the live head, base and author. A fork's head binding
   // lives in ship's own answer: an `at` other than the handed-off head reads as a stop, even while the adoption is stalled.
   const handoffHead = { head: undefined };
@@ -216,6 +218,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     ...(adoption.task ? { task: adoption.task } : {}),
     ...(handoffHead.head !== undefined && at !== handoffHead.head ? { hold: { kind: "stopped", reason: "the write isn't on the head handed off" } } : adoption.hold ? { hold: adoption.hold } : {}),
     ...(adoption.refused && check ? { refused: adoption.refused } : {}),
+    ...(adoption.comments && check ? { comments: adoption.comments } : {}),
   }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
@@ -243,7 +246,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, base, c1, fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, treePosts, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; }, refuseTree: (v) => { refuseTree = v; } };
+  return { memberPr, root, ws, origin, base, c1, fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, treePosts, duringRepair: (fn) => { duringRepair = fn; }, duringPush: (fn) => { duringPush = fn; }, refuseRef: (v) => { refuseRef = v; }, refuseTree: (v) => { refuseTree = v; } };
 }
 
 test("a push onto an adopted PR's branch is written through the API as the code host's sign-in, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
@@ -493,6 +496,18 @@ test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts
   assert.ok(sent.every((c) => c.as === undefined), "the queue is joined as the code host's sign-in, never the reviewer App");
 });
 
+test("a member's comment since the record was filed ends an approve and an enqueue before they go on, once", async (t) => {
+  const { c1, calls, run, adoption, memberPr } = await setup(t);
+  adoption.comments = { since: "2020-01-01T00:00:00Z" };
+  memberPr.v = { reviewThreads: { nodes: [{ id: "T1", isResolved: false, path: "a.ts", line: 1, comments: { nodes: [{ fullDatabaseId: "1", author: { __typename: "User", login: "maxsam4" }, authorAssociation: "MEMBER" }] }, last: { nodes: [{ fullDatabaseId: "1", body: "fix this", author: { __typename: "User", login: "maxsam4" }, authorAssociation: "MEMBER" }] } }] }, comments: { nodes: [] } };
+  const a = { repo: REPO, number: 7, head: c1, generation: 2, base: "main" };
+  const approve = await run("k-00000000000000e0", "github.approve", a);
+  assert.match(approve.text, /^ship-tier-pending: .*members have open review comments/, approve.text);
+  assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/reviews")).length, 0);
+  assert.match((await run("k-00000000000000e1", "github.enqueue", { ...a, attempt: 1 })).text, /^ship-tier-pending: .*members have open review comments/);
+  assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("enqueuePullRequest")).length, 0);
+});
+
 test("ship's final tier check refuses an approve before it posts; a dismissal asks no tier and dismisses only the App's approvals", async (t) => {
   const { c1, calls, run, adoption } = await setup(t);
   const a = { repo: REPO, number: 7, head: c1, generation: 2, base: "main" };
@@ -578,9 +593,9 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.deepEqual(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, running] }), { do: "wait", why: "checks are still running on its head" });
   // A superseded cancelled twin never counts as pending: the newest run of the name decides.
   assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name: "packages (1)", kind: "run", rank: 1, ok: false, pending: false }, { name: "packages (1)", kind: "run", rank: 2, ok: true, pending: false }] }).do, "stall", "an old cancelled run is not a pending check");
-  // The design review and code review's advisory commit *statuses* are not what GitHub holds a merge for, so one pending never
+  // Code review's advisory commit *status* is not what GitHub holds a merge for, so one pending never
   // hides a stall; a check run that only shares the name is the repo's own job and still waits.
-  for (const name of ["design-review", "aidenhq/review"]) {
+  for (const name of ["aidenhq/review"]) {
     assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name, kind: "status", ok: false, pending: true }] }).do, "stall", `the advisory ${name} status is not a running check`);
     assert.equal(go({ mergeStateStatus: "BLOCKED" }, { checks: [...ok, { name, kind: "run", ok: false, pending: true }] }).do, "wait", `a check run named ${name} is still running`);
   }
@@ -674,10 +689,6 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   const unread = await run(true, false, "in_progress", 403);
   assert.equal(unread.calls.filter((c) => c.startsWith("PUT")).length, 0, unread.calls.join("\n"));
   assert.equal(unread.outcomes.length, 0, "waiting, not settled");
-  // The advisory design review alone is no CI: still waiting, never merged on it.
-  const design = await run(true, false, "in_progress", 403, [{ name: "design-review", status: "completed", conclusion: "success" }]);
-  assert.equal(design.calls.filter((c) => c.startsWith("PUT")).length, 0, design.calls.join("\n"));
-  assert.equal(design.outcomes.length, 0, "waiting, not settled");
 });
 
 test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {

@@ -5,10 +5,10 @@ import { GATE_CHECK, contextRank, latestChecks, namedChecks, skippedImageScan } 
 const run = (name, status, conclusion = null) => ({ __typename: "CheckRun", name, status, conclusion });
 const rollup = (...nodes) => ({ contexts: { nodes } });
 
-test("checks are read as named results; the design review and code review are advisory; an image scan skip needs an image change", () => {
+test("checks are read as named results; code review is advisory; an image scan skip needs an image change", () => {
   const checks = namedChecks(rollup(
     run(GATE_CHECK, "COMPLETED", "SUCCESS"), run("lint", "COMPLETED", "FAILURE"), run("build", "IN_PROGRESS"), run("docs", "COMPLETED", "SKIPPED"),
-    { __typename: "StatusContext", context: "legacy", state: "PENDING" }, run("design-review", "COMPLETED", "FAILURE"),
+    { __typename: "StatusContext", context: "legacy", state: "PENDING" },
     { __typename: "StatusContext", context: "aidenhq/review", state: "ERROR" },
   ));
   assert.deepEqual(checks.map((c) => [c.name, c.ok, c.pending]), [[GATE_CHECK, true, false], ["lint", false, false], ["build", false, true], ["docs", true, false], ["legacy", false, true]]);

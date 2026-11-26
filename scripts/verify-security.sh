@@ -797,19 +797,20 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
 # the head the record bound (GitHub refuses any other), only after decide says so (open on the default branch, at that head,
 # every named check green, none truncated, the base's gate check present). Nothing in the
 # queue updates, rebases, retargets, re-runs, deletes or closes: a moved head or base goes back to the PR's own path. Its only
-# other GitHub write is the design review's `pending` commit status (design-review.ts; never success or failure: the review
-# is advisory and never holds a merge). Its only other GitHub calls are two confirming reads on the same token
+# other GitHub calls are two confirming reads on the same token
 # — `GET /repos/:slug`, and the PR itself (`GET /repos/:slug/pulls/:n`) — which tell a deleted repo or PR from one this token
 # can no longer see before a NOT_FOUND ends an approved merge; neither writes. An adopted PR's merge (ship, #1669) adds three reads,
 # none a write: every check on the head (`check-runs` / `statuses`, paged), and the target branch's required checks (its rules and
 # classic protection); decide() with ship's context judges those, stalls a PR off the default branch, and the queue reads ship's
-# generation right before the PUT. The record is the
+# generation right before the PUT. A PR handed to ship whose repo's `fix` includes review also adds one more read, never a write: its
+# review threads and conversation comments, one GraphQL query per page (member-comments.ts), so a member's open comment holds it like a
+# finding. The record is the
 # review in our own repos; a product merge is Tier 0 only on its exact-head eligibility (productMergeEligible). Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
 # instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
-rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"; rdr="modules/github/service/src/design-review.ts"
-[ "$(grep -c 'd\.gh(' "$rq")" = 10 ] && grep -qF 'const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);' "$rq" && grep -qF 'await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"
+[ "$(grep -c 'd\.gh(' "$rq")" = 11 ] && grep -qF 'const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);' "$rq" && grep -qF 'await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: MEMBER_COMMENTS_QUERY,' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/actions/runs?event=merge_group&per_page=50`);' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);' "$rq" \
   && grep -qF 'const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);' "$rq" \
@@ -835,7 +836,6 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (!def || pr.baseRefName !== def) return ship ? { do: "wait"' "$rm_" && grep -qF ': { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch' "$rm_" \
   && grep -qF 'if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail"' "$rm_" \
   && grep -qF 'if (!named.length && !noChecksOk) return { do: "wait"' "$rm_" \
-  && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW_CHECK,' "$rdr" \
   && grep -qF 'if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge"' "$rplan" \
   && grep -qF 'export const ownRepo = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos) => inOrg(fleetOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/git-auth.ts \
   && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/git-auth.ts \
@@ -850,7 +850,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));' "$rplan" && grep -qF 'const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);' "$rplan" \
   && grep -qF 'agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rplan" \
-  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); its only other write is a pending design-review status; outside merges refused in plan and queue; a product merge is Tier 0 only with ci-required successful (not neutral or skipped) and code review's pass on its exact head, checked again at the merge ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
+  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); it has no other write; outside merges refused in plan and queue; a product merge is Tier 0 only with ci-required successful (not neutral or skipped) and code review's pass on its exact head, checked again at the merge ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
 # The AI reviewer's own code (evalgate.ts REVIEWER_CODE) merges on CI's reviewer-eval job, part of ci-required; the code host
 # runs no eval of its own. An `aidenhq` marketplace pin never lands through an apply: official modules come with the product pin.
 rgate="modules/github/service/src/evalgate.ts"

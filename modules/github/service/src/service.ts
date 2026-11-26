@@ -45,7 +45,6 @@ import { candidatesOf, readSiblings } from "./siblings.ts";
 import { withBranch } from "./branch-lock.ts";
 import { notePrTask } from "./pr-tasks.ts";
 
-import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
 import { copyBoxBundle, publishRef } from "./aidenhq-sdk/box-bundle.ts";
 import { APPLY_PATHS } from "./aidenhq-sdk/instance-paths.ts";
@@ -124,7 +123,7 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
  * now, and the hold it sits on when it is. A `stalled` hold leaves the adoption in place: the push that resumes it may land, and
  * nothing else. */
-export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean }> };
+export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean; /** Ask for members' open review comments before the write goes on (member-comments.ts): the hand-off's time, and the PR author whose own comments ask nothing. */ comments?: { since: string; author?: string } }> };
 /**
  * The hold off ship's answer, when it carries one: a `stalled` one still admits the push that resumes it, so it is the plan's to
  * judge with its kind. A hold it can't read (not an object, or no kind) is still a hold: it reads as `unknown`, which no write
@@ -145,9 +144,9 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
       const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), at, ...(check ? { do: check.do, head: check.head, base: check.base, association: check.association, ...(check.policy ? { policy: check.policy } : {}) } : {}) });
       const r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/generation?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
-      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown };
+      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown; comments?: { since?: unknown; author?: unknown } };
       const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 ? (j.generation as number) : null;
-      return { generation, ...(holdOf(j.hold) ?? {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}) };
+      return { generation, ...(holdOf(j.hold) ?? {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}), ...(typeof j.comments?.since === "string" ? { comments: { since: j.comments.since, ...(typeof j.comments.author === "string" ? { author: j.comments.author } : {}) } } : {}) };
     },
   };
 }
@@ -879,8 +878,6 @@ export function createService(o: Options) {
       flow.pushed(s.slug, n, sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
     }
     flow.checksStarted(s.slug, n, sha, undefined, a.workspace);
-    // A fleet-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
-    if (same(s.org, o.fleetOrg)) void designReviews?.fileDesignReview({ repo: s.slug, number: n, head: sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
   }
   /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
   async function run1(rec: { id: string; kind: string; args: any; task?: string; identifier?: string; tier?: number }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
@@ -1054,6 +1051,8 @@ export function createService(o: Options) {
     const at = o.ship ? await o.ship.generation(repo, n, head, check).catch(() => undefined) : undefined;
     if (at?.generation === generation && at.refused) return `${at.retry ? "ship-tier-pending" : "ship-tier"}: https://github.com/${repo}/pull/${n}: ${at.refused}: nothing was done.`;
     if (at?.generation !== generation) return `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
+    // A member's comment since the record was filed: the same read the round's decision makes, once, right before the write.
+    if (check && at.comments && (await merges.openComments(repo, n, at.comments)).length) return `ship-tier-pending: https://github.com/${repo}/pull/${n}: members have open review comments: nothing was done.`;
     if (at.hold && !holdAdmits(at.hold, { push, task: push ? at.task : undefined })) return `ship-generation: https://github.com/${repo}/pull/${n} is on hold by ship (${at.hold.kind}${at.hold.kind === "stalled" ? ": only the push that resumes it may land" : ""})${at.hold.reason ? `: ${at.hold.reason}` : ""}: nothing was done.`;
     return undefined;
   }
@@ -1560,9 +1559,6 @@ export function createService(o: Options) {
     if (!r.ok) throw Object.assign(new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`), { status: r.status });
     return j;
   }
-  // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
-  // queue waits on for its verdict.
-  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, gh: (m, p, b) => gh(m, p, b, { background: true }), log });
   // The managed repos: the fleet org's, the product repo and the instance repo.
   async function managedRepos(): Promise<string[]> {
     const out = new Set([o.productRepo, o.instanceRepo].filter(Boolean).map((r) => r!.toLowerCase()));
@@ -2022,9 +2018,7 @@ export function createService(o: Options) {
     startMerges: () => merges.start(),
     /** The release train (train.ts): only with the product and instance repos set. */
     startReleases: () => train?.start(),
-    /** The superseded design reviews' sweep (design-review.ts). */
-    startDesignReviews: () => startDesignReviewSweep(designReviews, { log }),
-    designReviews, train, managedRepos: () => (access.connected() ? managedRepos() : Promise.resolve([] as string[])),
+    train, managedRepos: () => (access.connected() ? managedRepos() : Promise.resolve([] as string[])),
     /** The change feed this service's train reads its product tip from. */
     useFeed: (f: Pick<Feed, "tip">) => { feed = f; },
     /** Held writes run once GitHub is connected again: checked every 30 s. */
@@ -2036,6 +2030,6 @@ export function createService(o: Options) {
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
     /** Ship's round decision for an adopted PR (merges.ts decision), for /internal/ship/decision. */
-    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number }) => merges.decision(repo, number, head, view),
+    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string; author?: string } }) => merges.decision(repo, number, head, view),
   });
 }

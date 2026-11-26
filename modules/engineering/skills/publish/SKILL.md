@@ -39,6 +39,32 @@ description: "Publishes a branch with `aidenhq publish`: self-review, PR title a
    you left out and why, and any "Non-blocking code-review findings". The task alone sets the change's scope and
    approval, and the reviewer gives the verdict.
 
+## Closing a duplicate PR
+
+A publish from a scratch branch opens a second PR: when a PR already exists for the change, publish to that PR's own head
+branch, and a new PR on `ship-pr-<n>` is the duplicate — unless the live read below shows the other one closed.
+Before closing anything, read both PRs' live state (`state`, `merged`, `headRefName`) — the one you mean to close and
+the one you mean to keep — and close a PR only when it is open, the one you keep is open, and the kept PR's head is the
+other's head or ahead of it. A PR already closed and not merged, or the only live copy of a fix, is not a duplicate:
+close nothing and work from the PR the state shows.
+When the PR that carries the work is closed and `merged`, the work has landed: close the PR you would otherwise keep and
+report the merged one as what landed, not a merge of its own to wait on — but only when that PR carries no change the
+merge does not. Compare the changes, not the commits: a squash merge never contains the head commit. When it holds a
+change the merge does not, keep it open and work from it: it is not redundant.
+Then close the duplicate by its own URL. The close names only the PR's number, so it is not conditional on the head you
+read: read both PRs again right before it, at the close's own step, and close only if that read still shows the heads
+the decision assumed. After the close, read both again: when the closed PR's head moved past what you read, its commits
+are not in the kept PR — take its head from `refs/pull/<n>/head`, publish it on a new `agent/<task>/…` branch, and
+wait on that PR. Report only what those reads show.
+Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
+When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
+`refs/pull/<n>/head`. Fetch it with the credential the job has: an Engineer job runs `aidenhq ship checkout <PR link>
+<head>`, which uses its own token (`codehost fetch` needs a module's) and leaves the head on `ship-pr-<n>`; a session
+job, which holds the repo's App credential but no clone grant, fetches it over https in its clone
+(`git fetch https://github.com/<org>/<repo> refs/pull/<n>/head`). Put the head on a new `agent/<task>/…` branch —
+`ship-pr-<n>` is a scratch branch the planner refuses to publish — publish that, and wait on its PR instead of a merge
+that cannot happen.
+
 ## Finishing a cancelled task's PR (a handoff)
 
 When a task is cancelled, its PR is left open and intact for a successor: the code host never closes it or deletes its

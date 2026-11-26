@@ -6,7 +6,7 @@
 export const MARKER = "<!-- aidenhq-ship -->";
 
 /** The line that acknowledges a member's explicit hand-off (the `ship` label or a `/ship` comment). */
-export const ACK = "Ship has this PR: it will rebase, fix CI and review findings, and merge when ready.";
+export const ACK = "Ship has this PR: it will rebase, fix CI and review comments, and merge when ready.";
 
 const FIXED = {
   /** Ship is working, or waiting on something that needs no one. */

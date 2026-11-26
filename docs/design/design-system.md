@@ -33,11 +33,13 @@ Usage and migration live in `modules/apps-platform/design-system/README.md`; thi
 - **Behaviour rules from the owner's corrections:** filters apply instantly, URL state, partial updates (no reload that
   loses focus), details in a drawer, status first, sources on facts, honest empty states, no invented dates or internal
   labels on screen.
-- **Light UI review.** A UI review is one quick look that blocks only obvious, major breakage the PR introduced (the page
-  doesn't render, a core flow it touches is broken, data missing or wrong, unusable at desktop width, a severe
-  accessibility blocker on the primary flow, a structural departure from a mockup the task names); everything else is a
-  non-blocking note, and when unsure it passes. A PR gets at most one failing verdict: the re-review checks only the
-  blockers that verdict named (`modules/design/agents/ui-reviewer/AGENTS.md`).
+- **UI review on request.** The UI Reviewer is a professional designer someone asks (the owner, Aiden or another agent) to
+  review a PR or an app; nothing triggers it and it sets no commit status. It reports verified bugs (obvious, major
+  breakage the PR introduced; a quick look, when unsure it leaves it out) and design improvements ranked by impact (visual
+  polish, ease of use), which never block (`modules/design/agents/ui-reviewer/AGENTS.md`). For a PR it judges the
+  before|after pictures of each changed page (`ui-review --baseline`), dark mode included: what is broken in the after that
+  was fine in the before. Its model is GPT Sol by default (`modules/design/module.yaml`); set another with
+  `overrides.agents.ui-reviewer.model` in `instance.yaml`.
 
 ## Pieces
 

@@ -790,7 +790,7 @@ export function App() {
           </div>
         </header>
       )}
-      {onBoard && work && <AttentionStrip onSignIn={signInNeeded} compact />}
+      {onBoard && work && <AttentionStrip onSignIn={signInNeeded} />}
       {!mobile && onBoard && (
         <header className="page-tools tt-tools">
           <div className="tt-row">

@@ -31,7 +31,7 @@ Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them
 
 - New apps, screens and major UI changes start with the UI/UX Designer (`ui-designer`): who uses the screen, what it answers, the data, the repository, who asked, and for an existing app its owning agent (`fleet_catalog`). A reference design goes on its task as files (source and screenshots). The designer hands the build to an Engineer itself.
 - A UI task names the purpose, the data and the states, and its rubric includes "the page renders styled under the app's CSP with no console errors" and "the header's brand is `Link href="/"` and opens home in its default state; a redesign starts from the starter's shells; every clickable element visibly acts". An app on the old plain-CSS kit moves to the starter when its UI next changes: say "migrate to shadcn/ui (the design-system README's migration guide)". Small edits go straight to an Engineer. An app with no sign-in of its own: "no app login".
-- A PR that changes UI files waits for the UI Reviewer's `design-review` verdict. For any other PR, ask it with the repository and PR link (`task_delegate`, else `task_create` with `assignee: ui-reviewer`).
+- The UI Reviewer reviews only on request: ask it for a PR (repository and PR link) or an app (its name or URL) with `task_delegate`, else `task_create` with `assignee: ui-reviewer`. It reports on its own task; its verdict never holds a merge.
 - Asked by the designer about your app: answer on its task with what people use it for, what the data means and what you want changed.
 
 ## Graded work
