@@ -128,7 +128,7 @@
   .prr .s { color: var(--soft); display: flex; gap: 8px; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; }
   .prr .s > :last-child { overflow: hidden; text-overflow: ellipsis; }
   .prr .r, .prr .w { color: var(--soft); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .prr .chev { color: var(--soft); transition: transform .26s var(--ease); display: inline-block; font-size: 15px; line-height: 1; }
+  .prr .chev { color: var(--soft); transition: transform .26s var(--ease); display: grid; place-items: center; width: 16px; height: 16px; font-size: 15px; line-height: 1; }
   .prw.open .chev { transform: rotate(90deg); }
   .prr > .tag { justify-self: start; }
   .bar4 { height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: hidden; width: 72px; flex: none; position: relative; }
@@ -193,6 +193,7 @@
     .rt { display: flex; align-items: center; gap: 6px; } .rt select.tsel { width: auto; flex: 0 1 132px; } .rt .ra { min-width: 0; margin-left: auto; }
     .globs { padding-left: 10px; }
     .prr { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "tag w chev" "main main main" "sum sum r"; gap: 4px 10px; padding: 12px 16px; }
+    .prr .r:empty, .prr .s:empty { display: none; } .prr .w { text-align: right; } .prr .chev { align-self: center; }
     .prr > .tag { grid-area: tag; } .prr > div:nth-child(2) { grid-area: main; } .prr > div.s { grid-area: sum; } .prr .r { grid-area: r; } .prr .w { grid-area: w; } .prr .chev { grid-area: chev; }
     .prr .t { white-space: normal; } .prr .s { flex-wrap: wrap; white-space: normal; }
     .xp { padding: 4px 16px 14px; }
@@ -540,7 +541,9 @@
   const gates = (t) => [...t.on_open, ...t.on_push].some((c) => c.mandatory);
 
   /* -------------------------------------------------------------------------------- Reviews: results first */
-  const WHO = "Max";
+  // The reviewer teammate: the board names it in the host context (an owner may rename it); Max is the module's declared default name.
+  const REVIEWER = "reviewer-manager";
+  let WHO = "Max";
   const DAY = 86400000;
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many ?? one + "s"}`;
   const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : 0; };
@@ -580,7 +583,7 @@
       h("div", { className: "who" }, h("span", {}, h("b", { textContent: WHO }), " · PR reviewer"), live1 ? h("span", { className: "live" }, h("span", { className: "dot done" }), live1) : t("span", "soft", "Nothing is in review right now")),
       h("div", { className: "acts" }, btn("Review a PR now", () => { form = null; go({ page: "pr" }); }), btn(`Ask ${WHO}`, () => talk(""))));
   }
-  const talk = (text) => ask(`@reviewer-manager ${text}`.trim()).catch(fail);   // the agent's key: it routes after an owner's rename of the name shown
+  const talk = (text) => ask(`@${REVIEWER} ${text}`.trim()).catch(fail);   // the agent's key: it routes after an owner's rename of the name shown
 
   function headline(groups) {
     const since = Date.now() - days * DAY, reviewed = groups.filter((g) => g.runs.some((r) => r.status === "done" && ts(r) >= since));
@@ -624,7 +627,7 @@
         btn("Always review outside PRs here", () => edit(n.repo, { forks: "auto" })), btn("Open the PR ↗", () => send("ui/open-link", { url }).catch(fail), "quiet"), avg ? t("span", "soft", `About ${costText(avg)}`) : h("span"));
       return h("div", { className: "dr" }, h("div", { className: "top" }, h("p", { className: "ask-q", textContent: `Someone outside the team opened #${n.number}${n.title ? ` (${n.title})` : ""} in ${n.repo}. Review it on your budget?` }), t("span", "soft", age)), acts);
     });
-    return h("section", { className: "card" }, h("div", { className: "head" }, h("span", { className: "bar" }, h("h2", { textContent: "Needs you" }), items.length ? t("span", "count", String(items.length)) : null), t("small", "", `${WHO} settles the rest himself`)),
+    return h("section", { className: "card" }, h("div", { className: "head" }, h("span", { className: "bar" }, h("h2", { textContent: "Needs you" }), items.length ? t("span", "count", String(items.length)) : null), t("small", "", `${WHO} settles the rest`)),
       ...(rows.length ? rows : [t("div", "empty", "Nothing waits on you.")]));
   }
 
@@ -642,7 +645,7 @@
     const row = h("div", { className: "prr", role: "button", tabIndex: 0, ariaExpanded: String(expanded.has(g.key)) },
       h("span", { className: `tag ${g.tone}`, textContent: g.word }),
       h("div", { style: "min-width:0" }, h("div", { className: "t", title: g.title ?? "" }, `#${g.number} `, h("span", { textContent: "" }), g.title ?? `at ${short(g.newest.head)}`), sub),
-      mid, t("span", "r", g.rounds ? plural(g.rounds, "round") : "—"), t("span", "w", g.cur.some(live) ? "now" : agoShort(g.newest.ended ?? when(g.newest))), t("span", "chev", "›"));
+      mid, t("span", "r", g.rounds ? plural(g.rounds, "round") : ""), t("span", "w", g.cur.some(live) ? "now" : agoShort(g.newest.ended ?? when(g.newest))), t("span", "chev", "›"));
     const xp = h("div", { className: "xp" });
     const coll = h("div", { className: `collapse${expanded.has(g.key) ? " open" : ""}` }, h("div", {}, xp));
     coll.inert = !expanded.has(g.key);   // a closed panel's controls are out of the tab order
@@ -777,11 +780,16 @@
     };
     add.append(name, btn("Watch repo", addRepo, "primary"));
     add.addEventListener("submit", (e) => { e.preventDefault(); addRepo(); });
+    // One policy sentence for the repos that share it (the commonest, when two or more do); the others keep their own.
+    const how = new Map(rows.filter((r) => !r.gone).map((r) => [r.repo, howSentence(r.repo)])), tally = new Map();
+    for (const v of how.values()) tally.set(v, (tally.get(v) ?? 0) + 1);
+    const [top, n] = [...tally].sort((a, b) => b[1] - a[1])[0] ?? ["", 0];
+    const common = n >= 2 ? top : "";
     return h("section", { className: "card" }, h("h3", { textContent: `What ${WHO} covers` }),
-      ...(rows.length ? rows.map((r) => h("div", { className: r.gone || r.repo in pending.watch ? "rrepo unsaved" : "rrepo" },
+      ...(rows.length ? [...(common ? [t("div", "soft", `${n === rows.length ? (rows.length === 2 ? "Both repos" : `All ${rows.length} repos`) : [...how].filter(([, v]) => v === common).map(([r]) => r).join(", ")}: ${common}`)] : []), ...rows.map((r) => h("div", { className: r.gone || r.repo in pending.watch ? "rrepo unsaved" : "rrepo" },
         h("b", { textContent: r.repo }), t("span", "soft", r.gone ? "Will stop watching" : `${plural(r.prs.length, "open PR")}`),
-        r.error ? t("span", "how", r.error) : r.gone ? btn("Undo", () => { pending.unwatch = pending.unwatch.filter((x) => x !== r.repo); propose(); }, "sm") : t("span", "how", howSentence(r.repo)),
-        r.gone ? null : h("div", { className: "acts" }, linkBtn("Settings", () => { advOpen = true; advRepo = r.repo; render(); $("adv")?.scrollIntoView?.({ behavior: "smooth", block: "start" }); }), linkBtn("Review a PR here", () => { form = { url: `https://github.com/${r.repo}/pull/`, combos: [], focus: "", full: false }; go({ page: "pr" }); })))) : [t("div", "soft", "No repo is watched yet. Code review needs GitHub connected (Settings, Connections). Type owner/name below and press Watch repo: each new PR there is sorted into a risk tier and reviewed by that tier's reviewers.")]),
+        r.error ? t("span", "how", r.error) : r.gone ? btn("Undo", () => { pending.unwatch = pending.unwatch.filter((x) => x !== r.repo); propose(); }, "sm") : (how.get(r.repo) !== common ? t("span", "how", how.get(r.repo)) : null),
+        r.gone ? null : h("div", { className: "acts" }, linkBtn("Settings", () => { advOpen = true; advRepo = r.repo; render(); $("adv")?.scrollIntoView?.({ behavior: "smooth", block: "start" }); }), linkBtn("Review a PR here", () => { form = { url: `https://github.com/${r.repo}/pull/`, combos: [], focus: "", full: false }; go({ page: "pr" }); }))))] : [t("div", "soft", "No repo is watched yet. Code review needs GitHub connected (Settings, Connections). Type owner/name below and press Watch repo: each new PR there is sorted into a risk tier and reviewed by that tier's reviewers.")]),
       add, t("div", "soft", `Today ${usd(ov.repos.day_spent_usd)} across repos · bounded by the install-wide limits in Settings`),
       ...(ov.problems?.length ? [t("div", "banner warn", `The setting has problems: ${ov.problems.slice(0, 3).join("; ")}`)] : []));
   }
@@ -793,7 +801,7 @@
     const repo0 = ov.repos.repos[0]?.repo, multi = groups.find((g) => g.rounds > 1);
     const sugg = [repo0 ? `Be stricter on ${repo0}` : "Watch a repo for me", "Skip generated files in reviews", multi ? `Why did #${multi.number} take ${multi.rounds} rounds?` : null].filter(Boolean);
     return h("section", { className: "card" }, h("h3", { textContent: `Change something? Ask ${WHO}` }), h("div", { className: "composer" }, box, go1),
-      h("div", { className: "sugg" }, ...sugg.map((s) => btn(s, () => talk(s)))), t("span", "soft", `${WHO} changes his own settings and shows you exactly what changed.`));
+      h("div", { className: "sugg" }, ...sugg.map((s) => btn(s, () => talk(s)))), t("span", "soft", `${WHO} changes its own settings and shows you exactly what changed.`));
   }
   function batchItem(b) {
     const tone = b.status === "done" ? (b.verdict === "clean" ? "ok" : "needs") : b.status === "failed" ? "failed" : live(b) || b.status === "running" ? "run" : "";
@@ -945,7 +953,7 @@
     } else app.replaceChildren(...(route.page === "run" ? runPage() : route.page === "batch" ? batchPage() : route.page === "pr" ? prForm() : treeForm()));
     if (!$("lists").querySelector("#repos")) $("lists").append(h("datalist", { id: "repos" }));
   }
-  start("code-review", (ctx) => loadOverview(ctx));
+  start("code-review", (ctx) => { WHO = ctx?.teammates?.[REVIEWER] ?? WHO; return loadOverview(ctx); });
 </script>
 </body>
 </html>

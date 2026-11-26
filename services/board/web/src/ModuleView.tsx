@@ -82,6 +82,8 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   const loads = useRef(0);
   const started = useRef(false);
   const id = page?.id;
+  const roster = useRef<Promise<Record<string, string>> | undefined>(undefined);
+  const names = () => (roster.current ??= Promise.race([api.roster().then((r) => Object.fromEntries(r.roster.filter((a) => a.key && a.teammate).map((a) => [a.key!, a.name])), () => ({})), new Promise<Record<string, string>>((ok) => setTimeout(() => ok({}), 1500))]));
   useEffect(() => {
     loads.current = 0;
     started.current = false;
@@ -102,7 +104,13 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       if (!frame.current || e.source !== frame.current.contentWindow || loads.current > 1) return;
       const m = e.data as Msg;
       if (m?.jsonrpc !== "2.0") return;
-      if (m.method === "ui/initialize") return (started.current = true), answer(m, { result: { protocolVersion: PROTOCOL, hostInfo: { name: "AidenHQ board", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { ...hostContext(), route: sub ?? "" } } });
+      if (m.method === "ui/initialize") {
+        started.current = true;
+        // `teammates`: each teammate's key and current name (an owner may rename one), for a view that speaks of its own.
+        const teammates = await names();
+        if (!live || e.source !== frame.current?.contentWindow || loads.current > 1) return;
+        return answer(m, { result: { protocolVersion: PROTOCOL, hostInfo: { name: "AidenHQ board", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { ...hostContext(), teammates, route: sub ?? "" } } });
+      }
       if (m.method === "ui/notifications/size-changed" && typeof m.params?.height === "number") return setHeight(Math.min(4000, Math.max(160, Math.ceil(m.params.height))));
       // A link the view asks to open: http(s) only, in a new tab the page can't reach back from.
       if (m.method === "ui/open-link") {
