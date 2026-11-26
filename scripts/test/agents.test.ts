@@ -141,9 +141,9 @@ test("event routines compile and the lints hold", () => {
   assert.ok(bundle.agents[r.agent].enabled_tools.paperclip_tasks.includes("routine_events"), "its agent reads the batch");
 });
 
-test("the Architect: max effort, only its own role, no fleet tools, reads every source; it changes the fleet only by delegating", () => {
+test("the Architect: high effort, only its own role, no fleet tools, reads every source; it changes the fleet only by delegating", () => {
   const a = compile(product, withAgents({}, ["slack", "github"])).paperclip.agents.architect;
-  assert.deepEqual([a.model, a.reasoning_effort], ["~deepseek/deepseek-flash-latest", "max"]);
+  assert.deepEqual([a.model, a.reasoning_effort], ["~deepseek/deepseek-flash-latest", "high"]);
   assert.deepEqual(a.roles, ["architect", "repo-checkout"]);
   assert.deepEqual(a.enabled_tools.owner_channel, ["notify"]);
   assert.deepEqual(a.enabled_tools.apps, ["app_list", "app_status", "app_logs", "app_view", "web_view", "warehouse_query"]); // research reads only: no deploys, and the request and role reads would refuse it anyway
