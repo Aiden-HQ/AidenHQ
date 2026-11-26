@@ -22,7 +22,7 @@ const MEASURE = () => {
     px.fillStyle = s;
     px.fillRect(0, 0, 1, 1);
     const d = px.getImageData(0, 0, 1, 1).data;
-    const out = { c: d[3] ? [Math.round((d[0] * 255) / d[3]), Math.round((d[1] * 255) / d[3]), Math.round((d[2] * 255) / d[3])] : [0, 0, 0], a: d[3] / 255 };
+    const out = { c: [d[0], d[1], d[2]], a: d[3] / 255 };
     cache.set(s, out);
     return out;
   };

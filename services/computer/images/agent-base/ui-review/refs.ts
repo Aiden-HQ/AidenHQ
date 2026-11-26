@@ -67,6 +67,7 @@ export async function refs(list: RefEntry[], opts: RefsOptions = {}): Promise<{ 
     await sleep(at - Date.now());
     return route.continue().catch(() => {});
   });
+  await ctx.routeWebSocket(/.*/, (ws) => void ws.close()); // no socket traffic: a reference is read, never written to
   const loadedAt = new Map<string, number>(), pages = new Map<string, number>();
   let n = 0;
   const capture = async (e: RefEntry, source: "live" | "fallback", url: string): Promise<RefResult | string> => {
