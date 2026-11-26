@@ -9,7 +9,7 @@ const COMMANDS: Record<string, string> = {
   refs: "refs <refs.json> --out <dir> [--measure]",
   review: "review <capture dir> [--model id] [--effort low|medium|high] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n (stops starting calls once reached)]",
   "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id] [--taste file]",
-  login: "login supplied --app <app> --out state.json [--renew] | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json",
+  login: "login supplied --app <app> --out state.json | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json",
   browser: "browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir]   (prints the CDP port; runs until SIGTERM)",
 };
 

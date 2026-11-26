@@ -37,6 +37,23 @@ export function refuses(mode: Mode, method: string, url: string): boolean {
 const where = (url: string) => { try { const u = new URL(url); return { origin: u.origin, path: u.pathname }; } catch { return { origin: "", path: url.slice(0, 200) }; } };
 const pageOf = (url: string) => { try { const u = new URL(url); return u.pathname + u.search + u.hash; } catch { return url.slice(0, 200); } };
 
+const WS_BINDING = "__uiReviewSocket";
+/** Read mode's stand-ins: a WebSocket that reports itself to the guard and closes unopened; no WebTransport or peer connection. */
+const NO_CHANNELS = `(() => {
+  const report = globalThis.${WS_BINDING};
+  class WebSocket extends EventTarget {
+    constructor(url) {
+      super(); this.url = String(url); this.readyState = 3; this.protocol = ""; this.extensions = ""; this.bufferedAmount = 0; this.binaryType = "blob";
+      try { report?.(new URL(this.url, location.href).href); } catch {}
+      setTimeout(() => { const e = new Event("error"); this.onerror?.(e); this.dispatchEvent(e); const c = new CloseEvent("close", { code: 1006 }); this.onclose?.(c); this.dispatchEvent(c); }, 0);
+    }
+    send() {} close() {}
+  }
+  Object.assign(WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+  globalThis.WebSocket = WebSocket;
+  for (const k of ["WebTransport", "RTCPeerConnection", "webkitRTCPeerConnection"]) try { delete globalThis[k]; } catch {}
+})();`;
+
 type Msg = { id?: number; method?: string; params?: Record<string, unknown>; sessionId?: string; result?: unknown; error?: { message: string } };
 export type Guard = { mode: Mode; blocked(): Blocked[]; seed(state: StorageState | null): void; close(): void };
 
@@ -69,18 +86,23 @@ export async function installGuard(cdp: string, mode: Mode, o: { log?: string; s
   const attached = async (sessionId: string, info: { targetId: string; type: string; url: string; browserContextId?: string }) => {
     urls.set(sessionId, info.url); targetOf.set(info.targetId, sessionId);
     const page = info.type === "page" || info.type === "iframe";
+    // A document's scripts take only with the Page domain on.
+    const pageOn = page ? send("Page.enable", {}, sessionId) : Promise.resolve();
     const steps: Promise<unknown>[] = [send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId)];
     if (mode !== "any") steps.push(send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId));
     if (mode === "read") {
-      steps.push(send("Network.enable", {}, sessionId).then(() => send("Network.setBlockedURLs", { urls: ["ws://*", "wss://*"] }, sessionId)));
-      // The channels request interception doesn't see (WebTransport, peer connections) are gone before the app's own code runs.
-      if (page) steps.push(send("Page.addScriptToEvaluateOnNewDocument", { source: `for (const k of ["WebTransport", "RTCPeerConnection", "webkitRTCPeerConnection"]) try { delete globalThis[k]; } catch {}` }, sessionId));
+      // The channels request interception doesn't see (WebSocket, WebTransport, peer connections) are replaced before the app's own
+      // code runs, in every document and worker: a socket never connects (it reports the refusal and closes, as a refused upgrade).
+      // (Runtime events: a binding call is reported only with the domain on.)
+      steps.push(send("Runtime.enable", {}, sessionId).then(() => send("Runtime.addBinding", { name: WS_BINDING }, sessionId)).then(() => page
+        ? pageOn.then(() => send("Page.addScriptToEvaluateOnNewDocument", { source: NO_CHANNELS }, sessionId))
+        : send("Runtime.evaluate", { expression: NO_CHANNELS }, sessionId)));
     }
     if (state && info.browserContextId && !seeded.has(info.browserContextId)) {
       seeded.add(info.browserContextId);
       steps.push(send("Storage.setCookies", { browserContextId: info.browserContextId, cookies: state.cookies.map((c) => ({ ...c, ...(c.expires > 0 ? {} : { expires: undefined }) })) }));
     }
-    if (state && page && state.origins.length) steps.push(send("Page.addScriptToEvaluateOnNewDocument", { source: seedScript(state) }, sessionId));
+    if (state && page && state.origins.length) steps.push(pageOn.then(() => send("Page.addScriptToEvaluateOnNewDocument", { source: seedScript(state!) }, sessionId)));
     await Promise.all(steps);
     await send("Runtime.runIfWaitingForDebugger", {}, sessionId);
   };
@@ -98,8 +120,8 @@ export async function installGuard(cdp: string, mode: Mode, o: { log?: string; s
         block({ method: r.method, ...where(r.url), page: pageOf(urls.get(m.sessionId!) ?? "") });
         void send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, m.sessionId);
       } else void send("Fetch.continueRequest", { requestId: p.requestId }, m.sessionId);
-    } else if (m.method === "Network.webSocketCreated" && mode === "read") {
-      block({ method: "WS", ...where(p.url as string), page: pageOf(urls.get(m.sessionId!) ?? "") });
+    } else if (m.method === "Runtime.bindingCalled" && p.name === WS_BINDING) {
+      block({ method: "WS", ...where(String(p.payload)), page: pageOf(urls.get(m.sessionId!) ?? "") });
     }
   };
   await send("Target.setDiscoverTargets", { discover: true });

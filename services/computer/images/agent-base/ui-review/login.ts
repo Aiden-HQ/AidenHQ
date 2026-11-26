@@ -1,10 +1,11 @@
 // `ui-review login`: the login ladder's rungs that sign a run in, and the session check a capture runs after each page.
-//   supplied --app <app> --out state.json [--renew]   the owner's stored login for the app's own pass (the design module's job tool
-//                                                      `login`), released only for this run's one-time nonce (NONCE_FILE)
+//   supplied --app <app> --out state.json   the owner's stored login for the app's own pass (the design module's job tool
+//                                                      `login`, kernel route POST /v1/jobtools/module/design/login),
+//                                                      released by the module only to the app's own pass
 //   form --url <login url> --user <u> --password-file <f> [--totp-file <f>] --out state.json   a user the agent found or made
 //   signup --url <signup url> --out state.json         signs up as ui-review+<run>@example.test, the mail through Mailpit
 // Each writes Playwright storage state (state.json, mode 0600) and state.meta.json (SessionMeta: no secret) beside it, and prints
-// only `signed in (<rung>) at <login path>`. Login material (passwords, TOTP seeds and codes, cookies, nonces, mail links) is read
+// only `signed in (<rung>) at <login path>`. Login material (passwords, TOTP seeds and codes, cookies, mail links) is read
 // only by this process: it is never printed, logged or written anywhere but the state and its password file, and a failed
 // login says a fixed reason, never a browser error (whose call log may quote what was typed).
 import { spawn } from "node:child_process";
@@ -24,8 +25,6 @@ export type SessionMeta = {
   again?: { rung: "supplied"; app: string } | { rung: "form"; url: string; user: string; passwordFile: string; totpFile?: string };
 };
 
-/** Where this run's one-time login nonce lives: a folder only the box's ui-review processes read (0700, the nonce 0600). */
-export const NONCE_FILE = process.env.AIDENHQ_LOGIN_NONCE || "/aidenhq/engine/.aidenhq/login-nonce";
 export const MAILPIT = { smtp: "127.0.0.1:1025", api: "http://127.0.0.1:8025" };
 
 class LoginError extends Error {}
@@ -97,19 +96,16 @@ export async function formLogin(o: { url: string; user: string; passwordFile: st
   return withPage(o.out, (page) => signIn(page, o.url, o.user, password, seed ? () => totp(seed) : undefined), "form", again);
 }
 
-/** The job tool's answer: the login, the current TOTP code (never the seed) and the run's next nonce. */
-type Released = { login_url: string; username: string; password: string; totp?: string; nonce?: string };
+/** The job tool's answer: the login and the current TOTP code (never the seed). */
+type Released = { login_url: string; username: string; password: string; totp?: string };
 
 export async function suppliedLogin(o: { app: string; out: string }) {
-  let nonce = "";
-  try { nonce = readFileSync(NONCE_FILE, "utf8").trim(); } catch { /* none */ }
-  if (!nonce) fail("no login nonce: a supplied login is for the app's own pass only");
   const gw = process.env.AIDENHQ_GATEWAY_URL || "http://10.231.2.1:8200";
   let r: Response;
   try {
     r = await fetch(`${gw}/v1/jobtools/module/design/login`, {
       method: "POST", headers: { authorization: `Bearer ${process.env.AIDENHQ_RUN_TOKEN ?? ""}`, "content-type": "application/json" },
-      body: JSON.stringify({ app: o.app, nonce }), signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({ app: o.app }), signal: AbortSignal.timeout(30_000),
     });
   } catch { return fail("the login tool didn't answer"); }
   if (!r.ok) {
@@ -117,8 +113,6 @@ export async function suppliedLogin(o: { app: string; out: string }) {
     return fail(`the login tool refused (${r.status})${why ? `: ${why.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}` : ""}`);
   }
   const got = (await r.json().catch(() => ({}))) as Partial<Released>;
-  // The next nonce first: this one is spent, and a re-login (a dead session) needs the next.
-  if (got.nonce) writeFileSync(NONCE_FILE, got.nonce, { mode: 0o600 });
   if (!got.login_url || !got.username || !got.password) return fail("the login tool's answer has no login");
   const code = got.totp;
   return withPage(o.out, (page) => signIn(page, got.login_url!, got.username!, got.password!, code ? () => code : undefined), "supplied", { rung: "supplied", app: o.app });
@@ -201,11 +195,11 @@ export async function relogin(file: string): Promise<StorageState> {
   return fresh.state;
 }
 
-const USAGE = "usage: ui-review login supplied --app <app> --out state.json [--renew] | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json";
+const USAGE = "usage: ui-review login supplied --app <app> --out state.json | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json";
 
 export async function loginCommand(argv: string[]): Promise<number> {
   const [rung, ...rest] = argv;
-  const { values: v } = parseArgs({ args: rest, options: { app: { type: "string" }, out: { type: "string" }, renew: { type: "boolean" }, url: { type: "string" }, user: { type: "string" }, "password-file": { type: "string" }, "totp-file": { type: "string" } } });
+  const { values: v } = parseArgs({ args: rest, options: { app: { type: "string" }, out: { type: "string" }, url: { type: "string" }, user: { type: "string" }, "password-file": { type: "string" }, "totp-file": { type: "string" } } });
   const out = v.out ? resolve(v.out) : "";
   if (!out || !existsSync(dirname(out))) { console.error(USAGE); return 2; }
   try {

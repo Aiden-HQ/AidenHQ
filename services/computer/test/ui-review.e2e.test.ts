@@ -160,34 +160,29 @@ describe("signed in and guarded", chrome, () => {
     assert.equal(c.code, 1); assert.match(c.text, /CAPTCHA/); assert.ok(!existsSync(st2));
   });
 
-  test("a supplied login spends its nonce, leaves the next one for a re-login, and a spent one is refused", async () => {
-    // The design module's job tool as the kernel forwards it: one nonce, spent by each answer, which carries the next.
-    let current = "n1", calls = 0;
+  test("a supplied login comes from the design module's job tool, and a refusal carries no login", async () => {
+    // The kernel route as the box sees it: the job's token; the module answers for its own pass's app and refuses the rest.
+    let calls = 0;
     const tool = createServer((req, res) => {
       let body = ""; req.on("data", (d) => (body += d)); req.on("end", () => {
         calls++;
-        const b = JSON.parse(body) as { app: string; nonce?: string };
-        if (req.url !== "/v1/jobtools/module/design/login" || b.app !== "acme" || b.nonce !== current) return void res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: "not this pass's nonce" }));
-        current = `n${calls + 1}`;
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ login_url: fx("/login"), username: SIGN_IN.user, password: SIGN_IN.password, totp: totpCode(SIGN_IN.totp), nonce: current }));
+        const b = JSON.parse(body) as { app: string };
+        if (req.url !== "/v1/jobtools/module/design/login" || req.headers.authorization !== "Bearer run-token") return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "not a live job" }));
+        if (b.app !== "acme" || Object.keys(b).length !== 1) return void res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: "not this app's pass" }));
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ login_url: fx("/login"), username: SIGN_IN.user, password: SIGN_IN.password, totp: totpCode(SIGN_IN.totp) }));
       });
     });
     await new Promise<void>((ok) => tool.listen(0, "127.0.0.1", ok));
-    const dir = tmp(), nonce = join(dir, "login-nonce"), st = join(tmp(), "state.json");
-    const env = { AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${(tool.address() as { port: number }).port}`, AIDENHQ_RUN_TOKEN: "run-token", AIDENHQ_LOGIN_NONCE: nonce };
+    const env = { AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${(tool.address() as { port: number }).port}`, AIDENHQ_RUN_TOKEN: "run-token" };
     try {
-      writeFileSync(nonce, "run-token"); // the run token in place of the nonce
+      const st = join(tmp(), "state.json");
       let l = await login("supplied", { app: "acme", out: st }, env);
-      assert.equal(l.code, 1); assert.match(l.text, /refused \(403\)/); assert.ok(!existsSync(st));
-      writeFileSync(nonce, "n1");
-      l = await login("supplied", { app: "acme", out: st }, env);
       assert.equal(l.code, 0, l.text); assert.equal(l.text.trim(), "signed in (supplied) at /login");
-      assert.equal(readFileSync(nonce, "utf8"), current); // the next nonce, for a re-login
-      l = await login("supplied", { app: "acme", out: st, renew: "" }, env);
-      assert.equal(l.code, 0, l.text);
-      writeFileSync(nonce, "n1"); // a replay of a spent nonce
-      l = await login("supplied", { app: "acme", out: join(tmp(), "state.json") }, env);
-      assert.equal(l.code, 1); assert.ok(!l.text.includes(SIGN_IN.password) && !l.text.includes(SIGN_IN.user));
+      assert.ok(!readFileSync(st.replace(/\.json$/, ".meta.json"), "utf8").includes(SIGN_IN.password));
+      l = await login("supplied", { app: "acme", out: st }, env); // a re-login asks again
+      assert.equal(l.code, 0, l.text); assert.equal(calls, 2);
+      l = await login("supplied", { app: "other", out: join(tmp(), "state.json") }, env);
+      assert.equal(l.code, 1); assert.match(l.text, /refused \(403\)/); assert.ok(!l.text.includes(SIGN_IN.password) && !l.text.includes(SIGN_IN.user));
     } finally { tool.closeAllConnections(); tool.close(); }
   });
 
