@@ -1,6 +1,6 @@
-// The design connection's tools. Reads: design_runs, design_run, design_image, design_apps, and design_evidence_put and
-// design_run_finish (they write only into this module's own store). Writes: design_run_start, design_pass_start (files a task),
-// design_pass_stop (closes one), design_issue_note (remembers the GitHub issue a pass filed for a marker).
+// The design connection's tools. Reads: design_runs, design_run, design_image, design_apps, and design_evidence_put,
+// design_run_finish and design_issue_note (the GitHub issue a pass filed for a marker): they write only into this module's own
+// store. Writes: design_run_start, design_pass_start (files a task), design_pass_stop (closes one).
 // A run belongs to the agent that started it, or a pass to the agent its task went to (the caller's signed assertion), and only
 // that agent writes to it.
 import type { Tool } from "./mcp.ts";

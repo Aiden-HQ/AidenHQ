@@ -194,12 +194,14 @@ you), the target, the live-app mode, the model, the spend mode (how many fixes a
 whether recording is on, where coverage resumes, how to sign in and the app's known issues. Run the app, capture, review,
 show the fixes and work the clicking pass as above, at that depth; the steps below take the place of "Report":
 
-1. **Resume.** When the task says "resume from <previous run>", restore its queue first:
-   `ui-review get --run <previous run> --out review queue.json run.json`. Read `review/run.json`: when its `base` is not this
-   pass's address, or its `commit` is not the commit you capture (a repo app: always pass `--commit <the checked-out sha>`),
-   the app changed since, so delete `review/` and start a new cycle (no `--resume`) and say so in the notes. Otherwise
-   `ui-review capture … --resume` takes the pages the earlier passes left. When `capture --resume` still refuses (it names
-   the commit), do the same: a clean `review/` and a new cycle.
+1. **Resume.** Every capture of a pass names what it captures: `--commit <the checked-out sha>` for a repo app (run its local
+   build on the port its restored `run.json` names, when there is one), `--commit live` for an app reviewed at its url. When
+   the task says "resume from <previous run>", restore its queue first:
+   `ui-review get --run <previous run> --out review queue.json run.json`. When that fails (the run was swept or kept no
+   queue), or `review/run.json`'s `base` is not this pass's address, or its `commit` is not this pass's, the app changed
+   since: delete `review/`, start a new cycle (no `--resume`) and say so in the notes. Otherwise `ui-review capture …
+   --resume` takes the pages the earlier passes left. When `capture --resume` still refuses (it names the commit), do the
+   same: a clean `review/` and a new cycle.
 2. **Keep the resume point.** Right after every `capture` returns, before review or clicking, put the queue on this run:
    `ui-review put --run <run> review/queue.json review/run.json`. A pass that dies later still leaves where the next one
    starts.

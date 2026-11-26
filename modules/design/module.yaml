@@ -80,10 +80,11 @@ connections:
     auth: design_service_key
     returns: untrusted
     tools:
-      # design_evidence_put and design_run_finish write only into this module's own store (the caller's own run, no outside
-      # effect): reads, so the images and the report never enter the kernel's permanent write records or an approval's arguments.
-      read: [ design_runs, design_run, design_image, design_evidence_put, design_run_finish, design_apps ]
-      write: [ design_run_start, design_pass_start, design_pass_stop, design_issue_note ]
+      # design_evidence_put, design_run_finish and design_issue_note write only into this module's own store (no outside
+      # effect): reads, so the images and the report never enter the kernel's permanent write records or an approval's arguments,
+      # and an issue's number is kept the moment GitHub confirms it, never waiting on an approval of its own.
+      read: [ design_runs, design_run, design_image, design_evidence_put, design_run_finish, design_apps, design_issue_note ]
+      write: [ design_run_start, design_pass_start, design_pass_stop ]
 # The job tools a pass's box calls (the kernel's POST /v1/jobtools/module/design/<op> forwards { op, body, caller } here with the
 # service key): login releases the app's supplied login to the pass's own ui-review process; app-session gets an AidenHQ app's
 # read-only test-user session from the kernel for it (service/src/jobtools.ts).
