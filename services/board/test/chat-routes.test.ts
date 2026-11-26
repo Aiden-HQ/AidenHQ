@@ -73,4 +73,31 @@ describe("chat routes", () => {
     expect(r.agents.find((a: { name: string }) => a.name === "Aiden").front).toBe(true);
   });
 
+  it("shows a pending card the owner still owes, even when newer records would crowd it out of the recent page", async () => {
+    // 120 newer Tier 0 records on this chat, and 50 newer reviewed records elsewhere in the fleet: the fleet page and a
+    // page of this chat's `recent` both fill up without the pending card, which only the live read still returns.
+    const noise = Array.from({ length: 120 }, (_, i) =>
+      card({ id: `T${i}`, issueId: chat.id, identifier: "WOR-10", tier: 0, state: "auto", outcome: "applied", createdAt: `2026-11-20T10:${String(i % 60).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z` }),
+    );
+    const elsewhere = Array.from({ length: 50 }, (_, i) =>
+      card({ id: `E${i}`, issueId: `other-${i}`, identifier: `WOR-${100 + i}`, tier: 1, state: "used", outcome: "applied", decidedBy: "reviewer:x", createdAt: `2026-11-21T10:${String(i % 60).padStart(2, "0")}:00.000Z` }),
+    );
+    const waiting = card({ id: "OWNER1", issueId: chat.id, identifier: "WOR-10", sentence: "Deploy the app", tier: 2, state: "pending", createdAt: "2026-11-01T10:00:00.000Z" });
+    const many = fakeRecords([...noise, ...elsewhere, waiting]);
+    const a = createApp({ taskStates: states, paperclip: pc, store, records: many, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
+    await new Promise<void>((r) => a.listen(0, "127.0.0.1", r));
+    const p = (a.address() as AddressInfo).port;
+    const view = await new Promise<any>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port: p, method: "GET", path: `/api/chats/${chat.identifier}`, headers: { host: "localhost:3120" } }, (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c));
+        res.on("end", () => (res.statusCode === 200 ? resolve(JSON.parse(text)) : reject(new Error(`${res.statusCode} ${text}`))));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    a.close();
+    expect(view.approvals.map((x: { id: string }) => x.id)).toContain("OWNER1");
+  });
+
 });

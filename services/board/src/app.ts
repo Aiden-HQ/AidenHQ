@@ -838,8 +838,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       chatMessages(issue, ctx, comments),
       stateRows([...ids]),
       work.task(issue.id).catch(() => []),
-      // `tier0`: a Tier 0 run that failed is a card the chat shows (conversation.ts shownInChat).
-      Promise.all([...ids].map((t) => cardsOf("recent", { task: t, limit: 100, tier0: true }).catch(() => [] as Approval[]))).then((p) => p.flat()),
+      // The chat's own cards whole, not a page of them: `live` is every card still able to act (pending, approved or
+      // claimed), so a decision the owner still owes is never crowded out by newer records (`recent` alone would cap it),
+      // and `recent` with `tier0` adds what ended (a failure is shown; conversation.ts shownInChat).
+      Promise.all([...ids].flatMap((t) => [
+        records.allOf("live", undefined, t).then((rows) => Promise.all(rows.map(named))).catch(() => [] as Approval[]),
+        cardsOf("recent", { task: t, limit: 100, tier0: true }).catch(() => [] as Approval[]),
+      ])).then((p) => p.flat()),
     ]);
     const byId = new Map<string, Approval>(cards.map((a) => [a.id, a]));
     for (const a of own) byId.set(a.id, a);

@@ -54,8 +54,8 @@ export async function titleOf(call: Call, id: string, reuse = false): Promise<st
 
 /** What a card can say about one comment thread: its document's title, and the first comment quoted, both optional. */
 export type Thread = { has: boolean; title?: string; excerpt?: string };
-/** Only what a card says (its title and quote): never `has`, which decides the tier and is read live at every filing. */
-const threads = new Map<string, Omit<Thread, "has">>();
+/** What the card says and whether the thread was found: read live at every filing, reused only for the re-plan's card. */
+const threads = new Map<string, Thread>();
 
 /**
  * A thread's document title and first comment, from primer_get_document and primer_get_comments (both bounded, read side by
@@ -64,7 +64,7 @@ const threads = new Map<string, Omit<Thread, "has">>();
  */
 export async function threadOf(call: Call, documentId: string, threadId: string, reuse = false): Promise<Thread> {
   const key = `${documentId}|${threadId}`;
-  if (reuse) return { has: false, ...threads.get(key) };
+  if (reuse) return threads.get(key) ?? { has: false };
   const [doc, comments] = await Promise.all([
     within(call("primer_get_document", { documentId }).catch(() => undefined)),
     within(call("primer_get_comments", { documentId }).catch(() => undefined)),
@@ -78,12 +78,13 @@ export async function threadOf(call: Call, documentId: string, threadId: string,
     .flat()
     .find((c: any) => c?.thread_id === threadId);
   const said = first?.quote ?? first?.body ?? first?.text;
-  const named: Omit<Thread, "has"> = {
+  const found: Thread = {
+    has: Boolean(first),
     ...(typeof t === "string" && t.trim() ? { title: t.trim() } : {}),
     ...(typeof said === "string" && said.trim() ? { excerpt: few(said) } : {}),
   };
-  keep(threads, key, named);
-  return { has: Boolean(first), ...named };
+  keep(threads, key, found);
+  return found;
 }
 
 /** A comment's words, one line, about 160 characters: enough to tell two threads apart, never the whole document. */

@@ -39,17 +39,28 @@ export function replier(call: Call, owners: Owners = fileOwners()): Executor {
       const deciding = req.revalidate !== true;
       const document = owner && agent && owner.agent === agent && owner.task === req.task && thread.has ? args.document_id : undefined;
       const raise = deciding && !document ? { raise: { tier: 2 as const, rule: "primer-reply-not-own", reason: "a reply on a thread the owners map and the document's comments don't show on a document this agent published on this task" } } : {};
-      const where = thread.title ? `"${thread.title}"` : "the document";
-      const quoted = thread.excerpt ? ` “${thread.excerpt}”` : "";
+      // The write acts on the thread, not on the document the request names (Primer's tool takes only the thread id). So the
+      // card names a document only when the read found the thread in it: a request naming document A and a thread on another
+      // must not card A's title, or the owner would approve what reads like a change to A.
+      const named = thread.title ? `"${thread.title}"` : "the document the request names";
+      const card = thread.has
+        ? {
+            what: args.body ? `a reply on a thread in ${named}` : `resolving a thread in ${named}`,
+            changes: args.body
+              ? `Posts this reply on the comment thread${thread.excerpt ? ` “${thread.excerpt}”` : ""}: everyone who can read ${named} sees it: “${few(args.body, 300)}”`
+              : `Marks the comment thread${thread.excerpt ? ` “${thread.excerpt}”` : ""} resolved.`,
+          }
+        : {
+            // The thread is real but not in the named document: say so, rather than name a document it isn't on.
+            what: args.body ? `a reply on a thread ${named} does not show` : `resolving a thread ${named} does not show`,
+            changes: `${args.body ? `Posts this reply on the comment thread (${named} doesn't show it: the thread is on another document this request doesn't name), which everyone who can read that document sees: “${few(args.body, 300)}”` : `Marks a comment thread resolved that ${named} doesn't show (the thread is on another document this request doesn't name).`}`,
+          };
       return {
         args,
         targets: { thread: args.thread_id, document: args.document_id },
         facts: { body: args.body ?? "", doc: document ?? "" },
         ...raise,
-        card: {
-          what: args.body ? `a reply on a thread in ${where}` : `resolving a thread in ${where}`,
-          changes: args.body ? `Posts this reply on the comment thread${quoted}: everyone who can read ${where} sees it: “${few(args.body, 300)}”` : `Marks the comment thread${quoted} resolved.`,
-        },
+        card,
       };
     },
     async execute(rec) {

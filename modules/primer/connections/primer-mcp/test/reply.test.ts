@@ -44,6 +44,15 @@ describe("primer.reply executor", () => {
     expect(plan.card?.changes).toContain("“Please cut section 2”");
   });
 
+  it("never cards a named document's title for a thread that document doesn't show", async () => {
+    const ex = replier(async () => ({ text: '{"title":"Finance Plan","comments":[{"thread_id":"other","body":"x"}]}' }), memory([["01a1-doc0", { agent: "a1", task: "T-1" }]]));
+    const plan = await ex.plan({ kind: "primer.reply", args: { document_id: "01a1-doc0", thread_id: "th-1", body: "Done." }, requester, task: "T-1" });
+    expect(plan.card?.what).toBe('a reply on a thread "Finance Plan" does not show');
+    expect(plan.card?.changes).toContain("the thread is on another document this request doesn't name");
+    // It reads as a change to Finance Plan, which it isn't; and it is the owner's to approve.
+    expect(plan.raise?.tier).toBe(2);
+  });
+
   it("stays the owner's when the thread isn't in the document, however the title reads", async () => {
     const ex = replier(async () => ({ text: '{"title":"Finance Plan","comments":[{"thread_id":"other"}]}' }), memory([["01a1-doc0", { agent: "a1", task: "T-1" }]]));
     expect((await ex.plan({ kind: "primer.reply", args: { document_id: "01a1-doc0", thread_id: "th-1" }, requester, task: "T-1" })).raise?.tier).toBe(2);
