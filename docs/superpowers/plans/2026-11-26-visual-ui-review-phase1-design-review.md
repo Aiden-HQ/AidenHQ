@@ -224,7 +224,7 @@ export type Report = { version: 2; target: string; commit?: string; frozenAt: st
   `modules/apps-platform/starter/{AGENTS.md,README.md,test/app.test.mjs,public/theme.js,src/catalog/catalog.tsx}` (then
   `node scripts/sync-shared.ts` for the agent-base copies), `modules/engineering/test/evals/engineer/cases/app-header-brand-link.json`,
   `docs/configuration.md`, `docs/design/design-system.md`; delete `services/computer/test/fixtures/agent-browser-stub.cts` if
-  nothing else uses it. Check: `git grep -n 'ui-review http\|--modes\|--no-routes' -- modules services docs` prints nothing.
+  nothing else uses it. Check: `git grep -nE 'ui-review (http|[^ ]+ --(modes|full|no-routes))' -- modules services docs ':!docs/superpowers'` prints nothing.
 
 ### Task 2: Capture, coverage queue, page list (lane A)
 
@@ -525,8 +525,9 @@ Catalog entry:
 1. `codex exec` (Sol, low) with `prompts/router-read.md` plus "start this app on 127.0.0.1:8080 with its seed or demo
    data; write the command to `.aidenhq-ui/run.sh` and the pages to `.aidenhq-ui/pages.json`"; then run `run.sh` and wait
    for the port (180 s cap).
-2. `ui-review capture http://127.0.0.1:8080 --pages-file .aidenhq-ui/pages.json --out /aidenhq-out/ui`, then
-   `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/default.json` (an unattended
+2. `ui-review capture http://127.0.0.1:8080 --map .aidenhq-ui/pages.json --out /aidenhq-out/ui`, then
+   `ui-review routes http://127.0.0.1:8080 --out /aidenhq-out/ui-routes` (exit 1 means blocking findings, not a failure:
+   the recipe reads its `report.json` either way; exit 2 is a failed check), then `ui-review review /aidenhq-out/ui --model <spec.model>` with the product rules and `refs/default.json` (an unattended
    scan carries no owner taste; agent runs do).
 3. Result: a `Review` (`version: 1`, `target: "tree"`, `engine: "ui-review"`, the spec's model, effort `low`) that the
    tree validator accepts:
@@ -564,7 +565,9 @@ test("ui.scan runs as its own whole-repo check and reports a UI section", async 
 same-repo PR or a push to main touching `services/computer/images/agent-base/ui-review/{prompts,rules,review.ts,pairwise.ts,model.ts}`
 or `modules/design/eval/`; the harness (`run.ts`, `degrade.ts`) and the existing cases come from the PR's base, the
 engine and prompts under test from the head; the key is the separate, capped eval key (`openrouter_eval_key`), never the
-fleet's; a fork's PR gets no key; a pass is reused for the same content of those files)
+fleet's; a fork's PR gets no key; a pass is reused for the same content of those files. Bootstrap: when the base has no
+`modules/design/eval/run.ts` (only the PR that adds it), the job runs the head's harness and cases once; every later PR
+runs the base's)
 - Instance repo: `design/eval/rated.json` (the owner's order: Stripe ≈ shadcn > Linear > Monday ≈ Cal > Airtable ≈ Notion
   ≈ Raycast > Duolingo; the board poor; Roadmap Keeper weaker) and `design/eval/corrections/` (one case per owner correction).
 

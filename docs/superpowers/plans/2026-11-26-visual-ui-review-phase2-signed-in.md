@@ -229,8 +229,9 @@ test("an app session takes its mode from the app and the pass, never the box", a
 - `Report` (phase 1's `types.ts`) gains `blocked: { method: string; path: string; page: string }[]` and
   `session?: { rung: "supplied" | "form" | "signup" | "aidenhq" | "patch"; relogins: number }`.
 - Guard: `--mode read|test-write|any` (default `read` unless the target is `127.0.0.1`/`localhost`); CDP `Fetch.enable` for the
-  target origins (requests and WebSocket opens); a refused request fails with `BlockedByClient` and is recorded
-  `{ method, path, page }`. With the guard on, `ui-review routes` and motion clicks accept a live target.
+  target origins (requests; `Fetch` doesn't see WebSockets), and `context.routeWebSocket` installed before the first
+  navigation: in `read` mode every WebSocket to a target origin is refused; in `test-write` and `any` it passes. A refused
+  request fails with `BlockedByClient` and is recorded `{ method, path, page }` (a socket as `{ method: "WS", … }`). With the guard on, `ui-review routes` and motion clicks accept a live target.
 - Session check: after each capture, a final URL whose path is `loginPath`, or a visible password input with the login
   title, means the session is gone: one re-login with the same rung (supplied, form, aidenhq), then `failed: session ended`.
 
@@ -252,6 +253,8 @@ test("the guard blocks writes in read mode and destructive paths in test-write",
   assert.ok(r.blocked.some((b) => b.method === "POST")); assert.equal(fixtureServer.writes, 0);
   const t = await runCapture(fx("/danger"), { mode: "test-write", clickAll: true });
   assert.ok(t.blocked.some((b) => /\/pay/.test(b.path))); assert.ok(fixtureServer.writes > 0);
+  const w = await runCapture(liveAlias + "/#/socket-write", { mode: "read", clickAll: true });   // a non-AidenHQ target writing over a WebSocket
+  assert.ok(w.blocked.some((b) => b.method === "WS")); assert.equal(fixtureServer.socketWrites, 0);
 });
 ```
 - [ ] **Step 2-4:** FAIL, implement, PASS (Task 1 Step 4 command of phase 1).

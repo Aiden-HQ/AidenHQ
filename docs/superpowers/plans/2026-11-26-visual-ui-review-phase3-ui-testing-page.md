@@ -141,6 +141,9 @@ test("a budget key caps its tasks' calls per UTC day, in flight included", async
   `POST /v1/events { connection: "apps", kind: "app.deployed", resource: <app>, id: <the deploy's write record id>, data: { sha } }`
   (the event log dedupes on `(connection, id)`: a retry of one deploy is one event, a redeploy of the same sha another); a failed
   send is logged, never the deploy's failure)
+- Modify: `kernel/src/modtasks.ts` (`GET /v1/tasks?source=` lists a module's own source family too: a source starting
+  `<that module>:`, beside the release module's `release:instance:`; test in `kernel/test/modtasks.test.ts`: design lists
+  `design:pass:` tasks and is refused `github:` ones)
 - Create: `modules/design/service/src/schedule.ts`; modify `passes.ts`, `store.ts` (unique partial index
   `runs_active ON runs(app) WHERE kind = 'pass' AND status = 'running'`), `main.ts` (a 60 s tick; the feed cursor as code-review's)
 - Test: `modules/design/test/schedule.e2e.test.ts`
@@ -232,9 +235,9 @@ test("overview reports each app's state and configure returns one typed change",
   at most 2; `icon` enum gains `palette`), `scripts/modules.ts` (compile checks `secret` is the module's own `setup:` secret
   and `keys_from` its own setting)
 - Modify: `services/board/web/src/ModuleView.tsx` (a native "Sign-ins" panel under the frame: per key Set / Replace /
-  Clear, values never shown back), the board's server route that writes a module's `setup:` secret today (find it with
-  `git grep -n "setup" services/board/src/server*`; it gains "merge one key of a JSON-map secret", written in place, as the
-  vault requires), the icon `palette` in the board's icon set
+  Clear, values never shown back), the kernel's account op `save_secret` (the one secret writer; `services/board/src/setup-flows.ts`
+  calls it as the signed-in admin) gains `key`: merge one key of a JSON-map secret, written in place as the vault
+  requires (`kernel/src/auth-api.ts`), the icon `palette` in the board's icon set
 - Modify: `modules/design/module.yaml` (`secret_maps: [{ secret: ui_logins, keys_from: "ui_testing.apps[].name", fields: [login_url, username, password, totp_secret] }]`
   on the page; the `ui_logins` field leaves the module settings screen)
 - Test: `services/board/web/src/ModuleView.test.tsx` (the panel) and `scripts/test/modules.test.ts` (compile checks
@@ -268,7 +271,8 @@ test("a secret map sets one key without reading the others back", async () => {
   the run link for images, coverage and date) and one body per verified bug (marker, steps, expected, saw, run link)
 - Test: `services/computer/test/ui-review.e2e.test.ts` (issue bodies; a 10 s recorded flow)
 
-Issue identity is kept by the design store: table `issues (app TEXT, marker TEXT, repo TEXT, number INTEGER, PRIMARY KEY (app, marker))`,
+Issue identity is kept by the design store: table `issues (app TEXT, repo TEXT, marker TEXT, number INTEGER, PRIMARY KEY (app, repo, marker))` (a changed repo
+finds no number and starts afresh there),
 written by the write tool `design_issue_note { app, marker, repo, number }` and listed in the pass task's text and
 `design_run`. Skill's issue steps (positive how-to): a known number for the marker → `github_issue_update` its body (and
 state `open`); no known number → search once for the marker (`github_search_issues repo:<r> is:issue "<marker>"`, open or
@@ -294,6 +298,8 @@ test("a noted issue number wins over search", async () => {   // modules/design/
   await call("design_issue_note", { app: "acme", marker: "aidenhq-ui:design:acme", repo: "acme/app", number: 41 });
   const { run, task } = await call("design_pass_start", { app: "acme", depth: "scan" });
   assert.match(tasks.byId(task).description, /aidenhq-ui:design:acme → acme\/app#41/);
+  settings({ apps: [{ ...acme, repo: "acme/new" }] }); const t2 = (await call("design_pass_start", { app: "acme", depth: "scan" })).task;
+  assert.doesNotMatch(tasks.byId(t2).description, /#41/);
 });
 ```
 - [ ] **Step 2-4:** FAIL, implement, PASS.
