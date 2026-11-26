@@ -188,10 +188,14 @@ export function namespaced(repo: string, s: State): boolean {
   return same(repo, s.productRepo) || !inAgentsOrg(repo, s);
 }
 
+/** Ship's own scratch branch for an adoption (`aidenhq ship checkout`): never a publish target. */
+const SHIP_SCRATCH = /^ship-pr-\d+$/;
+
 function publishParts(action: string, b: Branch, s: State): Part[] {
   const inAgents = inAgentsOrg(b.repo, s);
   if (same(b.repo, s.instanceRepo)) return [REJECT("instance-repo", "the instance repo changes only through apply")];
   if (!Array.isArray(b.files)) return [REJECT("unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes; try again`)];
+  if (SHIP_SCRATCH.test(b.branch)) return [REJECT("ship-scratch-branch", `\`${b.branch}\` is ship's own scratch branch for an adoption: push the fix with \`aidenhq ship push <PR link> <head sha> <n>\`, never publish it`)];
   // A job without the platform role pushes only its own task's branches (agent/<task>/…): never a branch another
   // requester's PR stands on, a protected or deploy branch, or the default branch.
   // A push onto an adopted PR's branch is checked against the adoption first: when it holds, that one ref is the task's.
