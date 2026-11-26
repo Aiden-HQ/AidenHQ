@@ -529,6 +529,11 @@ test("the scorecard counts a done task as work only when the ledger holds a job 
     (({ done, cost }) => ({ count: done.count, autoClosed: done.autoClosed, perDone: cost.perDone }))(scorecard({ closed: older, records: [], usage, jobs: cut }, { id: "eng", key: "eng" }, t)),
     { count: 1, autoClosed: 0, perDone: 2 },
   );
+  // A job only queued (`admitted`) never started: it does not make its task the agent's work.
+  const queuedOnly = [{ state: "admitted", started_at: at(4), task: "t-queued" }];
+  const queuedTask = [{ id: "t-queued", identifier: "WOR-11", title: "Closed while its run was queued", status: "done", assigneeAgentId: "eng", createdAt: at(4), completedAt: at(4), updatedAt: at(4) }];
+  const s3 = scorecard({ closed: queuedTask, records: [], usage, jobs: queuedOnly }, { id: "eng", key: "eng" }, t);
+  assert.deepEqual([s3.done.count, s3.done.autoClosed], [0, 1], "a queued job is not a run: the task is auto-closed, not done");
   const inside = [{ id: "t-inside", identifier: "WOR-10", title: "Filed after the oldest row read", status: "done", assigneeAgentId: "eng", createdAt: at(4), completedAt: at(4), updatedAt: at(4) }];
   const s2 = scorecard({ closed: inside, records: [], usage, jobs: cut }, { id: "eng", key: "eng" }, t);
   assert.deepEqual([s2.done.count, s2.done.autoClosed, s2.cost.perDone], [0, 1, null], "a task filed inside the read with no job is auto-closed, and perDone has no worked task to divide by");

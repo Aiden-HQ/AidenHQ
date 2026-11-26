@@ -31,10 +31,11 @@ export function scorecard(f: Facts, agent: { id: string; key: string }, now = Da
   const inPrior = (t: number) => t >= prior && t < week;
   const mine = f.closed.filter((i) => i.status === "done" && i.assigneeAgentId === agentId);
   // A task the ledger holds no job for was never run by the agent: it filed itself as a holder and closed itself (a ship
-  // record, a pin bump), so it is not work done — and its $0 must not dilute cost.perDone. The ledger read holds only the
-  // agent's newest jobs, so when it is cut, a task created before the oldest row read may have run in a row it left out:
-  // that one stays counted as work (as before) rather than be misreported as auto-closed.
-  const worked = new Set(f.jobs.map((j) => j.task));
+  // record, a pin bump), so it is not work done — and its $0 must not dilute cost.perDone. An `admitted` job is only queued
+  // (never started), so it does not make a task worked either. The ledger read holds only the agent's newest jobs, so when it
+  // is cut, a task created before the oldest row read may have run in a row it left out: that one stays counted as work (as
+  // before) rather than be misreported as auto-closed.
+  const worked = new Set(f.jobs.filter((j) => j.state !== "admitted").map((j) => j.task));
   const starts = f.jobs.flatMap((j) => (j.started_at ? [Date.parse(j.started_at)] : []));
   const horizon = f.jobs.length >= JOB_READ && starts.length ? Math.min(...starts) : null;
   const ran = (i: Closed) => worked.has(i.id) || (horizon !== null && !(i.createdAt && Date.parse(i.createdAt) > horizon));
