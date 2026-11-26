@@ -8,6 +8,7 @@ import { QUERIES, useQuery } from "./queries";
 import { ago } from "./util";
 import { ListRow, ListRows, Segmented } from "./ui";
 import { TaskState, needsOwner } from "./ui/TaskState";
+import { Bone } from "./Skeleton";
 import type { NeedsYou } from "./types";
 
 type Item = NeedsYou["items"][number];
@@ -38,7 +39,38 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
   const listRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLElement>(null);
   const d = q.data;
-  if (!d) return null;
+  // The strip's own frame, at the height the loaded strip takes: the counts, then the open list's area, so a cold load
+  // lands it in one place instead of pushing the board's columns down by its whole height (the Tasks page's layout shift).
+  if (!d)
+    return (
+      <section className={compact ? "attn attn-compact" : "attn"} role="status" aria-busy="true" aria-label="Loading fleet attention">
+        <div className="attn-head">
+          <b className="attn-title">Fleet attention</b>
+          {/* The loaded counts' segmented control, with a count-shaped placeholder in each of its three parts: the row keeps
+              its width and its wrap points, so the heading is the same height before and after the counts arrive. */}
+          <span className="ui-seg attn-counts-load" aria-hidden>
+            {(["Needs you · ", "Failed · ", "Unexplained idle · "] as const).map((label) => (
+              <span key={label} className="attn-count-load">
+                {label}
+                <Bone w={7} h={11} />
+              </span>
+            ))}
+          </span>
+          {!compact && <Bone className="attn-order-load" w={54} h="1.45em" />}
+        </div>
+        {!compact && (
+          <div className="attn-list attn-list-load" aria-hidden>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="attn-row-load">
+                <Bone w="46%" h={13} />
+                <Bone w="28%" h={10} />
+                <Bone w="100%" h={30} />
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    );
   const n: Record<Which, number> = { needs: d.counts.needs_you, failed: d.counts.failed, idle: d.counts.unexplained_idle };
   const which = chosen ?? (compact ? (n.needs ? "needs" : n.failed ? "failed" : n.idle ? "idle" : "needs") : "needs");
   const rows = d.items.filter(IN[which]);

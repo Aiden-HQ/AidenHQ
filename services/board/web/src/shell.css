@@ -28,6 +28,10 @@
 @keyframes tn-pop { from { transform: scale(0.6); opacity: 0; } }
 .tn-live { display: inline-flex; align-items: center; gap: 5px; font-size: var(--text-xs); color: var(--ok-text); font-variant-numeric: tabular-nums; }
 .tn-live > i { width: 7px; height: 7px; border-radius: 50%; background: var(--working); animation: ui-breathe 2.4s var(--ease) infinite; }
+/* A count of zero keeps its own space (so the item is the width its count will need) but is neither seen nor announced;
+   `hidden` alone would be display: none, which reserves nothing, so each keeps the display its layout needs. */
+.tn-badge[hidden] { display: inline-grid; visibility: hidden; }
+.tn-live[hidden] { display: inline-flex; visibility: hidden; }
 
 .tn-search {
   display: flex; align-items: center; gap: 8px; width: clamp(150px, 14vw, 260px); height: 32px; padding: 0 8px 0 10px;
@@ -92,9 +96,18 @@
 /* The fleet header on Tasks (Attention.tsx): three counts, then those tasks oldest first, scrolling within a third of the screen. */
 .attn { flex: none; display: grid; gap: 8px; padding: 10px clamp(16px, 1.4vw, 28px); border-bottom: 1px solid var(--border); background: var(--bg); }
 .attn-head { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
+/* The full strip's counts are a segmented control (33px tall): hold that row's height while the counts load, so the board below never moves. */
+.attn:not(.attn-compact) .attn-head { min-height: 33px; }
 .attn-order { margin-left: auto; font-size: var(--text-xs); color: var(--faint); }
 .attn-list { max-height: 32vh; overflow-y: auto; border-radius: var(--radius); }
 .attn-list.asks { max-height: min(60vh, 34rem); }
+/* The strip before its counts arrive (Attention.tsx): its own frame, the list at the height the open one takes. */
+.attn-counts-load { pointer-events: none; }
+.attn-count-load { display: inline-flex; align-items: center; gap: 3px; padding: 4px 12px; font-size: var(--text-base); color: var(--muted); white-space: nowrap; }
+.attn-order-load { margin-left: auto; font-size: var(--text-xs); }
+.attn-list-load { min-height: min(60vh, 34rem); max-height: min(60vh, 34rem); display: grid; align-content: start; overflow: hidden; }
+.attn-row-load { display: grid; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border); }
+.attn-row-load:first-child { border-top: 0; }
 .attn-row { display: grid; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .attn-row:first-child { border-top: 0; }
 .attn-q { font-size: var(--text-row); font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
