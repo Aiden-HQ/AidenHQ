@@ -236,10 +236,6 @@ run `node scripts/sync-shared.ts`.
 - `repo-checkout <org/name> [sha]` in a computer (role `repo-checkout`): the launcher streams the kernel's code host snapshot of
   that commit (`POST /v1/checkout`: the kernel checks the role and the repo) into `/workspace/repos/<name>` of the caller's
   box. The GitHub fleet org (`github_fleet_org`) only, full SHA (none: the default branch), files only; no token enters the box.
-- `design-review` (module `design`): the UI Reviewer reviews in its computer and sets the `design-review` commit
-  status with github-mcp's `commit_status_set` (role `design-review`, fleet org only, as the owner's sign-in; a status needs only
-  the `repo` scope). For a PR that changes UI files (styles, markup, components, UI folders, server-rendered page files; `modules/github/service/src/merge-gate.ts` isUiFile) the code host files the UI Reviewer a "Design review: <repo>#<n>" task for each head and marks it `design-review` pending. The review is advisory (owner, 2026-11-23): it never holds a merge, and its findings come back as follow-up fixes. The verdict is scoped to the diff: the reviewer runs `ui-review --baseline` against the base, which lists the findings the base already had under "already on this base". A review task whose head is no longer the one to review — the PR moved on, merged or closed, or its verdict is on that exact head already — closes as superseded.
-  The reviewer's 4-hourly heartbeat is the backstop for a wake that missed.
 
 ### Quality checks
 

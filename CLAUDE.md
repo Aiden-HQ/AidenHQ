@@ -26,7 +26,7 @@ never in this file.
 - `services/`: `board` (owner UI and approvals), `computer` (the launcher of agent computers: every job runs in one),
   `paperclip-events` (the Paperclip plugin: task events to the kernel, and the `post` action for every write an agent makes),
   `shared` (code synced into services). Jobs come from `modules/dispatch` (wakes into kernel jobs for every agent);
-  `modules/github` runs git writes, merges, releases, PR watch, design reviews and tidy.
+  `modules/github` runs git writes, merges, releases, PR watch and tidy.
   `modules/apps-platform/` holds `apps-mcp`, `gate` (shared-app door), the app starter and the design system.
 - `scripts/`: compiler (`compile.ts`, `modules.ts`), Paperclip setup (`paperclip-setup.ts`), account auth,
   health, backup and restore.

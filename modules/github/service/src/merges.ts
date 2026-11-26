@@ -10,10 +10,9 @@
 // terminal state (closed, head moved, red checks on the head, changes requested).
 // A product merge the kernel ran at Tier 0 (eligible: ci-required green and code review's pass on its head, merge-gate.ts
 // productMergeEligible) is checked again right before the merge; no longer eligible, it fails and the merge is filed again.
-// The UI Reviewer's design review is advisory: it never holds a merge.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, contextChecks, contextRank, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, contextChecks, contextRank, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
@@ -258,9 +257,9 @@ export function createMerges(d: {
     const checks = await allChecks(repo, String(run.head_sha));
     return [...new Set(headChecks(checks).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
   }
-  /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts but the
-   * advisory design review; with none of those reported yet (the design review alone included) the caller waits. */
-  const fallbackRequired = (checks: { name: string }[]) => [...new Set(checks.map((c) => c.name).filter((n) => n !== DESIGN_REVIEW_CHECK))];
+  /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts;
+   * with none reported yet the caller waits. */
+  const fallbackRequired = (checks: { name: string }[]) => [...new Set(checks.map((c) => c.name))];
   async function mergePut(repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
     // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
     // The trailer goes on whatever the body says (withTrailer would keep a body's own AidenHQ trailer and drop ours), and it
@@ -775,7 +774,7 @@ export function createMerges(d: {
       const failing = [...new Set(headChecks(checks).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
       // Every named check red on the head, required or not: a repo whose rules require only `ci-required` hides the `policy` job's
       // own red behind it, and ship's title-only wake reads it from here (a check red on the base too is ship's to filter).
-      const redChecks = [...new Set(headChecks(checks).filter((c) => c.name !== DESIGN_REVIEW_CHECK && c.name !== CODE_REVIEW_STATUS && !c.ok && !c.pending).map((c) => c.name))];
+      const redChecks = [...new Set(headChecks(checks).filter((c) => c.name !== CODE_REVIEW_STATUS && !c.ok && !c.pending).map((c) => c.name))];
       return { ...v, failing, redChecks, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "fix_review" && g && "findingsKey" in g && g.findingsKey ? { findingsKey: g.findingsKey } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */

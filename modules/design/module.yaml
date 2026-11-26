@@ -1,8 +1,6 @@
 name: design
-description: "The UI/UX Designer (mockups the Engineer builds from, the design system, design advice, an audit when an app moves to the starter) and the UI Reviewer (screenshot reviews of UI PRs: the design-review check)."
+description: "The UI/UX Designer (mockups the Engineer builds from, the design system, design advice, an audit when an app moves to the starter) and the UI Reviewer (a designer's review of a PR or an app, on request: bugs and ranked design improvements)."
 roles:
-  declares:
-    - { id: design-review, description: "The design-review verdict: the commit status on agents-org PRs (github-mcp commit_status_set), and the `design-review: success|failure <sha>` comment on a local change request's review task, which the runner records as its check." }
   requests: [ repo-checkout ]
 requires:
   # Any code host: UI changes are reviewed on GitHub PRs and on local change requests alike.
@@ -33,21 +31,20 @@ agents:
   ui-reviewer:
     department: engineering
     skills: [ apps-platform.design-system, engineering.supply-chain, engineering.write-code, tasks.delegate-work ]
-    max_parallel: 2 # design reviews per PR are independent; each run gets its own box
-    # Finds visible defects in screenshots: the owner picked GPT Luna at medium (2026-11-13; it matched Opus on screenshot
-    # bug-finding at a fraction of the cost). Takes images on OpenRouter.
-    model: ~openai/gpt-luna-latest
+    max_parallel: 2 # reviews are independent; each run gets its own box
+    # Judges each changed page's before|after pictures. Default GPT Sol (2026-11-26 spike: 7 of 10 planted UI bugs, Luna 4);
+    # users pick their own per agent (instance.yaml overrides.agents.ui-reviewer.model). Takes images on OpenRouter.
+    model: ~openai/gpt-sol-latest
     reasoning_effort: medium
     timeout_sec: 2400
     image: agent-base
     connections:
       owner_channel: [ notify ]
       apps: [ app_list, app_status, app_view, app_check, web_view ]
-      # Reads PRs and their checks; commit_status_set is the design-review verdict (role-checked in github-mcp).
-      github?: [ github_whoami, github_issue_read, github_search_issues, commit_status_set ]
+      # Reads the PR it is asked to review and posts its one comment; it sets no status.
+      github?: [ github_whoami, github_issue_read, github_search_issues, github_issue_comment ]
       # fleet_catalog: which agent owns an app, so a redesign or a review brings that agent in.
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_amend_rubric, task_comment, task_handoff, task_block, task_cancel, task_file_upload, task_finish, fleet_catalog ]
-    heartbeat: true
-    # repo-checkout: a PR's head and base in its computer; design-review: the design-review commit status (the runner files
-    # each UI PR's review task to the holder of this role).
-    roles: [ repo-checkout, design-review ]
+    # Woken only by a request, never by a schedule or a PR event.
+    # repo-checkout: a PR's head and base in its computer.
+    roles: [ repo-checkout ]
