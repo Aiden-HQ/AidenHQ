@@ -342,12 +342,21 @@ export class Workspace {
     const deadline = Math.min(finish, start + INBOX_BUDGET_MS * INBOX_WALK_SHARE);
     // Every id since the cursor (cheap: 500 a page; the cursor is at most four days back), so the walk below starts at the oldest.
     const ids: string[] = [];
-    let pageToken: string | undefined;
+    let pageToken: string | undefined, listedAll = true;
     do {
+      // Paging stops at the walk's deadline too: a window that takes more pages than the budget allows is not walked at all
+      // (below), because the walk needs the whole listing to serve the oldest mail first and hand back a cursor it can trust.
+      if (ids.length && Date.now() >= deadline) {
+        listedAll = false;
+        break;
+      }
       const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q: `${INBOX_QUERY} after:${Math.floor(after / 1000)}`, maxResults: 500, pageToken });
       ids.push(...(page.messages ?? []).map((m) => m.id));
       pageToken = page.nextPageToken;
     } while (pageToken);
+    // A partial listing holds only the newest pages: serving them would move the cursor past older mail that was never listed,
+    // which no later call could reach. Nothing is served, the cursor stays where it was, and `more` says to call again.
+    if (!listedAll) return { threads: [], dropped: {}, cursor: after, more: true };
     const threads = new Map<string, Record<string, unknown>>();
     /** Each kept thread's listed message time: the walk's progress, so a call cut short by the enrichment budget hands back an
      *  honest cursor instead of one past rows it did not serve. */
@@ -420,24 +429,36 @@ export class Workspace {
     // Enrichment is bounded by `limit` and by the rest of the call's budget. A batch that would start past it is not read at
     // all: its rows are dropped and the cursor goes back to the last row actually served, with `more: true`, so a row is never
     // served with a `replied` the call did not read and never lost behind a cursor that already passed it.
-    let enriched = rows.length;
-    for (let i = 0; i < rows.length; i += READS_AT_ONCE) {
-      if (i > 0 && Date.now() >= finish) {
-        enriched = i;
-        break;
-      }
+    const fetchRows = async (from: number, to: number) => {
       await Promise.all(
-        rows.slice(i, i + READS_AT_ONCE).map(async ([threadId]) => {
+        rows.slice(from, to).map(async ([threadId]) => {
           const r = await this.g.get<{ messages?: GmailMessage[] }>(`${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "metadata" }).then((t) => ({ t }), (err: Error) => ({ err }));
           fetched.set(threadId, r);
         }),
       );
+    };
+    let enriched = rows.length;
+    for (let i = 0; i < rows.length; i += READS_AT_ONCE) {
+      let end = Math.min(i + READS_AT_ONCE, rows.length);
+      if (i > 0 && Date.now() >= finish) {
+        // The stop must not split a millisecond: the cursor cannot, so every row tied with the last served one is read and
+        // served too (at most `limit` rows in all, a few extra batches, still inside the tool timeout).
+        const tied = listedAt.get(rows[i - 1]![0]);
+        end = i;
+        while (end < rows.length && listedAt.get(rows[end]![0]) === tied) end++;
+        enriched = end;
+      }
+      await fetchRows(i, end);
+      if (enriched < rows.length) break;
     }
     if (enriched < rows.length) {
       const kept = Math.max(after, ...rows.slice(0, enriched).map(([threadId]) => listedAt.get(threadId) ?? after));
       for (const [threadId] of rows.slice(enriched)) threads.delete(threadId);
       rows.length = enriched;
-      if (kept < cursor) { cursor = kept; more = true; }
+      // Rows are left over, so the next call has work: `more` says so whether or not the cursor moved back (the tie extension
+      // above can leave the last served row at the cursor itself).
+      cursor = Math.min(cursor, kept);
+      more = true;
     }
     for (const [threadId, row] of rows) {
       const { t, err } = fetched.get(threadId) ?? {};
