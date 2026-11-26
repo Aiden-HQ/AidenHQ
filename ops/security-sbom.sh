@@ -10,9 +10,14 @@
 #                   to an image a container already runs is that container's target, not a second row. Each is saved from
 #                   Docker under the apply lock, from the reference the lock resolved, and read as a docker archive, so the
 #                   scan follows what runs rather than whatever a tag names by the time syft opens it. An image nothing
-#                   local can export is a line saying so, never a silent gap in the batch. Without a readable
-#                   config/computers.json the pass publishes no batch at all: an inventory missing every configured image
-#                   must not read as a complete pass
+#                   local can export is a line saying so, never a silent gap in the batch. A running container whose
+#                   image the daemon no longer holds as an image record (untagged and collected while the container kept
+#                   running) is inventoried from the container's own filesystem instead: `docker export`, extracted in
+#                   this pass's private directory, scanned as a directory under the same image:<id> target. That scan is
+#                   the container's root filesystem, not proof about the missing image, so its row has no error and its
+#                   commit column names the container it came from. Without a readable config/computers.json the pass
+#                   publishes no batch at all: an inventory missing every configured image must not read as a complete
+#                   pass
 #   repo:product    this checkout (lockfiles; not data/, node_modules or .git)
 #   repo:instance   the instance checkout
 #   app:<name>      each app's deployed source (data/apps/.platform/<name>/src, what apps-mcp checked out); a checkout
@@ -28,6 +33,19 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 set -a; [ -f .env ] && . ./.env; set +a
 SYFT="anchore/syft:v1.57.1@sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6410aecb7e80f95b060"
 out="${AIDENHQ_DATA_DIR:-$PWD/data}/modules/security/sbom"
+# Remove a tree this pass wrote. Tar restores a container's own directory modes, so a read-only dependency tree (a Go
+# module cache, say) leaves directories this user cannot unlink inside; a plain `rm -rf` would then fail under `set -e`
+# and, worse, the next pass's first cleanup would fail the same way and leave the runtime data on disk. The owner can
+# always chmod its own tree, so a failed removal is retried after granting owner write/search.
+discard_tree() { # <dir>...
+  local d
+  for d in "$@"; do
+    [ -e "$d" ] || continue
+    rm -rf "$d" 2>/dev/null && continue
+    chmod -R u+rwX "$d" 2>/dev/null || true
+    rm -rf "$d" 2>/dev/null || echo "security-sbom: could not remove $d" >&2
+  done
+}
 mkdir -p "$out"
 [ -w "$out" ] || { echo "security-sbom: $out isn't writable by $(id -un) (created by Docker?): sudo chown $(id -u):$(id -g) $out" >&2; exit 1; }
 # One pass at a time: two passes unpack two images each into their own .work on the same filesystem, and a timer that fires
@@ -40,8 +58,16 @@ pass="$(printf '%s' "$out" | sha256sum | cut -c1-12)-$$"
 next="$out/next"
 work="$out/.work"
 archives="$out/.archives"
-rm -rf "$next" "$work" "$archives"
+# A running container whose image the daemon no longer holds as an image record is inventoried from `docker export`
+# instead; its tar and extracted tree live only here. A container export can hold runtime data (a credential a process
+# wrote into its own filesystem, say), so it is kept outside the directory the long-running security-scanner mounts at
+# /sbom (modules/security/module.yaml), private to this user (mode 700) and removed with the pass: that service reads the
+# finished batch only, never a raw export or the tree unpacked from it, and nothing stays in data/ after the swap.
+exportdir="$(dirname "$out")/sbom-exports"
+discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
 mkdir -p "$next" "$work" "$archives"
+mkdir -p -m 700 "$exportdir"
+chmod 700 "$exportdir"
 : > "$next/targets.tsv"
 user="$(id -u):$(id -g)"
 # The apply lock comes before any Docker probe: while an apply holds it, Docker may be mid-recreate and a probe that
@@ -53,7 +79,7 @@ mkdir -p "$(dirname "$APPLY_LOCK")"
 exec 8>>"$APPLY_LOCK"
 if ! flock -n 8; then
   echo "security-sbom: an apply holds the apply lock; skipping this pass" >&2
-  rm -rf "$next" "$work" "$archives"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 # The smallest free space a target may start with, in GB: syft writes a `docker save` archive and unpacks every layer under
@@ -79,7 +105,6 @@ free_bytes_at() { # <dir>
 # A container is this scanner's own only by its label: a name is not proof of ownership, so nothing else's is ever removed.
 scanner_container() { [ "$(docker inspect -f '{{index .Config.Labels "aidenhq.oneoff"}}' "$1" 2>/dev/null || true)" = 1 ]; }
 n=0
-
 # scan <target> <commit> [docker mount args...] -- <syft source> [syft args...]
 scan() {
   local target="$1" commit="$2"; shift 2
@@ -127,7 +152,11 @@ HOST_EXCLUDES=(
   './proc/**' './sys/**' './dev/**' './run/**' './tmp/**'
   './var/lib/docker/**' './var/lib/containerd/**'
 )
+# The pass's export directory is a sibling of $out, not below it, so excluding $out's own tree does not cover it: when
+# AIDENHQ_DATA_DIR sits on another disk (/srv/aidenhq-data, say) the host scan can reach it, and a staged container root
+# there would be attributed to the host. Both roots are excluded when they are under /.
 host_excludes=("${HOST_EXCLUDES[@]}" "./${PWD#/}/**" "./${out#/}/**" '**/node_modules/**')
+case "$exportdir" in "$PWD"/*) : ;; /*) host_excludes+=("./${exportdir#/}/**") ;; esac
 [ -n "$inst" ] && host_excludes+=("./${inst#/}/**")
 host_args=()
 for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
@@ -144,6 +173,15 @@ for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
 fail() { # <target> <error>: a target that never reached syft is a line with its error, like a failed scan
   n=$((n + 1))
   printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
+}
+# Whether a failed `docker image inspect` says the image record is gone, rather than that the daemon could not answer.
+# Only a positive "no such image/object" is proof: a deadline (124) or a transport error is a retryable read, and a
+# container export under that image's target would inventory something other than the target it names.
+image_absent() { # <inspect output>
+  case "$1" in
+    *"No such image"*|*"No such object"*|*"no such image"*) return 0 ;;
+  esac
+  return 1
 }
 ceil_gb() { echo $(( ($1 + 1073741823) / 1073741824 )); }
 # One Docker call with a deadline, so a daemon that stops answering can't hold the apply lock past it, and the whole
@@ -213,7 +251,7 @@ SNAPSHOT_DEADLINE=$((SECONDS + budget))
 if ! platform="$(docker_call 15 version -f '{{.Server.Os}}/{{.Server.Arch}}')" || [ -z "$platform" ]; then
   echo "security-sbom: could not read the Docker server platform; keeping the previous batch" >&2
   exec 8>&-
-  rm -rf "$next" "$work" "$archives"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 # `docker image save --platform` needs API 1.48. A daemon older than that may still use the containerd image store and hold
@@ -240,19 +278,19 @@ fi
 if ! jq -e '(.images | type) == "object" and ([.images[] | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")] | all)' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" >/dev/null 2>"$work/configured.err"; then
   echo "security-sbom: config/computers.json is missing, unreadable or names an image that is not a tag ($(tr '\t\n' '  ' < "$work/configured.err" | tail -c 200)); keeping the previous batch" >&2
   exec 8>&-
-  rm -rf "$next" "$work" "$archives"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 if ! jq -r '.images | to_entries[] | .value' "${AIDENHQ_CONFIG_DIR:-config}/computers.json" > "$work/configured" 2>"$work/configured.err"; then
   echo "security-sbom: config/computers.json is missing or unreadable ($(tr '\t\n' '  ' < "$work/configured.err" | tail -c 200)); keeping the previous batch" >&2
   exec 8>&-
-  rm -rf "$next" "$work" "$archives"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 if ! grep -q . "$work/configured"; then
   echo "security-sbom: config/computers.json names no image; keeping the previous batch" >&2
   exec 8>&-
-  rm -rf "$next" "$work" "$archives"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 # Every reference the daemon holds that might export a platform manifest: the manifest itself, the container's index,
@@ -271,23 +309,47 @@ platform_refs() { # <platform manifest id> <container .Image>
 # names <pin>, and it is an image record the daemon can hand to `docker save` (a bare platform manifest inside a
 # multi-platform index is not one, which `docker image inspect` shows). Falls back to the pin itself for a single-platform
 # store that holds the manifest as an image record the inspect doesn't resolve; the save then either works or the next
-# reference runs.
+# reference runs. A caller that gets the pin back for one of these has an unresolvable image when the size read on it also
+# fails: see the container fallback in snapshot().
 resolve_ref() { # <pin manifest> <container .Image> [platform]
-  local pin="$1" image="$2" plat="${3:-$platform}" candidate
+  local pin="$1" image="$2" plat="${3:-$platform}" candidate out unsure=""
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     # An immutable id (the pin itself, or the container's index) that the daemon holds as an image record is the safest
     # export: it cannot move, and saving from it can't name another image. Only if none is held does a tag come into it.
     case "$candidate" in
       sha256:*)
-        if docker_call 5 image inspect -f '{{.Id}}' "$candidate" >/dev/null 2>&1; then
-          printf '%s' "$candidate"; return 0
+        if out="$(docker_call 5 image inspect -f '{{.Id}}' "$candidate" 2>&1)"; then
+          printf '%s\n' "$candidate"; return 0
         fi
+        # A killed probe (docker_call 124, a timeout) prints nothing at all: an empty answer is not the daemon saying
+        # "no such image", and must not be read as one.
+        image_absent "$out" || unsure="${out:-the probe for $candidate did not answer}"
         continue ;;
     esac
-    if [ "$(pin_of "$candidate" "$plat")" = "$pin" ]; then printf '%s' "$candidate"; return 0; fi
+    # A tag: the id it names on the container's platform. A tag pin_of cannot read is asked once more keeping its error,
+    # so one that did not answer (a timeout, a refused socket) is not mistaken for a tag that has moved off the image.
+    if out="$(pin_of "$candidate" "$plat")" && [ -n "$out" ]; then
+      # Only a single id answers which image the tag names; anything with whitespace in it (a warning printed ahead of
+      # the id, a half-written reply) says nothing. Reading such an answer as "the tag moved off this image" would let
+      # the bare pin's "No such image" pass for proof that the image is gone, and export a live container under it.
+      if [[ "$out" == sha256:?* ]] && [[ "$out" != *[[:space:]]* ]]; then
+        [ "$out" = "$pin" ] && { printf '%s\n' "$candidate"; return 0; }
+        continue
+      fi
+      unsure="$out"
+      continue
+    fi
+    if ! out="$(docker_call 5 image inspect -f '{{.Id}}' "$candidate" 2>&1)"; then
+      image_absent "$out" || unsure="${out:-the probe for $candidate did not answer}"
+    fi
   done < <(platform_refs "$pin" "$image")
-  printf '%s' "$pin"
+  printf '%s\n' "$pin"
+  # A probe that did not answer proves nothing about the image: it may be held, only the read timed out. The caller runs
+  # this in a subshell, so the reason travels as the second line (the first is always the reference to try) instead of
+  # through a variable.
+  [ -n "$unsure" ] && printf '%s\n' "$(printf '%s' "$unsure" | tr '\t\n' '  ')"
+  return 0
 }
 # A plain `docker save` (a daemon without `image save --platform`) writes every platform a tag or an index id holds, so
 # the archive itself has to prove it holds the running variant. An OCI archive's `index.json` is read, and a single
@@ -458,20 +520,226 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
   if [ "$(pin_of "$ref" "$plat")" = "$pin" ]; then export_err=""; return 0; fi
   rm -f "$dest"; export_err="the tag moved during this pass; not scanning a different image"; return 1
 }
+# A running container whose image record is gone is inventoried from its root filesystem. `docker export` writes an
+# uncompressed tar of the container's whole filesystem, so the pass holds two copies of it (the tar and the extracted
+# tree) in its private directory; both are removed as soon as the scan ends and with the pass. The write is bounded like
+# an image save: under the apply lock, inside the snapshot deadline, capped at the room left above the floor, and stopped
+# if free space falls to the floor while it runs. Returns 1 with export_err.
+export_container() { # <container id> <dest tar> <cap bytes>
+  local cid="$1" dest="$2" cap="$3" stage rc
+  export_err=""; export_space=0
+  if ! stage="$(mktemp -d "${dest%/*}/.export.XXXXXX")" || [ -z "$stage" ]; then
+    export_err="could not create a staging directory beside $dest"; return 1
+  fi
+  chmod 700 "$stage" 2>/dev/null || true
+  export_err="$(save_call "$cap" 900 export -o "$stage/rootfs.tar" "$cid" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    save_hit_cap "$rc" "$stage/rootfs.tar" "$export_err" "$cap" && export_space=1
+    [ "$rc" -eq 137 ] && export_space=1
+    [ "$rc" -eq 124 ] && export_err="the snapshot deadline reached during the container export"
+    rm -rf "$stage"; return 1
+  fi
+  mv -f "$stage/rootfs.tar" "$dest" || { rm -rf "$stage"; export_err="could not move the container export into place"; return 1; }
+  rm -rf "$stage"
+  export_err=""
+  return 0
+}
+# Run a command under the snapshot deadline, stopped if free space on the pass's filesystem or Docker's own root falls to
+# the floor: extraction writes a second copy of a container's filesystem, which the tar's own cap does not cover.
+run_watched() { # <secs> <cmd...>
+  local limit="$1" secs rc floor_bytes pid docker_root; shift
+  deadline_secs "$limit" >/dev/null || return 124
+  floor_bytes=$(( min_free_gb * 1073741824 ))
+  docker_root="$(docker_call 5 info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [ -n "$docker_root" ] && [ -d "$docker_root" ] || docker_root=""
+  # The budget is read again after that probe: a slow `docker info` must not hand the extraction time the pass no longer
+  # has.
+  secs="$(deadline_secs "$limit")" || return 124
+  ( exec timeout "$secs" "$@" ) &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    if [ "$(free_bytes)" -lt "$floor_bytes" ] || { [ -n "$docker_root" ] && [ "$(free_bytes_at "$docker_root")" -lt "$floor_bytes" ]; }; then
+      kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      return 137
+    fi
+  done
+  wait "$pid"; rc=$?
+  return "$rc"
+}
+# Fold one replica's extracted tree into the unit's merged root. A path the root does not hold is linked in at the
+# container's own path; a path it holds with different content is linked under `<root>/.replicas[-N]/<cid>/<path>`, so one
+# scan reads both replicas' files instead of one overwriting the other. A file identical on both sides is linked once.
+# Returns 1 with export_err if the merge cannot be made.
+# Whether two entries are the same thing: both symlinks with the same target, or both regular files with the same bytes.
+same_entry() { # <a> <b>
+  if [ -L "$1" ] || [ -L "$2" ]; then
+    [ -L "$1" ] && [ -L "$2" ] && [ "$(readlink "$1" 2>/dev/null)" = "$(readlink "$2" 2>/dev/null)" ]
+    return
+  fi
+  [ -f "$1" ] && [ -f "$2" ] && cmp -s "$1" "$2"
+}
+# Whether placing <rel> under <root> would run through something that is not a directory the merge itself made: a regular
+# file one replica has where another has a directory, or a symlink. A symlink in an ancestor is never followed, even when
+# it points somewhere inside the root: a container controls its own tree, so `app -> /home/<user>` in one replica and
+# `app/.bash_profile` in another would otherwise write that file to the host instead of the staged root, and a link into
+# another container's tree would put one target's files under another's. Such an entry is kept aside instead.
+ancestor_blocked() { # <root> <rel>
+  local root="$1" rel="$2" rest part acc="$1" noglob=""
+  case "$rel" in */*) rest="${rel%/*}" ;; *) return 1 ;; esac
+  # A container names its own paths, so one can be `o*s` or `app[1]`. With pathname expansion on, the walk would test
+  # whatever those match in the current directory (this checkout's `ops`, say) instead of the entry itself, and a link or
+  # file ancestor would then go unnoticed. Expansion is off for the walk and put back as it was found.
+  case $- in *f*) noglob=1 ;; *) set -f ;; esac
+  local oldifs="$IFS"; IFS='/'
+  for part in $rest; do
+    acc="$acc/$part"
+    if [ -L "$acc" ]; then IFS="$oldifs"; [ -n "$noglob" ] || set +f; return 0; fi
+    if [ -e "$acc" ] && [ ! -d "$acc" ]; then IFS="$oldifs"; [ -n "$noglob" ] || set +f; return 0; fi
+  done
+  IFS="$oldifs"
+  [ -n "$noglob" ] || set +f
+  return 1
+}
+# The directory conflicting entries are kept under. A container controls its own tree, so it can hold a `/.replicas` of its
+# own (a link, a file, a directory of its own paths), and that one is the container's, not the pass's: the merged root is
+# built fresh for every unit, so a name that already exists there came from a container, and the first free
+# `.replicas`, `.replicas-2`, ... is the one this merge creates. Kept per root, so both replicas of one unit agree on it.
+declare -A aside_for=()
+pick_asideroot() { # <rootfs>: sets `asideroot`
+  local rootfs="$1" k=1 cand
+  asideroot="${aside_for[$rootfs]:-}"
+  [ -n "$asideroot" ] && [ -d "$asideroot" ] && return 0
+  while [ "$k" -le 20 ]; do
+    if [ "$k" -eq 1 ]; then cand="$rootfs/.replicas"; else cand="$rootfs/.replicas-$k"; fi
+    if [ ! -e "$cand" ] && [ ! -L "$cand" ] && mkdir -p -m 755 "$cand" 2>/dev/null; then
+      asideroot="$cand"; aside_for[$rootfs]="$cand"; return 0
+    fi
+    k=$((k + 1))
+  done
+  return 1
+}
+# Link one entry into place: a symlink stays a symlink (its target is part of what the scan reads), a regular file is a
+# hard link where that works and a copy where it does not (another filesystem, or a file with no link permission).
+place_entry() { # <src> <dst>
+  if [ -L "$1" ]; then ln -P "$1" "$2" 2>/dev/null || cp -a "$1" "$2" 2>/dev/null; return; fi
+  ln "$1" "$2" 2>/dev/null || cp -a "$1" "$2" 2>/dev/null
+}
+# Fold one replica's extracted tree into the unit's merged root, bounded by the snapshot deadline (the apply lock is held
+# while this runs, so it may not outlast the pass's own budget). A path the root does not hold is linked in at the
+# container's own path; one it holds with different content goes under `<root>/.replicas[-N]/<cid>/<rel>`; one whose ancestor
+# is a file, or a symlink the merge will not follow, goes there too. Symlinks are carried as symlinks, so a distro's
+# `/etc/os-release -> ../usr/lib/os-release` and `/bin -> usr/bin` are where syft looks for them. Returns 1 with export_err.
+merge_replica_root() { # <replica root> <merged root> <container id>
+  local repodir="$1" rootfs="$2" cid="$3" f rel src dst keep n rc
+  export_err=""
+  # Sorted, so one replica's files always merge in the same order: a merge that failed halfway must not depend on the
+  # order the filesystem happened to list a container's tree in. The walk itself is bounded like the rest of the merge:
+  # a dependency-heavy root can hold millions of entries, and it runs while the apply lock is held.
+  run_watched 900 bash -c 'set -o pipefail; cd "$1" && find . -mindepth 1 \( -type f -o -type l \) -print0 | LC_ALL=C sort -z' _ "$repodir" \
+    > "$exportdir/merge-$cid.list" 2>/dev/null; rc=$?
+  if [ "$rc" -eq 124 ]; then
+    rm -f "$exportdir/merge-$cid.list"
+    export_err="the snapshot deadline reached while listing the replica root"; return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$exportdir/merge-$cid.list"
+    export_err="could not list the extracted root"; return 1
+  fi
+  while IFS= read -r -d '' f; do
+    # The apply lock is held: one slow merge must not keep a deploy waiting past the pass's budget.
+    if [ -n "${SNAPSHOT_DEADLINE:-}" ] && [ "$SECONDS" -ge "$SNAPSHOT_DEADLINE" ]; then
+      rm -f "$exportdir/merge-$cid.list"
+      export_err="the snapshot deadline reached while merging the replica roots"
+      return 1
+    fi
+    rel="${f#./}"; src="$repodir/$rel"; dst="$rootfs/$rel"; keep=""
+    if ancestor_blocked "$rootfs" "$rel"; then
+      keep=1
+    elif [ -e "$dst" ] || [ -L "$dst" ]; then
+      same_entry "$src" "$dst" && continue
+      keep=1
+    fi
+    if [ -n "$keep" ]; then
+      # Chosen on the first conflict, not up front: a container's own `/.replicas` is merged before this is asked for, so
+      # the holding directory never takes a name the merged root already holds.
+      pick_asideroot "$rootfs" || { rm -f "$exportdir/merge-$cid.list"; export_err="could not create the replica holding directory"; return 1; }
+      # A second conflicting version of the same path (two replicas, one already kept aside) gets its own suffix, and a
+      # version whose own ancestors are a file or a link goes to the next suffix until one can hold it.
+      n=1
+      while :; do
+        if [ "$n" -eq 1 ]; then dst="$asideroot/$cid/$rel"; else dst="$asideroot/$cid.$n/$rel"; fi
+        if [ "$n" -gt 20 ]; then
+          rm -f "$exportdir/merge-$cid.list"; export_err="could not place $rel"; return 1
+        fi
+        if ancestor_blocked "$rootfs" "${dst#"$rootfs"/}"; then n=$((n + 1)); continue; fi
+        if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then break; fi
+        same_entry "$src" "$dst" && break
+        n=$((n + 1))
+      done
+      if [ -e "$dst" ] || [ -L "$dst" ]; then continue; fi
+    fi
+    mkdir -p "$(dirname "$dst")" 2>/dev/null || { rm -f "$exportdir/merge-$cid.list"; export_err="could not create $(dirname "$dst")"; return 1; }
+    place_entry "$src" "$dst" || { rm -f "$exportdir/merge-$cid.list"; export_err="could not place $rel"; return 1; }
+  done < "$exportdir/merge-$cid.list"
+  rm -f "$exportdir/merge-$cid.list"
+  # Directories no file lives in (an empty mount point) are not package evidence and are not needed by the scan.
+  return 0
+}
+# Extract a container's exported tar into <dir> (mode 700, beside the tar). Returns 1 with export_err when the tar is
+# unreadable, the tree does not fit above the floor, or the snapshot deadline is reached.
+extract_container_root() { # <tar> <dir>
+  local tar="$1" dir="$2" rc
+  export_err=""; export_space=0
+  if ! mkdir -p -m 700 "$dir" 2>/dev/null; then export_err="could not create the extracted root $dir"; return 1; fi
+  chmod 700 "$dir" 2>/dev/null || true
+  # The tree is about the tar's size; the extraction check happens before it starts, so a tar that cannot be unpacked
+  # above the floor is a line rather than a full filesystem.
+  if [ "$(free_bytes)" -lt $(( min_free_gb * 1073741824 + $(stat -c %s "$tar" 2>/dev/null || echo 0) )) ]; then
+    export_space=1; export_err="the extracted root does not fit above the ${min_free_gb} GB floor"; return 1
+  fi
+  # The export holds the container's device nodes (`dev/null`, `dev/console`). This pass runs as an ordinary user, so it
+  # cannot recreate them; they are not package evidence, and tar's walk of the rest of the tree is what the scan needs.
+  # The exclusion is anchored: GNU tar matches an unanchored pattern at any depth, so `dev/*` alone would also drop a
+  # nested `/opt/app/dev/...` (a dependency tree, say) and the row would claim a complete scan of a partial filesystem.
+  # Sockets and fifos it cannot create are tolerated the same way, but a truncated or unreadable archive is not. `--mode`
+  # keeps every directory owner-writable, so one the container had read-only (a Go module cache) can still be removed
+  # beneath the floor the pass restores.
+  local errf="${exportdir}/extract-$(basename "$dir").err"
+  run_watched 900 tar --anchored --no-same-owner --mode='u+rwX' --exclude='dev' --exclude='./dev' --exclude='dev/*' --exclude='./dev/*' \
+    -C "$dir" -xf "$tar" 2>"$errf"; rc=$?
+  if [ "$rc" -eq 124 ]; then export_err="the snapshot deadline reached while extracting the container root"; return 1; fi
+  if [ "$rc" -eq 137 ]; then export_space=1; export_err="extraction stopped: free space fell to the ${min_free_gb} GB floor"; return 1; fi
+  if [ "$rc" -ne 0 ]; then
+    if grep -Eq 'Unexpected EOF|truncated|Cannot open|Cannot read|not recoverable|Archive contains' "$errf" 2>/dev/null; then
+      export_err="could not extract the container root: $(tr '\t\n' '  ' < "$errf" | tail -c 200)"
+      return 1
+    fi
+    if grep -Eq 'Cannot mknod|Cannot create socket|Cannot create fifo|Cannot utime|Cannot change ownership|Operation not permitted' "$errf" 2>/dev/null; then
+      echo "security-sbom: extracted the container root without its device nodes or sockets ($(tr '\t\n' '  ' < "$errf" | tail -c 200))" >&2
+    else
+      export_err="could not extract the container root (tar exited $rc)"
+      return 1
+    fi
+  fi
+  rm -f "$errf"
+  return 0
+}
 # The batch's images, enumerated and sized from one snapshot of the containers, taken under the host's apply lock: between
 # an apply's `docker compose build` and its recreate every rebuilt tag names the new image while its container still runs
 # the old one, and a batch enumerated there is a half-applied snapshot. The survey fixes the target list and the waves;
 # each wave's saves then happen under a lock hold and its scans after the lock is released (the driver below), so an apply
 # waits only for one wave's saves. Returns 1 when the enumeration itself failed: the caller keeps the previous batch
 # rather than publish a short one.
-plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=(); plan_space=(); plan_idx=()
-plan_add() { # <target> <source> <pin> <ref> <size GB> <survey idx> [workspace bytes]
+plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=(); plan_space=(); plan_idx=(); plan_cid=()
+plan_add() { # <target> <source> <pin> <ref> <size GB> <survey idx> [workspace bytes] [container id]
   plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}")
-  plan_idx+=("${6:-0}"); plan_space+=("${7:-0}")
+  plan_idx+=("${6:-0}"); plan_space+=("${7:-0}"); plan_cid+=("${8:-}")
 }
 # The units this pass resolved and sized, indexed alike for the wave driver below. The sizes are known before any bytes
 # are written; the driver decides each wave from them, so a later wave never needs to look at the daemon again for size.
-p_key=(); p_pin=(); p_ref=(); p_plat=(); p_bytes=(); p_size=()
+p_key=(); p_pin=(); p_ref=(); p_plat=(); p_bytes=(); p_size=(); p_mode=(); p_cid=()
 archive_seq=0
 # Each wave's index, 0 for a unit that never fits (a line at survey time): the save and scan of a wave select their units.
 declare -a wave_of=()
@@ -489,7 +757,7 @@ space_need() { # <admitted GB> <this image GB> <largest archive GB> <room GB> [s
     "$admitted" "$size" "$largest" "$room" "$min_free_gb" "$out" "$short"
 }
 snapshot() {
-  local listing rows cid row image config desc label want key raw size ref saved pin now
+  local listing rows cid row image config desc label want key raw size ref resolved saved pin now mode
   local plat man nodesc unit
   local -A variant_count=()
   if ! listing="$(docker_call 10 ps -q 2>&1)"; then
@@ -548,7 +816,7 @@ snapshot() {
   # share the first's archive and publish no row for it. A unit is its image plus the platform manifest it runs (its
   # platform when the daemon reports no descriptor), and the plan keeps one per unit in a stable order.
   local -a units=()
-  local -A unit_seen=() u_image=() u_plat=() u_man=() u_tag=() u_label=() u_pinned=()
+  local -A unit_seen=() u_image=() u_plat=() u_man=() u_tag=() u_label=() u_pinned=() u_cid=()
   while read -r cid image config label desc; do
     [ -n "$cid" ] || continue
     [ "$label" = - ] && label=""
@@ -563,9 +831,12 @@ snapshot() {
       unit_seen[$unit]=1; units+=("$unit")
       u_image[$unit]="$image"; u_plat[$unit]="$plat"; u_man[$unit]="$man"
       u_label[$unit]="$label"
-      u_tag[$unit]=""; u_pinned[$unit]="$man"
-    elif [ -z "${u_label[$unit]:-}" ] && [ -n "$label" ]; then
-      u_label[$unit]="$label"
+      u_tag[$unit]=""; u_pinned[$unit]="$man"; u_cid[$unit]="$cid"
+    else
+      if [ -z "${u_label[$unit]:-}" ] && [ -n "$label" ]; then u_label[$unit]="$label"; fi
+      # Two containers can run one image variant (two replicas of a service). If the daemon no longer holds the image,
+      # both filesystems are in production and each has to be exported: keep every id, not only the first container's.
+      [[ " ${u_cid[$unit]:-} " == *" $cid "* ]] || u_cid[$unit]="${u_cid[$unit]:-} $cid"
     fi
     # The tag is read once per variant, on that variant's platform: the id the tests below judge, and the identity carried
     # forward as the pin. Reading it again later would pin whatever it names then, not what the container runs.
@@ -608,10 +879,10 @@ snapshot() {
     [ -z "${unit_seen[$unit]:-}" ] || continue
     unit_seen[$unit]=1; units+=("$unit")
     u_image[$unit]="$pin_now"; u_plat[$unit]="$platform"; u_man[$unit]=""
-    u_label[$unit]=""; u_tag[$unit]="$tag"; u_pinned[$unit]="$pin_now"
+    u_label[$unit]=""; u_tag[$unit]="$tag"; u_pinned[$unit]="$pin_now"; u_cid[$unit]=""
     u_configured_tag[$unit]=1
   done < "$work/configured"
-  p_key=(); p_pin=(); p_ref=(); p_plat=(); p_bytes=(); p_size=()
+  p_key=(); p_pin=(); p_ref=(); p_plat=(); p_bytes=(); p_size=(); p_mode=(); p_cid=()
   # Every unit is resolved and sized first, before any bytes are written: a save is only worth making for a target whose
   # scan can be planned. The wave driver uses these sizes to decide which images go in this pass at all. A unit's image
   # is its platform manifest, or the reference when the pin is unknown: two names for one image on one platform are one
@@ -681,12 +952,14 @@ snapshot() {
     if [ -n "${u_configured_tag[$unit]:-}" ] && [ -z "${u_pinned[$unit]:-}" ]; then
       fail "image:$key" "docker save: no local image is tagged $want"; continue
     fi
-    # The reference the save will read, resolved now, while the lock still holds the store still. Discovering it here, not
-    # after the size checks, is what lets an image whose own id is gone but whose index another tag holds still be
+    # The reference the save will read, resolved now, while the lock still holds the store still. Discovering it here,
+    # not after the size checks, is what lets an image whose own id is gone but whose index another tag holds still be
     # exported instead of dropped as unreadable.
-    if ! ref="$(resolve_ref "$pin" "$image" "$plat")"; then
-      fail "image:$key" "docker save: no local image exports $want"; continue
-    fi
+    resolved="$(resolve_ref "$pin" "$image" "$plat")"
+    ref="$(printf '%s\n' "$resolved" | head -1)"
+    # A reference probe that timed out or was refused, as resolve_ref's second line reports it: see the fallback below.
+    ref_unsure="$(printf '%s\n' "$resolved" | sed -n '2,$p' | tr '\t\n' '  ')"
+    mode=image; cid=""
     # Size the very variant the save will write, through the very reference it will read: `docker image inspect` on an
     # index reports the index's total, while `docker save --platform` writes one platform manifest. A plain save (no
     # `--platform` on this daemon) writes everything the reference holds, so the whole reference is what must fit; the
@@ -699,6 +972,36 @@ snapshot() {
     fi
     if [ -z "$saved" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
     if [ -z "$saved" ]; then
+      # No reference resolved the image (`resolve_ref` fell back to the bare pin) and the daemon cannot even size it: the
+      # image was untagged and collected while the container kept running. Its filesystem is in production and there is
+      # nothing else to read, so a running container is inventoried from `docker export` under the same target. The image
+      # path above runs unchanged whenever any reference answers, which is every image the daemon still holds.
+      # Only the daemon's own "no such image" is that shape: a timeout (docker_call 124), a refused socket or a daemon
+      # mid-restart leaves the image in place, and exporting a live container then would publish a filesystem scan under
+      # the image's target — an inventory of the wrong thing that the absent-tag guards would read as a clean image. Those
+      # stay the size-read error line, so the next pass retries the image.
+      if [ -n "${ref_unsure:-}" ]; then
+        # One of resolve_ref's probes timed out or was refused. That probe's candidate could be the image's own index still
+        # held by the daemon, and the bare pin's "No such image" then says only that the manifest is not an image record of
+        # its own. The container is exported only when every probe answered that nothing holds the image, so this stays an
+        # error line and the next pass retries it.
+        fail "image:$key" "docker image inspect: ${ref_unsure:-failed}"; continue
+      fi
+      if [ "$ref" = "$pin" ] && [ -n "${u_cid[$unit]:-}" ] && image_absent "$raw"; then
+        mode=container
+        # Every container on this variant is exported when the image is gone: two replicas are one unit and one target
+        # key, so their roots are scanned together under that row. Their root filesystem sizes, where the daemon reports
+        # them, are the demand the unit makes; one it cannot size leaves that part to the write's own cap.
+        size=0
+        for cid in ${u_cid[$unit]}; do
+          raw="$(docker_call 15 inspect --size -f '{{.SizeRootFs}}' "$cid" 2>/dev/null || true)"
+          raw="$(printf '%s\n' "$raw" | tail -1)"
+          if [[ "$raw" =~ ^[0-9]+$ ]]; then size=$(( size + raw )); fi
+        done
+        p_key+=("$key"); p_pin+=("$pin"); p_ref+=(""); p_plat+=("$plat"); p_bytes+=("$size"); p_size+=("$(ceil_gb "$size")")
+        p_mode+=("$mode"); p_cid+=("${u_cid[$unit]}")
+        continue
+      fi
       fail "image:$key" "docker image inspect: ${raw:-failed}"; continue
     fi
     # The template prints one number; a warning ahead of it is not the size, so the last line is what is judged. A size
@@ -708,6 +1011,7 @@ snapshot() {
       fail "image:$key" "docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')"; continue
     fi
     p_key+=("$key"); p_pin+=("$pin"); p_ref+=("$ref"); p_plat+=("$plat"); p_bytes+=("$size"); p_size+=("$(ceil_gb "$size")")
+    p_mode+=("$mode"); p_cid+=("")
   done
   # Cut the surveyed set into waves, smallest first, each wave admitted only while its peak fits above the floor. A
   # wave's peak is all of its archives on disk at the first scan plus the largest one's own size again, unpacked beside
@@ -720,7 +1024,7 @@ snapshot() {
   local room_bytes=$(( $(free_bytes) - min_free_gb * 1073741824 ))
   [ "$room_bytes" -lt 0 ] && room_bytes=0
   local room="$(ceil_gb "$room_bytes")"
-  local idx sz szb wave wave_total wave_biggest
+  local idx sz szb wave wave_total wave_biggest what
   wave_of=(); wave=0; wave_total=0; wave_biggest=0; wave_count=0
   # NB: the loop body runs in this shell only if the loop itself is not at the end of a pipeline; the sizes come from a
   # process substitution so `wave_of` persists for the save pass. Admission is in bytes: a gigabyte rounded up here would
@@ -734,7 +1038,8 @@ snapshot() {
     if [ $(( 2 * szb )) -gt "$room_bytes" ]; then
       # The shortfall comes from the bytes, not the rounded figures: 5 GiB against 9.5 GiB of room is short by 0.5 GiB,
       # and subtracting the two rounded numbers would print "short by 0 GB".
-      fail "image:${p_key[$idx]}" "skipped: ${sz} GB image does not fit: $(space_need 0 "$sz" "$sz" "$room" $(( (2 * szb - room_bytes + 1073741823) / 1073741824 )))"
+      what=image; [ "${p_mode[$idx]}" = container ] && what="container root filesystem"
+      fail "image:${p_key[$idx]}" "skipped: ${sz} GB ${what} does not fit: $(space_need 0 "$sz" "$sz" "$room" $(( (2 * szb - room_bytes + 1073741823) / 1073741824 )))"
       continue
     fi
     if [ "$wave" -eq 0 ] || [ $(( wave_total + szb + (szb > wave_biggest ? szb : wave_biggest) )) -gt "$room_bytes" ]; then
@@ -769,7 +1074,8 @@ declare -A defer_seen=()
 # with it. Every archive is written from the reference the survey resolved, re-checked at save time; each failure is a
 # line, never a gap.
 save_wave() { # <wave>
-  local w="$1" idx sz szb key pin ref plat archive top top_gb avail_now why cap_bytes written=0 written_big=0
+  local w="$1" idx sz szb key pin ref plat archive root top top_gb avail_now why cap_bytes written=0 written_big=0
+  local unitdir tarsdir rootfs replicasdir repodir cont_err cont_space cont_bytes cont_tars cid ctarchive ctbytes
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   while IFS=$'\t' read -r szb idx; do
     [ -n "$idx" ] || continue
@@ -803,8 +1109,94 @@ save_wave() { # <wave>
     # nothing that moves after this lock is released can change it. The scan only re-opens archives. The write is capped
     # at the room this save was admitted with, so the daemon's estimate being low can overrun the host's reserve by at
     # most nothing: a save that hits the cap is a refused write, and its file is removed below.
-    archive="$archives/$((archive_seq += 1)).tar"
+    archive_seq=$((archive_seq + 1))
+    archive="$archives/$archive_seq.tar"
     cap_bytes=$(( $(free_bytes) - floor_bytes )); [ "$cap_bytes" -lt 0 ] && cap_bytes=0
+    if [ "${p_mode[$idx]}" = container ]; then
+      # No image record is left, so the containers' own root filesystems are what gets inventoried. One unit can hold
+      # two containers running the same gone image (two replicas); each is exported, and their files are extracted into one
+      # root, which is then scanned once under the unit's single target key. The root has to be a real container root:
+      # syft looks for `/etc/os-release`, `/usr/lib` and the like at fixed paths relative to the scan root, so a root
+      # holding one subdirectory per container would find package files by glob but report no distro, and grype would skip
+      # that distro's advisory matching. Every write is bounded like a save: capped at the room above the floor, under this
+      # wave's apply-lock hold and the snapshot deadline, with the floor watched while it runs. A container that cannot be
+      # exported or extracted leaves the unit a line with its daemon error rather than a gap, and no half-built tree is
+      # ever scanned.
+      unitdir="$exportdir/unit-$archive_seq"; tarsdir="$unitdir.tars"; rootfs="$unitdir"
+      replicasdir="$exportdir/unit-$archive_seq.replicas"
+      cont_err=""; cont_space=0; cont_bytes=0; cont_tars=0
+      # Each tar goes beside the root in `<unit>.tars`, and each replica's own tree in `<unit>.replicas`, so the scan never
+      # reads an export's bytes a second time and never sees a replica's tree outside the merged root.
+      if ! mkdir -p -m 700 "$rootfs" "$tarsdir" "$replicasdir" 2>/dev/null; then
+        cont_err="could not create the private export directory $rootfs"
+      else
+        chmod 700 "$rootfs" "$tarsdir" "$replicasdir" 2>/dev/null || true
+        for cid in ${p_cid[$idx]}; do
+          ctarchive="$tarsdir/export-$cid.tar"
+          cap_bytes=$(( $(free_bytes) - floor_bytes )); [ "$cap_bytes" -lt 0 ] && cap_bytes=0
+          export_space=0
+          if ! export_container "$cid" "$ctarchive" "$cap_bytes"; then
+            if [ "$export_space" = 1 ]; then
+              cont_space=1
+              cont_err="container $cid's export outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor"
+            else
+              cont_err="container $cid: ${export_err:-failed}"
+            fi
+            break
+          fi
+          ctbytes="$(stat -c %s "$ctarchive" 2>/dev/null || echo 0)"
+          if [ "$ctbytes" -gt "$cap_bytes" ] || [ "$(free_bytes)" -lt "$floor_bytes" ]; then
+            cont_space=1
+            cont_err="container $cid's export outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor"
+            break
+          fi
+          cont_tars=$(( cont_tars + ctbytes ))
+          # Extracted here, under the same apply-lock hold: the tree is a second write of the container's filesystem and
+          # must not outlive the lock or the snapshot budget. The scan reads only the extracted root, after the lock is
+          # released like every other scan. Each replica is extracted on its own first: two containers of one image can
+          # each have modified the same path in their writable layer, and extracting one straight over the other would
+          # lose whichever file came first, so the scan would miss that replica's packages while the row claimed both.
+          repodir="$replicasdir/$cid"
+          export_space=0
+          if ! extract_container_root "$ctarchive" "$repodir"; then
+            cont_err="container $cid: ${export_err:-failed to extract the container root}"
+            [ "$export_space" = 1 ] && cont_space=1
+            break
+          fi
+          # Merged into the one real root: a path the merged root does not hold yet is added there (so /etc, /usr and the
+          # package files sit at the container's own paths for the first replica), and a path it already holds with other
+          # content is kept under `<root>/.replicas[-N]/<id>/<path>` instead of being dropped, so the one scan still reads both
+          # replicas' versions. Hard links keep the second copy from doubling the bytes.
+          if ! merge_replica_root "$repodir" "$rootfs" "$cid"; then
+            cont_err="container $cid: could not merge its root into the unit root (${export_err:-failed})"
+            break
+          fi
+          discard_tree "$repodir"
+          # Every tar written so far plus the merged root and whatever replica tree is still resident are charged: counting
+          # only the root would let a later unit's extraction take room an earlier tar already holds, and the second
+          # extraction would then hit the floor and be a line on every pass though each unit fits alone. The replica tree is
+          # removed as soon as it is merged, so at most one is charged beside the root.
+          cont_bytes=$(( cont_tars + $(du -sb "$rootfs" 2>/dev/null | awk '{ print $1 }' || echo 0) + $(du -sb "$replicasdir" 2>/dev/null | awk '{ print $1 }' || echo 0) ))
+        done
+      fi
+      if [ -z "$cont_err" ]; then
+        # The tar and the root stay until the scan ends; scan_wave removes the whole unit directory, tars included, so
+        # neither outlives its scan.
+        plan_add "image:$key" "$rootfs" "$pin" "$ref" "$sz" "$idx" "${p_bytes[$idx]}" "${p_cid[$idx]}"
+        # Both copies are resident until the scan ends: every tar and the root unpacked from them (`cont_bytes` is both,
+        # accumulated above). Charging only one would let a later save in this wave use room the other already holds.
+        written=$(( written + cont_bytes )); [ "$cont_bytes" -gt "$written_big" ] && written_big="$cont_bytes"
+      elif [ "$cont_space" = 1 ]; then
+        discard_tree "$unitdir" "$tarsdir" "$replicasdir"
+        why="skipped: the ${sz} GB container root filesystem does not fit: $cont_err"
+        if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then continue; fi
+        fail "image:$key" "$why"
+      else
+        discard_tree "$unitdir" "$tarsdir" "$replicasdir"
+        fail "image:$key" "docker export: $cont_err"
+      fi
+      continue
+    fi
     if export_image "$pin" "$ref" "$archive" "$plat" "$cap_bytes"; then
       # The archive is measured, not estimated: a save can be larger than the image it holds, and the bytes it really
       # took are what the rest of the wave and the pass's end-of-day budget have to live with. The ceiling stops a real
@@ -854,8 +1246,18 @@ save_wave() { # <wave>
 # rather than skipping the largest on every pass. An archive that is gone, or that cannot fit even alone, is a line too.
 # Its bytes go back before the next target, and the line states the admitted total, its size, the largest archive, the
 # room and the shortfall.
+# A planned source is an image archive or a container's extracted root: either is removed when its scan ends or it is
+# dropped, so neither outlives the pass.
+discard_plan_source() { # <archive file, extracted unit directory, or its tar directory>
+  # A container unit's exported tars sit in `<unit>.tars` and each replica's own tree in `<unit>.replicas` beside the merged
+  # root: the scan root must hold the merged root only, and all three go together when the scan ends (or the unit is
+  # dropped), never at the end of the pass.
+  [ -e "$1.tars" ] && discard_tree "$1.tars"
+  [ -e "$1.replicas" ] && discard_tree "$1.replicas"
+  if [ -d "$1" ]; then discard_tree "$1"; else rm -f "$1"; fi
+}
 scan_wave() { # <first plan index>
-  local first="$1" i k target archive avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes workspace
+  local first="$1" i k target archive root avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes workspace
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   local -A bytes_of=() gb_of=() space_of=()
   local -a pending=()
@@ -864,26 +1266,46 @@ scan_wave() { # <first plan index>
     < <(for i in "${!plan_target[@]}"; do [ "$i" -ge "$first" ] && printf '%s\t%s\n' "${plan_size[$i]}" "$i"; done | sort -rn)
   for i in "${pending[@]}"; do
     archive="${plan_source[$i]#archive:}"
-    sz_bytes="$(stat -c %s "$archive" 2>/dev/null || echo 0)"
-    # Resident bytes are the archive's; the workspace a scan unpacks is the image's own size, which a compressed archive
-    # can be much smaller than. A scan must have room for both the archive and that workspace above the floor.
-    bytes_of[$i]="$sz_bytes"; gb_of[$i]="$(ceil_gb "$sz_bytes")"; space_of[$i]="${plan_space[$i]}"
-    [ "${space_of[$i]}" -gt 0 ] || space_of[$i]="$sz_bytes"
+    if [ -n "${plan_cid[$i]:-}" ]; then
+      # A container's extracted root is already on disk and syft reads it in place, so its resident bytes are the tree's
+      # and there is no layer workspace to unpack beside it.
+      sz_bytes="$(du -sb "$archive" 2>/dev/null | awk '{ print $1 }')"; [ -n "$sz_bytes" ] || sz_bytes="${plan_space[$i]}"
+      bytes_of[$i]="$sz_bytes"; gb_of[$i]="$(ceil_gb "$sz_bytes")"; space_of[$i]=0
+    else
+      sz_bytes="$(stat -c %s "$archive" 2>/dev/null || echo 0)"
+      # Resident bytes are the archive's; the workspace a scan unpacks is the image's own size, which a compressed archive
+      # can be much smaller than. A scan must have room for both the archive and that workspace above the floor.
+      bytes_of[$i]="$sz_bytes"; gb_of[$i]="$(ceil_gb "$sz_bytes")"; space_of[$i]="${plan_space[$i]}"
+      [ "${space_of[$i]}" -gt 0 ] || space_of[$i]="$sz_bytes"
+    fi
     remaining_bytes=$(( remaining_bytes + sz_bytes ))
   done
   while [ "${#pending[@]}" -gt 0 ]; do
     local -a rest=()
     for i in "${pending[@]}"; do
       target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$i]}"
-      if [ ! -f "$archive" ]; then remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); fail "$target" "docker save: its archive is gone"; continue; fi
+      if [ -n "${plan_cid[$i]:-}" ] && [ ! -d "$archive" ]; then
+        remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); fail "$target" "docker export: its extracted root is gone"; continue
+      fi
+      if [ -z "${plan_cid[$i]:-}" ] && [ ! -f "$archive" ]; then
+        remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); fail "$target" "docker save: its archive is gone"; continue
+      fi
       avail_bytes="$(free_bytes)"; room_bytes=$(( avail_bytes - floor_bytes ))
       # The archive stays on disk while this image is unpacked beside it: the room must hold every archive still held plus
       # this scan's workspace (the image's size), which is the model the plan admitted waves with. `avail_bytes` already has
       # the archives' written bytes subtracted, so `remaining_bytes` is not added again; it is only the pool a prune frees.
       workspace="${space_of[$i]}"
       if [ "$avail_bytes" -lt "$floor_bytes" ] || [ "$workspace" -gt "$room_bytes" ]; then rest+=("$i"); continue; fi
+      if [ "${plan_cid[$i]:-}" ]; then
+        # A container export: scan the extracted root(s) as a directory and remove the whole private unit directory, the
+        # tars included. The row's commit column carries `container:<id>`, this scan's provenance: the containers'
+        # filesystems, not the missing image. Two containers on one gone image are one target, so both ids are named.
+        scan "$target" "container:$(printf '%s' "${plan_cid[$i]}" | tr ' ' ',')" -v "$archive:/src:ro" -- dir:/src
+        discard_plan_source "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] ))
+        continue
+      fi
       scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
-      rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] ))
+      discard_plan_source "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] ))
     done
     # A round that scanned nothing: the archives themselves now exceed the room (their real bytes are the sizes read
     # here, not the plan's). The capacity is the room the wave began with plus everything still held; deleting an archive
@@ -907,7 +1329,7 @@ scan_wave() { # <first plan index>
           i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$k]}"
           room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
           fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - bytes_of[$i] )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (bytes_of[$i] + space_of[$i] - capacity + 1073741823) / 1073741824 )))"
-          rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); continue
+          discard_plan_source "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); continue
         fi
         keep+=("$k")
       done
@@ -926,7 +1348,7 @@ scan_wave() { # <first plan index>
         if [ -z "${plan_idx[$i]:-}" ] || ! defer_to_next_wave "${plan_idx[$i]}" "$(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (space_of[$i] - room_now + 1073741823) / 1073741824 )))"; then
           fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (space_of[$i] - room_now + 1073741823) / 1073741824 )))"
         fi
-        rm -f "$archive"; remaining_bytes=$(( remaining_bytes - drop_bytes ))
+        discard_plan_source "$archive"; remaining_bytes=$(( remaining_bytes - drop_bytes ))
         local -a dropped=()
         for k in "${rest[@]}"; do [ "$k" = "$drop" ] || dropped+=("$k"); done
         keep=("${dropped[@]}")
@@ -938,7 +1360,7 @@ scan_wave() { # <first plan index>
 }
 if ! snapshot; then
   exec 8>&-
-  rm -rf "$next" "$work" "$archives"
+  discard_tree "$next"; discard_tree "$work"; discard_tree "$archives"; discard_tree "$exportdir"
   exit 0
 fi
 # The survey is done under the lock and fixed the target list. Each wave is saved under its own lock hold and scanned
@@ -986,7 +1408,7 @@ for idx in "${!p_size[@]}"; do
   [ "${wave_of[$idx]}" -lt "$wave_no" ] && continue
   fail "image:${p_key[$idx]}" "skipped: not reached: this wave's export did not start (the pass's export budget was spent or an apply took the apply lock)"
 done
-rm -rf "$archives"
+discard_tree "$archives"; discard_tree "$exportdir"
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
 if [ -n "$inst" ]; then scan repo:instance "$(git -C "$inst" rev-parse HEAD 2>/dev/null || true)" -v "$inst:/src:ro" -- dir:/src --exclude './.git/**' --exclude '**/node_modules/**'; fi
 apps="$PWD/data/apps/.platform"
@@ -1034,5 +1456,5 @@ if [ "${images_planned:-0}" -gt 0 ] && [ "$(grep -c $'^image:[^\t]*\t' "$next/ta
   : > "$next/images.complete"
 fi
 mv "$next" "$out/current"
-rm -rf "$out/prev" "$work"
+discard_tree "$out/prev"; discard_tree "$work" "$exportdir"
 echo "security-sbom: $(wc -l < "$out/current/targets.tsv") targets, $(grep -c $'\t-\t' "$out/current/targets.tsv" || true) failed"
