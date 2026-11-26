@@ -49,7 +49,7 @@ describe("conversation", () => {
   const msgs = conversation(chat, comments, "me", name);
 
   it("opens with the owner's first message, shows tagged replies, and folds run notes into one line per stretch", () => {
-    expect(msgs.map((m) => m.kind)).toEqual(["owner", "notes", "reply", "notes", "owner", "owner", "notice"]);
+    expect(msgs.map((m) => m.kind)).toEqual(["owner", "notes", "reply", "notes", "owner", "owner"]); // the kernel's approval outcome line is the agent's, never shown
     expect(msgs[0]).toMatchObject({ text: "can you chase Sam on the audit?", via: "Telegram" });
     expect(msgs[2]).toMatchObject({ agent: "Aiden", text: "**On it**: Sam has it, due Friday.", actions: ["Chase now", "Not now"] });
     expect(msgs[3]).toMatchObject({ kind: "notes", notes: [{ by: "Aiden" }] });

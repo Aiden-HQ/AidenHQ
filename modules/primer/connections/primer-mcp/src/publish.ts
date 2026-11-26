@@ -96,11 +96,11 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
         facts: { size: args.content.length, short: sha.slice(0, 12) },
         ...(args.documentId && !args.own && !report ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of document ${args.documentId}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
         card: {
-          what: args.private ? `the private report "${args.title ?? args.repo_key}" (${args.repo_key})` : args.documentId ? `a new version of Primer document ${args.documentId}` : `the new document "${args.title}"`,
+          what: args.private ? `the private report "${args.title ?? args.repo_key}" (${args.repo_key})` : args.documentId ? `a new version of ${args.title ? `"${args.title}"` : "the document"}` : `the new document "${args.title}"`,
           changes: args.private
             ? "Publishes this report as a new Primer document that only its owner can read."
             : args.documentId
-            ? `Adds this as the latest version of document ${args.documentId} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
+            ? `Adds this as the latest version of ${args.title ? `"${args.title}"` : "the document"} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
             : "Creates a new Primer document that everyone in the organization can read.",
           from: args.path ? `, from the workspace file ${args.path}` : "",
         },

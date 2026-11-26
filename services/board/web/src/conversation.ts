@@ -14,8 +14,7 @@ export function chatListForDevice(r: { chats: ChatRow[]; agents: ChatAgent[] }) 
 }
 
 /**
- * A system line that only reports progress: runner and agent notes, wake-ups and approval outcomes (the card shows
- * those too). A failure, a file the board couldn't read and someone else's opening words stay in the conversation.
+ * A system line that only reports progress: runner and agent notes and wake-ups. A failure, a file the board couldn't read and someone else's opening words stay in the conversation.
  */
 export function isNoise(m: ChatMessage): boolean {
   if (m.kind === "notes") return true;
@@ -85,10 +84,26 @@ export const inFilter = (a: Approval, f: ApprovalFilter) =>
   (f === "pending" ? awaitsOwner(a) : f === "failed" ? outcomeOf(a).tone === "bad" : !awaitsOwner(a) && !awaitsReviewer(a) && !inProgress(a) && outcomeOf(a).tone !== "bad");
 
 /**
+ * Which cards a conversation shows: the ones that need the owner, are still in flight or went wrong. What the AI reviewer
+ * or code approved and applied stays on Approvals and in the agent's activity.
+ */
+export const shownInChat = (a: Approval) => a.state !== "auto" && (awaitsOwner(a) || inProgress(a) || a.state === "rejected" || outcomeOf(a).tone === "bad");
+
+/**
  * A card in a conversation folds to one line once it is decided; a pending one stays whole with its buttons. A card
  * the owner decides while looking at it (`seenPending`) stays open so it doesn't jump away under the tap.
  */
 export const foldsInChat = (a: Approval, seenPending: boolean) => a.state !== "pending" && a.state !== "running" && !seenPending;
+
+/** The card's head after "{agent} ": what it asks, or who decided it in words. */
+export function headOf(a: Approval): string {
+  if (a.state === "auto") return "ran it at once (Tier 0)";
+  if (a.state === "running") return "is running";
+  if (awaitsOwner(a)) return "asks for your approval";
+  if (awaitsReviewer(a)) return "asks the AI reviewer";
+  const by = deciderOf(a);
+  return `${a.state === "rejected" ? "was rejected" : "was approved"}${by ? ` by ${by}` : ""}`;
+}
 
 /** Who decided a card, in words: a named admin, you (your tap or reply), code, the AI reviewer or the panel, or the stamp itself (watcher). */
 export function deciderOf(a: Pick<Approval, "decidedBy" | "decidedByName">): string {

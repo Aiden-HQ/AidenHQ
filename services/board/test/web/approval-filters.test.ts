@@ -1,6 +1,6 @@
 // Which Approvals tab a card is in (web/src/conversation.ts): a card in flight has not ended, so the Done tab never lists it.
 import { describe, expect, it } from "vitest";
-import { inFilter, inProgress } from "../../web/src/conversation";
+import { headOf, inFilter, inProgress, shownInChat } from "../../web/src/conversation";
 import type { Approval } from "../../web/src/types";
 
 const card = (o: Partial<Approval>): Approval =>
@@ -36,5 +36,22 @@ describe("Approvals filters", () => {
   it("a running card that was decided is never counted as an end", () => {
     // `outcome: "applied"` with a live state cannot happen from the kernel, but the filter must not read it as Done if it did.
     expect(inFilter(card({ state: "running", outcome: "applied" }), "done")).toBe(false);
+  });
+});
+
+describe("a conversation's cards", () => {
+  it("shows only what needs the owner, is in flight or went wrong; what the AI reviewer approved stays on Approvals", () => {
+    expect(shownInChat(card({ state: "pending", tier: 2 }))).toBe(true);
+    expect(shownInChat(card({ state: "running" }))).toBe(true);
+    expect(shownInChat(card({ state: "used", outcome: "failed" }))).toBe(true);
+    expect(shownInChat(card({ state: "rejected" }))).toBe(true);
+    expect(shownInChat(card({ state: "used", outcome: "applied", decidedBy: "reviewer:~openai/gpt-luna-latest" }))).toBe(false);
+    expect(shownInChat(card({ state: "auto", outcome: "applied" }))).toBe(false);
+    expect(shownInChat(card({ state: "pending", tier: 1 }))).toBe(false);
+  });
+
+  it("says who decided in words, and asks for approval only while it waits for the owner", () => {
+    expect(headOf(card({ state: "pending", tier: 2 }))).toBe("asks for your approval");
+    expect(headOf(card({ state: "rejected", decidedBy: "reviewer:~openai/gpt-luna-latest" }))).toBe("was rejected by the AI reviewer");
   });
 });
