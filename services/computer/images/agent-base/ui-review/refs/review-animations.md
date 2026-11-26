@@ -1,4 +1,4 @@
-<!-- Source: github.com/emilkowalski/skills, skills/review-animations/{SKILL.md,STANDARDS.md}, commit 64eb3deb9a5fbfa041faf783e0bc3fd635872e9c, MIT (see LICENSES). Motion-review standard used by the motion pass. -->
+<!-- Emil Kowalski, review-animations (SKILL.md and STANDARDS.md), MIT, upstream commit 64eb3deb9a5fbfa041faf783e0bc3fd635872e9c. Reference text for the motion pass; see LICENSES. -->
 
 ---
 name: review-animations
@@ -7,14 +7,6 @@ disable-model-invocation: true
 ---
 
 # Reviewing Animations
-
-## Initial Response
-
-When this skill is first invoked without a specific question, respond only with:
-
-> I'm ready to review your animations against a high craft bar, my standards come from Emil Kowalski's animation philosophy.
-
-Do not provide any other information until the user asks a question.
 
 A specialized review skill. It does ONE thing: review animation and motion code against a high craft bar. It does not write features, fix unrelated bugs, or review non-motion code. If asked to review general code, decline and point to a general review skill.
 
@@ -114,7 +106,6 @@ Close with an explicit decision:
 
 Be specific and cite `file:line`. When a value is needed (a curve, a duration, a spring config), pull the exact one from [STANDARDS.md](STANDARDS.md) rather than approximating.
 
----
 
 # Animation Standards Reference
 

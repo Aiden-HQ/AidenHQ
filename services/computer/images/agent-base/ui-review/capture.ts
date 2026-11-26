@@ -15,15 +15,12 @@ import { measurePage } from "./measure.ts";
 import { measureMotion } from "./motion.ts";
 import { pageList } from "./pages.ts";
 import { keyOf, openQueue } from "./queue.ts";
-import { readReport, writeReport } from "./report.ts";
+import { CHANGED_PCT, CHANGED_PX, readReport, writeReport } from "./report.ts";
 import { rules } from "./rules.ts";
 import type { Capture, Measures, Page, QueueItem, RuleHit, ShotDiff, State, Theme } from "./types.ts";
 
 export const MAX_STEPS = 6;
 const NOT_MEASURED: Measures = { fonts: [], colours: [], radii: [], shadows: [], spacing: { values: [], offScale: [] }, nearMisses: [], content: { width: 0, viewport: 0 }, ctas: [], contrastFails: 0, signatures: { button: [], card: [], heading: [], input: [] } };
-// A shot counts as changed when this share (%) of its pixels differ from the baseline's, or at least CHANGED_PX of them (one
-// changed word: on a 2560px shot 0.1% is a whole paragraph).
-export const CHANGED_PCT = 0.1, CHANGED_PX = 1000;
 
 export type CaptureOptions = {
   out: string; frozenAt: string; commit?: string; tree?: string;
@@ -240,6 +237,8 @@ function slugs(pages: Page[]): Map<string, string> {
 
 const list = <T extends string | number>(v: string | undefined, d: T[], f: (s: string) => T): T[] => (v ? v.split(",").filter(Boolean).map(f) : d);
 const PAGE_MAX = 120, CAPTURE_TIMEOUT = 60_000;
+/** The default widths: phone, tablet, small laptop, the common 1280 laptop, the reference desktop, a large and a 4K-class screen. */
+export const WIDTHS = [390, 768, 1024, 1280, 1512, 1920, 2560];
 
 export async function captureCommand(argv: string[]): Promise<number> {
   const { values: v, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
@@ -255,7 +254,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
   const prior = v.resume && existsSync(runFile) ? JSON.parse(readFileSync(runFile, "utf8")) as { base: string; commit?: string; tree?: string; frozenAt: string; pages: Page[]; widths: number[]; themes: Theme[]; states: State[]; baseline?: string } : null;
   const at = source(v.commit);
   if (prior && (prior.base !== base || prior.commit !== at.commit || prior.tree !== at.tree)) { console.error(`ui-review: --resume of a run of ${prior.base} at ${prior.commit ?? "an unknown commit"}, not ${base} at ${at.commit ?? "an unknown commit"}: start a new --out`); return 2; }
-  const widths = prior?.widths ?? list(v.widths, [390, 768, 1024, 1512, 1920, 2560], Number);
+  const widths = prior?.widths ?? list(v.widths, WIDTHS, Number);
   const themes = prior?.themes ?? list(v.themes, ["light", "dark"] as Theme[], (s) => s as Theme);
   const states = prior?.states ?? list(v.states, ["default"] as State[], (s) => s as State);
   const baseline = v.baseline ?? prior?.baseline;
@@ -315,8 +314,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
   });
   for (const i of q.items) if (i.status === "failed") notes.push(`${i.page} ${i.width}px ${i.theme}${i.state === "default" ? "" : ` (${i.state})`}: not captured: ${i.why}`);
   const counts = q.counts();
-  const r = writeReport(out, { version: 2, target: base, ...(at.commit ? { commit: at.commit } : {}), frozenAt, model: "", coverage: counts, captures: caps, improvements: [], motion: [], bugs: [], notes, cost_usd: 0 },
-    { widths, themes, states, baseline, shows: Object.fromEntries(pages.filter((p) => p.shows).map((p) => [p.path, p.shows!])) });
+  const r = writeReport(out, { version: 2, target: base, ...(at.commit ? { commit: at.commit } : {}), frozenAt, model: "", coverage: counts, captures: caps, improvements: [], motion: [], bugs: [], notes, cost_usd: 0 });
   console.log(`${join(out, "report.md")}: ${counts.done}/${counts.total} captures in ${secs} s, ${r.blocking!.length} blocking, ${r.preexisting!.length} already on this base, ${caps.reduce((n, c) => n + c.shots.length, 0)} screenshots${counts.failed ? `, ${counts.failed} failed` : ""}${counts.deferred ? `, ${counts.deferred} deferred` : ""}`);
   if (!counts.done) { console.error("ui-review: nothing was captured (is the app up?)"); return 2; }
   return r.blocking!.length ? 1 : 0;

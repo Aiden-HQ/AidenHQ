@@ -39,4 +39,5 @@ export type Report = {
   coverage: { done: number; total: number; failed: number; deferred: number };
   captures: Capture[]; improvements: Improvement[]; motion: MotionRow[]; bugs: Bug[]; notes: string[]; cost_usd: number;
   blocking?: string[]; preexisting?: string[]; // the rule checks' blocking findings: this run's own, and those its baseline also had
+  candidates?: string[]; // the route check's controls that changed nothing when clicked: to look at, never blocking
 };

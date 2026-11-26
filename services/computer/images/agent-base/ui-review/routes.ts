@@ -6,12 +6,14 @@
 //   after Back and Forward, and on a reload: never the app's own not-found view, an empty page or a page error.
 // - A link to the page it is on (a path link or an in-page anchor, not a hash router's link to its current route, which
 //   browsers leave alone) must visibly act, from the foot of the page.
-// - Every visible control (one per kind and label across the pages) must visibly act when clicked: the address, the page, the
-//   scroll, the focus or what is open changes. A click that changes nothing is confirmed by a second click after a fresh load
-//   before it is reported. Never a form's submit or one that deletes, sends or pays.
+// - Every visible control (one per kind and label across the pages; not one already selected, current or pressed) should
+//   visibly act when clicked: the address, the page, the scroll, the focus or what is open changes. A click that changes
+//   nothing is confirmed by a second click after a fresh load, then listed to look at (never blocking). Never a form's submit
+//   or one that deletes, sends or pays.
 // The app's not-found view is fingerprinted first: what loads at a path, a hash route and a route under each section of the
 // app that can't exist (kept only when it differs from home and from that section's own page).
-// Writes report.json (a version-2 Report: its findings in `blocking` and `bugs`) and report.md; exits 1 on findings.
+// Writes report.json (a version-2 Report: its findings in `blocking` and `bugs`, the controls that changed nothing in
+// `candidates`, never blocking) and report.md; exits 1 on blocking findings.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -59,8 +61,11 @@ const HELPERS = () => {
   const sameLinks = () => links().filter((a) => { const u = new URL(a.href); return routeOf(u) === here() && !u.hash.startsWith("#/") && !(a.closest("header, [role=banner], [data-slot=sidebar-header]") && !a.closest("nav, [role=navigation]") && u.pathname === "/") && !RISKY_RE.test(a.getAttribute("aria-label") || a.textContent || ""); });
   const RISKY_RE = /\b(delete|remove|discard|sign ?out|log ?out|pay|purchase|send|publish|deploy|archive|reset)\b/i;
   const controls = () => [...document.querySelectorAll("button, [role=button], [role=tab], [role=option], [role=menuitem], [role=switch], [role=checkbox], [role=link], summary, input[type=checkbox], input[type=radio], [onclick]")]
-    .filter((e) => seen(e) && !(e as HTMLButtonElement).disabled && e.getAttribute("aria-disabled") !== "true" && !(e.closest("form") && (e as HTMLButtonElement).type === "submit") && !(e.tagName === "A" && (e as HTMLAnchorElement).href))
+    .filter((e) => seen(e) && !(e as HTMLButtonElement).disabled && e.getAttribute("aria-disabled") !== "true" && !(e.closest("form") && (e as HTMLButtonElement).type === "submit") && !(e.tagName === "A" && (e as HTMLAnchorElement).href) && !current(e))
     .filter((e) => !RISKY_RE.test(e.getAttribute("aria-label") || e.textContent || ""));
+  // Already selected, current or pressed (the active tab, the chosen segment, a checked radio): clicking it again rightly does nothing.
+  const current = (e: Element) => e.getAttribute("aria-selected") === "true" || e.getAttribute("aria-pressed") === "true" || (e.hasAttribute("aria-current") && e.getAttribute("aria-current") !== "false")
+    || /^(active|on)$/.test(e.getAttribute("data-state") ?? "") || ((e as HTMLInputElement).type === "radio" && (e as HTMLInputElement).checked);
   const kindOf = (e: Element) => e.tagName === "BUTTON" ? "button" : e.getAttribute("role") || (e as HTMLInputElement).type || e.tagName.toLowerCase();
   // The header's brand: the first header link outside the nav that goes home, else the one named or styled as the brand.
   const brand = (home: string) => {
@@ -310,19 +315,22 @@ export async function routesCommand(argv: string[]): Promise<number> {
     if (!missing.length) notes.push("the app's not-found view wasn't fingerprinted (unknown routes show home or redirect)");
   } finally { await b.close(); }
 
-  const found = checks.flatMap((c) => c.problems.map((p) => `${c.from} ${c.what}: ${p}`));
+  // A click that changed nothing is a generic heuristic, so it is a review candidate, never blocking; the rest block.
+  const found = checks.flatMap((c) => c.problems.filter((p) => p !== DEAD).map((p) => `${c.from} ${c.what}: ${p}`));
+  const candidates = checks.flatMap((c) => c.problems.filter((p) => p === DEAD).map((p) => `${c.from} ${c.what}: ${p}`));
   const { introduced, preexisting } = splitPreexisting(found, v.baseline ? readReport(v.baseline)?.blocking : undefined);
   const bugs: Bug[] = checks.flatMap((c) => c.problems.filter((p) => introduced.includes(`${c.from} ${c.what}: ${p}`)).map((p): Bug => ({ page: c.from, width: WIDTH, theme: "light", title: `${c.what}: ${p.split(":")[0]}`, evidence: p, captures: [], verified: true, repro: [`open ${c.from}`, `click ${c.what}`] })));
   const done = checks.filter((c) => !c.skipped).length;
   const r: Report = { version: 2, target: base, frozenAt, model: "", coverage: { done, total: checks.length, failed: checks.filter((c) => c.skipped && !c.skipped.startsWith("not checked")).length, deferred: checks.filter((c) => c.skipped?.startsWith("not checked")).length },
-    captures: [], improvements: [], motion: [], bugs, notes, cost_usd: 0, blocking: introduced, preexisting };
+    captures: [], improvements: [], motion: [], bugs, notes, cost_usd: 0, blocking: introduced, preexisting, candidates };
   writeFileSync(join(out, "report.json"), JSON.stringify(r, null, 2));
   const md = [`# Route check of ${base}`, "", `${checks.length} checks at ${WIDTH}px light, ${Math.round((Date.now() - t0) / 1000)} s`, "",
     introduced.length ? `## Blocking (${introduced.length})` : "## Blocking: none found", "", ...introduced.map((x) => `- ${x}`), "",
     ...(preexisting.length ? [`## Already on this base (${preexisting.length}): not this change's`, "", ...preexisting.map((x) => `- ${x}`), ""] : []),
+    ...(candidates.length ? [`## To look at (${candidates.length}): not blocking`, "", "Controls a click didn't visibly change anything with; some do act (a copy, a download, a dialog the check can't see). Look before filing:", "", ...candidates.map((x) => `- ${x}`), ""] : []),
     ...(notes.length ? ["## Notes", "", ...notes.map((n) => `- ${n}`), ""] : []),
     "## Checks (brand, links with Back, Forward and reload, controls)", "", ...checks.map((c) => `- ${c.from} ${c.what}: ${c.skipped ?? (c.problems.join("; ") || (c.to ? "renders" : "acts"))}`), ""];
   writeFileSync(join(out, "report.md"), md.join("\n"));
-  console.log(`${join(out, "report.md")}: ${checks.length} checks, ${introduced.length} blocking, ${preexisting.length} already on this base, ${Math.round((Date.now() - t0) / 1000)} s`);
+  console.log(`${join(out, "report.md")}: ${checks.length} checks, ${introduced.length} blocking, ${preexisting.length} already on this base, ${candidates.length} to look at, ${Math.round((Date.now() - t0) / 1000)} s`);
   return introduced.length ? 1 : 0;
 }
