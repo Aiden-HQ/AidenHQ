@@ -135,7 +135,8 @@ test("a retried create that died before recording the requester records it on th
   assert.equal(first.refused, undefined, first.refused);
   // The kernel died after Paperclip wrote but before the marker did: the task is there, placed beside the Architect.
   const task = issues[first.child!];
-  delete task.description;
+  // An edit landed before the retry (the owner changed the brief): the retry must keep it.
+  task.description = "Build it, with paging.";
   assert.equal(requestedParentOf(task), CHIEF, "reads as the flattened parent until the retry records it");
 
   const retry = { ...base, again: true, ts: 3_000 };
@@ -144,4 +145,5 @@ test("a retried create that died before recording the requester records it on th
   assert.equal(second.child, first.child, "the retry finds the task the first attempt made");
   assert.equal(second.found, true);
   assert.equal(requestedParentOf(issues[first.child!]), ARCH, "the retry records the task that asked for it");
+  assert.match(String(issues[first.child!].description), /^Build it, with paging\./, "and keeps the edit that landed in between");
 });

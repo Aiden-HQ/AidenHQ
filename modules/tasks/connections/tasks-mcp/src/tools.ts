@@ -967,7 +967,10 @@ const TOOLS: Record<string, Tool> = {
     run: async () => {
       if (!CURRENT()) return { task: null };
       const i = await api("GET", `/api/issues/${issueRef(CURRENT())}`);
-      const p = i.parentId ? await api("GET", `/api/issues/${issueRef(i.parentId)}`).catch(() => undefined) : undefined;
+      // The task it is part of is the one that asked for it: when Paperclip placed it beside that task, `parentId` is the
+      // placement parent (requested-parent.ts).
+      const asked = requestedParentOf(i);
+      const p = asked ? await api("GET", `/api/issues/${issueRef(asked)}`).catch(() => undefined) : undefined;
       const parts = p ? await partsOf(p, i.id).catch(() => []) : [];
       const s = (await stateRows([i.id])).get(i.id);
       const more = "the rest is not available here; ask for the relevant part";

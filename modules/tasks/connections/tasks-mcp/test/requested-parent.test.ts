@@ -9,7 +9,7 @@ import { bridge, parse } from "./helpers.ts";
 // chief of staff (WOR-1) → architect (WOR-2, a child of WOR-1) → engineer (WOR-3, placed beside the architect under WOR-1)
 const MARK = (id: string) => `<!-- aidenhq:requested-parent:${id} -->`;
 
-function world({ adjusted }: { adjusted: boolean }) {
+function world({ adjusted, me = "me" }: { adjusted: boolean; me?: string }) {
   const writes: Json[] = [];
   const tasks: Record<string, Json> = {
     cur: { id: "cur", identifier: "WOR-2", title: "Design it", status: "in_progress", assigneeAgentId: "me", parentId: "root", createdByAgentId: "boss" },
@@ -27,7 +27,7 @@ function world({ adjusted }: { adjusted: boolean }) {
       const url = req.url ?? "";
       const send = (x, status = 200) => (res.writeHead(status, { "content-type": "application/json" }), res.end(JSON.stringify(x)));
       const json = body ? JSON.parse(body) : {};
-      if (url === "/api/agents/me") return send({ id: "me", name: "Mira" });
+      if (url === "/api/agents/me") return send({ id: me, name: me === "eng" ? "Kai" : "Mira" });
       if (url.endsWith("/agents")) return send([{ id: "eng", name: "Kai", metadata: { setupKey: "aidenhq:engineer-openrouter" }, status: "idle" }]);
       if (req.method === "POST" && url.endsWith("/issues")) {
         writes.push(json);
@@ -52,7 +52,9 @@ function world({ adjusted }: { adjusted: boolean }) {
     });
   };
   const { call } = bridge({ handler, agents: { me: { key: "architect" }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
-  return { call, writes, tasks };
+  // The Engineer's task, as the Engineer's own run reads it: placed beside the Architect under WOR-1, recording WOR-2.
+  const engineer = bridge({ handler, agents: { eng: { key: "engineer-openrouter" } }, agent: "eng", task: "sibling" });
+  return { call, writes, tasks, engineer };
 }
 
 const brief = { agent: "Kai", title: "Write the API", description: "Build the same API the last task asked for.", deliverable: { kind: "pr", ref: "acme/app" } };
@@ -99,4 +101,19 @@ test("an edit of a task with no recorded requester writes no marker", async () =
   const r = parse(await call("task_update", { issue: "sibling", description: "Build the API, with paging." }));
   assert.equal(r.error, undefined, r.error);
   assert.doesNotMatch(String(writes.at(-1)!.description), /requested-parent/);
+});
+
+test("reading the current task shows the requester that asked for it as its parent, not the placed one", async () => {
+  const { engineer } = world({ adjusted: true, me: "eng" });
+  const r = parse(await engineer.call("task_current", {}));
+  assert.equal(r.error, undefined, r.error);
+  assert.equal(r.out.parent?.identifier, "WOR-2", "the Architect's task asked for it");
+  assert.doesNotMatch(JSON.stringify(r.out.parts ?? []), /WOR-5/, "and the parts are its own, not the chief of staff's");
+});
+
+test("with no placement adjustment, task_current reads the parent as before", async () => {
+  const { engineer } = world({ adjusted: false, me: "eng" });
+  const r = parse(await engineer.call("task_current", {}));
+  assert.equal(r.error, undefined, r.error);
+  assert.equal(r.out.parent?.identifier, "WOR-2");
 });

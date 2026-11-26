@@ -163,7 +163,11 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
     const asked = !p.issueId || kid.parentId === p.issueId ? askedParent(kid, p.issueId) : p.issueId;
     const marker = asked && asked !== kid.parentId ? `<!-- aidenhq:requested-parent:${asked} -->` : "";
     if (marker && !String(kid.description ?? "").includes(marker)) {
-      const base = text(c.description ?? "", MAX - marker.length - 2).trimEnd();
+      // A retry reads the task's description as it stands now, never the write's original text: an edit may have landed while
+      // the first attempt died, and re-sending `c.description` would erase it. The marker is appended after the text is
+      // quoted, so it is the one marker that survives.
+      const current = had ? String((await ctx.issues.get(kid.id, companyId))?.description ?? "") : text(c.description ?? "", MAX - marker.length - 2);
+      const base = current.replace(/<!--\s*aidenhq:/gi, "<!-- (quoted) aidenhq:").trimEnd();
       await ctx.issues.update(kid.id, { description: base ? `${base}\n\n${marker}` : marker }, companyId, as);
     }
   }
