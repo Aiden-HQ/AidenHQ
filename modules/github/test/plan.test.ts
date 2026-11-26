@@ -54,6 +54,14 @@ describe("plan: the product repo", () => {
     assert.deepEqual([part.tier, part.reject], [2, true], "a refusal, not a reviewer or owner part: no PR, no card");
     // The guard is not a general widening of `foreign`: an ordinary branch outside the namespace is unchanged.
     assert.deepEqual(rules("pr", engineer, branch(["src/a.ts"], "agent/ACME-7/fix", "other/lib")), [[1, "outside-pr"]]);
+    // The one path that may land on a `ship-pr-<n>` branch is a ship push that validates against its adoption: the branch is the
+    // PR's own head (a PR opened before this guard), and `pushOnto` moves that PR rather than opening anything. Refusing it by
+    // name would block the very command the refusal above recommends.
+    const head = "a".repeat(40);
+    const adoptedShip = { number: 9, generation: 1, expected: head, head, branch: "ship-pr-9", headRef: "ship-pr-9", current: 1 };
+    assert.deepEqual(rules("push", engineer, { ...branch(["src/a.ts"], "ship-pr-9"), ship: adoptedShip }), [[1, "product-push-branch"]]);
+    // A ship push whose adoption no longer holds is still refused, and never by the name test into a publish part.
+    assert.deepEqual(rules("push", engineer, { ...branch(["src/a.ts"], "ship-pr-9"), ship: { ...adoptedShip, current: null } }), [[2, "ship-generation"]]);
   });
 
 });

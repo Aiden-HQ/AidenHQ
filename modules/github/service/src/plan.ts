@@ -195,7 +195,6 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
   const inAgents = inAgentsOrg(b.repo, s);
   if (same(b.repo, s.instanceRepo)) return [REJECT("instance-repo", "the instance repo changes only through apply")];
   if (!Array.isArray(b.files)) return [REJECT("unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes; try again`)];
-  if (SHIP_SCRATCH.test(b.branch)) return [REJECT("ship-scratch-branch", `\`${b.branch}\` is ship's own scratch branch for an adoption: push the fix with \`aidenhq ship push <PR link> <head sha> <n>\`, never publish it`)];
   // A job without the platform role pushes only its own task's branches (agent/<task>/…): never a branch another
   // requester's PR stands on, a protected or deploy branch, or the default branch.
   // A push onto an adopted PR's branch is checked against the adoption first: when it holds, that one ref is the task's.
@@ -205,6 +204,11 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
     // A contributor's fork receives the commits: an outside push, whatever its base repo is.
     if (b.ship.headRepo && !same(b.ship.headRepo, b.repo)) return [T(1, "outside-push", `a push to ${b.ship.headRepo}, a contributor's fork of ${b.repo} (outside the agents org)`)];
   }
+  // Ship's scratch branch is never a publish target: publishing it opens a duplicate PR nobody reviews, which ship then read as a
+  // successor and used to retire the real PR. Checked after the adoption above and before every other branch rule, so no
+  // requester role or `adopted`/`handoff` flag reaches a publish part -- but a ship push that validates against its adoption is
+  // the one path that may land there (`pushOnto` moves that PR's own head), so it is not refused by name.
+  if (!b.ship && SHIP_SCRATCH.test(b.branch)) return [REJECT("ship-scratch-branch", `\`${b.branch}\` is ship's own scratch branch for an adoption: push the fix with \`aidenhq ship push <PR link> <head sha> <n>\`, never publish it`)];
   const foreign = !b.ship && !b.adopted && !s.requester?.platform && !b.branch.startsWith(`agent/${s.workspace}/`);
   const namespace = () => REJECT("branch-namespace", `\`${b.branch}\` isn't this task's branch: name it \`agent/${s.workspace}/<topic>\` and publish again`);
   // A branch whose recorded owner is a task no longer open (cancelled, done) is an explicit handoff: a successor finishes that PR
