@@ -280,9 +280,9 @@ const slugOf = (repo: unknown) => {
 /** A PR's merge-queue state, for an enqueue and its reconcile. */
 const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation labels(first: 100) { nodes { name } } isInMergeQueue mergeQueueEntry { headCommit { oid } } reviewDecision latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
 
-/** GitHub's enqueue, bound to the head: it refuses when the PR's head isn't `head`. */
+/** The wait on a pending merge-async request: one answer a few seconds apart, about a minute at most. */
+const ENQUEUE_POLL_MS = 3000, ENQUEUE_POLLS = 20;
 const DEQUEUE = `mutation($id: ID!) { dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { state } } }`;
-const ENQUEUE = `mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { state } } }`;
 
 export function createService(o: Options) {
   const log = o.log ?? (() => {});
@@ -1388,7 +1388,7 @@ export function createService(o: Options) {
   }
 
   /**
-   * An adopted PR into its branch's merge queue, bound by GitHub to the head (`expectedHeadOid`). An answer that never came
+   * An adopted PR into its branch's merge queue, bound by GitHub to the head (merge-async's `sha`). An answer that never came
    * (a timeout, a 5xx) is reconciled by reading the PR's queue entry, never by asking again: queued at this head (or merged at
    * it) is done; anything else fails and the next round files a new attempt after reading the PR itself.
    */
@@ -1427,14 +1427,29 @@ export function createService(o: Options) {
     // GitHub may still count an earlier commit's.
     const app = (await o.reviewer?.(s.slug).catch(() => undefined))?.login.replace(/\[bot\]$/, "");
     if ((pr.reviewDecision === "REVIEW_REQUIRED" || pr.reviewDecision === "APPROVED") && !approvedAt(pr, a.head, app)) return { ok: false, text: `ship-tier-pending: ${url} has no approval on \`${String(a.head).slice(0, 12)}\` from someone who can push: not queued; queued again once it has one.` };
+    // GitHub's merge-async API is the one enqueue (the only one that takes a stacked PR, with its open downstack PRs; a plain PR
+    // too): `sha` is the expected head, a push in between cancels it. 200 = already merged or queued; 202 carries a status, polled
+    // by its uuid for up to a minute while `pending`.
+    const base = `/repos/${s.slug}/pulls/${n}/merge-async`;
+    const queued = `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.`;
+    const refused = (r: { status: number; body: any }) => ({ ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.details?.message ?? r.body?.message ?? r.status).slice(0, 300)}` });
     let r: { status: number; body: any } | undefined;
-    try { r = await gh("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head: a.head } }); } catch (e) { log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
-    // Success is GitHub's queue entry, not a bare 200: an answer without one is read back like a lost answer.
-    if (r && r.status < 300 && !r.body?.errors?.length && r.body?.data?.enqueuePullRequest?.mergeQueueEntry) {
-      return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
-    }
-    // GitHub's own refusal (a GraphQL error, a 4xx): the PR wasn't queued.
-    if (r && r.status < 500 && (r.status >= 300 || r.body?.errors?.length)) return { ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.errors?.[0]?.message ?? r.body?.message ?? r.status).slice(0, 300)}` };
+    try {
+      r = await gh("PUT", base, { sha: a.head, merge_action: "merge_queue" });
+      // The PUT's 202 and each poll's answer (a 200 even while pending or failed) carry the status in the body.
+      for (let i = 0; r.status === 202 && r.body?.status === "pending" && r.body?.details?.uuid && i < ENQUEUE_POLLS; i++) {
+        await new Promise((res) => setTimeout(res, ENQUEUE_POLL_MS));
+        const uuid = r.body.details.uuid;
+        r = await gh("GET", `${base}/${uuid}`);
+        if (r.status === 200 && r.body?.status === "pending") r = { status: 202, body: { ...r.body, details: { uuid, ...r.body.details } } };
+      }
+    } catch (e) { r = undefined; log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
+    // Success is GitHub's own word (enqueued or merged). A PUT's bare 200 is a PR already queued or merged, maybe at another head:
+    // read back below.
+    if (r && r.status < 300 && (r.body?.status === "enqueued" || r.body?.status === "merged")) return { ok: true, text: queued };
+    // GitHub's own refusal (a failed request, a 4xx other than a request already pending): the PR wasn't queued.
+    if (r && ((r.status < 300 && r.body?.status === "failed") || (r.status >= 400 && r.status < 500 && r.status !== 409))) return refused(r);
+    // Still pending after the wait, a 409, a 5xx or no answer: read back like a lost answer.
     const again = await read().catch(() => undefined);
     return (again && settled(again)) ?? { ok: false, text: `${url}: GitHub didn't answer the enqueue and the PR doesn't read as queued at \`${String(a.head).slice(0, 12)}\`: the next round reads it and asks again.` };
   }

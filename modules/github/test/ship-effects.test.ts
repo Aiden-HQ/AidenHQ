@@ -18,7 +18,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true } = {}) {
+async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: {} }), app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -125,7 +125,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   const bare = (args) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   const gh = async (method, path, body) => {
     calls.push({ method, path, body, as: body?.as });
-    if (path === "/graphql" && body.query.includes("enqueuePullRequest")) return enqueueAnswer(queue);
+    if (path.includes("/merge-async")) return enqueueAnswer(queue, method, path, body);
     if (path === "/graphql" && body.query.includes("MemberComments") === false && body.query.includes("reviewThreads(last")) return { status: 200, body: { data: { repository: { pullRequest: memberPr.v } } } };
     if (path === "/graphql") return { status: 200, body: { data: { repository: { pullRequest: { id: "PR_7", state: "OPEN", headRefOid: pr.head, baseRefName: "main", isInMergeQueue: Boolean(queue.head), mergeQueueEntry: queue.head ? { headCommit: { oid: queue.head } } : null, ...queue.review } } } } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
@@ -491,7 +491,7 @@ test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts
   assert.equal(enq.json.raise?.rule, "agents-org-merge-foreign-head");
   const queued = await run("k-00000000000000c2", "github.enqueue", e);
   assert.match(queued.text, /didn't answer the enqueue/, queued.text);
-  const sent = calls.filter((c) => c.path === "/graphql" && typeof c.body?.query === "string" && c.body.query.includes("enqueuePullRequest"));
+  const sent = calls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge-async"));
   assert.equal(sent.length, 1);
   assert.ok(sent.every((c) => c.as === undefined), "the queue is joined as the code host's sign-in, never the reviewer App");
 });
@@ -505,7 +505,7 @@ test("a member's comment since the record was filed ends an approve and an enque
   assert.match(approve.text, /^ship-tier-pending: .*members have open review comments/, approve.text);
   assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/reviews")).length, 0);
   assert.match((await run("k-00000000000000e1", "github.enqueue", { ...a, attempt: 1 })).text, /^ship-tier-pending: .*members have open review comments/);
-  assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("enqueuePullRequest")).length, 0);
+  assert.equal(calls.filter((c) => c.path.includes("/merge-async")).length, 0);
 });
 
 test("ship's final tier check refuses an approve before it posts; a dismissal asks no tier and dismisses only the App's approvals", async (t) => {
@@ -519,6 +519,26 @@ test("ship's final tier check refuses an approve before it posts; a dismissal as
   assert.equal(out.ok, true, out.text);
   assert.deepEqual(calls.filter((c) => c.method === "PUT" && /dismissals$/.test(c.path)).map((c) => c.path.split("/").at(-2)), ["50", "99"], "the App's own approvals, never the owner's");
   assert.equal(calls.filter((c) => c.method === "POST" && c.path.endsWith("/reviews")).length, 0, "nothing is approved");
+});
+
+test("an enqueue goes through merge-async bound to the head, waits out a pending answer, and carries GitHub's refusal", async (t) => {
+  let polled = 0;
+  const answers = [
+    (m) => (m === "PUT" ? { status: 202, body: { status: "pending", details: { uuid: "u-1" } } } : (polled++, { status: 200, body: { status: "enqueued", details: {} } })),
+    (m) => ({ status: 202, body: { status: "failed", details: { message: "This pull request has unresolved threads" } } }),
+  ];
+  answers.push((m) => (m === "PUT" ? { status: 202, body: { status: "pending", details: { uuid: "u-2" } } } : { status: 200, body: { status: "failed", details: { message: "no good" } } }));
+  let i = 0;
+  const puts = [];
+  const { c1, run } = await setup(t, { enqueueAnswer: (q, m, path, body) => { if (m === "PUT") puts.push({ body }); return answers[i](m); } });
+  const ok = await run("k-00000000000000f1", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(ok.ok, true, ok.text);
+  assert.equal(polled, 1);
+  assert.deepEqual(puts.map((c) => c.body), [{ sha: c1, merge_action: "merge_queue" }]);
+  i = 1;
+  const no = await run("k-00000000000000f2", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 2, base: "main" });
+  assert.equal(no.ok, false);
+  assert.match(no.text, /^GitHub refused to queue .*: This pull request has unresolved threads/);
 });
 
 test("an enqueue GitHub didn't answer is reconciled by reading the queue entry, never sent twice", async (t) => {
