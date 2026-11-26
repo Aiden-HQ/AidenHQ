@@ -48,3 +48,29 @@ test("a publish never files a merge: the run checks the task's merge card before
   assert.doesNotMatch(publish, /with no merge card the PR is only open/, "the unconditional filing sentence is gone");
   assert.doesNotMatch(publish, /unless the task has several open PRs there, and then the code host wakes the task/, "the watcher's several-PR handoff is a notice case, not an exception to check");
 });
+
+test("the duplicate-PR section reads both states before and after a close, and names the state it claims", () => {
+  const publish = read("publish");
+  const section = publish.slice(publish.indexOf("## Closing a duplicate PR"), publish.indexOf("## Finishing a cancelled task's PR"));
+  assert.ok(section.length > 0, "the section exists, between step 5 and the handoff section");
+  assert.match(section, /publish to that PR's own head\s+branch/, "a second PR is avoided by publishing to the existing head");
+  assert.match(section, /a new PR on `ship-pr-<n>` is the duplicate — unless the live read below shows the other one closed/, "ship-pr-<n> is a duplicate only while the other is live");
+  assert.match(section, /read both PRs' live state \(`state`, `merged`, `headRefName`\) — the one you mean to close and\s+the one you mean to keep/, "both PRs' state is read before the close");
+  assert.match(section, /close the duplicate by its own URL/, "the close names the duplicate's own URL");
+  assert.match(section, /After the close, read both again/, "both are read again after the close");
+  assert.match(section, /name the PR and the state you read for it in the same turn/, "a claim about which PR remains carries the state read");
+  assert.match(section, /its head survives at\s+`refs\/pull\/<n>\/head`/, "a closed PR's head is recovered from refs/pull/<n>/head");
+  assert.match(section, /publish\s+it on a new `agent\/<task>\/…` branch/, "the recovered head is republished on the task's own branch");
+});
+
+test("the duplicate-PR section never closes the only live copy, an already-closed PR, or one whose head the kept PR lacks", () => {
+  const section = read("publish").slice(read("publish").indexOf("## Closing a duplicate PR"), read("publish").indexOf("## Finishing a cancelled task's PR"));
+  assert.match(section, /close a PR only when it is open, the one you keep is open, and the kept PR's head is the\s+other's head or ahead of it/, "a close needs both open and the kept head at or ahead");
+  assert.match(section, /A PR already closed and not merged, or the only live copy of a fix, is not a duplicate/, "a closed or sole copy is not a duplicate");
+  assert.match(section, /the PR that carries the work is closed and `merged`, the work has landed/, "a merged original means the work landed, not a duplicate to keep");
+  assert.match(section, /only when that PR carries no change the\s+merge does not\. Compare the changes, not the commits: a squash merge never contains the head commit/, "the landing test compares changes, since a squash merge lacks the head commit");
+  assert.match(section, /When it holds a\s+change the merge does not, keep it open and work from it/i, "the PR holding unique work stays open");
+  assert.match(section, /The close names only the PR's number, so it is not conditional on the head you\s+read: read both PRs again right before it, at the close's own step/, "the close is re-read at its own step, since it cannot bind a head");
+  assert.match(section, /when the closed PR's head moved past what you read, its commits\s*are not in the kept PR — take its head from `refs\/pull\/<n>\/head`, publish it on a new `agent\/<task>\/…` branch/, "a raced close is recovered through a new branch, never a reopen no tool offers");
+  assert.match(section, /the code host serves as a bundle \(`codehost fetch` with that `ref`\)/, "the head is read through the code host's bundle, not a bare fetch of the aidenhq:// origin");
+});
