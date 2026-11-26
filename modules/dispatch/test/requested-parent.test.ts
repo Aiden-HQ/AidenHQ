@@ -124,3 +124,35 @@ test("a placed sibling is found under the requester's parent even when the creat
   assert.equal(asked.includes("from:WOR2"), true, "the create origin was still consulted");
   assert.deepEqual((await kernel.children("WOR1", "co")).map((i) => i.id), ["WOR2"], "the chief of staff's batch is its own child, not the two placed under it: their requester is the Architect");
 });
+
+test("a cut row whose whole task cannot be read fails the batch rather than resolving to its placed parent", async () => {
+  // WOR-3's row is cut before its marker, and its single-task read fails: answering from the preview would put it in WOR-1's
+  // batch (its placed parent) and drop it from WOR-2's, so the batch summary could call the Architect's work finished.
+  const brief = "Detail. ".repeat(200);
+  const rows: Record<string, Json> = {
+    WOR1: { id: "WOR1", identifier: "WOR-1", title: "Ship it", status: "in_progress", assigneeAgentId: CHIEF },
+    WOR2: { id: "WOR2", identifier: "WOR-2", title: "Design it", status: "in_progress", assigneeAgentId: ARCHITECT, parentId: "WOR1" },
+    WOR3: { id: "WOR3", identifier: "WOR-3", title: "Build it", status: "in_progress", assigneeAgentId: ENGINEER, parentId: "WOR1", description: `${brief}${MARK("WOR2")}` },
+  };
+  const fetcher = (async (url: string | URL) => {
+    const u = new URL(String(url));
+    const path = u.pathname.replace(/^\/v1\/cp\/read/, "");
+    const single = /^\/api\/issues\/([^/]+)$/.exec(path);
+    if (single) {
+      const id = decodeURIComponent(single[1]);
+      // Only the cut task's own read fails; the parent tasks read fine (their rows carry no cut).
+      return id === "WOR3"
+        ? { ok: false, status: 503, json: async () => ({ error: "unavailable" }) } as Response
+        : { ok: true, status: 200, json: async () => rows[id] ?? {} } as Response;
+    }
+    if (path.startsWith("/api/companies/")) {
+      const parentId = u.searchParams.get("parentId");
+      if (u.searchParams.get("createdFromIssueId")) return { ok: true, status: 200, json: async () => [] } as Response;
+      return { ok: true, status: 200, json: async () => Object.values(rows).filter((i) => i.parentId === parentId).map((i) => ({ ...i, description: String(i.description).slice(0, 1200), descriptionTruncated: true })) } as Response;
+    }
+    return { ok: false, status: 404, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+  const kernel = createKernel("http://kernel.test", "t", fetcher);
+  await assert.rejects(() => kernel.children("WOR2", "co"), /503/);
+  await assert.rejects(() => kernel.children("WOR1", "co"), /503/, "nor is it silently counted under the placed parent");
+});

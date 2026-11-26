@@ -45,13 +45,18 @@ export function requestedParentOf(t: { id?: unknown; parentId?: string | null; d
  * The requester of a task read from a list, where Paperclip cuts every description to 1200 characters: a row whose
  * `descriptionTruncated` is true and carries no visible marker is read whole, so a marker the cut hid still resolves.
  * `full` reads one task (a single-task read is never cut).
+ *
+ * A row that is cut without a marker is only a preview, so it is never decided on: if `full` cannot read the task this
+ * throws. Falling back to its `parentId` would route the task to the placed parent the cut exposed instead of the requester
+ * the marker records — a wrong delegator, a dropped notice, or (in grading) a live child left out of its batch. A caller
+ * that cannot tell retries; a caller that must answer says the read failed.
  */
 export async function requesterOfListed(
   t: { id?: unknown; parentId?: string | null; description?: unknown; descriptionTruncated?: unknown } | undefined,
   full: (id: string) => Promise<{ description?: unknown } | undefined>,
 ): Promise<string | undefined> {
   if (t?.descriptionTruncated === true && typeof t.id === "string" && !recordedRequesterOf(t)) {
-    const whole = await full(t.id).catch(() => undefined);
+    const whole = await full(t.id);
     if (whole) return requestedParentOf({ ...t, description: whole.description });
   }
   return requestedParentOf(t);

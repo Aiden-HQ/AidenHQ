@@ -6,7 +6,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { uncheckableAbsence } from "./absence.ts";
-import { requesterOfListed, requestedParentOf, withRequester } from "./requested-parent.ts";
+import { recordedRequesterOf, requestedParentOf, withRequester } from "./requested-parent.ts";
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
@@ -766,20 +766,23 @@ export function similar(a: Json, b: Json) {
  */
 async function childrenOf(parent: Json, statuses = OPEN_STATUSES, assignees?: string[]) {
   const found = new Map<string, Json>();
-  // Under the task itself a child's requester is its parent, as it always was: only the other lists can hold a task that asked
-  // for `parent` but was placed elsewhere, so only those rows are ever read whole.
-  const queries: { base: URLSearchParams; precise: boolean }[] = [{ base: new URLSearchParams({ parentId: parent.id, status: statuses, limit: "50" }), precise: false }];
-  if (parent.parentId) queries.push({ base: new URLSearchParams({ parentId: parent.parentId, status: statuses, limit: "50" }), precise: true });
+  // A row is decided by the requester it records, never by the parent a list row shows: a delegation placed beside its requester
+  // sits under the placed parent, and an edit (the board keeps the marker, at the end) can put a marker past the 1200-char cut.
+  // A direct child needs no marker to resolve, but a truncated row is read whole before its requester is decided anyway.
+  const queries = [parent.id, parent.parentId].filter(Boolean).map((p) => new URLSearchParams({ parentId: String(p), status: statuses, limit: "50" }));
   // A top-level placement no longer carries the requester in `parentId`: the create's origin still names it.
-  queries.push({ base: new URLSearchParams({ createdFromIssueId: parent.id, status: statuses, limit: "50" }), precise: true });
-  for (const { base, precise } of queries) for (const agent of assignees?.length ? assignees : [undefined]) {
+  queries.push(new URLSearchParams({ createdFromIssueId: parent.id, status: statuses, limit: "50" }));
+  for (const base of queries) for (const agent of assignees?.length ? assignees : [undefined]) {
     // The assignee filter goes in the query, before the limit: the check is for these agents' tasks, not the first 50 of anyone's.
     const q = new URLSearchParams(base);
     if (agent) q.set("assigneeAgentId", agent);
     const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
     for (const k of Array.isArray(kids) ? kids : []) {
-      const asked = precise ? await requesterOfListed(k, (id) => api("GET", `/api/issues/${id}`).catch(() => undefined)) : requestedParentOf(k);
-      if (k.id !== parent.id && asked === parent.id) found.set(k.id, k);
+      // A cut row without a marker is read whole; the whole task is the one kept, so a caller isn't handed a preview. A failed
+      // read throws (requested-parent.ts): the row's parent is the placed one, and taking it would group the task wrongly.
+      const whole = k.descriptionTruncated === true && !recordedRequesterOf(k) && typeof k.id === "string" ? await api("GET", `/api/issues/${k.id}`) : undefined;
+      const asked = requestedParentOf(whole ?? k);
+      if (k.id !== parent.id && asked === parent.id) found.set(k.id, whole ?? k);
     }
   }
   return [...found.values()];
