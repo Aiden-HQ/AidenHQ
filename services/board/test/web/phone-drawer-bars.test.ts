@@ -22,6 +22,12 @@ const issue = {
   updatedAt: "2026-11-25T00:00:00Z", labels: [], project: null, settled: false, working: null,
 };
 
+const run = {
+  id: "j-0123456789abcdef", agent: "Engineer", engine: "codex", status: "done", error: null,
+  startedAt: "2026-11-26T00:00:00Z", finishedAt: "2026-11-26T00:09:00Z", durationMs: 540000, issue: null, rev: null,
+  tokens: null, plan: [], ledger: { rows: [], usd: null }, timeline: [],
+};
+
 const answer = (body: unknown, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) });
 
 const fetchFor = (failIssue = false) =>
@@ -36,6 +42,7 @@ const fetchFor = (failIssue = false) =>
     if (path === "/api/pages") return answer({ pages: [] });
     if (path === "/api/sessions") return answer({ enabled: false, agent: null, sessions: [] });
     if (path === "/api/views") return answer({ views: [] });
+    if (path === "/api/runs/j-0123456789abcdef") return answer(run);
     return answer({ error: `no route ${path}` }, 404);
   });
 
@@ -82,6 +89,15 @@ describe("a phone's task drawer", () => {
     for (let i = 0; i < 4; i++) await act(async () => void (await new Promise((r) => setTimeout(r, 25))));
     expect(el.querySelector(".drawer")).toBeNull();
     expect(location.hash).toBe("#/");
+  });
+
+  // The phone header rules are the task drawer's: a run's head labels the run (agent · engine · status) and must keep it.
+  it("leaves a run's own header label alone on a narrow phone", async () => {
+    const el = await mount("#/r/j-0123456789abcdef");
+    expect(el.querySelector(".task-drawer")).toBeNull();
+    expect(el.querySelector(".run-page")).not.toBeNull();
+    expect(el.querySelector(".run-page .drawer-head .ident")?.textContent).toBe("Engineer · codex · done");
+    // happy-dom applies no stylesheet: test/phone-header-scope.test.ts holds the rules themselves to the task drawer.
   });
 
   it("keeps the bottom tab bar on the board itself", async () => {

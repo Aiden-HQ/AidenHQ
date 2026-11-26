@@ -91,7 +91,7 @@ export function Drawer({ refId, focus, board, onClose, onChanged, onMove, onSnoo
 
   return (
     <div className="drawer-backdrop" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <aside className="drawer" role="dialog" aria-label="Task">
+      <aside className="drawer task-drawer" role="dialog" aria-label="Task">
         {!issue ? (
           <>
             {/* Loading or a failed read: the phone has no bottom bar here, so the close control is the only way back. */}
