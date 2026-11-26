@@ -254,9 +254,11 @@
   const back = () => h("div", { className: "bar" }, btn("← Reviews", () => go({ page: "list" })));
 
   /* -------------------------------------------------------------------------------- reads */
-  async function loadOverview(ctx) {
+  async function loadOverview(ctx, polled) {
     try {
       ov = await tool("code_review_overview", {});
+      // A poll answers late: if the owner has since started typing or editing, the data is kept and the page is drawn at the next change, not over his input.
+      if (polled && editing()) return;
       $("lists").replaceChildren(...Object.entries(ov.engines).map(([k, e]) => h("datalist", { id: `models-${k}` }, ...e.models.map((m) => h("option", { value: m })))));
       render();
       // Opened at an address (#/reviews/r/<run>, #/reviews/b/<batch>, #/reviews/<tab>): the host says which, once.
@@ -281,7 +283,7 @@
       // The report is fetched once the batch is done, judged on the fresh overview (the poll that sees it finish is not the one that fetches it).
       if (route.page === "batch" && route.id === id && report === null && ov.batches.find((x) => x.id === id)?.status === "done") loadReport();
     }
-    else if (route.page === "list" && !editing() && (ov.runs.some(live) || ov.batches.some(live) || ++idleTicks % 5 === 0)) loadOverview();   // idle: read again every 30 s
+    else if (route.page === "list" && !editing() && (ov.runs.some(live) || ov.batches.some(live) || ++idleTicks % 5 === 0)) loadOverview(undefined, true);   // idle: read again every 30 s
   }, 6000);
 
   /* -------------------------------------------------------------------------------- the owner's settings proposal */
@@ -367,23 +369,25 @@
       h("details", {}, h("summary", { textContent: "Why flagged" }), h("pre", { textContent: f.evidence }), h("div", {}, h("b", { textContent: "Wanted: " }), ...mdInline(String(f.fix_brief ?? "")))),
       brief && !closed ? h("details", {}, h("summary", { textContent: "Fix brief" }), area, h("div", { className: "actions" }, btn("Select all", () => { area.focus(); area.select(); }), t("small", "soft", "Then copy it, to paste to a coding agent."))) : null);
   }
+  /** One open finding with its own Dismiss: a reason, kept with that finding only. */
+  function dismissRow(repo, number, f, after) {
+    const row = h("div", { className: "gopen" }, h("span", {}, h("span", { className: "mono", textContent: `${f.path}:${f.line}` }), ` ${f.title}`));
+    const ask1 = btn("Dismiss…", () => {
+      ask1.disabled = true;
+      const why = h("input", { type: "text", ariaLabel: "Why", placeholder: "Why: kept with the finding", autocomplete: "off" });
+      const go1 = btn("Dismiss", async () => { if (!why.value.trim()) return; go1.disabled = true; try { await tool("code_review_dismiss", { repo, number, id: f.id, reason: why.value.trim() }); say(""); await after(); } catch (e) { go1.disabled = false; fail(e); } }, "primary");
+      const form1 = h("form", {}, why, go1, btn("Cancel", () => { ask1.disabled = false; form1.remove(); }));
+      // Enter in the reason box dismisses; the form never submits (a submit would navigate the frame).
+      form1.addEventListener("submit", (e) => { e.preventDefault(); go1.click(); });
+      row.append(form1);
+      why.focus();
+    });
+    row.append(ask1);
+    return row;
+  }
   /** A gated repo's merge verdict for the PR's current head: why it waits, and a Dismiss (with a reason) for each open important finding. */
   function gateCard(run, gate) {
-    const open = gate.open.map((f) => {
-      const row = h("div", { className: "gopen" }, h("span", {}, h("span", { className: "mono", textContent: `${f.path}:${f.line}` }), ` ${f.title}`));
-      const ask1 = btn("Dismiss", () => {
-        ask1.disabled = true;
-        const why = h("input", { type: "text", ariaLabel: "Why", placeholder: "Why: kept with the finding", autocomplete: "off" });
-        const go1 = btn("Dismiss", async () => { if (!why.value.trim()) return; go1.disabled = true; try { await tool("code_review_dismiss", { repo: run.repo, number: run.number, id: f.id, reason: why.value.trim() }); say(""); details.delete(`${run.repo}#${run.number}`); loadDetail(); } catch (e) { go1.disabled = false; fail(e); } }, "primary");
-        const form1 = h("form", {}, why, go1, btn("Cancel", () => { ask1.disabled = false; form1.remove(); }));
-        // Enter in the reason box dismisses; the form never submits (a submit would navigate the frame).
-        form1.addEventListener("submit", (e) => { e.preventDefault(); go1.click(); });
-        row.append(form1);
-        why.focus();
-      });
-      row.append(ask1);
-      return row;
-    });
+    const open = gate.open.map((f) => dismissRow(run.repo, run.number, f, () => { details.delete(`${run.repo}#${run.number}`); loadDetail(); }));
     return card("Merge gate", h("span", {}, h("span", { className: `dot ${gate.verdict === "pass" ? "done" : "busy"}` }), gate.verdict === "pass" ? "May merge" : "Waiting", help("Merge gate", "The PR's risk tier decides whether a mandatory review is needed. When it is, the PR can merge once that review has seen its latest version and no important finding is open. Dismissing a finding means you judged it wrong or not worth fixing: it stops blocking the merge, your reason is kept with it, and it opens again if a later review reports it again.", { bare: true })),
       h("div", { className: "pad gate" }, t("small", "soft mono", short(gate.head)),
         gate.tier?.state === "classified" ? h("div", { className: "tierline" }, tierTag(gate.tier.tier), t("span", "soft", gate.tier.why)) : gate.tier?.state === "pending" ? h("div", { className: "tierline" }, h("span", { className: "tt pend" }, h("i"), "Sorting"), t("span", "soft", "its risk tier isn't read yet")) : null,
@@ -555,12 +559,19 @@
     const groups = new Map();
     for (const r of ov.runs) { if (!r.number) continue; const k = `${r.repo}#${r.number}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
     const openPrs = new Map(ov.repos.repos.flatMap((x) => x.prs.map((p) => [`${x.repo}#${p.number}`, p])));
-    return [...groups].map(([key, runs]) => {
+    const out = [...groups].map(([key, runs]) => build(key, runs, openPrs));
+    // A held PR the overview's recent runs don't list is read on its own when the owner asks for it.
+    for (const [key, p] of pinned) if (!out.some((g) => g.key === key)) out.push(build(key, p, openPrs));
+    return out.sort((a, b) => (b.cur.some(live) - a.cur.some(live)) || (waits(b) - waits(a)) || b.at - a.at);
+  }
+  const pinned = new Map();
+  function build(key, runs, openPrs) {
+    {
       // runs arrive newest created first (a queued run has no time yet): that order is kept.
       const newest = runs[0], cur = runs.filter((r) => r.head === newest.head), done = cur.filter((r) => r.status === "done");
       const important = done.reduce((n, r) => n + r.important, 0), nits = done.reduce((n, r) => n + r.nit, 0);
       const rounds = new Set(runs.filter((r) => r.status === "done").map((r) => r.head)).size;
-      const first = runs.filter((r) => r.head === runs[runs.length - 1].head && r.status === "done");
+      const doneRuns = runs.filter((r) => r.status === "done"), first = doneRuns.filter((r) => r.head === doneRuns[doneRuns.length - 1].head);   // the first review that finished, whatever skipped before it
       const sig = cur.map((r) => `${r.id}:${r.status}`).join(",");
       let tone, word;
       if (cur.some(live)) [tone, word] = ["run", "Reviewing"];
@@ -571,10 +582,10 @@
       else if (important) [tone, word] = ["needs", "Findings"];
       else [tone, word] = ["ok", "Passed"];
       return { key, repo: newest.repo, number: newest.number, title: newest.title, runs, newest, cur, done, important, nits, rounds, tone, word, sig, at: ts(newest) || Date.parse(when(newest)), pr: openPrs.get(key), hasFindings: done.some((r) => r.important || r.nit || r.pre_existing), bad: !done.length && cur.some((r) => r.status === "skipped" || r.status === "failed"), passedFirst: first.length > 0 && first.every((r) => !r.important) };
-    }).sort((a, b) => (b.cur.some(live) - a.cur.some(live)) || (waits(b) - waits(a)) || b.at - a.at);
+    }
   }
   const waits = (g) => ((ov.needs ?? []).some((n) => n.repo === g.repo && n.number === g.number) ? 1 : 0);
-  const inPeriod = (g) => g.cur.some(live) || g.at >= Date.now() - days * DAY;
+  const inPeriod = (g) => g.cur.some(live) || pinned.has(g.key) || g.at >= Date.now() - days * DAY;
 
   function header(groups) {
     const running = ov.runs.filter(live).sort((a, b) => Date.parse(b.started ?? "") - Date.parse(a.started ?? ""))[0];
@@ -607,20 +618,11 @@
       const url = `https://github.com/${n.repo}/pull/${n.number}`, g = groups.find((x) => x.key === `${n.repo}#${n.number}`);
       const age = n.since ? agoShort(n.since) : "";
       if (n.kind === "held") {
-        const f = n.findings[0], more = n.findings.length - 1;
-        const detail = h("div", { className: "detail" }, h("span", {}, `“${f.title}” · `), h("span", { className: "mono", textContent: `${f.path}:${f.line}` }), more > 0 ? ` and ${plural(more, "more finding")}` : "", ". A dismissal keeps your reason with the finding, and it opens again if a later review finds it again.");
+        const detail = h("div", { className: "detail" }, ...n.findings.map((f) => dismissRow(n.repo, n.number, f, () => { details.delete(`${n.repo}#${n.number}`); return loadOverview(); })), t("small", "soft", "A dismissal keeps your reason with the finding, and it opens again if a later review finds it again."));
         const acts = h("div", { className: "actions" });
-        acts.append(btn("See the findings", () => reveal(`${n.repo}#${n.number}`), "primary"));
-        acts.append(btn("Dismiss, with a reason…", () => {
-          if (detail.querySelector("form")) return;
-          const why = h("input", { type: "text", ariaLabel: "Why", placeholder: "Why: kept with the finding", autocomplete: "off" });
-          const go1 = btn("Dismiss", async () => { if (!why.value.trim()) return; go1.disabled = true; try { for (const x of n.findings) await tool("code_review_dismiss", { repo: n.repo, number: n.number, id: x.id, reason: why.value.trim() }); say(""); } catch (e) { go1.disabled = false; fail(e); } details.delete(`${n.repo}#${n.number}`); await loadOverview(); }, "primary");
-          const fm = h("form", {}, why, go1, btn("Cancel", () => fm.remove()));
-          fm.addEventListener("submit", (e) => { e.preventDefault(); go1.click(); });
-          detail.append(fm); why.focus();
-        }));
+        acts.append(btn("See the findings", () => reveal(`${n.repo}#${n.number}`, n.run), "primary"));
         acts.append(btn("Open the PR ↗", () => send("ui/open-link", { url }).catch(fail), "quiet"));
-        return h("div", { className: "dr" }, h("div", { className: "top" }, h("p", { className: "ask-q", textContent: `#${n.number}${n.title ? ` ${n.title}` : ""} in ${n.repo} has an important finding nobody has fixed, and its merge is held. See it, or dismiss ${n.findings.length === 1 ? "it" : "them"}?` }), t("span", "soft", age)), detail, acts);
+        return h("div", { className: "dr" }, h("div", { className: "top" }, h("p", { className: "ask-q", textContent: `#${n.number}${n.title ? ` ${n.title}` : ""} in ${n.repo} has ${n.findings.length === 1 ? "an important finding" : `${n.findings.length} important findings`} nobody has fixed, and its merge is held. Look at ${n.findings.length === 1 ? "it" : "them"}, or dismiss ${n.findings.length === 1 ? "it" : "each you judge wrong"}?` }), t("span", "soft", age)), detail, acts);
       }
       const go2 = btn("Review it", async () => { go2.disabled = true; try { await tool("code_review_run", { pr_url: url }); say(""); await loadOverview(); } catch (x) { go2.disabled = false; fail(x); } }, "primary");
       const acts = h("div", { className: "actions" }, go2,
@@ -662,7 +664,8 @@
     if (expanded.has(g.key)) openPanel(g, xp);
     return wrap;
   }
-  function reveal(key) {
+  async function reveal(key, runId) {
+    if (!groups.some((g) => g.key === key) && runId) { try { pinned.set(key, [(await tool("code_review_run_detail", { id: runId })).run]); } catch (e) { return fail(e); } }
     expanded.add(key); filter = "all"; repoFilter = ""; showAll = true; days = 90; render();
     const el = $("app").querySelector(`[data-key="${CSS.escape(key)}"]`); el?.scrollIntoView?.({ block: "center", behavior: "smooth" });
   }
@@ -672,12 +675,12 @@
     // Shown at once from what was read; read again when the runs changed or it is a while old (a finding fixed or a gate decided on GitHub).
     if (have && have.sig === g.sig && have.loading) return void xp.replaceChildren(t("div", "soft", "Reading the findings…"));
     if (have && have.sig === g.sig) { fillPanel(g, xp, have); if (Date.now() - have.at < 30000) return; }
-    if (!(have && have.sig === g.sig)) xp.replaceChildren(t("div", "soft", g.done.length ? "Reading the findings…" : ""));
-    if (!g.done.length) return fillPanel(g, xp, { sig: g.sig, at: Date.now(), items: [], gate: null, reviews: [] });
+    if (!(have && have.sig === g.sig)) xp.replaceChildren(t("div", "soft", "Reading the findings…"));
+    if (!g.done.length && g.cur.some(live)) return fillPanel(g, xp, { sig: g.sig, at: Date.now(), items: [], gate: null, reviews: [] });
     const token = {};
     if (!have || have.sig !== g.sig) details.set(g.key, { sig: g.sig, token, loading: true, at: Date.now(), items: [], gate: null, reviews: [] }); else details.set(g.key, { ...have, token });
     try {
-      const picked = g.done.slice(0, 4), got = await Promise.all(picked.map((r) => tool("code_review_run_detail", { id: r.id })));
+      const picked = g.done.length ? g.done : [g.newest], got = await Promise.all(picked.map((r) => tool("code_review_run_detail", { id: r.id })));
       const merged = new Map();
       for (const d of got) {
         const outcome = new Map(d.findings.map((f) => [f.id, f.outcome]));

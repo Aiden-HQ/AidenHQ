@@ -2514,13 +2514,13 @@ export function createEngine(d: EngineDeps) {
     /** What waits on the owner, per open PR of a watched repo: a merge held by an open important finding (with it, to keep waiting or dismiss),
      * and a fork's PR no one has asked to review (a review on his budget). Each with when its latest run ended. */
     needs() {
-      const out: { kind: "held" | "fork"; repo: string; number: number; title: string | null; since: string | null; findings?: { id: string; path: string; line: number; title: string }[] }[] = [];
+      const out: { kind: "held" | "fork"; repo: string; number: number; title: string | null; since: string | null; run: string | null; findings?: { id: string; path: string; line: number; title: string }[] }[] = [];
       for (const r of d.config().repos) {
         for (const p of all<PrRow>("SELECT * FROM prs WHERE repo = ? AND open = 1 ORDER BY number DESC LIMIT 100", r.repo)) {
-          const last = one<{ ended: string | null; status: string; why: string | null }>("SELECT ended, status, why FROM runs WHERE repo = ? AND number = ? AND target = 'pr' ORDER BY created DESC LIMIT 1", r.repo, p.number);
+          const last = one<{ id: string; ended: string | null; status: string; why: string | null }>("SELECT id, ended, status, why FROM runs WHERE repo = ? AND number = ? AND target = 'pr' ORDER BY created DESC LIMIT 1", r.repo, p.number);
           const gate = openGating(r.repo, p.number);
-          if (gate.length && verdict(r.repo, p.number, p.head).verdict === "wait") out.push({ kind: "held", repo: r.repo, number: p.number, title: p.title, since: last?.ended ?? null, findings: gate.map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 160) })) });
-          else if (last?.status === "skipped" && String(last.why ?? "").toLowerCase().startsWith("fork")) out.push({ kind: "fork", repo: r.repo, number: p.number, title: p.title, since: last.ended });
+          if (gate.length && verdict(r.repo, p.number, p.head).verdict === "wait") out.push({ kind: "held", repo: r.repo, number: p.number, title: p.title, since: last?.ended ?? null, run: last?.id ?? null, findings: gate.map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 160) })) });
+          else if (last?.status === "skipped" && String(last.why ?? "").toLowerCase().startsWith("fork")) out.push({ kind: "fork", repo: r.repo, number: p.number, title: p.title, since: last.ended, run: last.id });
         }
       }
       return out;

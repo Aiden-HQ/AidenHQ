@@ -124,7 +124,10 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
         const content = m.params?.content;
         const text = Array.isArray(content) ? (content as { type?: string; text?: unknown }[]).find((c) => c?.type === "text")?.text : undefined;
         if (typeof text !== "string" || !text.trim()) return answer(m, { error: { code: -32602, message: "a message has text" } });
-        openAsk({ text: text.slice(0, 2000) });
+        // An unsent message already in Ask Aiden stays: the view's text goes after it.
+        let prior = "";
+        try { prior = localStorage.getItem("draft:ask") ?? ""; } catch { /* no storage: nothing to keep */ }
+        openAsk({ text: (prior.trim() ? `${prior.trimEnd()}\n\n${text}` : text).slice(0, 4000) });
         return answer(m, { result: {} });
       }
       if (m.method !== "tools/call") return; // ui/notifications/initialized needs nothing; anything else isn't offered
