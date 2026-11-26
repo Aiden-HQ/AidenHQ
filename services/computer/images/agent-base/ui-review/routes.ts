@@ -164,10 +164,10 @@ export async function routesCommand(argv: string[]): Promise<number> {
         try {
           await openAt(main, base, probe);
           const view = await look(main);
-          // A not-found view is short. Like a reviewed page but not the same: a page template filled for an unknown id, not a
+          // Home again (a router that ignores the probe) is not a not-found view. A not-found view is short. Like a reviewed page but not the same: a page template filled for an unknown id, not a
           // not-found view. The same as a reviewed page: that page shows the not-found view too.
           const like = pageTexts.map((t) => ({ ...t, a: alike(view.text, t.text) }));
-          if (!view.route.endsWith(MISSING) || view.text.split(" ").length > 60 || like.some((t) => t.a >= 0.5 && t.a < 0.95) || missing.some((m) => alike(m.text, view.text) >= 0.85)) continue;
+          if (!view.route.endsWith(MISSING) || alike(view.all, home.all) >= 0.8 || view.text.split(" ").length > 60 || like.some((t) => t.a >= 0.5 && t.a < 0.95) || missing.some((m) => alike(m.text, view.text) >= 0.85)) continue;
           for (const t of like) if (t.a >= 0.95) notes.push(`${t.path} shows the app's own not-found view`);
           // Its own words: on no reviewed page (other than one that shows this view), so a page that has them all shows it.
           const elsewhere = wordsOf(like.filter((t) => t.a < 0.95).map((t) => t.text).join(" "));
@@ -203,7 +203,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
       await settle(s);
       const now = await snap(s), v = await look(s);
       if (now.origin !== new URL(base).origin) c.problems.push(`clicking it leaves the app for ${now.origin}${now.route}`);
-      else if (![home.route, "/"].includes(now.route) && alike(v.text, home.text) < 0.8) c.problems.push(`clicking it goes to ${now.route}, not the home page (${home.route})`);
+      else if (![home.route, "/"].includes(now.route) && alike(v.all, home.all) < 0.8) c.problems.push(`clicking it goes to ${now.route}, not the home page (${home.route})`);
       else if (await s.page.evaluate(() => Math.round(scrollY))) c.problems.push(`clicking it leaves the page scrolled down, not at the top`);
     });
     // Links to this page, links to other routes and controls, read from each page.
