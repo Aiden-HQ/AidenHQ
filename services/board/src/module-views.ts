@@ -10,7 +10,7 @@ export interface SecretMap { secret: string; keys_from: string; fields: { name: 
 export interface PagePoint { id: string; title: string; icon: string; order: number; module: string; connection: string; view: string; tools: string[]; settings?: string[]; secret_maps?: SecretMap[] }
 
 /** Each setting's applied value: the compiled config (readSources) carries { value, set } per key. */
-export const appliedValues = (settings: Record<string, { value: unknown }> | undefined): Record<string, unknown> => Object.fromEntries(Object.entries(settings ?? {}).map(([k, e]) => [k, e.value]));
+export const appliedValues = (settings: Record<string, { value: unknown; set?: boolean }> | undefined): Record<string, unknown> => Object.fromEntries(Object.entries(settings ?? {}).map(([k, e]) => [k, e.value]));
 
 /** A key the kernel's vault merge takes (kernel/src/module-secrets.ts MAP_KEY). */
 export const MAP_KEY = /^[a-z0-9][a-z0-9_-]{0,62}$/;
