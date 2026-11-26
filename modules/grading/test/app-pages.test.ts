@@ -138,6 +138,34 @@ describe("liveEvidence", () => {
     assert.ok(lengths.every((n) => n <= PAGE_MAX), "no page exceeds PAGE_MAX");
   });
 
+  it("records an app with no HTTP surface as not-applicable, not as a page it failed to capture", async () => {
+    // apps-mcp's answer for a warehouse-shaped app (stateful, expose: false, no health.url): no page exists to render.
+    const ev = await liveEvidence(APP, ["Every nav link's page renders at its own path"], {
+      view: async () => ({ unavailable: `${APP.name} has no health.url, so there's no page to view`, noHttp: true }),
+    });
+    assert.equal(ev.data && Object.keys(ev.data).length, 0, "no live page is made up for an app with no page");
+    assert.equal(ev.facts.length, 1);
+    assert.match(ev.facts[0], new RegExp(`^app ${APP.name}: no HTTP surface \\(${APP.name} has no health\\.url`));
+    assert.match(ev.facts[0], /so it has no live pages and its page criteria do not apply$/);
+    assert.doesNotMatch(ev.facts[0], /not captured/, "a page that never existed is not a capture that failed");
+  });
+
+  it("keeps a restricted or non-local app reading as could-not-capture, never as no page", async () => {
+    for (const unavailable of [`${APP.name} is restricted to roles, so the grader doesn't capture its pages`, `${APP.name} runs on docker context vps; only local apps can be viewed`]) {
+      const ev = await liveEvidence(APP, ["Every nav link's page renders at its own path"], { view: async () => ({ unavailable }) });
+      assert.equal(ev.facts.length, 1);
+      assert.match(ev.facts[0], new RegExp(`^app ${APP.name}: live pages could not be captured \\(`));
+      assert.doesNotMatch(ev.facts[0], /no HTTP surface|page criteria do not apply/, `${unavailable}: a page the grader could not look at is not a page that doesn't exist`);
+    }
+  });
+
+  it("tells the grader a scoped criterion whose condition the facts deny is met, not unknown", () => {
+    const { system } = gradePrompt({ rubric: ["Where the app serves HTTP, every nav link's page renders at its own path"], deliverable: { kind: "app" }, facts: [], data: {} });
+    assert.match(system, /page criteria do not apply"\), the criterion is met: answer yes/);
+    // A page the grader could not look at is judged on other evidence (an attached capture, the diff), never passed by the fact.
+    assert.match(system, /could not be captured \(a restricted or non-local app\) is not such a fact: judge the criterion on whatever other evidence the facts and blocks carry, an attached capture or the diff above all, and answer unknown only when there is none/);
+  });
+
   it("puts a long page's whole text into its fenced block in the grader's prompt", async () => {
     const long = `${"- row \"filler\"\n".repeat(2_000)}- row "the named row"`; // ~28,000 characters, over the old 20,000 prompt cut
     const { user } = gradePrompt({ rubric: ["the /changes page shows the named row"], deliverable: { kind: "app" }, facts: [], data: { LIVE_PAGE_1: long } });

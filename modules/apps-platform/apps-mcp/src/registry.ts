@@ -106,6 +106,14 @@ export const parseApp = (raw: unknown): App => AppSchema.parse(raw);
 /** `preview`: set only on a pull request's preview (previews.ts previewApp), never by the registry. */
 export type App = z.output<typeof AppSchema> & { preview?: Preview };
 export interface Preview { of: string; pr: number; published: number } // published: the parent's port, which its compose publishes
+/**
+ * The app is not expected to serve HTTP at all: not exposed on the tailnet or through the gate, not shared, no `health.url`
+ * and no agent `api` (the registry needs a health.url for an api). A database is the shape this is for: it speaks its own
+ * protocol, so its ports answer silence to an HTTP request. Such an app's unprobed ports are recorded as non-hard findings
+ * instead of failing the deploy; a port that does answer HTTP is still judged, on this app as on any other (identityPorts,
+ * and the grader's view flags it `noHttp` so a page criterion reads as not applicable rather than not captured).
+ */
+export const noHttpSurface = (app: App) => !app.expose && !app.share?.host && !app.health.url && !app.api;
 
 const readApps = (path: string): App[] =>
   (((parseDocument(readFileSync(path, "utf8")).toJS() ?? {}) as { apps?: unknown[] }).apps ?? []).map((a) => AppSchema.parse(a));

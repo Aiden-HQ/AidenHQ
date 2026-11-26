@@ -38,6 +38,28 @@ describe("status row", () => {
     ]);
   });
 
+  // The grader's "no HTTP surface" fact rests on this field: it is the running commit's own proven verdict, never a registry
+  // shape and never an older deploy's. A redeploy or a failed probe moves it off, so a stale pass cannot label an app no page.
+  it("carries no_http_proven only for the commit that is running and whose own probe proved it", async () => {
+    const p = setup();
+    const older = "a".repeat(40), running = "b".repeat(40);
+    p.store.addDeploy({ app: "notes", sha: older, images_json: "[]", by: "auto-deploy", at: 1, status: "healthy", detail: "", no_http_proven: 1 });
+    p.store.setRunning("notes", older);
+    expect((await p.status(p.find("notes"))).no_http_proven).toBe(true);
+    // A redeploy to a commit with no verdict: the older row's proof does not carry over.
+    p.store.addDeploy({ app: "notes", sha: running, images_json: "[]", by: "auto-deploy", at: 2, status: "healthy", detail: "" });
+    p.store.setRunning("notes", running);
+    expect((await p.status(p.find("notes"))).no_http_proven).toBeUndefined();
+    // The running commit's own proved row sets it again.
+    p.store.addDeploy({ app: "notes", sha: running, images_json: "[]", by: "auto-deploy", at: 3, status: "healthy", detail: "", no_http_proven: 1 });
+    expect((await p.status(p.find("notes"))).no_http_proven).toBe(true);
+    // A later failed deploy of another commit leaves what is running unproven-ness alone, but a failed row never proves.
+    p.store.addDeploy({ app: "notes", sha: "c".repeat(40), images_json: "[]", by: "auto-deploy", at: 4, status: "failed", detail: "", no_http_proven: 1 });
+    expect((await p.status(p.find("notes"))).no_http_proven).toBe(true);
+    p.store.clearRunning("notes");
+    expect((await p.status(p.find("notes"))).no_http_proven).toBeUndefined();
+  });
+
   // The row's list is bounded, so the grader looks a merge commit up by exact sha: that read is over every deploy the app
   // ever had, not the newest few, or a merge that deployed would stop being provable once later deploys pushed it out.
   it("looks one exact commit's deploys up over the whole table, past the row's bounded list", async () => {

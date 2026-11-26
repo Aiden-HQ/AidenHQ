@@ -238,14 +238,17 @@ async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
 /**
  * A commit's parents, first parent first: the tree a merge was made on. For a merged PR, whose CI run no longer records its own
  * base (`pull_requests` is dropped on merge), the merge commit's first parent is that base. A commit GitHub has no answer for
- * is 404 to the caller; its parent list is the API's own order, and nothing here reorders or picks a different one.
+ * is 404 to the caller; its parent list is the API's own order, and nothing here reorders or picks a different one. `tree` is
+ * the git tree the commit records: two commits with the same tree carry identical code, which is how a capture taken before a
+ * commit (or at a PR head since squash-merged) is recognized as this code.
  */
 async function commitOf(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
   const r = await ctx.access.rest("GET", `/repos/${s.slug}/commits/${String(b.ref)}`);
   if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no commit ${String(b.ref)}` } };
   if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/commits/${String(b.ref)}: ${r.status}`);
   const parents = Array.isArray(r.body?.parents) ? r.body.parents.map((p: any) => String(p?.sha ?? "")).filter(Boolean) : [];
-  return { status: 200, json: { sha: String(r.body?.sha ?? ""), parents } };
+  const tree = String(r.body?.commit?.tree?.sha ?? "");
+  return { status: 200, json: { sha: String(r.body?.sha ?? ""), parents, ...(tree ? { tree } : {}) } };
 }
 
 /**

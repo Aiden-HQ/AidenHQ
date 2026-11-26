@@ -74,18 +74,28 @@ async function renderApp(app: App, caller: { key: string; roles: string[] }, req
   return r;
 }
 
-export type GraderView = { unavailable: string } | (ViewResult & { sha_before: string; sha_after: string });
+/** `noHttp`: the deploy's own identity probe proved the running app serves no HTTP at all (checks.ts `noHttpProven`, stored
+ * on its deploy row), so it has no page to capture and the grading module records its page criteria as not applicable. Absent
+ * for every other app — a restricted one, one that isn't local, an app this was not proven for — because those are pages the
+ * grader could not look at, never pages that don't exist. A registry declaration alone is never this flag. */
+export type GraderView = { unavailable: string; noHttp?: true } | (ViewResult & { sha_before: string; sha_after: string });
 
 /**
  * The runner's grader looking at a deployed app (through the board, never an agent): app_view as a member, with the running
  * commit read before and after the render, so the runner can tell a redeploy mid-capture from a verdict. An app it can't
  * view for good (role-restricted, no health.url, not local) is `unavailable` with the reason, not an error to retry.
  */
-export async function graderView(app: App, req: { path?: string; width?: number; cap?: number }, d: { resolve: Resolve; render: Render; sign: Sign; running: (name: string) => string | undefined; audit?: (o: object) => void }): Promise<GraderView> {
+export async function graderView(app: App, req: { path?: string; width?: number; cap?: number }, d: { resolve: Resolve; render: Render; sign: Sign; running: (name: string) => string | undefined; noHttpProven?: (name: string) => boolean; audit?: (o: object) => void }): Promise<GraderView> {
   // Restricted apps' pages stay with the agents holding their roles: the grader's notes are posted on the task.
   if (app.access) return { unavailable: `${app.name} is restricted to roles, so the grader doesn't capture its pages` };
-  if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view` };
+  // A remote app is out of this renderer's reach whatever it serves, so it is a page the grader could not look at, never one
+  // that doesn't exist: the registry's shape is a declaration this platform cannot check without the app's sockets, so it is
+  // never proof here. (A local app's shape is checked: the deploy's identity gate fails an app that answers HTTP.)
   if (app.host !== "local") return { unavailable: `${app.name} runs on docker context ${app.host}; only local apps can be viewed` };
+  // No health.url: either the running app's own identity probe proved it serves no HTTP at all, or it has a page this
+  // registry knows no address for. Only the first is a not-applicable page criterion; the second is one not captured. The
+  // registry's shape is what an app says about itself, so it never decides this alone.
+  if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view`, ...(d.noHttpProven?.(app.name) ? { noHttp: true as const } : {}) };
   const sha_before = d.running(app.name) ?? "";
   const r = await renderApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width }, d, req.cap ?? SNAPSHOT_CAP);
   return { ...r, sha_before, sha_after: d.running(app.name) ?? "" };

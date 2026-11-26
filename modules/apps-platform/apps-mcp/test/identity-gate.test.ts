@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { finishedJob, IDENTITY_SCRIPT, identityPorts, identityProbes, judgeIdentity, NO_SIGN_IN, noHttpSurface, unprobedServices, type Door } from "../src/checks.js";
+import { finishedJob, IDENTITY_SCRIPT, identityPorts, identityProbes, judgeIdentity, NO_SIGN_IN, noHttpSurface, unprobedServices, type Door, type PortAnswers } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
 
@@ -201,4 +201,39 @@ describe("identity gate", () => {
     expect(unprobedServices(compose, up, hashes)).toEqual(["migrate"]); // no container at all
   });
 
+});
+
+// The no-HTTP verdict the grader reads: proved only by a complete probe of the running app's own sockets, never by the
+// registry's shape. A probe that could not look (denied, no socket, an unconfirmed look) proves nothing.
+describe("no-HTTP verdict", () => {
+  const sock = (o: Partial<PortAnswers> = {}): PortAnswers => ({ service: "app", port: 5433, host: "127.0.0.1", listening: true, answers: [], ...o });
+
+  it("is proved when every probed socket answered neither HTTP nor TLS, with nothing denied", () => {
+    const r = identityPorts([sock({ raw: "banner", tls: "no" }), sock({ port: 5432, raw: "closed", tls: "no" })], [], [], true);
+    expect(r).toMatchObject({ ok: true, noHttpProven: true });
+    expect(r.findings.every((f) => !f.hard)).toBe(true);
+  });
+
+  it("is never proved from a missing, denied or inconclusive probe", () => {
+    // No socket at all: nobody could look, so nothing is proven.
+    expect(identityPorts([], [], [], true).noHttpProven).toBeUndefined();
+    // A process no scan could read may hold an HTTP listener.
+    expect(identityPorts([sock({ raw: "banner", tls: "no" })], [], ["app:5433"], true).noHttpProven).toBeUndefined();
+    // The TLS probe didn't answer: an HTTPS listener can't be ruled out.
+    expect(identityPorts([sock({ raw: "closed" })], [], [], true).noHttpProven).toBeUndefined();
+    // A door the registry says is HTTP was expected, so no skip covers the app.
+    expect(identityPorts([sock({ raw: "banner", tls: "no" })], [{ service: "app", port: "8080" }], [], true).noHttpProven).toBeUndefined();
+  });
+
+  it("is never proved when a socket answered HTTP or HTTPS, even on a no-HTTP-shaped app", () => {
+    const probe = { method: "GET" as const, path: "/", counts: true, forged: false };
+    expect(identityPorts([sock({ answers: [{ probe, status: 302 }] })], [], [], true).noHttpProven).toBeUndefined();
+    expect(identityPorts([sock({ raw: "http" })], [], [], true).noHttpProven).toBeUndefined();
+    expect(identityPorts([sock({ tls: "tls" })], [], [], true).noHttpProven).toBeUndefined();
+  });
+
+  it("is never proved for an app the registry says serves HTTP (a banner on one port is not the whole app)", () => {
+    // noHttp false: the app-level skip never applies, so a non-HTTP banner there says nothing about the app.
+    expect(identityPorts([sock({ raw: "banner", tls: "no" })], [], [], false).noHttpProven).toBeUndefined();
+  });
 });

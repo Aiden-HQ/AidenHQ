@@ -226,7 +226,7 @@ const http = createServer(async (req, res) => {
       if (typeof who === "number") return send(res, who, { error: who === 403 ? `role apps.read is required` : "unauthorized" });
       const b = await readBody(req);
       const cap = who.module === "grading" ? GRADER_SNAPSHOT_CAP : SNAPSHOT_CAP;
-      return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width, cap }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, audit: p.auditView }));
+      return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width, cap }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, noHttpProven: p.noHttpProven, audit: p.auditView }));
     }
     if (url.pathname === "/internal/deploy" && req.method === "POST") {
       if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });

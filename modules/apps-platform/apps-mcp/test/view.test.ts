@@ -112,9 +112,29 @@ describe("the grader's live view", () => {
     expect(await graderView(app(), { path: "/roadmap" }, d)).toMatchObject({ status: 200, sha_before: sha, sha_after: sha });
     const redeploy: Render = async (n, r) => ((sha = "b".repeat(40)), render(n, r));
     expect(await graderView(app(), {}, { ...d, render: redeploy })).toMatchObject({ sha_before: "a".repeat(40), sha_after: "b".repeat(40) });
+    // A restricted app has pages, just not ones the grader may look at: unavailable, and never flagged as having no page.
     expect(await graderView(app({ access: { roles: ["finance"] } }), {}, d)).toEqual({ unavailable: expect.stringMatching(/restricted/) });
     expect(await graderView(app({ health: {} }), {}, d)).toEqual({ unavailable: expect.stringMatching(/health.url/) });
     expect(calls.length).toBe(2);
+  });
+  it("flags noHttp only from the deploy's own proven verdict, never from the registry's shape", async () => {
+    const { calls, render } = fake();
+    const bare = { unavailable: expect.stringMatching(/health\.url/) };
+    // warehouse-shaped: stateful, expose: false, a port, no health.url, no api, not shared (parseApp defaults expose: true).
+    const warehouse = { name: "warehouse", repo: "example-org/example", owner: "app-maintainer", description: "d", stateful: true, expose: false, port: 5433, health: {} };
+    const proven = { resolve, render, sign, running: () => "a".repeat(40), noHttpProven: (n: string) => n === "warehouse" };
+    const unproven = { resolve, render, sign, running: () => "a".repeat(40) };
+    expect(await graderView(app(warehouse), {}, proven)).toEqual({ ...bare, noHttp: true });
+    // The same shape without a probe that proved it is a page not captured, never a page that doesn't exist.
+    expect(await graderView(app(warehouse), {}, unproven)).toEqual(bare);
+    expect(await graderView(app({ ...warehouse, name: "other" }), {}, proven)).toEqual(bare);
+    // A restricted app is a page the grader may not look at, never a page that doesn't exist, even when its shape matches.
+    expect(await graderView(app({ access: { roles: ["finance"] }, health: {} }), {}, proven)).toEqual({ unavailable: expect.stringMatching(/restricted/) });
+    // A remote app is out of the renderer's reach, whatever a probe of some other context could say.
+    expect(await graderView(app({ ...warehouse, host: "vps" }), {}, proven)).toEqual({ unavailable: expect.stringMatching(/docker context vps/) });
+    // An exposed app with no health.url is a page this registry knows no address for: not captured, not not-applicable.
+    expect(await graderView(app({ health: {}, expose: true, port: 8080 }), {}, proven)).toEqual(bare);
+    expect(calls).toEqual([]);
   });
   it("keeps an agent's view at SNAPSHOT_CAP; the grader's view takes the cap its verified caller was given", async () => {
     const { calls, render } = fake();
