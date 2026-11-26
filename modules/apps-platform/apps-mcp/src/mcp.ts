@@ -77,7 +77,7 @@ export function buildServer(p: Platform, caller: Caller, repo: { dir: string; pu
   };
   const mutable = (name: string) => {
     const a = p.find(name);
-    if (!canMutate(p, a, caller)) throw new Error(`${caller.name} can't change ${name}: only its owner (${a.owner}), or the app builder (`app-maintainer`) during an incident`);
+    if (!canMutate(p, a, caller)) throw new Error(`${caller.name} can't change ${name}: only its owner (${a.owner}), or the app builder (app-maintainer) during an incident`);
     return a;
   };
   const name = z.string().describe("app name");
