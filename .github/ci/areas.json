@@ -30,6 +30,7 @@
     {"name": "modules/fleet-steward", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/fleet-steward", "kernel/sdk"]},
     {"name": "modules/warehouse/search", "secs": 10, "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/warehouse/search"]},
     {"name": "modules/code-review", "secs": 4, "job": "modules", "run": "npm test", "paths": ["modules/code-review", "kernel/src", "modules/ci/template/.github", "modules/github/connections/github-mcp/src/review-render.ts", "services/computer/images/engineer/Dockerfile"]},
+    {"name": "modules/design", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/design", "kernel/sdk/src/caller.ts"]},
     {"name": "modules/maintainer", "secs": 1, "job": "modules", "run": "node --test test/*.test.ts", "paths": ["modules/maintainer"]},
     {"name": "modules/security/scanner", "secs": 6, "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/security/scanner"]},
     {"name": "modules/engine-opencode", "secs": 20, "job": "modules", "run": "NODE_PATH=../../scripts/node_modules node --test test/*.test.ts", "paths": ["modules/engine-opencode", "kernel/sdk"]},

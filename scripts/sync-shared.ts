@@ -64,12 +64,14 @@ export function sharedCopies(root = repo) {
     // The fleet-steward and code-review services check the caller's assertion on their connections.
     "modules/fleet-steward/service/src",
     "modules/code-review/service/src",
+    // The design service checks the caller's assertion on its connection.
+    "modules/design/service/src",
     // The grading service checks the tasks module's assertion when it files a rubric, and the owner's router on notify; the
     // grading service, the reviewer and dispatch fence their prompts' data blocks (dataBlock).
     ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src", "modules/ship/service/src", "modules/maintainer/service/src", "modules/sessions/service/src"] : ["modules/grading/service/src", "modules/ai-reviewer/service/src", "modules/dispatch/service/src", "modules/warehouse/search/src"]),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The module MCP endpoint (tools and a Fleet page view): ship's, the Maintainer's and code review's.
-  "modules/ship/service/src/mcp.ts": ["modules/maintainer/service/src/mcp.ts", "modules/code-review/service/src/mcp.ts", "modules/sessions/service/src/mcp.ts"],
+  "modules/ship/service/src/mcp.ts": ["modules/maintainer/service/src/mcp.ts", "modules/code-review/service/src/mcp.ts", "modules/sessions/service/src/mcp.ts", "modules/design/service/src/mcp.ts"],
   // The Fleet pages' shared kit (the common styles and bridge script), inlined into each module's page.html when it is served (mcp.ts pageHtml).
   ...Object.fromEntries(["page-kit.css", "page-kit.js"].map((f) => [`services/shared/${f}`, [`modules/ship/service/src/${f}`, `modules/maintainer/service/src/${f}`, `modules/code-review/service/src/${f}`]])),
   // The box's one MCP client (code mode): the engineer image's /opt/aidenhq/lib/tools.ts, which the in-box `aidenhq` CLI and a
