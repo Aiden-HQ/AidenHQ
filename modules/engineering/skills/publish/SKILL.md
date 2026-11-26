@@ -48,7 +48,8 @@ the one you mean to keep — and close a PR only when it is open, the one you ke
 other's head or ahead of it. A PR already closed and not merged, or the only live copy of a fix, is not a duplicate:
 close nothing and work from the PR the state shows.
 When the PR that carries the work is closed and `merged`, the work has landed: close the PR you would otherwise keep and
-report the merged one as what landed, not a merge of its own to wait on.
+report the merged one as what landed, not a merge of its own to wait on — but only when that PR's head is a commit the
+merged head contains. When it holds commits the merge does not, keep it open and work from it: it is not redundant.
 Then close the duplicate by its own URL. After the close, read both again and report only what they show.
 Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
 When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
