@@ -9,7 +9,7 @@ import { discovered } from "./actions.ts";
 import { withFooter } from "./aidenhq-sdk/attribution.ts";
 import { latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
-import { handBack, intake, recordTask, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
+import { closeHeld, handBack, intake, recordTask, tasksOf, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
 import { retryReport, round, tell, type Decision, type RoundDeps } from "./rounds.ts";
 import { canApprove, judge, sameChange, riskOf, type ChangedFile, type Judged, type Risk, type Verdict } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
@@ -352,7 +352,7 @@ export function adoptedPass(o: AdoptedOptions) {
     /** The adoptions of `repo` whose PR left the open list: a merged one ends its adoption once (a hand-off's task closes, a task's PR tells it). */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {
       for (const a of o.state.all() as Kept[]) {
-        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || ended(a)) continue;
+        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || (ended(a) && !a.closing?.length)) continue;
         const r = await o.gh("GET", `/repos/${repo}/pulls/${a.number}`);
         if (r.status >= 300) continue;
         // A held adoption is still finished when someone merges its PR (round closes the hand-off's task). A closed one is handed
@@ -361,7 +361,11 @@ export function adoptedPass(o: AdoptedOptions) {
           if (r.body?.state !== "closed") continue;
           if (!a.hold) handBack(o.state, repo, a.number, "its PR was closed");
           const b = o.state.get(repo, a.number) as Kept;
-          o.state.put({ ...b, counters: { ...(b.counters ?? { head: "", wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: "closed" } } as Kept);
+          // The tasks a close leaves are queued the way a hand-back does, and closed now (a refusal is kept for the next pass,
+          // which `gone` reads again although the record has ended).
+          const closing: Kept = { ...b, closing: tasksOf(b), counters: { ...(b.counters ?? { head: "", wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: "closed" } };
+          o.state.put(closing);
+          await closeHeld(handoff, { url: String(r.body.html_url ?? `${repo}#${a.number}`) }, closing, `${String(r.body.html_url ?? `${repo}#${a.number}`)} was closed, so ship stopped working on it.`);
           continue;
         }
         const view: PrView = { repo, number: a.number, url: String(r.body.html_url), head: String(r.body.head?.sha), base: String(r.body.base?.ref), defaultBranch, author: String(r.body.user?.login ?? ""), authorBot: r.body.user?.type !== "User", fork: false, canModify: false, draft: false, state: "merged", labels: [], assignees: [], events: [] };

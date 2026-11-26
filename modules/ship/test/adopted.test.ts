@@ -328,3 +328,50 @@ test("a fork head with the same patches but a changed file mode is not the same 
   await pass.open("acme/app", main, pr(H3));
   assert.equal(state.get("acme/app", 9).hold?.kind, "stopped", "the script became executable");
 });
+
+test("a fleet-triggered adoption's records task is closed when its PR merges; a task-owned PR's opener is not", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "e".repeat(40);
+  // Fleet-triggered with no owner and no opener task: only the quiet records task recordTask filed.
+  state.put({ repo: "acme/app", number: 20, generation: 1, trigger: { kind: "fleet", event: `all:${H}`, actor: "dev", at: "2026-11-24T09:00:00Z", head: H }, holder: "R20", hold: null });
+  // The `handoff: all` adoption that files it in practice (trigger kind "all").
+  state.put({ repo: "acme/app", number: 23, generation: 1, trigger: { kind: "all", event: `all:${H}`, actor: "dev", at: "2026-11-24T09:00:00Z", head: H }, holder: "R23", hold: null });
+  // A task's PR: its opener task is never ship's to close.
+  state.put({ repo: "acme/app", number: 21, generation: 1, trigger: { kind: "fleet", event: "opened:21", actor: "T21", at: "2026-11-24T09:00:00Z", head: H }, task: "T21", owner: { kind: "task", task: "T21" }, hold: null });
+  const closes = [], wakes = [];
+  const pass = adoptedPass({
+    gh: async (method, path) => ({ status: 200, body: path.endsWith("/pulls/21")
+      ? { merged_at: "2026-11-24T10:00:00Z", html_url: "https://github.com/acme/app/pull/21", head: { sha: H }, base: { ref: "main" }, user: { login: "dev", type: "User" } }
+      : { merged_at: "2026-11-24T10:00:00Z", html_url: "https://github.com/acme/app/pull/20", head: { sha: H }, base: { ref: "main" }, user: { login: "dev", type: "User" } } }),
+    state, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path, body) => (path.endsWith("/close") && closes.push(path.split("/")[3]), path === "/v1/wakes" && wakes.push(body), {}) },
+    decision: async () => ({ do: "wait" }),
+    effects: { comment: async () => 1, askReview: async () => {}, askFresh: async () => {}, verdict: async () => verdict("standard", { verdict: "wait" }) },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes.sort(), ["R20", "R23"], "each records task, once");
+  assert.deepEqual(wakes.map((w) => w.task), ["T21"], "the task's PR tells its task instead of closing it");
+});
+
+test("a closed-unmerged adoption's records task is closed, and a kernel refusal is retried next pass", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  state.put({ repo: "acme/app", number: 22, generation: 1, trigger: { kind: "label", event: "e22", actor: "maria", at: "2026-11-24T09:00:00Z", head: "a".repeat(40) }, owner: { kind: "member", login: "maria" }, holder: "R22", hold: null });
+  let refuse = true;
+  const closes = [];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: { state: "closed", merged_at: null, html_url: "https://github.com/acme/app/pull/22" } }), state,
+    kernel: { call: async (m, path) => { if (path.endsWith("/close")) { closes.push(path.split("/")[3]); if (refuse) throw new Error("kernel 503"); } return {}; } },
+    settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: "wait" }), effects: { comment: async () => 1, askReview: async () => {}, verdict: async () => verdict() },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes, ["R22"]);
+  assert.deepEqual(state.get("acme/app", 22).closing, ["R22"], "the refusal is kept for the next pass");
+  refuse = false;
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes, ["R22", "R22"], "tried again");
+  assert.equal(state.get("acme/app", 22).closing, undefined, "closed: nothing left");
+  await pass.gone("acme/app", "main", new Set());
+  assert.deepEqual(closes, ["R22", "R22"], "an ended record is not read again");
+});

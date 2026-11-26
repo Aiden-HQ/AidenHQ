@@ -249,8 +249,11 @@ async function ask(d: HandoffDeps, pr: PrView, a: Kept): Promise<Kept> {
   return done;
 }
 
-/** The adoption's tasks ship filed (never the task a task-owned PR belongs to). */
-export const tasksOf = (a: Kept) => (a.owner?.kind === "task" || (!a.owner && a.trigger.kind === "fleet") ? [] : [a.task, a.holder].filter((t): t is string => Boolean(t)));
+/**
+ * The adoption's tasks ship filed (never the task a task-owned PR belongs to). A fleet-triggered adoption with no opener keeps
+ * only its quiet records task: the `[]` is for the opener's task, which is never ship's to close.
+ */
+export const tasksOf = (a: Kept) => (a.owner?.kind === "task" || (!a.owner && a.trigger.kind === "fleet" && !!a.task) ? [] : [a.task, a.holder].filter((t): t is string => Boolean(t)));
 
 /**
  * The task the adoption's records go on: its Engineer task when it has one, else its quiet records task (source
@@ -269,11 +272,11 @@ export async function recordTask(kernel: HandoffDeps["kernel"], pr: PrView, a: K
 }
 
 /** Closes the tasks a hold left (`closing`), keeping any the kernel refused for the next pass. */
-async function closeHeld(d: HandoffDeps, pr: PrView, a: Kept): Promise<Kept> {
+export async function closeHeld(d: HandoffDeps, pr: Pick<PrView, "url">, a: Kept, why?: string): Promise<Kept> {
   const left: string[] = [];
-  const body = a.hold?.kind === "handed_back"
+  const body = why ?? (a.hold?.kind === "handed_back"
     ? `${pr.url} was handed back: ship stopped working on it.`
-    : `${pr.url} has new commits from its author since it was handed off: ship stopped until a member hands it off again.`;
+    : `${pr.url} has new commits from its author since it was handed off: ship stopped until a member hands it off again.`);
   for (const t of a.closing ?? []) {
     try { await d.kernel.call("POST", `/v1/tasks/${t}/close`, { status: "done", body }); }
     catch (e) { left.push(t); d.log("task close failed: tried again next pass", { task: t, err: String((e as Error).message).slice(0, 200) }); }
