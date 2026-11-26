@@ -32,12 +32,15 @@ const toYou = (i: Item) => {
 /**
  * One line of counts, each opening its list in place; the list starts closed. The line is the same height in every state —
  * loading, all-clear and with tasks — so the board below it lands where it stays and nothing waits on the needs-you query.
- * Opening a list grows the strip: that is a click, not a cold-load shift.
+ * The counts never wrap to a second row (a longer count would move the board after the query answered): on a narrow phone the
+ * line scrolls sideways, as the board's tabs do. Opening a list grows the strip: that is a click, not a cold-load shift.
  */
 export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
   const q = useQuery(QUERIES.needsYou, onSignIn);
   useLive(["approvals", "chat", "tasks"], q.reload, 30_000);
   const [chosen, setChosen] = useState<Which | null>(null);
+  // The lane whose list stays mounted once it has been opened: closing hides it, it is not torn down (see `list`).
+  const [lane, setLane] = useState<Which | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLElement>(null);
   const d = q.data;
@@ -58,18 +61,20 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
       <section className="attn attn-compact" role="status" aria-busy="true" aria-label="Loading fleet attention">
         <div className="attn-head">
           <b className="attn-title">Fleet attention</b>
-          {/* The loaded buttons themselves, disabled, with a bone where each number goes: same words, same box, so the line
-              breaks where it will once the counts arrive and is the same height at every width, a phone's two rows included. */}
-          {(["need you", "failed", "unexplained"] as const).map((label) => (
-            <button key={label} type="button" className="attn-count attn-count-load" tabIndex={-1} disabled aria-hidden>
-              <Bone w={7} h={11} /> {label}
-            </button>
-          ))}
+          {/* The loaded buttons themselves, disabled, with a bone where each number goes: the same words and the same box, on the
+              row that never wraps, so the line is the height it will be once the counts arrive. */}
+          <span className="attn-counts">
+            {(["need you", "failed", "unexplained"] as const).map((label) => (
+              <button key={label} type="button" className="attn-count attn-count-load" tabIndex={-1} disabled aria-hidden>
+                <Bone w={7} h={11} /> {label}
+              </button>
+            ))}
+          </span>
         </div>
       </section>
     );
   const n: Record<Which, number> = { needs: d.counts.needs_you, failed: d.counts.failed, idle: d.counts.unexplained_idle };
-  const rows = chosen ? d.items.filter(IN[chosen]) : [];
+  const rows = lane ? d.items.filter(IN[lane]) : [];
   /** After an answer: the next row's first control, else the heading, so the keyboard never lands on a removed row. */
   const moveOn = (identifier: string) => {
     const els = [...(listRef.current?.querySelectorAll<HTMLElement>(".attn-row, .ui-row") ?? [])];
@@ -77,8 +82,10 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
     const target = next?.matches(".ui-row") ? next : next?.querySelector<HTMLElement>("button, input");
     (target ?? headRef.current)?.focus();
   };
+  // Kept mounted and only hidden when closed: collapsing must not unmount the answer forms, which hold the owner's drafted
+  // reply and picks in their own state. `hidden` also takes the closed list out of the reading order.
   const list = (
-    <div className="attn-list" ref={listRef}>
+    <div className="attn-list" ref={listRef} hidden={!chosen}>
       <ListRows>
         {rows.map((i) => {
           const ask = needsOwner(i.state) ? i.ask : undefined;
@@ -108,14 +115,26 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
     <section className="attn attn-compact" aria-label="What needs attention">
       <div className="attn-head">
         <b className="attn-title" tabIndex={-1} ref={headRef}>Fleet attention</b>
-        {(["needs", "failed", "idle"] as const).map((w) => (
-          <button key={w} type="button" className={`attn-count attn-${w}${n[w] ? " on" : ""}`} aria-expanded={chosen === w} onClick={() => setChosen(chosen === w ? null : w)}>
-            {words[w]}
-          </button>
-        ))}
+        <span className="attn-counts">
+          {(["needs", "failed", "idle"] as const).map((w) => (
+            <button
+              key={w}
+              type="button"
+              className={`attn-count attn-${w}${n[w] ? " on" : ""}`}
+              aria-expanded={chosen === w}
+              onClick={() => {
+                setLane(w);
+                setChosen(chosen === w ? null : w);
+              }}
+            >
+              {words[w]}
+            </button>
+          ))}
+        </span>
         {chosen && rows.length > 0 && <span className="attn-order">oldest first</span>}
       </div>
-      {chosen && (rows.length > 0 ? list : <p className="attn-none">{EMPTY[chosen]}</p>)}
+      {lane && rows.length > 0 && list}
+      {chosen && rows.length === 0 && <p className="attn-none">{EMPTY[chosen]}</p>}
     </section>
   );
 }

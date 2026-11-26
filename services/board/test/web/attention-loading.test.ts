@@ -29,6 +29,15 @@ const mount = async () => {
   return el;
 };
 
+/** A task with an open question, so its row carries an answer form. */
+const asked = {
+  identifier: "WOR-2",
+  title: "Which one should ship?",
+  agent: "lena",
+  state: { kind: "waiting", reason: "owner_wait", attention: [{ who: "owner", why: "owner_wait", ref: "wait:t", since: "2026-11-26T05:00:00Z" }] },
+  ask: { question: "Which one should ship?", questions: [{ question: "Which one should ship?", options: [] }], waitSince: "2026-11-26T05:00:00Z" },
+};
+
 const loaded = {
   counts: { needs_you: 1, failed: 0, unexplained_idle: 0 },
   approvals: 0,
@@ -53,6 +62,8 @@ describe("the fleet strip's loading frame", () => {
     expect(el.querySelector(".attn-title")?.textContent).toBe("Fleet attention");
     expect(el.querySelector(".attn-list")).toBeNull();
     expect(el.querySelector(".attn-list-load")).toBeNull();
+    // One row: the three counts share a box that never wraps onto a second line once the numbers arrive.
+    expect(el.querySelector(".attn-head > .attn-counts")?.children).toHaveLength(3);
   });
 
   it("shows the read's failure instead of a busy frame that never ends", async () => {
@@ -75,6 +86,23 @@ describe("the fleet strip's loading frame", () => {
     expect(el.textContent).toContain("A task that needs you");
     await act(async () => count.click());
     expect(count.getAttribute("aria-expanded")).toBe("false");
-    expect(el.querySelector(".attn-list")).toBeNull();
+    // Kept mounted so a drafted answer survives, but hidden: out of the page and out of the reading order.
+    expect(el.querySelector(".attn-list")?.hasAttribute("hidden")).toBe(true);
+    expect(el.querySelector(".attn-order")).toBeNull();
+  });
+
+  it("keeps a drafted answer when the open list is collapsed and reopened", async () => {
+    query.data = { ...loaded, items: [asked] };
+    const el = await mount();
+    const count = el.querySelector<HTMLButtonElement>(".attn-count.attn-needs")!;
+    await act(async () => count.click());
+    const box = el.querySelector<HTMLInputElement>(".q-own")!;
+    expect(box).not.toBeNull();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box, "ship the second one");
+    await act(async () => box.dispatchEvent(new Event("input", { bubbles: true })));
+    await act(async () => count.click());
+    expect(el.querySelector(".attn-list")?.hasAttribute("hidden")).toBe(true);
+    await act(async () => count.click());
+    expect(el.querySelector<HTMLInputElement>(".q-own")!.value).toBe("ship the second one");
   });
 });
