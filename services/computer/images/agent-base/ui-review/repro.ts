@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { BrowserContext, Page as PwPage } from "playwright-core";
 import { heightOf, initScript, launch, ready } from "./browser.ts";
-import { type Mode, modeOf } from "./guard.ts";
+import { type Mode, modeOf, pageOf } from "./guard.ts";
 import { readSession } from "./login.ts";
 import { ask, DEFAULT_MODEL, spend } from "./model.ts";
 import { saveReport } from "./report.ts";
@@ -57,20 +57,24 @@ async function run(page: PwPage, base: string, s: Step): Promise<void> {
 }
 
 /** The steps in a fresh context; pictures of the page just before and just after the last step. */
-async function replay(newContext: () => Promise<BrowserContext>, base: string, c: Click, out: string, tag: string): Promise<Replay> {
+/** `sockets`: the guard's refused WebSockets so far (read mode stubs them: no request a page event would show). */
+async function replay(newContext: () => Promise<BrowserContext>, base: string, c: Click, out: string, tag: string, sockets: () => Blocked[]): Promise<Replay> {
   const ctx = await newContext();
   try {
     const page = await ctx.newPage();
     const steps = c.steps as Step[], last = steps.length - 1;
     const text = () => page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
-    let before = "", textBefore = "", urlBefore = "", writes = 0, refused = 0;
+    let before = "", textBefore = "", urlBefore = "", writes = 0, refused = 0, socketsBefore = 0;
     page.on("request", (r) => { if (before && !["GET", "HEAD", "OPTIONS"].includes(r.method())) writes++; }); // sent by the last step (a guard may then refuse it)
     // A request of the last step the live-app guard refused: what the page then shows is the guard's doing, not the app's.
     page.on("requestfailed", (r) => { if (before && /BLOCKED_BY_CLIENT/.test(r.failure()?.errorText ?? "")) refused++; });
     for (const [i, s] of steps.entries()) {
-      if (i === last) { before = `repro/${tag}-before.png`; await page.screenshot({ path: join(out, before) }); textBefore = await text(); urlBefore = page.url(); }
+      if (i === last) { socketsBefore = sockets().length; before = `repro/${tag}-before.png`; await page.screenshot({ path: join(out, before) }); textBefore = await text(); urlBefore = page.url(); }
       await run(page, base, s);
     }
+    // Evidence is of the app only: a last step that left it (a click or redirect to another origin) is no replay.
+    if (new URL(page.url()).origin !== new URL(base).origin) throw new Error(`the last step left the app under review (${new URL(page.url()).origin})`);
+    refused += sockets().slice(socketsBefore).filter((b) => b.page === pageOf(urlBefore) || b.page === pageOf(page.url())).length;
     const after = `repro/${tag}-after.png`;
     await page.screenshot({ path: join(out, after) });
     return { ok: true, before, after, changed: { text: (await text()) !== textBefore, url: page.url() !== urlBefore }, writes, refused };
@@ -133,7 +137,7 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
         const runs: Extract<Replay, { ok: true }>[] = [];
         let verified = true;
         for (const k of c.kind === "bug" ? [1, 2] : [1]) {
-          const r = await replay(fresh(c), base, c, o.out, `${batch}/${id}-r${k}`);
+          const r = await replay(fresh(c), base, c, o.out, `${batch}/${id}-r${k}`, () => l.blocked().filter((b) => b.method === "WS"));
           if (!r.ok) { dropped.push(`${c.title}: replay ${k} failed: ${r.why}`); verified = false; break; }
           runs.push(r);
           if (c.kind === "bug" && r.refused) { dropped.push(`${c.title}: not testable in ${o.mode} mode (the live-app guard refused its last step's request)`); verified = false; break; }

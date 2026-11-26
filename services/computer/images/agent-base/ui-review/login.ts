@@ -207,13 +207,8 @@ export async function signupLogin(o: { url: string; out: string }) {
     if (submit) await submit.click(); else await e.press("Enter");
     await page.waitForLoadState("domcontentloaded").catch(() => {});
     await ready(page);
-    // An app that signs the new account in at once may send no mail: no mail, and off the sign-up page, is that session.
-    const origin = new URL(o.url).origin, mail = await mailTo(email).catch((e) => { if (e instanceof LoginError) return ""; throw e; });
+    const mail = await mailTo(email), origin = new URL(o.url).origin;
     const stillThere = async () => pathOf(new URL(page.url())) === signupAt.path && (await page.title()) === signupAt.title;
-    if (!mail) {
-      if (await stillThere()) fail("no sign-up mail arrived");
-      return { loginPath: signupAt.path, loginTitle: signupAt.title, origin };
-    }
     const links = [...mail.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((m) => m[0].replace(/&amp;/g, "&"));
     const link = links.find((l) => new URL(l).origin === origin) ?? links[0];
     const code = /\b(\d{6})\b/.exec(mail)?.[1];
