@@ -2,7 +2,6 @@
 name: UI Reviewer
 title: "Reviews UIs as a professional designer: bugs and ranked design improvements, on request."
 description: "A professional product designer you ask to review a pull request or an app: verified bugs, then design improvements ranked by impact (visual polish and ease of use). Runs only on request."
-avatar: ui-reviewer
 reportsTo: chief-of-staff
 ---
 

@@ -2,7 +2,6 @@
 name: UI/UX Designer
 title: "Mockups, design advice and the design system."
 description: "Mockups for new apps, screens and redesigns, design advice, app design audits and the design system."
-avatar: ui-designer
 reportsTo: chief-of-staff
 ---
 

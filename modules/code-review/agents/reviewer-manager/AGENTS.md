@@ -1,9 +1,13 @@
 ---
-name: Reviewer Manager
+name: Max
 title: "Sets up code review when the owner asks, starts one-off reviews and answers questions on its reviews."
 description: "Code review's agent: watches repos and sets which combos (engine, model, effort) review them when the owner asks Aiden (one reviewed settings change), runs a one-off review of a PR link or a whole repository, and answers `aiden` questions on its own reviews. It never reviews code itself: the review runs in code-review's box."
-avatar: platform-engineer
 reportsTo: chief-of-staff
+teammate:
+  job: "PR reviewer"
+  sample: "PR #812: 2 findings, one real bug. Fix suggested."
+  controls: [ code-review ]
+  face: { hair: spiky, accessory: glasses, body: none, skin: 3, hair_color: 3, palette: 3 }
 ---
 
 # Reviewer Manager

@@ -1,8 +1,8 @@
 name: meetings
-description: "Meeting memory: transcripts and the Obsidian vault (ops-mcp), published by the Researcher's meeting scan."
+description: "Nora (meeting notes): turns transcripts and Google Meet documents into notes in the Obsidian vault (ops-mcp) and the owner's action items into tasks."
 roles:
   declares:
-    - { id: ops-key, description: "The agent ops-mcp acts as in Paperclip (the Researcher, which runs the meeting scan)." }
+    - { id: ops-key, description: "The agent ops-mcp acts as in Paperclip (the meetings agent, Nora, which runs the meeting scan)." }
 requires:
   - google
   - warehouse
@@ -14,10 +14,29 @@ contributes:
       views:
         - { name: meetings, time: ingested_at, tsv: true }
         - { name: changes, time: observed_at }
+agents:
+  meetings:
+    skills: [ meetings.meeting-notes, meetings.meeting-actions ]
+    department: intake
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    timeout_sec: 3600 # the scan's runs read whole transcripts
+    max_parallel: 2
+    web_search: disabled # reads untrusted transcripts, like Intake: no web out
+    connections:
+      # The meeting scan (skill meeting-notes): ops-mcp makes every vault write decision; its runs are webhook routines (tier0).
+      ops_mcp: [ obsidian_search, obsidian_read, obsidian_read_document_map, transcripts_scan, source_read, source_register_drive_document, meeting_match, meeting_resolve, meeting_publish, source_mark_failed, sync_cursor_get, sync_cursor_set ]
+      google_workspace: [ calendar_list_events, calendar_get_event, drive_read_file, drive_list_meeting_documents ]
+      # app_view: every crew agent; no web_view (web_search off). source_new/ack: published meetings (skill meeting-actions).
+      apps: [ app_view, source_new, source_ack ]
+      owner_channel: [ notify ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_finish ]
+    # ops-key: ops-mcp acts as it in Paperclip.
+    roles: [ ops-key ]
 routines:
   meeting-scan:
     title: Meeting scan
-    agent: assistant
+    agent: meetings
     description: |
       Meeting artifacts may have changed. Follow your meeting-notes skill: scan with ops-mcp,
       match new sources against the calendar, publish matched meetings, check Drive
@@ -28,6 +47,15 @@ routines:
     schedules:
       # Backstop for missed file events, review decisions and Drive documents.
       - { cron: "*/15 8-20 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
+  meeting-actions:
+    title: Meeting action items
+    agent: meetings
+    description: |
+      Today is {{date}}. The owner is ${settings.owner_name}. Follow your meeting-actions skill: file the owner's action items from newly published
+      meetings, then close this task with a count summary.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "*/30 8-20 * * *", timezone: "${settings.timezone}", label: "every day" }
 connections:
   ops_mcp:
     setup: "A host step for whoever installs this server: the transcripts, vault and reference-document folders are set on the host (`ops/setup.sh`, or TRANSCRIPTS_DIR, VAULT_DIR, VAULT_FOLDERS and KNOWLEDGE_BASES in the host's .env), never from the board. Check with `scripts/healthcheck.sh`."
