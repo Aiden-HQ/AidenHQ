@@ -76,8 +76,15 @@ test("the browser image installs the four krb5 packages by name and touches only
   assert.ok(install.includes("-y") && install.includes("--no-install-recommends"), "installs non-interactively without recommends");
   for (const p of KRB5) assert.ok(install.includes(p), `installed by name: ${p}`);
   // The one cleanup, and only for the apt lists. rm is stubbed, so a second destructive call cannot pass unnoticed or run.
+  // The shell expands `/var/lib/apt/lists/*` before rm sees it, and a runner's lists are populated while this container's may
+  // be empty, so check every target is under that directory rather than the literal glob (which only appears when it is empty).
   const rms = r.calls.filter((c) => c[0] === "rm");
-  assert.deepEqual(rms.map((c) => c.slice(1)), [["-rf", "/var/lib/apt/lists/*"]], "only the apt lists are removed");
+  assert.equal(rms.length, 1, "the step removes once");
+  assert.equal(rms[0]![1], "-rf", "recursively");
+  const targets = rms[0]!.slice(2);
+  assert.ok(targets.length > 0, "the cleanup names its path");
+  for (const target of targets)
+    assert.ok(target === "/var/lib/apt/lists/*" || target.startsWith("/var/lib/apt/lists/"), `removes only the apt lists: ${target}`);
 });
 
 test("the browser image's step passes at 1.22.3-1 or newer and fails on a stale or missing krb5 package", (t) => {
