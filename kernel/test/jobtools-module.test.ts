@@ -11,21 +11,22 @@ import { createIdentity } from "../src/identity.ts";
 import { createModuleTool } from "../src/jobtools.ts";
 import { createResolver } from "../src/net.ts";
 import { mintToken } from "../src/gateway/token.ts";
-import { MODULE_TASK } from "../src/modtasks.ts";
+import { createModuleTasks } from "../src/modtasks.ts";
 import { readBody, serve } from "./helpers.ts";
 
 const T = "22222222-2222-4222-8222-222222222222", T2 = "33333333-3333-4333-8333-333333333333";
 
 test("module job tool forwards the caller and the task's module source", async (t) => {
   const db = new DatabaseSync(":memory:");
-  db.exec("CREATE TABLE task_filers (task TEXT PRIMARY KEY, filer TEXT NOT NULL)");
-  db.prepare("INSERT INTO task_filers VALUES (?, 'module:design'), (?, 'owner')").run(T, T2);
-  const passText = `Review acme.\n\n<!-- source:design:pass:acme:r1 -->\n${MODULE_TASK("design")}`;
-  // T2's text was typed to look like the module's (an agent may edit a description): its filer row is the owner's.
-  const issues: Record<string, { createdByAgentId?: string; description: string }> = { [T]: { description: passText }, [T2]: { description: passText } };
+  // The design module files the pass (modtasks.ts): the kernel keeps its module and source. The task's text plays no part, so
+  // an assignee that edits it (or types the markers on the owner's task T2) changes nothing.
+  const filed = createModuleTasks({ db, agents: () => ({ "a-ui": { roles: ["ui-login"] } }), plugin: () => ({}) as never,
+    owner: async (method, path) => method === "GET" ? { status: 200, json: { companyId: "c-1", status: "idle" } } : { status: 201, json: { id: T, identifier: "ACME-1" } } });
+  await filed.file("design", { title: "UI pass: acme", description: "Review acme.", role: "ui-login", source: "design:pass:acme:r1" });
+  db.prepare("INSERT INTO task_filers (task, filer) VALUES (?, 'owner')").run(T2);
   const jobs: Record<string, { agent: string; task: string; state: string; identifier: string; authority: { tools: {}; jobcaps: []; writes: []; roles: string[] } }> = {
     "j-ui": { agent: "a-ui", task: T, state: "running", identifier: "ACME-1", authority: { tools: {}, jobcaps: [], writes: [], roles: ["ui-login"] } },
-    "j-forged": { agent: "a-ui", task: T2, state: "running", identifier: "ACME-2", authority: { tools: {}, jobcaps: [], writes: [], roles: ["ui-login"] } },
+    "j-owner": { agent: "a-ui", task: T2, state: "running", identifier: "ACME-2", authority: { tools: {}, jobcaps: [], writes: [], roles: ["ui-login"] } },
   };
   const whoami = createIdentity({ grants: () => ({ "a-ui": { key: "ui-reviewer", roles: ["ui-login"] } }), connections: () => ({}), jobcaps: () => ({}), job: (id) => jobs[id], secret: (n) => (n === "gateway_job_secret" ? "s" : "") });
   const asserter = createAsserter(generateKeyPairSync("ed25519").privateKey);
@@ -39,7 +40,6 @@ test("module job tool forwards the caller and the task's module source", async (
   });
   t.after(() => design.s.close());
   const moduleTool = createModuleTool({ db, whoami, asserter, resolver: createResolver(), secret: (n) => (n === "design_service_key" ? "dk" : ""),
-    issue: async (id) => (issues[id] ? { status: 200, json: issues[id] } : { status: 404, json: {} }),
     decl: (m) => (m === "design" ? { url: `${design.url}/jobtools`, auth_secret: "design_service_key", ops: ["login", "app-session"] } : undefined) });
   const bp = createBackplane({ whoami, asserter, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), moduleTool } as never);
   const k = await serve(bp);
@@ -61,14 +61,10 @@ test("module job tool forwards the caller and the task's module source", async (
   assert.equal((await post("/v1/jobtools/module/other/login", {}, { job: "j-ui" })).status, 404);
   assert.equal((await post("/v1/jobtools/module/design/login", { app: "acme" }, { job: null })).status, 401);
   assert.equal((await post("/v1/jobtools/module/design/login", { pad: "x".repeat(17_000) }, { job: "j-ui" })).status, 413);
-  // Markers an agent typed on a task the kernel didn't record as the module's: no module, no source; the module's 403 reaches the box.
-  const forged = await post("/v1/jobtools/module/design/login", { app: "acme" }, { job: "j-forged" });
-  assert.equal(forged.status, 403);
+  // A task the kernel didn't record as a module's (the owner's, an agent's): no module, no source; the module's 403 reaches the box.
+  const other = await post("/v1/jobtools/module/design/app-session", { app: "acme" }, { job: "j-owner" });
+  assert.equal(other.status, 403);
   assert.deepEqual(calls.at(-1)!.body.caller, { agent: "ui-reviewer", roles: ["ui-login"], task: T2, task_module: null, task_source: null });
-  // A task an agent created carries no module source, whatever its filer row and text say.
-  issues[T]!.createdByAgentId = "a-ui";
-  assert.equal((await post("/v1/jobtools/module/design/app-session", { app: "acme" }, { job: "j-ui" })).status, 403);
-  assert.equal(calls.at(-1)!.body.caller.task_module, null);
   // An ended job's token: 401.
   jobs["j-ui"]!.state = "done";
   assert.equal((await post("/v1/jobtools/module/design/login", { app: "acme" }, { job: "j-ui" })).status, 401);

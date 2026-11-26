@@ -10,7 +10,6 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Asserter } from "./assert.ts";
 import { verifyToken } from "./gateway/token.ts";
 import type { Whoami } from "./identity.ts";
-import { markedModule } from "./modtasks.ts";
 import type { Resolver } from "./net.ts";
 
 export const JOB_TOOLS = ["reset", "engine", "cleanup"] as const;
@@ -176,52 +175,58 @@ const TIMEOUT_S = 60;
  * job's own token, read by whoami (live, on its own agent and task); the op is one the module lists. The kernel POSTs
  * `{op, body, caller}` to the module's `providers.jobtools.url` with the module's key and a caller assertion for the job,
  * in flight while the module answers (so it may reach a module+assertion route, such as the test session, for this job and no
- * other). `task_module` and `task_source` are the task's markers (modtasks.ts markedModule) only when no agent created it, the
- * kernel's own `task_filers` row names that module as its filer, and the text names one module and one source: never what an
- * agent could type. The module decides what to release; its status and answer go back to the box as they came (bounded).
+ * other). `task_module` and `task_source` are the module and source the kernel recorded when that module filed the task
+ * (modtasks.ts `task_filers`), never the task's text, which its assignee may edit; null for any other task. The module decides
+ * what to release; its status and answer go back to the box as they came (bounded).
  */
-export function createModuleTool({ db, whoami, decl, issue, asserter, resolver, secret, log = () => {} }: {
+export function createModuleTool({ db, whoami, decl, asserter, resolver, secret, log = () => {} }: {
+  /** The kernel's database: its `task_filers` rows (modtasks.ts). */
   db: DatabaseSync;
   whoami: Whoami;
   decl: (module: string) => ModuleJobToolsDecl | undefined;
-  /** The task as the control plane has it (the owner's read). */
-  issue: (id: string) => Promise<{ status: number; json: any }>;
   asserter: Asserter;
   resolver: Resolver;
   secret: (name: string) => string;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
-  async function taskOrigin(task: string): Promise<{ task_module: string | null; task_source: string | null }> {
-    const none = { task_module: null, task_source: null };
-    const r = await issue(task).catch(() => undefined);
-    if (r?.status !== 200 || r.json?.createdByAgentId) return none;
-    const marked = markedModule(String(r.json?.description ?? ""));
-    const filer = (db.prepare("SELECT filer FROM task_filers WHERE task = ?").get(task) as { filer: string } | undefined)?.filer;
-    return marked && filer === `module:${marked.module}` ? { task_module: marked.module, task_source: marked.source } : none;
+  function taskOrigin(task: string): { task_module: string | null; task_source: string | null } {
+    const r = db.prepare("SELECT filer, source FROM task_filers WHERE task = ?").get(task) as { filer: string; source: string | null } | undefined;
+    const module = /^module:([\w-]+)$/.exec(r?.filer ?? "")?.[1];
+    return module && r?.source ? { task_module: module, task_source: r.source } : { task_module: null, task_source: null };
   }
-
-  return async function call(token: string, module: string, op: string, body: unknown): Promise<{ status: number; body: string }> {
+  /** The live kernel job this token names (whoami: on its own agent and task, admitted or running), or 401. */
+  const liveJob = async (token: string) => {
     const who = await whoami(token).catch(() => undefined);
     if (who?.kind !== "run" || !who.job || !who.task || !who.agent) throw new JobToolError(401, "unauthorized", "a kernel job's own token is required");
+    return who as typeof who & { job: string; task: string; agent: string };
+  };
+
+  return async function call(token: string, module: string, op: string, body: unknown): Promise<{ status: number; body: string }> {
+    await liveJob(token);
     const d = decl(module);
     if (!d || !OP.test(op) || !d.ops.includes(op)) throw new JobToolError(404, "no-tool", `${module} serves no job tool ${op.slice(0, 60)}`);
     const key = secret(d.auth_secret);
     if (!key) throw new JobToolError(503, "no_service_key", `${module}'s service key is missing`);
-    const caller: JobToolCaller = { agent: who.key ?? "", roles: [...who.roles], task: who.task, ...(await taskOrigin(who.task)) };
+    const to = await resolver.resolve(d.url).catch((e: Error) => { throw new JobToolError(502, "bad_upstream", e.message); });
+    // Read again after the wait: a job that ended meanwhile sends nothing.
+    const who = await liveJob(token);
+    const caller: JobToolCaller = { agent: who.key ?? "", roles: [...who.roles], task: who.task, ...taskOrigin(who.task) };
     const payload = JSON.stringify({ op, body: body ?? {}, caller });
     const signed = asserter.signCaller({ agent: who.agent, key: who.key ?? "", name: who.name ?? "", roles: who.roles, task: who.task, tool: JOBTOOL_CLAIM(module, op), aud: module, kind: who.kind });
     asserter.begin(signed.jti, { credential: "", bearer: token, job: who.job, aud: module, kind: who.kind }, TIMEOUT_S);
     try {
-      const to = await resolver.resolve(d.url).catch((e: Error) => { throw new JobToolError(502, "bad_upstream", e.message); });
-      const out = await new Promise<{ status: number; body: string }>((ok, no) => {
-        const req = request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: TIMEOUT_S * 1000, headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": signed.jwt, "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => {
+      const out = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        // One deadline for the whole answer, not an idle timer: a module trickling bytes can't hold the call (and its assertion) open.
+        const deadline = setTimeout(() => { req.destroy(); no(new JobToolError(504, "timeout", `${module} didn't answer within ${TIMEOUT_S} s`)); }, TIMEOUT_S * 1000);
+        const ok = (v: { status: number; body: string }) => { clearTimeout(deadline); resolve(v); };
+        const no = (e: JobToolError) => { clearTimeout(deadline); reject(e); };
+        const req = request({ host: to.host, port: to.port, path: to.path, method: "POST", headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": signed.jwt, "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => {
           const chunks: Buffer[] = [];
           let n = 0;
           res.on("data", (c: Buffer) => { if ((n += c.length) > ANSWER_MAX) { res.destroy(); no(new JobToolError(502, "too_large", `${module}'s answer is over ${ANSWER_MAX} bytes`)); } else chunks.push(c); });
           res.on("end", () => ok({ status: res.statusCode ?? 502, body: Buffer.concat(chunks).toString("utf8") }));
           res.on("error", () => no(new JobToolError(502, "bad_upstream", `${module} broke off its answer`)));
         });
-        req.on("timeout", () => req.destroy(new Error("timed out")));
         req.on("error", (e) => { resolver.forget(d.url); no(new JobToolError(502, "bad_upstream", `${module} is unreachable (${e.message})`)); });
         req.end(payload);
       });

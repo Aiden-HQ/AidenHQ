@@ -39,17 +39,6 @@ function ownTask(module: string, description: string) {
 }
 
 /**
- * The module and source a task's text names, by the same rules (ownTask): one module's markers only, and exactly one source
- * marker; null otherwise. Text anyone can type: a caller also checks the control plane's `createdByAgentId` and the kernel's
- * own `task_filers` row beside it.
- */
-export function markedModule(description: string): { module: string; source: string } | null {
-  const mods = [...new Set([...description.matchAll(MODULE_MARK)].map((m) => m[1]!))];
-  const sources = [...description.matchAll(SOURCE_TAG)].map((m) => m[1]!);
-  return mods.length === 1 && sources.length === 1 ? { module: mods[0]!, source: sources[0]! } : null;
-}
-
-/**
  * The release family's marker is the task's only source marker: a task that also carries another family's (`<!-- source:x -->`)
  * is one the train doesn't own, whatever else its text says, and is neither listed nor closed by it.
  */
@@ -77,8 +66,11 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS graded_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)");
-  // Who filed each task (admission.ts reads it): a module's task carries no platform authority, whatever role it went to.
+  // Who filed each task (admission.ts reads it): a module's task carries no platform authority, whatever role it went to. A
+  // module's row keeps the source it filed under: a module's job tool (jobtools.ts createModuleTool) reads it there, never from
+  // the task's text, which its assignee may edit.
   db.exec("CREATE TABLE IF NOT EXISTS task_filers (task TEXT PRIMARY KEY, filer TEXT NOT NULL)");
+  if (!(db.prepare("PRAGMA table_info(task_filers)").all() as { name: string }[]).some((c) => c.name === "source")) db.exec("ALTER TABLE task_filers ADD COLUMN source TEXT");
   /**
    * Close a task this module filed (its marker, and no agent made it): done or cancelled, with one line why. The line carries
    * the kernel's tag (wakes.ts SELF_TAG), so it wakes nobody and is never read as the owner's words.
@@ -167,7 +159,7 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
       idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
-    if (!r.json.deduplicated) db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, ?)").run(String(r.json.id), `module:${module}`);
+    if (!r.json.deduplicated) db.prepare("INSERT OR IGNORE INTO task_filers (task, filer, source) VALUES (?, ?, ?)").run(String(r.json.id), `module:${module}`, b.source);
     // Graded status is the kernel's own row, never the task's editable text. A dedup hit takes a rubric only on a task this
     // module filed graded.
     if (graded) {
