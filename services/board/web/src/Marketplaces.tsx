@@ -1,5 +1,5 @@
 // Modules > Marketplaces: where modules come from, each at its pinned sha.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
 import { RowsSkeleton } from "./SettingsConnections";
 import { ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
@@ -53,30 +53,38 @@ function useOp() {
 
 const shortDate = (d: string) => (d ? new Date(d).toLocaleDateString() : "an unknown date");
 
-function AddMarketplace() {
+/** The "check a repository, then add it" form (exported for its test). */
+export function AddMarketplace() {
   const [repo, setRepo] = useState("");
-  const [pin, setPin] = useState<{ sha: string; date: string } | null>(null);
+  // A pin belongs to the repository that was checked: typing clears it, and a late answer for an earlier repository is
+  // dropped (a ref holds the live input, which the lookup's closure would otherwise see as it was when it started).
+  const typed = useRef("");
+  const [pin, setPin] = useState<{ repo: string; sha: string; date: string } | null>(null);
   const [looking, setLooking] = useState(false);
   const { run, busy, error } = useOp();
   const [problem, setProblem] = useState("");
   const ok = /^[\w.-]+\/[\w.-]+$/.test(repo.trim());
   const look = async () => {
+    const forRepo = typed.current.trim();
     setLooking(true);
     setProblem("");
     try {
-      setPin(await api.resolveMarketplace(repo.trim()));
+      const found = await api.resolveMarketplace(forRepo);
+      if (typed.current.trim() === forRepo) setPin({ repo: forRepo, ...found });
     } catch (e) {
       setProblem((e as Error).message);
     } finally {
       setLooking(false);
     }
   };
-  const add = () => pin?.sha && void run({ kind: "marketplace", op: "add", name: repo.trim().split("/")[1]!.toLowerCase().replace(/[^a-z0-9-]/g, "-"), source: { source: "github", repo: repo.trim() }, sha: pin.sha }, () => (setRepo(""), setPin(null)));
+  // Add only a pin made for exactly what the input says now, so its commit is never filed against another repository.
+  const pinned = pin && pin.repo === typed.current.trim() && pin.sha ? pin : null;
+  const add = () => pinned && void run({ kind: "marketplace", op: "add", name: repo.trim().split("/")[1]!.toLowerCase().replace(/[^a-z0-9-]/g, "-"), source: { source: "github", repo: pinned.repo }, sha: pinned.sha }, () => (setRepo(""), setPin(null)));
   return (
-    <form className="br-add" onSubmit={(e) => (e.preventDefault(), ok && (pin ? add() : void look()))}>
-      <input className="br-search" placeholder="github owner/repo" aria-label="GitHub repository" value={repo} onChange={(e) => (setRepo(e.target.value), setPin(null))} />
-      <button className="btn primary" disabled={!ok || busy || looking}>{pin ? "Add marketplace" : "Check repository"}</button>
-      {pin?.sha ? <p className="muted">Pinning {pin.sha.slice(0, 7)} from {shortDate(pin.date)} (the newest commit at least 7 days old). Reviewed by AI, then needs your tap.</p> : pin ? <p className="muted">No commit found for this repository, so there is nothing to pin.</p> : <p className="muted">Pinned at its newest commit that is at least 7 days old. Reviewed by AI, then needs your tap.</p>}
+    <form className="br-add" onSubmit={(e) => (e.preventDefault(), ok && (pinned ? add() : void look()))}>
+      <input className="br-search" placeholder="github owner/repo" aria-label="GitHub repository" value={repo} onChange={(e) => (typed.current = e.target.value, setRepo(e.target.value), setPin(null))} />
+      <button className="btn primary" disabled={!ok || busy || looking}>{pinned ? "Add marketplace" : "Check repository"}</button>
+      {pinned ? <p className="muted">Pinning {pinned.sha.slice(0, 7)} from {shortDate(pinned.date)} (the newest commit at least 7 days old). Reviewed by AI, then needs your tap.</p> : pin ? <p className="muted">No commit found for this repository, so there is nothing to pin.</p> : <p className="muted">Pinned at its newest commit that is at least 7 days old. Reviewed by AI, then needs your tap.</p>}
       {(problem || error) && <p className="st-error" role="alert">{problem || error}</p>}
     </form>
   );

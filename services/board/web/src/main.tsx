@@ -25,7 +25,8 @@ preloadBoot();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <WelcomeGate>
-      <ErrorBoundary>
+      {/* The last resort: keyed by the route, so an error here still clears when the owner navigates. */}
+      <ErrorBoundary resetKey={location.hash}>
         <App />
       </ErrorBoundary>
     </WelcomeGate>

@@ -875,7 +875,8 @@ export function App() {
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
       {view === "board" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} searching={searching} moreDone={found.hasMore ? found.more : undefined} onClear={() => tb.setFilters({})} />}
-      <main className={`columns${doneColumn || showRecurring ? " extra" : ""}`} hidden={view !== "board" || work}>
+      {view === "board" && !work && (
+      <main className={`columns${doneColumn || showRecurring ? " extra" : ""}`}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (
             <Column
@@ -936,8 +937,10 @@ export function App() {
           </section>
         )}
       </main>
+      )}
       </ErrorBoundary>
 
+      <ErrorBoundary resetKey={`overlay:${JSON.stringify(route)}`}>
       {route.kind === "task" && (
         <Drawer
           key={route.ref}
@@ -973,6 +976,7 @@ export function App() {
       {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} /></Suspense>}
       {route.kind === "help" && <Help />}
       {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} change={route.change} onDone={() => go("#/")} onSignIn={signInNeeded} />}
+      </ErrorBoundary>
       {creating && (
         <NewTask
           board={board}
