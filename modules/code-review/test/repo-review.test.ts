@@ -6,9 +6,12 @@ import { createEngine } from "../service/src/engine.ts";
 import { display, render, verdict, REPORT_MAX } from "../service/src/report.ts";
 import { loadCatalog, toolSpec } from "../service/src/catalog.ts";
 import { primerPublisher } from "../service/src/primer-client.ts";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { checkSpec } from "../service/src/adapters.ts";
-import { toReview } from "../recipe/ui.ts";
+import { bundle, captureReport } from "../recipe/ui.ts";
+import { toReview, unpack } from "../recipe/ui-review.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 const sha = (c) => c.repeat(40);
@@ -378,36 +381,91 @@ test("deepsec is handed the repo's records earlier runs left, and what a run cha
   assert.deepEqual([Object.keys(records()), status()], [["src/c.ts", "src/d.ts"], "done"]);
 });
 
-// The ui-review report as the engine leaves it (types.ts Report), reduced to what the recipe reads.
+// The ui-review report as the engine leaves it (types.ts Report, after `review`), reduced to what the recipes read.
 const uiReport = {
-  coverage: { done: 12, total: 12, failed: 0, deferred: 0 }, cost_usd: 0.4,
-  captures: [{ page: "/approvals", width: 1512, theme: "dark", rules: [{ rule: "page-error", blocking: true, text: "TypeError: x is undefined" }, { rule: "overflow", blocking: false, text: "2px" }] }, { page: "/", width: 390, theme: "light", rules: [] }],
+  coverage: { done: 4, total: 4, failed: 0, deferred: 0 }, cost_usd: 0.4,
+  captures: [
+    { page: "/approvals", width: 1512, theme: "dark", state: "default", shots: ["approvals-1512-dark.png"], rules: [{ rule: "page-error", blocking: true, text: "TypeError: x is undefined" }, { rule: "overflow", blocking: false, text: "2px" }] },
+    { page: "/approvals", width: 768, theme: "light", state: "default", shots: ["approvals-768-light.png"], rules: [] },
+    { page: "/", width: 390, theme: "light", state: "default", shots: ["home-390-light.png", "home-390-light-s2.png"], rules: [] },
+    { page: "/", width: 1512, theme: "light", state: "default", shots: ["home-1512-light.png"], rules: [] },
+  ],
   improvements: [
     { rank: 2, where: { page: "/", width: 1512, theme: "light", region: "attention rail" }, weak: "Compact the attention rail", change: "Tighten the rail in src/Rail.tsx to 48px rows", why: "Wasted space", best: "Linear's lists", captures: ["home-1512-light.png"] },
-    { rank: 1, where: { page: "/approvals", width: 1512, theme: "dark", region: "grid" }, weak: "Widen the approvals grid", change: "Let the grid use the full width", why: "A narrow column on wide screens", best: "Stripe's tables", captures: ["approvals-1512-dark.png", "approvals-1920-dark.png"] },
+    { rank: 1, where: { page: "/approvals", width: 1512, theme: "dark", region: "grid" }, weak: "Widen the approvals grid", change: "Let the grid use the full width", why: "A narrow column on wide screens", best: "Stripe's tables", captures: ["approvals-1512-dark.png"] },
   ],
-  bugs: [{ page: "/approvals", width: 390, theme: "light", title: "Approve button does nothing", evidence: "second click", captures: ["approvals-390-light.png"], verified: false },
-    { page: "/approvals", width: 390, theme: "light", title: "Approve button does nothing", evidence: "second click", captures: ["approvals-390-light.png"], verified: true }],
+  bugs: [],
 };
+const routesClean = { captures: [], improvements: [], bugs: [], cost_usd: 0, blocking: [], candidates: ["/approvals Copy: the click changed nothing"] };
+const routesFail = { ...routesClean, blocking: ["/approvals Back: lands on a blank page"], bugs: [{ page: "/approvals", width: 1280, theme: "light", title: "Back: lands on a blank page", evidence: "lands on a blank page", captures: [], verified: true }] };
 
-test("ui.scan runs as its own whole-repo check and reports a UI section", async () => {
+/** A capture folder as `ui-review capture` and `routes` leave it, and the capture step's bundle of it. */
+function captured(routes) {
+  const ui = mkdtempSync(join(tmpdir(), "ui-scan-test-"));
+  mkdirSync(join(ui, "routes"));
+  writeFileSync(join(ui, "report.json"), JSON.stringify({ ...uiReport, improvements: [], cost_usd: 0 }));
+  writeFileSync(join(ui, "run.json"), JSON.stringify({ pages: [{ path: "/" }, { path: "/approvals", kind: "list" }, { path: "/broken" }] }));
+  writeFileSync(join(ui, "queue.json"), JSON.stringify(["/", "/approvals", "/broken"].map((page) => ({ page, width: 390, theme: "light", state: "default", status: page === "/broken" ? "failed" : "done", tries: 2 }))));
+  writeFileSync(join(ui, "routes", "report.json"), JSON.stringify(routes));
+  for (const c of uiReport.captures) for (const f of c.shots) writeFileSync(join(ui, f), "png");
+  return { ui, ...bundle(ui) };
+}
+
+/** The capture check passes with its bundle kept; the review step's check is started with that bundle; returns its unpacked folder. */
+async function captureThenReview(w, routes) {
+  await w.tick();
+  const [capture] = w.started;
+  const c = captured(routes);
+  w.kept.set("c-1", c.gz);
+  w.results.set("c-1", { state: "done", billed_usd: 0, review: captureReport({ model: checkSpec(capture).model, repo: REPO, head: capture.head, listed: ["/", "/approvals", "/broken"], pages: c.pages, dropped: c.dropped }) });
+  await w.tick();
+  const dir = join(mkdtempSync(join(tmpdir(), "ui-review-test-")), "ui");
+  unpack(w.inputs.at(-1), dir);
+  return { capture, review: w.started[1], dir };
+}
+
+test("ui.scan captures in a token-free box, then reviews the text in a model box", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["ui.scan"] });
+  const { capture, review, dir } = await captureThenReview(w, routesClean);
+  // The repo's code runs in the capture check, which declares no model (so the kernel gives it no token); only the review check has one.
+  const job = (name) => /\n  ([\w-]+):\n((?: {4}.*\n)+)/g[Symbol.matchAll](readFileSync(new URL("../module.yaml", import.meta.url), "utf8")).find((m) => m[1] === name)?.[2] ?? "";
+  assert.doesNotMatch(job("code-review-ui"), /^ {4}model:/m);
+  assert.match(job("code-review-ui"), /^ {4}keep: true$/m);
+  assert.match(job("code-review-ui-review"), /^ {4}model: true$/m);
+  assert.equal(capture.profile, "code-review-ui");
+  assert.deepEqual(Object.keys(checkSpec(capture)).sort(), ["base", "model", "option", "run"]);
+  assert.equal(review.profile, "code-review-ui-review");
+  assert.deepEqual(Object.keys(checkSpec(review)).sort(), ["base", "model", "option", "run", "ui"]);   // the bundle, not code
+  assert.equal(checkSpec(review).ui, `${w.inputs.length}`.padStart(64, "0"));
+  // The bundle: the reports, and per page only the shots the review reads (a later scroll step and other widths stay out).
+  assert.equal(JSON.parse(readFileSync(join(dir, "run.json"), "utf8")).pages[1].kind, "list");
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "report.json"), "utf8")).captures.length, uiReport.captures.length);
+  assert.throws(() => readFileSync(join(dir, "home-390-light-s2.png")));
+  assert.throws(() => readFileSync(join(dir, "approvals-768-light.png")));
+  const listed = JSON.parse(readFileSync(join(dir, "queue.json"), "utf8")).map((i) => i.page);
+  const routes = JSON.parse(readFileSync(join(dir, "routes", "report.json"), "utf8"));
+  w.results.set("c-2", { state: "done", billed_usd: 0.4, review: toReview(uiReport, { model: checkSpec(review).model, repo: REPO, head: review.head, listed, routes }) });
   await w.tick();
-  const req = w.started[0];
-  assert.equal(req.profile, "code-review-ui");
-  assert.deepEqual(Object.keys(checkSpec(req)).sort(), ["base", "model", "option", "run"]);
-  assert.equal(checkSpec(req).model, "google/gemini-4-carbon");
-  const review = toReview(uiReport, { model: "google/gemini-4-carbon", listed: ["/", "/approvals"] });
-  assert.deepEqual(review.findings.filter((f) => f.title === "Approve button does nothing").map((f) => f.severity), ["important"], "the verified twin wins, once");
-  w.finish(0, review, 0.4);
-  await w.tick();
-  assert.equal(w.engine.batches({})[0].status, "done", "the tree validator accepted it");
+  const [batch] = w.engine.batches({});
+  assert.equal(batch.status, "done", "the tree validator accepted it");
+  assert.equal(batch.verdict, "concerns", "the page error blocks; a click that changed nothing does not");
   const md = w.engine.report(b.batch);
   assert.match(md, /### UI/);
   assert.ok(md.indexOf("Widen the approvals grid") < md.indexOf("Compact the attention rail"), "ranked");
-  assert.ok(md.indexOf("Compact the attention rail") < md.indexOf("page-error"), "blocking rule findings follow the improvements");
-  assert.match(md, /Approve button does nothing/); assert.equal(w.engine.batches({})[0].verdict, "concerns", "a verified bug blocks");
-  assert.match(md, /Source: `src\/Rail\.tsx`/);
+  assert.match(md, /\/broken/, "a page not captured is a gap, never a clean review");
   await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["ui.scan"], combo: { effort: "xhigh" } }), /takes an effort of low, medium, high/);
+});
+
+test("ui.scan carries a blocking route finding as an important ui-rule finding", async () => {
+  const w = world();
+  const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["ui.scan"] });
+  const { review, dir } = await captureThenReview(w, routesFail);
+  const routes = JSON.parse(readFileSync(join(dir, "routes", "report.json"), "utf8"));
+  const r = toReview({ ...uiReport, captures: uiReport.captures.map((c) => ({ ...c, rules: [] })) }, { model: checkSpec(review).model, repo: REPO, head: review.head, routes });
+  assert.deepEqual(r.findings.filter((f) => /^ui-rule-/.test(f.id)).map((f) => [f.severity, f.title]), [["important", "Back: lands on a blank page"]]);
+  w.results.set("c-2", { state: "done", billed_usd: 0.4, review: r });
+  await w.tick();
+  assert.equal(w.engine.batches({})[0].status, "done");
+  assert.match(w.engine.report(b.batch), /Back: lands on a blank page/);
 });

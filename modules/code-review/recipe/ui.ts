@@ -1,179 +1,143 @@
 #!/usr/bin/env node
-// The ui.scan recipe (check job `code-review-ui`, module.yaml): the catalog's UI design scan of a whole repo at a commit, with no agent.
-// Docs: docs/design/code-review.md "UI scan".
+// The ui.scan option's capture step (check job `code-review-ui`, module.yaml): the repo's own app, started and captured with no
+// model. Docs: docs/design/code-review.md "UI scan".
 //
-// The box (the engineer image, which carries the `ui-review` engine of the agent-base image) holds the commit's tree (the workspace)
-// and the spec at $AIDENHQ_SPEC: { repo, head, base (the head itself), run, option, model }. The steps:
-//   1. `codex exec` (Sol, low) with the engine's `prompts/router-read.md` reads the repo, writes the command that starts the app on
-//      127.0.0.1:8080 with its seed or demo data to `.aidenhq-ui/run.sh` and the pages to `.aidenhq-ui/pages.json`; run.sh is then
-//      started and waited for (180 s).
-//   2. `ui-review capture`, `ui-review routes` and `ui-review review <run dir>`: the engine's own commands, the engine's prompts and
-//      rules (an unattended scan carries no owner taste). Exit 1 of the first two means blocking findings (the report says which),
-//      exit 2 a failed check. Only the review step gets the model token; the app and the capture run with the tool allowlist's env.
-//   3. The engine's report.json becomes the shared Review (toReview): improvements as nits ranked by the engine, blocking rule
-//      findings as important, pages as coverage counts. No rendered fixes at scan depth; the report to Primer is text.
-// The app is the repo's own code: it runs in this box only, as the other options that run code do (catalog `runs_code`).
+// This box runs the repo's code, so it holds no model token at all: the check declares no `model`, so the kernel gives it neither
+// OPENROUTER_API_KEY nor OPENROUTER_BASE_URL (kernel/src/checkjobs.ts checkEnv "result"), and it runs no model, as the tools box
+// (tools.ts). The box (the engineer image, which carries the `ui-review` engine of the agent-base image) holds the commit's tree
+// (the workspace) and the spec at $AIDENHQ_SPEC: { repo, head, base (the head itself), run, option, model }. The steps:
+//   1. The app: the dependencies installed with the lockfile's package manager, then the `start` script package.json declares, with
+//      PORT=8080 HOST=127.0.0.1, waited for (180 s). No start script: the check fails (it never guesses a command).
+//   2. `ui-review capture` (its pages: the repo's committed `.aidenhq-ui/pages.json` when there is one, else its own crawl) and
+//      `ui-review routes` over the same pages, both from a folder outside the checkout. Exit 1 means blocking findings (the reports
+//      say which), anything else but 0 a failed check.
+//   3. The bundle for the review step (recipe/ui-review.ts, the model box) at /aidenhq-out/keep: the capture's report.json, run.json and
+//      queue.json, the route check's report.json and, per page, the shots the review reads (390, 1512 and 2560 light and 1512 dark,
+//      each capture's first). Pages that don't fit the kernel's 64 MB input are left out from the end of the list, and the result says
+//      so. The result is the coverage only (the tree Review's shape, no findings): every finding comes from the review step.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { codexConfig, codexEnv } from "./engines.ts";
 import { readSmall, run, stopped } from "./proc.ts";
-import { bound } from "./review.ts";
 import { toolEnv } from "./tools.ts";
+import { pack, type UiReport } from "./ui-review.ts";
 
 /** The spec ($AIDENHQ_SPEC) of the `code-review-ui` check. */
 export interface UiSpec { repo?: string; head: string; base: string; run?: string; option: string; model: string }
-/** The part of the engine's report.json (ui-review's types.ts `Report`, version 2) this recipe reads. */
-export interface UiReport {
-  coverage?: { done: number; total: number; failed: number; deferred: number };
-  captures: { page: string; width: number; theme: "light" | "dark"; rules: { rule: string; blocking: boolean; text: string }[] }[];
-  improvements: { rank: number; where: { page: string; width: number; theme: "light" | "dark"; region: string }; weak: string; change: string; why: string; best: string; captures: string[] }[];
-  bugs: { page: string; width: number; theme: "light" | "dark"; title: string; evidence: string; captures: string[]; verified: boolean }[];
-  cost_usd: number;
-}
+type Capture = UiReport["captures"][number];
 
-/** The option's spend cap in dollars: catalog.json `run.max_cost_usd` (a check's spec carries four fields only, so the recipe holds it; keep the two equal). */
-const MAX_USD = 10;
-/** What the result keeps (it stays under the kernel's 256 KB): the top improvements, and at most this many rule and bug findings. */
-const TOP = 10, MAX_RULES = 20;
 const PORT = 8080, APP_WAIT_MS = 180_000;
-const ROUTER_PROMPT = "/opt/aidenhq/ui-review/prompts/router-read.md";
-/** The router read's model and effort (Sol, low). */
-const ROUTER_MODEL = "openai/gpt-6.2-sol", ROUTER_EFFORT = "low";
-const cut = (t: unknown, n: number) => String(t ?? "").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, n);
+/** The bundle's room: the kernel's input limit (INPUT_MAX, 64 MB) less a margin for the tar's headers and the text's compression. */
+const BUNDLE_MAX = 63 << 20;
 
-/** The source file a change names (a path of the checkout in its words), else the page's path. */
-function sourceOf(change: string, page: string, root?: string) {
-  for (const m of change.matchAll(/[\w@.\-/]+\.(?:tsx|ts|jsx|js|vue|svelte|astro|css|scss|html)\b/g)) {
-    const p = m[0].replace(/^\.\//, "");
-    if (!root || (!p.startsWith("/") && !p.split("/").includes("..") && existsSync(join(root, p)))) return p;
-  }
-  return page;
-}
-
-/**
- * The engine's report as the shared Review (a tree's, version 1) the service validates. `listed`: every page the run was to capture
- * (the engine's queue); `routes`: the route check's report, whose blocking hits and verified bugs are findings too; `root`: the
- * checkout, to confirm a source file a change names.
- */
-export function toReview(report: UiReport, o: { model: string; repo?: string; head?: string; listed?: string[]; routes?: UiReport; root?: string }) {
-  const captured = [...new Set(report.captures.map((c) => c.page))];
-  const listed = [...new Set([...(o.listed ?? []), ...captured])];
-  const excluded = listed.filter((p) => !captured.includes(p));
-  const at = (x: { page: string; width: number; theme: "light" | "dark" }, region: string, change = "", best = "") => ({ page: x.page, width: x.width, theme: x.theme, region, change, best });
-
-  const improvements = [...report.improvements].sort((a, z) => a.rank - z.rank);
-  const top = improvements.slice(0, TOP).map((i) => ({
-    id: `ui-${i.rank}`, severity: "nit" as const, path: sourceOf(i.change, i.where.page, o.root), line: 0, title: cut(i.weak, 300), why: cut(i.why, 1500),
-    evidence: cut(i.captures.join(", "), 600), fix_brief: cut(i.change, 1500), option: "ui.scan", lens: "ui", ui: at(i.where, cut(i.where.region, 200), cut(i.change, 1500), cut(i.best, 800)),
-  }));
-
-  // Blocking rule hits (the capture's and the route check's: page errors, axe, dead controls, blank routes) and verified bugs are
-  // important; a suspected (unverified) bug is a nit. One of each rule, page and text.
-  const seen = new Map<string, number>();
-  const rules: { severity: "important" | "nit"; title: string; why: string; evidence: string; ui: ReturnType<typeof at> }[] = [];
-  // A bug seen both verified and not is the verified one.
-  const add = (key: string, f: (typeof rules)[number]) => {
-    const at = seen.get(key);
-    if (at === undefined) { seen.set(key, rules.length); rules.push(f); } else if (f.severity === "important" && rules[at]!.severity === "nit") rules[at] = f;
-  };
-  for (const r of [report, ...(o.routes ? [o.routes] : [])]) {
-    for (const c of r.captures) for (const h of c.rules) if (h.blocking) add(`${h.rule}|${c.page}|${h.text}`, { severity: "important", title: cut(h.rule, 200), why: cut(h.text, 1500), evidence: "", ui: at(c, cut(h.rule, 200)) });
-    for (const b of r.bugs) add(`bug|${b.page}|${b.title}`, { severity: b.verified ? "important" : "nit", title: cut(b.title, 300), why: cut(b.evidence, 1500), evidence: cut(b.captures.join(", "), 600), ui: at(b, "bug") });
-  }
-  rules.sort((a, z) => Number(z.severity === "important") - Number(a.severity === "important"));
-  const keptRules = rules.slice(0, MAX_RULES);
-  const lostRules = rules.slice(MAX_RULES);
-  const ruleFindings = keptRules.map((f, n) => ({ id: `ui-rule-${n + 1}`, severity: f.severity, path: f.ui.page, line: 0, title: f.title, why: f.why, evidence: f.evidence, fix_brief: "", option: "ui.scan", lens: "ui", ui: f.ui }));
-
-  const cov = report.coverage;
-  const gaps = [
-    ...(captured.length ? [] : ["no page was captured"]),
-    ...(excluded.length ? [`${excluded.length} of ${listed.length} pages not captured (${excluded.slice(0, 3).join(", ")}${excluded.length > 3 ? ", …" : ""})`] : []),
-    ...(cov && (cov.failed || cov.deferred) ? [`${cov.failed} captures failed, ${cov.deferred} deferred`] : []),
-    ...(lostRules.some((f) => f.severity === "important") ? [`${lostRules.filter((f) => f.severity === "important").length} blocking findings left out to fit the result`] : []),
-  ];
-  const result = {
-    version: 1, ...(o.repo !== undefined ? { repo: o.repo } : {}), ...(o.head !== undefined ? { head: o.head, base: o.head } : {}), target: "tree", engine: "ui-review", model: o.model, effort: "low", pr: 0, incremental_from: null, full: true, addressed: false,
-    coverage: { reviewed: captured, excluded, incomplete: gaps.join("; ").slice(0, 500) || null, counts: { eligible: listed.length, reviewed: captured.length } },
-    findings: [...ruleFindings, ...top], fixed: [] as string[],
-    withheld: { important: 0, nit: improvements.length - top.length + lostRules.filter((f) => f.severity === "nit").length, pre_existing: 0 },
-    cost_usd: report.cost_usd, stale_guidance: [] as string[], guidance: [] as string[],
-  };
-  return bound(result as never) as typeof result;
-}
-
-/** The engine's pages as the queue lists them (queue.json: one item per page, width, theme and state), as page paths. */
-function listedPages(dir: string): string[] {
-  try {
-    const q = JSON.parse(readFileSync(join(dir, "queue.json"), "utf8")) as unknown;
-    const items = (Array.isArray(q) ? q : (q as { items?: unknown })?.items) as { page?: unknown }[] | undefined;
-    return [...new Set((items ?? []).map((i) => i.page).filter((p): p is string => typeof p === "string"))];
-  } catch { return []; }
-}
-const readReport = (dir: string) => { try { return JSON.parse(readFileSync(join(dir, "report.json"), "utf8")) as UiReport; } catch { return undefined; } };
-
-/** Starts the app (`run.sh`, its own process group) and waits for its port: a script that exits first, or no answer in 180 s, fails the run. */
-async function startApp(ws: string, env: Record<string, string>) {
-  const child = spawn("sh", [join(ws, ".aidenhq-ui", "run.sh")], { cwd: ws, env, stdio: "ignore", detached: true });
+/** Starts the app (its own process group) and waits for its port: a start that exits first, or no answer in 180 s, fails the run. */
+async function startApp(pm: string, ws: string, env: Record<string, string>) {
+  const child = spawn(pm, ["start"], { cwd: ws, env: { ...env, PORT: String(PORT), HOST: "127.0.0.1" }, stdio: "ignore", detached: true });
   let exited: number | null | undefined;
   child.on("close", (c) => { exited = c; });
   child.on("error", () => { exited = null; });
   const stop = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); } };
   const until = Date.now() + APP_WAIT_MS;
   while (Date.now() < until) {
-    if (exited !== undefined) throw new Error(`the app's run.sh ended (exit ${exited}) before it answered on port ${PORT}`);
+    if (exited !== undefined) throw new Error(`\`${pm} start\` ended (exit ${exited}) before the app answered on port ${PORT}`);
     try { await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(2000) }); return stop; } catch { await new Promise((ok) => setTimeout(ok, 1000)); }
   }
   stop();
   throw new Error(`the app didn't answer on port ${PORT} within ${APP_WAIT_MS / 1000} s`);
 }
 
-export async function scan({ spec, ws, out, env = process.env }: { spec: UiSpec; ws: string; out: string; env?: NodeJS.ProcessEnv }) {
+/** The shots the review reads of one page's captures (ui-review review.ts `pick`): 390, 1512 and 2560 light and 1512 dark, each its
+ * first; a run without them, its narrowest and widest. */
+export function shotsFor(caps: Capture[]): string[] {
+  const first = (w: number, theme: string) => caps.find((c) => c.width === w && c.theme === theme && (c.state ?? "default") === "default")?.shots?.[0];
+  const picked = [first(390, "light"), first(1512, "light"), first(2560, "light"), first(1512, "dark")].filter((s): s is string => !!s);
+  if (picked.length) return picked;
+  const have = caps.filter((c) => (c.state ?? "default") === "default" && c.shots?.length).sort((a, z) => a.width - z.width);
+  return [...new Set([have[0], have.at(-1)].filter((c): c is Capture => !!c).map((c) => c.shots![0]!))];
+}
+
+/**
+ * The bundle of the capture folder `ui`: its report (less the pages that don't fit), run.json, queue.json, the route check's report
+ * and the shots the review reads, pages in the run's order until BUNDLE_MAX. `pages`: the pages bundled; `dropped`: those left out.
+ */
+export function bundle(ui: string, max = BUNDLE_MAX) {
+  const report = JSON.parse(readFileSync(join(ui, "report.json"), "utf8")) as UiReport;
+  const order = (JSON.parse(readFileSync(join(ui, "run.json"), "utf8")) as { pages?: { path: string }[] }).pages?.map((p) => p.path) ?? [];
+  const byPage = new Map<string, Capture[]>();
+  for (const c of report.captures) byPage.set(c.page, [...(byPage.get(c.page) ?? []), c]);
+  const pages = [...new Set([...order.filter((p) => byPage.has(p)), ...byPage.keys()])];
+  const text = ["run.json", "queue.json", "routes/report.json"].filter((f) => existsSync(join(ui, f)));
+  let size = statSync(join(ui, "report.json")).size + text.reduce((n, f) => n + statSync(join(ui, f)).size, 0);
+  const kept: string[] = [], shots: string[] = [];
+  for (const p of pages) {
+    const s = shotsFor(byPage.get(p)!).filter((f) => existsSync(join(ui, f)));
+    const more = s.reduce((n, f) => n + statSync(join(ui, f)).size + 1024, 0);
+    if (size + more > max) break;
+    size += more; kept.push(p); shots.push(...s);
+  }
+  const dropped = pages.filter((p) => !kept.includes(p));
+  const trimmed = { ...report, captures: report.captures.filter((c) => kept.includes(c.page)), dropped };
+  const gz = pack([["report.json", Buffer.from(JSON.stringify(trimmed))], ...text.map((f): [string, Buffer] => [f, readFileSync(join(ui, f))]), ...shots.map((f): [string, Buffer] => [f, readFileSync(join(ui, f))])]);
+  return { gz, pages: kept, dropped };
+}
+
+/** The capture's result: the tree Review's shape with no findings, its coverage the pages listed and those bundled for the review. */
+export function captureReport(o: { model: string; repo?: string; head?: string; listed: string[]; pages: string[]; dropped: string[] }) {
+  const listed = [...new Set([...o.listed, ...o.pages])], excluded = listed.filter((p) => !o.pages.includes(p));
+  const gaps = [
+    ...(o.pages.length ? [] : ["no page was captured"]),
+    ...(o.dropped.length ? [`${o.dropped.length} captured pages left out of the review to fit a check input (${o.dropped.slice(0, 3).join(", ")}${o.dropped.length > 3 ? ", …" : ""})`] : []),
+    ...(excluded.length > o.dropped.length ? [`${excluded.length - o.dropped.length} pages not captured`] : []),
+  ];
+  return {
+    version: 1, ...(o.repo !== undefined ? { repo: o.repo } : {}), ...(o.head !== undefined ? { head: o.head, base: o.head } : {}), target: "tree", engine: "ui-review", model: o.model, effort: "low", pr: 0, incremental_from: null, full: true, addressed: false,
+    coverage: { reviewed: o.pages.slice(0, 500), excluded: excluded.slice(0, 500), incomplete: gaps.join("; ").slice(0, 500) || null, counts: { eligible: listed.length, reviewed: o.pages.length } },
+    findings: [] as never[], fixed: [] as string[], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [] as string[], guidance: [] as string[],
+  };
+}
+
+export async function capture({ spec, ws, out, env = process.env }: { spec: UiSpec; ws: string; out: string; env?: NodeJS.ProcessEnv }) {
+  let scripts: Record<string, unknown> | undefined;
+  try { scripts = (JSON.parse(readSmall(join(ws, "package.json"), 1_000_000) ?? "{}") as { scripts?: Record<string, unknown> }).scripts; } catch { /* no start script */ }
+  if (typeof scripts?.start !== "string" || !scripts.start.trim()) throw new Error('no start command: add a "start" script to package.json');
+  const pm = existsSync(join(ws, "pnpm-lock.yaml")) ? "pnpm" : existsSync(join(ws, "yarn.lock")) ? "yarn" : "npm";
+  const install = pm === "npm" ? [existsSync(join(ws, "package-lock.json")) ? "ci" : "install"] : ["install", "--frozen-lockfile"];
   const tmp = mkdtempSync(join(env.TMPDIR || "/tmp", "ui-scan-"));
-  const work = join(ws, ".aidenhq-ui"), url = `http://127.0.0.1:${PORT}`, ui = join(out, "ui"), routes = join(out, "ui-routes");
-  mkdirSync(work, { recursive: true });
-  // The app and the capture get the tool allowlist (no token); only the review step and the router read hold the run's model token.
+  const ui = join(out, "ui"), url = `http://127.0.0.1:${PORT}`, pagesFile = join(ws, ".aidenhq-ui", "pages.json");
+  // The box holds no token; the app and the engine get the tool allowlist's environment all the same, and the image's Chrome.
   const plainEnv = { ...toolEnv(env, tmp), ...(env.AGENT_BROWSER_EXECUTABLE_PATH ? { AGENT_BROWSER_EXECUTABLE_PATH: env.AGENT_BROWSER_EXECUTABLE_PATH } : {}) };
-  const modelEnv = { ...plainEnv, OPENROUTER_API_KEY: String(env.OPENROUTER_API_KEY ?? ""), OPENROUTER_BASE_URL: String(env.OPENROUTER_BASE_URL ?? "") };
   const ok = (r: { code: number | null; stderr: string; timedOut: boolean; aborted?: string }, what: string, codes = [0, 1]) => {
     if (!codes.includes(r.code ?? -1)) throw new Error(`${what}: ${stopped(r)}${r.stderr.trim() ? `; ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 200)}` : ""}`);
   };
 
-  // 1. The router read: how to start the app, and its pages.
-  const prompt = readSmall(ROUTER_PROMPT, 40_000);
-  if (prompt === undefined) throw new Error(`the engine's router prompt is missing (${ROUTER_PROMPT})`);
-  const home = join(tmp, "codex");
-  mkdirSync(home);
-  writeFileSync(join(home, "config.toml"), codexConfig({ model: ROUTER_MODEL, effort: ROUTER_EFFORT, url: String(env.OPENROUTER_BASE_URL ?? "").replace(/\/$/, ""), instructions: "", write: [work] }));
-  const task = `${prompt}\n\nStart this app on 127.0.0.1:${PORT} with its seed or demo data; write the command to .aidenhq-ui/run.sh and the pages to .aidenhq-ui/pages.json.`;
-  const read = await run("codex", ["exec", "--skip-git-repo-check", "--ignore-rules", "-o", join(tmp, "answer.txt"), task], { cwd: ws, env: codexEnv(home), minutes: 15 });
-  ok(read, "the router read", [0]);
-  for (const f of ["run.sh", "pages.json"]) if (!existsSync(join(work, f))) throw new Error(`the router read wrote no .aidenhq-ui/${f}`);
-
-  const stop = await startApp(ws, plainEnv);
+  ok(await run(pm, install, { cwd: ws, env: plainEnv, minutes: 15 }), `\`${pm} ${install.join(" ")}\``, [0]);
+  const stop = await startApp(pm, ws, plainEnv);
   try {
-    // 2. Capture, the route check, the review. Exit 1: blocking findings (the reports say which); anything else is a failed check.
-    ok(await run("ui-review", ["capture", url, "--map", ".aidenhq-ui/pages.json", "--out", ui], { cwd: ws, env: plainEnv, minutes: 25 }), "ui-review capture");
-    ok(await run("ui-review", ["routes", url, "--out", routes], { cwd: ws, env: plainEnv, minutes: 6 }), "ui-review routes");
-    ok(await run("ui-review", ["review", ui, "--model", spec.model, "--max-usd", String(MAX_USD)], { cwd: ws, env: modelEnv, minutes: 20 }), "ui-review review");
+    // From a folder outside the checkout, so only the committed pages.json (or the crawl) decides the pages.
+    ok(await run("ui-review", ["capture", url, "--out", ui, "--commit", spec.head, ...(existsSync(pagesFile) ? ["--pages-file", pagesFile] : [])], { cwd: tmp, env: plainEnv, minutes: 25 }), "ui-review capture");
+    ok(await run("ui-review", ["routes", url, "--out", join(ui, "routes"), "--pages-file", join(ui, "run.json")], { cwd: tmp, env: plainEnv, minutes: 8 }), "ui-review routes");
   } finally { stop(); }
 
-  const report = readReport(ui);
-  if (!report) throw new Error("ui-review left no report.json");
-  return toReview(report, { model: spec.model, repo: spec.repo, head: spec.head, listed: listedPages(ui), routes: readReport(routes), root: ws });
+  const b = bundle(ui);
+  writeFileSync(join(out, "keep"), b.gz);
+  const queue = JSON.parse(readFileSync(join(ui, "queue.json"), "utf8")) as { page: string }[];
+  return captureReport({ model: spec.model, repo: spec.repo, head: spec.head, listed: queue.map((i) => i.page), pages: b.pages, dropped: b.dropped });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const specFile = process.env.AIDENHQ_SPEC, resultFile = process.env.AIDENHQ_RESULT;
   try {
     const spec = JSON.parse(readFileSync(specFile!, "utf8")) as UiSpec;
-    const r = await scan({ spec, ws: process.cwd(), out: dirname(specFile!) });
+    const out = dirname(specFile!);
+    mkdirSync(join(out, "ui"), { recursive: true });
+    const r = await capture({ spec, ws: process.cwd(), out });
     writeFileSync(resultFile!, JSON.stringify(r));
-    console.error(`code-review-ui: ${r.findings.length} findings (${r.coverage.counts.reviewed} of ${r.coverage.counts.eligible} pages${r.coverage.incomplete ? `; incomplete: ${r.coverage.incomplete}` : ""})`);
+    console.error(`code-review-ui: ${r.coverage.counts.reviewed} of ${r.coverage.counts.eligible} pages bundled for the review${r.coverage.incomplete ? `; incomplete: ${r.coverage.incomplete}` : ""}`);
   } catch (e) {
     console.error(`code-review-ui: no result: ${String((e as Error).message ?? e).split("\n")[0]!.slice(0, 300)}`);
     process.exit(1);
   }
+  // The app's processes are gone (its group killed); nothing else may hold the box open.
+  process.exit(0);
 }

@@ -172,8 +172,10 @@ const ADVICE: Combo[] = PRESETS.standard.trivial.on_open.map((c) => ({ ...c, man
 const DEEPSEC_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
 /** The ui-review engine's efforts: its own list, not in recipe/engines.ts ENGINES, so no PR combo can name it. */
 const UI_EFFORTS = ["low", "medium", "high"];
-/** The check job each whole-repo model option runs as: the ui scan is its own check (it starts the app and a browser), the rest are `code-review`. */
-const profileOf = (o: Option) => (o.kind === "engine" && o.run.engine === "ui-review" ? "code-review-ui" : "code-review");
+/** The ui.scan option's two check jobs on one run: the repo's app captured in a token-free box, then the captures reviewed by the model. */
+const UI_CAPTURE = "code-review-ui", UI_REVIEW = "code-review-ui-review";
+/** The check job each whole-repo model option starts as: the ui scan's capture, the rest `code-review`. */
+const profileOf = (o: Option) => (o.kind === "engine" && o.run.engine === "ui-review" ? UI_CAPTURE : "code-review");
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS prs (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, last_reviewed_head TEXT,
@@ -715,7 +717,9 @@ export function createEngine(d: EngineDeps) {
 
   /** A repo review's run: the whole tree at its commit (no merge base, no recheck), one option's check (the tools run: its tool options). */
   async function startTree(r: RunRow) {
-    run("UPDATE runs SET attempts = attempts + 1, merge_base = ? WHERE id = ?", r.head, r.id);
+    // A ui.scan review step that failed starts again from its capture: the same spec is the same finished check, its bundle kept.
+    if (r.profile === UI_REVIEW) r = { ...r, profile: UI_CAPTURE };
+    run("UPDATE runs SET attempts = attempts + 1, merge_base = ?, profile = ? WHERE id = ?", r.head, r.profile, r.id);
     const b = batchRow(r.batch)!;
     const tools = r.profile === "code-review-tools";
     try {
@@ -772,6 +776,17 @@ export function createEngine(d: EngineDeps) {
     } catch (e) {
       log("deepsec's records not kept", { run: r.id, err: String((e as Error).message).slice(0, 200) });
     }
+  }
+
+  /** The ui.scan capture passed: its kept bundle is uploaded and the review step starts on the same run (the capture's bill carried).
+   * Nothing is written before the one UPDATE, so a kernel that can't answer now throws and the next tick hands it over again. */
+  async function uiReview(r: RunRow, billed?: number): Promise<void> {
+    const kept = await d.runner.kept(r.check_job!);
+    if (!kept) return finish(r, { state: "failed", why: "the UI capture left no bundle for its review", billed_usd: billed });
+    const ui = await d.runner.input(kept);
+    const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: UI_REVIEW, combo: comboOf(r), option: r.option!, lens: "ui", ui,
+      focus: null, intent: "", threads: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
+    run("UPDATE runs SET profile = ?, check_job = ?, bills = ? WHERE id = ?", UI_REVIEW, check, JSON.stringify(bills(r, billed)), r.id);
   }
 
   /** The run's review.ended fact (a PR's flow; a repo review's runs have no PR); a one-off's askers are summarised once all the runs they asked for have ended. */
@@ -867,6 +882,8 @@ export function createEngine(d: EngineDeps) {
       if (r.kind !== "auto" || !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND id != ? AND status IN ('queued', 'running', 'done')", r.repo, r.number, r.head, r.id)) void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
     }
+    // A ui.scan capture is no review: its review step reads what it kept.
+    if (r.profile === UI_CAPTURE) return uiReview(r, res.billed_usd);
     const cost = charge(r, res.billed_usd);
     if (r.target === "tree") return finishTree(r, res.review, cost);
     // The run's own facts over whatever the box wrote for them.

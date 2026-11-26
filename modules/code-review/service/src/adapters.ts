@@ -85,7 +85,8 @@ function shards(findings: unknown[]): Record<string, string> {
  * A tree review has no merge base: base and incremental_from are its head (the recipe diffs against the empty tree), and pr is
  * empty. option and lens are the catalog option's (empty for a combo); setup_files a pending deepsec setup branch's files.
  * `code-review-tools` (the selected tool options, token-free): the base (a tree's: the commit itself) and the options (toolSpec).
- * `code-review-ui` (the ui.scan option): the commit, the run, the option and its model. `code-review-plan` (a repo review's area plan): the commit, the planner's model and the catalog's stack tags with their globs.
+ * `code-review-ui` (the ui.scan option's capture): the commit, the run, the option and its model; `code-review-ui-review` (its
+ * review) the same and `ui`, the capture's bundle. `code-review-plan` (a repo review's area plan): the commit, the planner's model and the catalog's stack tags with their globs.
  * A repo review's area run carries its area ({ id, name, files }) and a map option the plan's areas; both {} otherwise.
  */
 export function checkSpec(s: ReviewSpec): Record<string, string> {
@@ -94,6 +95,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   // `run` keeps two reviews of one commit with one spec apart (the kernel reuses a check for an identical spec): empty for a PR run.
   if (s.profile === "code-review-tools") return { base, options: JSON.stringify(s.tools ?? {}), run: s.run ?? "" };
   if (s.profile === "code-review-ui") return { base, run: s.run ?? "", option: s.option ?? "", model: s.combo.model };
+  if (s.profile === "code-review-ui-review") return { base, run: s.run ?? "", option: s.option ?? "", model: s.combo.model, ui: s.ui ?? "" };
   if (s.profile === "code-review-plan") return { base, run: s.run ?? "", model: s.combo.model, stacks: JSON.stringify(s.stacks ?? {}) };
   return {
     base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",

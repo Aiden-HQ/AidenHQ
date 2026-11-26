@@ -211,20 +211,29 @@ deepsec 254.
 
 ## UI scan (the `ui` lens, option `ui.scan`)
 
-A whole-repo option that runs no agent: its own check job `code-review-ui` (`recipe/ui.ts`, 60 minutes, spec `{ base, run, option,
-model }`), started at once with the tools, like deepsec. In the box a `codex exec` (Sol, low) reads the repo with the engine's
-`prompts/router-read.md` and writes how to start the app on `127.0.0.1:8080` with its seed or demo data (`.aidenhq-ui/run.sh`) and
-its pages (`.aidenhq-ui/pages.json`); then the agent-base image's `ui-review` engine runs `capture`, `routes` and `review`
-(exit 1 of the first two means blocking findings; exit 2 a failed check). The recipe maps its `report.json` to the tree `Review`:
-improvements (the top 10, ranked by the engine) are nits `ui-<rank>` with a `ui` place (page, width, theme, region, change, best),
-blocking rule hits and verified bugs are important `ui-rule-<n>` (at most 20), pages are the coverage counts (`eligible` = pages
-listed, `reviewed` = pages captured); an uncaptured page is a gap, never a clean review. No rendered fixes at scan depth. The report's
-"UI" section lists the improvements ranked, then the blocking findings, as text (Primer takes no images).
+A whole-repo option that runs no agent, as two check jobs on one run, because the box that runs the repo's code must hold no model
+token:
 
-`ui-review` is not in `ENGINES` (recipe/engines.ts), so no PR combo can name it: its efforts (low, medium, high) are the service's
-`UI_EFFORTS`, checked when a repo review is asked for. `runs_code: true` is allowed for it (it starts the repo's own app) and for
-tools only. The app runs in the box with the tool allowlist's environment; only the router read and the review step hold the
-run's model token.
+- `code-review-ui` (`recipe/ui.ts`, 60 minutes, spec `{ base, run, option, model }`, `keep`, no `model` line: the kernel gives it no
+  OpenRouter token or address, and it runs no model). It installs the app's dependencies with the lockfile's package manager, runs the
+  `start` script package.json declares with `PORT=8080 HOST=127.0.0.1` (none: the check fails, `no start command: add a "start"
+  script`), then the agent-base image's `ui-review` engine: `capture` (the pages: a committed `.aidenhq-ui/pages.json`, else its crawl)
+  and `routes` over the same pages (exit 1 of either means blocking findings; 2 a failed check). It keeps a bundle (a gzipped tar of
+  at most 64 MB: the reports, run.json, queue.json and per page the shots the review reads, pages left out from the end when they
+  don't fit, saying so) and its result is coverage only. Its failure is the option's.
+- `code-review-ui-review` (`recipe/ui-review.ts`, 20 minutes, `model: true`, spec as above plus `ui`, the bundle the service uploads
+  from the capture's kept file, as deepsec's records travel). It unpacks the bundle with its own reader (regular files with the
+  bundle's names only), runs `ui-review review` over it (no install, no start, no repo config) and maps the report to the tree
+  `Review`: improvements (the top 10, ranked by the engine) are nits `ui-<rank>` with a `ui` place (page, width, theme, region,
+  change, best), blocking rule hits and the route check's verified bugs are important `ui-rule-<n>` (at most 20), pages are the
+  coverage counts (`eligible` = pages listed, `reviewed` = pages captured); an uncaptured page is a gap, never a clean review. A
+  failed review fails the run (the batch is incomplete); a retry starts from the capture, which the kernel answers with the
+  finished check and its kept bundle.
+
+No rendered fixes at scan depth. The report's "UI" section lists the improvements ranked, then the blocking findings, as text
+(Primer takes no images). `ui-review` is not in `ENGINES` (recipe/engines.ts), so no PR combo can name it: its efforts (low, medium,
+high) are the service's `UI_EFFORTS`, checked when a repo review is asked for. `runs_code: true` is allowed for it only because its
+repo-code step is the token-free capture check; otherwise only tools run repo code.
 
 ## Posting
 

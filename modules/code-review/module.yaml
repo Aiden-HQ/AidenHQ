@@ -77,15 +77,26 @@ check_jobs:
     title: the code review tools
     spec: { base: sha, options: json, run: text }
     result: true
-  # The ui.scan option's whole-repo check (recipe/ui.ts): it starts the repo's own app in the box, captures every page with the
-  # `ui-review` engine, and maps the engine's report to the Review (the tree contract: coverage counts are pages). `base` is the
-  # commit, `option` the catalog id, `model` the run's (the recipe's own router read is Sol, low).
+  # The ui.scan option, two checks on one run (the box that runs the repo's code holds no model token). `code-review-ui`
+  # (recipe/ui.ts) installs and starts the repo's own app, captures every page with the `ui-review` engine and keeps the captures'
+  # bundle for the review step: no `model` line, so the kernel gives it no OpenRouter token or address, and it runs no model.
+  # `base` is the commit, `option` the catalog id, `model` the review step's.
   code-review-ui:
     dir: recipe
     argv: [ node, /aidenhq-out/recipe/ui.ts ]
     timeout_min: 60
-    title: the ui scan
+    title: the UI design scan
     spec: { base: sha, run: text, option: text, model: text }
+    result: true
+    keep: true
+  # `code-review-ui-review` (recipe/ui-review.ts): the model reads the capture's bundle (`ui`, the kept file the service uploads, as
+  # deepsec's records travel) and the engine's report becomes the Review. It runs no repo code: no install, no start, no repo config.
+  code-review-ui-review:
+    dir: recipe
+    argv: [ node, /aidenhq-out/recipe/ui-review.ts ]
+    timeout_min: 20
+    title: the UI design review
+    spec: { base: sha, run: text, option: text, model: text, ui: input }
     model: true
     result: true
 # The change feed's PR and comment events on the watched repos (service/src/engine.ts feed(); kernel events.ts log, read with the
