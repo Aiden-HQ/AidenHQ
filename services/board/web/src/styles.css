@@ -355,6 +355,11 @@ kbd {
 .app.mobile .head-chips { display: none; }
 .app.mobile .drawer { width: 100%; border-left: 0; }
 .app.mobile .drawer-scroll { padding: 14px 16px 20px; }
+/* The head's seven items stay on one row at 390 wide: no wrap, tighter padding, and buttons that give up width first. */
+.app.mobile .drawer-head { flex-wrap: nowrap; gap: 4px; padding: 10px 12px; padding-top: max(10px, env(safe-area-inset-top)); }
+.app.mobile .drawer-head .btn { padding: 5px 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.app.mobile .drawer-head .ident { flex: none; }
+.app.mobile .drawer-head .spacer { min-width: 0; }
 .app.mobile .props { grid-template-columns: 80px 1fr; }
 .app.mobile .prop-value select, .app.mobile .prop-value input { min-width: 0; width: 100%; }
 .app.mobile input, .app.mobile select, .app.mobile textarea { font-size: var(--text-input); } /* no zoom on focus (iOS) */
