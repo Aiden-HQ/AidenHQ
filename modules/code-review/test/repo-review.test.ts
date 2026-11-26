@@ -398,7 +398,9 @@ test("ui.scan runs as its own whole-repo check and reports a UI section", async 
   assert.equal(req.profile, "code-review-ui");
   assert.deepEqual(Object.keys(checkSpec(req)).sort(), ["base", "model", "option", "run"]);
   assert.equal(checkSpec(req).model, "google/gemini-4-carbon");
-  w.finish(0, toReview(uiReport, { model: "google/gemini-4-carbon", listed: ["/", "/approvals"] }), 0.4);
+  const review = toReview(uiReport, { model: "google/gemini-4-carbon", listed: ["/", "/approvals"] });
+  assert.deepEqual(review.findings.filter((f) => f.title === "Approve button does nothing").map((f) => f.severity), ["important"], "the verified twin wins, once");
+  w.finish(0, review, 0.4);
   await w.tick();
   assert.equal(w.engine.batches({})[0].status, "done", "the tree validator accepted it");
   const md = w.engine.report(b.batch);
