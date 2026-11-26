@@ -87,11 +87,13 @@ export type GraderView = { unavailable: string; noHttp?: true } | (ViewResult & 
 export async function graderView(app: App, req: { path?: string; width?: number; cap?: number }, d: { resolve: Resolve; render: Render; sign: Sign; running: (name: string) => string | undefined; audit?: (o: object) => void }): Promise<GraderView> {
   // Restricted apps' pages stay with the agents holding their roles: the grader's notes are posted on the task.
   if (app.access) return { unavailable: `${app.name} is restricted to roles, so the grader doesn't capture its pages` };
-  // A remote app is a page this grader cannot reach, whatever else it serves: never a page that doesn't exist.
+  // An app the registry says serves no HTTP at all (`noHttp`, the one predicate for it) has no page on any docker context or
+  // address: its page criteria don't apply, and the fact is the same whether it runs locally or remotely.
+  if (noHttpSurface(app)) return { unavailable: `${app.name} has no health.url, so there's no page to view`, noHttp: true };
+  // Every other app with no page here is one the grader could not look at, never one that doesn't exist: a remote app is out
+  // of this renderer's reach whatever it serves, and a missing health.url is an address the registry doesn't know.
   if (app.host !== "local") return { unavailable: `${app.name} runs on docker context ${app.host}; only local apps can be viewed` };
-  // No health.url: either the app serves no HTTP at all (`noHttp`, from the one predicate for it) or it has a page this
-  // registry knows no address for. Only the first is a not-applicable page criterion; the second is one not captured.
-  if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view`, ...(noHttpSurface(app) ? { noHttp: true as const } : {}) };
+  if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view` };
   const sha_before = d.running(app.name) ?? "";
   const r = await renderApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width }, d, req.cap ?? SNAPSHOT_CAP);
   return { ...r, sha_before, sha_after: d.running(app.name) ?? "" };

@@ -162,7 +162,8 @@ describe("liveEvidence", () => {
   it("tells the grader a scoped criterion whose condition the facts deny is met, not unknown", () => {
     const { system } = gradePrompt({ rubric: ["Where the app serves HTTP, every nav link's page renders at its own path"], deliverable: { kind: "app" }, facts: [], data: {} });
     assert.match(system, /page criteria do not apply"\), the criterion is met: answer yes/);
-    assert.match(system, /could not be captured \(a restricted or non-local app\) is not such a fact and leaves the criterion unknown/);
+    // A page the grader could not look at is judged on other evidence (an attached capture, the diff), never passed by the fact.
+    assert.match(system, /could not be captured \(a restricted or non-local app\) is not such a fact: judge the criterion on whatever other evidence the facts and blocks carry, an attached capture or the diff above all, and answer unknown only when there is none/);
   });
 
   it("puts a long page's whole text into its fenced block in the grader's prompt", async () => {
