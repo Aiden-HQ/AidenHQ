@@ -110,8 +110,10 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       // `since` (a `from` instant, ms) asks instead for every job that started at or after it, uncut: a caller that has to decide
       // what an agent did in a window needs all of its rows, so an absent task is a task it never ran, not one past the cut.
       // `brief` skips the per-job timeline (three reads each), for that caller: it needs the task and how the run went, no more.
+      // An uncut read can be every job of a long-lived agent, so it selects those columns alone: a prompt, progress or final is
+      // never read, let alone the thousands of them a `SELECT *` would materialize before they are dropped.
       const from = o.since === undefined ? undefined : [o.since];
-      const shown = rows(`SELECT * FROM jobs j WHERE agent = ?${o.shown ? " AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'job:' || j.id AND f.type = 'job.ended' AND json_extract(f.data, '$.quiet') = 1)" : ""}${from ? " AND at >= ?" : ""} ORDER BY at DESC${from ? "" : " LIMIT 50"}`, ...(from ? [id, o.since!] : [id]));
+      const shown = rows(`SELECT ${o.brief ? JOB_COLS : "*"} FROM jobs j WHERE agent = ?${o.shown ? " AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'job:' || j.id AND f.type = 'job.ended' AND json_extract(f.data, '$.quiet') = 1)" : ""}${from ? " AND at >= ?" : ""} ORDER BY at DESC${from ? "" : " LIMIT 50"}`, ...(from ? [id, o.since!] : [id]));
       if (o.brief) return { jobs: shown.map((r) => job(r)) };
       return { jobs: shown.map((r) => {
         const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
