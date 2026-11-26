@@ -5,7 +5,7 @@
 //   { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" }
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,14 +13,15 @@ import { after, before, describe, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Capture, Report } from "../images/agent-base/ui-review/types.ts";
-import { type Fixture, ROUTES, startFixture } from "./fixtures/ui-app/server.ts";
+import { totp as totpCode } from "../images/agent-base/ui-review/totp.ts";
+import { type Fixture, ROUTES, SIGN_IN, startFixture } from "./fixtures/ui-app/server.ts";
 
 const main = fileURLToPath(new URL("../images/agent-base/ui-review/main.ts", import.meta.url));
 
-test("ui-review --help lists the six subcommands", () => {
+test("ui-review --help lists its subcommands", () => {
   const r = spawnSync("node", [main, "--help"], { encoding: "utf8" });
   assert.equal(r.status, 0);
-  for (const c of ["capture", "pages", "routes", "refs", "review", "fix-check"]) assert.match(r.stdout, new RegExp(`^  ${c} `, "m"));
+  for (const c of ["capture", "pages", "routes", "refs", "review", "fix-check", "login", "browser"]) assert.match(r.stdout, new RegExp(`^  ${c} `, "m"));
 });
 
 test("the fixture app serves 60 routes and counts writes", async () => {
@@ -50,10 +51,10 @@ test("every fixture route renders its own page, and /planted carries its defects
 
 // ---- capture, coverage queue, route check (lane A) ----
 const chrome = { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" };
-type Run = { out: string; coverage: { done: number; total: number; failed: number; deferred: number }; captures: { page: string; width: number; theme: string; state: string; shots: string[]; settled: boolean; motion?: unknown; rules: { rule: string }[]; diffs?: { shot: string; pct: number; diff?: string }[] }[]; lookFirst: { page: string }[] };
+type Run = { out: string; notes: string[]; blocked: { method: string; origin: string; path: string; page: string }[]; session?: { rung: string; relogins: number }; coverage: { done: number; total: number; failed: number; deferred: number }; captures: { page: string; width: number; theme: string; state: string; shots: string[]; settled: boolean; motion?: unknown; rules: { rule: string }[]; diffs?: { shot: string; pct: number; diff?: string }[] }[]; lookFirst: { page: string }[] };
 const tmp = () => mkdtempSync(join(tmpdir(), "ui-review-test-"));
-const capArgs = (url: string, o: { out: string; pagesFile?: string; widths?: number[]; themes?: string[]; resume?: boolean; baseline?: string }) =>
-  [main, "capture", url, "--out", o.out, ...(o.pagesFile ? ["--pages-file", o.pagesFile] : []), ...(o.widths ? ["--widths", o.widths.join(",")] : []), ...(o.themes ? ["--themes", o.themes.join(",")] : []), ...(o.resume ? ["--resume"] : []), ...(o.baseline ? ["--baseline", o.baseline] : []), "--commit", "test"];
+const capArgs = (url: string, o: { out: string; pagesFile?: string; widths?: number[]; themes?: string[]; resume?: boolean; baseline?: string; mode?: string; session?: string }) =>
+  [main, "capture", url, "--out", o.out, ...(o.pagesFile ? ["--pages-file", o.pagesFile] : []), ...(o.widths ? ["--widths", o.widths.join(",")] : []), ...(o.themes ? ["--themes", o.themes.join(",")] : []), ...(o.resume ? ["--resume"] : []), ...(o.baseline ? ["--baseline", o.baseline] : []), ...(o.mode ? ["--mode", o.mode] : []), ...(o.session ? ["--session", o.session] : []), "--commit", "test"];
 const pagesFile = (paths: string[]) => { const f = join(tmp(), "pages.json"); writeFileSync(f, JSON.stringify(paths)); return f; };
 const pages = (n: number) => pagesFile(Array.from({ length: n }, (_, i) => `/#/p${String(i + 1).padStart(3, "0")}`));
 function startCapture(url: string, o: Parameters<typeof capArgs>[1]) { return spawn("node", capArgs(url, o), { stdio: "ignore" }); }
@@ -68,6 +69,16 @@ async function runCapture(url: string, o: Partial<Parameters<typeof capArgs>[1]>
   return { ...r, out, lookFirst: [...new Map(changed.map((c) => [c.page, c])).values()] };
 }
 const runRoutes = (url: string) => new Promise<number>((ok) => spawn("node", [main, "routes", url, "--out", tmp(), "--paths", "/#/danger"], { stdio: "ignore" }).on("exit", (c) => ok(c ?? 2)));
+/** `ui-review login <rung>`: its exit code and output (stdout and stderr). */
+function login(rung: string, o: Record<string, string>, env: Record<string, string> = {}) {
+  const args = [main, "login", rung, ...Object.entries(o).flatMap(([k, v]) => [`--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`, ...(v === "" ? [] : [v])])]; // "" is a flag
+  return new Promise<{ code: number; text: string }>((ok) => {
+    const p = spawn("node", args, { env: { ...process.env, ...env } });
+    let text = "";
+    p.stdout.on("data", (d) => (text += d)); p.stderr.on("data", (d) => (text += d));
+    p.on("exit", (code) => ok({ code: code ?? 2, text }));
+  });
+}
 async function waitForDone(out: string, n: number) {
   for (;;) {
     try { if ((JSON.parse(readFileSync(join(out, "queue.json"), "utf8")) as { status: string }[]).filter((i) => i.status === "done").length >= n) return; } catch { /* not written yet */ }
@@ -101,11 +112,12 @@ describe("capture", chrome, () => {
     fixture.set("planted-title", "Planted page");
     assert.deepEqual(after.lookFirst.map((c) => c.page), ["/#/planted"]); // /clock unchanged: the clock is frozen
   });
-  test("a live target is never clicked or written to", async () => {
+  test("a live target is read only: captured, clicked by the route check, never written to", async () => {
     const w0 = fixture.writes();
     const r = await runCapture(liveAlias + "/#/danger", { widths: [1512], themes: ["light"] });
-    assert.equal(await runRoutes(liveAlias + "/#/danger"), 2);
-    assert.equal(fixture.writes() - w0, 0); assert.ok(r.captures[0].motion); // measured passively; its POST on mount was answered by the guard
+    assert.ok([0, 1].includes(await runRoutes(liveAlias + "/#/danger"))); // the route check runs on a live target now: the guard is on
+    assert.equal(fixture.writes() - w0, 0); assert.ok(r.captures[0].motion); // its POST on mount was refused by the guard
+    assert.ok(r.blocked.some((b) => b.method === "POST" && b.path === "/api/seen"));
     assert.ok(!r.captures[0].rules.some((h) => h.rule === "page-errors")); // and the guard is no page error of the app's
     await runCapture(fixtureUrl + "/#/danger", { widths: [1512], themes: ["light"] });
     assert.ok(fixture.writes() - w0 >= 1); // the same page as a local build does write: the guard is what stopped it
@@ -114,6 +126,108 @@ describe("capture", chrome, () => {
     const r = await runCapture(fixtureUrl, { pagesFile: pages(300), widths: [1512], themes: ["light"] });
     assert.equal(r.coverage.done, 120); assert.equal(r.coverage.deferred, 180);
     const next = await runCapture(fixtureUrl, { out: r.out, resume: true }); assert.equal(next.coverage.done, 240);
+  });
+});
+
+// ---- login ladder, session check, live-app guard (phase 2, lane E) ----
+describe("signed in and guarded", chrome, () => {
+  let fixture: Fixture, fx: (p: string) => string, liveAlias: string;
+  // Sessions die 8 s after sign-in here (30 s by default), so one run crosses the expiry more than once.
+  before(async () => { fixture = await startFixture(0, { sessionSeconds: 8 }); fx = (p) => fixture.url + p; liveAlias = `http://live.localhost:${fixture.port}`; });
+  after(() => fixture.close());
+  const secrets = () => { const d = tmp(), pw = join(d, "pw"), totp = join(d, "totp"); writeFileSync(pw, SIGN_IN.password); writeFileSync(totp, SIGN_IN.totp); return { pw, totp, st: join(tmp(), "state.json") }; };
+  const files = (dir: string): string[] => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name));
+
+  test("form login captures signed-in pages and notices a dead session", async () => {
+    const { pw, totp, st } = secrets();
+    const l = await login("form", { url: fx("/login"), user: SIGN_IN.user, passwordFile: pw, totpFile: totp, out: st });
+    assert.equal(l.code, 0, l.text); assert.equal(l.text.trim(), "signed in (form) at /login"); assert.ok(!l.text.includes(SIGN_IN.password));
+    const r = await runCapture(fx("/app/home"), { session: st, pages: ["/app/home", "/app/orders", "/app/billing", "/app/team"], widths: [390, 768, 1024, 1280, 1512, 1920, 2560] });
+    assert.equal(r.coverage.done, r.coverage.total);
+    assert.ok(r.captures.every((c) => !c.url.endsWith("/login")));
+    assert.ok(r.notes.some((n) => /re-signed in/.test(n)), r.notes.join("\n")); // the expiry was crossed
+    assert.equal(r.session?.rung, "form"); assert.ok(r.session!.relogins >= 1);
+    const shot = readFileSync(join(r.out, r.captures.find((c) => c.page === "/app/orders")!.shots[0]));
+    assert.ok(shot.length > 0);
+    assert.ok(!files(r.out).some((f) => readFileSync(f).includes(SIGN_IN.password) || readFileSync(f).includes(SIGN_IN.totp)));
+  });
+
+  test("sign-up through Mailpit works and CAPTCHA stops the rung", async () => {
+    const st = join(tmp(), "state.json"), st2 = join(tmp(), "state.json");
+    const l = await login("signup", { url: fx("/signup"), out: st });
+    assert.equal(l.code, 0, l.text); assert.ok(existsSync(st)); assert.equal(fixture.signups(), 1);
+    const c = await login("signup", { url: fx("/signup-captcha"), out: st2 });
+    assert.equal(c.code, 1); assert.match(c.text, /CAPTCHA/); assert.ok(!existsSync(st2));
+  });
+
+  test("a supplied login spends its nonce, leaves the next one for a re-login, and a spent one is refused", async () => {
+    // The design module's job tool as the kernel forwards it: one nonce, spent by each answer, which carries the next.
+    let current = "n1", calls = 0;
+    const tool = createServer((req, res) => {
+      let body = ""; req.on("data", (d) => (body += d)); req.on("end", () => {
+        calls++;
+        const b = JSON.parse(body) as { app: string; nonce?: string };
+        if (req.url !== "/v1/jobtools/module/design/login" || b.app !== "acme" || b.nonce !== current) return void res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: "not this pass's nonce" }));
+        current = `n${calls + 1}`;
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ login_url: fx("/login"), username: SIGN_IN.user, password: SIGN_IN.password, totp: totpCode(SIGN_IN.totp), nonce: current }));
+      });
+    });
+    await new Promise<void>((ok) => tool.listen(0, "127.0.0.1", ok));
+    const dir = tmp(), nonce = join(dir, "login-nonce"), st = join(tmp(), "state.json");
+    const env = { AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${(tool.address() as { port: number }).port}`, AIDENHQ_RUN_TOKEN: "run-token", AIDENHQ_LOGIN_NONCE: nonce };
+    try {
+      writeFileSync(nonce, "run-token"); // the run token in place of the nonce
+      let l = await login("supplied", { app: "acme", out: st }, env);
+      assert.equal(l.code, 1); assert.match(l.text, /refused \(403\)/); assert.ok(!existsSync(st));
+      writeFileSync(nonce, "n1");
+      l = await login("supplied", { app: "acme", out: st }, env);
+      assert.equal(l.code, 0, l.text); assert.equal(l.text.trim(), "signed in (supplied) at /login");
+      assert.equal(readFileSync(nonce, "utf8"), current); // the next nonce, for a re-login
+      l = await login("supplied", { app: "acme", out: st, renew: "" }, env);
+      assert.equal(l.code, 0, l.text);
+      writeFileSync(nonce, "n1"); // a replay of a spent nonce
+      l = await login("supplied", { app: "acme", out: join(tmp(), "state.json") }, env);
+      assert.equal(l.code, 1); assert.ok(!l.text.includes(SIGN_IN.password) && !l.text.includes(SIGN_IN.user));
+    } finally { tool.closeAllConnections(); tool.close(); }
+  });
+
+  test("the guard blocks writes in read mode and destructive paths in test-write", async () => {
+    const clickAll = async (mode: string, url: string) => {
+      const { launch } = await import("../images/agent-base/ui-review/browser.ts");
+      const b = await launch({ mode: mode as "read" });
+      try {
+        const p = await (await b.browser.newContext()).newPage();
+        await p.goto(url); await p.waitForTimeout(300);
+        for (const btn of await p.locator("button").all()) { await btn.click(); await p.waitForTimeout(200); }
+        await p.waitForTimeout(300);
+        return b.blocked();
+      } finally { await b.close(); }
+    };
+    const w0 = fixture.writes();
+    const r = await clickAll("read", fx("/#/danger"));
+    assert.ok(r.some((b) => b.method === "POST")); assert.equal(fixture.writes() - w0, 0);
+    const t = await clickAll("test-write", fx("/#/danger"));
+    assert.ok(t.some((b) => /\/pay/.test(b.path)) && t.some((b) => /\/delete/.test(b.path))); assert.ok(fixture.writes() - w0 > 0); // its POST on mount went
+    const w = await runCapture(liveAlias + "/#/socket-write", { widths: [1512], themes: ["light"] }); // a live target: read by default
+    assert.ok(w.blocked.some((b) => b.method === "WS"), JSON.stringify(w.blocked)); assert.equal(fixture.socketWrites(), 0);
+  });
+
+  test("read mode blocks a write to a separate API origin, and the agent's own tab is guarded", async () => {
+    const { launch } = await import("../images/agent-base/ui-review/browser.ts");
+    const { chromium } = await import("../images/agent-base/ui-review/node_modules/playwright-core/index.mjs");
+    const b = await launch({ mode: "read" });
+    try {
+      const p = await (await b.browser.newContext()).newPage();
+      await p.goto(fx("/split")); await p.click("text=Save"); await p.waitForTimeout(500);
+      assert.ok(b.blocked().some((x) => x.method === "POST" && /api\./.test(x.origin)), JSON.stringify(b.blocked())); assert.equal(fixture.apiWrites(), 0);
+      // The clicking pass's attachment: another CDP client opens its own context and tab, and clicks Pay; that target is guarded too.
+      const w0 = fixture.writes();
+      const agent = await chromium.connectOverCDP(`http://127.0.0.1:${b.port}`);
+      const tab = await (await agent.newContext()).newPage();
+      await tab.goto(fx("/#/danger")); await tab.click("text=Pay"); await tab.waitForTimeout(500);
+      assert.ok(b.blocked().some((x) => x.method === "POST" && /\/pay/.test(x.path)), JSON.stringify(b.blocked())); assert.equal(fixture.writes() - w0, 0);
+      await agent.close();
+    } finally { await b.close(); }
   });
 });
 

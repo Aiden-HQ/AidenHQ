@@ -1,15 +1,14 @@
 // Chrome for the engine: one Chrome per run, started by playwright-core over the image's Chrome, with a CDP port an agent can
-// attach to (`agent-browser --cdp <port>`). Also the things every page of a run shares: the frozen clock and readiness tracker
-// (an init script), the readiness wait, the politeness throttle for other origins, and what counts as a local build.
-import { writeFileSync } from "node:fs";
+// attach to (`agent-browser --cdp <port>`), guarded (guard.ts) on every target it ever has. Also the things every page of a run
+// shares: the frozen clock and readiness tracker (an init script), the readiness wait and the politeness throttle for other origins.
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { parseArgs } from "node:util";
 import { chromium, type Browser, type BrowserContext, type Page as PwPage } from "playwright-core";
+import { type Blocked, type Guard, installGuard, type Mode, modeOf, type StorageState } from "./guard.ts";
 
 export const CHROME = process.env.AGENT_BROWSER_EXECUTABLE_PATH || "/opt/chrome/chrome";
-
-/** A local build: the only kind phase 1 ever clicks on (route checks, motion clicks). */
-export const isLocal = (url: string) => ["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname);
 
 /**
  * Where a URL is in the app: path and query, plus the hash when it is a hash router's route ("#/a/b", a trailing slash
@@ -27,17 +26,15 @@ const freePort = () => new Promise<number>((ok, no) => {
 });
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 
-export type Launched = { cdp: string; port: number; browser: Browser; close(): Promise<void> };
+export type Launched = { cdp: string; port: number; browser: Browser; guard: Guard; blocked(): Blocked[]; close(): Promise<void> };
 
 /**
- * Starts Chrome with a CDP port (written to <out>/browser.json when `out` is given). With `politeness`, every request to
- * another origin than `politeness.origin` (sub-requests included, from every context of this browser) waits its turn so
- * that together they stay under `rps` requests a second. `target` is the app under review: when it is not a local build,
- * every context is read only from its first navigation: a request that isn't GET, HEAD or OPTIONS is answered by the guard
- * (204) and never sent, and no service worker, WebSocket, WebTransport or peer connection runs, so a live app's own code (a
- * POST on mount, a socket, a data channel) never writes.
+ * Starts Chrome with a CDP port (written to <out>/browser.json when `out` is given) and the live-app guard in `mode` on it
+ * (guard.ts: every target, every origin; blocked requests also go to <out>/blocked.jsonl). `session`: storage state every
+ * context starts signed in with. With `politeness`, every request to another origin than `politeness.origin` (sub-requests
+ * included, from every context the engine makes) waits its turn so that together they stay under `rps` requests a second.
  */
-export async function launch(o: { port?: number; out?: string; politeness?: { origin: string; rps: number }; target?: string } = {}): Promise<Launched> {
+export async function launch(o: { mode: Mode; port?: number; out?: string; politeness?: { origin: string; rps: number }; session?: StorageState | null }): Promise<Launched> {
   const port = o.port ?? (await freePort());
   const browser = await chromium.launch({
     executablePath: CHROME, headless: true,
@@ -47,29 +44,20 @@ export async function launch(o: { port?: number; out?: string; politeness?: { or
   for (let i = 0; i < 50 && !cdp; i++) {
     try { cdp = ((await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl; } catch { await sleep(100); }
   }
-  if (o.out) writeFileSync(join(o.out, "browser.json"), JSON.stringify({ cdp, port }, null, 2));
-  const readOnly = o.target !== undefined && !isLocal(o.target);
-  if (o.politeness || readOnly) {
-    const gap = o.politeness ? (1000 / o.politeness.rps) * 1.05 : 0;
+  const guard = await installGuard(cdp, o.mode, { log: o.out ? join(o.out, "blocked.jsonl") : undefined, state: o.session });
+  if (o.out) writeFileSync(join(o.out, "browser.json"), JSON.stringify({ cdp, port, mode: o.mode }, null, 2));
+  if (o.politeness) {
+    const gap = (1000 / o.politeness.rps) * 1.05, { origin } = o.politeness;
     let nextAt = 0;
     const turn = async () => { const now = Date.now(), at = Math.max(now, nextAt); nextAt = at + gap; if (at > now) await sleep(at - now); };
     const newContext = browser.newContext.bind(browser);
     browser.newContext = async (opts) => {
-      const ctx = await newContext(readOnly ? { ...opts, serviceWorkers: "block" } : opts);
-      if (o.politeness) { const { origin } = o.politeness; await ctx.route((u) => u.origin !== origin && /^https?:$/.test(u.protocol), async (route) => { await turn(); await route.continue().catch(() => {}); }); }
-      if (readOnly) {
-        // Registered last, so it runs first: a write is aborted before the throttle or the app ever sees it.
-        // A write is answered by the guard itself (204, empty), so the app goes on as if it went: never sent, and never a page
-        // error or a failed load of the app's own in the findings.
-        await ctx.route("**/*", (route) => ["GET", "HEAD", "OPTIONS"].includes(route.request().method()) ? route.fallback() : route.fulfill({ status: 204, body: "" }));
-        await ctx.routeWebSocket(/.*/, (ws) => void ws.close());
-        // The channels request routing doesn't see (WebTransport, peer connections) are gone before the app's own code runs.
-        await ctx.addInitScript(() => { for (const k of ["WebTransport", "RTCPeerConnection", "webkitRTCPeerConnection"]) try { delete (globalThis as Record<string, unknown>)[k]; } catch { /* not there */ } });
-      }
+      const ctx = await newContext(opts);
+      await ctx.route((u) => u.origin !== origin && /^https?:$/.test(u.protocol), async (route) => { await turn(); await route.continue().catch(() => {}); });
       return ctx;
     };
   }
-  return { cdp, port, browser, close: () => browser.close().catch(() => {}) };
+  return { cdp, port, browser, guard, blocked: guard.blocked, close: async () => { guard.close(); await browser.close().catch(() => {}); } };
 }
 
 /**
@@ -131,3 +119,25 @@ export async function workerContext(browser: Browser, frozenAt: string): Promise
 
 /** Viewport heights per width: the common device or window at that width. */
 export const heightOf = (w: number) => ({ 360: 780, 390: 844, 768: 1024, 1024: 768, 1280: 800, 1512: 982, 1920: 1080, 2560: 1440 } as Record<number, number>)[w] ?? 900;
+
+/**
+ * `ui-review browser start [--url u] [--mode m] [--session state.json] [--out dir]`: a guarded Chrome for an agent to attach to
+ * (the clicking pass: `agent-browser --cdp <port>`), signed in with the session, until it gets SIGTERM or SIGINT. Prints
+ * `cdp port <port>`; the requests the guard refuses go to <out>/blocked.jsonl. Mode: --mode, else read (any for a local --url).
+ */
+export async function browserCommand(argv: string[]): Promise<number> {
+  const { readSession } = await import("./login.ts"); // login.ts signs in through this module
+  const [sub, ...rest] = argv;
+  const { values: v } = parseArgs({ args: rest, options: { url: { type: "string" }, mode: { type: "string" }, session: { type: "string" }, out: { type: "string", default: "ui-review-browser" }, port: { type: "string" } } });
+  const mode = modeOf(v.mode, v.url ?? "http://app.invalid/");
+  if (sub !== "start" || !mode) { console.error("usage: ui-review browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir]"); return 2; }
+  let session: StorageState | null = null;
+  try { session = v.session ? readSession(v.session).state : null; } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
+  mkdirSync(v.out!, { recursive: true });
+  const b = await launch({ mode, out: v.out, session, port: v.port ? Number(v.port) : undefined });
+  if (v.url) { const ctx = await b.browser.newContext({ viewport: { width: 1512, height: 900 } }); await (await ctx.newPage()).goto(v.url, { waitUntil: "domcontentloaded" }).catch(() => {}); }
+  console.log(`cdp port ${b.port}`);
+  await new Promise<void>((ok) => { process.once("SIGTERM", ok); process.once("SIGINT", ok); });
+  await b.close();
+  return 0;
+}

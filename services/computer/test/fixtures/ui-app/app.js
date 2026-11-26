@@ -16,6 +16,7 @@ const pages = {
     <div class="cards"><div class="card">One</div><div class="card off">Two</div></div>
     <button class="slow">Hover me</button></div>`,
   clock: () => `<h1>Clock</h1><div class="card">Last sync <span id="ago">${Math.max(0, Math.round((Date.now() - window.__bootAt) / 60000))}m ago</span></div>`,
+  "socket-write": () => { const ws = new WebSocket(`ws://${location.host}/ws`); ws.onopen = () => ws.send("write"); return `<h1>Socket writer</h1><div class="card">Writes over a WebSocket on load.</div>`; },
   danger: () => `<h1>Danger zone</h1><div class="card"><button id="del" onclick="fetch('/api/delete',{method:'POST'})">Delete</button> <button class="primary" id="pay" onclick="fetch('/api/pay',{method:'POST'})">Pay</button></div>`,
 };
 for (const r of GENERATED) pages[r] = () => `<h1>Section ${r.slice(1)}</h1><div class="card"><div class="skeleton" style="width:0;height:0"></div>Acme report ${r.slice(1)} for example.com.</div><button class="primary">Open</button>`;

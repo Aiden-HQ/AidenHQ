@@ -57,9 +57,8 @@ const SETTLE = async () => {
   return { transitions, animations, hover, active, keyframes, longFrames };
 };
 
-const isLocal = (url: string) => { try { return ["127.0.0.1", "localhost"].includes(new URL(url).hostname); } catch { return false; } };
-// Clicks are opt-in: the caller passes click only for a build it runs itself and only while the page is on a loopback address (Phase 1: a local build, 127.0.0.1 or localhost; a redirect elsewhere ends them).
-// A click may still change data, so controls named like a write are never clicked.
+// Clicks are opt-in: the caller passes click only in a browser under the live-app guard (browser.ts launch), which refuses
+// what the app's mode doesn't allow. Controls named like a write are never clicked all the same.
 const RISKY = /delete|remove|destroy|pay|purchase|buy|submit|confirm|send|reset|sign out|log ?out|archive|cancel subscription/i;
 
 export async function measureMotion(page: PwPage, opts: { click?: boolean } = {}): Promise<Motion> {
@@ -85,7 +84,7 @@ export async function measureMotion(page: PwPage, opts: { click?: boolean } = {}
     if (hovered > 0) shifts.push(Math.round(hovered * 10000) / 10000);
     // Clicks only when the caller asked for them, only on buttons (a link would navigate), never a control in a form or one named like a write.
     const label = ((await c.innerText().catch(() => "")) || (await c.getAttribute("aria-label").catch(() => "")) || "").trim();
-    if (opts.click && isLocal(page.url()) && (await c.evaluate((e) => !(e as HTMLButtonElement).form && (e.tagName === "BUTTON" || e.getAttribute("role") === "button")).catch(() => false)) && !RISKY.test(label)) {
+    if (opts.click && (await c.evaluate((e) => !(e as HTMLButtonElement).form && (e.tagName === "BUTTON" || e.getAttribute("role") === "button")).catch(() => false)) && !RISKY.test(label)) {
       await c.click({ timeout: 1000 }).catch(() => {});
       await page.waitForTimeout(250);
       const clicked = await read();

@@ -1,4 +1,5 @@
-// The route check (#1876's, on Playwright): it clicks, so it runs on a local build only (127.0.0.1 or localhost), at 1512px
+// The route check (#1876's, on Playwright): it clicks, under the live-app guard's --mode (guard.ts: read by default on a live
+// target, so a click there writes nothing; any on a local build), with --session signed in (login.ts), at 1512px
 // light, at most 300 s, 4 contexts side by side. A hash router's "#/a" is a route like a path. Every check opens its page afresh.
 // - The header brand on every page goes to the home view, at the top (from the foot of the page, so a brand that looks
 //   clickable and does nothing fails).
@@ -18,7 +19,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { Page as PwPage } from "playwright-core";
-import { isLocal, launch, ready, routeOf, workerContext } from "./browser.ts";
+import { launch, ready, routeOf, workerContext } from "./browser.ts";
+import { modeOf } from "./guard.ts";
+import { readSession } from "./login.ts";
 import { pageList } from "./pages.ts";
 import { readReport, splitPreexisting } from "./report.ts";
 import type { Bug, Report } from "./types.ts";
@@ -115,10 +118,10 @@ const look = async (s: Session) => { await prep(s); return s.page.evaluate(() =>
 const snap = async (s: Session) => { await prep(s); return s.page.evaluate(() => (window as unknown as { __uiRoutes: R }).__uiRoutes.snap()); };
 const toFoot = (s: Session) => s.page.evaluate(() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }); return Math.round(scrollY); });
 const same = (a: Snap, b: Snap, polling: boolean) => a.route === b.route && a.scrollY === b.scrollY && a.focus === b.focus && a.html === b.html && a.live === b.live && (polling || a.reqs === b.reqs);
-/** Clicks only on the app under review, on a local build: a page that redirected elsewhere (a hosted sign-in) is never clicked. */
+/** Clicks only on the app under review: a page that redirected elsewhere (a hosted sign-in) is never clicked. */
 function guard(s: Session) {
   const u = new URL(s.page.url());
-  if (u.origin !== s.origin || !isLocal(u.href)) throw new Error(`the page left the app for ${u.origin} before the click`);
+  if (u.origin !== s.origin) throw new Error(`the page left the app for ${u.origin} before the click`);
 }
 async function click(s: Session, attr: string) {
   guard(s);
@@ -127,10 +130,11 @@ async function click(s: Session, attr: string) {
 const firstLine = (e: unknown) => String((e as Error)?.message ?? e).split("\n")[0].slice(0, 160);
 
 export async function routesCommand(argv: string[]): Promise<number> {
-  const { values: v, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { out: { type: "string", default: "ui-review-routes" }, map: { type: "string" }, "pages-file": { type: "string" }, paths: { type: "string" }, baseline: { type: "string" } } });
+  const { values: v, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { out: { type: "string", default: "ui-review-routes" }, map: { type: "string" }, "pages-file": { type: "string" }, paths: { type: "string" }, baseline: { type: "string" }, mode: { type: "string" }, session: { type: "string" } } });
   const base = positionals.find((a) => /^https?:\/\//.test(a));
-  if (!base) { console.error("usage: ui-review routes <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--baseline <dir>]"); return 2; }
-  if (!isLocal(base)) { console.error("ui-review routes: route checks click: a local build only (127.0.0.1 or localhost)"); return 2; }
+  if (!base) { console.error("usage: ui-review routes <url> --out <dir> [--map f | --pages-file f | --paths /,/x] [--baseline <dir>] [--mode read|test-write|any] [--session state.json]"); return 2; }
+  const mode = modeOf(v.mode, base);
+  if (!mode) { console.error("ui-review routes: --mode is read, test-write or any"); return 2; }
   const out = v.out!;
   mkdirSync(out, { recursive: true });
   let paths: string[];
@@ -139,7 +143,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
   const origin = new URL(base).origin;
   if (paths.some((p) => new URL(p, base).origin !== origin)) { console.error("ui-review routes: every path must be on the app under review"); return 2; }
   const t0 = Date.now(), frozenAt = new Date().toISOString();
-  const b = await launch({ out, target: base });
+  const b = await launch({ out, mode, session: v.session ? readSession(v.session).state : null });
   const sessions: Session[] = [];
   // A session's page in its own context; `renew` replaces it (a timed-out check may still be clicking on the old one).
   const renew = async (s: Session) => {

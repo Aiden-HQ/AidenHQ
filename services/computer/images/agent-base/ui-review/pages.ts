@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { launch, ready, routeOf, workerContext } from "./browser.ts";
+import type { StorageState } from "./guard.ts";
 import type { Page, PageKind } from "./types.ts";
 
 const CRAWL_MAX = 120, CRAWL_DEPTH = 2, DEFAULT_MAP = "feature-map.json";
@@ -25,12 +26,12 @@ function read(file: string, base: string, source: Page["source"]): Page[] {
 }
 
 /** The page list: `featureMap` (a file that must exist), else `pagesFile`, else ./feature-map.json when there is one, else the crawl. */
-export async function pageList(base: string, o: { featureMap?: string; pagesFile?: string; crawl: boolean }): Promise<Page[]> {
+export async function pageList(base: string, o: { featureMap?: string; pagesFile?: string; crawl: boolean; session?: StorageState | null }): Promise<Page[]> {
   if (o.featureMap) return read(o.featureMap, base, "feature-map");
   if (o.pagesFile) return read(o.pagesFile, base, "router");
   if (existsSync(DEFAULT_MAP)) return read(DEFAULT_MAP, base, "feature-map");
   if (!o.crawl) return [{ path: "/", source: "links" }];
-  return crawl(base);
+  return crawl(base, o.session);
 }
 
 /** The path of a URL on the app, relative to the app's URL, or null when it leaves the app or isn't a page. */
@@ -40,11 +41,12 @@ function pathOf(base: string, href: string): string | null {
   return routeOf(u);
 }
 
-async function crawl(base: string): Promise<Page[]> {
+/** The crawl only opens pages: read mode, signed in with `session` when given. */
+async function crawl(base: string, session?: StorageState | null): Promise<Page[]> {
   const found: Page[] = [], seen = new Set<string>();
   const add = (path: string, source: Page["source"]) => { if (seen.has(path) || found.length >= CRAWL_MAX) return false; seen.add(path); found.push({ path, source }); return true; };
   add(routeOf(new URL(base)), "links");
-  const b = await launch({ politeness: { origin: new URL(base).origin, rps: 4 }, target: base });
+  const b = await launch({ politeness: { origin: new URL(base).origin, rps: 4 }, mode: "read", session });
   try {
     const page = await (await workerContext(b.browser, new Date().toISOString())).newPage();
     let level = [found[0].path];
