@@ -247,6 +247,8 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<Bucket>("today");
+  // A column's quick-add draft lives here, not in the column: leaving the board unmounts the columns, and the draft stays.
+  const [drafts, setDrafts] = useState<Record<Bucket, string>>(() => ({ triage: "", today: "", tomorrow: "", later: "", backlog: "" }));
   const [view, setViewState] = useState<View>(savedView);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -896,6 +898,8 @@ export function App() {
               onAdd={(title) => addTask(title, b)}
               onCarried={b === "today" && !filtering ? (action) => void carriedAction(action) : undefined}
               addRef={b === "triage" ? addRef : undefined}
+              draft={drafts[b]}
+              onDraft={(title) => setDrafts((d) => (d[b] === title ? d : { ...d, [b]: title }))}
               timezone={board.timezone}
             />
           ))}
@@ -1045,13 +1049,15 @@ interface ColumnProps {
   onAdd: (title: string) => Promise<void>;
   onCarried?: (action: "keep" | "tomorrow" | "later") => void;
   addRef?: React.RefObject<HTMLInputElement | null>;
+  /** The quick-add draft, kept by the board so it survives this column unmounting. */
+  draft: string;
+  onDraft: (title: string) => void;
   timezone: string;
 }
 
-function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, onDone, onMove, onSnooze, onMerge, mergeTargets, onAdd, onCarried, addRef, timezone }: ColumnProps) {
+function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, onDone, onMove, onSnooze, onMerge, mergeTargets, onAdd, onCarried, addRef, draft, onDraft, timezone }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: bucket });
   const [adding, setAdding] = useState(bucket === "triage");
-  const [title, setTitle] = useState("");
   const hint =
     bucket === "today"
       ? new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", timeZone: timezone })
@@ -1060,9 +1066,9 @@ function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, o
         : HINTS[bucket];
   const carried = onCarried ? cards.filter((c) => c.carried).length : 0;
   async function submit() {
-    const t = title.trim();
+    const t = draft.trim();
     if (!t) return;
-    setTitle("");
+    onDraft("");
     await onAdd(t);
   }
   return (
@@ -1088,12 +1094,12 @@ function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, o
         >
           <input
             ref={addRef}
-            value={title}
+            value={draft}
             placeholder={bucket === "triage" ? "Add a task…  c" : `Add to ${BUCKET_NAMES[bucket]}…`}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => onDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
-                setTitle("");
+                onDraft("");
                 (e.target as HTMLInputElement).blur();
                 if (bucket !== "triage") setAdding(false);
               }
