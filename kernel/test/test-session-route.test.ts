@@ -57,12 +57,13 @@ const base = () => ({
 });
 
 /** One POST as a module, with the job's assertion the kernel's proxy would send for tool `tool`. */
-async function post(k: any, path: string, body: unknown, { job = "red", tool = "apps.app_page_canary", module = "apps-key", aud = "apps-platform" } = {}) {
+async function post(k: any, path: string, body: unknown, { job = "red", tool = "apps.app_page_canary", module = "apps-key", aud = "apps-platform", jobtool = false } = {}) {
   // The assertion the proxy mints for the call, and its in-flight record (the kernel's own begin/end). The signed roles are
   // empty on purpose: the route reads the job's own roles, never the assertion's or the body's.
   const id = { red: RED, other: OTHER, ui: UI }[job]!, key = { red: "red-teamer", other: "app-maintainer", ui: "ui-reviewer" }[job]!;
   const signed = k.asserter.signCaller({ agent: id, key, name: job, roles: [], task: job === "ui" ? UI_TASK : TASK, tool, aud, kind: "run" });
-  k.asserter.begin(signed.jti, { credential: "", bearer: k.token(job), aud, kind: "run" }, 300);
+  // A module job tool's call is begun as the kernel's jobtools.ts begins it (`jobtool: true`): it opens only routes that accept one.
+  k.asserter.begin(signed.jti, { credential: "", bearer: k.token(job), aud, kind: "run", ...(jobtool ? { jobtool: true as const } : {}) }, 300);
   try {
     const r = await fetch(`${k.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${module}`, "content-type": "application/json", "x-aidenhq-caller": signed.jwt }, body: JSON.stringify(body) });
     return { status: r.status, json: await r.json() };
@@ -125,8 +126,8 @@ test("a module without kernel.test-session can't reach the route, and a task not
 test("an AidenHQ app's session is read-only: test-write and any are refused, and only app_page_canary's own submission writes", async (t) => {
   const one = sessions(() => ({ email: "canary@aidenhq.test", apps: [APP] }));
   const k = await kernel(t, { ...base(), testSessions: () => one });
-  const ui = { job: "ui", tool: "design.app-session", module: "design-key", aud: "design" };
-  // A module job tool's call for the UI Reviewer (an app-tester): up to 60 minutes, always read.
+  const ui = { job: "ui", tool: "jobtool:design/app-session", module: "design-key", aud: "design", jobtool: true };
+  // design's job tool app-session, called for the UI Reviewer (an app-tester): up to 60 minutes, always read.
   const ok = await post(k, "/v1/test-session", { app: APP, minutes: 60 }, ui);
   assert.equal(ok.status, 200, JSON.stringify(ok.json));
   assert.equal(ok.json.mode, "read");
@@ -139,6 +140,9 @@ test("an AidenHQ app's session is read-only: test-write and any are refused, and
     assert.match(String(r.json.error?.message ?? ""), /read-only/);
   }
   assert.equal((await post(k, "/v1/test-session", { app: APP, minutes: 61 }, ui)).status, 400);
+  // Another job tool of the same module (login) opens no session.
+  const login = await post(k, "/v1/test-session", { app: APP }, { ...ui, tool: "jobtool:design/login" });
+  assert.equal(login.status, 403); assert.match(String(login.json.error?.message ?? ""), /app-session/);
   // app_page_canary keeps its one 15-minute submission (test-write), and can't stretch it or ask for more either.
   const canary = await post(k, "/v1/test-session", { app: APP });
   assert.equal(canary.json.mode, "test-write");

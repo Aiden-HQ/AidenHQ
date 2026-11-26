@@ -1,8 +1,8 @@
 // The design service's store: runs in SQLite (DESIGN_DB), each run's evidence (the report's cited captures, fixes and notes)
 // as files under <data>/evidence/<run>/. One store for every kind of run: a review an agent starts, and a pass (passes.ts) the
-// service files for an app, which also holds the hash of its current login nonce (jobtools.ts).
+// service files for an app.
 import { DatabaseSync } from "node:sqlite";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,10 +13,9 @@ const NAME = /^[\w-][\w.-]{0,119}\.(png|jpg|webp|json|md|diff)$/;
 const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", json: "application/json", md: "text/markdown", diff: "text/x-diff" };
 const KINDS = new Set(["review", "scan", "pass"]);
 
-type Row = { id: string; target: string; kind: string; app: string | null; task: string | null; agent: string; model: string; status: string; started: string; ended: string | null; cost_usd: number | null; report: string | null; depth: string | null; mode: string | null; source: string | null; nonce: string | null };
-/** A pass's run as passes.ts and jobtools.ts read it (never its nonce hash). */
-export type PassRow = Omit<Row, "report" | "nonce">;
-const sha = (s: string) => createHash("sha256").update(s).digest();
+type Row = { id: string; target: string; kind: string; app: string | null; task: string | null; agent: string; model: string; status: string; started: string; ended: string | null; cost_usd: number | null; report: string | null; depth: string | null; mode: string | null; source: string | null };
+/** A pass's run as passes.ts and jobtools.ts read it. */
+export type PassRow = Omit<Row, "report">;
 
 export interface Store {
   start(a: { target: string; kind: string; model: string; app?: string; task?: string; agent: string }): { run: string };
@@ -27,12 +26,8 @@ export interface Store {
   bindPass(run: string, task: string, agent: string, source: string): void;
   endPass(run: string, status: "failed"): void;
   pass(run: string): PassRow | undefined;
-  /** A new login nonce for the run (the old one is spent); its hash is kept, never the nonce. */
-  issueNonce(run: string): string;
-  /** Whether `nonce` is the run's current one. */
-  nonceIs(run: string, nonce: string): boolean;
-  runs(q: { app?: string; limit?: number }): { runs: Omit<Row, "report" | "nonce">[] };
-  run(run: string): { run: Omit<Row, "report" | "nonce">; report: unknown; files: string[] };
+  runs(q: { app?: string; limit?: number }): { runs: Omit<Row, "report">[] };
+  run(run: string): { run: Omit<Row, "report">; report: unknown; files: string[] };
   image(run: string, name: string): { data: string; type: string };
   sweep(): number;
 }
@@ -43,9 +38,9 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
   db.exec(`CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY, target TEXT NOT NULL, kind TEXT NOT NULL, app TEXT, task TEXT, agent TEXT NOT NULL, model TEXT NOT NULL,
     status TEXT NOT NULL, started TEXT NOT NULL, ended TEXT, cost_usd REAL, report TEXT)`);
-  // data_version 1: a pass's depth (scan | signed-in | tester), live-app mode, task source and login nonce hash.
+  // data_version 1: a pass's depth (scan | signed-in | tester), live-app mode and task source.
   const cols = new Set((db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name));
-  for (const c of ["depth", "mode", "source", "nonce"]) if (!cols.has(c)) db.exec(`ALTER TABLE runs ADD COLUMN ${c} TEXT`);
+  for (const c of ["depth", "mode", "source"]) if (!cols.has(c)) db.exec(`ALTER TABLE runs ADD COLUMN ${c} TEXT`);
   const evidence = (run: string) => join(dir, "evidence", run);
   const get = (run: string): Row => {
     if (!/^[\w-]{1,40}$/.test(run)) throw new Error(`no run ${run}`);
@@ -58,7 +53,7 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
     if (r.agent !== agent) throw new Error(`run ${run} belongs to another agent`);
     return r;
   };
-  const head = ({ report: _r, nonce: _n, ...r }: Row) => r;
+  const head = ({ report: _r, ...r }: Row) => r;
   const newId = () => `r-${now().toString(36)}-${randomBytes(4).toString("hex")}`;
 
   return {
@@ -88,15 +83,6 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
       if (!/^[\w-]{1,40}$/.test(run)) return undefined;
       const r = db.prepare("SELECT * FROM runs WHERE id = ? AND kind = 'pass'").get(run) as Row | undefined;
       return r && head(r);
-    },
-    issueNonce(run) {
-      const nonce = randomBytes(32).toString("base64url");
-      db.prepare("UPDATE runs SET nonce = ? WHERE id = ? AND kind = 'pass'").run(sha(nonce).toString("hex"), run);
-      return nonce;
-    },
-    nonceIs(run, nonce) {
-      const r = db.prepare("SELECT nonce FROM runs WHERE id = ? AND kind = 'pass'").get(run) as { nonce: string | null } | undefined;
-      return Boolean(r?.nonce && nonce) && timingSafeEqual(Buffer.from(r!.nonce!, "hex"), sha(nonce));
     },
     put(run, agent, files) {
       if (own(run, agent).status !== "running") throw new Error(`run ${run} is finished`);

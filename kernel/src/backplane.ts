@@ -141,7 +141,7 @@ import type { Jobs } from "./jobs.ts";
 import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
-import { JOBTOOL_BODY_MAX, type JobTools, type ModuleTool } from "./jobtools.ts";
+import { JOBTOOL_BODY_MAX, JOBTOOL_CLAIM, type JobTools, type ModuleTool } from "./jobtools.ts";
 import type { Routing } from "./routing-tune.ts";
 import { CODEHOSTS, hostOf, type Answer } from "./codehost.ts";
 import { fail } from "./proxy.ts";
@@ -844,9 +844,11 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         if (!w.roles.includes("kernel.test-session")) throw fail(403, "forbidden", `${w.module} may not reach the test session (role kernel.test-session)`);
         const sessions = testSessions?.();
         if (!sessions) throw fail(503, "unavailable", "test sessions are off");
-        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+        // A module job tool's call (jobtools.ts createModuleTool) opens it too, but only that module's own `app-session` op.
+        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!, { jobtool: true });
         const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
         if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight opens a test session");
+        if (live.flight.jobtool && live.caller.tool !== JOBTOOL_CLAIM(w.module!, "app-session")) throw fail(403, "forbidden", `only ${w.module}'s job tool app-session opens a test session`);
         // The mode is the kernel's: app_page_canary's one feedback submission writes (test-write); every other caller reads.
         // AidenHQ apps never get more: a body asking for test-write or any is refused, whatever the app's own settings say.
         const canary = String(live.caller.tool ?? "") === "apps.app_page_canary";

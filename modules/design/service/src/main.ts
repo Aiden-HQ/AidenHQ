@@ -28,7 +28,9 @@ const passes = createPasses({
   store, apps: () => apps, logins,
   fileTask: async (t) => { const r = await kernel().call("POST", "/v1/tasks", t); return { id: String(r.id), agent: String(r.agent) }; },
 });
-const jobtools = createJobTools({ passes, store, logins });
+// An AidenHQ app's test-user session: this module's token and the job tool call's own assertion, which the kernel re-checks.
+const mintSession = (assertion: string, app: string) => kernel().raw("POST", "/v1/test-session", { app, minutes: 60 }, { "x-aidenhq-caller": assertion });
+const jobtools = createJobTools({ passes, logins, mintSession });
 const serviceKey = () => file(env.DESIGN_SERVICE_KEY_FILE);
 
 const mcp = serveMcp(createMcp("design", designTools(store, { passes, apps: () => apps, logins })), serviceKey, async (req) => ({ ...(await verifyCaller(req, jwks, "design")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }),

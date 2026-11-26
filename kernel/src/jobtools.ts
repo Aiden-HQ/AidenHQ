@@ -175,7 +175,7 @@ const TIMEOUT_S = 60;
  * job's own token, read by whoami (live, on its own agent and task); the op is one the module lists. The kernel POSTs
  * `{op, body, caller}` to the module's `providers.jobtools.url` with the module's key and a caller assertion for the job,
  * in flight while the module answers. The assertion opens only a module+assertion route that accepts a job tool's call
- * (assert.ts `inFlight` with `jobtool: true`), for this job and no other: none does yet. `task_module` and `task_source` are the module and source the kernel recorded when that module filed the task
+ * (assert.ts `inFlight` with `jobtool: true`), for this job and no other: only POST /v1/test-session, from the module's own `app-session` op. `task_module` and `task_source` are the module and source the kernel recorded when that module filed the task
  * (modtasks.ts `task_filers`), never the task's text, which its assignee may edit; null for any other task. The module decides
  * what to release; its status and answer go back to the box as they came (bounded).
  */

@@ -340,7 +340,7 @@ function runDir(): string {
       ...(width === 1512 ? { motion: { transitions: [{ property: "all", duration: 600, easing: "ease", n: 3, examples: [".btn"] }], animations: [], hover: [".btn:hover { transform: scale(1.1) }"], active: [], keyframes: [], longFrames: [], shifts: [] } } : {}),
     });
   }
-  const report: Report = { version: 2, target: "http://127.0.0.1:1", frozenAt: "2026-01-01T00:00:00Z", model: "", coverage: { done: 9, total: 9, failed: 0, deferred: 0 }, captures, improvements: [], motion: [], bugs: [], notes: [], cost_usd: 0 };
+  const report: Report = { version: 2, target: "http://127.0.0.1:1", frozenAt: "2026-01-01T00:00:00Z", model: "", coverage: { done: 9, total: 9, failed: 0, deferred: 0 }, captures, improvements: [], motion: [], bugs: [], notes: [], cost_usd: 0, blocked: [] };
   writeFileSync(join(dir, "report.json"), JSON.stringify(report));
   writeFileSync(join(dir, "run.json"), JSON.stringify({ base: "http://127.0.0.1:1", frozenAt: "2026-01-01T00:00:00Z", widths: [390, 1512, 2560], themes: ["light"], states: ["default"], pages: [{ path: "/#/r01", kind: "list", source: "router" }, { path: "/#/r02", kind: "list", source: "router" }, { path: "/#/r03", kind: "form", source: "router" }] }));
   return dir;
@@ -435,7 +435,7 @@ describe("repro", chrome, () => {
       return { shows: title !== "Save does nothing" || seen[title] === 1, why: "decided from the pictures" };
     });
     try {
-      const r = await repro(fixture.url, clicksWith([archive, filter, fine, rough]), { out, model: "fake/judge", base: fake.url });
+      const r = await repro(fixture.url, clicksWith([archive, filter, fine, rough]), { out, model: "fake/judge", base: fake.url, mode: "any" });
       assert.deepEqual(r.bugs.map((b) => b.title).sort(), ["Archive does nothing", "Filter lost on reload"]);
       assert.ok(r.bugs.every((b) => b.verified && b.repro!.length > 0 && b.captures.length >= 2 && b.captures.every((f) => existsSync(join(out, f)))));
       assert.ok(r.bugs.every((b) => b.kind && b.selector));
@@ -446,11 +446,25 @@ describe("repro", chrome, () => {
     } finally { await fake.close(); }
   });
 
+  test("repro --mode read replays a bug without a write reaching the app", async () => {
+    const out = runDir();
+    const pay = { kind: "bug", page: "/#/danger", width: 1512, title: "Pay does nothing", saw: "nothing happens", expected: "a receipt", steps: [{ open: "/#/danger" }, { click: "#pay" }] };
+    const fake = await fakeModel(() => ({ shows: true, why: "decided from the pictures" }));
+    try {
+      const w0 = fixture.writes();
+      const p = spawnSync("node", [main, "repro", clicksWith([pay]), "--out", out, "--url", fixture.url, "--mode", "read", "--model", "fake/judge"], { encoding: "utf8", env: { ...process.env, OPENROUTER_BASE_URL: fake.url } });
+      assert.equal(p.status, 0, p.stderr);
+      assert.equal(fixture.writes() - w0, 0); // the POST on mount and Pay's POST, in both replays, never reached the app
+      const saved = JSON.parse(readFileSync(join(out, "report.json"), "utf8")) as Report;
+      assert.ok(saved.blocked.some((b) => b.method === "POST" && b.path === "/api/pay"), JSON.stringify(saved.blocked));
+    } finally { await fake.close(); }
+  });
+
   test("repro refuses candidates.json, which has no steps to replay", async () => {
     const { repro } = await import("../images/agent-base/ui-review/repro.ts");
     const f = join(tmp(), "candidates.json");
     writeFileSync(f, JSON.stringify([{ page: "/#/clicks", width: 1512, theme: "light", title: "Archive does nothing", evidence: "x", capture: "shots/a.png" }]));
-    await assert.rejects(repro(fixture.url, f, { out: tmp(), model: "fake/judge" }), /candidates have no steps/);
+    await assert.rejects(repro(fixture.url, f, { out: tmp(), model: "fake/judge", mode: "any" }), /candidates have no steps/);
     const p = spawnSync("node", [main, "repro", f, "--out", tmp(), "--url", fixture.url], { encoding: "utf8" });
     assert.equal(p.status, 2);
   });

@@ -8,16 +8,18 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { BrowserContext, Page as PwPage } from "playwright-core";
 import { heightOf, initScript, launch, ready } from "./browser.ts";
+import { type Mode, modeOf } from "./guard.ts";
+import { readSession } from "./login.ts";
 import { ask, DEFAULT_MODEL, spend } from "./model.ts";
 import { saveReport } from "./report.ts";
-import type { Bug, Click, Report, Step } from "./types.ts";
+import type { Blocked, Bug, Click, Report, Step } from "./types.ts";
 
 const STEP_MS = 5000;
 const judgePrompt = readFileSync(new URL("./prompts/repro-judge.md", import.meta.url), "utf8").trim();
 const fence = (s: string) => `<untrusted>\n${s.replace(/<\/?untrusted>/gi, "")}\n</untrusted>`;
 const judgeSchema = { type: "object", additionalProperties: false, required: ["shows", "why"], properties: { shows: { type: "boolean" }, why: { type: "string" } } };
 
-export type ReproOptions = { out: string; model?: string; session?: string; mode?: string; maxUsd?: number; base?: string; key?: string };
+export type ReproOptions = { out: string; model?: string; session?: string; mode: Mode; maxUsd?: number; base?: string; key?: string };
 type Replay = { ok: true; before: string; after: string; changed: { text: boolean; url: boolean }; writes: number } | { ok: false; why: string };
 
 const SECRET = /pass|secret|token|otp|totp|pin\b/i;
@@ -107,11 +109,13 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
   mkdirSync(join(o.out, "repro", batch), { recursive: true });
   spend.usd = 0; spend.calls = 0;
   const over = () => o.maxUsd !== undefined && spend.usd >= o.maxUsd;
-  const l = await launch({ target: base, mode: o.mode } as Parameters<typeof launch>[0]);
+  const session = o.session ? readSession(o.session).state : null;
+  const l = await launch({ mode: o.mode, session });
   const bugs: Bug[] = [], friction: unknown[] = [];
+  let blocked: Blocked[] = [];
   try {
     const frozenAt = new Date().toISOString();
-    const state = o.session ? { storageState: o.session } : {};
+    const state = session ? { storageState: session } : {};
     const fresh = (c: Click) => async () => {
       const ctx = await l.browser.newContext({ ...state, viewport: { width: c.width, height: heightOf(c.width) }, deviceScaleFactor: 1 });
       await ctx.addInitScript(initScript(frozenAt));
@@ -150,13 +154,15 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
       }
     };
     await Promise.all([worker(), worker()]);
-  } finally { await l.close(); }
+  } finally { blocked = l.blocked(); await l.close(); }
 
   const r = JSON.parse(readFileSync(join(o.out, "report.json"), "utf8")) as Report;
   const mine = new Set(todo.map((c) => `${c.page}|${c.title}`)); // every finding retried here: a bug that no longer reproduces leaves the report
   r.bugs = [...r.bugs.filter((b) => !mine.has(`${b.page}|${b.title}`)), ...bugs];
   r.cost_usd = Math.round((r.cost_usd + spend.usd) * 1e4) / 1e4;
   r.notes = [...r.notes, ...dropped.map((d) => `clicking pass, not reported: ${d}`)];
+  // What the guard refused while replaying: listed with the capture's own under "Blocked requests".
+  r.blocked = [...(r.blocked ?? []), ...blocked];
   saveReport(o.out, r);
   writeFileSync(join(o.out, "friction.json"), JSON.stringify(friction, null, 2));
   return { bugs, friction: friction.length, dropped };
@@ -166,12 +172,14 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
 export async function reproCommand(argv: string[]): Promise<number> {
   const { values: v, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { out: { type: "string" }, url: { type: "string" }, session: { type: "string" }, mode: { type: "string" }, model: { type: "string" }, "max-usd": { type: "string" } } });
   if (!positionals[0] || !v.out) { console.error("usage: ui-review repro <clicks.json> --out <dir> [--url <app url>] [--session state.json] [--mode read|test-write|any] [--model id] [--max-usd n]"); return 2; }
-  if (v.mode && !["read", "test-write", "any"].includes(v.mode)) { console.error("ui-review repro: --mode is read, test-write or any"); return 2; }
   const report = existsSync(join(v.out, "report.json")) ? (JSON.parse(readFileSync(join(v.out, "report.json"), "utf8")) as Report) : null;
   const url = v.url ?? report?.target;
   if (!url) { console.error("ui-review repro: --url is required when --out has no report.json"); return 2; }
+  // The mode as capture reads it: --mode, else any for a local build and read for everything else.
+  const mode = modeOf(v.mode, url);
+  if (!mode) { console.error("ui-review repro: --mode is read, test-write or any"); return 2; }
   try {
-    const r = await repro(url, positionals[0], { out: v.out, session: v.session, mode: v.mode, model: v.model, maxUsd: v["max-usd"] ? Number(v["max-usd"]) : undefined });
+    const r = await repro(url, positionals[0], { out: v.out, session: v.session, mode, model: v.model, maxUsd: v["max-usd"] ? Number(v["max-usd"]) : undefined });
     console.log(`${r.bugs.length} verified bugs, ${r.friction} friction items, ${r.dropped.length} not reported${r.dropped.length ? `:\n${r.dropped.map((d) => `  - ${d}`).join("\n")}` : ""}`);
     return 0;
   } catch (e) {

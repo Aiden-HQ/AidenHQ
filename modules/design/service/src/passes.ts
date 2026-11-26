@@ -18,7 +18,6 @@ const BASE32 = /^[A-Za-z2-7\s=-]+$/;
 const rank = (m: Mode) => MODES.indexOf(m);
 /** A pass is active this long after it starts, at most (the UI Reviewer's run is 40 minutes; a re-run on unvisited flows fits). */
 export const PASS_MS = 2 * 3_600_000;
-export const WAITS_FOR_PR2 = "signed-in review of AidenHQ apps waits for the owner's decision on test-user sessions";
 
 /**
  * The most a pass on this app may do. An AidenHQ app is read-only whatever its `live_mode` says (owner, 2026-11-26): its
@@ -106,11 +105,11 @@ export function createPasses(d: PassDeps) {
     if (o.mode !== undefined && !MODES.includes(o.mode)) return { refused: `mode is one of ${MODES.join(", ")}` };
     const top = ceiling(a);
     if (o.mode && rank(o.mode) > rank(top)) return { refused: `mode ${o.mode} is above ${a.name}'s live_mode (${top}${a.aidenhq_app ? ": AidenHQ apps are read-only" : ""})` };
-    if (a.aidenhq_app && o.depth !== "scan") return { refused: WAITS_FOR_PR2 };
     const mode = o.mode ?? top, model = o.model ?? "the UI Reviewer's own model";
     const { run } = d.store.startPass({ app: a.name, target: a.url, model, depth: o.depth, mode });
     const source = `design:pass:${a.name}:${run}`;
     const signIn = o.depth === "scan" ? "Review the pages a visitor sees; don't sign in."
+      : a.aidenhq_app ? `Sign in with \`ui-review login aidenhq --app ${a.name} --out state.json\` (a read-only test-user session) and review the address it prints, not the public url.`
       : `Sign in with \`ui-review login\` (the login ladder in the skill${d.logins()[a.name] ? ": a supplied login is set, `ui-review login supplied --app " + a.name + "`" : ""}).`;
     const description = [
       `A ${o.depth} UI review pass of the app ${a.name} (${why}), design run ${run}.`,

@@ -71,12 +71,13 @@ connections:
       read: [ design_runs, design_run, design_image, design_evidence_put, design_run_finish, design_apps ]
       write: [ design_run_start, design_pass_start ]
 # The job tools a pass's box calls (the kernel's POST /v1/jobtools/module/design/<op> forwards { op, body, caller } here with the
-# service key): login releases the app's supplied login to the pass's own ui-review process (service/src/jobtools.ts).
+# service key): login releases the app's supplied login to the pass's own ui-review process; app-session gets an AidenHQ app's
+# read-only test-user session from the kernel for it (service/src/jobtools.ts).
 providers:
   jobtools:
     url: http://design:8099/jobtools
     auth: design_service_key
-    ops: [ login ]
+    ops: [ login, app-session ]
 # The module's own check of a ui_testing change or a pasted ui_logins (service/src/passes.ts validate): errors under the field.
 validate:
   post: http://design:8099/validate
@@ -120,4 +121,4 @@ services:
 generated_secrets:
   - design_service_key
   - design_token
-data_version: 1 # its data dir's format: 1 adds a pass's depth, mode, source and login nonce hash to runs (store.ts)
+data_version: 1 # its data dir's format: 1 adds a pass's depth, mode and source to runs (store.ts)

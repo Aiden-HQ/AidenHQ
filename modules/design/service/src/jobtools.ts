@@ -2,19 +2,22 @@
 // /v1/jobtools/module/design/<op> forwards a job's call here as { op, body, caller } with this module's key). The kernel signs
 // nothing more: the service key on the request is what makes `caller` the kernel's word.
 //
-// login { app, nonce } releases the app's supplied login (secret ui_logins) to the box's `ui-review` process, only when:
-//   the caller holds role ui-login; its task is the design module's own pass for that app (task_module design, task_source
-//   design:pass:<app>:<run>); that run is the app's running pass at depth signed-in or tester; the app is not an AidenHQ app
-//   (those sign in through the test-user session, read-only); a login is set; and `nonce` is the run's current login nonce.
-// Each answer spends that nonce and carries the next one (`nonce`), which the engine writes back where the agent can't
-// read it, so a dead session's re-login works and a replay doesn't. Every refusal is 403 with its reason and nothing else.
+// Both ops answer only when the caller holds role ui-login, its task is the design module's own pass for that app (task_module
+// design, task_source design:pass:<app>:<run>) and that run is the app's running pass at depth signed-in or tester:
+//   login { app }        the app's supplied login (secret ui_logins) for the box's `ui-review` process; not for an AidenHQ app.
+//   app-session { app }  an AidenHQ app's read-only test-user session: the kernel's POST /v1/test-session { app, minutes: 60 },
+//                        made with this module's token and the call's own forwarded assertion (the kernel re-checks the job,
+//                        its role app-tester, its open task and the app list, and sets the mode: always read). The box never
+//                        names a mode. Its answer is the one-time handoff code the engine redeems at the test listener.
+// Every refusal is 403 with its reason and nothing else; no login material is ever logged.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Passes, Login } from "./passes.ts";
-import type { Store } from "./store.ts";
 
 export type JobCaller = { agent: string; roles: string[]; task: string; task_module: string | null; task_source: string | null };
 type Answer = { status: number; body: Record<string, unknown> };
+/** The kernel's test-session mint for the call in flight (`assertion` is the forwarded x-aidenhq-caller): its status and body. */
+export type MintSession = (assertion: string, app: string) => Promise<{ status: number; json: Record<string, unknown> }>;
 const refuse = (why: string): Answer => ({ status: 403, body: { error: why } });
 
 /** RFC 6238 (SHA-1, 30 s, 6 digits) from a base32 seed: the current code, never the seed. */
@@ -34,31 +37,48 @@ export function totp(seed: string, at = Date.now()): string {
   return String((h.readUInt32BE(o) & 0x7fffffff) % 1_000_000).padStart(6, "0");
 }
 
-export function createJobTools(d: { passes: Passes; store: Store; logins: () => Record<string, Login>; now?: () => number }) {
+export function createJobTools(d: { passes: Passes; logins: () => Record<string, Login>; mintSession: MintSession; now?: () => number }) {
   const now = d.now ?? Date.now;
-  function login(body: Record<string, unknown>, caller: JobCaller): Answer {
-    const name = String(body.app ?? "");
-    if (!caller.roles.includes("ui-login")) return refuse("login is for an agent with the ui-login role");
-    if (caller.task_module !== "design") return refuse("login is only for the design module's own pass");
-    const p = d.passes.passFor(name, caller.task_source);
-    if (p.refused) return refuse(p.refused);
-    if (p.app!.aidenhq_app) return refuse(`${p.app!.name} is an AidenHQ app: it signs in through the test-user session (read-only), never a supplied login`);
-    if (p.run!.depth === "scan") return refuse(`pass ${p.run!.id} is a scan: it doesn't sign in`);
-    const l = d.logins()[p.app!.name];
-    if (!l) return refuse(`no login is set for ${p.app!.name} (secret ui_logins)`);
-    if (typeof body.nonce !== "string" || !d.store.nonceIs(p.run!.id, body.nonce)) return refuse("login needs the run's current login nonce (a run token or a spent nonce is refused)");
-    let code: string | undefined;
-    try { code = l.totp_secret ? totp(l.totp_secret, now()) : undefined; } catch { return refuse(`the login for ${p.app!.name} has a TOTP seed that isn't base32`); }
-    const next = d.store.issueNonce(p.run!.id);
-    return { status: 200, body: { login_url: l.login_url, username: l.username, password: l.password, ...(code ? { totp: code } : {}), nonce: next } };
+  /** The app's running signed-in pass for this caller, or why not. */
+  function pass(body: Record<string, unknown>, caller: JobCaller, op: string) {
+    if (!caller.roles.includes("ui-login")) return { refused: `${op} is for an agent with the ui-login role` };
+    if (caller.task_module !== "design") return { refused: `${op} is only for the design module's own pass` };
+    const p = d.passes.passFor(String(body.app ?? ""), caller.task_source);
+    if (p.refused) return { refused: p.refused };
+    if (p.run!.depth === "scan") return { refused: `pass ${p.run!.id} is a scan: it doesn't sign in` };
+    return { app: p.app! };
   }
-  const ops: Record<string, (b: Record<string, unknown>, c: JobCaller) => Answer> = { login };
+  async function login(body: Record<string, unknown>, caller: JobCaller): Promise<Answer> {
+    const p = pass(body, caller, "login");
+    if (!p.app) return refuse(p.refused!);
+    if (p.app.aidenhq_app) return refuse(`${p.app.name} is an AidenHQ app: it signs in through the test-user session (read-only, ui-review login aidenhq), never a supplied login`);
+    const l = d.logins()[p.app.name];
+    if (!l) return refuse(`no login is set for ${p.app.name} (secret ui_logins)`);
+    let code: string | undefined;
+    try { code = l.totp_secret ? totp(l.totp_secret, now()) : undefined; } catch { return refuse(`the login for ${p.app.name} has a TOTP seed that isn't base32`); }
+    return { status: 200, body: { login_url: l.login_url, username: l.username, password: l.password, ...(code ? { totp: code } : {}) } };
+  }
+  async function appSession(body: Record<string, unknown>, caller: JobCaller, assertion: string): Promise<Answer> {
+    const p = pass(body, caller, "app-session");
+    if (!p.app) return refuse(p.refused!);
+    if (!p.app.aidenhq_app) return refuse(`${p.app.name} isn't an AidenHQ app: it signs in with a supplied login or the ladder's other rungs`);
+    const r = await d.mintSession(assertion, p.app.name);
+    if (r.status !== 200) {
+      const e = r.json.error as { message?: unknown } | string | undefined;
+      const why = typeof e === "string" ? e : typeof e?.message === "string" ? e.message : `the kernel answered ${r.status}`;
+      return refuse(`no test-user session for ${p.app.name}: ${why.slice(0, 200)}`);
+    }
+    // Only what the engine needs to redeem it: the one-time code and state, the session's mode and expiry.
+    const { app, code, state, mode, expires } = r.json;
+    return { status: 200, body: { app, code, state, mode, expires } };
+  }
+  const ops: Record<string, (b: Record<string, unknown>, c: JobCaller, assertion: string) => Promise<Answer>> = { login, "app-session": appSession };
 
   /** One forwarded call: 404 for an op this module doesn't serve. */
-  const answer = (op: string, body: unknown, caller: JobCaller): Answer => {
+  const answer = async (op: string, body: unknown, caller: JobCaller, assertion = ""): Promise<Answer> => {
     const f = Object.hasOwn(ops, op) ? ops[op] : undefined;
     if (!f) return { status: 404, body: { error: `no job tool ${String(op).slice(0, 40)}` } };
-    return f(body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {}, caller);
+    return f(body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {}, caller, assertion);
   };
 
   /** POST /jobtools with this module's key; false for any other path. */
@@ -75,7 +95,7 @@ export function createJobTools(d: { passes: Passes; store: Store; logins: () => 
     const c = m?.caller;
     if (!c || typeof c.agent !== "string" || !Array.isArray(c.roles) || typeof c.task !== "string") return send({ status: 400, body: { error: "send { op, body, caller }" } }), true;
     const caller: JobCaller = { agent: c.agent, roles: c.roles.map(String), task: c.task, task_module: typeof c.task_module === "string" ? c.task_module : null, task_source: typeof c.task_source === "string" ? c.task_source : null };
-    return send(answer(String(m.op ?? ""), m.body, caller)), true;
+    return send(await answer(String(m.op ?? ""), m.body, caller, String(req.headers["x-aidenhq-caller"] ?? ""))), true;
   }
   return { answer, serve };
 }
