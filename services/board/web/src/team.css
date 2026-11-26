@@ -1,0 +1,35 @@
+/* Team (Team.tsx) and a teammate's page (Teammate.tsx): layout only; the kit draws the parts. */
+.team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: 12px; }
+.team-grid > .enter { display: grid; min-width: 0; }
+.team-grid .ui-tile-desc { min-height: 0; }
+.team-grid .ui-tile-title { white-space: normal; }
+.team-plus { display: inline-grid; place-items: center; width: 64px; height: 64px; flex: none; border: 1px dashed var(--border-strong); border-radius: 50%; color: var(--muted); font-size: var(--text-2xl); }
+
+/* The teammate's page: its header, then the chat beside a side column (stacked under 1100px). */
+.mate-back { justify-self: start; font-size: var(--text-md); font-weight: 600; text-decoration: none; }
+.mate-back:hover { text-decoration: underline; }
+.mate-head { display: flex; align-items: center; gap: clamp(14px, 1.5vw, 24px); flex-wrap: wrap; }
+.mate-who { flex: 1; min-width: min(100%, 18rem); display: grid; gap: 4px; }
+.mate-name { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.mate-name h1 { margin: 0; font-size: var(--text-3xl); font-weight: 700; letter-spacing: -0.025em; }
+.mate-job { font-size: var(--text-xl); color: var(--muted); }
+.mate-desc { margin: 0; font-size: var(--text-base); color: var(--muted); }
+.mate-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.mate-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: start; }
+@media (min-width: 1100px) { .mate-grid { grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem); } }
+.mate-side { display: grid; gap: var(--stack); align-content: start; min-width: 0; }
+.mate-chat { display: flex; flex-direction: column; height: min(76vh, 860px); min-height: 420px; }
+.mate-chat > .ui-sc-flush { flex: 1; min-height: 0; }
+/* The composer closes the card: it scrolls with the page, never pinned over the messages. */
+.mate-chat .ws-composer { position: static; }
+.mate-chat-tools { display: flex; align-items: center; gap: 8px; }
+.mate-new { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; min-height: 0; }
+.mate-new-hint { margin: auto; padding: 24px; max-width: 36rem; text-align: center; color: var(--muted); font-size: var(--text-md); }
+.mate-p { margin: 0; font-size: var(--text-md); line-height: 1.5; color: var(--muted); }
+.mate-work { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.mate-work li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--text-base); }
+.mate-work a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; }
+.mate-work a:hover { text-decoration: underline; }
+.mate-work time { flex: none; font-size: var(--text-sm); color: var(--faint); }
+.mate-foot { margin: 0; font-size: var(--text-sm); color: var(--faint); }
+.mate-staff { display: grid; gap: 6px; }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { FeatureCostStrip } from "./FeatureCost";
 import { LineageStrip, useLineage } from "./Lineage";
 import { api } from "./api";
+import { QUERIES, useQuery } from "./queries";
 import { Avatar, Chips, CloseIcon, CrewAvatar, MergeMenu, MoveMenu, Plan, SnoozeMenu, memberIssue } from "./components";
 import { Markdown } from "./markdown";
 import { SkeletonLines } from "./Skeleton";
@@ -990,6 +991,10 @@ function Files({ issue }: { issue: IssueView }) {
 }
 
 function Composer({ issue, reload, toast, to, crew = [], moved }: { issue: IssueView; reload: () => Promise<void>; toast: Props["toast"]; to?: { assignee: Assignee; label: string }; crew?: Assignee[]; moved?: (identifier: string) => void }) {
+  // @-mentions offer teammates only (the server ignores a mention of a hidden agent: it works through its teammate).
+  const roster = useQuery(QUERIES.roster).data?.roster;
+  const mates = new Set((roster ?? []).filter((r) => r.teammate).map((r) => r.key));
+  crew = crew.filter((a) => mates.has(a.seed));
   const key = `draft:${issue.id}`;
   const [text, setText] = useState(() => {
     try {

@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
-import { SignInRequired, api } from "./api";
 import { Plan, PlusIcon } from "./components";
+import { AttentionStrip } from "./Attention";
 import { useEvents } from "./events";
 import { useCached } from "./cache";
 import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } from "./queries";
@@ -22,17 +22,10 @@ const STATUS: Record<string, { text: string; tone: "ok" | "bad" | "meh" }> = {
 };
 const runStatus = (status: string) => STATUS[status] ?? { text: status, tone: "meh" as const };
 
-/** "+ New agent": a chat with the Agent Architect, opened on what the person needs. */
-async function newAgent(onSignIn: () => void, setError: (e: string) => void) {
+/** "+ New agent": Archie's page, its composer pre-filled with what the person needs. */
+function newAgent() {
   const text = window.prompt("What should the new agent do?", "I need an agent that ");
-  if (!text?.trim()) return;
-  try {
-    const { identifier } = await api.newChat(text.trim(), "architect");
-    location.hash = `#/c/${identifier}`;
-  } catch (e) {
-    if (e instanceof SignInRequired) onSignIn();
-    else setError((e as Error).message);
-  }
+  if (text?.trim()) location.hash = `#/team/architect?text=${encodeURIComponent(text.trim())}`;
 }
 
 type Department = RosterAgent["department"];
@@ -124,7 +117,6 @@ function fold(runs: Finished[]) {
 export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () => void }) {
   const fleet = useQuery(QUERIES.roster, onSignIn);
   const runs = useQuery(QUERIES.agents, onSignIn);
-  const [newError, setNewError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [open, setOpen] = useState<Set<string>>(new Set());
 
@@ -139,15 +131,15 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
 
   const data = runs.data;
   const roster = data?.roster ?? fleet.data?.roster;
-  const error = newError || runs.error || (!roster ? fleet.error : "");
+  const error = runs.error || (!roster ? fleet.error : "");
   const head = (sub: ReactNode) => (
     <header className="page-head">
       <div>
-        <h1>Agents</h1>
+        <h1>All agents</h1>
         <p className="page-sub">{sub}</p>
       </div>
       <span className="spacer" />
-      <button className="btn primary" onClick={() => void newAgent(onSignIn, setNewError)}>
+      <button className="btn primary" onClick={newAgent}>
         <PlusIcon /> New agent
       </button>
     </header>
@@ -156,6 +148,7 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
     return (
       <main className="page wide">
         {head(fleet.error ? "" : "Loading your agents…")}
+        <AttentionStrip onSignIn={onSignIn} />
         {fleet.error ? (
           <div className="offline">Couldn't load your agents: {fleet.error}. Retrying…</div>
         ) : (
@@ -255,6 +248,7 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
           <Updating on={runs.stale || fleet.stale || !data} />
         </>,
       )}
+      <AttentionStrip onSignIn={onSignIn} />
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       {platform.length > 0 && table("Platform agents", platform, true)}
       {mine.length > 0 ? (
@@ -411,13 +405,13 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
             {a.key && <NeedsYouLine agentKey={a.key} />}
             <div className="ap-bar">
               {a.key && (
-                <a className="btn primary" href={`#/agents/${a.key}`}>
+                <a className="btn primary" href={a.teammate ? `#/team/${a.key}` : `#/team/agents/${a.key}`}>
                   Open {a.name}'s page
                 </a>
               )}
-              {/* A paused agent takes no chats (the chat list leaves it out). */}
-              {a.state !== "paused" && (
-                <a className="btn" href={`#/c/?to=${encodeURIComponent(a.id)}`}>
+              {/* Only a teammate takes chats; a paused one takes none. */}
+              {a.teammate && a.state !== "paused" && (
+                <a className="btn" href={`#/team/${a.key}`}>
                   Chat with {a.name}
                 </a>
               )}

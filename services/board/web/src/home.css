@@ -1,0 +1,56 @@
+/* Home (Home.tsx): layout only. Colours, type and motion come from the kit (ui/ui.css) and its tokens. */
+.home { gap: var(--stack); }
+.home-head { display: grid; gap: 6px; }
+.home-date { margin: 0; font-size: var(--text-md); color: var(--muted); font-variant-numeric: tabular-nums; }
+.home-head h1 { margin: 0; font-size: var(--text-3xl); font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; text-wrap: balance; }
+.home-banner-actions { display: flex; gap: 6px; }
+
+/* Needs you beside Since and the idea; one column under 1100px. */
+.home-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: start; }
+@media (min-width: 1100px) { .home-top { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
+.home-side { display: grid; gap: var(--stack); align-content: start; min-width: 0; }
+.home-side > .ui-detail { width: auto; }
+.home-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: var(--stack); align-items: start; }
+.home-bone { display: block; width: 100%; border-radius: var(--radius); }
+
+.home-keys { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.home-keys .ui-kbd + .ui-kbd { margin-left: -1px; }
+.home-keys .ui-kbd:not(:first-child) { margin-left: 6px; }
+.home-keys .ui-kbd:nth-child(2) { margin-left: 2px; }
+@media (max-width: 860px) { .home-keys { display: none; } }
+.home-clear { margin: 0; padding: 18px 16px; color: var(--muted); font-size: var(--text-md); }
+.home-reads { font-size: var(--text-sm); color: var(--faint); }
+.home-needs [role="option"] { outline: none; }
+.home-needs [role="option"] + [role="option"] .ui-dr { border-top: 1px solid var(--border); }
+.home-needs .approval-decide, .home-needs .approval-actions { display: contents; }
+.home-all { font-size: var(--text-sm); font-weight: 600; color: var(--accent); }
+.home-more { color: var(--faint); font-size: var(--text-sm); white-space: nowrap; }
+
+/* The detail pane's body. */
+.home-detail { display: grid; gap: 12px; min-width: 0; }
+.home-detail-who { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: var(--text-sm); }
+.home-detail-who a { color: var(--muted); }
+.home-detail h3, .home-since-all h3 { margin: 0; font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.015em; line-height: 1.3; }
+.home-draft { margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); color: var(--muted); font-size: var(--text-body); line-height: 1.55; white-space: pre-line; }
+.home-detail .qform { margin: 0; max-width: none; }
+.home-done { margin: 0; font-weight: 600; color: var(--ok-text); }
+.home-detail-actions { display: flex; gap: 8px; }
+.home-since-all { display: grid; gap: 14px; }
+.home-since-all section { display: grid; gap: 4px; }
+.home-since-all .ui-digest-row { padding-inline: 0; }
+
+.home-idea { margin: 0; font-size: var(--text-body); line-height: 1.5; }
+.home-idea-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Your world and your team: fluid grids that add columns as the screen grows. */
+.home-h2 { margin: 0; font-size: var(--text-lg); font-weight: 650; letter-spacing: -0.01em; }
+.home-world, .home-team { display: grid; gap: 12px; }
+.home-world-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: var(--stack); align-items: start; }
+.home-time { flex: none; min-width: 3.2em; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted); }
+.home-team-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.home-sub { font-size: var(--text-sm); color: var(--faint); }
+.home-team-all { margin-left: auto; font-size: var(--text-md); font-weight: 600; text-decoration: none; }
+.home-team-all:hover { text-decoration: underline; }
+.home-team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr)); gap: 12px; }
+.home-team-grid .ui-tile-desc { min-height: 0; }
+.home-plus { display: inline-grid; place-items: center; width: 40px; height: 40px; flex: none; border: 1px dashed var(--border-strong); border-radius: 50%; color: var(--muted); font-size: var(--text-xl); }

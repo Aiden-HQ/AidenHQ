@@ -1,4 +1,4 @@
-// The Modules tab (#/modules): every module as a tile, installed first, then available; one search over both, and
+// The Modules page (#/team/modules): every module as a tile, installed first, then available; one search over both, and
 // Marketplaces (where modules come from) one click away.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
@@ -29,7 +29,7 @@ export function ModulesView({ onSignIn, can }: { onSignIn: () => void; can: Can 
       <main className="mods page wide">
         {markets ? (
           <>
-            <PageHeader crumb={<><a href="#/modules" onClick={(e) => (e.preventDefault(), setMarkets(false))}>Modules</a> / Marketplaces</>} title="Marketplaces" sub="Where modules come from, each held at a commit at least 7 days old. Updating one moves every module it holds." />
+            <PageHeader crumb={<><a href="#/team/modules" onClick={(e) => (e.preventDefault(), setMarkets(false))}>Modules</a> / Marketplaces</>} title="Marketplaces" sub="Where modules come from, each held at a commit at least 7 days old. Updating one moves every module it holds." />
             <div className="mods-markets">
               <Marketplaces onSignIn={onSignIn} />
             </div>
@@ -125,7 +125,7 @@ function ModulesList({ onSignIn, onMarkets, can }: { onSignIn: () => void; onMar
               Details
             </a>
           )}
-          <a className="btn primary" href={`#/modules/${a.module}`}>
+          <a className="btn primary" href={`#/team/modules/${a.module}`}>
             Open {a.module}
           </a>
         </div>
@@ -175,7 +175,7 @@ function ModuleTile({ m, setup, pairing, connect, advisory, info }: { m: ModuleR
   const t = useModuleToggle(m);
   const [asking, setAsking] = useState(false);
   const s = moduleState(m, { filed: t.filed, setup, pairing, connect: Boolean(connect), advisory });
-  const href = `#/modules/${m.name}`;
+  const href = `#/team/modules/${m.name}`;
   // A module turned on while the owner is still here opens its setup flow (the design's "Setup flows").
   const was = useRef(t.filed?.stage);
   useEffect(() => {
@@ -210,9 +210,9 @@ function ModuleTile({ m, setup, pairing, connect, advisory, info }: { m: ModuleR
         facts={<ModuleFacts m={m} />}
         foot={
           t.busy ? (
-            <a className="mods-foot-link busy" href={`#/c/${t.filed!.identifier}`}>Follow it ({t.filed!.identifier})</a>
+            <a className="mods-foot-link busy" href={`#/t/${t.filed!.identifier}`}>Follow it ({t.filed!.identifier})</a>
           ) : stopped ? (
-            <a className="mods-foot-link" href={`#/c/${t.filed!.identifier}`}>See why ({t.filed!.identifier})</a>
+            <a className="mods-foot-link" href={`#/t/${t.filed!.identifier}`}>See why ({t.filed!.identifier})</a>
           ) : locked ? (
             <span className="mods-locked" title="Can't be turned off">
               <LockIcon />

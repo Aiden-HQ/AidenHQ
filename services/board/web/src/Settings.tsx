@@ -341,7 +341,7 @@ function ApprovalsPage({ data, rows }: { data: SettingsData; rows: (keys: string
           <p>Always yours: one tap in Approvals or Telegram, or an exact typed reply.</p>
         </div>
       </div>
-      <p className="st-note">{data.approvals.pending ? <><a href="#/approvals">{data.approvals.pending} waiting on you</a> in Approvals.</> : "Nothing is waiting on you."}</p>
+      <p className="st-note">{data.approvals.pending ? <><a href="#/">{data.approvals.pending} waiting on you</a> on Home.</> : "Nothing is waiting on you."}</p>
       <Group title="Settings">
         {autonomy && <SettingItem s={autonomy} />}
       </Group>

@@ -5,10 +5,10 @@ Long-lived coding harnesses (opencode) on the always-on computer, each held by o
 
 ## Pages
 
-- `#/sessions`: Active and Ended lists. A row has the state (Working, Waiting, Starting, Stopped, Failed), the title with its
+- `#/tasks/sessions`: Active and Ended lists. A row has the state (Working, Waiting, Starting, Stopped, Failed), the title with its
   task id and repository, what it is doing (its own column from 1400px wide), who started it, spend and age. "Show more" pages through ended
   sessions. A fresh install shows what a session is and one button, "Start a session".
-- `#/sessions/<identifier>`: the console (a real terminal through ttyd, or the harness's web view; a phone opens on the web
+- `#/tasks/sessions/<identifier>`: the console (a real terminal through ttyd, or the harness's web view; a phone opens on the web
   view) beside the facts and the task thread, which also takes a message that wakes the
   session. On a narrow screen the parts are a switch: Session, Thread, Details.
 - Start: name, first instruction, optional repository. It uses the board's ordinary task path (`api.create` then
@@ -45,7 +45,7 @@ only an allowlist of upstream headers is kept (no cookies, no Clear-Site-Data, n
 board adds its key (`computer_session_key`) for the launcher, which adds the box-side credentials
 (`services/computer/session-proxy.ts`). Neither credential reaches the browser.
 
-The phone link is the page's own address (`#/sessions/<identifier>`), so a phone signs in first and then lands on the session.
+The phone link is the page's own address (`#/tasks/sessions/<identifier>`), so a phone signs in first and then lands on the session.
 
 The kernel side is `GET /v1/work?sessions=1` and `?session=<task>` (`kernel/src/work.ts sessions()`, board key): a session is
 the newest job of a task whose agent's grants have profile `session`; running is "the gateway billed a call in the last two

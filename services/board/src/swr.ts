@@ -20,6 +20,8 @@ interface Read {
   gen: number;
   /** Its caller stopped waiting for it. */
   late: boolean;
+  /** Forgotten while under way: its answer goes to its callers only, never into the cache. */
+  dropped?: boolean;
 }
 
 export type Served<T> = T & { stale?: true };
@@ -42,7 +44,7 @@ export class Swr {
       const r: Read = { gen: this.gen, late: false, promise: undefined as unknown as Promise<object> };
       r.promise = load().then((value) => {
         // A partial answer (marked stale by its own route) never replaces a complete one.
-        if ((value as { stale?: unknown }).stale === true) return value;
+        if ((value as { stale?: unknown }).stale === true || r.dropped) return value;
         // A read that began before the latest change is kept to show in a pinch, never as fresh.
         this.last.set(key, { value, until: r.gen === this.gen ? Date.now() + (r.late ? LATE_FRESH_MS : FRESH_MS) : 0 });
         return value;
@@ -70,6 +72,12 @@ export class Swr {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** Every response under keys starting `prefix` is gone (and reads under way are not kept): the next read waits for a fresh one. */
+  forget(prefix: string): void {
+    for (const k of [...this.last.keys()]) if (k.startsWith(prefix)) this.last.delete(k);
+    for (const [k, r] of [...this.reading]) if (k.startsWith(prefix)) (r.dropped = true), this.reading.delete(k);
   }
 
   /** A write or a change may have changed what pages show: every response, and any read already under way, is read again. */

@@ -4,6 +4,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Kbd } from "./Kbd";
 
+/** The open panes, oldest first: one Escape closes one pane (the one holding focus, else the newest). */
+const panes: HTMLElement[][] = [];
+/** A modal layer over the page (a dialog, a drawer, the palette): Escape is its, unless focus is inside the pane. */
+const MODAL = "dialog[open], .drawer-backdrop, .palette-backdrop";
+
 /** A pane that animates out before it unmounts, closes on Escape, and returns focus to its opener. */
 export function usePane(open: boolean, onClose: () => void) {
   const [shown, setShown] = useState(open);
@@ -14,9 +19,23 @@ export function usePane(open: boolean, onClose: () => void) {
   useEffect(() => {
     if (!open) return;
     const opener = document.activeElement as HTMLElement | null;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && close.current();
+    const me: HTMLElement[] = [];
+    panes.push(me);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const el = ref.current;
+      const focused = !!el && el.contains(document.activeElement);
+      const anyFocused = panes.some((p) => p[0]?.contains(document.activeElement));
+      if (!focused && (anyFocused || panes[panes.length - 1] !== me || document.querySelector(MODAL))) return;
+      e.preventDefault();
+      close.current();
+    };
+    if (ref.current) me[0] = ref.current;
+    const t = requestAnimationFrame(() => ref.current && (me[0] = ref.current));
     document.addEventListener("keydown", onKey);
     return () => {
+      cancelAnimationFrame(t);
+      panes.splice(panes.indexOf(me), 1);
       document.removeEventListener("keydown", onKey);
       // Back to the opener only when focus was in the pane (a click elsewhere keeps its own focus).
       const at = document.activeElement;

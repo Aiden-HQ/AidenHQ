@@ -22,6 +22,8 @@ export function createViews({ connections, asserter, resolver, secret }: { conne
     const [name, conn] = entry;
     let out: Record<string, unknown>, tool = "";
     if (b.method === "resources/read") {
+      // A board read (`read:<id>`, board.reads) is a tool only; only a page's ui:// view has a resource.
+      if (!view.startsWith("ui://")) throw fail(403, "view-refused", "only a page's ui:// view has a resource to read");
       if (params.uri !== view) throw fail(403, "view-refused", "a view reads only its own resource");
       out = { uri: view };
     } else if (b.method === "tools/call") {

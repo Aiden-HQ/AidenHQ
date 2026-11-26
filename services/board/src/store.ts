@@ -175,10 +175,13 @@ export class Store {
       CREATE TABLE IF NOT EXISTS usage (key TEXT PRIMARY KEY, at TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, cached INTEGER NOT NULL, output INTEGER NOT NULL, cost_usd REAL);
       -- Which account wrote a task or comment on the board: for the "by <name>" label, never in the text.
       CREATE TABLE IF NOT EXISTS authored (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, at TEXT NOT NULL);
-      -- Finished chats and tasks the owner settled out of the active lists (a snapshot, for the searchable Settled view).
+      -- Finished chats and tasks the owner settled out of the active lists (when each was settled; an agent's Settled filter reads it).
       CREATE TABLE IF NOT EXISTS settled (issue_id TEXT PRIMARY KEY, identifier TEXT NOT NULL, title TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL);
       -- Saved boards (views.ts): an account's named filters for the Tasks page; rev is bumped on every write (a stale write is refused).
       CREATE TABLE IF NOT EXISTS views (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, rev INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      -- Home (home.ts): when each account last looked (its "since" window starts there), and the rows it snoozed until when.
+      CREATE TABLE IF NOT EXISTS home_seen (account_id TEXT PRIMARY KEY, at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS home_snoozes (account_id TEXT NOT NULL, item_id TEXT NOT NULL, until TEXT NOT NULL, PRIMARY KEY (account_id, item_id));
     `);
     const columns = (this.db.prepare("PRAGMA table_info(placements)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("carried")) this.db.exec("ALTER TABLE placements ADD COLUMN carried INTEGER NOT NULL DEFAULT 0");
@@ -512,12 +515,29 @@ export class Store {
     return this.db.prepare("DELETE FROM settled WHERE issue_id = ?").run(issueId).changes > 0;
   }
 
-  /** Settled items, newest first; `q` matches the identifier, title or agent. */
-  settledList(q = ""): Settled[] {
-    const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
-    return this.db
-      .prepare("SELECT issue_id AS issueId, identifier, title, agent, kind, at FROM settled WHERE identifier LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\' OR agent LIKE ?1 ESCAPE '\\' ORDER BY at DESC LIMIT 200")
-      .all(like) as unknown as Settled[];
+  /** The account looked at Home up to `asOf`: the cursor only moves forward, and never past now. Returns the stored cursor. */
+  markHomeSeen(accountId: string, asOf: string): string {
+    const at = [this.homeSeen(accountId) ?? "", new Date(Math.min(Date.parse(asOf), Date.now())).toISOString()].sort().at(-1)!;
+    this.db.prepare("INSERT INTO home_seen (account_id, at) VALUES (?, ?) ON CONFLICT(account_id) DO UPDATE SET at = excluded.at").run(accountId, at);
+    return at;
+  }
+
+  homeSeen(accountId: string): string | undefined {
+    return (this.db.prepare("SELECT at FROM home_seen WHERE account_id = ?").get(accountId) as { at: string } | undefined)?.at;
+  }
+
+  snooze(accountId: string, itemId: string, until: string): void {
+    this.db.prepare("INSERT INTO home_snoozes (account_id, item_id, until) VALUES (?, ?, ?) ON CONFLICT(account_id, item_id) DO UPDATE SET until = excluded.until").run(accountId, itemId, until);
+  }
+
+  unsnooze(accountId: string, itemId: string): void {
+    this.db.prepare("DELETE FROM home_snoozes WHERE account_id = ? AND item_id = ?").run(accountId, itemId);
+  }
+
+  /** The rows the account snoozed past `now` (expired snoozes are dropped). */
+  snoozed(accountId: string, now: string): Set<string> {
+    this.db.prepare("DELETE FROM home_snoozes WHERE until <= ?").run(now);
+    return new Set((this.db.prepare("SELECT item_id FROM home_snoozes WHERE account_id = ?").all(accountId) as { item_id: string }[]).map((r) => r.item_id));
   }
 
   /** When each settled item was settled, by task id. */

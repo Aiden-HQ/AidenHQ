@@ -1,4 +1,4 @@
-// A module's page (#/modules/<name>/<tab>): what it is, its agents and work, what it may do, its contents, settings and changes.
+// A module's page (#/team/modules/<name>/<tab>): what it is, its agents and work, what it may do, its contents, settings and changes.
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SignInRequired, api } from "./api";
 import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
@@ -52,7 +52,7 @@ function ModuleBody({ name, tab, go, onSignIn, can }: { name: string; tab: Modul
       <main className="mods">
         {error ? (
           /no such module/.test(error) ? (
-            <EmptyState action={<a className="btn" href="#/modules">Back to Modules</a>}>
+            <EmptyState action={<a className="btn" href="#/team/modules">Back to Modules</a>}>
               <strong>No module called {name}.</strong> It may have been removed from its marketplace, or the link has a typo.
             </EmptyState>
           ) : (
@@ -81,7 +81,7 @@ function Loaded({ d, tab, go, onSignIn, setup, pairing, connect, can, advisory }
   return (
     <main className={`mods ${hueClass(m.name)}`}>
       <PageHeader
-        crumb={<><a href="#/modules">Modules</a> / {m.name}</>}
+        crumb={<><a href="#/team/modules">Modules</a> / {m.name}</>}
         face={<Monogram name={m.name} size={44} />}
         title={m.name}
         status={
@@ -128,7 +128,7 @@ function Loaded({ d, tab, go, onSignIn, setup, pairing, connect, can, advisory }
       )}
       <Pin m={m} />
       <div>
-        <Tabs<ModuleTab> label="Section" value={tab} tabs={TABS} href={(k) => `#/modules/${m.name}${k === "overview" ? "" : `/${k}`}`} />
+        <Tabs<ModuleTab> label="Section" value={tab} tabs={TABS} href={(k) => `#/team/modules/${m.name}${k === "overview" ? "" : `/${k}`}`} />
       </div>
       {tab === "overview" && <Overview d={d} />}
       {tab === "contents" && <Contents d={d} onSignIn={onSignIn} can={can} />}
@@ -163,7 +163,7 @@ function Tasks({ rows }: { rows: TaskRow[] }) {
   );
 }
 
-const modLinks = (names: string[]) => (names.length ? <span className="mod-tags">{names.map((n) => <a key={n} className="mod-tag" href={`#/modules/${n}`}>{n}</a>)}</span> : <span className="mod-none">nothing</span>);
+const modLinks = (names: string[]) => (names.length ? <span className="mod-tags">{names.map((n) => <a key={n} className="mod-tag" href={`#/team/modules/${n}`}>{n}</a>)}</span> : <span className="mod-none">nothing</span>);
 const tags = (names: string[], none = "none") => (names.length ? <span className="mod-tags">{names.map((n) => <span key={n} className="mod-tag">{n}</span>)}</span> : <span className="mod-none">{none}</span>);
 
 function Agents({ d }: { d: ModuleDetail }) {
@@ -171,7 +171,7 @@ function Agents({ d }: { d: ModuleDetail }) {
   return (
     <div className="mod-rows">
       {d.agents.map((a) => (
-        <ModRow key={a.key} href={`#/agents/${a.key}`} lead={<Face seed={a.key} {...faceProps(a.teammate?.face)} size={24} label={a.name} />} title={a.name} meta={<>{a.title && <span>{a.title}</span>}<span>{sentence(a.state)}</span></>} />
+        <ModRow key={a.key} href={a.teammate ? `#/team/${a.key}` : `#/team/agents/${a.key}`} lead={<Face seed={a.key} {...faceProps(a.teammate?.face)} size={24} label={a.name} />} title={a.name} meta={<>{a.title && <span>{a.title}</span>}<span>{sentence(a.state)}</span></>} />
       ))}
     </div>
   );
@@ -317,7 +317,7 @@ function Share({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
         <button className="btn" type="button" disabled={busy || !/^[\w.-]+\/[\w.-]+$/.test(repo.trim()) || !ref.trim()} onClick={preview}>Preview</button>
       </div>
       {error && <span className="st-error" role="alert">{error}</span>}
-      {filed && <Banner action={<a className="btn" href={`#/c/${filed}`}>Open</a>}>Filed as {filed}: not published yet. Open it for whether it published.</Banner>}
+      {filed && <Banner action={<a className="btn" href={`#/t/${filed}`}>Open</a>}>Filed as {filed}: not published yet. Open it for whether it published.</Banner>}
       {p && (
         <>
           {p.private && <Banner tone="danger">{p.repo} is private: a module is shared to a public repo.</Banner>}
@@ -385,7 +385,7 @@ function RoutineRow({ r }: { r: NonNullable<ModuleDetail["routines"]>[number] })
   };
   return (
     <div className="mod-row-with-action">
-      <ModRow href={`#/agents/${r.agent}/settings`} hint="Change its schedule or model on its agent's Settings" title={r.title} meta={<StatusDot tone={on ? "working" : "done"}>{on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
+      <ModRow href={`#/team/agents/${r.agent}/settings`} hint="Change its schedule or model on its agent's Settings" title={r.title} meta={<StatusDot tone={on ? "working" : "done"}>{on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
       {r.id && <button className="btn" type="button" disabled={busy} onClick={toggle}>{on ? "Pause" : "Resume"}</button>}
       {error && <span className="st-error" role="alert">{error}</span>}
     </div>
@@ -416,7 +416,7 @@ function ModuleChanges({ m }: { m: ModuleRow }) {
   return (
     <ListRows>
       {mine.map((f) => (
-        <ListRow key={f.identifier} href={`#/c/${f.identifier}`} status={changeStatus(f.stage)} title={f.title} id={f.identifier} time={ago(f.createdAt)} />
+        <ListRow key={f.identifier} href={`#/t/${f.identifier}`} status={changeStatus(f.stage)} title={f.title} id={f.identifier} time={ago(f.createdAt)} />
       ))}
     </ListRows>
   );

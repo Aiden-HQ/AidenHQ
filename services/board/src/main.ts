@@ -7,7 +7,7 @@ import { appsApi } from "./fleet.js";
 import { appWatchTick, type Alert, type AppStatus } from "./app-watch.js";
 import { ownerAlert, startNotify } from "./notify.js";
 import { createGrading } from "./grading.js";
-import { createViewHost, pagePoints } from "./module-views.js";
+import { createViewHost, pagePoints, readPoints } from "./module-views.js";
 import { loadConfig } from "./config.js";
 import { pullUsage } from "./costs.js";
 import { McpAuth } from "./mcpauth.js";
@@ -84,7 +84,7 @@ const signIns = cfg.signIns.map(({ url, token, ...s }) => ({ ...s, auth: new Mcp
 const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl, log });
 // Read on every use: an apply that adds, changes or removes a module's page rewrites the points file without restarting the board.
 const pointsFile = process.env.BOARD_POINTS_FILE ?? "/config/points/board.json";
-const views = createViewHost({ kernel: cfg.gateway && { url: kernelUrl, token: cfg.gateway.token }, pages: () => pagePoints(pointsFile) });
+const views = createViewHost({ kernel: cfg.gateway && { url: kernelUrl, token: cfg.gateway.token }, pages: () => pagePoints(pointsFile), reads: () => readPoints(pointsFile) });
 // Sessions (sessions.ts): the kernel's session rows; the launcher's session key opens only a lease's terminal and phone UI.
 const sessionKey = process.env.COMPUTER_SESSION_KEY_FILE ?? "/run/secrets/computer_session_key";
 const terminals = { kernel: kernelSessions({ url: kernelUrl, token: cfg.gateway.token }), launcher: process.env.AIDENHQ_LAUNCHER_URL && existsSync(sessionKey) ? { url: process.env.AIDENHQ_LAUNCHER_URL.replace(/\/+$/, ""), key: readFileSync(sessionKey, "utf8").trim() } : undefined };

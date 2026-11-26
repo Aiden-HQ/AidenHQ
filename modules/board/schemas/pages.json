@@ -1,10 +1,10 @@
 {
-  "title": "board.pages: a module's Fleet page (docs/design/board-ui.md \"Modules\"). Compile adds `module`.",
+  "title": "board.pages: a module's page under Team (docs/design/board-ui.md \"Modules\"). Compile adds `module`.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "title", "icon", "order", "connection", "view", "tools"],
   "properties": {
-    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,30}$", "description": "the page's address, #/fleet/<id>; unique across modules"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,30}$", "description": "the page's address, #/team/m/<id>; unique across modules"},
     "title": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9 .&-]{0,30}$", "description": "its name in the sidebar and the page header"},
     "icon": {"enum": ["agents", "apps", "modules", "reviews", "costs", "flow", "tasks", "approvals", "chat", "brief", "bell", "settings", "rocket", "list", "shield"], "description": "one of the board's icons"},
     "order": {"type": "integer", "minimum": 1, "maximum": 999, "description": "its place after the core entries (Agents, Apps, Modules, Reviews), ascending"},

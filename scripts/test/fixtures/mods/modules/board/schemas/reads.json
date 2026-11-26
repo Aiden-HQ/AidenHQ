@@ -1,0 +1,11 @@
+{
+  "title": "board.reads: a read the board makes for the owner's own view (Home), by id. Compile adds `module`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "connection", "tool"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,40}$", "description": "the read's slot the board asks for (e.g. calendar_today); unique across modules"},
+    "connection": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$", "description": "one of this module's own MCP connections: it serves the tool"},
+    "tool": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$", "description": "a read tool of `connection` (never write or destructive, never a write kind's)"}
+  }
+}

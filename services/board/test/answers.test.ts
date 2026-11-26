@@ -91,8 +91,9 @@ describe("an owner's answer is bound to the open wait", () => {
   it("needs-you carries the open question and options", async () => {
     ask("Ship?", ["Wait", "Publish"]);
     waiting("Ship?", SINCE);
+    states.rows[1]!.detail = "Release notes: v2"; // notify's detail, which the kernel's state carries beside the question
     const item = (await call("GET", "/api/needs-you")).json.items.find((i: any) => i.identifier === "WOR-21");
-    expect(item.ask).toMatchObject({ question: "Ship?", waitSince: SINCE, questions: [{ question: "Ship?", options: ["Wait", "Publish"] }] });
+    expect(item.ask).toMatchObject({ question: "Ship?", detail: "Release notes: v2", waitSince: SINCE, questions: [{ question: "Ship?", options: ["Wait", "Publish"] }] });
   });
 
   it("posts once on the claim and refuses a taken one", async () => {
