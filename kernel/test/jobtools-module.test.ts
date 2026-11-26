@@ -33,9 +33,11 @@ test("module job tool forwards the caller and the task's module source", async (
   const calls: { auth?: string; live: boolean; body: any }[] = [];
   const design = await serve(async (req, res) => {
     const body = JSON.parse(await readBody(req));
-    // The assertion opens the kernel's module+assertion routes for this job while the module answers.
-    const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), "design");
-    calls.push({ auth: req.headers.authorization, live: Boolean(live?.flight.bearer && live.caller.tool === "jobtool:design/login"), body });
+    // While the module answers, the assertion opens a module+assertion route for this job...
+    // ...only one that asks for a job tool's call: every other module+assertion route (the control plane, memory, waits) refuses it.
+    const jwt = String(req.headers["x-aidenhq-caller"] ?? "");
+    const live = await asserter.inFlight(jwt, "design", { jobtool: true });
+    calls.push({ auth: req.headers.authorization, live: Boolean(live?.flight.bearer && live.caller.tool === "jobtool:design/login") && !(await asserter.inFlight(jwt, "design")), body });
     res.writeHead(body.caller.task_source ? 200 : 403, { "content-type": "application/json" }).end(JSON.stringify(body.caller.task_source ? { ok: true } : { error: "not this app's pass" }));
   });
   t.after(() => design.s.close());

@@ -174,8 +174,8 @@ const TIMEOUT_S = 60;
  * POST /v1/jobtools/module/:module/:op: a module's own job tool, for a kernel job's box (`ui-review login`). The caller is the
  * job's own token, read by whoami (live, on its own agent and task); the op is one the module lists. The kernel POSTs
  * `{op, body, caller}` to the module's `providers.jobtools.url` with the module's key and a caller assertion for the job,
- * in flight while the module answers (so it may reach a module+assertion route, such as the test session, for this job and no
- * other). `task_module` and `task_source` are the module and source the kernel recorded when that module filed the task
+ * in flight while the module answers. The assertion opens only a module+assertion route that accepts a job tool's call
+ * (assert.ts `inFlight` with `jobtool: true`), for this job and no other: none does yet. `task_module` and `task_source` are the module and source the kernel recorded when that module filed the task
  * (modtasks.ts `task_filers`), never the task's text, which its assignee may edit; null for any other task. The module decides
  * what to release; its status and answer go back to the box as they came (bounded).
  */
@@ -213,7 +213,7 @@ export function createModuleTool({ db, whoami, decl, asserter, resolver, secret,
     const caller: JobToolCaller = { agent: who.key ?? "", roles: [...who.roles], task: who.task, ...taskOrigin(who.task) };
     const payload = JSON.stringify({ op, body: body ?? {}, caller });
     const signed = asserter.signCaller({ agent: who.agent, key: who.key ?? "", name: who.name ?? "", roles: who.roles, task: who.task, tool: JOBTOOL_CLAIM(module, op), aud: module, kind: who.kind });
-    asserter.begin(signed.jti, { credential: "", bearer: token, job: who.job, aud: module, kind: who.kind }, TIMEOUT_S);
+    asserter.begin(signed.jti, { credential: "", bearer: token, job: who.job, aud: module, kind: who.kind, jobtool: true }, TIMEOUT_S);
     try {
       const out = await new Promise<{ status: number; body: string }>((resolve, reject) => {
         let deadline: NodeJS.Timeout | undefined;

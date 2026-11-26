@@ -1648,8 +1648,12 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}, official: Set<s
     const jt = def.providers?.jobtools;
     if (jt != null) {
       if (typeof jt !== "object" || Array.isArray(jt) || Object.keys(jt).some((k) => !["url", "auth", "ops"].includes(k))) fail(`module ${name}: providers.jobtools is { url, auth, ops }`);
-      if (!/^http:\/\/[a-z][a-z0-9-]*:\d+\/[\w/.-]*$/.test(String(jt.url)) || /^http:\/\/localhost:/.test(String(jt.url))) fail(`module ${name}: providers.jobtools.url must be http://<service>:<port>/<path>, a compose service`);
-      if (!ownSecrets(def).includes(jt.auth)) fail(`module ${name}: providers.jobtools.auth must name one of its own secrets`);
+      if (!/^http:\/\/[a-z][a-z0-9-]*:\d+\/[\w/.-]*$/.test(String(jt.url)) || /^http:\/\/localhost:/.test(String(jt.url))) fail(`module ${name}: providers.jobtools.url must be http://<service>:<port>/<path>`);
+      // The kernel sends the module's key and its callers' data there: only to a service this module declares (as validate's post).
+      if (!Object.keys(def.services?.run ?? {}).includes(new URL(String(jt.url)).hostname)) fail(`module ${name}: providers.jobtools.url must be one of the module's own services (services.run)`);
+      // The key the kernel sends on every box's call: one the module generates for itself, named for it, never a host credential.
+      const prefix = `${name.replace(/-/g, "_")}_`;
+      if (typeof jt.auth !== "string" || !jt.auth.startsWith(prefix) || !/^[a-z][a-z0-9_]*$/.test(jt.auth) || ![def.generated_secrets ?? [], def.secrets?.generated ?? []].flat().includes(jt.auth)) fail(`module ${name}: providers.jobtools.auth must name a secret the module generates, named ${prefix}…`);
       if (!Array.isArray(jt.ops) || !jt.ops.length || jt.ops.some((o: unknown) => typeof o !== "string" || !/^[a-z][a-z0-9-]{0,40}$/.test(o)) || new Set(jt.ops).size !== jt.ops.length) fail(`module ${name}: providers.jobtools.ops is a list of distinct op names ([a-z][a-z0-9-]*)`);
     }
     const { facts, stages, journeys } = flowDecls(name, def, declared);

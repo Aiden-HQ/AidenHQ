@@ -443,11 +443,15 @@ test("a channel's transport is a compose service (the kernel sends the channel's
 });
 
 test("a module's job tools compile with the ops it lists; anything else is refused", () => {
-  const jt = (jobtools) => ({ design: { providers: { jobtools }, generated_secrets: ["design_service_key"] } });
+  const jt = (jobtools, more = {}) => ({ design: { providers: { jobtools }, services: { run: { design: {} } }, generated_secrets: ["design_service_key"], ...more } });
   assert.deepEqual(kernelModuleTable(jt({ url: "http://design:8099/jobtools", auth: "design_service_key", ops: ["login", "app-session"] })).design.jobtools, { url: "http://design:8099/jobtools", auth_secret: "design_service_key", ops: ["login", "app-session"] });
   for (const ops of [[], ["Login"], ["login", "login"], "login"]) assert.throws(() => kernelModuleTable(jt({ url: "http://design:8099/jobtools", auth: "design_service_key", ops })), /providers.jobtools.ops/, String(ops));
-  assert.throws(() => kernelModuleTable(jt({ url: "http://localhost:8099/j", auth: "design_service_key", ops: ["login"] })), /a compose service/);
-  assert.throws(() => kernelModuleTable(jt({ url: "http://design:8099/j", auth: "github_token", ops: ["login"] })), /its own secrets/);
+  // Only to its own service: never another module's, an IP or localhost.
+  for (const url of ["http://apps-mcp:8099/j", "http://localhost:8099/j", "http://10.0.0.5:8099/j"]) assert.throws(() => kernelModuleTable(jt({ url, auth: "design_service_key", ops: ["login"] })), /own services|http:\/\/<service>/, url);
+  // The kernel resolves localhost to the host itself, whatever the module calls its service.
+  assert.throws(() => kernelModuleTable(jt({ url: "http://localhost:8099/j", auth: "design_service_key", ops: ["login"] }, { services: { run: { localhost: {} } } })), /http:\/\/<service>/);
+  // Only a key it generates, named for it: never a host credential it merely declares.
+  for (const auth of ["paperclip_board_key", "paperclip-agents/x", "design_owner_key"]) assert.throws(() => kernelModuleTable(jt({ url: "http://design:8099/j", auth, ops: ["login"] }, { secrets: { provided: [auth] } })), /a secret the module generates/, auth);
 });
 
 test("journeys: the end names declared facts, a phase any fact (absent when no module records it); two modules may declare one journey only alike", () => {

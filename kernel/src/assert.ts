@@ -16,7 +16,9 @@ export type InFlight = {
   bearer?: string;
   /** The kernel job making the call: its comments carry it in their tag, so a reader can tell which run wrote one. */
   job?: string;
-  aud: string; run?: string; kind: string; at: number; exp: number };
+  aud: string; run?: string; kind: string; at: number; exp: number;
+  /** A module job tool's call (jobtools.ts createModuleTool): it opens only the routes that ask for one (`inFlight`'s `jobtool`). */
+  jobtool?: true };
 
 const b64 = (v: unknown) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");
 
@@ -47,8 +49,11 @@ export function createAsserter(key: KeyObject, now = Date.now) {
   const begin = (jti: string, f: Omit<InFlight, "exp" | "at">, ttlS = TTL_S) => void flights.set(jti, { ...f, at: now(), exp: now() + Math.max(TTL_S, ttlS) * 1000 });
   const end = (jti: string) => void flights.delete(jti);
 
-  /** The call in flight behind an assertion presented by module `aud`; undefined when forged, expired, misaddressed or ended. */
-  async function inFlight(jwt: string, aud: string): Promise<{ caller: Caller; flight: InFlight } | undefined> {
+  /**
+   * The call in flight behind an assertion presented by module `aud`; undefined when forged, expired, misaddressed or ended,
+   * and for a module job tool's call unless the route accepts one (`jobtool: true`): a job tool opens no other route.
+   */
+  async function inFlight(jwt: string, aud: string, { jobtool = false }: { jobtool?: boolean } = {}): Promise<{ caller: Caller; flight: InFlight } | undefined> {
     let caller: Caller;
     let jti: unknown;
     try { jti = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8")).jti; } catch { return undefined; }
@@ -57,7 +62,7 @@ export function createAsserter(key: KeyObject, now = Date.now) {
     // Signature, audience and expiry checked as of the call's start: its assertion was valid when it was minted.
     try { caller = await verifyCaller({ headers: { "x-aidenhq-caller": jwt } }, jwks, aud, started.at); } catch { return undefined; }
     const flight = flights.get(caller.call);
-    if (!flight || flight.aud !== aud || flight.exp <= now()) return undefined;
+    if (!flight || flight.aud !== aud || flight.exp <= now() || (flight.jobtool && !jobtool)) return undefined;
     return { caller, flight };
   }
   return { jwks, signCaller, begin, end, inFlight, size: () => flights.size };
