@@ -17,12 +17,13 @@ export const MAX_READS = 200;
 /** Metadata reads in flight at once: one request each, so a window full of mail overlaps its reads instead of walking them
  *  one at a time; the messages themselves are still decided oldest first, in order. */
 export const READS_AT_ONCE = 8;
-/** One inbox call's wall-clock budget for its listing and per-message walk (split across the accounts still to serve). Past
- *  it the rest is handed to the next call (`more`, cursor up to the last decided message), so a wide window answers inside the
- *  kernel's 300 s tool timeout instead of dying with neither threads nor a cursor. Thread enrichment follows, bounded by
- *  `limit` (50 threads = 7 batches of 8, at worst 210 s against the 30 s per-request timeout), and runs past this budget so
- *  every row it serves carries its real `replied`; the two together stay inside the timeout. */
+/** One inbox call's wall-clock budget (split across the accounts still to serve), covering both the listing and per-message
+ *  walk and the thread enrichment after it, so a wide window answers inside the kernel's 300 s tool timeout instead of dying
+ *  with neither threads nor a cursor. The walk gets `INBOX_WALK_SHARE` of it and enrichment the rest: past either, the rest is
+ *  handed to the next call (`more`, with a cursor that stays honest about what was decided). */
 export const INBOX_BUDGET_MS = 60_000;
+/** The walk's part of that budget: what is left keeps enrichment going, so a walk that used its part cannot starve it. */
+export const INBOX_WALK_SHARE = 0.6;
 
 /** A sender's local part that never reads replies. */
 const NO_REPLY = /^(?:.*[-_.+])?(?:no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounces?|notifications?|notify|alerts?)(?:[-_.+].*)?$/i;

@@ -1,8 +1,10 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MultiWorkspace, toolFailure } from "../src/accounts.js";
+import { GoogleClient } from "../src/google.js";
+import { Workspace } from "../src/workspace.js";
 import { readNeed } from "../src/aidenhq-sdk/needs.js";
 import { InboxCursors } from "../src/inbox.js";
 
@@ -15,7 +17,7 @@ const message = (m: Msg) => ({ id: m.id, threadId: m.threadId, internalDate: Str
 const CATEGORY_TERMS: Record<string, string> = { promotions: "CATEGORY_PROMOTIONS", social: "CATEGORY_SOCIAL", updates: "CATEGORY_UPDATES", forums: "CATEGORY_FORUMS" };
 
 /** Two accounts' inboxes: `side.io` fails. Gmail lists newest first, pages by 2, and honours `-from:me` and any `-category:` terms. */
-function google(msgs: Msg[]) {
+function google(msgs: Msg[], onThread?: () => void) {
   const listed: string[] = [];
   /** Message metadata requests in flight (`reads`) and the most at once (`most`), so a test sees the walk overlap its reads. */
   const reads = { now: 0, most: 0 };
@@ -25,6 +27,7 @@ function google(msgs: Msg[]) {
     const thread = /^\/gmail\/v1\/users\/me\/threads\/([^/]+)$/.exec(url.pathname);
     if (thread) {
       const id = decodeURIComponent(thread[1]!);
+      onThread?.();
       const inThread = msgs.filter((x) => x.threadId === id);
       if (!inThread.length) return new Response("not found", { status: 404 });
       return Response.json({ id, messages: inThread.map(message) });
@@ -199,6 +202,24 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     const none = await new MultiWorkspace(creds(), "primary", google(early.slice(0, 2)).impl).gmailInbox({ "me@work.com": T0 + 500 }, 20);
     expect(none.threads).toEqual([]);
     expect(none.accounts[0]).toMatchObject({ threads: 0, dropped: { "before-window": 2 } });
+
+    // The message exactly at the cursor is the one the previous call decided: the listing still returns it (approach: whole
+    // seconds), and it must be skipped without a count, or every call would add a phantom before-window drop.
+    const atCursor: Msg[] = [
+      { id: "x1", threadId: "tx1", at: T0 + 1_000, headers: person("Dana <dana@acme.com>") },
+      { id: "x2", threadId: "tx2", at: T0 + 2_000, headers: person("Kim <kim@acme.com>") },
+    ];
+    const again = await new MultiWorkspace(creds(), "primary", google(atCursor).impl).gmailInbox({ "me@work.com": T0 + 1_000 }, 20);
+    expect(again.threads.map((t) => t.thread_id)).toEqual(["tx2"]);
+    expect(again.accounts[0]).toMatchObject({ threads: 1, more: false });
+    expect((again.accounts[0] as { dropped: Record<string, number> }).dropped).toEqual({});
+
+    // And a call that ends at x2 leaves a cursor the next call must not re-count either.
+    const first = await new MultiWorkspace(creds(), "primary", google(atCursor).impl).gmailInbox({ "me@work.com": T0 }, 20);
+    expect(first.cursor).toEqual({ "me@work.com": T0 + 2_000 });
+    const next = await new MultiWorkspace(creds(), "primary", google(atCursor).impl).gmailInbox(first.cursor, 20);
+    expect(next.threads).toEqual([]);
+    expect((next.accounts[0] as { dropped: Record<string, number> }).dropped).toEqual({});
   });
 
   it("overlaps the metadata reads, so a wide window costs a few round trips instead of one per message", async () => {
@@ -208,6 +229,50 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     const r = await new MultiWorkspace(creds(), "primary", g.impl).gmailInbox({ "me@work.com": T0 }, 50);
     expect(r.threads).toHaveLength(12);
     expect(g.reads.most).toBeGreaterThan(1);
+  });
+
+  it("never splits a millisecond at the budget, so a stopped call loses no message", async () => {
+    // Three messages at one millisecond, then one later. With the budget already spent the walk still decides the whole first
+    // group and stops before the later message: the cursor it returns (that millisecond) is one the next call skips, so a
+    // message left at it would be lost forever.
+    const same: Msg[] = [
+      { id: "g1", threadId: "tg1", at: T0 + 1_000, headers: person("Dana <dana@acme.com>") },
+      { id: "g2", threadId: "tg2", at: T0 + 1_000, headers: person("Kim <kim@acme.com>") },
+      { id: "g3", threadId: "tg3", at: T0 + 1_000, headers: person("Sam <sam@acme.com>") },
+      { id: "g4", threadId: "tg4", at: T0 + 2_000, headers: person("Pat <pat@acme.com>") },
+    ];
+    const g = google(same);
+    const ws = new Workspace(new GoogleClient({ client_id: "cid", refresh_token: "r1" }, g.impl), "primary");
+    const first = await ws.gmailInbox("me@work.com", T0, 20, 0); // the account's share of the budget is already spent
+    // Within one millisecond the order is Gmail's own (it lists newest first, the walk reverses it): all three come together.
+    expect(first.threads.map((t) => t.thread_id).sort()).toEqual(["tg1", "tg2", "tg3"]);
+    expect(first).toMatchObject({ cursor: T0 + 1_000, more: true });
+
+    const second = await ws.gmailInbox("me@work.com", first.cursor, 20, 0);
+    expect(second.threads.map((t) => t.thread_id)).toEqual(["tg4"]);
+    expect(second).toMatchObject({ cursor: T0 + 2_000, more: false });
+  });
+
+  it("stops enrichment at the budget and hands the rows it did not read to the next call", async () => {
+    // limit 20 over 12 threads, with thread reads slow enough to spend the call's budget after the first batch: those 8 rows
+    // are served, the rest is not served (a row must carry the `replied` the call read) and the cursor goes back to the last
+    // served row with `more: true`, so the next call picks the rest up instead of losing them behind the cursor.
+    const many: Msg[] = Array.from({ length: 12 }, (_, i) => ({ id: `w${i}`, threadId: `tw${i}`, at: T0 + (i + 1) * 1_000, headers: person(`P${i} <p${i}@acme.com>`) }));
+    let clock = Date.now();
+    const slow = google(many, () => { clock += 20_000; });
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      const ws = new Workspace(new GoogleClient({ client_id: "cid", refresh_token: "r1" }, slow.impl), "primary");
+      const first = await ws.gmailInbox("me@work.com", T0, 20);
+      expect(first.threads.map((t) => t.thread_id)).toEqual(["tw0", "tw1", "tw2", "tw3", "tw4", "tw5", "tw6", "tw7"]);
+      expect(first).toMatchObject({ cursor: T0 + 8_000, more: true });
+
+      const second = await ws.gmailInbox("me@work.com", first.cursor, 20);
+      expect(second.threads.map((t) => t.thread_id)).toEqual(["tw8", "tw9", "tw10", "tw11"]);
+      expect(second).toMatchObject({ cursor: T0 + 12_000, more: false });
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("a failing account keeps its place and shows its error", async () => {
