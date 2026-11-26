@@ -490,7 +490,7 @@ test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts
   assert.equal(enq.status, 200, JSON.stringify(enq.json));
   assert.equal(enq.json.raise?.rule, "agents-org-merge-foreign-head");
   const queued = await run("k-00000000000000c2", "github.enqueue", e);
-  assert.match(queued.text, /didn't answer the enqueue/, queued.text);
+  assert.match(queued.text, /^ship-enqueue-pending: /, queued.text);
   const sent = calls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge-async"));
   assert.equal(sent.length, 1);
   assert.ok(sent.every((c) => c.as === undefined), "the queue is joined as the code host's sign-in, never the reviewer App");

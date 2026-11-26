@@ -1434,6 +1434,7 @@ export function createService(o: Options) {
     const queued = `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.`;
     const refused = (r: { status: number; body: any }) => ({ ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.details?.message ?? r.body?.message ?? r.status).slice(0, 300)}` });
     let r: { status: number; body: any } | undefined;
+    let polled = false;
     try {
       r = await gh("PUT", base, { sha: a.head, merge_action: "merge_queue" });
       // The PUT's 202 and each poll's answer (a 200 even while pending or failed) carry the status in the body.
@@ -1441,17 +1442,19 @@ export function createService(o: Options) {
         await new Promise((res) => setTimeout(res, ENQUEUE_POLL_MS));
         const uuid = r.body.details.uuid;
         r = await gh("GET", `${base}/${uuid}`);
+        polled = true;
         if (r.status === 200 && r.body?.status === "pending") r = { status: 202, body: { ...r.body, details: { uuid, ...r.body.details } } };
       }
     } catch (e) { r = undefined; log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
-    // Success is GitHub's own word (enqueued or merged). A PUT's bare 200 is a PR already queued or merged, maybe at another head:
-    // read back below.
-    if (r && r.status < 300 && (r.body?.status === "enqueued" || r.body?.status === "merged")) return { ok: true, text: queued };
+    // Success is GitHub's own word on the request ship filed (polled by its uuid, bound to `sha`). The PUT's immediate 200 is a PR
+    // already queued or merged at a head and base it doesn't name: read back below.
+    if (r && polled && r.status < 300 && (r.body?.status === "enqueued" || r.body?.status === "merged")) return { ok: true, text: queued };
     // GitHub's own refusal (a failed request, a 4xx other than a request already pending): the PR wasn't queued.
     if (r && ((r.status < 300 && r.body?.status === "failed") || (r.status >= 400 && r.status < 500 && r.status !== 409))) return refused(r);
-    // Still pending after the wait, a 409, a 5xx or no answer: read back like a lost answer.
+    // An immediate 200, still pending after the wait, a 409 (a request already pending), a 5xx or no answer: read back. Not queued
+    // yet is `ship-enqueue-pending`: queue.ts asks again next round (a repeat answers 409 while pending, 200 once queued).
     const again = await read().catch(() => undefined);
-    return (again && settled(again)) ?? { ok: false, text: `${url}: GitHub didn't answer the enqueue and the PR doesn't read as queued at \`${String(a.head).slice(0, 12)}\`: the next round reads it and asks again.` };
+    return (again && settled(again)) ?? { ok: false, text: `ship-enqueue-pending: ${url}: GitHub hasn't confirmed the enqueue and the PR doesn't read as queued at \`${String(a.head).slice(0, 12)}\`: the next round reads it and asks again.` };
   }
 
   /**
