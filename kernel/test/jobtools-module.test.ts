@@ -39,7 +39,11 @@ test("module job tool forwards the caller and the task's module source", async (
     res.writeHead(body.caller.task_source ? 200 : 403, { "content-type": "application/json" }).end(JSON.stringify(body.caller.task_source ? { ok: true } : { error: "not this app's pass" }));
   });
   t.after(() => design.s.close());
-  const moduleTool = createModuleTool({ db, whoami, asserter, resolver: createResolver(), secret: (n) => (n === "design_service_key" ? "dk" : ""),
+  // A job that ends while the kernel looks up the module (endsMidCall) sends nothing.
+  let endsMidCall = false;
+  const real = createResolver();
+  const resolver = { forget: real.forget, resolve: async (u: string) => { if (endsMidCall) jobs["j-ui"]!.state = "done"; return real.resolve(u); } };
+  const moduleTool = createModuleTool({ db, whoami, asserter, resolver, secret: (n) => (n === "design_service_key" ? "dk" : ""),
     decl: (m) => (m === "design" ? { url: `${design.url}/jobtools`, auth_secret: "design_service_key", ops: ["login", "app-session"] } : undefined) });
   const bp = createBackplane({ whoami, asserter, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), moduleTool } as never);
   const k = await serve(bp);
@@ -65,7 +69,10 @@ test("module job tool forwards the caller and the task's module source", async (
   const other = await post("/v1/jobtools/module/design/app-session", { app: "acme" }, { job: "j-owner" });
   assert.equal(other.status, 403);
   assert.deepEqual(calls.at(-1)!.body.caller, { agent: "ui-reviewer", roles: ["ui-login"], task: T2, task_module: null, task_source: null });
-  // An ended job's token: 401.
-  jobs["j-ui"]!.state = "done";
+  // A job that ends mid-call, or has ended: 401, and the module hears nothing.
+  const heard = calls.length;
+  endsMidCall = true;
   assert.equal((await post("/v1/jobtools/module/design/login", { app: "acme" }, { job: "j-ui" })).status, 401);
+  assert.equal((await post("/v1/jobtools/module/design/login", { app: "acme" }, { job: "j-ui" })).status, 401);
+  assert.equal(calls.length, heard);
 });
