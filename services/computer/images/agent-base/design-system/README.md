@@ -38,7 +38,7 @@ missing or older file from the current starter's `src/components/blocks/` and `s
 ## Migrating an existing server-rendered app
 
 For an app that renders HTML on the server (with or without the old kit). One Engineer PR per step where possible; the
-UI Reviewer reviews each with `ui-review --baseline` against the version before. The data layer, the API, auth, the
+UI Reviewer reviews each with `ui-review capture --baseline` against the version before. The data layer, the API, auth, the
 gate check and migrations stay as they are: only the UI moves.
 
 1. **Split the server into an API.** Every page's data becomes a JSON route (`GET /api/<view>?<the page's query>`)
@@ -57,7 +57,7 @@ gate check and migrations stay as they are: only the UI moves.
 4. **Compose each page afresh** from its mockup or the starter's blocks rather than porting markup: the main content
    first, long feeds beside or below it, and history in the detail sheet or its own paged view.
 5. **Retire the old UI:** delete the templates, the vendored kit (`components.css`, `kit.js`) and its copy script once the
-   last page has moved. Run `ui-review` at 390 and 1280 in light and dark on every page and fix anything blocking,
+   last page has moved. Run `ui-review capture` and `ui-review routes` on every page and fix anything blocking,
    then ask the UI/UX Designer for the app's design audit (one task naming the app and its repository).
 
 An app on the old kit that isn't being touched for UI stays as it is. Migrate it the next time its UI changes, or when

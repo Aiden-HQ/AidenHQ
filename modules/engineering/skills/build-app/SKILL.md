@@ -30,9 +30,11 @@ package is missing (it goes into the `engineer` image by a PR). You have no ware
 
   ```sh
   PORT=4173 node server.mjs & pid=$!; sleep 2
-  ui-review http://127.0.0.1:4173 --widths 1280 --modes light --out .aidenhq/out/review; status=$?
-  kill $pid; [ "$status" -eq 0 ]
+  ui-review capture http://127.0.0.1:4173 --widths 1280 --themes light --out .aidenhq/out/review; shots=$?
+  ui-review routes http://127.0.0.1:4173 --out .aidenhq/out/routes; routes=$?
+  kill $pid; [ "$shots" -eq 0 ] && [ "$routes" -eq 0 ]
   ```
 
-  Its "Routes" section must read "renders" for every link, with no dead clicks.
+  Both reports (`report.md` in each folder) must list nothing blocking: every link renders and the brand opens home. Make
+  each control under the route check's "To look at" visibly act.
 - Publish as skill `publish` says (`aidenhq publish <org/repo> <branch>`). The task ends when the PR merges; the delegator hears it then.
