@@ -83,9 +83,9 @@ export async function measureMotion(page: PwPage, opts: { click?: boolean } = {}
     await page.waitForTimeout(150);
     const hovered = await read();
     if (hovered > 0) shifts.push(Math.round(hovered * 10000) / 10000);
-    // Clicks only when the caller asked for them, only on buttons (a link would navigate), never on a control named like a write.
+    // Clicks only when the caller asked for them, only on buttons (a link would navigate), never a form's submit or a control named like a write.
     const label = ((await c.innerText().catch(() => "")) || (await c.getAttribute("aria-label").catch(() => "")) || "").trim();
-    if (opts.click && isLocal(page.url()) && (await c.evaluate((e) => e.tagName === "BUTTON" || e.getAttribute("role") === "button").catch(() => false)) && !RISKY.test(label)) {
+    if (opts.click && isLocal(page.url()) && (await c.evaluate((e) => (e.tagName === "BUTTON" && !((e as HTMLButtonElement).type === "submit" && (e as HTMLButtonElement).form)) || e.getAttribute("role") === "button").catch(() => false)) && !RISKY.test(label)) {
       await c.click({ timeout: 1000 }).catch(() => {});
       await page.waitForTimeout(250);
       const clicked = await read();

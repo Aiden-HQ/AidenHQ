@@ -90,7 +90,7 @@ const HELPERS = () => {
 type R = { routeLinks(): { href: string; to: string; kind: string; label: string; nav: boolean }[]; sameLinks(): HTMLAnchorElement[]; controls(): Element[]; kindOf(e: Element): string; label(e: Element): string; brand(home: string): HTMLAnchorElement | undefined; view(): View; snap(): Snap; mark(attr: string, e: Element | undefined): boolean };
 
 /** One browser page for checks, with its page errors. */
-type Session = { page: PwPage; errs: string[] };
+type Session = { page: PwPage; errs: string[]; origin: string };
 async function prep(s: Session) { if (!(await s.page.evaluate(() => "__uiRoutes" in window))) await s.page.evaluate(`(${HELPERS.toString()})()`); }
 async function openAt(s: Session, base: string, path: string) {
   await s.page.goto("about:blank");
@@ -103,7 +103,13 @@ const look = async (s: Session) => { await prep(s); return s.page.evaluate(() =>
 const snap = async (s: Session) => { await prep(s); return s.page.evaluate(() => (window as unknown as { __uiRoutes: R }).__uiRoutes.snap()); };
 const toFoot = (s: Session) => s.page.evaluate(() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }); return Math.round(scrollY); });
 const same = (a: Snap, b: Snap, polling: boolean) => a.route === b.route && a.scrollY === b.scrollY && a.focus === b.focus && a.html === b.html && a.live === b.live && (polling || a.reqs === b.reqs);
+/** Clicks only on the app under review, on a local build: a page that redirected elsewhere (a hosted sign-in) is never clicked. */
+function guard(s: Session) {
+  const u = new URL(s.page.url());
+  if (u.origin !== s.origin || !isLocal(u.href)) throw new Error(`the page left the app for ${u.origin} before the click`);
+}
 async function click(s: Session, attr: string) {
+  guard(s);
   try { await s.page.locator(`[${attr}]`).first().click({ timeout: 2000 }); } catch { await s.page.evaluate((a) => (document.querySelector(`[${a}]`) as HTMLElement | null)?.click(), attr); }
 }
 const firstLine = (e: unknown) => String((e as Error)?.message ?? e).split("\n")[0].slice(0, 160);
@@ -116,18 +122,25 @@ export async function routesCommand(argv: string[]): Promise<number> {
   const out = v.out!;
   mkdirSync(out, { recursive: true });
   let paths: string[];
-  try { paths = v.paths ? v.paths.split(",") : (await pageList(base, { featureMap: v.map ?? "feature-map.json", pagesFile: v["pages-file"], crawl: true })).map((p) => p.path); }
+  try { paths = v.paths ? v.paths.split(",") : (await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true })).map((p) => p.path); }
   catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
+  const origin = new URL(base).origin;
+  if (paths.some((p) => new URL(p, base).origin !== origin)) { console.error("ui-review routes: every path must be on the app under review"); return 2; }
   const t0 = Date.now(), frozenAt = new Date().toISOString();
   const b = await launch({ out });
   const sessions: Session[] = [];
-  const session = async () => {
-    const ctx = await workerContext(b.browser, frozenAt);
-    const page = await ctx.newPage();
+  // A session's page in its own context; `renew` replaces it (a timed-out check may still be clicking on the old one).
+  const renew = async (s: Session) => {
+    await s.page?.context().close().catch(() => {});
+    const page = await (await workerContext(b.browser, frozenAt)).newPage();
     await page.setViewportSize({ width: WIDTH, height: HEIGHT });
     await page.emulateMedia({ colorScheme: "light" });
-    const s: Session = { page, errs: [] };
     page.on("pageerror", (e) => s.errs.push(String(e.message)));
+    s.page = page;
+  };
+  const session = async () => {
+    const s = { errs: [], origin } as unknown as Session;
+    await renew(s);
     sessions.push(s);
     return s;
   };
@@ -174,6 +187,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
       if (found === "none") { c.problems.push(`there is no header brand to click on ${path}`); return; }
       if (found !== "ok") { c.problems.push("its header has no brand link to the home page"); return; }
       // A direct DOM click: a pointer click would scroll the brand into view first, and that scroll would pass for an effect.
+      guard(s);
       await s.page.evaluate(() => (document.querySelector("[data-ui-review-brand]") as HTMLElement | null)?.click());
       await settle(s);
       const now = await snap(s), v = await look(s);
@@ -198,6 +212,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
             if (!(await s.page.evaluate((i) => (window as unknown as { __uiRoutes: R }).__uiRoutes.mark("data-ui-review-same", (window as unknown as { __uiRoutes: R }).__uiRoutes.sameLinks()[i]), i))) return { skipped: "the link wasn't on the page when it was opened again" };
             const { start, polling } = await readState(s);
             s.errs.length = 0;
+            guard(s);
             await s.page.evaluate(() => (document.querySelector("[data-ui-review-same]") as HTMLElement | null)?.click());
             await settle(s);
             const after = await snap(s);
@@ -275,7 +290,7 @@ export async function routesCommand(argv: string[]): Promise<number> {
         if (Date.now() - t0 > BUDGET_MS) { t.c.skipped = "not checked: the route check's 300 s ran out"; cut++; continue; }
         let timer: NodeJS.Timeout | undefined;
         try { await Promise.race([t.run(s), new Promise((_, no) => { timer = setTimeout(() => no(new Error(`timed out after ${CHECK_MS / 1000} s`)), CHECK_MS); })]); }
-        catch (e) { t.c.skipped = `couldn't check it: ${firstLine(e)}`; }
+        catch (e) { t.c.skipped = `couldn't check it: ${firstLine(e)}`; await renew(s); }
         finally { clearTimeout(timer); }
       }
     }));

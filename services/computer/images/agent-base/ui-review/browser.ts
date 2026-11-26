@@ -118,4 +118,4 @@ export async function workerContext(browser: Browser, frozenAt: string): Promise
 }
 
 /** Viewport heights per width: the common device or window at that width. */
-export const heightOf = (w: number) => ({ 360: 780, 390: 844, 768: 1024, 1024: 768, 1280: 800, 1512: 900, 1920: 1080, 2560: 1440 } as Record<number, number>)[w] ?? 900;
+export const heightOf = (w: number) => ({ 360: 780, 390: 844, 768: 1024, 1024: 768, 1280: 800, 1512: 982, 1920: 1080, 2560: 1440 } as Record<number, number>)[w] ?? 900;

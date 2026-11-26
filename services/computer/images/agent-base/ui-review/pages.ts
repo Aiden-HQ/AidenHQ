@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { launch, ready, routeOf, workerContext } from "./browser.ts";
 import type { Page, PageKind } from "./types.ts";
 
-const CRAWL_MAX = 120, CRAWL_DEPTH = 2;
+const CRAWL_MAX = 120, CRAWL_DEPTH = 2, DEFAULT_MAP = "feature-map.json";
 type Entry = string | { path?: unknown; shows?: unknown; kind?: unknown };
 
 /** A path relative to the app's URL, on the app (a protocol-relative "//host" would take the browser elsewhere). */
@@ -23,9 +23,11 @@ function read(file: string, base: string, source: Page["source"]): Page[] {
   return pages.map((p) => ({ path: p.path as string, source, ...(typeof p.shows === "string" ? { shows: p.shows } : {}), ...(typeof p.kind === "string" ? { kind: p.kind as PageKind } : {}) }));
 }
 
+/** The page list: `featureMap` (a file that must exist), else `pagesFile`, else ./feature-map.json when there is one, else the crawl. */
 export async function pageList(base: string, o: { featureMap?: string; pagesFile?: string; crawl: boolean }): Promise<Page[]> {
-  if (o.featureMap && existsSync(o.featureMap)) return read(o.featureMap, base, "feature-map");
+  if (o.featureMap) return read(o.featureMap, base, "feature-map");
   if (o.pagesFile) return read(o.pagesFile, base, "router");
+  if (existsSync(DEFAULT_MAP)) return read(DEFAULT_MAP, base, "feature-map");
   if (!o.crawl) return [{ path: "/", source: "links" }];
   return crawl(base);
 }
@@ -73,7 +75,7 @@ export async function pagesCommand(argv: string[]): Promise<number> {
   const base = positionals.find((a) => /^https?:\/\//.test(a));
   if (!base) { console.error("usage: ui-review pages <url> --out <dir> [--map feature-map.json] [--pages-file f]"); return 2; }
   let pages: Page[];
-  try { pages = await pageList(base, { featureMap: v.map ?? "feature-map.json", pagesFile: v["pages-file"], crawl: true }); } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
+  try { pages = await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true }); } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
   mkdirSync(v.out!, { recursive: true });
   writeFileSync(join(v.out!, "pages.json"), JSON.stringify(pages, null, 2));
   console.log(`${join(v.out!, "pages.json")}: ${pages.length} pages`);

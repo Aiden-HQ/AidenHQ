@@ -37,8 +37,8 @@ export type CaptureOptions = {
   diffPage?: () => Promise<PwPage>;
 };
 
-/** The shot's file name: `<page>-<width>-<mode>.png` (a state other than default after the page), `-s<n>` for later steps. */
-export const shotName = (slug: string, item: QueueItem, step: number) => `${slug}${item.state === "default" ? "" : `-${item.state}`}-${item.width}-${item.theme}${step ? `-s${step + 1}` : ""}.png`;
+/** The shot's file name: `<page>-<width>-<mode>.png`, then `-<state>` for a state other than default, `-s<n>` for later steps. */
+export const shotName = (slug: string, item: QueueItem, step: number) => `${slug}-${item.width}-${item.theme}${item.state === "default" ? "" : `-${item.state}`}${step ? `-s${step + 1}` : ""}.png`;
 
 /** The URL of a page: "/" is the app's URL itself; a page that takes ?palette= also gets the theme as ?mode=. */
 export function urlOf(base: string, path: string, theme: string): string {
@@ -67,14 +67,14 @@ function stateRoute(item: QueueItem, origin: string) {
   const empty = (v: unknown): unknown => Array.isArray(v) ? [] : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, empty(x)])) : v;
   return async (route: Route) => {
     const req = route.request();
-    if (req.method() !== "GET" || !["fetch", "xhr"].includes(req.resourceType()) || new URL(req.url()).origin !== origin) return route.continue().catch(() => {});
+    if (req.method() !== "GET" || !["fetch", "xhr"].includes(req.resourceType()) || new URL(req.url()).origin !== origin) return route.fallback().catch(() => {});
     if (item.state === "error") return route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"ui-review: the error state"}' }).catch(() => {});
     if (item.state === "loading") { await new Promise((ok) => setTimeout(ok, 10_000)); return route.continue().catch(() => {}); }
     try {
       const resp = await route.fetch();
       if (!/json/.test(resp.headers()["content-type"] ?? "")) return route.fulfill({ response: resp });
       return route.fulfill({ response: resp, json: empty(await resp.json()) });
-    } catch { return route.continue().catch(() => {}); }
+    } catch { return route.fallback().catch(() => {}); }
   };
 }
 
@@ -102,7 +102,8 @@ export async function capture(ctx: BrowserContext, base: string, item: QueueItem
   if (item.state !== "default") await page.route("**/*", stateRoute(item, new URL(base).origin));
   await page.goto("about:blank");
   errs.length = 0;
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+  const doc = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+  if (doc && doc.status() >= 400 && o.widest && item.state === "default") notes.push({ rule: "document-status", blocking: true, text: `${where} ${item.theme}: the page answers ${doc.status()}` });
   let settled: boolean, loading: number;
   if (item.state === "loading") { await page.waitForTimeout(400); settled = false; loading = 0; }
   else {
@@ -251,7 +252,9 @@ export async function captureCommand(argv: string[]): Promise<number> {
   const out = v.out!;
   mkdirSync(out, { recursive: true });
   const runFile = join(out, "run.json");
-  const prior = v.resume && existsSync(runFile) ? JSON.parse(readFileSync(runFile, "utf8")) as { frozenAt: string; pages: Page[]; widths: number[]; themes: Theme[]; states: State[]; baseline?: string } : null;
+  const prior = v.resume && existsSync(runFile) ? JSON.parse(readFileSync(runFile, "utf8")) as { base: string; commit?: string; frozenAt: string; pages: Page[]; widths: number[]; themes: Theme[]; states: State[]; baseline?: string } : null;
+  const at = source(v.commit);
+  if (prior && (prior.base !== base || prior.commit !== at.commit)) { console.error(`ui-review: --resume of a run of ${prior.base} at ${prior.commit ?? "an unknown commit"}, not ${base} at ${at.commit ?? "an unknown commit"}: start a new --out`); return 2; }
   const widths = prior?.widths ?? list(v.widths, [390, 768, 1024, 1512, 1920, 2560], Number);
   const themes = prior?.themes ?? list(v.themes, ["light", "dark"] as Theme[], (s) => s as Theme);
   const states = prior?.states ?? list(v.states, ["default"] as State[], (s) => s as State);
@@ -259,14 +262,13 @@ export async function captureCommand(argv: string[]): Promise<number> {
   let pages = prior?.pages;
   if (!pages) {
     try {
-      pages = v.paths ? v.paths.split(",").map((path): Page => ({ path, source: "feature-map" })) : await pageList(base, { featureMap: v.map ?? "feature-map.json", pagesFile: v["pages-file"], crawl: true });
+      pages = v.paths ? v.paths.split(",").map((path): Page => ({ path, source: "feature-map" })) : await pageList(base, { featureMap: v.map, pagesFile: v["pages-file"], crawl: true });
     } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
     const palettes = list(v.palettes, [] as string[], String);
     if (palettes.length) pages = pages.flatMap((p) => palettes.map((pal) => { const u = new URL(p.path, "http://x"); u.searchParams.set("palette", pal); return { ...p, path: u.pathname + u.search + u.hash }; }));
   }
   const frozenAt = (baseline && readReport(baseline)?.frozenAt) || prior?.frozenAt || new Date().toISOString();
-  writeFileSync(runFile, JSON.stringify({ base, frozenAt, pages, widths, themes, states, baseline }, null, 2));
-  const at = source(v.commit);
+  writeFileSync(runFile, JSON.stringify({ base, commit: at.commit, frozenAt, pages, widths, themes, states, baseline }, null, 2));
   const q = openQueue(join(out, "queue.json"), pages, { widths, themes, states, max: PAGE_MAX, resume: !!v.resume });
   const slug = slugs(pages);
   const widest = Math.max(...widths), narrowest = Math.min(...widths), motionWidth = widths.includes(1512) ? 1512 : widest;
@@ -305,7 +307,8 @@ export async function captureCommand(argv: string[]): Promise<number> {
   caps = caps.filter((c) => {
     if (c.state === "default") return true;
     const d = shotOf.get(keyOf(c).replace(/\|[a-z]+$/, ""));
-    if (!d || !c.shots[0] || !unstamped(readFileSync(join(out, d))).equals(unstamped(readFileSync(join(out, c.shots[0]))))) return true;
+    const dropped = !!c.shots[0] && !existsSync(join(out, c.shots[0])); // dropped by an earlier pass of this run (before a --resume)
+    if (!dropped && (!d || !c.shots[0] || !unstamped(readFileSync(join(out, d))).equals(unstamped(readFileSync(join(out, c.shots[0])))))) return true;
     for (const s of c.shots) rmSync(join(out, s), { force: true });
     notes.push(`${c.page} ${c.width}px ${c.theme}: the ${c.state} state is not reachable (it looks just like the default)`);
     return false;
@@ -315,5 +318,6 @@ export async function captureCommand(argv: string[]): Promise<number> {
   const r = writeReport(out, { version: 2, target: base, ...(at.commit ? { commit: at.commit } : {}), frozenAt, model: "", coverage: counts, captures: caps, improvements: [], motion: [], bugs: [], notes, cost_usd: 0 },
     { widths, themes, states, baseline, shows: Object.fromEntries(pages.filter((p) => p.shows).map((p) => [p.path, p.shows!])) });
   console.log(`${join(out, "report.md")}: ${counts.done}/${counts.total} captures in ${secs} s, ${r.blocking!.length} blocking, ${r.preexisting!.length} already on this base, ${caps.reduce((n, c) => n + c.shots.length, 0)} screenshots${counts.failed ? `, ${counts.failed} failed` : ""}${counts.deferred ? `, ${counts.deferred} deferred` : ""}`);
+  if (!counts.done) { console.error("ui-review: nothing was captured (is the app up?)"); return 2; }
   return r.blocking!.length ? 1 : 0;
 }
