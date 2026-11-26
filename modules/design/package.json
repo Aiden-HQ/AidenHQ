@@ -1,0 +1,9 @@
+{
+  "name": "design",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "description": "Design: the UI Reviewer's runs and evidence store (service).",
+  "scripts": { "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts" }
+}
