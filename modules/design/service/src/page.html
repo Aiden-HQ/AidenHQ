@@ -138,7 +138,7 @@
   const fail = (e) => say(e.message, true);
   const status = (s, word) => { const [tone, w] = STATUS[s] ?? ["", s]; return h("span", {}, t("span", `dot ${tone}`), word ?? w); };
   const card = (title, aside, ...kids) => h("div", { className: "card" }, title ? h("div", { className: "head" }, typeof title === "string" ? t("b", "", title) : title, aside ?? h("span")) : null, ...kids);
-  const go = (r) => { route = r; runData = null; render(); window.scrollTo?.(0, 0); if (r.page === "app") loadLast(); if (r.page === "run") loadRun(r.id); };
+  const go = (r) => { route = r; runData = null; adding = false; render(); window.scrollTo?.(0, 0); if (r.page === "app") loadLast(); if (r.page === "run") loadRun(r.id); };
   const appOf = (name) => (draft ?? ov?.apps ?? []).find((a) => a.name === name);
   const live = (name) => ov?.apps.find((a) => a.name === name);
 
@@ -243,10 +243,10 @@
     const f = h("form", { className: "addf" }, name, url, repo, h("label", {}, own, "AidenHQ app"), h("button", { type: "submit", className: "primary", textContent: "Add app" }));
     f.addEventListener("submit", (e) => {
       e.preventDefault();
-      const n = name.value.trim().toLowerCase();
+      const n = name.value.trim().toLowerCase(), add = { name: n, url: url.value.trim(), ...(repo.value.trim() ? { repo: repo.value.trim() } : {}), aidenhq_app: own.checked };
       if ((draft ?? ov.apps).some((a) => a.name === n)) return say(`${n} is already listed.`, true);
       adding = false;
-      propose((list) => [...list, { name: n, url: url.value.trim(), ...(repo.value.trim() ? { repo: repo.value.trim() } : {}), aidenhq_app: own.checked }], `add ${n}`);
+      propose((list) => (list.some((a) => a.name === n) ? list : [...list, add]), `add ${n}`);
     });
     setTimeout(() => name.focus(), 0);
     return f;
@@ -282,7 +282,7 @@
     const text = (k, ph) => { const i = h("input", { type: "text", value: a[k] ?? "", placeholder: ph ?? "", ariaLabel: k, autocomplete: "off", spellcheck: false }); i.addEventListener("change", () => set(k)(i.value.trim() || undefined)); return i; };
     const cap = h("input", { type: "text", inputMode: "decimal", value: String(a.day_cap_usd ?? 5), ariaLabel: "Daily cap in USD", className: "num" });
     cap.addEventListener("change", () => { const n = Number(cap.value); if (!Number.isFinite(n) || n < 0 || n > 100) return say("The daily cap is a number of dollars from 0 to 100.", true); set("day_cap_usd")(n); });
-    const model = (k, what) => { const i = h("input", { type: "text", value: a.models?.[k] ?? "", placeholder: "the UI Reviewer's own", ariaLabel: `${what} model`, autocomplete: "off", spellcheck: false, className: "mono" }); i.addEventListener("change", () => edit(a.name, (cur) => ({ models: { ...(cur.models ?? {}), [k]: i.value.trim() || undefined } }), `${a.name}: ${what.toLowerCase()} model`)); return h("label", {}, what, i); };
+    const model = (k, what) => { const i = h("input", { type: "text", value: a.models?.[k] ?? "", placeholder: "the UI Reviewer's own", ariaLabel: `${what} model`, autocomplete: "off", spellcheck: false, className: "mono" }); i.addEventListener("change", () => { const v = i.value.trim() || undefined; edit(a.name, (cur) => ({ models: { ...(cur.models ?? {}), [k]: v } }), `${a.name}: ${what.toLowerCase()} model`); }); return h("label", {}, what, i); };
     const rec = toggle(a.recording, "Record clicking flows", () => edit(a.name, (cur) => ({ recording: !cur.recording }), `${a.name}: recording`));
     const own = toggle(a.aidenhq_app, "An app on this AidenHQ", () => edit(a.name, (cur) => ({ aidenhq_app: !cur.aidenhq_app }), `${a.name}: AidenHQ app`));
     const l = live(a.name);
