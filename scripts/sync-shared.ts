@@ -3,7 +3,7 @@
 // byte-identical copy; scripts/test/shared.test.ts fails when one drifts (the official modules' under modules/ included).
 //   kernel/sdk/src/{caller,fence}.ts the caller assertion check and the fence, in every module server (src/aidenhq-sdk/)
 //   kernel/sdk/src/executor.ts       the executor side of write kinds, in each module server with an executor
-//   kernel/sdk/src/tools-client.ts   the box's one MCP client, in the engineer image (lib/tools.ts)
+//   kernel/sdk/src/tools-client.ts   the box's one MCP client, in the engineer image (lib/tools.ts) and the ui-review engine
 //   kernel/sdk/src/vendor/{proxy,oauth,needs}.ts  the vendor pass-through, in each vendor connection (src/vendor/); needs.ts
 //                                    (the needs_owner answer) also in google-workspace-mcp (src/aidenhq-sdk/)
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
@@ -76,8 +76,8 @@ export function sharedCopies(root = repo) {
   // The Fleet pages' shared kit (the common styles and bridge script), inlined into each module's page.html when it is served (mcp.ts pageHtml).
   ...Object.fromEntries(["page-kit.css", "page-kit.js"].map((f) => [`services/shared/${f}`, [`modules/ship/service/src/${f}`, `modules/maintainer/service/src/${f}`, `modules/code-review/service/src/${f}`]])),
   // The box's one MCP client (code mode): the engineer image's /opt/aidenhq/lib/tools.ts, which the in-box `aidenhq` CLI and a
-  // session's generated tool files import.
-  "kernel/sdk/src/tools-client.ts": ["services/computer/images/engineer/lib/tools.ts"],
+  // session's generated tool files import; and the ui-review engine's (`ui-review put` and `get`: evidence files to the design tools).
+  "kernel/sdk/src/tools-client.ts": ["services/computer/images/engineer/lib/tools.ts", "services/computer/images/agent-base/ui-review/tools-client.ts"],
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
   "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/slack/connections/slack-live/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/github/service/src/aidenhq-sdk/executor.ts", "modules/code-review/service/src/aidenhq-sdk/executor.ts"],
   // A change's tests (the secret scan, supply chain, lint, tests and build), run the same for a change request on this server.

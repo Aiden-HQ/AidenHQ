@@ -29,7 +29,16 @@ apps (`aidenhq_app: true`) are always read-only and sign in through the test-use
 - The UI Reviewer also gets the `design` connection: `design_run_start`, `design_evidence_put`, `design_run_finish`
   (write) and `design_runs`, `design_run` (read), and for apps `design_apps` (read) and `design_pass_start` (write: files a
   pass for the holder of role `ui-login`). A run's reports and the captures they cite are kept 30 days, except each
-  app's latest finished run.
+  app's latest finished run. In its computer, `ui-review put` and `ui-review get` move a run's files (captures, the coverage
+  queue, recordings) to and from the store without passing them through the model.
+- A pass reports to the app's repo when it has one and GitHub is connected: one "design improvements" issue per app,
+  refreshed in place on every pass, and one issue per verified bug (`github_issue_create`, `github_issue_update`: AI-reviewed
+  writes). Each issue carries a marker (`<!-- aidenhq-ui:design:<app> -->`, or a bug's hash of its page, kind and last step's
+  selector, so a reworded title is the same bug); the store keeps each marker's issue number (`design_issue_note`), so a
+  later pass updates it by number and never files a second. Images stay on the board: each issue names its run and links
+  the UI testing page. Without a repo or GitHub, the run's page is the report.
+- Recordings (an app's `recording: true`): each clicking-pass flow as a VP8 webm, at most 2 minutes and 4 MB, with the
+  flow's layout shifts and long frames.
 
 ## New installs
 

@@ -88,7 +88,7 @@ app per pass:
 
 ```sh
 ui-review flows review --out flows.md          # per page: flows of at most 6 steps, each with a persona and what should happen
-ui-review browser start --url <app url> --session state.json --mode <the pass's mode> --out browser &   # prints `cdp port <port>` (also browser/browser.json); the guard covers every tab you open
+ui-review browser start --url <app url> --session state.json --mode <the pass's mode> --out browser [--record review/recordings] &   # prints `cdp port <port>` (also browser/browser.json); the guard covers every tab you open; --record: a webm per flow
 codex exec --skip-git-repo-check -m openai/gpt-6.2-sol -c model_reasoning_effort=low <the gateway provider flags of "Show the fix" step 1> -C /workspace \
   "Follow /opt/aidenhq/skills/dogfood/SKILL.md, attaching with agent-browser --cdp <port>. Work the flows in flows.md and write clicks.json as flows.md says." < /dev/null
 ```
@@ -174,9 +174,10 @@ Write each improvement's `fix` into `review/report.json`; the report you post re
 ## Report
 
 Evidence first: `design_run_start { target, kind: "review", model, app }` (`app`: the app's name from `app_list`, else the repo name, else the URL's
-host: stable across reviews, so retention and `design_runs` group a product's runs), then `design_evidence_put` the report's cited
-captures, the before|after pairs and each fix's diff (8 MB per call), then `design_run_finish { run, report }`. All three
-write only into the design module's own store.
+host: stable across reviews, so retention and `design_runs` group a product's runs), then put the report's cited captures,
+the before|after pairs and each fix's diff with `ui-review put --run <run> <file>[=<name>]...` (it sends the files to
+`design_evidence_put` itself, 8 MB per call, a recording alone), then `design_run_finish { run, report }`. All three write
+only into the design module's own store.
 
 Then one comment on your task (`task_comment`, then `task_finish`): the improvements ranked, each with where, what is weak,
 the change, why, what the best product does and, for a fixed one, its before|after image attached with `task_file_upload`
@@ -185,6 +186,53 @@ capture and the fix); then a short list of cold-page notes for a PR. For a PR on
 findings (`github_issue_comment`; GitHub takes no images from you); a repo on the local code host reports on its task only. A request to land a fix goes to an Engineer with
 `task_delegate`: the repo, the PR, each fix's diff and how you will check it.
 If an upload fails, say so and describe what the image shows; one try is enough.
+
+## A UI testing pass
+
+A pass's task ("UI review pass: <app> (<depth>)") names everything it runs at: the design run (`r-…`, already started for
+you), the target, the live-app mode, the model, the spend mode (how many fixes and clicking passes), per-role models,
+whether recording is on, where coverage resumes, how to sign in and the app's known issues. Run the app, capture, review,
+show the fixes and work the clicking pass as above, at that depth; the steps below take the place of "Report":
+
+1. **Resume.** Every capture of a pass names what it captures: `--commit <the checked-out sha>` for a repo app (run its local
+   build on the port its restored `run.json` names, when there is one), `--commit live` for an app reviewed at its url. When
+   the task says "resume from <previous run>", restore its queue first:
+   `ui-review get --run <previous run> --out review queue.json run.json`. When that fails (the run was swept or kept no
+   queue), or `review/run.json`'s `base` is not this pass's address, or its `commit` is not this pass's, the app changed
+   since: delete `review/`, start a new cycle (no `--resume`) and say so in the notes. Otherwise `ui-review capture …
+   --resume` takes the pages the earlier passes left. When `capture --resume` still refuses (it names the commit), do the
+   same: a clean `review/` and a new cycle.
+2. **Keep the resume point.** Right after every `capture` returns, before review or clicking, put the queue on this run:
+   `ui-review put --run <run> review/queue.json review/run.json`. A pass that dies later still leaves where the next one
+   starts.
+3. **Spend mode.** `scan`: capture and review only, no fixes, no clicking. `standard`: the top 3 improvements get a rendered
+   fix and one clicking pass runs. `thorough`: the top 5 and two clicking passes. A model the task names for `design` goes
+   to `ui-review review --model`, for `fixes` to the fixer, for `clicking` to the clicking pass's `codex exec -m`.
+4. **Recording on:** start each clicking pass's browser with `--record review/recordings` (both passes of a thorough run use
+   the same folder: each adds its own clips). The clicking agent marks each flow's start (flows.md says how). Stop the
+   browser with `kill <its pid>` when the clicking pass ends (it writes `recordings.json` as it stops).
+5. **Evidence:** `ui-review put --run <run>` the report's cited captures, each fix's before|after pair under its own names
+   and its diff, and with recording on `review/recordings/*.webm review/recordings/recordings.json`.
+6. **Issues**, before you finish the run (a finished run takes no more writes). `ui-review issue-body review --app <app>
+   --run <run>` (add `--run-url <the board's UI testing page>` when you know the board's address) prints the design issue
+   and one issue per verified bug, each with its `marker`, `title` and `body`. For each, in the app's repo:
+   - The task lists a number for the marker: `github_issue_update` it with the `body` and `state: open`.
+   - No number: search once, `github_search_issues` with `repo:<repo> is:issue "<marker>"` (open or closed), and
+     `github_issue_read` each hit; adopt the issue whose body holds the exact line `<!-- <marker> -->` and update it as
+     above. None: `github_issue_create` with the title and body, with `labels: ["ui-design"]` (a bug: `ui-bug`) only when
+     an issue there carries that label (`github_search_issues` with `repo:<repo> label:ui-design`); otherwise no label, and
+     say so in the notes.
+   - Once GitHub confirms the issue (the answer names its number and URL), `design_issue_note { app, marker, repo, number }`
+     at once, before the next issue. An answer that says it was filed for approval hasn't happened yet: its outcome lands on
+     your task and wakes you. File the rest and list the pending approval ids in your memory of the task, then end this turn
+     with the run and the task still open. On each wake read their state (`task_approvals`, and the outcomes in
+     `task_comments`) and note the number of each issue created or adopted; go on to step 7 once every pending write has
+     ended (done, failed, refused, or cancelled when its approval expired: a write that didn't happen is listed in the notes).
+   No repo in the task, GitHub not connected, or a write refused: the run's page is the report. Record the outcome in
+   `report.json` as `issues: { design: <url>, bugs: [<urls>] }`, or `issues: { unavailable: "<reason>" }`, and go on; one
+   try is enough.
+7. **Finish:** `design_run_finish { run, report }`, then one comment on the task with the headline improvements, the bugs,
+   the issue links (or the reason there are none) and the run id, then `task_finish`.
 
 ## Learning taste
 

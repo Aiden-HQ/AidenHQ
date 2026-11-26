@@ -1,6 +1,6 @@
 // The design service: the UI Reviewer's runs and evidence store (store.ts) behind the `design` connection (tools.ts, served at
 // /mcp with the service key; every call carries the kernel's signed caller assertion), the apps it tests and their passes
-// (passes.ts: settings.ui_testing, tasks filed with this module's kernel token) and the job tools the kernel forwards to a pass
+// (passes.ts: settings.ui_testing, tasks filed with this module's kernel token; schedule.ts: when they start) and the job tools the kernel forwards to a pass
 // (jobtools.ts, POST /jobtools with the service key). Evidence older than 30 days is swept daily.
 import { readFileSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
@@ -12,6 +12,7 @@ import { designTools } from "./tools.ts";
 import { DAY, openStore } from "./store.ts";
 import { createPasses, readApps, readLogins, validate } from "./passes.ts";
 import { createJobTools } from "./jobtools.ts";
+import { createScheduler } from "./schedule.ts";
 
 const env = process.env;
 const file = (p: string | undefined) => { try { return p ? readFileSync(p, "utf8").trim() : ""; } catch { return ""; } };
@@ -24,10 +25,37 @@ for (const e of errors) log("WARNING: settings.ui_testing", { error: e });
 // Read on each call, so a login pasted on the board works without a restart. Never logged.
 const logins = () => readLogins(file(env.DESIGN_UI_LOGINS_FILE));
 const kernel = () => kernelClient(kernelUrl, file(env.DESIGN_TOKEN_FILE));
+/** Closes a pass's task, cancelled: the dispatcher stops its job (a Stop, a pass past its time). */
+const closeTask = async (task: string, body: string) => void await kernel().call("POST", `/v1/tasks/${encodeURIComponent(task)}/close`, { status: "cancelled", body });
 const passes = createPasses({
   store, apps: () => apps, logins,
-  fileTask: async (t) => { const r = await kernel().call("POST", "/v1/tasks", t); return { id: String(r.id), agent: String(r.agent) }; },
+  kernel: {
+    fileTask: async (t) => { const r = await kernel().call("POST", "/v1/tasks", t); return { id: String(r.id), agent: String(r.agent) }; },
+    closeTask,
+    spend: async (prefix, day) => (await kernel().call("GET", `/v1/work?spend_tasks=${encodeURIComponent(prefix)}&day=${day}`)).by_task,
+  },
 });
+// The scheduler (schedule.ts): deploys, 24/7 apps and the running passes' reconcile, one tick a minute, one at a time.
+const scheduler = createScheduler({
+  store, passes, apps: () => apps, log,
+  kernel: {
+    openTasks: async (prefix) => (await kernel().call("GET", `/v1/tasks?source=${encodeURIComponent(prefix)}`)).tasks,
+    taskWork: async (task) => {
+      const w = await kernel().call("GET", `/v1/work?task=${encodeURIComponent(task)}`);
+      return { status: w.status ?? null, live: (w.jobs as { state: string }[]).some((j) => ["admitted", "running"].includes(j.state)) };
+    },
+    closeTask,
+  },
+  feed: (connection, after) => kernel().call("GET", `/v1/events/log?connection=${connection}&limit=200${after === undefined ? "" : `&after=${after}`}`),
+});
+let ticking = false;
+const tick = async () => {
+  if (ticking) return;
+  ticking = true;
+  try { await scheduler.tick(); } finally { ticking = false; }
+};
+setInterval(tick, 60_000);
+void tick();
 // An AidenHQ app's test-user session: this module's token and the job tool call's own assertion, which the kernel re-checks.
 const mintSession = (assertion: string, app: string) => kernel().raw("POST", "/v1/test-session", { app, minutes: 60 }, { "x-aidenhq-caller": assertion });
 const jobtools = createJobTools({ passes, logins, mintSession });

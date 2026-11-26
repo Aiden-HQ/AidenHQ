@@ -9,6 +9,7 @@ import { designTools } from "../service/src/tools.ts";
 import { openStore } from "../service/src/store.ts";
 import { createPasses, readApps, readLogins, validate } from "../service/src/passes.ts";
 import { createJobTools, type JobCaller } from "../service/src/jobtools.ts";
+import { fakeKernel } from "./kernel.fake.ts";
 
 const LOGINS = JSON.stringify({ acme: { login_url: "https://acme.example.com/login", username: "reviewer@example.com", password: "hunter2", totp_secret: "JBSWY3DPEHPK3PXP" }, roadmap: { login_url: "https://roadmap.example.com/login", username: "r", password: "hunter2" } });
 
@@ -20,8 +21,8 @@ async function setup() {
     { name: "roadmap", url: "https://roadmap.example.com", aidenhq_app: true, live_mode: "any" },
   ] }));
   const logins = () => readLogins(LOGINS);
-  const filed: { title: string; description: string; role: string; source: string }[] = [];
-  const passes = createPasses({ store, apps: () => apps, logins, fileTask: async (t) => (filed.push(t), { id: `task-${filed.length}`, agent: "ui-agent" }) });
+  const k = fakeKernel(), filed = k.filed;
+  const passes = createPasses({ store, apps: () => apps, logins, kernel: k.passes });
   const handle = createMcp("design", designTools(store, { passes, apps: () => apps, logins }));
   const as = (agent: string, kind = "run") => async (name: string, args: object) => {
     const out = (await handle({ id: 1, method: "tools/call", params: { name, arguments: args as Record<string, unknown> } }, async () => ({ agent, key: agent, name: agent, roles: ["ui-login"], task: "t", tool: name, call: "c", kind }))) as { result: { content: { text: string }[]; isError?: boolean } };
@@ -73,12 +74,10 @@ test("a supplied login reaches only the app's own pass", async () => {
     }
     assert.equal((await jobtoolRaw("login", { app: "acme" }, caller({ source: src }), "wrong")).status, 401);
     assert.equal((await jobtoolRaw("nope", {}, caller({ source: src }))).status, 404);
-    // A newer pass ends the older one; a finished pass releases nothing.
-    const { run: r2 } = await call("design_pass_start", { app: "acme", depth: "signed-in" });
-    assert.equal((await jobtoolRaw("login", { app: "acme" }, caller({ source: src }))).status, 403);
-    const src2 = `design:pass:acme:${r2}`;
-    await agentCall("design_run_finish", { run: r2, report: { version: 2, captures: [], improvements: [], bugs: [] } });
-    const done = await jobtoolRaw("login", { app: "acme" }, caller({ source: src2 }));
+    // One pass per app: a second waits for the first; a finished pass releases nothing.
+    await assert.rejects(call("design_pass_start", { app: "acme", depth: "signed-in" }), new RegExp(`already running: ${run}`));
+    await agentCall("design_run_finish", { run, report: { version: 2, captures: [], improvements: [], bugs: [] } });
+    const done = await jobtoolRaw("login", { app: "acme" }, caller({ source: src }));
     assert.equal(done.status, 403); assert.match(done.json.error, /isn't running/);
     const apps = await call("design_apps", {});
     assert.ok(!JSON.stringify(apps).includes("hunter2"));
@@ -110,6 +109,7 @@ test("an AidenHQ app's pass gets a read-only test-user session, never a supplied
     const no = await jobtoolRaw("app-session", { app: "roadmap" }, caller({ source: src }));
     assert.equal(no.status, 403); assert.match(no.json.error, /role app-tester/);
     assert.equal(minted.length, 2);
+    store.endPass(run, "failed", "test");
     const { run: scan } = await call("design_pass_start", { app: "roadmap", depth: "scan" });
     assert.match((await jobtoolRaw("app-session", { app: "roadmap" }, caller({ source: `design:pass:roadmap:${scan}` }))).json.error, /is a scan/);
     await assert.rejects(call("design_pass_start", { app: "acme", depth: "signed-in", mode: "any" }), /live_mode/);
@@ -118,7 +118,7 @@ test("an AidenHQ app's pass gets a read-only test-user session, never a supplied
   } finally { close(); }
 });
 
-test("the validate hook names a bad app or login, never a login's value; a failed filing keeps the running pass", async () => {
+test("the validate hook names a bad app or login, never a login's value; a refused filing frees only its own app", async () => {
   assert.deepEqual(validate({ settings: { ui_testing: { apps: [{ name: "acme", url: "https://acme.example.com", live_mode: "write" }] } } }), { ok: false, errors: [{ field: "ui_testing", message: "apps[0]: live_mode is one of read, test-write, any" }] });
   const bad = validate({ secret: { name: "ui_logins" }, value: JSON.stringify({ acme: { username: "u", password: "hunter2" } }) });
   assert.equal(bad.ok, false); assert.ok(!JSON.stringify(bad).includes("hunter2"));
@@ -127,11 +127,13 @@ test("the validate hook names a bad app or login, never a login's value; a faile
   assert.equal(validate({ settings: { ui_testing: { apps: { acme: {} } } } }).ok, false);
   assert.equal(readLogins("{}")["constructor" as string], undefined);
   const store = openStore(mkdtempSync(join(tmpdir(), "design-")));
-  const { apps } = readApps(JSON.stringify({ apps: [{ name: "acme", url: "https://acme.example.com" }] }));
-  let refuse = false;
-  const passes = createPasses({ store, apps: () => apps, logins: () => ({}), fileTask: async () => { if (refuse) throw new Error("kernel down"); return { id: "t1", agent: "a" }; } });
+  const { apps } = readApps(JSON.stringify({ apps: [{ name: "acme", url: "https://acme.example.com" }, { name: "beta", url: "https://beta.example.com" }] }));
+  const k = fakeKernel();
+  const passes = createPasses({ store, apps: () => apps, logins: () => ({}), kernel: k.passes });
   const first = await passes.startPass("acme", "request", { depth: "scan" });
-  refuse = true;
-  assert.ok("refused" in (await passes.startPass("acme", "request", { depth: "scan" })));
+  k.refuse(409);
+  const failed = await passes.startPass("beta", "request", { depth: "scan" });
+  assert.match((failed as { refused: string }).refused, /was refused: kernel answered 409/);
   assert.equal(store.pass((first as { run: string }).run)!.status, "running");
+  assert.equal(store.active("beta"), undefined, "a failed filing frees its app");
 });

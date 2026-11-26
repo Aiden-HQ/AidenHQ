@@ -110,3 +110,31 @@ test("a module's task goes to the agent holding the role, once per source, marke
  * carrying this module's marker and no other module's is its to close. A second module's marker refuses both, even when this
  * module's marker is there too; a task with no module marker at all is refused by the same guard.
  */
+
+test("a module lists the open tasks of its own source family, and no other's", async (t) => {
+  const D = "99999999-1111-4111-8111-111111111111";
+  const issues = [
+    { id: "a1111111-1111-4111-8111-111111111111", identifier: "ACME-1", status: "todo", createdAt: "x", description: "Pass.\n\n<!-- source:design:pass:acme:r1 -->\n<!-- aidenhq-module:design -->" },
+    { id: "a2222222-1111-4111-8111-111111111111", identifier: "ACME-2", status: "todo", createdAt: "x", description: "Mentions design:pass:acme:r9 in prose only.\n<!-- source:github:x -->\n<!-- aidenhq-module:design -->" },
+    { id: "a3333333-1111-4111-8111-111111111111", identifier: "ACME-3", status: "todo", createdAt: "x", description: "<!-- source:design:pass:acme:r3 -->\n<!-- aidenhq-module:other -->" },
+    // Markers typed into a task design never filed: the kernel's filing record decides.
+    { id: "a4444444-1111-4111-8111-111111111111", identifier: "ACME-4", status: "todo", createdAt: "x", description: "<!-- source:design:pass:acme:r4 -->\n<!-- aidenhq-module:design -->" },
+  ];
+  const owner = async (method, path) => {
+    if (path === "/api/companies") return { status: 200, json: [{ id: "c-1" }] };
+    if (path.startsWith("/api/companies/c-1/issues?")) return { status: 200, json: issues };
+    return { status: 404, json: {} };
+  };
+  const db = new DatabaseSync(":memory:");
+  const tasks = createModuleTasks({ db, owner, agents: () => ({ [D]: { roles: ["ui-login"] } }), plugin: () => ({}) });
+  db.prepare("INSERT INTO task_filers (task, filer, source) VALUES (?, ?, ?)").run(issues[0].id, "module:design", "design:pass:acme:r1");
+  db.prepare("INSERT INTO task_filers (task, filer, source) VALUES (?, ?, ?)").run(issues[1].id, "module:design", "github:x");
+  const who = { design: { kind: "module", module: "design", roles: ["kernel.tasks"] } };
+  const bp = createBackplane({ whoami: async (k) => who[k] ?? Promise.reject(new Error("no")), asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), tasks });
+  const { s, url } = await serve(bp);
+  t.after(() => s.close());
+  const list = (source) => fetch(`${url}/v1/tasks?source=${encodeURIComponent(source)}`, { headers: { authorization: "Bearer design" } });
+  assert.deepEqual((await (await list("design:pass:")).json()).tasks.map((x) => [x.identifier, x.source]), [["ACME-1", "design:pass:acme:r1"]]);
+  assert.equal((await list("github:")).status, 400);
+  assert.equal((await list("release:instance:")).status, 400);
+});

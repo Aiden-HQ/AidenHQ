@@ -22,6 +22,9 @@
 //                            a time (default 20, at most 100; `next` is the id to pass as `after`): what interrupted the owner, for
 //                            the Fleet Steward's daily interruption pass. The card's sentence and who filed it, never its args.
 //   GET /v1/work?pauses=1    the Fleet Steward's open pauses (fleet-ops.ts): the detector keeps each one an incident
+//   GET /v1/work?spend_tasks=<prefix>&day=<UTC date>  (a module only) the confirmed charges in that UTC day (by each call's `at`) on
+//                            the tasks that module filed under a source starting with <prefix> (task_filers): { day, by_task }. A closed
+//                            task counts like an open one, and a task spending past midnight counts on the day it spent.
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*, aidenhq_kernel_session_*) over the same rows
 import type { DatabaseSync } from "node:sqlite";
 import { fleetGenerations } from "./generations.ts";
@@ -33,6 +36,11 @@ const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
 /** The columns job() reads, and enough of a job's final words for its first line (cut to 200). */
 const JOB_COLS = "id, agent, task, engine, state, pid, at, ended, session, profile, saw";
 const FINAL_HEAD = "substr(final, 1, 400) AS final";
+/**
+ * Confirmed spend only: a `reserved` call's amount is an estimate, an `unsettled` one the gateway's fail-closed hold, and a call
+ * that settled with no tokens seen (a stream cut or gone quiet, `upstream_aborted`) was closed at its reservation. A billed call has tokens (a free refusal, at $0, is confirmed too).
+ */
+const SETTLED = "status NOT IN ('reserved', 'unsettled') AND cost_usd IS NOT NULL AND (cost_usd = 0 OR input > 0 OR cached > 0 OR output > 0)";
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
 export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = async () => [], sessionAgents = () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; /** The agents whose grants have profile `session` (grants table): their tasks are the board's Sessions. */ sessionAgents?: () => string[]; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
@@ -126,14 +134,24 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       from = utc(from);
       to = utc(to);
       const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, judged: judged(r), outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
-      // Confirmed spend only: a `reserved` call's amount is an estimate, an `unsettled` one the gateway's fail-closed hold, and a call
-      // that settled with no tokens seen (a stream cut or gone quiet, `upstream_aborted`) was closed at its reservation. A billed call has tokens (a free refusal, at $0, is confirmed too).
-      const settled = "status NOT IN ('reserved', 'unsettled') AND cost_usd IS NOT NULL AND (cost_usd = 0 OR input > 0 OR cached > 0 OR output > 0)";
-      const usage = rows(`SELECT agent_id AS agent, day, COALESCE(SUM(CASE WHEN ${settled} THEN cost_usd END), 0) AS cost_usd, COUNT(*) AS calls, COUNT(CASE WHEN ${settled} THEN 1 END) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day`, from, to);
+      const usage = rows(`SELECT agent_id AS agent, day, COALESCE(SUM(CASE WHEN ${SETTLED} THEN cost_usd END), 0) AS cost_usd, COUNT(*) AS calls, COUNT(CASE WHEN ${SETTLED} THEN 1 END) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day`, from, to);
       // What the spend was on, per day: the five costliest components and subjects (a check run's `code-review:<run>`, a task) of each day,
       // so a spike names its cause (the Fleet Steward's spend check reads them with the totals above).
-      const top = (col: string) => rows(`SELECT day, name, cost_usd, calls FROM (SELECT day, ${col} AS name, SUM(cost_usd) AS cost_usd, COUNT(*) AS calls, ROW_NUMBER() OVER (PARTITION BY day ORDER BY SUM(cost_usd) DESC) AS n FROM calls WHERE at >= ? AND at < ? AND ${settled} AND ${col} IS NOT NULL GROUP BY day, ${col}) WHERE n <= 5 ORDER BY day, cost_usd DESC`, from, to);
+      const top = (col: string) => rows(`SELECT day, name, cost_usd, calls FROM (SELECT day, ${col} AS name, SUM(cost_usd) AS cost_usd, COUNT(*) AS calls, ROW_NUMBER() OVER (PARTITION BY day ORDER BY SUM(cost_usd) DESC) AS n FROM calls WHERE at >= ? AND at < ? AND ${SETTLED} AND ${col} IS NOT NULL GROUP BY day, ${col}) WHERE n <= 5 ORDER BY day, cost_usd DESC`, from, to);
       return { records: recs, usage, spend_components: top("component"), spend_subjects: top("task_subject") };
+    },
+    /**
+     * A UTC day's confirmed charges on the tasks `module` filed under a source starting with `prefix` (task_filers: the ledger keys
+     * an agent's calls by task id, never by source), by the call's own `at`, so a closed task counts and a task that spends past
+     * midnight counts on the day it spent.
+     */
+    spendTasks(module: string, prefix: string, day: string) {
+      const from = `${day}T00:00:00.000Z`, to = new Date(Date.parse(from) + 86_400_000).toISOString();
+      const by_task = rows(`SELECT f.source AS source, c.issue_id AS task, SUM(c.cost_usd) AS cost_usd FROM calls c JOIN task_filers f ON f.task = c.issue_id
+        WHERE f.filer = ? AND substr(f.source, 1, ?) = ? AND c.issue_id IS NOT NULL AND c.agent_id IS NOT NULL AND c.at >= ? AND c.at < ? AND ${SETTLED}
+        GROUP BY f.source, c.issue_id ORDER BY f.source`, `module:${module}`, prefix.length, prefix, from, to)
+        .map((r) => ({ task: String(r.task), source: String(r.source), cost_usd: Number(r.cost_usd) }));
+      return { day, by_task };
     },
     /**
      * The board's Sessions (GET /v1/work?sessions=1, or ?session=<task>): a session task's newest job, read-only. `lease` is the

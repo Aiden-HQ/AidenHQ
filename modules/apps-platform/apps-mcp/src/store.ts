@@ -52,7 +52,8 @@ export function openStore(path: string) {
   const markNotified = db.prepare(`UPDATE incidents SET notified = 1 WHERE id = ?`);
   const closeInc = db.prepare(`UPDATE incidents SET closed_at = ? WHERE app = ? AND closed_at IS NULL AND (? IS NULL OR kind IN (SELECT value FROM json_each(?)))`);
   return {
-    addDeploy: (d: Omit<Deploy, "id"> & { no_http_proven?: number }) => void addDeploy.run({ no_http_proven: null, ...d }),
+    /** The new deploy row's id. */
+    addDeploy: (d: Omit<Deploy, "id"> & { no_http_proven?: number }) => Number(addDeploy.run({ no_http_proven: null, ...d }).lastInsertRowid),
     lastDeploy: (app: string) => lastDeploy.get(app) as Deploy | undefined,
     /**
      * The commit whose containers are up (set when `compose up` succeeds: deploy, rollback, auto-rollback; cleared when a

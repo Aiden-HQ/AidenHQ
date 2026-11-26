@@ -36,6 +36,7 @@ export type MotionRow = { where: string; before: string; after: string; why: str
 export type Bug = {
   page: string; width: number; theme: Theme; title: string; evidence: string; captures: string[]; verified: boolean; repro?: string[];
   kind?: "friction" | "bug"; selector?: string; // a bug `repro` verified: what the agent filed it as, and its last step's target (the issue marker's inputs)
+  saw?: string; expected?: string; // the clicking pass's words for it (the bug issue's body)
 };
 /** One step of a clicking-pass finding; selectors are Playwright locators (`role=button[name="Save"]`, `text=...`, CSS). */
 export type Step = { open: string } | { click: string } | { fill: [string, string] } | { press: string } | { wait: string };
@@ -49,5 +50,6 @@ export type Report = {
   candidates?: string[]; // the route check's generic heuristics (a control that changed nothing, a link that shows the same page): to look at, never blocking
   blocked: Blocked[]; // requests the live-app guard refused (guard.ts); a socket's method is "WS"
   session?: { rung: "supplied" | "form" | "signup" | "aidenhq" | "patch"; relogins: number }; // a signed-in run: how it signed in, how often again
+  issues?: { design?: string; bugs?: string[]; unavailable?: string }; // a UI testing pass: its GitHub issues' URLs, or why it has none (the board report stands)
 };
 export type Blocked = { method: string; origin: string; path: string; page: string };

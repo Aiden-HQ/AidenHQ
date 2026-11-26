@@ -49,7 +49,7 @@ describe("guard", () => {
   });
 
   it("limits what an issue edit and a review may carry", () => {
-    for (const body of [{ title: "x" }, { state: "closed", body: "x" }, { state: "closed", assignees: [] }, { milestone: 1 }])
+    for (const body of [{ title: "x" }, { body: "x", title: "y" }, { state: "closed", assignees: [] }, { milestone: 1 }])
       expect(() => guard("PATCH", "/repos/a/b/issues/3", body), JSON.stringify(body)).toThrow(GitHubRefused);
     // A comment review only: an approval or change request as the owner would count as the owner's own review.
     for (const body of [undefined, { body: "x" }, { event: "DISMISS" }, { event: "APPROVE" }, { event: "REQUEST_CHANGES", body: "x" }, { event: "APPROVE", comments: [] }])
@@ -99,6 +99,19 @@ describe("owner-token label writes", () => {
     await expect(gh.createIssue({ repo: "a/b", title: "t", body: "b", labels: ["Agent-Build"] }, "Aiden")).rejects.toThrow("agent-build is the owner's label");
     await expect(gh.updateIssue({ owner: "a", repo: "b", number: 7 }, { addLabels: ["agent-build"] })).rejects.toThrow("agent-build is the owner's label");
     expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+  });
+});
+
+describe("issue body refresh", () => {
+  it("replaces an issue's body, signed, with no second issue; a pull request's text is refused", async () => {
+    const { impl, calls } = fake({ "GET /repos/a/b/issues/41": { number: 41, labels: [], state: "closed", html_url: "https://github.com/a/b/issues/41" }, "PATCH /repos/a/b/issues/41": {}, "GET /repos/a/b/issues/9": { number: 9, labels: [], state: "open", pull_request: {} } });
+    const gh = owner(impl);
+    const out = await gh.updateIssue({ owner: "a", repo: "b", number: 41 }, { body: "<!-- aidenhq-ui:design:acme -->\nnew report", state: "open" }, "UI Reviewer") as { done: string[] };
+    const writes = calls.filter((c) => c.method !== "GET");
+    expect(writes.map((c) => `${c.method} ${c.url.pathname}`)).toEqual(["PATCH /repos/a/b/issues/41", "PATCH /repos/a/b/issues/41"]);
+    expect((writes[0]!.body as { body: string }).body).toMatch(/^<!-- aidenhq-ui:design:acme -->\nnew report[\s\S]*UI Reviewer/);
+    expect(out.done).toEqual(["replaced the body", "reopened"]);
+    await expect(gh.updateIssue({ owner: "a", repo: "b", number: 9 }, { body: "x" }, "UI Reviewer")).rejects.toThrow("pull request's text");
   });
 });
 

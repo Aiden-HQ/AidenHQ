@@ -1,7 +1,7 @@
 // Chrome for the engine: one Chrome per run, started by playwright-core over the image's Chrome, with a CDP port an agent can
 // attach to (`agent-browser --cdp <port>`), guarded (guard.ts) on every target it ever has. Also the things every page of a run
 // shares: the frozen clock and readiness tracker (an init script), the readiness wait and the politeness throttle for other origins.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -126,23 +126,45 @@ export async function workerContext(browser: Browser, frozenAt: string): Promise
 export const heightOf = (w: number) => ({ 360: 780, 390: 844, 768: 1024, 1024: 768, 1280: 800, 1512: 982, 1920: 1080, 2560: 1440 } as Record<number, number>)[w] ?? 900;
 
 /**
- * `ui-review browser start [--url u] [--mode m] [--session state.json] [--out dir]`: a guarded Chrome for an agent to attach to
- * (the clicking pass: `agent-browser --cdp <port>`), signed in with the session, until it gets SIGTERM or SIGINT. Prints
- * `cdp port <port>`; the requests the guard refuses go to <out>/blocked.jsonl. Mode: --mode, else read (any for a local --url).
+ * `ui-review browser start [--url u] [--mode m] [--session state.json] [--out dir] [--record dir]`: a guarded Chrome for an agent
+ * to attach to (the clicking pass: `agent-browser --cdp <port>`), signed in with the session, until it gets SIGTERM or SIGINT.
+ * Prints `cdp port <port>`; the requests the guard refuses go to <out>/blocked.jsonl. Mode: --mode, else read (any for a local
+ * --url). --record: each flow's clip (record.ts) into that folder, with recordings.json, written once the browser stops.
  */
 export async function browserCommand(argv: string[]): Promise<number> {
   const { readSession } = await import("./login.ts"); // login.ts signs in through this module
   const [sub, ...rest] = argv;
-  const { values: v } = parseArgs({ args: rest, options: { url: { type: "string" }, mode: { type: "string" }, session: { type: "string" }, out: { type: "string", default: "ui-review-browser" }, port: { type: "string" } } });
+  // `ui-review browser flow [--out dir] "<title>"`: the clicking agent starts its next flow; a recording cuts its clip there.
+  if (sub === "flow") {
+    const { values: f, positionals: title } = parseArgs({ args: rest, allowPositionals: true, options: { out: { type: "string", default: "ui-review-browser" } } });
+    if (!title.length) { console.error('usage: ui-review browser flow [--out dir] "<flow title>"'); return 2; }
+    mkdirSync(f.out!, { recursive: true });
+    const mark = join(f.out!, "flow.txt");
+    writeFileSync(mark, title.join(" "));
+    // A recording browser acknowledges the mark (record.ts) before the flow's first step; without one there is nothing to wait for.
+    const at = statSync(mark).mtimeMs;
+    if (!existsSync(`${mark}.ack`)) return 0;
+    for (let i = 0; i < 50; i++) {
+      try { if (Number(readFileSync(`${mark}.ack`, "utf8")) >= at) return 0; } catch { return 0; } // the recorder stopped
+      await sleep(100);
+    }
+    console.error("ui-review: the recorder hasn't taken the mark in 5 s; this flow's clip may start late");
+    return 1;
+  }
+  const { values: v } = parseArgs({ args: rest, options: { url: { type: "string" }, mode: { type: "string" }, session: { type: "string" }, out: { type: "string", default: "ui-review-browser" }, port: { type: "string" }, record: { type: "string" } } });
   const mode = modeOf(v.mode, v.url ?? "http://app.invalid/");
-  if (sub !== "start" || !mode) { console.error("usage: ui-review browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir]"); return 2; }
+  if (sub !== "start" || !mode) { console.error("usage: ui-review browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir] [--record dir]"); return 2; }
   let session: StorageState | null = null;
   try { session = v.session ? readSession(v.session).state : null; } catch (e) { console.error(`ui-review: ${(e as Error).message}`); return 2; }
   mkdirSync(v.out!, { recursive: true });
   const b = await launch({ mode, out: v.out, session, port: v.port ? Number(v.port) : undefined });
+  const rec = v.record ? await (await import("./record.ts")).recordPages(b.cdp, v.record, { marks: join(v.out!, "flow.txt") }) : undefined;
   if (v.url) { const ctx = await b.browser.newContext({ viewport: { width: 1512, height: 900 } }); await (await ctx.newPage()).goto(v.url, { waitUntil: "domcontentloaded" }).catch(() => {}); }
   console.log(`cdp port ${b.port}`);
   await new Promise<void>((ok) => { process.once("SIGTERM", ok); process.once("SIGINT", ok); });
+  // The clips end (ffmpeg writes each one's index) before the browser goes. The guard lets go first: Playwright's own SIGTERM
+  // handler may take Chrome down meanwhile, which is the stop asked for, not a lost guard.
+  if (rec) { b.guard.close(); console.log(`${(await rec.stop()).length} recordings in ${v.record}`); }
   await b.close();
   return 0;
 }
