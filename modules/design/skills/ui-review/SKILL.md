@@ -12,8 +12,10 @@ run: `captures/`, `report.json`, `report.md`).
 ## Run the app
 
 - **A repo or a PR:** `repo-checkout <org/name> <sha>`, then start it as its `AGENTS.md` or README says, on seed, fixture or
-  demo data and a local port (never a real database). For a PR, check out the base and the head, one after the other, each
-  on its own port.
+  demo data and a local port (never a real database). For a PR, check out the base and the head one after the other:
+  `repo-checkout` replaces `/workspace/repos/<name>` each time, so move each aside
+  (`mv /workspace/repos/<name> /workspace/base-<sha7>`, then the head's checkout to `/workspace/head-<sha7>`), install each
+  as the repo says and run each server from its own folder on its own port.
 - **No repo (a URL):** review the URL as given. A live URL gets passive capture and hover only; the route check and any
   click run only on a local build (`127.0.0.1` or `localhost`).
 - An app with no way to run on sample data: review the live app, and list "a seed mode for UI review" under what to add.
@@ -37,7 +39,10 @@ pages, `--resume` continues a run that stopped (a big app queues at most 120 pag
 `deferred`). A page that never settles is captured with a `not settled` note: read the note before judging it.
 For a PR, capture the base into `before/` and the head with `--baseline before` into `after/`; run the pages the changed
 files render (a shared shell or header shows on every page: `/` and one other page cover it). A page with no before
-capture is a cold page: describe what you see there as notes.
+capture is a cold page: describe what you see there as notes. When the task names a mockup as its spec, also capture
+`--baseline <the mockup's screenshots folder>` into `vs-mockup/` and report what shows at a glance side by side (a missing
+section, state or view, a different look); the mockup's own task files come from `task_files` and
+`curl -o … -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/api/attachments/<file id>/content"`.
 
 ## References
 
@@ -61,9 +66,11 @@ drop an improvement the picture doesn't show, and sharpen one that is vague into
 
 ## Show the fix
 
-The top 3 improvements each get a rendered fix, one at a time, in a throwaway copy of the repo:
+The top 3 improvements each get a rendered fix, one at a time, in a throwaway copy of the repo (`cp -r` it, then `git init -q && git add -A && git commit -qm base` there, so `git diff` is the
+fix; a checkout has no `.git`):
 
-1. Implement the change with Claude Code or Codex, headless, through the gateway your box already has:
+1. Implement the change with Claude Code or Codex, headless, through the gateway your box already has (a job's env carries `OPENROUTER_BASE_URL` and `OPENROUTER_API_KEY`, the gateway's `/api/v1` and
+   the run token):
    `claude -p "<the improvement>" --model anthropic/claude-sonnet-5.5` with `ANTHROPIC_BASE_URL` = `OPENROUTER_BASE_URL`
    without its `/v1`, `ANTHROPIC_AUTH_TOKEN` = `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` empty and the three
    `ANTHROPIC_DEFAULT_*_MODEL` variables set to the model; or `codex exec` on `openai/gpt-6.2-sol` with a provider whose
@@ -78,7 +85,8 @@ The top 3 improvements each get a rendered fix, one at a time, in a throwaway co
 
 ## Report
 
-Evidence first: `design_run_start { target, kind: "review", model }`, then `design_evidence_put` the report's cited
+Evidence first: `design_run_start { target, kind: "review", model, app }` (`app`: the app's name from `app_list`, else the repo name, else the URL's
+host: stable across reviews, so retention and `design_runs` group a product's runs), then `design_evidence_put` the report's cited
 captures, the before|after pairs and each fix's diff (8 MB per call), then `design_run_finish { run, report }`.
 
 Then one comment on your task (`task_comment`, then `task_finish`): the improvements ranked, each with where, what is weak,
