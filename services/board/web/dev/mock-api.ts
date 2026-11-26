@@ -34,7 +34,7 @@ const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, em
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
 const LANE: Record<string, string> = { owner_wait: "needs_you", card_owner: "needs_you", handback: "needs_you", job_running: "working", failed: "blocked", blocked: "blocked", unknown: "blocked", orphaned: "blocked", history_expired: "blocked", unpolled: "blocked", scheduled: "idle", backlog: "idle", owner_task: "idle", chat_turn: "idle", closed: "done", cancelled: "done" };
 const st = (kind: string, reason: string, o: Record<string, unknown> = {}) => ({ task: "t", identifier: null as string | null, kind, reason, since: ago(30), holder: null, attention: [] as unknown[], lane: LANE[reason] ?? "waiting", ...o });
-const ASK = st("waiting", "owner_wait", { since: ago(120), question: "Which week should I compare against?", detail: "Hi Jonas, a quick nudge on the signed contract from last week. Could you send it over by Friday? Thanks!", attention: [A("owner", "owner_wait", "wait:t")] });
+const ASK = st("waiting", "owner_wait", { since: ago(120), question: "Which week should I compare against?", attention: [A("owner", "owner_wait", "wait:t")] });
 const CARD = st("waiting", "card_owner", { since: ago(9), ref: "record:k-00000000000000a1", refLabel: "Deploy the invoices app at 4e1a9c2", attention: [A("owner", "card", "record:k-00000000000000a1")] });
 const WORKING_CARD = st("working", "job_running", { since: ago(12), stage: "CI running", ref: "job:j-2", lane: "needs_you", attention: [A("owner", "card", "record:k-00000000000000a2")] });
 const FAILED = st("idle", "failed", { since: ago(8), ref: "job:j-1", refLabel: "timed out", attention: [A("agent", "failed", "job:j-1")] });
