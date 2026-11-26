@@ -2,7 +2,6 @@ import type { Lane } from "../../src/aidenhq-sdk/task-state-types";
 import type { ShownState } from "../../src/task-state";
 import type { FaceKit } from "../../src/face-kit";
 import type { IconName } from "./ui/icons";
-import type { FaceKit } from "../../src/face-kit";
 export type Bucket = "triage" | "today" | "tomorrow" | "later" | "backlog";
 export const BUCKETS: Bucket[] = ["triage", "today", "tomorrow", "later", "backlog"];
 export const BUCKET_NAMES: Record<Bucket, string> = { triage: "Triage", today: "Today", tomorrow: "Tomorrow", later: "Later", backlog: "Backlog" };
@@ -204,17 +203,6 @@ export interface TaskRow {
   state: ShownState | null;
   updatedAt: string;
   from: string | null;
-}
-
-/** A teammate's face on the roster: a module-shipped image (GET /api/faces/<key>), a kit spec, or none (the kit draws one from the key). */
-export type RosterFace = { src: string } | { kit: FaceKit } | null;
-/** An agent the owner talks to (its `teammate:` block); an agent without one is hidden staff. */
-export interface RosterTeammate {
-  job: string;
-  sample: string;
-  staff: string[];
-  controls: string[];
-  face: RosterFace;
 }
 
 export interface RosterAgent {
