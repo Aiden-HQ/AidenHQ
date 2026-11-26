@@ -6,7 +6,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 vi.mock("../../web/src/events", () => ({ useLive: () => {} }));
-vi.mock("../../web/src/queries", () => ({ QUERIES: { needsYou: { key: "needs-you" } }, useQuery: () => ({ data: undefined, reload: () => {} }) }));
+const query = vi.hoisted(() => ({ data: undefined as unknown, error: "" }));
+vi.mock("../../web/src/queries", () => ({ QUERIES: { needsYou: { key: "needs-you" } }, useQuery: () => ({ ...query, reload: () => {} }) }));
 
 import { AttentionStrip } from "../../web/src/Attention";
 
@@ -35,6 +36,14 @@ describe("the fleet strip's loading frame", () => {
     expect(section!.getAttribute("aria-label")).toMatch(/loading/i);
     expect(el.querySelector(".attn-title")?.textContent).toBe("Fleet attention");
     expect(el.querySelector(".attn-list-load")).not.toBeNull();
+  });
+
+  it("shows the read's failure instead of a busy frame that never ends", async () => {
+    query.error = "the kernel didn't answer";
+    const el = await mount();
+    expect(el.querySelector("section.attn[aria-busy]")).toBeNull();
+    expect(el.querySelector(".attn-failed")?.textContent).toMatch(/unavailable/i);
+    expect(el.textContent).toContain("the kernel didn't answer");
   });
 
   it("keeps the compact strip to its one line while loading", async () => {

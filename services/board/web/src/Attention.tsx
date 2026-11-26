@@ -39,6 +39,16 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
   const listRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLElement>(null);
   const d = q.data;
+  // A failed read is not a load: no busy frame, just the one line (the base code showed nothing at all).
+  if (!d && q.error)
+    return (
+      <section className={compact ? "attn attn-compact" : "attn"} aria-label="What needs attention">
+        <div className="attn-head">
+          <b className="attn-title">Fleet attention</b>
+          <span className="attn-failed" role="status">Unavailable: {q.error}</span>
+        </div>
+      </section>
+    );
   // The strip's own frame, at the height the loaded strip takes: the counts, then the open list's area, so a cold load
   // lands it in one place instead of pushing the board's columns down by its whole height (the Tasks page's layout shift).
   if (!d)

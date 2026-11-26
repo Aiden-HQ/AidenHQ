@@ -105,6 +105,7 @@
 .attn-counts-load { pointer-events: none; }
 .attn-count-load { display: inline-flex; align-items: center; gap: 3px; padding: 4px 12px; font-size: var(--text-base); color: var(--muted); white-space: nowrap; }
 .attn-order-load { margin-left: auto; font-size: var(--text-xs); }
+.attn-failed { font-size: var(--text-sm); color: var(--bad-text); overflow-wrap: anywhere; }
 .attn-list-load { min-height: min(60vh, 34rem); max-height: min(60vh, 34rem); display: grid; align-content: start; overflow: hidden; }
 .attn-row-load { display: grid; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .attn-row-load:first-child { border-top: 0; }
