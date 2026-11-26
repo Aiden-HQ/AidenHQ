@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { GoogleClient } from "./google.js";
-import { automated, ccOnly, INBOX_QUERY, MAX_READS } from "./inbox.js";
+import { automated, category, ccOnly, INBOX_QUERY, MAX_READS } from "./inbox.js";
 
 const CAL = "https://www.googleapis.com/calendar/v3";
 const DRIVE = "https://www.googleapis.com/drive/v3";
@@ -326,9 +326,10 @@ export class Workspace {
   }
 
   /**
-   * The inbox after `after` (ms), oldest first, automated mail dropped (inbox.ts): the newest message of each thread (the
-   * owner's own reply included, flagged `replied`), at most `limit` threads. `cursor` is the receipt time everything up to
-   * which was read (pass it to the next call once the threads are decided); `more` says threads past the limit wait.
+   * The inbox after `after` (ms), oldest first, category and automated mail dropped and counted (inbox.ts): the newest message
+   * of each thread (the owner's own reply included, flagged `replied`), at most `limit` threads. `cursor` is the receipt time
+   * everything up to which was read (pass it to the next call once the threads are decided); `more` says threads past the
+   * limit wait.
    */
   async gmailInbox(me: string, after: number, limit: number) {
     // Every id since the cursor (cheap: 500 a page; the cursor is at most four days back), so the walk below starts at the oldest.
@@ -352,7 +353,12 @@ export class Workspace {
         throw err;
       }
       const at = Number(m.internalDate ?? 0);
-      if (at <= after) continue; // `after:` is in whole seconds
+      // `after:` is in whole seconds, so the listing can hold mail at or before the window's start: count it, so a cursor
+      // past the mail explains itself instead of looking like an empty inbox.
+      if (at <= after) {
+        dropped["before-window"] = (dropped["before-window"] ?? 0) + 1;
+        continue;
+      }
       // A call stops at `limit` threads or MAX_READS messages, never inside one millisecond (the cursor can't split those).
       if (at > cursor && ((threads.size >= limit && !threads.has(m.threadId)) || reads >= MAX_READS)) {
         more = true;
@@ -361,7 +367,7 @@ export class Workspace {
       reads++;
       cursor = Math.max(cursor, at);
       const h = (name: string) => header(m, name);
-      const why = automated(h);
+      const why = category(m.labelIds) ?? automated(h);
       if (why) {
         dropped[why] = (dropped[why] ?? 0) + 1;
         continue;
@@ -380,8 +386,9 @@ export class Workspace {
         if (/^Google API 404:/.test((err as Error).message)) continue; // deleted since the listing
         throw err;
       }
-      // Automated mail stays set aside here too: the row is the newest message a person sent (the owner's own included).
-      const person = (x: GmailMessage) => (x.labelIds ?? []).includes("SENT") || !automated((name) => header(x, name));
+      // Category and automated mail stays set aside here too: the row is the newest message a person sent (the owner's own
+      // included). A thread is kept when its listed message was not categorised, even if an older message in it was.
+      const person = (x: GmailMessage) => (x.labelIds ?? []).includes("SENT") || (!category(x.labelIds) && !automated((name) => header(x, name)));
       const newest = (t.messages ?? []).filter(person).reduce<GmailMessage | undefined>((last, x) => (!last || Number(x.internalDate ?? 0) >= Number(last.internalDate ?? 0) ? x : last), undefined);
       if (!newest) continue;
       const h = (name: string) => header(newest, name);

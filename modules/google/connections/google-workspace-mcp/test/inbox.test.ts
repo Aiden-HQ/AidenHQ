@@ -11,7 +11,10 @@ const T0 = Math.floor(Date.now() / 1000) * 1000 - 3_600_000; // an hour ago, on 
 
 type Msg = { id: string; threadId: string; at: number; headers: Record<string, string>; labels?: string[] };
 const message = (m: Msg) => ({ id: m.id, threadId: m.threadId, internalDate: String(m.at), labelIds: m.labels ?? [], snippet: `about ${m.id}`, payload: { headers: Object.entries(m.headers).map(([name, value]) => ({ name, value })) } });
-/** Two accounts' inboxes: `side.io` fails. Gmail lists newest first, pages by 2, and leaves the owner's own mail out (`-from:me`). */
+/** Gmail's category search terms, as the label they exclude. */
+const CATEGORY_TERMS: Record<string, string> = { promotions: "CATEGORY_PROMOTIONS", social: "CATEGORY_SOCIAL", updates: "CATEGORY_UPDATES", forums: "CATEGORY_FORUMS" };
+
+/** Two accounts' inboxes: `side.io` fails. Gmail lists newest first, pages by 2, and honours `-from:me` and any `-category:` terms. */
 function google(msgs: Msg[]) {
   const listed: string[] = [];
   const impl = (async (input: string | URL) => {
@@ -28,7 +31,10 @@ function google(msgs: Msg[]) {
       const q = url.searchParams.get("q")!;
       listed.push(q);
       const after = Number(/after:(\d+)/.exec(q)![1]) * 1000;
-      const all = msgs.filter((m) => m.at >= after && !/me@work\.com/i.test(m.headers.From ?? "")).sort((a, b) => b.at - a.at);
+      const excluded = [...q.matchAll(/-category:(\w+)/g)].map((x) => CATEGORY_TERMS[x[1]!]).filter((x): x is string => Boolean(x));
+      const all = msgs
+        .filter((m) => m.at >= after && !/me@work\.com/i.test(m.headers.From ?? "") && !(m.labels ?? []).some((l) => excluded.includes(l)))
+        .sort((a, b) => b.at - a.at);
       const from = Number(url.searchParams.get("pageToken") ?? 0);
       return Response.json({ messages: all.slice(from, from + 2).map(({ id }) => ({ id })), ...(from + 2 < all.length ? { nextPageToken: String(from + 2) } : {}) });
     }
@@ -70,7 +76,9 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     const start = { "me@work.com": T0 };
 
     const first = await ws.gmailInbox(start, 2);
-    expect(g.listed[0]).toContain("in:inbox -from:me -category:promotions -category:social -category:updates -category:forums after:");
+    // The listing is broad: categories are filtered from labelIds in code, so a promotional message is counted, not hidden.
+    expect(g.listed[0]).toContain("in:inbox -from:me after:");
+    expect(g.listed[0]).not.toContain("-category:");
     expect(first.threads.map((t) => [t.thread_id, t.id, t.cc_only])).toEqual([["tc", "c1", true], ["ta", "a2", false]]);
     expect(first.threads[0]).toMatchObject({ account: "me@work.com", link: expect.stringContaining("#all/tc") });
     expect(first.accounts[0]).toMatchObject({ dropped: { list: 1, "no-reply": 1, auto: 1 }, more: true });
@@ -121,6 +129,50 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
       ["tk", "k3", "Kim <kim@acme.com>", false],
       ["tp", "p1", "Pat <pat@acme.com>", false],
     ]);
+  });
+
+  it("counts category mail under its own key instead of serving an empty feed", async () => {
+    // The report: the whole window's inbox mail is in Gmail's noise categories, so the old query never listed it and the feed
+    // said `threads: 0, dropped: {}` — indistinguishable from an empty inbox.
+    const categorised: Msg[] = [
+      { id: "p1", threadId: "tp", at: T0 + 1_000, headers: person("Shop <deals@shop.com>"), labels: ["CATEGORY_PROMOTIONS"] },
+      { id: "s1", threadId: "ts", at: T0 + 2_000, headers: person("Ann <ann@social.com>"), labels: ["CATEGORY_SOCIAL"] },
+      { id: "u1", threadId: "tu", at: T0 + 3_000, headers: person("Docs <docs@acme.com>"), labels: ["CATEGORY_UPDATES"] },
+      { id: "o1", threadId: "to", at: T0 + 4_000, headers: person("List <list@acme.com>"), labels: ["CATEGORY_FORUMS"] },
+    ];
+    const g = google(categorised);
+    const r = await new MultiWorkspace(creds(), "primary", g.impl).gmailInbox({ "me@work.com": T0 }, 20);
+    expect(r.threads).toEqual([]);
+    expect(r.accounts[0]).toMatchObject({ threads: 0, dropped: { "category:promotions": 1, "category:social": 1, "category:updates": 1, "category:forums": 1 }, more: false });
+    expect(r.cursor).toEqual({ "me@work.com": T0 + 4_000 });
+  });
+
+  it("keeps a thread whose newest listed message is not categorised, even if an older message was", async () => {
+    const mixed: Msg[] = [
+      { id: "p1", threadId: "tm", at: T0 + 1_000, headers: person("Shop <deals@shop.com>"), labels: ["CATEGORY_PROMOTIONS"] },
+      { id: "m1", threadId: "tm", at: T0 + 2_000, headers: person("Dana <dana@acme.com>") },
+    ];
+    const r = await new MultiWorkspace(creds(), "primary", google(mixed).impl).gmailInbox({ "me@work.com": T0 }, 20);
+    expect(r.threads.map((t) => [t.thread_id, t.id])).toEqual([["tm", "m1"]]);
+    expect(r.accounts[0]).toMatchObject({ dropped: { "category:promotions": 1 } });
+  });
+
+  it("counts mail at or before the window start, so a cursor past the mail explains itself", async () => {
+    // `after:` is whole seconds: a window starting mid-second still lists mail at the start of that second.
+    const early: Msg[] = [
+      { id: "w1", threadId: "tw1", at: T0 + 200, headers: person("Dana <dana@acme.com>") },
+      { id: "w2", threadId: "tw2", at: T0 + 400, headers: person("Kim <kim@acme.com>") },
+      { id: "w3", threadId: "tw3", at: T0 + 1_200, headers: person("Sam <sam@acme.com>") },
+    ];
+    const r = await new MultiWorkspace(creds(), "primary", google(early).impl).gmailInbox({ "me@work.com": T0 + 500 }, 20);
+    expect(r.threads.map((t) => t.thread_id)).toEqual(["tw3"]);
+    expect(r.accounts[0]).toMatchObject({ threads: 1, dropped: { "before-window": 2 }, more: false });
+    expect(r.cursor).toEqual({ "me@work.com": T0 + 1_200 });
+
+    // A cursor past the mail the listing still holds: nothing served, and the drops say why rather than looking empty.
+    const none = await new MultiWorkspace(creds(), "primary", google(early.slice(0, 2)).impl).gmailInbox({ "me@work.com": T0 + 500 }, 20);
+    expect(none.threads).toEqual([]);
+    expect(none.accounts[0]).toMatchObject({ threads: 0, dropped: { "before-window": 2 } });
   });
 
   it("a failing account keeps its place and shows its error", async () => {
