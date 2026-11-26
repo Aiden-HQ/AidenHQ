@@ -243,15 +243,17 @@ function agentBody(key: string, a: Obj) {
 }
 
 const display = (key: string, a: Obj) => {
-  // avatar: a portrait bundled with the board, from the handbook's frontmatter.
-  if (a.avatar !== undefined && !/^[a-z0-9-]{1,40}$/.test(a.avatar)) fail(`agent ${key}: avatar must be an avatar name (a-z, 0-9, -)`);
+  // teammate: an agent the owner sees by name (its job, sample line, staff, the modules it controls and its face), compiled by
+  // scripts/modules.ts; the board's roster reads it from the metadata.
+  if (a.teammate !== undefined && (typeof a.teammate?.job !== "string" || !Array.isArray(a.teammate.staff) || !Array.isArray(a.teammate.controls))) fail(`agent ${key}: teammate must be compiled (job, sample, staff, controls, face): run scripts/compile.ts`);
   // department: where the board's Agents page lists it, resolved from the registry by compile (scripts/modules.ts).
   if (a.department !== undefined && (typeof a.department?.id !== "string" || typeof a.department.name !== "string" || !Number.isInteger(a.department.order))) fail(`agent ${key}: department must be compiled (id, name, order): run scripts/compile.ts`);
   // A team (compile's teams): the team record lists its members ({key, name}); a member names its team record's key. The
   // board's Agents page draws the org from these.
   const team = a.team ? { team: { name: a.team.name, members: a.team.members.map((k: string) => ({ key: k, name: cfg.agents[k].name })) } } : {};
   // roles: what the agent does, kept on its record so a successor can be found by role once it is retired (retire-agents.ts).
-  return { ...(a.avatar ? { avatar: a.avatar } : {}), ...(a.department ? { department: a.department } : {}), ...(!a.member_of && a.roles?.length ? { roles: a.roles } : {}), ...team, ...(a.member_of ? { memberOf: a.member_of, ...(a.repos?.length ? { repos: a.repos } : {}) } : {}) };
+  const teammate = a.teammate ? { teammate: { job: a.teammate.job, sample: a.teammate.sample, staff: a.teammate.staff, controls: a.teammate.controls, face: a.teammate.face, ...(a.teammate.first ? { first: a.teammate.first } : {}) } } : {};
+  return { ...teammate, ...(a.department ? { department: a.department } : {}), ...(!a.member_of && a.roles?.length ? { roles: a.roles } : {}), ...team, ...(a.member_of ? { memberOf: a.member_of, ...(a.repos?.length ? { repos: a.repos } : {}) } : {}) };
 };
 
 // Paperclip secrets only Paperclip-run agents used: deleted once no agent refers to them (after ensureAgents).
@@ -409,6 +411,8 @@ function writeCatalog() {
     mcp_servers: a.mcp_servers ?? [],
     tools: a.enabled_tools ?? {},
     routines: Object.values<Obj>(cfg.routines ?? {}).filter((r) => r.agent === key).map((r) => r.title),
+    // A teammate's job and the hidden agents and modules it speaks for (its face is the board's alone).
+    ...(a.teammate ? { teammate: { job: a.teammate.job, sample: a.teammate.sample, staff: a.teammate.staff, controls: a.teammate.controls } } : {}),
     // A member does its team's work with the team's roles (the router picks it): say so, or a reader takes `roles: []` for no right.
     ...(a.team ? { team: a.team.members } : {}), ...(a.member_of ? { member_of: a.member_of, team_roles: cfg.agents?.[a.member_of]?.roles ?? [] } : {}),
   }));

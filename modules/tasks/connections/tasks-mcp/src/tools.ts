@@ -2084,7 +2084,7 @@ Object.assign(TOOLS, {
   },
   app_request_from_owner: {
     description:
-      "Chief of Staff only: when the owner asks to change who may use a shared app or their role in it (\"make ann@x.com an editor of roadmap\"), file his own chat message as an in-app request on that app. The board refuses unless it is his own original message (not forwarded or relayed, under 2 hours old) that names the app (name or host; if not, ask him which). It returns a request id: delegate to the app's maintainer (the DevOps Engineer) naming only that id and the app; it acts with app_role_set. Never paraphrase his words into the task.",
+      "Chief of Staff only: when the owner asks to change who may use a shared app or their role in it (\"make ann@x.com an editor of roadmap\"), file his own chat message as an in-app request on that app. The board refuses unless it is his own original message (not forwarded or relayed, under 2 hours old) that names the app (name or host; if not, ask him which). It returns a request id: delegate to the app's maintainer (the app builder, `app-maintainer`) naming only that id and the app; it acts with app_role_set. Never paraphrase his words into the task.",
     inputSchema: {
       type: "object",
       properties: {

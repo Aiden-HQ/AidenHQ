@@ -246,6 +246,8 @@ services:
       BOARD_INSTANCE_DIR: /handbooks/instance
       # The host's apply generations (ops/lib/generations.sh): the current product pin and the last 20 applies.
       AIDENHQ_GENERATIONS_FILE: /generations/generations.jsonl
+      # The teammates' shipped faces (compile copies them to config/faces/<key>.<ext>): GET /api/faces/<key>.
+      BOARD_FACES_DIR: /config/faces
     volumes:
       - ./modules:/handbooks/modules:ro
       - ${AIDENHQ_INSTANCE_DIR:?set AIDENHQ_INSTANCE_DIR in .env}:/handbooks/instance:ro
@@ -254,6 +256,7 @@ services:
       - ${AIDENHQ_CONFIG_DIR:-./config}/paperclip.yaml:/config/paperclip.yaml:ro # Settings: settings, agents, connections (no secrets)
       - ${AIDENHQ_DATA_DIR:-./data}/paperclip/instances/default/companies:/paperclip-companies:ro
       - ${AIDENHQ_CONFIG_DIR:-./config}/grants:/grants:ro
+      - ${AIDENHQ_CONFIG_DIR:-./config}/faces:/config/faces:ro # teammates' faces (GET /api/faces/<key>)
       # The board's points (compile): the modules' sign-ins (board.signins).
       - ${AIDENHQ_CONFIG_DIR:-./config}/points/board.json:/config/points/board.json:ro
       - ${AIDENHQ_DATA_DIR:-./data}/board:/data/board

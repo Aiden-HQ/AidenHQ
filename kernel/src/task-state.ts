@@ -235,9 +235,11 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const judging = wait && !wait.end && (wait.f.data.reason === "owner_wait" || wait.f.data.reason === "delegator_wait") ? wait.f.at : undefined;
   const openNote = wait && open.some((o) => o.ref === wait!.f.subject) ? str(wait.f.data.note) : undefined;
   const openUntil = waitQuestion ? str(wait!.f.data.until) : undefined;
+  // What the question is about (notify's `detail`, e.g. the draft to send): shown beside it on the owner's board.
+  const waitDetail = waitQuestion ? str(wait!.f.data.detail) : undefined;
   const blocker = open.find((o) => o.reason === "blocked")?.ref;
   const waitsOn = wait && !wait.end && wait.f.data.reason === "delegator_wait" ? str(wait.f.data.agent) : undefined;
-  const extra = { ...(blocker ? { blocker } : {}), ...(nextDue !== undefined ? { scheduled_for: iso(nextDue) } : {}), ...(waitsOn ? { waits_on: waitsOn } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
+  const extra = { ...(blocker ? { blocker } : {}), ...(nextDue !== undefined ? { scheduled_for: iso(nextDue) } : {}), ...(waitsOn ? { waits_on: waitsOn } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(waitDetail ? { detail: waitDetail } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
   const hint = () => {
     const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
       .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);

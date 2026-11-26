@@ -22,6 +22,9 @@ export function markOwnerMessage(store: Store, now = Date.now()): void {
   store.setKv("owner:last_in", String(now));
 }
 
+/** Text within one Telegram message: a longer one is cut, and says so (the board has it whole). */
+const fit = (text: string) => (text.length > 3500 ? `${text.slice(0, 3400)}\n\n… (cut here: the full text is on the board)` : text);
+
 // Telegram: escaped HTML with a small formatting subset (telegram.ts), optional one-tap buttons. If Telegram rejects
 // the HTML, the same text goes again as plain text.
 export async function postTelegram(cfg: TgConfig, text: string, markup?: unknown, store?: Store, now = Date.now(), chat?: { identifier: string; issueId: string; agentName: string }, out?: { id?: number }, asks = false): Promise<boolean> {
@@ -38,8 +41,8 @@ export async function postTelegram(cfg: TgConfig, text: string, markup?: unknown
       body: JSON.stringify({ chat_id: cfg.telegramChatId, ...body }),
     }).catch(() => null);
   const send = (body: Record<string, unknown>) => call("sendMessage", { disable_web_page_preview: true, ...(markup ? { reply_markup: markup } : {}), ...body });
-  let res = await send({ text: head.html + toTelegramHtml(text.slice(0, 3500), cfg.taskUrl, cfg.boardUrl), parse_mode: "HTML" });
-  if (!res?.ok) res = await send({ text: head.plain + text.slice(0, 4000) });
+  let res = await send({ text: head.html + toTelegramHtml(fit(text), cfg.taskUrl, cfg.boardUrl), parse_mode: "HTML" });
+  if (!res?.ok) res = await send({ text: head.plain + fit(text) });
   if (!res?.ok) return false;
   if (replace) await call("deleteMessage", { message_id: prev!.id });
   const id = Number(((await res.json().catch(() => ({}))) as any)?.result?.message_id);
@@ -57,7 +60,7 @@ export async function editTelegram(cfg: TgConfig, messageId: number, text: strin
   const res = await fetch(`https://api.telegram.org/bot${cfg.telegramToken}/editMessageText`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: cfg.telegramChatId, message_id: messageId, text: toTelegramHtml(text.slice(0, 3500), cfg.taskUrl, cfg.boardUrl), parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }),
+    body: JSON.stringify({ chat_id: cfg.telegramChatId, message_id: messageId, text: toTelegramHtml(fit(text), cfg.taskUrl, cfg.boardUrl), parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }),
   }).catch(() => null);
   return Boolean(res?.ok);
 }

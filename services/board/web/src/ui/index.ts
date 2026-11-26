@@ -22,3 +22,15 @@ export { TaskState, needsOwner, isActive, waitsForAnswer, showsAttention, stateW
 export { Tag, Tags, type TagTone } from "./Tag";
 export { Ticker, useTicker } from "./Ticker";
 export { Monogram, Tile, TileGrid } from "./Tile";
+export { Face, faceProps } from "./Face";
+export { kitFromSeed, type FaceKit, type FaceState } from "./face-kit";
+export { TeammateChip, faceStateOf } from "./TeammateChip";
+export { DecisionRow } from "./DecisionRow";
+export { DetailPane } from "./DetailPane";
+export { DigestList } from "./DigestList";
+export { SidePanel } from "./SidePanel";
+export { Stepper } from "./Stepper";
+export { OptionCard } from "./OptionCard";
+export { Disclosure } from "./Disclosure";
+export { Kbd } from "./Kbd";
+export { SectionCard } from "./SectionCard";

@@ -1,5 +1,5 @@
 // The agent page's reads (web/src/AgentPage.tsx): one agent's profile and its tasks, open and past.
-import { roster, type AgentState, type RosterAgent } from "./activity.js";
+import { roster, type AgentState, type RosterAgent, type RosterTeammate } from "./activity.js";
 import type { KernelActivity } from "./runs.js";
 import { needsOwner, type ShownState } from "./task-state.js";
 import type { Agent, Issue, Routine } from "./paperclip.js";
@@ -8,7 +8,7 @@ export interface AgentProfile {
   id: string;
   key: string;
   name: string;
-  avatar?: string;
+  teammate?: RosterTeammate;
   title: string | null;
   state: AgentState;
   stateNote?: string;
@@ -80,7 +80,7 @@ export function agentProfile({ agent, agents, routines, activity, effort, catalo
     id: agent.id,
     key: r.key ?? "",
     name: agent.name,
-    ...(r.avatar ? { avatar: r.avatar } : {}),
+    ...(r.teammate ? { teammate: r.teammate } : {}),
     title: r.title,
     state: r.state,
     ...(r.stateNote ? { stateNote: r.stateNote } : {}),

@@ -2,7 +2,6 @@
 // thread), its week, what it did run by run (Activity), its general chats and its settings. Reads: agent-page.ts; writes: the settings editor's (SettingsAgents AgentDetails).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentActivity } from "./AgentActivity";
-import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { load } from "./cache";
 import { agentOpenQuery, agentProfileQuery, QUERIES, scorecardQuery, useQuery } from "./queries";
@@ -23,7 +22,7 @@ import { StatusDot } from "./ui/StatusDot";
 import { TaskState } from "./ui/TaskState";
 import "./settings.css";
 import "./agent-page.css";
-import { Tabs } from "./ui";
+import { Face, Tabs, faceProps } from "./ui";
 
 export type AgentTab = "overview" | "activity" | "chats" | "handbook" | "settings";
 const TABS: [AgentTab, string][] = [["overview", "Overview"], ["activity", "Activity"], ["chats", "Chats"], ["handbook", "Handbook"], ["settings", "Settings"]];
@@ -82,7 +81,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
     <main className={`page wide agp ${hueClass(profile.name)}`}>
       <PageHeader
         crumb={<><a href="#/agents">Agents</a> / {profile.name}</>}
-        face={<AgentAvatar name={profile.name} portrait={profile.avatar} size={56} />}
+        face={<Face seed={profile.key} {...faceProps(profile.teammate?.face)} state={profile.state === "working" || profile.state === "queued" ? "working" : "idle"} size={56} label={profile.name} />}
         title={profile.name}
         status={status}
         sub={profile.title}

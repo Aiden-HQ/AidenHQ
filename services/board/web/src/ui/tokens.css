@@ -60,7 +60,7 @@
   --hue-6: light-dark(#7048e8, #b197fc);
   --hue-7: light-dark(#5c6773, #a5b0bc);
 
-  /* Monogram and avatar tones (avatar.ts): 7:1 text on its fill in both themes. */
+  /* Monogram tones (ui/hue.ts tone): 7:1 text on its fill in both themes. */
   --tone-0-bg: light-dark(#dbe4ff, #22305c); --tone-0-fg: light-dark(#1e3a8a, #c9d6ff);
   --tone-1-bg: light-dark(#d3f3ee, #173f3a); --tone-1-fg: light-dark(#0f4f45, #b5eee4);
   --tone-2-bg: light-dark(#dcf2d9, #1f3d22); --tone-2-fg: light-dark(#1f5420, #c3ecbf);
@@ -148,6 +148,59 @@
   --fast: 160ms;
   --medium: 220ms;
   --slow: 320ms;
+  /* The motion classes (ui.css .enter, .lift, .press): how far a thing rises as it arrives, the delay between siblings
+     (style --i: n), how far a card lifts on hover, and how much a pressed control shrinks. */
+  --enter-y: 6px;
+  --stagger: 35ms;
+  --lift-y: -2px;
+  --press-scale: 0.97;
+
+  /* Layout: the widest a page's content runs, a side pane's width (DetailPane, SidePanel) and a card grid's narrowest column (.ui-grid). */
+  --page-max: 1920px;
+  --pane-w: clamp(360px, 30vw, 560px);
+  --grid-min: 280px;
+  --shadow-pane: -12px 0 32px light-dark(rgba(15, 23, 42, 0.08), rgba(0, 0, 0, 0.6));
+
+  /* Faces (Face.tsx): illustration colours, the same in both themes, and only here. Index n of each list is one
+     character's pick (palette: background and shirt; skin; hair, whose brow follows); a module's face spec names indexes. */
+  --face-bg-0: #dbe4ff; --face-shirt-0: #3b5bdb;
+  --face-bg-1: #fde0cf; --face-shirt-1: #d9480f;
+  --face-bg-2: #d3f3ee; --face-shirt-2: #0c8599;
+  --face-bg-3: #dcf2d9; --face-shirt-3: #2b8a3e;
+  --face-bg-4: #e7defc; --face-shirt-4: #7048e8;
+  --face-bg-5: #fbebc8; --face-shirt-5: #b26a00;
+  --face-bg-6: #fadbe3; --face-shirt-6: #c2255c;
+  --face-bg-7: #fff3bf; --face-shirt-7: #5c6773;
+  --face-bg-8: #e2e6ea; --face-shirt-8: #343a40;
+  --face-bg-9: #d0ebff; --face-shirt-9: #1c7ed6;
+  --face-skin-0: #f1c7a5; --face-skin-1: #c98b62; --face-skin-2: #f3d2b6; --face-skin-3: #e8b48f; --face-skin-4: #8d5a3b;
+  --face-skin-5: #f6d5bd; --face-skin-6: #a86f4c; --face-skin-7: #f0c8a8; --face-skin-8: #d9a07a; --face-skin-9: #f7dcc6;
+  --face-hair-0: #2b2d42; --face-brow-0: #2b2d42;
+  --face-hair-1: #3a2418; --face-brow-1: #3a2418;
+  --face-hair-2: #b5533c; --face-brow-2: #8a3a26;
+  --face-hair-3: #c9a227; --face-brow-3: #8a6d12;
+  --face-hair-4: #1b1b1b; --face-brow-4: #1b1b1b;
+  --face-hair-5: #6b4226; --face-brow-5: #6b4226;
+  --face-hair-6: #241a14; --face-brow-6: #241a14;
+  --face-hair-7: #6b6b6b; --face-brow-7: #4a4a4a;
+  --face-hair-8: #5f3dc4; --face-brow-8: #3b2591;
+  --face-ink: #1a1c24; /* pupils */
+  --face-eye: #ffffff; /* eye whites and the pupils' glint */
+  --face-mouth: #7a3b2a;
+  --face-blush: #ff6b6b;
+  /* Accessories and body marks: one look each, whoever wears it. */
+  --face-headset: #12151c;
+  --face-pencil: #e8a400;
+  --face-glasses: #12151c;
+  --face-cap: #e03131; --face-cap-line: #a51d1d;
+  --face-earrings: #fcc419; --face-earrings-line: #b08800;
+  --face-hard-hat: #f5b700; --face-hard-hat-line: #a37900;
+  --face-headband: #495057;
+  --face-round-glasses: #1864ab;
+  --face-tie: #12151c;
+  --face-notepad: #ffffff; --face-notepad-line: #0a5f6e;
+  --face-badge: #fff3bf; --face-badge-line: #7a4a00;
+  --face-shield: #adb5bd; --face-shield-line: #f1f3f5;
 }
 
 .hue-0 { --hue: var(--hue-0); } .hue-1 { --hue: var(--hue-1); } .hue-2 { --hue: var(--hue-2); } .hue-3 { --hue: var(--hue-3); }

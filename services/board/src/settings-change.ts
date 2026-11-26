@@ -7,6 +7,7 @@ import type { Approval } from "./records.js";
 import { HEARTBEAT_HOURS, HEARTBEAT_TOOLS, type Compiled } from "./settings.js";
 import { EFFORTS, compiledEngine } from "./board.js";
 import { urlSettingProblem } from "./url-setting.js";
+import { teammateNameProblem } from "./teammate-name.js";
 
 const KEY = z.string().regex(/^[a-z][a-z0-9_]{0,60}$/);
 const AGENT = z.string().regex(/^[a-z0-9][a-z0-9-]{0,60}$/);
@@ -20,7 +21,7 @@ const SCHEDULE = z.object({ cron: z.string().regex(/^[0-9*/,\- ]{9,100}$/), time
 export const ChangeSchema = z.discriminatedUnion("kind", [
   // A setting a module declares `type: object` takes a whole map (settings.code_review); one it declares `entry:` takes a list whose entries may be maps (maintainer_repos). checkChange holds each to its declaration.
   z.object({ kind: z.literal("setting"), key: KEY, value: z.union([SCALAR, z.array(z.union([z.string().max(200), z.number().finite(), z.record(z.string(), z.unknown())])).max(50), z.record(z.string(), z.unknown())]) }).strict(),
-  z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel"]), value: SCALAR }).strict(),
+  z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel", "name"]), value: SCALAR }).strict(),
   // A module on or off (instance.yaml modules:; the owner's, Tier 2). On for a module of a configured marketplace installs it.
   z.object({ kind: z.literal("module"), name: NAME, on: z.boolean() }).strict(),
   // A routine's schedules or model (overrides.routines.<key>). Pause and resume are the routine's live controls (fleet.ts).
@@ -199,6 +200,11 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
     if (!efforts.includes(String(ch.value))) throw new ChangeRefused(efforts.length ? `effort is one of ${efforts.join(", ")}` : `${a.name ?? ch.agent} has no effort setting`);
   } else if (ch.field === "max_parallel") {
     if (!Number.isInteger(ch.value) || (ch.value as number) < 1 || (ch.value as number) > 10) throw new ChangeRefused("parallel jobs are 1 to 10");
+  } else if (ch.field === "name") {
+    // A rename (overrides.agents.<key>.name): the shared rule (services/shared/teammate-name.ts), checked again by the kernel and compile.
+    if (!a.teammate || a.team || a.member_of) throw new ChangeRefused(`${a.name ?? ch.agent} isn't a teammate: only a teammate is renamed`);
+    const bad = teammateNameProblem(ch.value, ch.agent, Object.fromEntries(Object.entries(compiled.agents ?? {}).map(([k, x]) => [k, { name: String(x.name ?? "") }])));
+    if (bad) throw new ChangeRefused(bad);
   } else {
     if (a.team || a.member_of) throw new ChangeRefused(`${a.name ?? ch.agent} is on a team: a team's agents have no heartbeat of their own`);
     if (ch.value !== false && !HEARTBEAT_HOURS.includes(Number(ch.value))) throw new ChangeRefused(`a heartbeat is off or every ${HEARTBEAT_HOURS.join(", ")} hours`);
@@ -222,6 +228,7 @@ export function describe(ch: Change, compiled: Compiled | null): string {
   if (ch.kind === "handbook") return `${name}'s own handbook`;
   if (ch.kind === "unfork") return `${name} back on its module's handbook`;
   if (ch.kind === "grants") return `${name}'s ${ch.connection} tools → ${ch.tools === null ? "the module's" : ch.tools.join(", ") || "none"}`;
+  if (ch.field === "name") return `rename ${name} to ${ch.value}`;
   const field = { model: "model", reasoning_effort: "effort", heartbeat: "heartbeat", max_parallel: "parallel jobs" }[ch.field];
   const v = ch.field === "heartbeat" ? (ch.value === false ? "off" : `every ${ch.value}h`) : String(ch.value);
   return `${name}'s ${field} → ${v}`;

@@ -10,6 +10,8 @@ import { validateImages } from "./computers.ts";
 import { validate } from "../kernel/src/writes.ts";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT, TEST_LISTENER_PORT } from "./edge.ts";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
+import { teammateNameProblem } from "../services/shared/teammate-name.ts";
+import { faceKitProblem, type FaceKit } from "../services/shared/face-kit.ts";
 import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
 import { OWNER_TOOLS } from "../services/board/src/mcp-tools.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
@@ -33,7 +35,7 @@ const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.ts); the instance turns it on or off per agent.
 // handbook_fork: a module agent's handbook is the instance's agents/<key>/AGENTS.md (the module blob it was copied from);
 // connections: the agent's grants, per connection over its module's (merged before grants resolve, below).
-const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections", "skills"], routines: ["schedules", "model"] };
+const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections", "skills", "name"], routines: ["schedules", "model"] };
 // The kernel's own settings (kernel/settings.json) and what every instance has beside its modules (kernel/defaults.json): the
 // company's description, the department registry and the secrets the kernel and the host services generate.
 const kernelJson = (f: string): Obj => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
@@ -44,7 +46,7 @@ const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // agents' own. A closed allowlist of manifest keys (no roles, services, connections, apps or privileged), the fields one of
 // their agents may set (identity included: a local AGENTS.md has no frontmatter), and the fields one of their routines may set.
 export const LOCAL_MODULE_KEYS = ["name", "description", "agents", "routines"];
-const LOCAL_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "max_parallel", "image", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile"];
+const LOCAL_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "max_parallel", "image", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile", "teammate"];
 // A local agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
@@ -976,11 +978,15 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         for (const f of ["name", "description", "model"]) if (a?.[f] == null || a[f] === "") fail(`agent ${key}: ${f} is required`);
         if (a.max_parallel != null && !(Number.isInteger(a.max_parallel) && a.max_parallel >= 1 && a.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
         const description = String(a.description).trim();
+        // A local agent's face is a kit spec: a shared local module carries its module.yaml and handbooks, never an image.
+        if (a.teammate !== undefined && typeof teammateOf(a.teammate, `agent ${key}`).face === "string") fail(`agent ${key}: a local agent's teammate.face is a kit spec, not a file`);
         put(paperclip.agents, key, { ...a, title: description, description, instructions: file, module: name, tier, isolation: "trusted" }, "agent");
         continue;
       }
+      if (a?.teammate !== undefined) fail(`agent ${key}: teammate: belongs in its AGENTS.md frontmatter`);
+      if (meta.teammate !== undefined) teammateOf(meta.teammate, `agent ${key}`);
       put(paperclip.agents, key, {
-        name: meta.name, title: meta.title, ...(meta.description ? { description: String(meta.description).trim() } : {}), ...(meta.avatar ? { avatar: meta.avatar } : {}), ...(meta.reportsTo ? { reports_to: meta.reportsTo } : {}), instructions: file,
+        name: meta.name, title: meta.title, ...(meta.description ? { description: String(meta.description).trim() } : {}), ...(meta.teammate !== undefined ? { teammate: meta.teammate } : {}), ...(meta.reportsTo ? { reports_to: meta.reportsTo } : {}), instructions: file,
         ...a, module: name, tier, isolation: isolationOf(a.isolation ?? def.isolation, `agent ${key}`),
         ...(existsSync(extra) ? { instructions_extra: extra } : {}),
       }, "agent");
@@ -1089,7 +1095,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // One host port, one owner: the product's compose, the modules', the gate, the kernel's sign-in listener and the apps.
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...(edge?.gate?.test_listener ? [[TEST_LISTENER_PORT, "the gate's test listener"] as [number, string]] : []), ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a): [number, string] => [a.port, `app ${a.name}`])]);
 
-  expandTeams(instance, paperclip);
+  expandTeams(instance, paperclip, warnings);
 
   // Departments: where the board's Agents page lists each agent. One registry, the kernel's (kernel/defaults.json) then the instance's
   // own (instance.yaml `departments:`); an agent's `department:` must name one, and without one it is `general`. Setup
@@ -1212,6 +1218,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const k of a.delegate_to) if (k !== "app-owners" && !k.endsWith("?") && !paperclip.agents[k]) fail(`${key}: delegate_to names ${k}, which is not an enabled agent (write "${k}?" if optional)`);
     a.delegate_to = a.delegate_to.map((k: string) => k.replace(/\?$/, "")).filter((k: string) => k === "app-owners" || paperclip.agents[k]);
   }
+  const faces: Record<string, string> = {};
+  compileTeammates(paperclip.agents, enabled, faces);
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
   appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles, new Set(defaultGrants.flatMap((g) => g.tools)));
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
@@ -1234,9 +1242,32 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         }
         // A bigger host runs more of one agent's work at once; the computer pool (settings.computers_max) must still cover box agents.
         if (f === "max_parallel" && !(Number.isInteger(v) && v >= 1 && v <= 10)) fail(`override ${kind}.${key}.max_parallel must be 1 to 10`);
+        if (f === "name" && !target.teammate) fail(`override agents.${key}.name: only a teammate is renamed`);
         target[f] = v;
       }
     }
+  }
+  // Every teammate's name (its default or the owner's rename) against every other agent's name and key, hidden ones included:
+  // chat's @name and the task tools address agents by either.
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
+    if (!a.teammate) continue;
+    // A default name a hidden agent (a local one, a team member) already has: the teammate goes by its key until renamed.
+    // Two teammates' names are the owner's to settle, so that collision fails below.
+    const hidden = Object.fromEntries(Object.entries<{ name: string; teammate?: unknown }>(paperclip.agents).filter(([k, o]) => !o.teammate || k === key));
+    let bad = teammateNameProblem(a.name, key, paperclip.agents);
+    const clash = instance.overrides?.agents?.[key]?.name === undefined && !teammateNameProblem(a.name, key, {}) && teammateNameProblem(a.name, key, hidden);
+    if (clash) {
+      // A valid name from the key (any valid key: empty segments and leading digits dropped, at most 3 words and 20 characters).
+      const words = key.split("-").filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join(" ").replace(/^[^A-Za-z]+/, "");
+      const byKey = words.split(" ").slice(0, 3).join(" ").slice(0, 20).trim() || "Teammate";
+      const free = [byKey, ...[2, 3, 4, 5, 6, 7, 8, 9].map((n) => `${byKey} ${n}`)].find((n) => !teammateNameProblem(n, key, paperclip.agents));
+      if (free) {
+        warnings.push(`agent ${key}: name ${JSON.stringify(a.name)}: ${clash}; it is called ${free} until you rename it (overrides.agents.${key}.name)`);
+        a.name = free;
+        bad = undefined;
+      }
+    }
+    if (bad) fail(`agent ${key}: name ${JSON.stringify(a.name)}: ${bad}`);
   }
   const localRoutines = new Map<string, number>();
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) {
@@ -1340,11 +1371,12 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const profile = profileOf(instanceDir, warnings);
   if (profile) paperclip.owner_profile = profile;
   // The kernel first, always on (the board's Settings lists its settings as the kernel's), then every module.
-  const kernelEntry: Obj = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
+  const kernelEntry: Obj = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], teammates: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
   const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source, pinned }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
     ...(def.replaces ? { replaces: [def.replaces].flat().map(String) } : {}),
     agents: Object.keys(def.agents ?? {}), routines: Object.keys(def.routines ?? {}), connections: Object.keys(def.connections ?? {}),
+    teammates: catalogTeammates(name, root, def, paperclip.agents, departments, faces, warnings),
     apps: (def.apps ?? []).map((a: Obj) => a.name), ...(sha ? { revision: sha } : revision ? { revision } : {}),
     // Where it comes from and its computed tier (spec §6.5): Settings > Modules and the advisories read them.
     marketplace, tier, ...(source ? { source } : {}), ...(pinned ? { pinned } : {}),
@@ -1412,7 +1444,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
   for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
   const secretPatterns = Object.fromEntries([...all.values()].flatMap((m) => [m.def.secrets?.provided ?? []].flat().filter((p: Obj) => p?.setup?.pattern).map((p: Obj) => [p.name, p.setup.pattern])));
-  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, checkComputersMax: settings.check_computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, faces, computersMax: settings.computers_max, checkComputersMax: settings.check_computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -1821,14 +1853,124 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
 }
 
 /**
+ * A teammate (an agent the owner sees by name, docs/configuration.md "teammate"): its `teammate:` block's shape only. Product
+ * agents write it in their AGENTS.md frontmatter, local ones in their module.yaml entry.
+ */
+const TEAMMATE_KEYS = ["job", "sample", "staff", "controls", "face", "first"];
+const REF = /^[a-z0-9][a-z0-9-]{0,62}\??$/;
+const FACE_FILE = /^[a-z0-9][a-z0-9._-]{0,60}\.(svg|png)$/;
+export interface Teammate { job: string; sample: string; staff: string[]; controls: string[]; face: string | FaceKit | null; first?: number }
+export function teammateOf(raw: unknown, where: string): { job: string; sample: string; staff: string[]; controls?: string[]; face?: string | FaceKit; first?: number } {
+  const at = `${where}: teammate`;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail(`${at} is a map of ${TEAMMATE_KEYS.join(", ")}`);
+  const t = raw as Obj;
+  const extra = Object.keys(t).find((k) => !TEAMMATE_KEYS.includes(k));
+  if (extra) fail(`${at}: unknown field ${extra} (known: ${TEAMMATE_KEYS.join(", ")})`);
+  const text = (f: string, max: number) => (typeof t[f] === "string" && t[f].trim() === t[f] && t[f].length >= 1 && t[f].length <= max && !/[\n\r]/.test(t[f]) ? t[f] : fail(`${at}.${f} is one line of 1 to ${max} characters`));
+  const refs = (f: string) => (t[f] === undefined ? undefined : Array.isArray(t[f]) && t[f].every((k: unknown) => typeof k === "string" && REF.test(k)) ? (t[f] as string[]) : fail(`${at}.${f} is a list of ${f === "staff" ? "agent keys" : "module names"} (end one in ? if it's optional)`));
+  const face = t.face === undefined ? undefined : typeof t.face === "string" ? (FACE_FILE.test(t.face) ? t.face : fail(`${at}.face: a file name in the agent's folder, .svg or .png (got ${t.face})`)) : faceKitProblem(t.face) ? fail(`${at}.face: ${faceKitProblem(t.face)}`) : (t.face as FaceKit);
+  if (t.first !== undefined && !(Number.isInteger(t.first) && t.first >= 1 && t.first <= 99)) fail(`${at}.first is the onboarding rank, a whole number 1 to 99`);
+  const controls = refs("controls");
+  return { job: text("job", 40), sample: text("sample", 140), staff: refs("staff") ?? [], ...(controls ? { controls } : {}), ...(face !== undefined ? { face } : {}), ...(t.first !== undefined ? { first: t.first } : {}) };
+}
+
+/** Why a shipped face file can't be served (inside the agent's own folder, at most 200 KB, a plain PNG or a script-free SVG), or undefined. */
+const SVG_BANNED: [RegExp, string][] = [[/<script/i, "<script"], [/<foreignObject/i, "<foreignObject"], [/<!ENTITY/i, "<!ENTITY"], [/javascript:/i, "javascript:"], [/\son[a-z]+\s*=/i, "an on…= handler"], [/@import/i, "@import"], [/href\s*=\s*(?!["']?#)/i, "an href not starting #"], [/url\(\s*(?!["']?#)/i, "url( not starting #"]];
+export function faceFileProblem(agentDir: string, face: string, key: string): string | undefined {
+  // The key names the copy (config/faces/<key>.<ext>): a plain key, so the copy stays inside the faces folder.
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(key)) return `agent key ${key} can't name a face file (lowercase letters, digits and -)`;
+  const file = join(agentDir, face);
+  if (!existsSync(file)) return `face ${face} isn't in the agent's folder`;
+  const real = realpathSync(file);
+  if (!real.startsWith(realpathSync(agentDir) + sep)) return `face ${face} is outside the agent's folder`;
+  if (statSync(real).size > 200 * 1024) return `face ${face} is over 200 KB`;
+  const bytes = readFileSync(real);
+  if (face.endsWith(".png")) return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? undefined : `face ${face} isn't a PNG`;
+  const svg = bytes.toString("utf8");
+  if (!/^\s*<(svg|\?xml)/i.test(svg.replace(/^\uFEFF/, ""))) return `face ${face} doesn't start with <svg or <?xml`;
+  const hit = SVG_BANNED.find(([re]) => re.test(svg));
+  return hit ? `face ${face} contains ${hit[1]}` : undefined;
+}
+
+/**
+ * Every enabled teammate's block, compiled: staff (enabled agents, hidden, never itself; `key?` dropped when off), controls
+ * (enabled modules, default its own; `name?` dropped when off) and its face (a kit spec, `<key>.<ext>` for a shipped file,
+ * which joins `faces`, or null).
+ */
+function compileTeammates(agents: Obj, enabled: string[], faces: Record<string, string>) {
+  for (const [key, a] of Object.entries<Obj>(agents)) {
+    if (a.teammate === undefined) continue;
+    const t = teammateOf(a.teammate, `agent ${key}`);
+    for (const k of t.staff) {
+      const sk = k.replace(/\?$/, "");
+      if (sk === key) fail(`agent ${key}: teammate.staff names itself`);
+      if (!agents[sk]) { if (k.endsWith("?")) continue; fail(`agent ${key}: teammate.staff names ${sk}, which is not an enabled agent (write "${sk}?" if optional)`); }
+      if (agents[sk].teammate !== undefined) fail(`agent ${key}: teammate.staff names ${sk}, a teammate (staff are hidden agents)`);
+    }
+    const staff = t.staff.map((k) => k.replace(/\?$/, "")).filter((k) => agents[k]);
+    for (const m of t.controls ?? []) if (!m.endsWith("?") && !enabled.includes(m)) fail(`agent ${key}: teammate.controls names ${m}, which is not an enabled module (write "${m}?" if optional)`);
+    const controls = t.controls ? t.controls.map((m) => m.replace(/\?$/, "")).filter((m) => enabled.includes(m)) : [a.module];
+    let face: string | FaceKit | null = null;
+    if (typeof t.face === "string") {
+      const bad = faceFileProblem(dirname(a.instructions), t.face, key);
+      if (bad) fail(`agent ${key}: ${bad}`);
+      face = `${key}.${t.face.split(".").pop()}`;
+      faces[face] = realpathSync(join(dirname(a.instructions), t.face));
+    } else if (t.face) face = t.face;
+    a.teammate = { job: t.job, sample: t.sample, staff, controls, face, ...(t.first ? { first: t.first } : {}) } satisfies Teammate;
+  }
+}
+
+/**
+ * The catalog's teammates of one module, enabled or not (hiring and onboarding show modules that are off): the compiled entry
+ * when its agent is on, else its AGENTS.md frontmatter (product) or module.yaml entry (local). A module that is off never
+ * fails the compile: a broken entry is skipped (a bad face file drops the face) with a warning.
+ */
+function catalogTeammates(name: string, root: string, def: Obj, agents: Obj, departments: Obj[], faces: Record<string, string>, warnings: string[]) {
+  const out: Obj[] = [];
+  for (const [key, entry] of Object.entries<Obj>(def.agents ?? {})) {
+    const on = agents[key]?.module === name ? agents[key] : undefined;
+    if (on) {
+      if (on.teammate) out.push({ key, name: on.name, job: on.teammate.job, sample: on.teammate.sample, description: on.description, department: on.department?.id ?? "general", face: on.teammate.face, first: on.teammate.first ?? null });
+      continue;
+    }
+    try {
+      const dir = join(root, "agents", key);
+      const meta = frontmatter(readFileSync(join(dir, "AGENTS.md"), "utf8")).meta;
+      if (meta.teammate === undefined) continue;
+      const t = teammateOf(meta.teammate, `module ${name}: agent ${key}`);
+      let face: string | FaceKit | null = null;
+      if (typeof t.face === "string") {
+        // An enabled agent of another module owns this key's face address.
+        const bad = agents[key] ? `the key ${key} is an enabled agent's` : faceFileProblem(dir, t.face, key);
+        if (bad) warnings.push(`module ${name}: agent ${key}: ${bad}; its face is left out`);
+        else { face = `${key}.${t.face.split(".").pop()}`; faces[face] = realpathSync(join(dir, t.face)); }
+      } else if (t.face) face = t.face;
+      const dept = String(entry?.department ?? "general");
+      out.push({ key, name: String(meta.name ?? key), job: t.job, sample: t.sample, description: String(meta.description ?? "").trim(), department: departments.some((d) => d.id === dept) ? dept : "general", face, first: t.first ?? null });
+    } catch (e) {
+      warnings.push(`module ${name}: agent ${key}: its teammate is left out of the catalog (${(e as Error).message})`);
+    }
+  }
+  return out;
+}
+
+/**
  * Teams (instance.yaml `teams.<name>`, schema in kernel/src/team-routing.ts): the template agent (`<module>.<agent>`, any
  * enabled module agent) becomes the team record, which keeps its key, roles, routines and description (one address for
  * delegation, routines and role filing) and never runs; each member becomes a real agent with a permanent key, a copy of the
  * template with the team's `defaults` and then its own fields over it, and no roles of its own (a member's job gets the team
  * record's at admission).
  */
-export function expandTeams(instance: Obj, paperclip: Obj) {
-  const names = new Set(Object.values<Obj>(paperclip.agents).map((a) => a.name));
+export function expandTeams(instance: Obj, paperclip: Obj, warnings: string[]) {
+  // A team made before its template became a teammate keeps working: the record stays hidden staff, as it was.
+  for (const [team, t] of Object.entries<Obj>(instance.teams ?? {})) {
+    const [module, key] = String(t?.template ?? "").split(".");
+    const tpl = paperclip.agents[key ?? ""];
+    if (tpl?.module === module && tpl.teammate) { warnings.push(`teams.${team}.template: ${key} is a teammate, so it stays the team's hidden record and isn't a teammate; base the team on another agent to have both`); delete tpl.teammate; }
+  }
+  // A teammate's name yields to a member's (compile's teammate name check renames a default that collides).
+  const names = new Set(Object.values<Obj>(paperclip.agents).filter((a) => !a.teammate).map((a) => a.name));
   for (const [team, t] of Object.entries<Obj>(instance.teams ?? {})) {
     const problems = teamProblems(team, t);
     if (problems.length) fail(problems.join("; "));
@@ -1843,7 +1985,7 @@ export function expandTeams(instance: Obj, paperclip: Obj) {
       names.add(m.name);
       const { handbook, ...own } = { ...(t.defaults ?? {}), ...m };
       // The record keeps the template's fast chat lane (chat:) and heartbeat routine (its runs are routed like any team task).
-      const { team: _, avatar: __, chat: ___, heartbeat: ____, ...base } = structuredClone(tpl);
+      const { team: _, chat: ___, heartbeat: ____, ...base } = structuredClone(tpl);
       paperclip.agents[k] = { ...base, ...own, ...(handbook ? { handbook_line: handbook } : {}), member_of: key };
     }
     tpl.team = { name: team, members: Object.keys(t.members), weights: weightsOf(t.routing) };

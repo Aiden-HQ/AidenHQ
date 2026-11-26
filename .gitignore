@@ -36,6 +36,7 @@ config/exposure
 config/apps-node
 config/Caddyfile
 config/kernel/
+config/faces/
 config/handbooks/
 config/points/
 

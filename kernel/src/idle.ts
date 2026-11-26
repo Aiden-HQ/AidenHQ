@@ -318,7 +318,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
      * The job's own task waits: `reason` (its words), `until` (ISO) and/or `on` (the event it waits for); `for` owner or
      * delegator, with the `question` they answer (`asked: true`, with `for: owner`: the question went already, notify's decision or the agent's own reply, so it is recorded and not sent when it may go to them directly; `handoff: true` marks a wait on the owner's reply to a handoff).
      */
-    async wait(caller: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown; for?: unknown; question?: unknown; asked?: unknown; handoff?: unknown }) {
+    async wait(caller: { agent: string; key: string; task: string }, b: { reason?: unknown; until?: unknown; on?: unknown; task?: unknown; for?: unknown; question?: unknown; detail?: unknown; asked?: unknown; handoff?: unknown }) {
       const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 300) : "";
       const on = typeof b.on === "string" ? b.on.trim().slice(0, 200) : "";
       const who = b.for === undefined ? undefined : b.for === "owner" || b.for === "delegator" ? b.for : null;
@@ -326,6 +326,10 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       if (!reason) throw fail(400, "bad_request", "send {reason, until?, on?, for?, question?}: why the task waits");
       if (who === null) throw fail(400, "bad_request", "for is owner or delegator");
       if (who && !question) throw fail(400, "bad_request", "a wait for the owner or the delegator sends the question it answers");
+      // `detail`: the text the question is about (notify's, e.g. a draft to send), shown beside it; never without a question.
+      const detail = typeof b.detail === "string" ? b.detail.trim() : "";
+      if (b.detail !== undefined && (typeof b.detail !== "string" || !detail || detail.length > 2000)) throw fail(400, "bad_request", "detail is 1 to 2000 characters of text");
+      if (detail && !question) throw fail(400, "bad_request", "detail goes with the question it is about");
       // `asked`: the question went to the owner already (notify's decision, the agent's own reply): recorded, never sent again,
       // when it may go to them directly; otherwise the chief of staff gets it (escalate.ts).
       const asked = b.asked === true;
@@ -358,7 +362,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // kernel picks who settles it (escalate.ts); an `asked` question that may not go to the owner directly goes there too.
       // A handoff (task_handoff on the agent's part of the owner's own task) is a report on their task, not a question: it waits
       // on them as before.
-      const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked, () => { if (deadlineError) throw deadlineError; }) : undefined;
+      const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked, () => { if (deadlineError) throw deadlineError; }, detail || undefined) : undefined;
       if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the Fleet Steward or the chief of staff too many questions today: nothing was sent and this task's wait is unchanged. Decide with your handbook, brief and advisor, and note the assumption in your result.");
       // One open ask per task: a different question while the recorded one is unanswered fails the call, actionably (escalate.ask
       // answers only a retry of the same question). A state that can't be read now fails the call too.
@@ -389,7 +393,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         // A replacement can arrive in the same millisecond as the wait it replaces: give its fact and wake their own id, or
         // both are dropped as duplicates and the task keeps the old question. The suffix also makes the wake replace the old one.
         let n = 0;
-        while (facts && !facts.record({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}${n ? `:${n}` : ""}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(r?.agent && to !== "owner" ? { agent: r.agent } : {}), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } })) n++;
+        while (facts && !facts.record({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}${n ? `:${n}` : ""}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(r?.agent && to !== "owner" ? { agent: r.agent } : {}), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(detail ? { detail } : {}), ...(b.handoff === true ? { handoff: true } : {}) } })) n++;
         // The wait episode is in the wake key too: two replacements with the same `until` but a different millisecond must
         // still be different wakes, or the later one is dropped as a duplicate and the task keeps the old one.
         wakes.open({ key: `wait:${caller.task}:${until}:${t}${n ? `:${n}` : ""}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });

@@ -28,6 +28,8 @@
     "st-field": "Field (ui-field)",
     "st-field-label": "Field (ui-field-label)",
     "st-field-help": "Field (ui-field-help / ui-field-error)",
-    "st-field-row": "ui-input-row"
+    "st-field-row": "ui-input-row",
+    "agent-face": "Face from ./ui",
+    "monogram": "Face from ./ui (AgentFace in components.tsx for a crew member)"
   }
 }

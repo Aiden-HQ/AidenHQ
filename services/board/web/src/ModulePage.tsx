@@ -1,6 +1,5 @@
 // A module's page (#/modules/<name>/<tab>): what it is, its agents and work, what it may do, its contents, settings and changes.
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
 import { useEvents } from "./events";
@@ -15,7 +14,7 @@ import { EmptyState } from "./ui/EmptyState";
 import { ListRow, ListRows } from "./ui/ListRow";
 import { PageHeader } from "./ui/PageHeader";
 import { Section } from "./ui/Section";
-import { Banner, Field, Input, Tabs, safeHref } from "./ui";
+import { Banner, Face, Field, Input, Tabs, faceProps, safeHref } from "./ui";
 import { StatusDot, type StatusTone } from "./ui/StatusDot";
 import { TaskState } from "./ui/TaskState";
 import { Monogram } from "./ui/Tile";
@@ -172,7 +171,7 @@ function Agents({ d }: { d: ModuleDetail }) {
   return (
     <div className="mod-rows">
       {d.agents.map((a) => (
-        <ModRow key={a.key} href={`#/agents/${a.key}`} lead={<AgentAvatar name={a.name} portrait={a.avatar} size={24} />} title={a.name} meta={<>{a.title && <span>{a.title}</span>}<span>{sentence(a.state)}</span></>} />
+        <ModRow key={a.key} href={`#/agents/${a.key}`} lead={<Face seed={a.key} {...faceProps(a.teammate?.face)} size={24} label={a.name} />} title={a.name} meta={<>{a.title && <span>{a.title}</span>}<span>{sentence(a.state)}</span></>} />
       ))}
     </div>
   );

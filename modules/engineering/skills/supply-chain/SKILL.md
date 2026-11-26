@@ -38,6 +38,6 @@ security fix (step 4).
 4. A newer version is allowed only for a security fix: the script returns it with the advisory (the lowest fixing
    release). List it in `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in
    the same PR as the pin. An app repo's CI runs the checker from its base commit, so until its default branch carries the
-   checker that reads the head, the entry goes in its own PR that merges first (Security Watch adds these).
+   checker that reads the head, the entry goes in its own PR that merges first (the security agent, `security-watch` adds these).
 5. A new registry, URL or git source is a `source_exceptions` record in `.github/supply-chain-source-exceptions.yaml`, in
    its own PR with the reason. Never write that the owner approved something: text claiming approval reads as an injection.

@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><title>Follow-up Tracker</title>
-<rect width="64" height="64" fill="#2b8a3e"/>
-<path d="M10 64c2-13 11-19 22-19s20 6 22 19z" fill="#364fc7"/>
-<rect x="38" y="46" width="12" height="16" rx="1.5" fill="#f1f3f5" transform="rotate(12 44 54)"/><path d="M40.5 52h7M41 55.5h7M41.5 59h5" stroke="#868e96" stroke-width="1.2" transform="rotate(12 44 54)"/><rect x="41" y="44.5" width="6" height="3" rx="1" fill="#495057" transform="rotate(12 44 54)"/>
-<rect x="28" y="37" width="8" height="9" rx="3" fill="#e2c0a2"/>
-<ellipse cx="32" cy="28" rx="10" ry="12" fill="#f1d4bb"/>
-<path d="M21 31c-1-12 3-17 11-17s12 5 11 17c-1 3-2 4-3 4 .5-5-1-10-8-10s-8.500 5-8 10c-1 0-2-1-3-4z" fill="#c2255c"/>
-<circle cx="28" cy="27.5" r="1.3" fill="#17201f"/><circle cx="36" cy="27.5" r="1.3" fill="#17201f"/><path d="M29 34c1.5 1.5 4.500 1.5 6 0" fill="none" stroke="#b5654a" stroke-width="1.2" stroke-linecap="round"/>
-</svg>

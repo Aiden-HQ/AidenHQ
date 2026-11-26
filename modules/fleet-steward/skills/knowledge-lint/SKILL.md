@@ -17,9 +17,9 @@ Tools are `knowledge-daily`'s; without the notes tools skip step 1.
 5. **Corrections:** `task_list` `label: "correction"`, `state: "working,waiting,idle,done"`, `updated_since` 7 days ago; read
    each "Not right:" comment. A missing rule is a rule fix. A working-style correction for all agents (plus
    `coach:owner:profile-<slug>` lines) is a profile fix: the whole new `owner/profile.md` (4 KB, one preference per line,
-   each ending `(task id, date)`) sent to Aiden with `task_create` (`assignee: chief-of-staff`, marker `profile:<slug>`), who changes it.
+   each ending `(task id, date)`) sent to the chief of staff with `task_create` (`assignee: chief-of-staff`, marker `profile:<slug>`), who changes it.
 6. **Report:** one `task_create` (marker `librarian-report:<ISO week>`, label `librarian-report`, title "Librarian weekly
    report: <date>"), non-empty sections **Done**, **Needs the owner**, **Confirmed**, **Proposed rule and profile fixes**
-   (each also sent to Aiden with `task_create` `assignee: chief-of-staff`, marker `rule:<agent>:<slug>`, who hands it to
+   (each also sent to the chief of staff with `task_create` `assignee: chief-of-staff`, marker `rule:<agent>:<slug>`, who hands it to
    that agent; list the ids), **Needs a tool**. No owner message.
 7. `task_finish` with counts.

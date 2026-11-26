@@ -3,7 +3,6 @@
 // narrow screen the panel opens over the conversation; on a phone: the list, then the conversation full screen, the
 // panel as a sheet. Lives at #/c/ (a new chat) and #/c/<chat>.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { load as loadCached } from "./cache";
 import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queries";
@@ -14,7 +13,7 @@ import { LaneChat } from "./LaneChat";
 import { FeatureCostStrip } from "./FeatureCost";
 import { DelegatedList, LineageStrip, useLineage } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
-import { CloseIcon, Plan, PlusIcon } from "./components";
+import { AgentFace, CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
 import { anyLive, groupChats, groupTasks, laneOf, settleableChat, taskSummary, type AgentGroup } from "./sidebar";
 import { TaskState, isActive, needsOwner, waitsForAnswer } from "./ui/TaskState";
@@ -39,16 +38,6 @@ const QUIET_MS = 2 * 60_000;
 const PANEL_KEY = "aidenhq.panel";
 /** From this width the details panel starts open; below it, it starts shut until the owner opens it (a stored choice wins). */
 const PANEL_OPEN_FROM = 1920;
-/** An agent's portrait (/crew/<avatar>.svg), by its key or name, when it has one. */
-export const portraitOf = (crew: Assignee[], keyOrName: string) => {
-  const a = crew.find((c) => c.key === keyOrName) ?? crew.find((c) => c.name === keyOrName);
-  return a?.avatar;
-};
-
-/** An agent's face in the chat workspace (AgentAvatar: its portrait, else its monogram). */
-export function Monogram({ name, size = 28, front, avatar }: { name: string; size?: number; front?: boolean; avatar?: string }) {
-  return <AgentAvatar className="monogram" name={name} portrait={avatar} size={size} front={front} />;
-}
 
 /**
  * The fallback timer (the cache fetched on mount already; live updates, events.ts, refetch on every change): at the old
@@ -242,7 +231,7 @@ function Group({ g, lane, crew, selected, go, front, searching }: { g: AgentGrou
     <section className={`side-group${front ? " front" : ""}`}>
       <div className="side-agent">
         <button className="side-agent-btn" onClick={() => (front && !open ? setOpen(true) : setOpen(!open))} aria-expanded={open}>
-          <Monogram name={g.agent.name} size={front ? 32 : 26} front={front} avatar={portraitOf(crew, g.agent.key)} />
+          <AgentFace crew={crew} agent={g.agent.key} name={g.agent.name} size={front ? 32 : 26} />
           <span className="side-agent-name">{g.agent.name}</span>
           {g.count && (
             <span className={`side-count ${g.count.kind}`} title={`${g.count.n} of ${g.agent.name}'s chats (and the work they handed out) ${g.count.kind === "needs" ? "need you" : "working now"}`}>
@@ -377,7 +366,7 @@ function NewChat({ agents, crew, mobile, go, toast, reloadList }: { agents: Chat
         </header>
       )}
       <div className="home-center">
-        <Monogram name={name} size={56} front={!agent || agent === front?.key} avatar={portraitOf(crew, agent || front?.key || "")} />
+        <AgentFace crew={crew} agent={agent || front?.key || ""} name={name} size={56} />
         <h1 className="home-title">What should {name} take off your plate?</h1>
         <div className="home-to">
           <label className="muted small" htmlFor="home-agent">
@@ -640,7 +629,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
                 <Icon name="back" size={20} />
               </button>
             )}
-            <Monogram name={row.agent.name} size={32} avatar={portraitOf(crew, row.agent.key)} />
+            <AgentFace crew={crew} agent={row.agent.key} name={row.agent.name} size={32} />
             <span className="conv-who">
               <span className="conv-name" title={row.title}>
                 {shortTitle(row.title)}
@@ -684,7 +673,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
               <Icon name="back" size={20} />
             </button>
           )}
-          <Monogram name={chat.agent.name} size={32} avatar={portraitOf(crew, chat.agent.key)} />
+          <AgentFace crew={crew} agent={chat.agent.key} name={chat.agent.name} size={32} state={chat.state?.kind === "working" ? "working" : needsOwner(chat.state) ? "needs" : "idle"} />
           <span className="conv-who">
             <span className="conv-name" title={chat.title}>
               {shortTitle(chat.title)}
@@ -879,7 +868,7 @@ const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, aski
   return (
     <div className="msg agent">
       <div className="msg-who">
-        <Monogram name={m.agent} size={26} avatar={portraitOf(crew, m.agent)} /> <b className="msg-name">{m.agent}</b> <span className="msg-time">{clock(m.at)}</span>
+        <AgentFace crew={crew} agent={m.agent} name={m.agent} size={26} /> <b className="msg-name">{m.agent}</b> <span className="msg-time">{clock(m.at)}</span>
       </div>
       <div className={`bubble${long && !expanded ? " clipped" : ""}`}>
         <Markdown text={m.text} prefix={prefix} className="md" />
@@ -1353,7 +1342,7 @@ function AskView({ q, crew, prefix, go, answered, toast }: { q: Ask; crew: Assig
   return (
     <div className="msg agent">
       <div className="msg-who">
-        <Monogram name={q.agent} size={26} avatar={portraitOf(crew, q.agent)} /> <b className="msg-name">{q.agent}</b>{" "}
+        <AgentFace crew={crew} agent={q.agent} name={q.agent} size={26} /> <b className="msg-name">{q.agent}</b>{" "}
         <span className="msg-time">
           {clock(q.at)} · on{" "}
           <a href={`#/c/${q.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${q.identifier}`))}>

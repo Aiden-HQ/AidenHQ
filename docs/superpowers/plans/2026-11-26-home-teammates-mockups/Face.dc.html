@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent face</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: {{px}}; height: {{px}}; display: inline-block; line-height: 0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #12151c;">
+<svg viewBox="0 0 100 100" width="100%" height="100%" role="img" aria-label="{{label}}">
+  <circle cx="50" cy="50" r="48" fill="{{c.bg}}"></circle>
+  <circle cx="50" cy="50" r="47" fill="none" stroke="#e8a400" stroke-width="3" stroke-opacity="0">
+    <animate attributeName="stroke-opacity" values="{{ringVals}}" dur="1.4s" repeatCount="indefinite"></animate>
+  </circle>
+  <g>
+    <animateTransform attributeName="transform" type="translate" values="{{bobVals}}" dur="1.1s" repeatCount="indefinite"></animateTransform>
+    <path d="M17 104 C17 80 33 71 50 71 C67 71 83 80 83 104 Z" fill="{{c.shirt}}"></path>
+    <path d="{{c.body}}" fill="{{c.bodyFill}}" stroke="{{c.bodyStroke}}" stroke-width="2"></path>
+    <rect x="44" y="64" width="12" height="10" rx="4" fill="{{c.skin}}"></rect>
+    <path d="{{c.back}}" fill="{{c.hair}}"></path>
+    <ellipse cx="50" cy="46" rx="24" ry="25" fill="{{c.skin}}"></ellipse>
+    <ellipse cx="26.5" cy="49" rx="3.5" ry="5" fill="{{c.skin}}"></ellipse>
+    <ellipse cx="73.5" cy="49" rx="3.5" ry="5" fill="{{c.skin}}"></ellipse>
+    <path d="{{c.hairTop}}" fill="{{c.hair}}"></path>
+    <circle cx="35" cy="56" r="4" fill="#ff6b6b" fill-opacity="0.22"></circle>
+    <circle cx="65" cy="56" r="4" fill="#ff6b6b" fill-opacity="0.22"></circle>
+    <path d="{{browL}}" fill="none" stroke="{{c.brow}}" stroke-width="2.4" stroke-linecap="round"></path>
+    <path d="{{browR}}" fill="none" stroke="{{c.brow}}" stroke-width="2.4" stroke-linecap="round"></path>
+    <g>
+      <ellipse cx="41" cy="48" rx="5.6" ry="6.2" fill="#ffffff"></ellipse>
+      <ellipse cx="59" cy="48" rx="5.6" ry="6.2" fill="#ffffff"></ellipse>
+      <g>
+        <animateTransform attributeName="transform" type="translate" values="{{lookVals}}" dur="2.6s" repeatCount="indefinite"></animateTransform>
+        <circle cx="41.5" cy="49" r="3.2" fill="#1a1c24"></circle>
+        <circle cx="59.5" cy="49" r="3.2" fill="#1a1c24"></circle>
+        <circle cx="42.6" cy="47.6" r="1.1" fill="#ffffff"></circle>
+        <circle cx="60.6" cy="47.6" r="1.1" fill="#ffffff"></circle>
+      </g>
+      <rect x="34" y="41.5" width="32" height="0" fill="{{c.skin}}">
+        <animate attributeName="height" values="0;0;13;0;0" keyTimes="0;0.9;0.94;0.98;1" dur="{{blinkDur}}" repeatCount="indefinite"></animate>
+      </rect>
+    </g>
+    <path d="{{mouth}}" fill="{{mouthFill}}" stroke="#7a3b2a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>
+    <path d="{{c.acc}}" fill="{{c.accFill}}" stroke="{{c.accStroke}}" stroke-width="{{c.accWidth}}" stroke-linecap="round" stroke-linejoin="round"></path>
+  </g>
+  <circle cx="84" cy="84" r="9" fill="#ffffff" fill-opacity="{{dotRing}}"></circle>
+  <circle cx="84" cy="84" r="6.5" fill="{{dot}}" fill-opacity="{{dotRing}}"></circle>
+</svg>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"who":{"editor":"enum","options":["aiden","tess","nora","max","sam","mia","iris","archie","vik","rhea"],"default":"max"},"state":{"editor":"enum","options":["idle","working","needs"],"default":"working"},"size":{"editor":"int","min":16,"max":400,"default":160},"$preview":{"width":160,"height":160}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var SHORT_TOP = 'M25 44 C24 26 37 18 51 18 C66 18 77 27 75 44 C71 34 61 29 50 30 C39 30 30 35 25 44 Z';
+    var SPIKY_TOP = 'M25 43 L26 25 L35 31 L38 15 L47 27 L53 12 L60 26 L69 17 L70 31 L78 27 L75 43 C69 33 60 29 50 30 C40 30 31 35 25 43 Z';
+    var LONG_TOP = 'M25 46 C23 25 37 17 51 17 C66 17 78 26 76 46 C72 33 62 28 51 29 C46 37 36 42 25 46 Z';
+    var LONG_BACK = 'M23 46 C20 70 22 80 30 84 L70 84 C78 80 80 70 77 46 Z';
+    var CURLY_TOP = 'M24 47 C17 40 21 29 29 27 C28 18 39 13 46 18 C51 11 62 12 65 19 C73 16 82 24 78 33 C84 39 80 47 76 47 C72 37 62 31 50 31 C38 31 29 37 24 47 Z';
+    var CURLY_BACK = 'M22 46 C14 58 20 72 28 74 C26 82 36 86 42 80 L58 80 C64 86 74 82 72 74 C80 72 86 58 78 46 Z';
+    var BUN_TOP = 'M25 45 C23 26 37 18 51 18 C66 18 77 27 75 45 C71 33 61 29 50 30 C39 30 30 35 25 45 Z M41 13 C41 5 59 5 59 13 C59 20 41 20 41 13 Z';
+    var NONE = 'M0 0';
+    var C = {
+      aiden: { bg: '#dbe4ff', skin: '#f1c7a5', hair: '#2b2d42', brow: '#2b2d42', shirt: '#3b5bdb', hairTop: SHORT_TOP, back: NONE,
+        body: 'M50 72 L45 77 L50 99 L55 77 Z', bodyFill: '#12151c', bodyStroke: 'none',
+        acc: NONE, accFill: 'none', accStroke: 'none', accWidth: 0, label: 'Aiden' },
+      tess: { bg: '#fde0cf', skin: '#c98b62', hair: '#3a2418', brow: '#3a2418', shirt: '#d9480f', hairTop: LONG_TOP, back: LONG_BACK,
+        body: NONE, bodyFill: 'none', bodyStroke: 'none',
+        acc: 'M24 46 C24 20 76 20 76 46 M22 42 L22 54 M78 42 L78 54 M23 54 C23 64 32 68 42 66', accFill: 'none', accStroke: '#12151c', accWidth: 3.4, label: 'Tess' },
+      nora: { bg: '#d3f3ee', skin: '#f3d2b6', hair: '#b5533c', brow: '#8a3a26', shirt: '#0c8599', hairTop: LONG_TOP, back: LONG_BACK,
+        body: 'M36 84 L48 84 L48 98 L36 98 Z', bodyFill: '#ffffff', bodyStroke: '#0a5f6e',
+        acc: 'M70 24 L80 44', accFill: 'none', accStroke: '#e8a400', accWidth: 4, label: 'Nora' },
+      max: { bg: '#dcf2d9', skin: '#e8b48f', hair: '#c9a227', brow: '#8a6d12', shirt: '#2b8a3e', hairTop: SPIKY_TOP, back: NONE,
+        body: NONE, bodyFill: 'none', bodyStroke: 'none',
+        acc: 'M34 48 a7 7 0 1 0 14 0 a7 7 0 1 0 -14 0 M52 48 a7 7 0 1 0 14 0 a7 7 0 1 0 -14 0 M48 48 L52 48', accFill: 'none', accStroke: '#12151c', accWidth: 2.4, label: 'Max' },
+      sam: { bg: '#e7defc', skin: '#8d5a3b', hair: '#1b1b1b', brow: '#1b1b1b', shirt: '#7048e8', hairTop: SHORT_TOP, back: NONE,
+        body: NONE, bodyFill: 'none', bodyStroke: 'none',
+        acc: 'M24 37 C25 18 75 18 76 37 Z M70 35 L90 39 L74 41 Z', accFill: '#e03131', accStroke: '#a51d1d', accWidth: 1.5, label: 'Sam' },
+      mia: { bg: '#fbebc8', skin: '#f6d5bd', hair: '#6b4226', brow: '#6b4226', shirt: '#b26a00', hairTop: BUN_TOP, back: NONE,
+        body: 'M58 84 L64 84 L64 92 L58 92 Z', bodyFill: '#fff3bf', bodyStroke: '#7a4a00',
+        acc: NONE, accFill: 'none', accStroke: 'none', accWidth: 0, label: 'Mia' },
+      iris: { bg: '#fadbe3', skin: '#a86f4c', hair: '#241a14', brow: '#241a14', shirt: '#c2255c', hairTop: CURLY_TOP, back: CURLY_BACK,
+        body: NONE, bodyFill: 'none', bodyStroke: 'none',
+        acc: 'M27 56 a2.5 2.5 0 1 0 0.1 0 M73 56 a2.5 2.5 0 1 0 0.1 0', accFill: '#fcc419', accStroke: '#b08800', accWidth: 1, label: 'Iris' },
+      archie: { bg: '#fff3bf', skin: '#f0c8a8', hair: '#6b6b6b', brow: '#4a4a4a', shirt: '#5c6773', hairTop: SHORT_TOP, back: NONE,
+        body: NONE, bodyFill: 'none', bodyStroke: 'none',
+        acc: 'M23 37 C23 14 77 14 77 37 Z M18 36 L82 36 L82 41 L18 41 Z M47 16 L53 16 L53 36 L47 36 Z', accFill: '#f5b700', accStroke: '#a37900', accWidth: 1.5, label: 'Archie' },
+      vik: { bg: '#e2e6ea', skin: '#d9a07a', hair: '#2b2d42', brow: '#2b2d42', shirt: '#343a40', hairTop: SHORT_TOP, back: NONE,
+        body: 'M50 78 L59 81 L59 88 C59 93 55 96 50 97 C45 96 41 93 41 88 L41 81 Z', bodyFill: '#adb5bd', bodyStroke: '#f1f3f5',
+        acc: 'M22 30 C30 12 70 12 78 30', accFill: 'none', accStroke: '#495057', accWidth: 4, label: 'Vik' },
+      rhea: { bg: '#d0ebff', skin: '#f7dcc6', hair: '#5f3dc4', brow: '#3b2591', shirt: '#1c7ed6', hairTop: LONG_TOP, back: LONG_BACK,
+        body: NONE, bodyFill: 'none', bodyStroke: 'none',
+        acc: 'M33 48 a8 8 0 1 0 16 0 a8 8 0 1 0 -16 0 M51 48 a8 8 0 1 0 16 0 a8 8 0 1 0 -16 0 M49 48 L51 48', accFill: 'none', accStroke: '#1864ab', accWidth: 2.4, label: 'Rhea' }
+    };
+    var who = this.props.who || 'max';
+    var c = C[who] || C.max;
+    var state = this.props.state || 'working';
+    var size = this.props.size || 160;
+    var working = state === 'working';
+    var needs = state === 'needs';
+    var names = { idle: 'idle', working: 'working', needs: 'needs you' };
+    return {
+      c: c,
+      px: size + 'px',
+      label: c.label + ', ' + names[state],
+      ringVals: needs ? '0.95;0.25;0.95' : '0;0;0',
+      bobVals: working ? '0 0;0 -1.8;0 0' : '0 0;0 0;0 0',
+      lookVals: working ? '-1.6 0.6;1.6 0.6;1.6 0.6;-1.6 0.6;-1.6 0.6' : '0 0;0 0;0 0;0 0;0 0',
+      blinkDur: who.length % 2 ? '4.3s' : '5.1s',
+      browL: needs ? 'M35 36 Q41 32 46 35' : 'M35 39 Q41 36 46 38',
+      browR: needs ? 'M54 35 Q59 32 65 36' : 'M54 38 Q59 36 65 39',
+      mouth: needs ? 'M46 60 Q50 57 54 60 Q50 64 46 60 Z' : (working ? 'M44 59 Q50 61 56 59' : 'M43 58 Q50 64 57 58'),
+      mouthFill: needs ? '#7a3b2a' : 'none',
+      dot: needs ? '#e8a400' : (working ? '#2f9e44' : '#b0b6c2'),
+      dotRing: size >= 28 ? 1 : 0
+    };
+  }
+}
+</script>
+</body>
+</html>

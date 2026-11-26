@@ -460,21 +460,31 @@ test("a codehost grant is taken literally: settings are refused, the kernel's @ 
   assert.throws(() => kernelModuleTable({ m: { codehost: { token: { repos: ["@instance"], perms: { contents: "read" } } } } }), /no field token/);
 });
 test("teams: any module agent becomes a team record over named members (template, then defaults, then member)", () => {
-  const teams = { research: { template: "chief-of-staff.assistant", defaults: { max_parallel: 2, reasoning_effort: "high", handbook: "Cite every source." }, routing: { weights: { repo: 2 } },
+  const teams = { research: { template: "engineering.engineer", defaults: { max_parallel: 2, reasoning_effort: "high", handbook: "Cite every source." }, routing: { weights: { repo: 2 } },
     members: { kai: { name: "Kai", repos: ["acme/*"] }, mina: { name: "Mina", max_parallel: 1, model: "~deepseek/deepseek-flash-latest" } } } };
   const r = compile(product, pinst([], owner, { teams })).paperclip;
-  const tpl = r.agents.assistant, kai = r.agents.kai, mina = r.agents.mina;
+  const tpl = r.agents.engineer, kai = r.agents.kai, mina = r.agents.mina;
   assert.deepEqual(tpl.team, { name: "research", members: ["kai", "mina"], weights: { repo: 2, continuity: 1, load: 1 } });
-  assert.deepEqual([kai.name, kai.member_of, kai.repos, kai.max_parallel, kai.handbook_line, kai.module], ["Kai", "assistant", ["acme/*"], 2, "Cite every source.", "chief-of-staff"]);
+  assert.deepEqual([kai.name, kai.member_of, kai.repos, kai.max_parallel, kai.handbook_line, kai.module], ["Kai", "engineer", ["acme/*"], 2, "Cite every source.", "engineering"]);
   assert.deepEqual([mina.max_parallel, mina.model, mina.description], [1, "~deepseek/deepseek-flash-latest", tpl.description]);
   assert.equal(kai.reasoning_effort, "high"); // the board's typed change on the team record lands in teams.<t>.defaults
   assert.deepEqual(kai.enabled_tools, tpl.enabled_tools); // the template's grants, resolved for each member
-  assert.deepEqual(grantEntry("kai", kai, r.routines).member_of, "assistant");
+  assert.deepEqual(grantEntry("kai", kai, r.routines).member_of, "engineer");
   const bad = (t, extra = {}) => () => compile(product, pinst([], owner, { teams: { research: { ...teams.research, ...t } }, ...extra }));
-  assert.throws(bad({ template: "chief-of-staff.nobody" }), /isn't an enabled module agent/);
+  assert.throws(bad({ template: "engineering.nobody" }), /isn't an enabled module agent/);
   assert.throws(bad({ members: { architect: { name: "Arch" } } }), /the key is already an agent's/);
   assert.throws(bad({ members: { kai: { name: "Kai" }, mina: { name: "Kai" } } }), /already called Kai/);
-  assert.throws(bad({}, { overrides: { agents: { assistant: { max_parallel: 2 } } } }), /assistant is team research's record/);
+  // A team on a template that became a teammate keeps compiling: the record stays hidden staff, with a warning.
+  const old = compile(product, pinst([], owner, { teams: { research: { ...teams.research, template: "chief-of-staff.assistant" } } }));
+  assert.equal(old.paperclip.agents.assistant.teammate, undefined);
+  assert.match(old.warnings.join("\n"), /assistant is a teammate, so it stays the team's hidden record/);
+  // A member already called by a teammate's new default name keeps it; the teammate goes by its key until renamed.
+  const clash = compile(product, pinst([], owner, { teams: { research: { ...teams.research, members: { kai: { name: "Rhea" }, mina: { name: "Assistant" } } } } }));
+  assert.deepEqual([clash.paperclip.agents.kai.name, clash.paperclip.agents.assistant.name], ["Rhea", "Assistant 2"]);
+  assert.match(clash.warnings.join("\n"), /agent assistant: name "Rhea": .*called Assistant 2 until you rename it/);
+  // The hidden record keeps its name: a member can't take it.
+  assert.throws(bad({ template: "chief-of-staff.assistant", members: { kai: { name: "Rhea" } } }), /already called Rhea/);
+  assert.throws(bad({}, { overrides: { agents: { engineer: { max_parallel: 2 } } } }), /engineer is team research's record/);
 });
 
 test("maintainer_repos: an old key or a boolean dependabot fails the compile naming the new one, so the last good generation keeps running", () => {

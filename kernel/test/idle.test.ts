@@ -198,6 +198,25 @@ test("an agent's owner question goes to the Fleet Steward as one task, never to 
   assert.match(w.asked.steward[1].description, /Or rename it\?/);
 });
 
+test("an owner question's detail (the draft it is about) is in the task's state beside the question and goes to its settler; never without a question", async (t) => {
+  const w = world(t);
+  const detail = "Hi Jonas, any news on the signed contract?";
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", on: "the answer", detail }), { status: 400 });
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Send this chaser?", detail });
+  assert.match(w.asked.steward[0].description, /Send this chaser\?\n\n> Hi Jonas/);
+  w.tick(MIN);
+  assert.deepEqual([w.row("t1").question, w.row("t1").detail], ["Send this chaser?", detail]);
+  // A retry (with its draft or without) sends nothing; the same question about a revised draft is refused, the first standing.
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Send this chaser?", detail });
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Send this chaser?" });
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Send this chaser?", detail: "Hi Jonas, revised" }), { status: 409 });
+  assert.equal(w.asked.steward.length, 1);
+  // The draft goes whole, never cut with the question.
+  const long = "y".repeat(1990);
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t2" }, { reason: "x", for: "owner", question: "Send this?", detail: long });
+  assert.ok(w.asked.steward[1].description.includes(`> ${long}`));
+});
+
 test("the Steward settles an agent's question: its task goes to role fleet-settle, the wait names it, and its comment ends the wait; the Steward's own question goes to the chief of staff", async (t) => {
   const w = world(t);
   const ask = { reason: "which endpoint", for: "delegator", question: "Keep v1 or drop it?" };

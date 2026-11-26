@@ -1,5 +1,4 @@
 import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
-import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { Plan, PlusIcon } from "./components";
 import { useEvents } from "./events";
@@ -8,7 +7,7 @@ import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } 
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
 import { ago, elapsed, runAt as when } from "./util";
-import { StatusDot, type StatusTone } from "./ui";
+import { Face, StatusDot, faceProps, faceStateOf, type StatusTone } from "./ui";
 
 const STATUS: Record<string, { text: string; tone: "ok" | "bad" | "meh" }> = {
   succeeded: { text: "Done", tone: "ok" },
@@ -204,7 +203,7 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
       depth={depth}
       team={team}
       ownModel={a.memberOf && a.model && a.model !== pm ? a.model : null}
-      assignee={crew.find((c) => c.key === a.id) ?? { key: a.id, kind: "agent", name: a.name, ...(a.avatar ? { avatar: a.avatar } : {}) }}
+      assignee={crew.find((c) => c.key === a.id) ?? { key: a.id, kind: "agent", name: a.name, seed: a.key ?? a.id }}
       sessions={mine}
       finished={finishedRuns.filter((f) => f.agentId && ids.has(f.agentId))}
       runsLoaded={!!data}
@@ -324,7 +323,7 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
       <div className="fleet-main" onClick={(e) => fromRow(e, toggle)}>
         <div className="fleet-who">
           <span className="crew-portrait">
-            <AgentAvatar className="avatar" name={a.name} portrait={assignee.avatar ?? a.avatar} size={36} front={a.key === FRONT} />
+            <Face seed={a.key ?? a.id} {...faceProps(a.teammate?.face)} state={faceStateOf(a)} size={36} label={a.name} />
           </span>
           <div className="fleet-name">
             <h3>

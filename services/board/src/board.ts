@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { closedIssue, crewOf, foldedChildren, type CrewInput, type CrewMember } from "./crew.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
+import { keyOf, teammateOf, type RosterFace } from "./activity.js";
 import { type Agent, type Comment, type Issue, type Label } from "./paperclip.js";
 import { BUCKETS, type Bucket, type Placement } from "./store.js";
 import type { ShownState } from "./task-state.js";
@@ -48,15 +49,17 @@ export interface Assignee {
   /** Models offered for this Engineer (config/paperclip.yaml `models`), besides Paperclip's list. */
   models?: string[];
   efforts?: string[];
-  /** A portrait: /crew/<avatar>.svg, from the agent's handbook frontmatter. */
-  avatar?: string;
+  /** Its face's seed: the definition key (stable across renames), else the Paperclip id ("me" for the owner). */
+  seed: string;
+  /** A teammate's face (activity.ts teammateOf); none for "me" and hidden agents. */
+  face?: RosterFace;
 }
 
 export function assignees(agents: Agent[]): Assignee[] {
   const live = agents.filter((a) => a.status !== "terminated");
-  const out: Assignee[] = [{ key: "me", kind: "me", name: "You" }];
+  const out: Assignee[] = [{ key: "me", kind: "me", name: "You", seed: "me" }];
   const assistant = live.find((a) => a.metadata?.setupKey === "aidenhq:assistant");
-  if (assistant) out.push({ key: assistant.id, kind: "assistant", name: assistant.name, ...withAvatar(assistant) });
+  if (assistant) out.push({ key: assistant.id, kind: "assistant", name: assistant.name, ...withFace(assistant) });
   // Engineers: the runner's agents, which the setup marks `runnerEngine`.
   const isEngineer = (a: Agent) => (/^aidenhq:engineer(-|$)/.test(a.metadata?.setupKey ?? "") || a.metadata?.runnerEngine === true) && engineOf(a);
   const engineers = live.filter(isEngineer);
@@ -65,15 +68,15 @@ export function assignees(agents: Agent[]): Assignee[] {
     const engine = engineOf(a)!;
     const model = typeof a.metadata?.model === "string" ? a.metadata.model : "";
     const models = Array.isArray(a.metadata?.models) ? a.metadata.models.filter((m): m is string => typeof m === "string") : [];
-    out.push({ key: a.id, kind: "engineer", name: a.name, engine, defaultModel: model || undefined, ...(models.length ? { models } : {}), efforts: EFFORTS[engine], ...withAvatar(a) });
+    out.push({ key: a.id, kind: "engineer", name: a.name, engine, defaultModel: model || undefined, ...(models.length ? { models } : {}), efforts: EFFORTS[engine], ...withFace(a) });
   }
-  for (const a of live) if (a !== assistant && !isEngineer(a)) out.push({ key: a.id, kind: "agent", name: a.name, ...withAvatar(a) });
+  for (const a of live) if (a !== assistant && !isEngineer(a)) out.push({ key: a.id, kind: "agent", name: a.name, ...withFace(a) });
   return out;
 }
 
-const withAvatar = (a: Agent) => {
-  const avatar = typeof a.metadata?.avatar === "string" && /^[a-z0-9-]{1,40}$/.test(a.metadata.avatar) ? a.metadata.avatar : undefined;
-  return avatar ? { avatar } : {};
+const withFace = (a: Agent) => {
+  const face = teammateOf(a)?.face;
+  return { seed: keyOf(a) ?? a.id, ...(face ? { face } : {}) };
 };
 
 export function assigneeKey(issue: Issue, list: Assignee[]): string | null {

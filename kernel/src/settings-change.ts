@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import YAML from "yaml";
 import { urlSettingProblem } from "../../services/shared/url-setting.ts";
+import { teammateNameProblem } from "../../services/shared/teammate-name.ts";
 import { MEMORY_MAX, compile } from "../../scripts/modules.ts";
 import { loadInputs } from "../../scripts/compiler/inputs.ts";
 import type { Write } from "./apply.ts";
@@ -156,10 +157,17 @@ export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }
     case "agent": {
       only(c, ["kind", "agent", "field", "value"]);
       const a = agentOf(c.agent);
-      const okFor = ({ model: (v: unknown) => typeof v === "string" && MODEL.test(v), reasoning_effort: (v: unknown) => typeof v === "string" && /^[a-z]{1,20}$/.test(v), heartbeat: (v: unknown) => v === false || (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 24), max_parallel: (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 10 } as Record<string, (v: unknown) => boolean>);
+      const okFor = ({ model: (v: unknown) => typeof v === "string" && MODEL.test(v), reasoning_effort: (v: unknown) => typeof v === "string" && /^[a-z]{1,20}$/.test(v), heartbeat: (v: unknown) => v === false || (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 24), max_parallel: (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 10, name: (v: unknown) => typeof v === "string" } as Record<string, (v: unknown) => boolean>);
       const ok = Object.hasOwn(okFor, c.field) ? okFor[c.field] : undefined;
       if (!ok) refuse(`${c.field} isn't an agent field the board may change`);
       if (c.field === "heartbeat" && (a.team || a.member_of)) refuse(`${c.agent} is on a team: a team's agents have no heartbeat of their own`);
+      // A rename (overrides.agents.<key>.name) is the owner's alone, of a teammate, by the one name rule compile checks too.
+      if (c.field === "name") {
+        if (self) refuse("an agent never renames a teammate: the owner does");
+        if (!a.teammate || a.team || a.member_of) refuse(`${c.agent} isn't a teammate: only a teammate is renamed`);
+        const bad = teammateNameProblem(c.value, String(c.agent), Object.fromEntries(Object.entries<Dict>(compiled?.agents ?? {}).map(([k, x]) => [k, { name: String(x.name ?? "") }])));
+        if (bad) refuse(bad);
+      }
       if (!ok!(c.value)) refuse(`${c.agent}.${c.field} can't be ${JSON.stringify(c.value)}`);
       return;
     }

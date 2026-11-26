@@ -1,12 +1,12 @@
 name: intake
-description: "Intake: turns what needs you in your inbox, Slack, Primer comments and meeting action items into deduplicated tasks."
+description: "Intake: turns what needs you in your inbox, Slack and Primer comments into deduplicated tasks."
 requires:
   - slack
   - google
 agents:
   inbox-agent:
-    skills: [ meetings.meeting-actions, intake.triage-email, intake.triage-slack, primer.primer-digest, tasks.delegate-work ]
-    # Intake: everything that comes in for the owner (live Slack, the inbox, the Primer digest, meeting action items), one routine and one skill each (design §4.5).
+    skills: [ intake.triage-email, intake.triage-slack, primer.primer-digest, tasks.delegate-work ]
+    # Intake: everything that comes in for the owner (live Slack, the inbox, the Primer digest), one routine and one skill each (design §4.5).
     department: intake
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -58,16 +58,6 @@ routines:
     when: { module: primer }
     schedules:
       - { cron: "0 8 * * *", timezone: "${settings.timezone}", label: "every morning" }
-  meeting-actions:
-    title: Meeting action items
-    agent: inbox-agent
-    description: |
-      Today is {{date}}. The owner is ${settings.owner_name}. Follow your meeting-actions skill: file the owner's action items from newly published
-      meetings, then close this task with a count summary.
-    concurrency: skip_if_active
-    when: { module: meetings }
-    schedules:
-      - { cron: "*/30 8-20 * * *", timezone: "${settings.timezone}", label: "every day" }
 labels:
   # Intake's tasks: `waiting-on` (a promise made to the owner, which open-loops chases) and `email` (a thread labelled Aiden).
   - { name: waiting-on, color: "#7c3aed" }

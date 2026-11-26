@@ -120,7 +120,7 @@ services:
         SBOM_DIR: /sbom
         GRYPE_DB_CACHE_DIR: /cache/grype-db
         TMPDIR: /cache/tmp
-        # The Security Watch routine's signed webhook (read at fire time; setup writes the files).
+        # The security agent's (`security-watch`) routine's signed webhook (read at fire time; setup writes the files).
         SCAN_WEBHOOK_URL_FILE: ${secrets.security_scan_webhook_url}
         SCAN_WEBHOOK_SECRET_FILE: ${secrets.security_scan_webhook_secret}
         # App Auditor (optional): vibe audits of app repos, off while the token files are empty.

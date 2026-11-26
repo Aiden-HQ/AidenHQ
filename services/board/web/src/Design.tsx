@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Banner, Button, Card, Checks, Dialog, EmptyState, Facts, Field, FieldRow, Input, LinkButton, ListRow, ListRows, Menu, Meter, Monogram, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, TaskState, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import type { ShownState } from "./types";
+import { TeamCatalogue } from "./DesignTeam";
 import "./design.css";
 
 const day = (i: number) => "MTWTFSS"[i]!;
@@ -198,6 +199,8 @@ function Catalogue() {
           <Facts items={[["Memory", <><span>182 MB of 512 MB</span><Meter value={182 / 512} label="Memory" /></>], ["CPU", "3%"], ["Version", <code key="v">3e9a1c2</code>]]} />
         </Card>
       </Section>
+
+      <TeamCatalogue />
 
       <Section title="Empty and dialog">
         <EmptyState action={<Button variant="primary" onClick={() => setDialog(true)}>Open a dialog</Button>}>No apps yet. Ask the Architect for one in Chat; it shows here once deployed.</EmptyState>
