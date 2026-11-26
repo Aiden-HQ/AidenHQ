@@ -137,11 +137,11 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   // why one was not sent); a rubric-named file is ranked first (fileEvidence).
   let files: any = { facts: [], data: {}, images: [] };
   if (rubric.length && w.files.length && deps.content) {
-    // A capture is judged against the code it claims to show: a pr's against its own heads, an app's against the commit the
+    // A capture is judged against the code it claims to show: a pr's against its own heads, an app's against the code the
     // app runs (an attached screenshot from an earlier iteration is not this deploy's page), and one showing other code is
     // left out (fileEvidence).
     const heads = kind === "pr" && ev ? ev.prs.map((p: any) => p.shows).filter((h: any) => h?.commits.length) : [];
-    const deployed = kind === "app" && app?.sha && !heads.length ? app.sha : "";
+    const deployed = kind === "app" && app?.sha && !heads.length ? await deployedCode(app, deps) : undefined;
     files = await fileEvidence(w.files, deps.content, { rubric: rubric.join("\n"), comments: w.data.TASK_COMMENTS, heads, ...(deployed ? { deployed } : {}) });
     if (files.awaiting) return { awaiting: files.awaiting };
   }
@@ -280,6 +280,17 @@ function encodeValue(value: string): string {
 /** A query string as plainPath (apps-mcp's api.ts:32-38) takes it: each character outside its class is percent-encoded. */
 function encodeQuery(query: string): string {
   return query.replace(/[^A-Za-z0-9._~=&%+,:-]/gu, (ch) => [...Buffer.from(ch)].map((b) => `%${b.toString(16).toUpperCase().padStart(2, "0")}`).join(""));
+}
+
+/**
+ * The code an app runs, as a capture's stamp can name it: the deployed commit, and the git tree that commit records (when the
+ * code host answers for it). Two commits with one tree carry the same code, so a capture taken before that commit existed, or
+ * at a PR head since squash-merged, is still this deploy's page. A tree that can't be read leaves the commit as the only name.
+ */
+export async function deployedCode(app: any, deps: any): Promise<{ commits: string[]; trees: string[] }> {
+  const commits = [String(app.sha)];
+  const tree = deps.commit && app.repo ? await deps.commit(app.repo, String(app.sha)).then((c: any) => String(c?.tree ?? ""), () => "") : "";
+  return { commits, trees: /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(tree) ? [tree] : [] };
 }
 
 /**
