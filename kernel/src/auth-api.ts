@@ -180,7 +180,7 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
             if (op === "setup_status") return send(res, 200, { secrets: secrets.status(module) });
             if (op === "secret_keys") return send(res, 200, { keys: secrets.keys(module, need(b, "secret", SECRET)) });
             if (!by.owner) throw fail(403, "forbidden", "only the owner");
-            const name = need(b, "secret", SECRET), value = need(b, "value", (v) => typeof v === "string" && v.length <= 1000);
+            const name = need(b, "secret", SECRET), value = need(b, "value", (v) => typeof v === "string" && v.length <= (b.key !== undefined ? 4000 : 1000));
             // One key of a JSON-map secret (a module page's secret_maps): `value` is that key's entry as JSON, or "" to clear it.
             // The module's own check sees the entry alone, never the other keys.
             if (b.key !== undefined) {

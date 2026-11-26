@@ -71,10 +71,10 @@ export function createModuleSecrets(deps: {
     return field;
   };
   return {
-    /** The keys a JSON-map secret holds: names only, never a value. */
+    /** The keys a JSON-map secret holds: names only, never a value, and only those that are valid keys with an entry (anything else in the file is never echoed). */
     keys(module: string, secret: string): string[] {
       mapField(module, secret);
-      return Object.keys(map(secret));
+      return Object.entries(map(secret)).flatMap(([k, e]) => (MAP_KEY.test(k) && e && typeof e === "object" && !Array.isArray(e) ? [k] : []));
     },
     /**
      * Sets, replaces (`entry`: one flat object of text values) or clears (`entry` null) one key of the map. `check` sees the entry
@@ -85,9 +85,11 @@ export function createModuleSecrets(deps: {
         const field = mapField(module, secret);
         if (!MAP_KEY.test(key)) throw fail(400, "bad_request", "that isn't a valid key");
         if (entry && (Object.keys(entry).length === 0 || Object.keys(entry).length > 8 || Object.entries(entry).some(([k, v]) => !/^[a-z][a-z0-9_]{0,31}$/.test(k) || typeof v !== "string" || !v || v.length > 300))) throw fail(400, "bad_request", "an entry is up to 8 named, non-empty texts of 300 characters at most");
-        const current = map(secret);
+        // The module's check may take a while: the map is read only after it, right before the synchronous merge and write, so a
+        // whole-secret save that landed meanwhile is merged into, never overwritten.
         if (entry) await check(JSON.stringify({ [key]: entry }));
-        else if (!Object.hasOwn(current, key)) return;
+        const current = map(secret);
+        if (!entry && !Object.hasOwn(current, key)) return;
         const next = { ...current };
         if (entry) next[key] = entry; else delete next[key];
         const text = JSON.stringify(next);

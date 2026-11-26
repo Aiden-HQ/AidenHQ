@@ -49,7 +49,7 @@ import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { Swr } from "./swr.js";
 import { CLOSED_WINDOW_MS, OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
 import { createMcp, WRITE_TOOLS } from "./mcp.js";
-import { FRAME_CSP, FRAME_TYPE, ViewError, mapKeys, mayPropose, type ViewHost } from "./module-views.js";
+import { FRAME_CSP, FRAME_TYPE, ViewError, appliedValues, mapKeys, mayPropose, type ViewHost } from "./module-views.js";
 import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
@@ -1474,6 +1474,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   /** An active routine's next scheduled run: the soonest of its enabled triggers (a paused one has none). */
   const nextRunOf = (r: { status: string; triggers?: { enabled?: boolean; nextRunAt?: string | null }[] }) => (r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled !== false).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? undefined : undefined);
 
+  const appliedSettings = () => appliedValues(readSources(settingsFiles()).compiled?.settings);
   async function settingsData() {
     const [pending, live, agents] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => []), pc.agents().catch(() => [])]);
     // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
@@ -2722,7 +2723,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       path: /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/secrets$/,
       handle: async (m, _b, who) => {
         const page = await viewCall(async () => opts.views!.page(m[1]!));
-        const settings = readSources(settingsFiles()).compiled?.settings ?? {};
+        const settings = appliedSettings();
         const maps = await Promise.all((page.secret_maps ?? []).map(async (sm) => {
           const stored = (await opts.accounts!.call<{ keys: string[] }>("secret_keys", who, { module: page.module, secret: sm.secret })).keys;
           const wanted = mapKeys(sm.keys_from, settings);
@@ -2744,11 +2745,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         let value = "";
         if (values) {
           // Only the declared fields, blank ones dropped: Set and Replace write the whole entry.
-          const entry = Object.fromEntries(sm.fields.flatMap((f) => (values[f.name]?.trim() ? [[f.name, values[f.name]!.trim()]] : [])));
+          // A password keeps its spaces exactly as typed; any other field is trimmed.
+          const entry = Object.fromEntries(sm.fields.flatMap((f) => { const v = f.kind === "password" ? values[f.name] : values[f.name]?.trim(); return v ? [[f.name, v]] : []; }));
           if (Object.keys(values).some((k) => !sm.fields.some((f) => f.name === k))) throw new HttpError(400, "not one of this page's fields");
           if (!Object.keys(entry).length) throw new HttpError(400, "give at least one value");
           // A new entry only for a key the setting names; Clear works for any stored one.
-          if (!mapKeys(sm.keys_from, readSources(settingsFiles()).compiled?.settings ?? {}).includes(m[3]!)) throw new HttpError(400, "that isn't one of the keys this page lists");
+          if (!mapKeys(sm.keys_from, appliedSettings()).includes(m[3]!)) throw new HttpError(400, "that isn't one of the keys this page lists");
           value = JSON.stringify(entry);
         }
         return opts.accounts!.call("save_secret", who, { module: page.module, secret: sm.secret, key: m[3]!, value });

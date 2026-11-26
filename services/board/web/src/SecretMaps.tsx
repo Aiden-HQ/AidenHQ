@@ -59,7 +59,7 @@ export function SecretMaps({ page, reload, onSignIn }: { page: string; /** Chang
                       ))}
                       <div className="mv-signin-buttons">
                         <Button variant="quiet" onClick={close} disabled={busy}>Cancel</Button>
-                        <Button variant="primary" type="submit" disabled={busy || !Object.values(values).some((v) => v.trim())}>{busy ? "Saving…" : "Save"}</Button>
+                        <Button variant="primary" type="submit" disabled={busy || !Object.values(values).some((v) => v)}>{busy ? "Saving…" : "Save"}</Button>
                       </div>
                     </form>
                   )}

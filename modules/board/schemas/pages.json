@@ -19,7 +19,7 @@
         "type": "object", "additionalProperties": false, "required": ["secret", "keys_from", "fields"],
         "properties": {
           "secret": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$", "description": "one of this module's own `setup:` secrets: a JSON map key -> { field: text }, which the module reads whole on each use (a save restarts nothing)"},
-          "keys_from": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}(\\.[a-z][a-z0-9_]{0,63})*\\[\\]\\.[a-z][a-z0-9_]{0,63}$", "description": "<setting>[.<path>][].<field>: the keys the map may hold, read from one of this module's own settings (ui_testing.apps[].name)"},
+          "keys_from": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}(\\.[a-z][a-z0-9_]{0,63})*\\[\\]\\.[a-z][a-z0-9_]{0,63}$", "description": "<setting>[.<path>][].<field>: the keys the map may hold, read from one of this module's own settings (ui_testing.apps[].name); a key is lowercase letters, digits, - and _ (63 at most), any other value the setting holds is not offered"},
           "fields": {
             "type": "array", "minItems": 1, "maxItems": 8,
             "items": {
