@@ -175,6 +175,10 @@ export async function review({ spec, ui, ws, env = process.env }: { spec: UiRevi
   }
   // The engine gets the tool allowlist's environment and the run's model token, and works in the bundle's folder only.
   const modelEnv = { ...toolEnv(env, tmp), OPENROUTER_API_KEY: String(env.OPENROUTER_API_KEY ?? ""), OPENROUTER_BASE_URL: String(env.OPENROUTER_BASE_URL ?? "") };
+  // A capture's fields reach the prompts as labels (its width, theme, state): anything but the engine's own values is refused.
+  const STATES = ["default", "empty", "error", "loading"];
+  if (captured.captures.some((c) => typeof c.page !== "string" || !Number.isInteger(c.width) || !["light", "dark"].includes(c.theme) || !STATES.includes((c as { state?: string }).state ?? "default")))
+    throw new Error("the capture's report has a capture whose page, width, theme or state is not the engine's");
   // A capture without its shots list has none (the engine reads every capture's list).
   for (const c of captured.captures) c.shots ??= [];
   writeFileSync(join(dir, "report.json"), JSON.stringify(captured));

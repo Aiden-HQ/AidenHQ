@@ -110,11 +110,14 @@ export function captureReport(o: { model: string; repo?: string; head?: string; 
 }
 
 export async function capture({ spec, ws, out, env = process.env }: { spec: UiSpec; ws: string; out: string; env?: NodeJS.ProcessEnv }) {
-  let scripts: Record<string, unknown> | undefined;
-  try { scripts = (JSON.parse(readSmall(join(ws, "package.json"), 1_000_000) ?? "{}") as { scripts?: Record<string, unknown> }).scripts; } catch { /* no start script */ }
+  let scripts: Record<string, unknown> | undefined, packageManager: unknown;
+  try { ({ scripts, packageManager } = JSON.parse(readSmall(join(ws, "package.json"), 1_000_000) ?? "{}") as { scripts?: Record<string, unknown>; packageManager?: unknown }); } catch { /* no start script */ }
   if (typeof scripts?.start !== "string" || !scripts.start.trim()) throw new Error('no start command: add a "start" script to package.json');
-  // Yarn through corepack (the image ships Node's corepack, not yarn), which takes the version package.json names.
-  const [pm, ...via] = existsSync(join(ws, "pnpm-lock.yaml")) ? ["pnpm"] : existsSync(join(ws, "yarn.lock")) ? ["corepack", "yarn"] : ["npm"];
+  // Yarn and pnpm through corepack, which takes the version package.json names (`packageManager`); a pnpm lockfile older than
+  // version 9 with no such field gets pnpm 8, which reads it (a newer pnpm refuses it under --frozen-lockfile).
+  const pnpmLock = /lockfileVersion:\s*['"]?(\d+)/.exec(readSmall(join(ws, "pnpm-lock.yaml"), 4096) ?? "")?.[1];
+  const pnpm = typeof packageManager === "string" || !pnpmLock || Number(pnpmLock) >= 9 ? "pnpm" : "pnpm@8";
+  const [pm, ...via] = existsSync(join(ws, "pnpm-lock.yaml")) ? ["corepack", pnpm] : existsSync(join(ws, "yarn.lock")) ? ["corepack", "yarn"] : ["npm"];
   const install = [...via, ...(pm === "npm" ? [existsSync(join(ws, "package-lock.json")) ? "ci" : "install"] : ["install", "--frozen-lockfile"])];
   const tmp = mkdtempSync(join(env.TMPDIR || "/tmp", "ui-scan-"));
   const ui = join(out, "ui"), url = `http://127.0.0.1:${PORT}`, pagesFile = join(ws, ".aidenhq-ui", "pages.json");
