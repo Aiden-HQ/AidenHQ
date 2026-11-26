@@ -465,6 +465,22 @@ test("flows lists every page's key controls with a persona", async () => {
   assert.ok((md.match(/^### Flow /gm) ?? []).length >= 4); // /#/settings alone needs two flows for its nine controls
 });
 
+test("bugs writes candidates citing the page's own captures into candidates.json, never the report", async () => {
+  const dir = runDir();
+  // On /#/r01: one candidate on its own capture, one citing another page's; elsewhere, a capture that doesn't exist.
+  const fake = await fakeModel((_n, text) => ({ candidates: /r01/.test(text) ? [
+    { title: "The table is cut off", evidence: "the last column is clipped", width: 1512, theme: "light", capture: "shots/r01-1512-light.png" },
+    { title: "Made up", evidence: "cites a picture it wasn't shown", width: 1512, theme: "light", capture: "shots/r02-1512-light.png" },
+  ] : [{ title: "Invented", evidence: "no such capture", width: 1512, theme: "light", capture: "shots/nope.png" }] }));
+  try {
+    const { bugs } = await import("../images/agent-base/ui-review/bugs.ts");
+    const r = await bugs(dir, { model: "fake/judge", base: fake.url, key: "test" });
+    assert.deepEqual(r.candidates.map((c) => `${c.page} ${c.title}`), ["/#/r01 The table is cut off"]);
+    assert.equal(JSON.parse(readFileSync(join(dir, "candidates.json"), "utf8")).length, 1);
+    assert.deepEqual((JSON.parse(readFileSync(join(dir, "report.json"), "utf8")) as Report).bugs, []);
+  } finally { await fake.close(); }
+});
+
 describe("repro", chrome, () => {
   let fixture: Fixture;
   before(async () => { fixture = await startFixture(); process.env.OPENROUTER_API_KEY = "test"; });
