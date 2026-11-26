@@ -1,9 +1,11 @@
 // One agent's 7 days against the 7 before, from facts the system already holds: tasks done (control plane), approval records and
 // billed cost (the kernel's /v1/work?since=), jobs (the kernel's ledger). A diagnostic for the Coach, not a ranking.
 const DAY = 864e5;
+/** GET /v1/work?agent= returns an agent's newest jobs, cut at this many: below it the ledger read is complete. */
+const JOB_READ = 50;
 const day = (t: number) => new Date(t).toISOString().slice(0, 10);
 
-export interface Closed { id: string; identifier: string; title: string; status: string; assigneeAgentId?: string | null; completedAt?: string | null; updatedAt: string }
+export interface Closed { id: string; identifier: string; title: string; status: string; assigneeAgentId?: string | null; createdAt?: string | null; completedAt?: string | null; updatedAt: string }
 /** One row of the kernel's job ledger (/v1/work?agent=): the shape the scorecard reads. */
 export interface Job { state: string; started_at: string | null; task: string }
 export interface Facts {
@@ -29,9 +31,13 @@ export function scorecard(f: Facts, agent: { id: string; key: string }, now = Da
   const inPrior = (t: number) => t >= prior && t < week;
   const mine = f.closed.filter((i) => i.status === "done" && i.assigneeAgentId === agentId);
   // A task the ledger holds no job for was never run by the agent: it filed itself as a holder and closed itself (a ship
-  // record, a pin bump), so it is not work done — and its $0 must not dilute cost.perDone.
-  const worked = new Set(f.jobs.filter((j) => j.task).map((j) => j.task));
-  const ran = (i: Closed) => worked.has(i.id);
+  // record, a pin bump), so it is not work done — and its $0 must not dilute cost.perDone. The ledger read holds only the
+  // agent's newest jobs, so when it is cut, a task created before the oldest row read may have run in a row it left out:
+  // that one stays counted as work (as before) rather than be misreported as auto-closed.
+  const worked = new Set(f.jobs.map((j) => j.task));
+  const starts = f.jobs.flatMap((j) => (j.started_at ? [Date.parse(j.started_at)] : []));
+  const horizon = f.jobs.length >= JOB_READ && starts.length ? Math.min(...starts) : null;
+  const ran = (i: Closed) => worked.has(i.id) || (horizon !== null && !(i.createdAt && Date.parse(i.createdAt) > horizon));
   const done = mine.filter((i) => inWeek(doneAt(i)) && ran(i));
   const autoClosed = mine.filter((i) => inWeek(doneAt(i)) && !ran(i));
   const ofAgent = f.usage.filter((c) => c.agent === agentId);

@@ -509,15 +509,27 @@ test("the scorecard counts a done task as work only when the ledger holds a job 
   const t = Date.parse("2026-11-26T02:20:00Z");
   const at = (h) => new Date(t - h * 3_600_000).toISOString();
   const closed = [
-    { id: "t-shipped", identifier: "ENG-1", title: "Ship acme/app#12: records", status: "done", assigneeAgentId: "eng", completedAt: at(4), updatedAt: at(4) },
-    { id: "t-worked", identifier: "WOR-2", title: "Fix the thing", status: "done", assigneeAgentId: "eng", completedAt: at(6), updatedAt: at(6) },
-    { id: "t-cancelled", identifier: "WOR-3", title: "Dropped", status: "cancelled", assigneeAgentId: "eng", completedAt: at(8), updatedAt: at(8) },
+    { id: "t-shipped", identifier: "ENG-1", title: "Ship acme/app#12: records", status: "done", assigneeAgentId: "eng", createdAt: at(3), completedAt: at(4), updatedAt: at(4) },
+    { id: "t-pin", identifier: "ENG-2", title: "Pin bump: this instance's product", status: "done", assigneeAgentId: "eng", createdAt: at(3), completedAt: at(3), updatedAt: at(3) },
+    { id: "t-worked", identifier: "WOR-2", title: "Fix the thing", status: "done", assigneeAgentId: "eng", createdAt: at(9), completedAt: at(6), updatedAt: at(6) },
+    { id: "t-cancelled", identifier: "WOR-3", title: "Dropped", status: "cancelled", assigneeAgentId: "eng", createdAt: at(9), completedAt: at(8), updatedAt: at(8) },
   ];
   const jobs = [{ state: "done", started_at: at(7), task: "t-worked" }];
   const usage = [{ agent: "eng", day: new Date(t).toISOString().slice(0, 10), cost_usd: 2, calls: 2, priced: 2 }];
   const s = scorecard({ closed, records: [], usage, jobs }, { id: "eng", key: "eng" }, t);
   assert.equal(s.done.count, 1, "only the task a job ran counts as done");
-  assert.equal(s.done.autoClosed, 1, "the self-closed holder is reported apart");
+  assert.equal(s.done.autoClosed, 2, "the self-closed holders are reported apart, never as done");
   assert.deepEqual(s.done.tasks.map((x) => x.identifier), ["WOR-2"]);
   assert.equal(s.cost.perDone, 2, "cost divides by the worked done count, not every done task");
+  // The ledger read is the newest 50 jobs: a task created before it reaches may have run in a row it left out, so it is never
+  // called auto-closed on that absence; a task created inside the window is.
+  const cut = Array.from({ length: 50 }, (_, n) => ({ state: "done", started_at: at(5), task: `t-job${n}` }));
+  const older = [{ id: "t-older", identifier: "WOR-9", title: "Ran before the read", status: "done", assigneeAgentId: "eng", createdAt: at(30), completedAt: at(6), updatedAt: at(6) }];
+  assert.deepEqual(
+    (({ done, cost }) => ({ count: done.count, autoClosed: done.autoClosed, perDone: cost.perDone }))(scorecard({ closed: older, records: [], usage, jobs: cut }, { id: "eng", key: "eng" }, t)),
+    { count: 1, autoClosed: 0, perDone: 2 },
+  );
+  const inside = [{ id: "t-inside", identifier: "WOR-10", title: "Filed after the oldest row read", status: "done", assigneeAgentId: "eng", createdAt: at(4), completedAt: at(4), updatedAt: at(4) }];
+  const s2 = scorecard({ closed: inside, records: [], usage, jobs: cut }, { id: "eng", key: "eng" }, t);
+  assert.deepEqual([s2.done.count, s2.done.autoClosed, s2.cost.perDone], [0, 1, null], "a task filed inside the read with no job is auto-closed, and perDone has no worked task to divide by");
 });

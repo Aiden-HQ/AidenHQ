@@ -11,7 +11,7 @@ import { detectorState, type Kv } from "./detector.ts";
 import { scorecard, type Closed } from "./scorecard.ts";
 
 type Agent = { id: string; name: string; status: string; lifecycleHolds?: string[]; createdAt?: string; metadata?: { setupKey?: string; model?: unknown; engine?: unknown } };
-type Issue = { id: string; identifier: string; title: string; description?: string | null; descriptionTruncated?: boolean; status: string; updatedAt: string; assigneeAgentId?: string | null; completedAt?: string | null };
+type Issue = { id: string; identifier: string; title: string; description?: string | null; descriptionTruncated?: boolean; status: string; createdAt?: string; updatedAt: string; assigneeAgentId?: string | null; completedAt?: string | null };
 type Comment = { id: string; body: string; authorAgentId?: string | null; createdAt: string; deletedAt?: string | null };
 
 const HOUR = 3_600_000;
