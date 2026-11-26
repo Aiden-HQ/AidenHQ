@@ -626,14 +626,6 @@ export interface Features {
   features: FeatureCost[];
   unattributed: { usd: number; calls: number };
 }
-export interface SettledItem {
-  issueId: string;
-  identifier: string;
-  title: string;
-  agent: string;
-  kind: "chat" | "task";
-  at: string;
-}
 export interface AsideMessage {
   role: "user" | "assistant";
   text: string;
@@ -670,6 +662,8 @@ export interface ChatDetail {
   title: string;
   open: boolean;
   agent: { key: string; name: string };
+  /** Settled out of the active list (as the chat lists say). */
+  settled?: boolean;
   state: ShownState | null;
   messages: ChatMessage[];
   working: Working | null;
@@ -720,7 +714,7 @@ export type Question = { question: string; options: string[]; multi?: boolean };
 /** A change the Settings pages file (services/board/src/settings-change.ts): it becomes an apply card, never applied here. */
 export type SettingChange =
   | { kind: "setting"; key: string; value: unknown }
-  | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat" | "max_parallel"; value: string | number | boolean }
+  | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat" | "max_parallel" | "name"; value: string | number | boolean }
   | { kind: "module"; name: string; on: boolean }
   | { kind: "routine"; routine: string; field: "schedules"; value: { cron: string; timezone?: string; label?: string }[] }
   | { kind: "routine"; routine: string; field: "model"; value: string | null }
@@ -869,3 +863,30 @@ export interface SessionRow {
   /** Whether this account may open its terminal and phone UI (only its creator). */
   mine: boolean;
 }
+
+// Home (GET /api/home): the server's shapes, services/board/src/home.ts.
+/** A teammate as Home shows it; `face` is the roster's own value. */
+export type FaceRef = { key: string; name: string; job: string; face: RosterFace; state: "idle" | "working" | "needs" };
+export type NeedRow =
+  | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string }
+  | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: { identifier: string; title: string } | null; question: string; card: Approval }
+  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string };
+export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
+export type WorldBlock = {
+  waiting_on: { identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
+  today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; prep?: string }[] } | null;
+};
+export type TeamNews = { teammate: FaceRef; line: string };
+export type IdeaRow = { identifier: string; teammate: FaceRef; question: string; options: string[]; waitSince: string };
+export type Home = {
+  as_of: string;
+  since_from: string;
+  /** Every read behind Since answered: only then may the seen cursor move past this snapshot. */
+  since_complete: boolean;
+  greeting: { needs: number };
+  needs: NeedRow[];
+  since: { groups: { teammate: FaceRef; latest: SinceItem; count: number }[]; items: SinceItem[]; total: number } | null;
+  world: WorldBlock;
+  team: TeamNews[];
+  idea: IdeaRow | null;
+};

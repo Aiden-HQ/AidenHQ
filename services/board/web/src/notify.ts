@@ -1,7 +1,5 @@
 // Browser notifications: while the board is open, one notification per new thing waiting for you, per
 // device. What this device has already shown is remembered locally (best effort: storage may be unavailable).
-import type { ShownState } from "./types";
-import { stateWords } from "./ui/TaskState";
 
 const SEEN_KEY = "aidenhq.notified";
 
@@ -18,15 +16,15 @@ function remember(ids: Set<string>) {
   } catch {}
 }
 
-type Waiting = { identifier: string; title: string; agent: string; state: ShownState };
+/** One thing that needs the owner (a Home needs row): `key` changes when it asks again; `href` opens it. */
+type Waiting = { title: string; agent: string; key: string; href: string };
 
 /**
  * What to notify about now: items not shown before. Only items still waiting are remembered, so a chat that asks
  * again after being answered notifies again.
  */
 export function nextSeen(seen: Set<string>, items: Waiting[]): { seen: Set<string>; fresh: Waiting[] } {
-  const key = (i: Waiting) => `${i.identifier}:${i.state.reason}`;
-  return { seen: new Set(items.map(key)), fresh: items.filter((i) => !seen.has(key(i))) };
+  return { seen: new Set(items.map((i) => i.key)), fresh: items.filter((i) => !seen.has(i.key)) };
 }
 
 /** Phones' Chrome only shows notifications through a service worker; there the constructor throws, so offer nothing. */
@@ -38,7 +36,7 @@ export const askForNotifications = () => (usable ? Notification.requestPermissio
 const WAKE_DEBOUNCE_MS = 2_000;
 
 /** Polls every 30 s; returns a stop function. The first poll only records what's already waiting (no burst on open). */
-export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen: (identifier: string) => void, wake?: (tick: () => void) => () => void): () => void {
+export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen: (href: string) => void, wake?: (tick: () => void) => () => void): () => void {
   let first = true;
   const tick = async () => {
     try {
@@ -48,8 +46,8 @@ export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen:
       if (!first && notificationsOn())
         for (const i of fresh) {
           try {
-            const n = new Notification(`${i.agent}: needs you${stateWords(i.state).detail ? ` · ${stateWords(i.state).detail}` : ""}`, { body: i.title, tag: `${i.identifier}:${i.state.reason}` });
-            n.onclick = () => (window.focus(), onOpen(i.identifier));
+            const n = new Notification(`${i.agent}: needs you`, { body: i.title, tag: i.key });
+            n.onclick = () => (window.focus(), onOpen(i.href));
           } catch {
             usable = false;
           }

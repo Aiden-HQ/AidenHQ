@@ -277,7 +277,7 @@ function Recent({ a }: { a: AgentSettings }) {
     <Group title="Recent changes">
       {mine.length ? (
         mine.map((f) => (
-          <Row key={f.identifier} title={f.title} sub={<a href={`#/c/${f.identifier}`}>{f.identifier}</a>} meta={<StatusDot tone={TONE[f.stage as keyof typeof TONE] ?? "busy"}>{f.stage === "working" ? "Filed" : f.stage === "waiting" ? "Waiting for approval" : f.stage === "applying" ? "Applying" : f.stage === "applied" ? "Live" : f.stage}</StatusDot>} />
+          <Row key={f.identifier} title={f.title} sub={<a href={`#/t/${f.identifier}`}>{f.identifier}</a>} meta={<StatusDot tone={TONE[f.stage as keyof typeof TONE] ?? "busy"}>{f.stage === "working" ? "Filed" : f.stage === "waiting" ? "Waiting for approval" : f.stage === "applying" ? "Applying" : f.stage === "applied" ? "Live" : f.stage}</StatusDot>} />
         ))
       ) : (
         <p className="fleet-empty">No changes to this agent in the last two weeks.</p>

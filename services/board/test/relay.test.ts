@@ -27,6 +27,10 @@ const [COS, FLEET, RESEARCHER, SCOUT, IMPOSTOR, ARCHITECT, FLEET_OPS] = agents.m
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
 writeFileSync(grantsFile, JSON.stringify({ agents: { [COS]: { key: "chief-of-staff", roles: ["fleet-admin"] }, [SCOUT]: { key: "scout", roles: [] }, [ARCHITECT]: { key: "architect", roles: [] }, [IMPOSTOR]: { key: "impostor", roles: [] }, [FLEET_OPS]: { key: "fleet-ops", roles: ["fleet-read"] } } }));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
+// The chief of staff and the Architect are teammates (compiled config): only teammates take the owner's chats.
+const tm = "teammate: { job: Work, sample: Ask me, staff: [], controls: [], face: null }";
+writeFileSync(join(grantsFile, "../paperclip.yaml"), `agents:\n  chief-of-staff: { name: Chief of Staff, ${tm} }\n  architect: { name: Agent Architect, ${tm} }\n`);
+process.env.BOARD_PAPERCLIP_CONFIG = join(grantsFile, "../paperclip.yaml");
 const UUID = /^[0-9a-f-]{36}$/;
 
 describe("/internal/relay", () => {
@@ -130,6 +134,9 @@ describe("/internal/relay", () => {
     expect((await relay({ comment_id: c.id, agent: "architect" }, COS, "/internal/chat")).status).toBe(403);
     expect((await relay({ comment_id: say(chat, "hi").id, agent: "chief-of-staff" }, COS, "/internal/chat")).status).toBe(403);
     expect((await relay({ comment_id: say(chat, "hi").id, agent: "architect" }, IMPOSTOR, "/internal/chat")).status).toBe(403);
+    // A hidden agent works through its teammate: no chat of its own.
+    const hidden = await relay({ comment_id: say(chat, "hi").id, agent: "scout" }, COS, "/internal/chat");
+    expect([hidden.status, hidden.json.error]).toEqual([403, "refused: scout isn't a teammate; hidden agents work through their teammate"]);
   });
 
   it("binds the approval to the task the owner meant", async () => {

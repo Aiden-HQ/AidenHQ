@@ -1,4 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -8,6 +11,13 @@ import type { Comment, Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 import { card, fakeRecords } from "./fake-records.js";
 import { fakeStates, row } from "./fake-states.js";
+
+// Teammates come from the compiled config, keyed by the grants table: Aiden is one, the Fleet Engineer works behind him.
+const cfg = mkdtempSync(join(tmpdir(), "chat-routes-"));
+writeFileSync(join(cfg, "paperclip.yaml"), "agents:\n  chief-of-staff: { name: Aiden, teammate: { job: Chief of staff, sample: Ask me, staff: [engineer-fleet], controls: [], face: null } }\n  engineer-fleet: { name: Fleet Engineer }\n");
+writeFileSync(join(cfg, "grants.json"), JSON.stringify({ agents: { cos: { key: "chief-of-staff" }, fe: { key: "engineer-fleet" } } }));
+process.env.BOARD_PAPERCLIP_CONFIG = join(cfg, "paperclip.yaml");
+process.env.AIDENHQ_GRANTS_FILE = join(cfg, "grants.json");
 
 const chatLabel = { id: "33333333-3333-3333-3333-333333333333", name: "chat", color: "#0ea5e9" };
 const base = { priority: "medium", assigneeUserId: null, assigneeAdapterOverrides: null, createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:05:00.000Z" };
@@ -73,6 +83,13 @@ describe("chat routes", () => {
     expect(r.agents.find((a: { name: string }) => a.name === "Aiden").front).toBe(true);
   });
 
+  it("lists one agent's chats by its key (active, or settled and finished), and 404s an unknown key", async () => {
+    expect(await get("/api/chats?agent=chief-of-staff")).toMatchObject({ chats: [{ identifier: "WOR-10", agent: { name: "Aiden" } }], more: false, next_offset: expect.any(Number) });
+    expect((await get("/api/chats?agent=chief-of-staff&state=settled")).chats).toEqual([]);
+    expect((await get("/api/chats?agent=engineer-fleet")).chats).toEqual([]);
+    await expect(get("/api/chats?agent=nobody")).rejects.toThrow(/^404/);
+  });
+
   it("shows a pending card the owner still owes, even when newer records would crowd it out of the recent page", async () => {
     // 120 newer Tier 0 records on this chat, and 50 newer reviewed records elsewhere in the fleet: the fleet page and a
     // page of this chat's `recent` both fill up without the pending card, which only the live read still returns.
@@ -100,4 +117,37 @@ describe("chat routes", () => {
     expect(view.approvals.map((x: { id: string }) => x.id)).toContain("OWNER1");
   });
 
+
+  it("only teammates take a chat: @Fleet Engineer goes to Aiden with a note, an explicit hidden agent is refused, a mention is plain text", async () => {
+    const created: { assigneeAgentId?: string; description?: string }[] = [];
+    const commented: string[] = [];
+    const mine: Issue = { ...base, id: "44444444-4444-4444-4444-444444444444", identifier: "WOR-12", title: "My task", description: "", status: "todo", assigneeAgentId: null, assigneeUserId: "me-1" };
+    const tpc = { ...pc, createIssue: async (b: { assigneeAgentId?: string; description?: string }) => (created.push(b), { ...chat, id: "55555555-5555-5555-5555-555555555555", identifier: "WOR-13" }), issue: async (ref: string) => [chat, child, mine].find((i) => i.id === ref || i.identifier === ref) ?? Promise.reject(new Error("404")), children: async () => [], addComment: async (id: string) => (commented.push(id), { id: "c9" }) } as unknown as Paperclip;
+    const a = createApp({ taskStates: states, paperclip: tpc, store, records, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
+    await new Promise<void>((r) => a.listen(0, "127.0.0.1", r));
+    const p = (a.address() as AddressInfo).port;
+    const post = (path: string, body: unknown) =>
+      new Promise<{ status: number; body: any }>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port: p, method: "POST", path, headers: { host: "localhost:3120", "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3120" } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode!, body: text ? JSON.parse(text) : null }));
+        });
+        req.on("error", reject);
+        req.end(JSON.stringify(body));
+      });
+    try {
+      expect((await post("/api/chats", { text: "@Fleet Engineer do X" })).status).toBe(200);
+      expect(created[0]).toMatchObject({ assigneeAgentId: "cos", description: expect.stringContaining("(No agent called @Fleet; sent to Aiden.)") });
+      const refused = await post("/api/chats", { text: "do X", agent: "fe" });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toBe("Fleet Engineer works behind Aiden; ask Aiden instead");
+      expect(created).toHaveLength(1);
+      expect((await post("/api/issues/WOR-12/comments", { body: "@FleetEngineer look", brief: true })).status).toBe(200);
+      expect(commented).toEqual([mine.id]); // on the owner's own task, no part for the hidden agent
+      expect(created).toHaveLength(1);
+    } finally {
+      a.close();
+    }
+  });
 });

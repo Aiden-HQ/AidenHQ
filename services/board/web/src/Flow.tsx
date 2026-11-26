@@ -6,7 +6,7 @@ import { Banner, Dialog, EmptyState, Page, PageHeader, Section, Segmented, Selec
 import { agoLabel } from "./util";
 import "./flow.css";
 
-// The Flow page (#/flow/<tab>, docs/design/flow-insights.md §4): where time goes between an issue and its deploy. Tabs share one
+// The Flow page (#/insight/flow/<tab>, docs/design/flow-insights.md §4): where time goes between an issue and its deploy. Tabs share one
 // period and one journey (a module declares each: a piece of work's by default, a PR's). Timeline: one row per item, its phases as
 // coloured blocks, loops folded into rounds, idle hatched. The other tabs draw the kernel's insights over the picked journey (GET
 // /v1/flow summary). The kernel computes everything; this only draws.
@@ -45,7 +45,7 @@ export const nameOf = (x: { subject: string; identifier: string | null }) => (x.
 const linkName = (subject: string) => `${subject.startsWith("pr:") ? "PR" : subject.slice(0, subject.indexOf(":"))} #${subject.split("#")[1] ?? ""}`;
 
 const tabOf = (): Tab => {
-  const t = /^#\/?flow\/([a-z]+)/.exec(location.hash)?.[1];
+  const t = /^#\/?insight\/flow\/([a-z]+)/.exec(location.hash)?.[1];
   return TABS.some(([k]) => k === t) ? (t as Tab) : "overview";
 };
 
@@ -75,14 +75,14 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
   const known = useRef(new Map<string, JourneyItem>());
 
   useEffect(() => {
-    const on = () => location.hash.startsWith("#/flow") && setTab(tabOf());
+    const on = () => location.hash.startsWith("#/insight/flow") && setTab(tabOf());
     window.addEventListener("hashchange", on);
     mounted++;
     return () => {
       window.removeEventListener("hashchange", on);
       mounted--;
       // The top tabs switch without touching the hash (as Costs): leaving Flow drops its link. Deferred for StrictMode's remount.
-      setTimeout(() => !mounted && location.hash.startsWith("#/flow") && history.replaceState(null, "", "#/"));
+      setTimeout(() => !mounted && location.hash.startsWith("#/insight/flow/") && history.replaceState(null, "", "#/insight/flow"));
     };
   }, []);
 
@@ -143,7 +143,7 @@ export function FlowView({ onSignIn }: { onSignIn: () => void }) {
           </>
         }
       />
-      <Tabs label="Flow views" tabs={TABS} value={tab} href={(t) => `#/flow/${t}`} />
+      <Tabs label="Flow views" tabs={TABS} value={tab} href={(t) => `#/insight/flow/${t}`} />
       {error && <Banner tone="danger">Couldn't load Flow: {error}</Banner>}
       <TipLayer key={tab}>
         {!data ? (
@@ -205,7 +205,7 @@ function TimelineTab(p: {
   const [view, setViewState] = useState<"bars" | "table">(viewOf);
   const setView = (v: "bars" | "table") => {
     setViewState(v);
-    history.replaceState(null, "", v === "table" ? "#/flow/timeline?view=table" : "#/flow/timeline");
+    history.replaceState(null, "", v === "table" ? "#/insight/flow/timeline?view=table" : "#/insight/flow/timeline");
   };
   const items = p.list?.items ?? [];
   useEffect(() => setShown(PAGE), [p.list]);

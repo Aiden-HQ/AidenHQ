@@ -1,4 +1,4 @@
-// An agent's Handbook tab (#/agents/<key>/handbook): Your rules, the main handbook (read-only until the owner opts into
+// An agent's Handbook tab (#/team/agents/<key>/handbook): Your rules, the main handbook (read-only until the owner opts into
 // their own copy), what the agent really reads, its memory (read-only: the agent keeps it), and the history. Reads: services/board/src/agent-handbook.ts; every edit
 // is a typed change (rules, handbook, unfork) that goes through the usual review and apply flow.
 import { useCallback, useEffect, useRef, useState } from "react";

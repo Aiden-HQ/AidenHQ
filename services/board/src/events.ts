@@ -10,9 +10,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  * chat: a chat changed (a message, its state, its run, or the work handed out from it; `issue` is the chat's id); tasks: a
  * task changed or its run started or ended (`issue` is its id); progress: a run on that task (or one handed out from that
  * chat) said more, for its live words; grades: a grade changed state; fleet: a Fleet Ops tick; connections: a sign-in finished;
- * setup: a setup flow's state changed (a secret saved, a mode chosen, a flow dismissed, a pairing completed or revoked).
+ * setup: a setup flow's state changed (a secret saved, a mode chosen, a flow dismissed, a pairing completed or revoked); home:
+ * what Home shows changed (a card, a task or a chat, which each also send it; the account looked or snoozed a row).
  */
-export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks" | "connections" | "setup";
+export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks" | "connections" | "setup" | "home";
+/** The changes Home shows: each one also tells Home. */
+const HOME_FROM: EventName[] = ["approvals", "tasks", "chat"];
 
 const HEARTBEAT_MS = 25_000;
 
@@ -30,6 +33,7 @@ export class Events {
     if (!this.streams.size) return;
     const frame = `event: ${name}\ndata: ${JSON.stringify(issue ? { issue } : {})}\n\n`;
     for (const res of this.streams) res.write(frame);
+    if (HOME_FROM.includes(name)) this.emit("home");
   }
 
   /** Shutdown: end every open stream, so the listeners can close (the browsers reconnect to the next board). */

@@ -46,6 +46,8 @@ const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // agents' own. A closed allowlist of manifest keys (no roles, services, connections, apps or privileged), the fields one of
 // their agents may set (identity included: a local AGENTS.md has no frontmatter), and the fields one of their routines may set.
 export const LOCAL_MODULE_KEYS = ["name", "description", "agents", "routines"];
+/** Team's own pages under #/team/ (the board's parseRoute): no teammate takes one of these keys. */
+const TEAM_PAGES = new Set(["hire", "agents", "modules", "m"]);
 const LOCAL_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "max_parallel", "image", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile", "teammate"];
 // A local agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
@@ -700,6 +702,26 @@ export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}, dec
 }
 
 /**
+ * board.reads (modules/board/schemas/reads.json): a read the board makes for the owner's own view, by id. The tool is a read
+ * tool of one of the module's own connections (never write or destructive, never one a write kind routes). It goes onto
+ * that connection's `views` as `read:<id>`, so the kernel's view route passes it as an owner call (kernel/src/views.ts).
+ */
+export function moduleReads(reads: Obj[], connections: Obj, kinds: Obj = {}) {
+  const ids = new Set<string>();
+  for (const r of reads) {
+    const where = `module ${r.module}: board.reads ${r.id}`;
+    const c = Object.hasOwn(connections, r.connection) ? connections[r.connection] : undefined;
+    if (c?.module !== r.module) fail(`${where}: connection ${r.connection} isn't one of its own`);
+    if (ids.has(r.id)) fail(`${where}: another module already declares the read ${r.id}`);
+    ids.add(r.id);
+    if (!c.tools.read.includes(r.tool) || c.tools.write.includes(r.tool) || c.tools.destructive.includes(r.tool)) fail(`${where}: ${r.tool} isn't a read tool of ${r.connection}`);
+    const kind = Object.keys(kinds).find((k) => kinds[k].tools?.includes(`${r.connection}.${r.tool}`));
+    if (kind) fail(`${where}: ${r.tool} is write kind ${kind}'s, which the board can't read`);
+    c.views = { ...c.views, [`read:${r.id}`]: [r.tool] };
+  }
+}
+
+/**
  * The board calls a flow's pair_url, so it shares a network with that service: the same one a board link makes
  * (aidenhq-mod-<module>-board, internal), and `board` joins the service's aidenhq.links label (scripts/verify-security.sh).
  * The host must be one of the declaring module's own services (its compose name or alias).
@@ -1251,6 +1273,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // chat's @name and the task tools address agents by either.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     if (!a.teammate) continue;
+    // A teammate's page is #/team/<key>; these keys are Team's own pages (services/board/web/src/App.tsx parseRoute).
+    if (TEAM_PAGES.has(key)) fail(`agent ${key}: a teammate can't have the key ${key}: #/team/${key} is a Team page; give the agent another key`);
     // A default name a hidden agent (a local one, a team member) already has: the teammate goes by its key until renamed.
     // Two teammates' names are the owner's to settle, so that collision fails below.
     const hidden = Object.fromEntries(Object.entries<{ name: string; teammate?: unknown }>(paperclip.agents).filter(([k, o]) => !o.teammate || k === key));
@@ -1339,6 +1363,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // A page may propose a setting its module, or a module it requires, declares.
   const declaresSetting = (module: string, key: string) => [module, ...(all.get(module)?.def.requires ?? [])].some((m) => Object.hasOwn(all.get(String(m))?.def.settings ?? {}, key));
   modulePages(points.board?.pages ?? [], connections, writes, declaresSetting);
+  moduleReads(points.board?.reads ?? [], connections, writes);
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. An Engineer gets

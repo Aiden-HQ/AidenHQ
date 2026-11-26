@@ -15,6 +15,13 @@ export const FRAME_TYPE = "text/html; charset=utf-8";
 /** The frame's own policy (it replaces the board's): inline script and style only, nothing loaded, nothing sent. */
 export const FRAME_CSP = "sandbox allow-scripts allow-forms; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 
+/** One compiled board read (modules/board/schemas/reads.json): a read tool the board calls for the owner's own view, by id. */
+export interface ReadPoint { id: string; module: string; connection: string; tool: string }
+
+export function readPoints(file: string): ReadPoint[] {
+  return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).reads ?? []) : [];
+}
+
 export function pagePoints(file: string): PagePoint[] {
   return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).pages ?? []) : [];
 }
@@ -31,9 +38,9 @@ export class ViewError extends Error {
 }
 
 /** A view's calls through the kernel. Without the kernel's key, every page says the view is unavailable. */
-export function createViewHost({ kernel, pages, fetchFn = fetch }: { kernel?: { url: string; token: string }; pages: () => PagePoint[]; fetchFn?: typeof fetch }) {
+export function createViewHost({ kernel, pages, reads = () => [], fetchFn = fetch }: { kernel?: { url: string; token: string }; pages: () => PagePoint[]; reads?: () => ReadPoint[]; fetchFn?: typeof fetch }) {
   const page = (id: string) => pages().find((p) => p.id === id) ?? (() => { throw new ViewError(404, `no page ${id}`); })();
-  async function send(p: PagePoint, method: "resources/read" | "tools/call", params: Record<string, unknown>): Promise<{ result?: any; error?: { code?: number; message?: string } }> {
+  async function send(p: { module: string; view: string }, method: "resources/read" | "tools/call", params: Record<string, unknown>): Promise<{ result?: any; error?: { code?: number; message?: string } }> {
     if (!kernel) throw new ViewError(503, "module views need the kernel");
     const res = await fetchFn(`${kernel.url.replace(/\/+$/, "")}/v1/views/${p.module}/mcp`, {
       method: "POST",
@@ -58,6 +65,21 @@ export function createViewHost({ kernel, pages, fetchFn = fetch }: { kernel?: { 
     },
     /** One tools/call of the page's view: the module's JSON-RPC answer (`result` or `error`). */
     call: (id: string, name: string, args: unknown) => send(page(id), "tools/call", { name, arguments: args ?? {} }),
+    reads,
+    /** A declared board read (board.reads) by id: the parsed JSON of its tool's first text block. A JSON-RPC error or a tool
+     * result with isError (a module's "Refused: …") is a 502, never data. */
+    async read(id: string, args: Record<string, unknown>): Promise<unknown> {
+      const r = reads().find((x) => x.id === id);
+      if (!r) throw new ViewError(404, `no read ${id}`);
+      const out = await send({ module: r.module, view: `read:${id}` }, "tools/call", { name: r.tool, arguments: args });
+      const text = (out.result?.content ?? []).find((c: { type?: string }) => c?.type === "text")?.text;
+      if (out.error || out.result?.isError) throw new ViewError(502, String(out.error?.message ?? text ?? `${r.module} refused ${r.tool}`).slice(0, 300));
+      try {
+        return JSON.parse(String(text));
+      } catch {
+        throw new ViewError(502, `${r.module} ${r.tool} answered no JSON`);
+      }
+    },
   };
 }
 export type ViewHost = ReturnType<typeof createViewHost>;

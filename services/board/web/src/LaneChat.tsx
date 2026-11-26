@@ -3,13 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Markdown } from "./markdown";
-import { Composer } from "./Workspace";
+import { Composer } from "./ChatPane";
 import { AgentFace } from "./components";
 import type { Assignee, LaneAgent, LaneMessage } from "./types";
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
-export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile: boolean; crew: Assignee[]; go: (h: string) => void }) {
+export function LaneChat({ agent, mobile, faces, go }: { agent: LaneAgent; mobile: boolean; faces: Assignee[]; go: (h: string) => void }) {
   const [messages, setMessages] = useState<LaneMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -65,12 +65,7 @@ export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile
   return (
     <section className="ws-main">
       <header className="conv-head">
-        {mobile && (
-          <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-            ‹
-          </button>
-        )}
-        <AgentFace crew={crew} agent={agent.id} name={agent.name} size={32} state={replying ? "working" : "idle"} />
+        <AgentFace crew={faces} agent={agent.id} name={agent.name} size={32} state={replying ? "working" : "idle"} />
         <span className="conv-who">
           <span className="conv-name">{agent.name}</span>
           <span className="conv-title muted small">{replying ? "working…" : "fast chat"}</span>
@@ -84,7 +79,7 @@ export function LaneChat({ agent, mobile, crew, go }: { agent: LaneAgent; mobile
             <div key={m.id} className={`msg ${m.role}`}>
               {m.role === "agent" && (
                 <div className="msg-who">
-                  <AgentFace crew={crew} agent={agent.id} name={agent.name} size={26} /> <b className="msg-name">{agent.name}</b> <span className="msg-time">{clock(m.at)}</span>
+                  <AgentFace crew={faces} agent={agent.id} name={agent.name} size={26} /> <b className="msg-name">{agent.name}</b> <span className="msg-time">{clock(m.at)}</span>
                 </div>
               )}
               <div className="bubble">

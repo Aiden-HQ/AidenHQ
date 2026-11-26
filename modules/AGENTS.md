@@ -19,12 +19,12 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
 ## Declare, and the board and the owner's Claude both drive it
 
 - **Everything the owner configures is declared in `module.yaml`:** settings (typed, with `values` and a comment that
-  explains them), `board.signins`, `board.setup_flows` and its Fleet page (below). The board draws them with its kit and theme
+  explains them), `board.signins`, `board.setup_flows` and its module page under Team (below). The board draws them with its kit and theme
   ([board-ui.md](../docs/design/board-ui.md)). The owner's MCP reads and sets the same declarations
   ([design](../docs/superpowers/specs/2026-11-20-owner-mcp-design.md)), so a module adds no owner-facing code of its own.
 - **Secrets go through a board field, never chat.** Declare each with `setup:`. The board stores it in the vault and the
   module reads it as a file.
-- **A module's Fleet page is a module view:** [board-ui.md](../docs/design/board-ui.md) "Modules".
+- **A module's page (under Team) is a module view:** [board-ui.md](../docs/design/board-ui.md) "Modules".
 - **Every setting is explained.** Put a comment above each setting in `module.yaml`; it is the help the board and the MCP
   show. Add `pattern` for a value's shape, and `when` for a setting that applies only in one mode.
 - **Every sign-in can be tested.** Its service answers `/auth/check` with ok, or what's wrong and how to fix it. The SDK
@@ -36,9 +36,9 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
 - **A new building block goes in the schema, for every module.** Add it to `modules/board/schemas/` and the board, never to
   one module ([design](../docs/superpowers/specs/2026-11-20-module-primitives-design.md)).
 
-## Features live on the module's own Fleet page
+## Features live on the module's own page
 
-- **A module's user-facing features are configured from its own Fleet page; the module-settings screen is for advanced settings only.**
+- **A module's user-facing features are configured from its own page (under Team); the module-settings screen is for advanced settings only.**
   Declare the page in `module.yaml` and ship it as a module view; the how-to is in
   [board-ui.md](../docs/design/board-ui.md) "Modules". One editor per setting: moving a feature setting to its page removes
   it from the generic screens in the same change (CLAUDE.md "One way to do each thing").

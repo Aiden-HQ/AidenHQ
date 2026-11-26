@@ -24,6 +24,10 @@ const pc = {
 } as unknown as Paperclip;
 const grantsFile = join(mkdtempSync(join(tmpdir(), "lane-")), "grants.json");
 writeFileSync(grantsFile, JSON.stringify({ agents: { a1: { key: "aria", chat_task: "i-chat" }, a2: { key: "bob" } } }));
+// Aria is a teammate (compiled config): the lane lists and takes only teammates.
+writeFileSync(join(grantsFile, "../paperclip.yaml"), "agents:\n  aria: { name: Aria, teammate: { job: Assistant, sample: Ask me, staff: [], controls: [], face: null } }\n");
+process.env.BOARD_PAPERCLIP_CONFIG = join(grantsFile, "../paperclip.yaml");
+process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 function boardWith(lane: { grantsFile: string } | undefined) {
   return createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", lane, session: () => ({ accountId: "owner", role: "admin" as const }) });
