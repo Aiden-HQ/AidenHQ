@@ -9,8 +9,13 @@ import { join } from "node:path";
 export const DAY = 86_400_000;
 export const RETENTION_DAYS = 30;
 const MAX_PUT_BYTES = 8 * 1024 * 1024;
-const NAME = /^[\w-][\w.-]{0,119}\.(png|jpg|webp|json|md|diff)$/;
-const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", json: "application/json", md: "text/markdown", diff: "text/x-diff" };
+const NAME = /^[\w-][\w.-]{0,119}\.(png|jpg|webp|json|md|diff|webm)$/;
+const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", json: "application/json", md: "text/markdown", diff: "text/x-diff", webm: "video/webm" };
+/** An issue marker: an app's one design issue, or one verified bug of it (the engine's issue.ts builds them). */
+export const MARKER = /^aidenhq-ui:(design:([a-z][a-z0-9-]{1,30})|bug:([a-z][a-z0-9-]{1,30}):[0-9a-f]{12})$/;
+const REPO = /^[\w.-]+\/[\w.-]+$/;
+/** An issue the UI Reviewer filed or adopted for a marker in a repo: refreshed by number from then on, never searched for again. */
+export type IssueRow = { app: string; repo: string; marker: string; number: number };
 const KINDS = new Set(["review", "scan", "pass"]);
 
 type Row = { id: string; target: string; kind: string; app: string | null; task: string | null; agent: string; model: string; status: string; started: string; ended: string | null; cost_usd: number | null; report: string | null; depth: string | null; mode: string | null; source: string | null; trigger: string | null; why: string | null; stopping: string | null; slot: number | null };
@@ -44,6 +49,10 @@ export interface Store {
   runs(q: { app?: string; limit?: number }): { runs: Omit<Row, "report">[] };
   run(run: string): { run: Omit<Row, "report">; report: unknown; files: string[] };
   image(run: string, name: string): { data: string; type: string };
+  /** Remembers the issue number of a marker in a repo (repo names compare without case). */
+  noteIssue(i: IssueRow): IssueRow;
+  /** The app's known issues, of one repo when given. */
+  issues(app: string, repo?: string): IssueRow[];
   sweep(): number;
 }
 
@@ -62,6 +71,8 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
       SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY app ORDER BY started DESC, id DESC) AS n FROM runs WHERE kind = 'pass' AND status = 'running') WHERE n = 1);
     UPDATE runs SET slot = 1 WHERE kind = 'pass' AND status = 'running';`);
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS runs_active ON runs(app) WHERE kind = 'pass' AND slot = 1");
+  // data_version 3: the issues each app's passes filed, by marker and repo (lowercase owner/name).
+  db.exec("CREATE TABLE IF NOT EXISTS issues (app TEXT NOT NULL, repo TEXT NOT NULL, marker TEXT NOT NULL, number INTEGER NOT NULL, PRIMARY KEY (app, repo, marker))");
   const evidence = (run: string) => join(dir, "evidence", run);
   const get = (run: string): Row => {
     if (!/^[\w-]{1,40}$/.test(run)) throw new Error(`no run ${run}`);
@@ -129,7 +140,7 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
       if (own(run, agent).status !== "running") throw new Error(`run ${run} is finished`);
       if (!Array.isArray(files) || !files.length) throw new Error("files is a list of { name, data }");
       const decoded = files.map((f) => {
-        if (typeof f?.name !== "string" || !NAME.test(f.name)) throw new Error(`file name ${String(f?.name).slice(0, 60)} isn't allowed (letters, digits, . _ -, ending .png .webp .json .md or .diff)`);
+        if (typeof f?.name !== "string" || !NAME.test(f.name)) throw new Error(`file name ${String(f?.name).slice(0, 60)} isn't allowed (letters, digits, . _ -, ending .png .jpg .webp .json .md .diff or .webm)`);
         if (typeof f.data !== "string") throw new Error(`${f.name} has no data`);
         return { name: f.name, bytes: Buffer.from(f.data, "base64") };
       });
@@ -164,6 +175,20 @@ export function openStore(dir: string, now: () => number = Date.now): Store {
       let data: Buffer;
       try { data = readFileSync(join(evidence(run), name)); } catch { throw new Error(`run ${run} has no ${name}`); }
       return { data: data.toString("base64"), type: TYPES[name.slice(name.lastIndexOf(".") + 1)]! };
+    },
+    noteIssue({ app, repo, marker, number }) {
+      const m = MARKER.exec(String(marker));
+      if (!m || (m[2] ?? m[3]) !== app) throw new Error(`marker is aidenhq-ui:design:${String(app).slice(0, 40)} or aidenhq-ui:bug:${String(app).slice(0, 40)}:<12 hex>, as ui-review issue-body prints it`);
+      if (!REPO.test(String(repo))) throw new Error("repo is owner/name");
+      if (!Number.isInteger(number) || number < 1) throw new Error("number is the issue's number");
+      const r = { app, repo: repo.toLowerCase(), marker, number };
+      db.prepare("INSERT INTO issues (app, repo, marker, number) VALUES (?,?,?,?) ON CONFLICT (app, repo, marker) DO UPDATE SET number = excluded.number").run(r.app, r.repo, r.marker, r.number);
+      return r;
+    },
+    issues(app, repo) {
+      return ((repo === undefined
+        ? db.prepare("SELECT app, repo, marker, number FROM issues WHERE app = ? ORDER BY marker").all(app)
+        : db.prepare("SELECT app, repo, marker, number FROM issues WHERE app = ? AND repo = ? ORDER BY marker").all(app, repo.toLowerCase())) as IssueRow[]).map((r) => ({ ...r }));
     },
     // Older than 30 days goes, except each app's (or, with no app, each target's) latest finished run.
     sweep() {

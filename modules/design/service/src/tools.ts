@@ -1,6 +1,6 @@
 // The design connection's tools. Reads: design_runs, design_run, design_image, design_apps, and design_evidence_put and
 // design_run_finish (they write only into this module's own store). Writes: design_run_start, design_pass_start (files a task),
-// design_pass_stop (closes one).
+// design_pass_stop (closes one), design_issue_note (remembers the GitHub issue a pass filed for a marker).
 // A run belongs to the agent that started it, or a pass to the agent its task went to (the caller's signed assertion), and only
 // that agent writes to it.
 import type { Tool } from "./mcp.ts";
@@ -16,7 +16,7 @@ export function designTools(store: Store, p: { passes: Passes; apps: () => App[]
     { name: "design_run_start", description: "Start a design run of a target (a URL or repo@commit) for the calling task and agent; returns its run id. Put its evidence with design_evidence_put, then finish it.",
       inputSchema: obj({ target: str, kind: { type: "string", enum: ["review"] }, model: str, app: str }, ["target", "kind", "model"]),
       run: async (a, c) => store.start({ target: s(a.target), kind: s(a.kind), model: s(a.model), app: a.app === undefined ? undefined : s(a.app), task: c.task, agent: c.agent }) },
-    { name: "design_evidence_put", description: "Store files for your run: { name, data (base64) }, at most 8 MB per call; names are letters, digits, . _ - ending .png .jpg .webp .json .md or .diff.",
+    { name: "design_evidence_put", description: "Store files for your run: { name, data (base64) }, at most 8 MB per call; names are letters, digits, . _ - ending .png .jpg .webp .json .md .diff or .webm (a recording goes in a call of its own). In a box, `ui-review put` sends files for you.",
       inputSchema: obj({ run: str, files: { type: "array", items: obj({ name: str, data: str }, ["name", "data"]) } }, ["run", "files"]),
       run: async (a, c) => store.put(s(a.run), c.agent, a.files as { name: string; data: string }[]) },
     { name: "design_run_finish", description: "Finish your run with its report (the ui-review report.json object); returns the run's board url.",
@@ -25,7 +25,11 @@ export function designTools(store: Store, p: { passes: Passes; apps: () => App[]
     { name: "design_runs", description: "Recent design runs, newest first, optionally of one app.",
       inputSchema: obj({ app: str, limit: { type: "integer" } }),
       run: async (a) => store.runs({ app: a.app === undefined ? undefined : s(a.app), limit: a.limit === undefined ? undefined : Number(a.limit) }) },
-    { name: "design_run", description: "One run: its row, its report and the names of its evidence files.", inputSchema: obj({ run: str }, ["run"]), run: async (a) => store.run(s(a.run)) },
+    { name: "design_run", description: "One run: its row, its report, the names of its evidence files and its app's known GitHub issues (marker, repo, number).", inputSchema: obj({ run: str }, ["run"]),
+      run: async (a) => { const r = store.run(s(a.run)); return { ...r, issues: r.run.app ? store.issues(r.run.app) : [] }; } },
+    { name: "design_issue_note", description: "Remember the GitHub issue you filed or adopted for a marker (ui-review issue-body prints each marker, without its <!-- -->): later passes update that number and never search for it again. Call it at once after the issue is created or found.",
+      inputSchema: obj({ app: str, marker: str, repo: str, number: { type: "integer" } }, ["app", "marker", "repo", "number"]),
+      run: async (a) => store.noteIssue({ app: s(a.app), marker: s(a.marker), repo: s(a.repo), number: Number(a.number) }) },
     { name: "design_apps", description: "The apps set up for UI testing (settings.ui_testing): name, url, repo, whether it is an AidenHQ app, its live-app mode (the most a pass may do; AidenHQ apps are read-only) and whether a supplied login is set.",
       inputSchema: obj({}),
       run: async () => { const logins = p.logins(); return { apps: p.apps().map((a) => ({ name: a.name, url: a.url, ...(a.repo ? { repo: a.repo } : {}), aidenhq_app: a.aidenhq_app, live_mode: ceiling(a), login: Boolean(logins[a.name]) })) }; } },

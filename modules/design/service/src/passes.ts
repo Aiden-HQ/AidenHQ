@@ -131,8 +131,13 @@ export interface PassDeps {
   apps: () => App[];
   logins: () => Record<string, Login>;
   kernel: PassKernel;
+  /** The board's address (BOARD_LAN_URL): issue bodies link to its UI testing page for a run's images. */
+  boardUrl?: string;
   now?: () => number;
 }
+
+/** The UI testing page on the board, where a run's images, fixes and recordings are found by its id. */
+export const pageUrl = (board: string | undefined) => `${(board || "http://localhost:3121").replace(/\/+$/, "")}/#/team/m/ui-testing`;
 
 export type PassStart = { run: string; task: string } | { refused: "already running"; run: string } | { refused: "cap reached today" | "unknown app" | string };
 
@@ -197,6 +202,10 @@ export function createPasses(d: PassDeps) {
       : a.aidenhq_app ? `Sign in with \`ui-review login aidenhq --app ${a.name} --out state.json\` (a read-only test-user session) and review the address it prints, not the public url.`
       : `Sign in with \`ui-review login\` (the login ladder in the skill${d.logins()[a.name] ? ": a supplied login is set, `ui-review login supplied --app " + a.name + "`" : ""}).`;
     const models = MODEL_ROLES.filter((m) => a.models[m]).map((m) => `${m} ${a.models[m]}`);
+    // The issues earlier passes filed in this repo, by marker: each is updated by its number, never searched for again.
+    const known = a.repo ? d.store.issues(a.name, a.repo) : [];
+    const issues = !a.repo ? "Issues: none (no repo): the run's page on the board is the report."
+      : `Issues in ${a.repo}: ${known.length ? known.map((i) => `${i.marker} → ${i.repo}#${i.number}`).join("; ") : "none filed yet"}.`;
     const description = [
       `A ${depth} UI review pass of the app ${a.name} (${r.trigger}), design run ${run}.`,
       `Target: ${a.url}${a.repo ? ` (repo ${a.repo}: its default branch only, never a PR head)` : ""}.`,
@@ -205,7 +214,9 @@ export function createPasses(d: PassDeps) {
       `Recording: ${a.recording && clicking ? "on (the clicking passes' flows)" : "off"}.`,
       prior && prior.left > 0 ? `Coverage: resume from ${prior.run} (its queue.json has ${prior.left} captures left).` : "Coverage: a new cycle from the first page.",
       signIn,
-      `Follow the design.ui-review skill; put the evidence on run ${run} and finish it with design_run_finish.`,
+      issues,
+      `Run link (issue bodies, --run-url): ${pageUrl(d.boardUrl)} (run ${run}).`,
+      `Follow the design.ui-review skill ("A UI testing pass"); put the evidence on run ${run} and finish it with design_run_finish.`,
     ].join("\n");
     try {
       const t = await d.kernel.fileTask({ title: `UI review pass: ${a.name} (${depth})`, description, role: "ui-login", source });
