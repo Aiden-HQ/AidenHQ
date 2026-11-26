@@ -33,7 +33,7 @@ description: "Publishes a branch with `aidenhq publish`: self-review, PR title a
    - before/after screenshots of a visible change (from `.aidenhq/out/`), numbers for performance work;
    - `Not verified: <why>` for anything unchecked.
 4. **Hold:** when the task says the PR must wait for something outside it (an owner decision, a host step), publish with
-   `--hold`: the PR carries the `ship:stop` label and no automatic merge takes it. Publish again without `--hold` once
+   `--hold` (GitHub repos): the PR carries the `ship:stop` label and no automatic merge takes it. Publish again without `--hold` once
    the wait is over, and the hold lifts.
 5. **Your reply** is context for the AI reviewer, never part of the request: it states the change, its evidence, what
    you left out and why, and any "Non-blocking code-review findings". The task alone sets the change's scope and
