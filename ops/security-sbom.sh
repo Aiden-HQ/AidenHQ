@@ -541,6 +541,31 @@ run_watched() { # <secs> <cmd...>
   wait "$pid"; rc=$?
   return "$rc"
 }
+# Fold one replica's extracted tree into the unit's merged root. A path the root does not hold is linked in at the
+# container's own path; a path it holds with different content is linked under `<root>/.replicas/<cid>/<path>`, so one
+# scan reads both replicas' files instead of one overwriting the other. A file identical on both sides is linked once.
+# Returns 1 with export_err if the merge cannot be made.
+merge_replica_root() { # <replica root> <merged root> <container id>
+  local repodir="$1" rootfs="$2" cid="$3" f rel dst
+  export_err=""
+  # `cp -al` links a directory tree with hard links where it creates files; without --no-clobber it would replace an
+  # existing file, which is exactly the loss this avoids, so every file is placed one at a time.
+  if ! ( cd "$repodir" && find . -type f -print0 ) > "$exportdir/merge-$cid.list" 2>/dev/null; then
+    export_err="could not list the extracted root"; return 1
+  fi
+  while IFS= read -r -d '' f; do
+    rel="${f#./}"; src="$repodir/$rel"; dst="$rootfs/$rel"
+    if [ -e "$dst" ] && ! cmp -s "$src" "$dst"; then
+      dst="$rootfs/.replicas/$cid/$rel"
+    fi
+    [ -e "$dst" ] && continue
+    mkdir -p "$(dirname "$dst")" 2>/dev/null || { export_err="could not create $(dirname "$dst")"; return 1; }
+    ln "$src" "$dst" 2>/dev/null || cp -a "$src" "$dst" 2>/dev/null || { export_err="could not place $rel"; return 1; }
+  done < "$exportdir/merge-$cid.list"
+  rm -f "$exportdir/merge-$cid.list"
+  # Directories no file lives in (an empty mount point) are not package evidence and are not needed by the scan.
+  return 0
+}
 # Extract a container's exported tar into <dir> (mode 700, beside the tar). Returns 1 with export_err when the tar is
 # unreadable, the tree does not fit above the floor, or the snapshot deadline is reached.
 extract_container_root() { # <tar> <dir>
@@ -919,7 +944,7 @@ declare -A defer_seen=()
 # line, never a gap.
 save_wave() { # <wave>
   local w="$1" idx sz szb key pin ref plat archive root top top_gb avail_now why cap_bytes written=0 written_big=0
-  local unitdir tarsdir cont_err cont_space cont_bytes cont_tars cid ctarchive ctbytes
+  local unitdir tarsdir rootfs replicasdir repodir cont_err cont_space cont_bytes cont_tars cid ctarchive ctbytes
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   while IFS=$'\t' read -r szb idx; do
     [ -n "$idx" ] || continue
@@ -967,13 +992,14 @@ save_wave() { # <wave>
       # exported or extracted leaves the unit a line with its daemon error rather than a gap, and no half-built tree is
       # ever scanned.
       unitdir="$exportdir/unit-$archive_seq"; tarsdir="$unitdir.tars"; rootfs="$unitdir"
+      replicasdir="$exportdir/unit-$archive_seq.replicas"
       cont_err=""; cont_space=0; cont_bytes=0; cont_tars=0
-      # Each tar goes beside the root in `<unit>.tars`, so the scan never reads an export's bytes a second time as a file
-      # in the tree.
-      if ! mkdir -p -m 700 "$rootfs" "$tarsdir" 2>/dev/null; then
+      # Each tar goes beside the root in `<unit>.tars`, and each replica's own tree in `<unit>.replicas`, so the scan never
+      # reads an export's bytes a second time and never sees a replica's tree outside the merged root.
+      if ! mkdir -p -m 700 "$rootfs" "$tarsdir" "$replicasdir" 2>/dev/null; then
         cont_err="could not create the private export directory $rootfs"
       else
-        chmod 700 "$rootfs" "$tarsdir" 2>/dev/null || true
+        chmod 700 "$rootfs" "$tarsdir" "$replicasdir" 2>/dev/null || true
         for cid in ${p_cid[$idx]}; do
           ctarchive="$tarsdir/export-$cid.tar"
           cap_bytes=$(( $(free_bytes) - floor_bytes )); [ "$cap_bytes" -lt 0 ] && cap_bytes=0
@@ -996,19 +1022,30 @@ save_wave() { # <wave>
           cont_tars=$(( cont_tars + ctbytes ))
           # Extracted here, under the same apply-lock hold: the tree is a second write of the container's filesystem and
           # must not outlive the lock or the snapshot budget. The scan reads only the extracted root, after the lock is
-          # released like every other scan. A replica's files overlay the first one's, exactly as a second container of the
-          # same image would; identical image content makes that harmless, and a file only one replica has is kept.
+          # released like every other scan. Each replica is extracted on its own first: two containers of one image can
+          # each have modified the same path in their writable layer, and extracting one straight over the other would
+          # lose whichever file came first, so the scan would miss that replica's packages while the row claimed both.
+          repodir="$replicasdir/$cid"
           export_space=0
-          if ! extract_container_root "$ctarchive" "$rootfs"; then
+          if ! extract_container_root "$ctarchive" "$repodir"; then
             cont_err="container $cid: ${export_err:-failed to extract the container root}"
             [ "$export_space" = 1 ] && cont_space=1
             break
           fi
-          # Every tar written so far plus the whole extracted root are resident until the scan ends, so both are charged:
-          # counting only the root would let a later unit's extraction take room an earlier tar already holds, and the
-          # second extraction would then hit the floor and be a line on every pass though each unit fits alone. The root
-          # is measured once at the end (below), because each replica's extraction overlays the same tree.
-          cont_bytes=$(( cont_tars + $(du -sb "$rootfs" 2>/dev/null | awk '{ print $1 }' || echo 0) ))
+          # Merged into the one real root: a path the merged root does not hold yet is added there (so /etc, /usr and the
+          # package files sit at the container's own paths for the first replica), and a path it already holds with other
+          # content is kept under `<root>/.replicas/<id>/<path>` instead of being dropped, so the one scan still reads both
+          # replicas' versions. Hard links keep the second copy from doubling the bytes.
+          if ! merge_replica_root "$repodir" "$rootfs" "$cid"; then
+            cont_err="container $cid: could not merge its root into the unit root (${export_err:-failed})"
+            break
+          fi
+          discard_tree "$repodir"
+          # Every tar written so far plus the merged root and whatever replica tree is still resident are charged: counting
+          # only the root would let a later unit's extraction take room an earlier tar already holds, and the second
+          # extraction would then hit the floor and be a line on every pass though each unit fits alone. The replica tree is
+          # removed as soon as it is merged, so at most one is charged beside the root.
+          cont_bytes=$(( cont_tars + $(du -sb "$rootfs" 2>/dev/null | awk '{ print $1 }' || echo 0) + $(du -sb "$replicasdir" 2>/dev/null | awk '{ print $1 }' || echo 0) ))
         done
       fi
       if [ -z "$cont_err" ]; then
@@ -1019,12 +1056,12 @@ save_wave() { # <wave>
         # accumulated above). Charging only one would let a later save in this wave use room the other already holds.
         written=$(( written + cont_bytes )); [ "$cont_bytes" -gt "$written_big" ] && written_big="$cont_bytes"
       elif [ "$cont_space" = 1 ]; then
-        discard_tree "$unitdir" "$tarsdir"
+        discard_tree "$unitdir" "$tarsdir" "$replicasdir"
         why="skipped: the ${sz} GB container root filesystem does not fit: $cont_err"
         if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then continue; fi
         fail "image:$key" "$why"
       else
-        discard_tree "$unitdir" "$tarsdir"
+        discard_tree "$unitdir" "$tarsdir" "$replicasdir"
         fail "image:$key" "docker export: $cont_err"
       fi
       continue
@@ -1081,9 +1118,11 @@ save_wave() { # <wave>
 # A planned source is an image archive or a container's extracted root: either is removed when its scan ends or it is
 # dropped, so neither outlives the pass.
 discard_plan_source() { # <archive file, extracted unit directory, or its tar directory>
-  # A container unit's exported tars sit in `<unit>.tars` beside the extracted roots: the scan root must hold the roots
-  # only, and both copies go together when the scan ends (or the unit is dropped), never at the end of the pass.
+  # A container unit's exported tars sit in `<unit>.tars` and each replica's own tree in `<unit>.replicas` beside the merged
+  # root: the scan root must hold the merged root only, and all three go together when the scan ends (or the unit is
+  # dropped), never at the end of the pass.
   [ -e "$1.tars" ] && discard_tree "$1.tars"
+  [ -e "$1.replicas" ] && discard_tree "$1.replicas"
   if [ -d "$1" ]; then discard_tree "$1"; else rm -f "$1"; fi
 }
 scan_wave() { # <first plan index>

@@ -155,9 +155,15 @@ if [ "$1" = run ]; then
       printf 'exportdir %s\n' "$(stat -c %a "$(dirname "$d")")" >> "$MODES"
       for r in "$d.tars"/*.tar; do [ -f "$r" ] && printf 'tar %s %s\n' "\${r#\${sb%/*}/}" "$(stat -c %a "$r")" >> "$MODES"; done
       for f in "$d"/etc/os-release "$d"/usr/lib/libfix.so "$d"/opt/app/dev/node_modules/pkg.json; do
-        [ -e "$f" ] || continue
-        printf 'file %s\n' "\${f#\${sb%/*}/}" >> "$MODES"
+        [ -e "$f" ] && printf 'file %s\n' "\${f#\${sb%/*}/}" >> "$MODES"
       done
+      # Every version of the replica paths a test plants, wherever the merge put them: the root's own path and the
+      # .replicas/<id>/ copies a conflicting path is kept under.
+      cd "$d"
+      for f in usr/lib/libdup.so usr/lib/replica-only.so .replicas/c1/usr/lib/libdup.so .replicas/c2/usr/lib/libdup.so; do
+        [ -f "$f" ] && printf 'content %s %s\n' "$f" "$(tr -d '\n' < "$f")" >> "$MODES"
+      done
+      cd - >/dev/null
       # A file the export dropped must not be in the scanned root: record those the test asks about.
       for f in "$d"/dev/null "$d"/opt/app/dev/node_modules/pkg.json; do [ -e "$f" ] && printf 'present %s\n' "\${f#\${sb%/*}/}" >> "$MODES"; done
       ;;
@@ -393,6 +399,18 @@ case "$1" in
     # nested dev inside a deployed app's dependency tree, which must survive the exclusion.
     printf '' > "$d/dev/null"
     printf '{}' > "$d/opt/app/dev/node_modules/pkg.json"
+    # EXPORT_EXTRAS "id:path=content;id:path=content": files a container has in its writable layer, so two replicas of one
+    # image can differ on one path (or one can hold a file the other lacks).
+    if [ -n "\${EXPORT_EXTRAS:-}" ]; then
+      oldifs="$IFS"; IFS=';'
+      for e in $EXPORT_EXTRAS; do
+        IFS="$oldifs"
+        [ "\${e%%:*}" = "$cid" ] || continue
+        epath="\${e#*:}"; econtent="\${epath#*=}"; epath="\${epath%%=*}"
+        mkdir -p "$d/$(dirname "$epath")"; printf '%s' "$econtent" > "$d/$epath"
+      done
+      IFS="$oldifs"
+    fi
     # EXPORT_DIR_MODE <mode>: a directory the container left read-only (a Go module cache), as tar would restore it.
     [ -n "\${EXPORT_DIR_MODE:-}" ] && { mkdir -p "$d/root/.cache/go-mod" && printf 'bin' > "$d/root/.cache/go-mod/mod.zip" && chmod "$EXPORT_DIR_MODE" "$d/root/.cache/go-mod"; }
     ( cd "$d" && tar -cf "$file" $(find . -type f | sed 's|^\./||') )
@@ -624,6 +642,31 @@ test("security-sbom: two containers on one gone image are both exported and scan
   // paths, so syft finds `/etc/os-release` where it looks for it.
   assert.equal(modes.filter((m) => m.startsWith("tree ")).length, 1, modes.join("\n"));
   assert.ok(modes.some((m) => m.startsWith("file ") && m.endsWith("/etc/os-release")), modes.join("\n"));
+});
+
+test("security-sbom: two replicas that differ on one file both keep their content in the scanned root", { skip: NOT_LINUX }, async () => {
+  // Two containers of one gone image can each have changed the same path in their writable layer. Extracting one straight
+  // over the other would keep only the second's file and the single scan would miss the first replica's packages while the
+  // row claimed both. Each replica is extracted on its own and merged without clobbering, so both files survive: the path
+  // held by the first, and a path only the second has.
+  const { status, out, targets, modes } = await run({ EXPORT_EXTRAS: "c1:usr/lib/libdup.so=one;c2:usr/lib/libdup.so=two;c2:usr/lib/replica-only.so=only" }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+    computers: { images: { image: "aidenhq/board:local" } },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(row, `no row:\n${targets.map((t) => t.join("\t")).join("\n")}\n${out}`);
+  assert.equal(row[2], "", `the unit errored: ${row[2]}`);
+  const contents = modes.filter((m) => m.startsWith("content ")).map((m) => m.slice(8));
+  assert.ok(contents.some((c) => c.endsWith(" one")), `c1's version of the shared path was lost: ${modes.join("\n")}`);
+  assert.ok(contents.some((c) => c.endsWith(" two")), `c2's version of the shared path was lost: ${modes.join("\n")}`);
+  assert.ok(contents.some((c) => c.endsWith(" only")), `c2's own file was dropped: ${modes.join("\n")}`);
 });
 
 test("security-sbom: a nested dev directory is kept; only the container root's device nodes are left out", { skip: NOT_LINUX }, async () => {
