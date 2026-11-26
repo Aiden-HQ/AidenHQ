@@ -1107,6 +1107,26 @@ test("a direct merge request that outlives the poll window is read to its end on
   assert.match(reports[0].text, /Merge conflict/);
 });
 
+test("a 409 refusal of a direct merge ends the record in GitHub's words, never an endless wait", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const reports = [];
+  let puts = 0;
+  const gh = async (m, p, b) => {
+    if (m === "PUT" && String(p).endsWith("/merge-async")) { puts++; return { status: 409, body: { message: "Pull request is not mergeable: required status check is failing" } }; }
+    return github.gh(m, p, b);
+  };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-409-")), gh, fleetOrg: "acme-agents", asyncPollMs: 0,
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000ce", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  for (let i = 0; i < 6 && !reports.length; i++) { await merges.step(); await new Promise((r) => setTimeout(r, 20)); }
+  assert.equal(reports[0]?.ok, false, JSON.stringify(reports));
+  assert.match(reports[0].text, /GitHub refused the merge: .*required status check/);
+  assert.ok(puts <= 2, `bounded: ${puts} PUTs`);
+});
+
 test("an unanswered PUT whose merge lands is still credited when the retry is refused while GitHub's read lags", async () => {
   // The first PUT merges on GitHub's side and never answers. The next poll still reads the PR open (a lag), so the queue sends a
   // retry; GitHub refuses it because the PR is in fact merged, and its re-read now shows the merge. The merge commit carries the

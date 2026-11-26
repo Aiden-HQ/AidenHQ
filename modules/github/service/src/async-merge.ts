@@ -42,7 +42,7 @@ export const requestKey = (repo: string, number: number, head: string) => `${rep
 /**
  * A direct merge: the merge commit's sha once GitHub reports `merged`. The accepted request's id is kept until it is terminal, and
  * a request kept from an earlier pass (by the same record) is read to its end before any new PUT is made. A request still pending after `polls` reads,
- * a 200 (GitHub's answer for a PR already merged or queued: never proof of this call's merge), a 409 and a failed read throw with
+ * a 200 (GitHub's answer for a PR already merged or queued: never proof of this call's merge), a 409 naming a pending request and a failed read throw with
  * no status, so the caller reads the PR itself and credits only a commit this call made. `failed` throws a 409: GitHub's refusal.
  */
 export async function mergeDirect(gh: Gh, repo: string, number: number, body: { sha: string; merge_method: string; commit_message?: string }, polls: number, pollMs: number, store: ReturnType<typeof requestStore>, record: string): Promise<string> {
@@ -65,6 +65,8 @@ export async function mergeDirect(gh: Gh, repo: string, number: number, body: { 
   const known = store.get(key);
   if (known) return settle(known);
   const r = await gh("PUT", asyncPath(repo, number), { ...body, merge_action: "direct_merge" });
+  // A 409 that names a request (a uuid) is one already pending or queued: read as unanswered. Any other 409 is GitHub's refusal, in its words.
+  if (r.status === 409 && !r.body?.details?.uuid) throw Object.assign(new Error(`HTTP 409: ${String(r.body?.message ?? r.body?.details?.message ?? "").slice(0, 300)}`), { status: 409 });
   if (r.status >= 400 && r.status !== 409) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
   if (r.status !== 202) throw unanswered(`HTTP ${r.status}`);
   const details = r.body?.details ?? {};
