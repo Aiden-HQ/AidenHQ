@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Agent computers' network: the Docker network boxes run on, and the host rule that keeps them off the LAN, the
-# tailnet and the host itself, except the launcher's gateway (model proxy + connections). Idempotent; run as root after Docker
+# tailnet and the host itself, except the launcher's gateway (model proxy + connections) and the gate's test listener (an
+# app-tester's signed-in browser; it serves nothing without a live test session, docs/design/access.md "Test-user sign-in"). Idempotent; run as root after Docker
 # starts (aidenhq-computer-net.service, installed by ops/vm/setup.sh), so it survives reboots and Docker restarts.
 #   ops/vm/computer-net.sh            apply
 #   ops/vm/computer-net.sh --remove   take the rule and the network away
-# Env: NET, BRIDGE, SUBNET, GATEWAY, GATEWAY_PORT, TABLE. The CI runners' network reuses it with its own values, its port
-# being the model gateway's CI listener (ops/units/aidenhq-ci-net.service); an empty GATEWAY_PORT opens nothing on the host.
+# Env: NET, BRIDGE, SUBNET, GATEWAY, GATEWAY_PORT, TEST_LISTENER, TABLE. The CI runners' network reuses it with its own values,
+# its port being the model gateway's CI listener (ops/units/aidenhq-ci-net.service); an empty GATEWAY_PORT opens nothing on the
+# host, and an empty TEST_LISTENER (CI's) leaves the test listener closed to the bridge.
 set -euo pipefail
 NET="${NET:-aidenhq-computers}"
 BRIDGE="${BRIDGE:-ahq-computers}"
 SUBNET="${SUBNET:-10.231.2.0/24}"
 GATEWAY="${GATEWAY:-10.231.2.1}"
 GATEWAY_PORT="${GATEWAY_PORT-8200}"
+# The gate's test listener (scripts/edge.ts TEST_LISTENER_ADDRESS:TEST_LISTENER_PORT, ops/vm/canary-net.sh's gateway).
+TEST_LISTENER="${TEST_LISTENER-10.231.6.1:3132}"
 TABLE="${TABLE:-aidenhq_computers}"
 
 if [ "${1:-}" = "--remove" ]; then
@@ -34,6 +38,7 @@ table inet $TABLE {
     type filter hook input priority filter - 1; policy accept;
     iifname "$BRIDGE" ct state established,related accept
     ${GATEWAY_PORT:+iifname "$BRIDGE" ip daddr $GATEWAY tcp dport $GATEWAY_PORT accept}
+    ${TEST_LISTENER:+iifname "$BRIDGE" ip daddr ${TEST_LISTENER%:*} tcp dport ${TEST_LISTENER##*:} accept}
     iifname "$BRIDGE" counter drop
   }
   chain forward {

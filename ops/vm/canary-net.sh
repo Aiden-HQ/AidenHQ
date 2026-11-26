@@ -5,7 +5,7 @@
 # so it survives reboots and Docker restarts.
 #   ops/vm/canary-net.sh            apply
 #   ops/vm/canary-net.sh --remove   take the rule and the network away
-# Env: NET, BRIDGE, SUBNET, GATEWAY, GATEWAY_PORT, TABLE. The listener's address and port are scripts/edge.ts's
+# Env: NET, BRIDGE, SUBNET, GATEWAY, GATEWAY_PORT, ALSO_FROM, TABLE. The listener's address and port are scripts/edge.ts's
 # TEST_LISTENER_ADDRESS and TEST_LISTENER_PORT; this script's defaults match them, and the gate (host networking) is the only
 # process that binds there. With no settings.edge.test_user nothing listens, and this network reaches nothing: the rule is
 # harmless either way (the capability is inert until the instance sets it).
@@ -15,7 +15,13 @@ BRIDGE="${BRIDGE:-ahq-canary}"
 SUBNET="${SUBNET:-10.231.6.0/24}"
 GATEWAY="${GATEWAY:-10.231.6.1}"
 GATEWAY_PORT="${GATEWAY_PORT-3132}"
+# The one other bridge that may reach the listener: the agent computers' (ops/vm/computer-net.sh), for an app-tester's box.
+ALSO_FROM="${ALSO_FROM-ahq-computers}"
 TABLE="${TABLE:-aidenhq_canary}"
+LISTENER_DROP=""
+if [ -n "$GATEWAY_PORT" ]; then
+  LISTENER_DROP="ip daddr $GATEWAY tcp dport $GATEWAY_PORT iifname != { \"$BRIDGE\"${ALSO_FROM:+, \"$ALSO_FROM\"} } counter drop"
+fi
 
 if [ "${1:-}" = "--remove" ]; then
   # The network goes first: while it exists (a canary browser still attached keeps it), its bridge stays guarded. The table is
@@ -48,9 +54,10 @@ table inet $TABLE {
     type filter hook input priority filter - 1; policy accept;
     iifname "$BRIDGE" ct state established,related accept
     ${GATEWAY_PORT:+iifname "$BRIDGE" ip daddr $GATEWAY tcp dport $GATEWAY_PORT accept}
-    # The listener is the canary bridge's alone: the address is also routable from the host and the other bridges, so a
-    # packet to it arriving on any other interface (another Docker bridge included) is dropped here, not just outside.
-    ${GATEWAY_PORT:+ip daddr $GATEWAY tcp dport $GATEWAY_PORT iifname != "$BRIDGE" counter drop}
+    # The listener is the canary bridge's and the agent computers' alone: the address is also routable from the host and the
+    # other bridges, so a packet to it arriving on any other interface (another Docker bridge included) is dropped here, not
+    # just outside. The computers' own rule (computer-net.sh) opens only this address and port from their bridge.
+    $LISTENER_DROP
     iifname "$BRIDGE" counter drop
   }
   chain forward {

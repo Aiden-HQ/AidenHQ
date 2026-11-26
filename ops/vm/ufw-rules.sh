@@ -9,6 +9,7 @@
 #   10.231.0.1:8201 tcp  the model gateway
 #   10.231.2.1:8200 tcp  the model gateway from the computers' bridge
 #   10.231.6.1:3132 tcp  the gate's test listener, from the canary browser's bridge (only when settings.edge.test_user names it)
+#   10.231.6.1:3132 tcp  the same listener from the computers' bridge (an app-tester's box; it serves no page without a session)
 # Nothing on the public interface opens: the rules match the Docker bridges and those addresses only. Idempotent: an
 # allow ufw already lists for the same interface, address and port, from Anywhere, is skipped. An explicit DENY, LIMIT or
 # REJECT for the same rule is left in place (ufw allow would replace it) and warns that sign-in may fail. An inactive or
@@ -79,6 +80,7 @@ rules=(
   "AidenHQ containers to host services|10.231.0.1|8201|br+|in on br+ to 10.231.0.1 port 8201 proto tcp"
   "AidenHQ computers to host|10.231.2.1|8200|ahq-computers|in on ahq-computers to 10.231.2.1 port 8200 proto tcp"
   "AidenHQ test-user canary to the gate's test listener|10.231.6.1|3132|ahq-canary|in on ahq-canary to 10.231.6.1 port 3132 proto tcp"
+  "AidenHQ app-tester computers to the gate's test listener|10.231.6.1|3132|ahq-computers|in on ahq-computers to 10.231.6.1 port 3132 proto tcp"
 )
 if [ "$mode" = public ]; then
   for port in 443 8446 8447; do apply "$port/tcp" "$port/tcp" "" front; done

@@ -1,4 +1,4 @@
-// The test-user page canary's listener (test-listener.ts): the one door a headless browser reaches without a person, and the
+// The test user's listener (test-listener.ts): the one door a headless browser reaches without a person, and the
 // checks that keep it to exactly one test session. Its kernel calls go to a fake sign-in listener standing in for the kernel's
 // gate-only routes; the app is a real HTTP server on loopback.
 import { test, before, after } from "node:test";
@@ -27,7 +27,8 @@ const listen = (s) => new Promise((r) => s.listen(0, "127.0.0.1", () => r(s.addr
 /** The kernel's side: one live cookie for one host, one handoff code spent once, and the notify handler's 200. */
 function fakeKernel() {
   const seen: { path: string; body: any }[] = [];
-  const state = { live: true, spent: new Set<string>() };
+  // The session's live-app mode: the canary's test-write for the tests that write, read where a test says so.
+  const state = { live: true, spent: new Set<string>(), mode: "test-write" as "read" | "test-write" | undefined };
   const s = createServer((q, r) => {
     let raw = "";
     q.on("data", (c) => (raw += c)).on("end", () => {
@@ -44,7 +45,7 @@ function fakeKernel() {
         const app = String(body.host).split(".")[0];
         if (!state.live || body.cookie !== COOKIE) return json(401, { error: "no test session" });
         // The one live cookie is roadmap's: presented under another app's host it is that app's own refusal (409 → 404).
-        return app === "roadmap" ? json(200, { email: EMAIL, app, expires: "2030-01-01T00:00:00.000Z", role: "member" }) : json(409, { error: "that session is for another app" });
+        return app === "roadmap" ? json(200, { email: EMAIL, app, expires: "2030-01-01T00:00:00.000Z", role: "member", ...(state.mode ? { mode: state.mode } : {}) }) : json(409, { error: "that session is for another app" });
       }
       if (q.url === "/.auth/api/app-feedback/new") return json(200, { ok: true });
       if (q.url === "/.auth/api/get-session") return json(200, null);
@@ -207,6 +208,8 @@ test("the handoff redeems once and sets a host-only __Host- cookie on the listen
   assert.match(set!, /; HttpOnly/);
   assert.doesNotMatch(set!, /Domain=/i); // host-only: a sibling host never gets it
   assert.ok(set!.startsWith("__Host-"));
+  // The cookie lives as long as its session, never past the 60-minute cap.
+  assert.match(set!, /; Max-Age=3600(;|$)/);
   // The same code again is spent.
   assert.equal((await hit(lPort, `roadmap.${CANARY_BASE}`, `/.auth/handoff?code=code-ok-0123456789&state=${state}`)).status, 401);
   // A bad state or a code the kernel refuses never sets a cookie.
@@ -452,5 +455,40 @@ test("a browser that leaves mid-handshake cancels the upstream upgrade, so no ap
     (l as any).closeTunnels?.();
     l.closeAllConnections?.();
     await new Promise<void>((ok) => l.close(() => ok()));
+  }
+});
+
+test("the session's live-app mode decides every request, the gate's notify and every upgrade", async () => {
+  const cookie = `${CANARY_COOKIE}=${COOKIE}`;
+  const origin = `http://roadmap.${CANARY_BASE}:${lPort}`;
+  const via = (method: string, path: string) => hit(lPort, `roadmap.${CANARY_BASE}`, path, { method, cookie, headers: { origin } });
+  const upgrade = () => new Promise<string>((ok) => {
+    const q = request({ host: "127.0.0.1", port: lPort, path: "/live", headers: { host: `roadmap.${CANARY_BASE}`, connection: "Upgrade", upgrade: "websocket", origin, cookie } });
+    q.on("upgrade", (r, sock) => { sock.destroy(); ok(`upgraded ${r.statusCode}`); });
+    q.on("response", (r) => { r.resume(); ok(String(r.statusCode)); });
+    q.on("error", (e) => ok(`error ${(e as Error).message}`));
+    q.end();
+  });
+  const before = appSeen.length, notifies = kernel.seen.filter((x) => x.path === "/.auth/api/app-feedback/new").length;
+  try {
+    // read (and a kernel that names no mode at all): GET and HEAD only; no write, no notify, no socket reaches anything.
+    for (const mode of ["read", undefined] as const) {
+      kernel.state.mode = mode;
+      assert.equal((await via("GET", "/api/items")).status, 200);
+      for (const [m, p] of [["POST", "/api/items"], ["PUT", "/api/items/1"], ["PATCH", "/api/items/1"], ["DELETE", "/api/items/1"], ["POST", "/.aidenhq/notify"]]) {
+        const r = await via(m!, p!);
+        assert.equal(r.status, 403, `${mode} ${m} ${p}`);
+        assert.match(r.body, /blocked by live-app mode/);
+      }
+      assert.equal(await upgrade(), "403");
+    }
+    assert.equal(appSeen.filter((x) => x.method !== "GET").length, appSeen.slice(0, before).filter((x) => x.method !== "GET").length, "no write reached the app");
+    assert.equal(kernel.seen.filter((x) => x.path === "/.auth/api/app-feedback/new").length, notifies, "no notify reached the kernel");
+    // test-write: the test account changes its own data, never DELETE or a destructive path (encoded or not).
+    kernel.state.mode = "test-write";
+    assert.equal((await via("POST", "/api/items")).status, 200);
+    for (const [m, p] of [["DELETE", "/api/items/1"], ["POST", "/api/items/1/publish"], ["POST", "/api/invite"], ["POST", "/api/%64elete"]]) assert.equal((await via(m!, p!)).status, 403, `${m} ${p}`);
+  } finally {
+    kernel.state.mode = "test-write";
   }
 });

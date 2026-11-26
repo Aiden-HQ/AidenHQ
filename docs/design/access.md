@@ -259,9 +259,10 @@ change. Exports are serialized, and a block, demotion, removal or disable return
 
 ## Test-user sign-in
 
-An agent can prove a page-level flow end to end — the page's own JavaScript, its same-origin `fetch("/.aidenhq/notify")`
-and the gate's real notify handler — without a person at a sign-in screen. This is the `app_page_canary` tool on the
-`apps` connection, and it exists only on instances that name a test user.
+An agent can see an AidenHQ app signed in, or prove a page-level flow end to end — the page's own JavaScript, its
+same-origin `fetch("/.aidenhq/notify")` and the gate's real notify handler — without a person at a sign-in screen. Two
+callers use it, both only on instances that name a test user: the `app_page_canary` tool on the `apps` connection (one
+feedback submission), and a module's job tool serving its own pass (the UI Reviewer's signed-in review, read-only).
 
 1. **The setting.** `settings.edge.test_user: { email, apps }` names one non-owner account (e.g. `canary@aidenhq.test`,
    non-routable) and the shared apps it may reach. Compile refuses the owner's own address, an empty or repeated app
@@ -271,19 +272,27 @@ and the gate's real notify handler — without a person at a sign-in screen. Thi
    this code ahead of the setting.
 2. **The account.** The kernel creates the email as a `test` account row on first use: no password, invite or mailbox.
    It is never the owner and never an admin.
-3. **The session.** `POST /v1/test-session` on the kernel's internal API takes `{ app }` from a module call made inside a
-   live job whose tool is `apps.app_page_canary`, and checks the agent key is `red-teamer`, the app is in
-   `test_user.apps`, and the task is open and assigned to that agent. It creates a Better Auth session for the test
-   account with a 15-minute TTL and a `test:` marker, and returns a one-time, 60-second, single-use, host- and
-   state-bound handoff code. `POST /v1/test-session/revoke` ends it; so does the task finishing, and the tool revokes in
+3. **The session.** `POST /v1/test-session` on the kernel's internal API takes `{ app, minutes? }` from a module holding
+   `kernel.test-session`, made while it serves a live job's tool call in flight, and checks the job's agent holds role
+   `app-tester` (its grants row, never a key list and never the request), the app is in `test_user.apps`, and the task is
+   open and assigned to that agent. The kernel sets the **live-app mode**: `read` for every caller, and `test-write` only
+   for `apps.app_page_canary`'s own submission. AidenHQ apps never get more: a body asking for `test-write` or `any` is
+   refused (400), whatever the app's own settings say. It creates a Better Auth session for the test account, 15 minutes
+   by default and at most 60 (the canary's is always 15), with a `test:` marker, and returns a one-time, 60-second,
+   single-use, host- and state-bound handoff code. `POST /v1/test-session/revoke` ends it; so does the task finishing, and the tool revokes in
    a `finally` whatever the browser did. `test_session_minted` and `test_session_revoked` audit rows carry the agent key,
    task id, app, session id and expiry — never a cookie, token or code value.
 4. **The listener.** The gate's test listener binds only `test_listener.address` (a bridge gateway the front door never
-   proxies and only the canary browser's network reaches), and serves nothing without a live test session: it redeems
+   proxies, reached only from the canary browser's network and the agent computers' network), and serves nothing without
+   a live test session: it redeems
    `/.auth/handoff?code=…&state=…` with the kernel once and sets a host-only `__Host-` cookie on
    `<app>.canary.localhost`. It never accepts the front-door identity header and never an anonymous request (401, no
    page). It checks the cookie with the kernel's session check, the same way password mode checks a session — no new
-   shared secret — and refuses every other host. The normal gate and the front door are unchanged.
+   shared secret — and refuses every other host. The session's mode decides each request and upgrade: `read` serves
+   `GET`/`HEAD` only (no other method, no WebSocket, no `POST /.aidenhq/notify`); `test-write` refuses `DELETE` and paths
+   matching `delete|destroy|remove|purge|archive|cancel|refund|pay|checkout|billing|invite|send|transfer|publish|deploy`.
+   A refusal is 403 `blocked by live-app mode` and never reaches the app. The cookie lives as long as its session. The
+   normal gate and the front door are unchanged.
 5. **The identity.** Each request is minted per request by the gate's own signer as the test user, `role: "member"`, for
    that one app (`idp: "test"`). Never admin, never the board. The cookie is valid only on the test listener's origin
    for the named app's host: not at the front door, not at the app's public URL (a different host), not for another app
@@ -303,8 +312,19 @@ Without it there is no `aidenhq-canary` bridge, the gate cannot bind `10.231.6.1
 browser: the canary stays unavailable (nothing opens or serves) rather than running on an unguarded network. The
 setting's own apply card says so.
 
-With the host's `ufw` active, `ops/vm/ufw-rules.sh` also opens the listener to the canary bridge only
-(`10.231.6.1:3132` from `ahq-canary`); `ops/vm/setup.sh` runs it on a new host. On an upgraded host, run it once the
+An agent computer reaches the listener too (`10.231.6.1:3132` from `ahq-computers`, and nothing else new):
+`ops/vm/computer-net.sh` opens it and `ops/vm/canary-net.sh` lets it through. An upgraded host installs both scripts
+again and re-runs them once:
+
+```sh
+sudo install -m0755 ops/vm/computer-net.sh /usr/local/sbin/aidenhq-computer-net
+sudo install -m0755 ops/vm/canary-net.sh /usr/local/sbin/aidenhq-canary-net
+sudo install -m0644 ops/units/aidenhq-ci-net.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl restart aidenhq-computer-net aidenhq-ci-net aidenhq-canary-net
+```
+
+With the host's `ufw` active, `ops/vm/ufw-rules.sh` also opens the listener to those two bridges only
+(`10.231.6.1:3132` from `ahq-canary` and `ahq-computers`); `ops/vm/setup.sh` runs it on a new host. On an upgraded host, run it once the
 same way (`sudo bash ops/vm/ufw-rules.sh tailscale`, or `public` for a public exposure), or `ufw`'s default deny keeps
 the browser from reaching the listener.
 

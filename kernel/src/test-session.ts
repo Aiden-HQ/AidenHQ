@@ -1,5 +1,7 @@
-// The test-user page canary (docs/design/access.md, Test-user sign-in): one non-owner account the kernel signs in for
-// exactly one allowlisted agent's open task, at exactly the apps the owner names in settings.edge.test_user, for 15 minutes.
+// Test-user sessions (docs/design/access.md, Test-user sign-in): one non-owner account the kernel signs in for the open task of
+// an agent holding role app-tester, at exactly the apps the owner names in settings.edge.test_user, for at most 60 minutes, in
+// one live-app mode the gate's test listener enforces on every request: `read` (GET/HEAD only) unless the caller is
+// app_page_canary's own submission (`test-write`). Nothing else is minted: a body never asks for a mode above `read`.
 //
 // It is deliberately not a second way into the gate. The session it opens is a real Better Auth session, but every other
 // surface refuses it by name (accounts.ts: sessionOf, gateSession, the gate's account map). Only the gate's test listener,
@@ -11,12 +13,21 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
-/** How long a minted session lives. */
+/** How long a minted session lives unless its caller asks for less or more (never above TEST_SESSION_MAX_MINUTES). */
 export const TEST_SESSION_TTL_MS = 15 * 60_000;
+/** The longest a session may live. */
+export const TEST_SESSION_MAX_MINUTES = 60;
 /** How long a handoff code lives: single use, bound to its host and state. */
 export const TEST_HANDOFF_TTL_MS = 60_000;
-/** The agent keys that may sign in as the test user. Never widened by a setting: the app list is the only knob. */
-export const TEST_SESSION_AGENTS = ["red-teamer"];
+/** The role an agent must hold to sign in as the test user (its grants row, frozen in its job): never a setting. */
+export const TEST_SESSION_ROLE = "app-tester";
+/**
+ * What a session may do at the test listener. `read`: GET and HEAD only, no WebSocket, no notify. `test-write`: the test
+ * account changes its own data, except DELETE and the destructive paths below. There is no `any`: an AidenHQ app's session
+ * never carries more than `test-write`, and only app_page_canary's one submission gets that (backplane.ts).
+ */
+export type TestSessionMode = "read" | "test-write";
+export const TEST_SESSION_MODES: readonly TestSessionMode[] = ["read", "test-write"];
 
 export type TestTask = { id: string; identifier?: string | null; status?: string; assigneeAgentId?: string | null };
 export type TestSessionsDeps = {
@@ -56,8 +67,10 @@ export class TestSessionError extends Error {
   }
 }
 
-export type TestSession = { id: string; app: string; host: string; expires: string };
-type Row = { id: string; agent_key: string; agent_id: string; task: string; identifier: string | null; app: string; host: string; email: string; expires: number; revoked: number };
+export type TestSession = { id: string; app: string; host: string; expires: string; mode: TestSessionMode };
+type Row = { id: string; agent_key: string; agent_id: string; task: string; identifier: string | null; app: string; host: string; email: string; expires: number; revoked: number; mode: string };
+/** A stored mode, read back: anything but `test-write` is `read` (a row from before modes, too). */
+const modeOf = (m: unknown): TestSessionMode => (m === "test-write" ? "test-write" : "read");
 
 export function createTestSessions(d: TestSessionsDeps) {
   const now = d.now ?? Date.now;
@@ -68,6 +81,8 @@ export function createTestSessions(d: TestSessionsDeps) {
     CREATE INDEX IF NOT EXISTS test_session_task ON test_session (task, revoked);
     CREATE TABLE IF NOT EXISTS test_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, event TEXT NOT NULL, agent_key TEXT NOT NULL,
       task TEXT NOT NULL, app TEXT NOT NULL, session_id TEXT NOT NULL, expires TEXT NOT NULL, reason TEXT)`);
+  // A database from before live-app modes: its rows read as `read`, the least a session may do.
+  if (!(d.db.prepare("PRAGMA table_info(test_session)").all() as { name: string }[]).some((c) => c.name === "mode")) d.db.exec("ALTER TABLE test_session ADD COLUMN mode TEXT NOT NULL DEFAULT 'read'");
 
   /** Handoff codes (memory): a single-use code bound to one session, host and state for 60 s. */
   const codes = new Map<string, { sessionId: string; host: string; state: string; until: number }>();
@@ -93,7 +108,7 @@ export function createTestSessions(d: TestSessionsDeps) {
     );
   }
 
-  const byId = (id: string) => d.db.prepare("SELECT id, agent_key, task, identifier, app, host, email, expires, revoked FROM test_session WHERE id = ?").get(id) as Row | undefined;
+  const byId = (id: string) => d.db.prepare("SELECT id, agent_key, task, identifier, app, host, email, expires, revoked, mode FROM test_session WHERE id = ?").get(id) as Row | undefined;
   const live = (r: { expires: number; revoked: number } | undefined) => Boolean(r && !r.revoked && r.expires > now());
 
   /** Ends one session here and in Better Auth; `reason` lands in the audit row. */
@@ -122,15 +137,21 @@ export function createTestSessions(d: TestSessionsDeps) {
     isTestToken: (token: string | undefined) => Boolean(token && d.db.prepare("SELECT 1 FROM test_session WHERE token_hash = ?").get(sha(String(token).split(".")[0] ?? ""))),
 
     /**
-     * Mint: an allowlisted agent's own open task, for an app the owner named → a 15-minute session and a one-time,
-     * 60-second, host-and-state-bound handoff code. Everything the request says is checked against the kernel's records.
-     * `agentKey` is the grants key (the audit's and the allowlist's); `agentId` is the control plane's agent id, which is
-     * what a task's assignee names.
+     * Mint: the open task of an agent holding role app-tester, for an app the owner named → a session of `minutes` (default
+     * 15, at most 60) in `mode` (default `read`) and a one-time, 60-second, host-and-state-bound handoff code. Everything the
+     * request says is checked against the kernel's records. `agentKey` is the grants key (the audit's); `roles` are the job's
+     * frozen roles; `agentId` is the control plane's agent id, which is what a task's assignee names. The caller (backplane.ts)
+     * decides the mode from the signed tool in flight, never from a body.
      */
-    async mint(input: { agentKey: string; agentId: string; task: string; app: string }): Promise<TestSession & { code: string; state: string; email: string }> {
+    async mint(input: { agentKey: string; agentId: string; roles: readonly string[]; task: string; app: string; mode?: TestSessionMode; minutes?: number }): Promise<TestSession & { code: string; state: string; email: string }> {
       const setting = d.testUser();
       if (!setting) throw new TestSessionError(403, "the test user is off: settings.edge.test_user names it");
-      if (!TEST_SESSION_AGENTS.includes(input.agentKey)) throw new TestSessionError(403, `${input.agentKey} may not sign in as the test user`);
+      if (!(input.roles ?? []).includes(TEST_SESSION_ROLE)) throw new TestSessionError(403, `${input.agentKey} may not sign in as the test user (role ${TEST_SESSION_ROLE})`);
+      const mode = input.mode ?? "read";
+      if (!TEST_SESSION_MODES.includes(mode)) throw new TestSessionError(400, "bad mode: an AidenHQ app's test session is read (or app_page_canary's test-write)");
+      const minutes = input.minutes ?? TEST_SESSION_TTL_MS / 60_000;
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > TEST_SESSION_MAX_MINUTES) throw new TestSessionError(400, `minutes is 1 to ${TEST_SESSION_MAX_MINUTES}`);
+      const ttl = minutes * 60_000;
       const app = String(input.app ?? "");
       if (!APP.test(app)) throw new TestSessionError(400, "bad app");
       if (!setting.apps.includes(app)) throw new TestSessionError(403, `${app} isn't in settings.edge.test_user.apps`);
@@ -145,20 +166,20 @@ export function createTestSessions(d: TestSessionsDeps) {
       if (t.assigneeAgentId !== input.agentId) throw new TestSessionError(403, "that task isn't assigned to this agent");
 
       const who = await account(setting.email);
-      const expiresAt = now() + TEST_SESSION_TTL_MS;
-      const s = await d.createSession(who.id, TEST_SESSION_TTL_MS, `aidenhq-test-session:${input.agentKey}`);
+      const expiresAt = now() + ttl;
+      const s = await d.createSession(who.id, ttl, `aidenhq-test-session:${input.agentKey}`);
       // The session names the task by its control-plane id (the sweep re-reads it by that) and keeps its identifier for the audit.
       const task = String(t.id ?? input.task), identifier = typeof t.identifier === "string" ? t.identifier : null;
-      d.db.prepare("INSERT INTO test_session (id, token_hash, agent_key, agent_id, task, identifier, app, host, email, expires, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-        s.id, sha(s.token), input.agentKey, input.agentId, task, identifier, app, host, who.email, expiresAt, now(),
+      d.db.prepare("INSERT INTO test_session (id, token_hash, agent_key, agent_id, task, identifier, app, host, email, expires, at, mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+        s.id, sha(s.token), input.agentKey, input.agentId, task, identifier, app, host, who.email, expiresAt, now(), mode,
       );
       const state = randomBytes(16).toString("hex");
       sweepCodes();
       const code = randomBytes(32).toString("base64url");
       codes.set(code, { sessionId: s.id, host, state, until: now() + TEST_HANDOFF_TTL_MS });
       audit("test_session_minted", { agent_key: input.agentKey, task, identifier, app, id: s.id, expires: expiresAt });
-      d.log.info({ agent: input.agentKey, task: identifier || task, app, session: s.id, expires: iso(expiresAt) }, "test session minted");
-      return { id: s.id, app, host, expires: iso(expiresAt), code, state, email: who.email };
+      d.log.info({ agent: input.agentKey, task: identifier || task, app, mode, session: s.id, expires: iso(expiresAt) }, "test session minted");
+      return { id: s.id, app, host, expires: iso(expiresAt), mode, code, state, email: who.email };
     },
 
     /** Redeem: spends the code once for its host and state and returns the session's cookie token (no code value logged). */
@@ -185,12 +206,12 @@ export function createTestSessions(d: TestSessionsDeps) {
      * The gate's test listener asking whether a cookie is a live test session for this app: this session's own host binding,
      * plus a closed task or a removed setting ending it here. Never an anonymous or front-door answer.
      */
-    async check(input: { cookie: string; host: string }): Promise<{ email: string; app: string; expires: string; role: "member" } | null> {
+    async check(input: { cookie: string; host: string }): Promise<{ email: string; app: string; expires: string; role: "member"; mode: TestSessionMode } | null> {
       // The cookie is the listener's own, but its signature is Better Auth's: an unsigned or altered value is no session,
       // exactly as the admin listener would read it. Only then is the token looked up in this store.
       const token = d.verifyCookie(String(input.cookie ?? ""));
       if (!token) return null;
-      const r = d.db.prepare("SELECT id, agent_key, agent_id, task, identifier, app, host, email, expires, revoked FROM test_session WHERE token_hash = ?").get(sha(token)) as Row | undefined;
+      const r = d.db.prepare("SELECT id, agent_key, agent_id, task, identifier, app, host, email, expires, revoked, mode FROM test_session WHERE token_hash = ?").get(sha(token)) as Row | undefined;
       if (!r || !live(r)) return null;
       // Better Auth's own row can be gone (a revoke, an admin action, its own expiry) while this store's row isn't: that is a
       // dead session, whatever the cookie says.
@@ -219,7 +240,7 @@ export function createTestSessions(d: TestSessionsDeps) {
       // The task read awaited: a revoke or expiry that landed meanwhile ends it here, so no request is served on a session
       // that is already gone.
       if (!live(byId(r.id))) return null;
-      return { email: r.email, app: r.app, expires: iso(r.expires), role: "member" };
+      return { email: r.email, app: r.app, expires: iso(r.expires), role: "member", mode: modeOf(r.mode) };
     },
 
     /**

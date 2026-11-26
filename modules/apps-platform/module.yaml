@@ -8,6 +8,7 @@ roles:
   declares:
     - { id: app-incidents, description: "Change any app with an open incident." }
     - { id: app-requests, description: "In-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)." }
+    - { id: app-tester, description: "Sign in as the test user (settings.edge.test_user) on its own open task, through the gate's test listener: read-only, or app_page_canary's one submission (kernel/src/test-session.ts)." }
     - { id: apps.read, description: "Read every app's status, deploy history and live view (apps-mcp /internal/status, /deploys, /view, /sources, /quality, /open-prs): a module that grades or reports on apps, with its own token." }
 # The apps connection: apps-mcp, still in the root compose until 4c moves it here.
 connections:

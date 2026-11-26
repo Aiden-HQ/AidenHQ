@@ -819,9 +819,10 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!, { tool, why: b.why })); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
       }
       if (hit && (hit.path === "/v1/test-session" || hit.path === "/v1/test-session/:op")) {
-        // The test-user page canary (test-session.ts): a module holding kernel.test-session serves a kernel job's own tool call
-        // in flight. Who the agent is comes from its job token and grants row, never from the request body; the app list and
-        // the task's assignee are re-read in test-session.ts. With no settings.edge.test_user the route refuses everything.
+        // Test-user sessions (test-session.ts): a module holding kernel.test-session serves a kernel job's own tool call in
+        // flight (app_page_canary, or a module's job tool forwarded for that job). Who the agent is, and its roles, come from
+        // its job token and grants row, never from the request body; the app list and the task's assignee are re-read in
+        // test-session.ts. With no settings.edge.test_user the route refuses everything.
         const w = await moduleOf(req);
         if (!w.roles.includes("kernel.test-session")) throw fail(403, "forbidden", `${w.module} may not reach the test session (role kernel.test-session)`);
         const sessions = testSessions?.();
@@ -829,19 +830,21 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
         const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
         if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight opens a test session");
-        const signed = String(live.caller.tool ?? "");
-        const tool = signed === "apps.app_page_canary" ? "apps.app_page_canary" : "";
-        if (!tool) throw fail(403, "forbidden", "a test session is app_page_canary's only");
+        // The mode is the kernel's: app_page_canary's one feedback submission writes (test-write); every other caller reads.
+        // AidenHQ apps never get more: a body asking for test-write or any is refused, whatever the app's own settings say.
+        const canary = String(live.caller.tool ?? "") === "apps.app_page_canary";
         const b = await json(req);
         const op = hit.path === "/v1/test-session" ? "mint" : m[0]!;
         // The allowlist and the audit use the grants key; the task's assignee is the control plane's agent id.
-        const who = { agentKey: String(job.key ?? ""), agentId: String(job.agent ?? ""), task: job.task };
+        const who = { agentKey: String(job.key ?? ""), agentId: String(job.agent ?? ""), roles: job.roles ?? [], task: job.task };
         try {
           if (op === "mint") {
             if (typeof b.app !== "string" || !/^[a-z][a-z0-9-]{1,30}$/.test(b.app)) throw fail(400, "bad_request", "send {app}");
-            const t = await sessions.mint({ agentKey: who.agentKey, agentId: who.agentId, task: who.task, app: b.app });
+            if (b.mode !== undefined && b.mode !== "read") throw fail(400, "bad_request", "an AidenHQ app's test session is read-only: send mode read or none");
+            if (b.minutes !== undefined && (canary || typeof b.minutes !== "number")) throw fail(400, "bad_request", canary ? "app_page_canary's session is 15 minutes" : "minutes is a number");
+            const t = await sessions.mint({ ...who, app: b.app, mode: canary && b.mode === undefined ? "test-write" : "read", ...(typeof b.minutes === "number" ? { minutes: b.minutes } : {}) });
             // The one place a code or cookie leaves the kernel: back to the tool call that asked, never to a browser.
-            return send(res, 200, { app: t.app, host: t.host, expires: t.expires, email: t.email, code: t.code, state: t.state, id: t.id });
+            return send(res, 200, { app: t.app, host: t.host, expires: t.expires, mode: t.mode, email: t.email, code: t.code, state: t.state, id: t.id });
           }
           if (op === "check") {
             if (typeof b.cookie !== "string" || typeof b.host !== "string") throw fail(400, "bad_request", "send {cookie, host}");
@@ -851,7 +854,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (op === "revoke") {
             const sessionId = typeof b.sessionId === "string" ? b.sessionId : undefined;
             // The calling job's task always scopes the revocation, so one task can never end another's session by id.
-            return send(res, 200, await sessions.revoke({ ...(sessionId ? { sessionId } : {}), task: who.task, reason: "canary finished" }));
+            return send(res, 200, await sessions.revoke({ ...(sessionId ? { sessionId } : {}), task: who.task, reason: "caller finished" }));
           }
           throw fail(404, "not_found", `no test session op ${op}`);
         } catch (e) {
