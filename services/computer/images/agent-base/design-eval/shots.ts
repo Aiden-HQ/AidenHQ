@@ -68,6 +68,8 @@ export async function open(url: string, o: ShotOptions) {
   if (!isLocal(url)) {
     await ctx.route("**/*", polite);
     await ctx.routeWebSocket(/.*/, (ws: any) => void ws.close()); // read only: no socket traffic
+    // Nor the channels routing doesn't see: WebTransport and peer connections are gone before the page's own code runs.
+    await ctx.addInitScript(() => { for (const k of ["WebTransport", "RTCPeerConnection", "webkitRTCPeerConnection"]) try { delete (globalThis as any)[k]; } catch { /* not there */ } });
   }
   const page = await ctx.newPage();
   const res = await page.goto(url, { waitUntil: "load", timeout: 30000 });

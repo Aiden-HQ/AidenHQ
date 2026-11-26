@@ -166,10 +166,11 @@ async function calibrate() {
 
 // ---- references and corrections run the engine's own commands over a captured app ---------------------------------------------
 type Report = { improvements: { where: { page: string; region: string }; weak: string; change: string; why: string; best: string }[]; cost_usd: number; notes?: string[] };
-/** A review whose page reviews failed (the model or the gateway) scores nothing: the suite stops with the reason. */
-function reviewed(file: string): Report {
+/** A review whose page reviews failed (the model or the gateway) scores nothing: the suite stops with the reason. `from`: how many
+ * notes the report held before this review (an earlier attempt's notes stay in it and are not this review's). */
+function reviewed(file: string, from: number): Report {
   const rep = json(file) as Report;
-  const failed = (rep.notes ?? []).filter((n) => /^design review of .+ failed: |^stopped at the --max-usd budget/.test(n));
+  const failed = (rep.notes ?? []).slice(from).filter((n) => /^design review of .+ failed: |^stopped at the --max-usd budget/.test(n));
   if (failed.length) throw new Error(`${file}: ${failed.length} page reviews failed or were skipped (${failed[0]})`);
   return rep;
 }
@@ -219,9 +220,9 @@ async function references() {
     if (o["capture-only"]) continue;
     for (const v of Object.keys(refsIn)) {
       const dir = join(work, "references", `${t.name}-${v}`);
-      const before = (json(join(dir, "report.json")) as Report).cost_usd ?? 0;
+      const prior = json(join(dir, "report.json")) as Report, before = prior.cost_usd ?? 0;
       cli("review", dir, "--model", model, "--refs", join(dir, "refs", "refs.json"), "--top", "10");
-      const rep = reviewed(join(dir, "report.json"));
+      const rep = reviewed(join(dir, "report.json"), prior.notes?.length ?? 0);
       const kindOf = new Map(((json(join(dir, "run.json")) as { pages?: { path: string; kind?: string }[] }).pages ?? []).map((p) => [p.path, p.kind ?? "other"]));
       const refsOf = json(join(dir, "refs", "refs.json")) as { kind: string; shots: string[]; product?: string; tokens?: Record<string, unknown> }[];
       const m = (variants[v] ??= { n: 0, specific: 0, tokens: 0, perTarget: {} });
@@ -263,9 +264,9 @@ async function corrections() {
   const missed: string[] = [];
   for (const c of cases) {
     const d = join(work, "corrections", c.f);
-    const before = (json(join(d, "report.json")) as Report).cost_usd ?? 0;
+    const prior = json(join(d, "report.json")) as Report, before = prior.cost_usd ?? 0;
     cli("review", d, "--model", model, "--top", "10");
-    const rep = reviewed(join(d, "report.json"));
+    const rep = reviewed(join(d, "report.json"), prior.notes?.length ?? 0);
     spend.usd += rep.cost_usd - before;
     const hit = rep.improvements.some((i) => new RegExp(c.expect.where, "i").test(`${i.where.page} ${i.where.region}`) && new RegExp(c.expect.change, "i").test(`${i.change} ${i.weak} ${i.why}`));
     if (!hit) missed.push(c.f);
