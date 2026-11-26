@@ -132,7 +132,7 @@
 @keyframes devsign-pulse { 50% { opacity: 0.3; transform: scale(0.8); } }
 @media (prefers-reduced-motion: reduce) { .devsign-pulse { animation: none; } }
 
-/* Your organisation (Organisation.tsx), on Settings > Connections and in the wizard. */
+/* Your organisation (Organisation.tsx), on Settings > Connections and in onboarding. */
 
 .org-bare { display: grid; gap: 12px; }
 .org-head { display: grid; gap: 4px; }

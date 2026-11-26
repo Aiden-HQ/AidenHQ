@@ -62,8 +62,8 @@ test("a teammate's block compiles into the agent, its face into the faces folder
   assert.deepEqual(r.paperclip.agents.bud.teammate.face, KIT);
   assert.equal(readFileSync(r.faces["hal.svg"], "utf8"), SVG);
   const cat = (m: string) => r.catalog.find((c: { name: string }) => c.name === m).teammates;
-  assert.deepEqual(cat("tm"), [{ key: "hal", name: "Nova", job: "Helper", sample: "Filed 3 things: 2 are yours.", description: "Hal does things.", department: "general", face: "hal.svg", first: null }]);
-  assert.deepEqual(cat("tmoff"), [{ key: "ida", name: "Ida", job: "Idler", sample: "Nothing yet.", description: "Ida does things.", department: "engineering", face: "ida.png", first: 3 }]);
+  assert.deepEqual(cat("tm"), [{ key: "hal", name: "Nova", job: "Helper", sample: "Filed 3 things: 2 are yours.", description: "Hal does things.", department: "General", face: "hal.svg", first: null }]);
+  assert.deepEqual(cat("tmoff"), [{ key: "ida", name: "Ida", job: "Idler", sample: "Nothing yet.", description: "Ida does things.", department: "Engineering", face: "ida.png", first: 3 }]);
   assert.ok(r.faces["ida.png"], "a module that is off still ships its face");
   assert.deepEqual(cat("tmbad"), []);
   assert.ok(r.warnings.some((w: string) => /module tmbad: agent bad: its teammate is left out/.test(w)), r.warnings.join("\n"));

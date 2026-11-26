@@ -30,7 +30,7 @@ test("an agent gets exactly its effective list", () => {
   assert.deepEqual(skillsOf(instance(), "review-chaser"), []);
   assert.deepEqual(skillsOf(instance({ skills: ["acme.nudge", "primer.primer-docs"] }), "review-chaser"), ["acme.nudge", "primer.primer-docs"]);
   // An override adds to a local agent and removes from a product agent, through the one shape.
-  const over = instance({ overrides: { agents: { "review-chaser": { skills: { add: ["acme.nudge"] } }, "chief-of-staff": { skills: { remove: ["tasks.delegate-work"] } } } } });
+  const over = instance({ overrides: { agents: { "review-chaser": { skills: { add: ["acme.nudge"] } }, "chief-of-staff": { skills: { remove: ["chief-of-staff.ideas", "tasks.delegate-work"] } } } } });
   assert.deepEqual(skillsOf(over, "review-chaser"), ["acme.nudge"]);
   assert.deepEqual(skillsOf(over, "chief-of-staff"), []);
   // A skill of an available module that isn't enabled (maintainer isn't in the bundle) is dropped; an unknown id fails.

@@ -42,3 +42,30 @@ test("queued by the board or a module, taken once by the router, sent through a 
   assert.equal((await k.v1("POST", "/v1/notify/send", { to: "channel-telegram", message: msg }, "router-key")).json.off, true);
   assert.equal((await k.v1("POST", "/v1/notify/send", { to: "plain", message: msg }, "router-key")).status, 404);
 });
+
+test("a push test reaches only the named transport and reports its answer", async (t) => {
+  const hits = { tg: [] as unknown[], slack: [] as unknown[] };
+  const tg = await serve(async (req, res) => { hits.tg.push(JSON.parse(await readBody(req))); res.writeHead(200, { "content-type": "application/json" }).end('{"sent":true}'); });
+  const slack = await serve(async (req, res) => { hits.slack.push(JSON.parse(await readBody(req))); res.writeHead(502).end("{}"); });
+  t.after(() => { tg.s.close(); slack.s.close(); });
+  const modules = { modules: {
+    "owner-channel": { roles: ["kernel.notify"], token: "router_token" },
+    "channel-telegram": { privileged: ["speaks-as-owner"], channel: { transport: `${tg.url}/transport/send` }, token: "tg_token" },
+    slack: { privileged: ["speaks-as-owner"], channel: { transport: `${slack.url}/transport/send` }, token: "slack_token" },
+  } };
+  const k = await kernel(t, { modules, secrets: { router_token: "router-key", tg_token: "tg-key", slack_token: "slack-key" } });
+  assert.equal((await k.v1("POST", "/v1/notify/test", { to: "channel-telegram" }, "router-key")).status, 401, "the board's key only");
+  assert.deepEqual((await k.v1("POST", "/v1/notify/test", { to: "channel-telegram" })).json, { sent: true });
+  assert.equal(hits.tg.length, 1);
+  assert.equal(hits.slack.length, 0, "only the named transport");
+  const card = hits.tg[0] as { kind: string; inert?: string[]; actions?: unknown };
+  assert.equal(card.kind, "decision");
+  assert.deepEqual(card.inert, ["Looks good", "Not now"]);
+  assert.equal(card.actions, undefined);
+  const down = (await k.v1("POST", "/v1/notify/test", { to: "slack" })).json;
+  assert.equal(down.sent, false);
+  assert.match(down.reason, /502/);
+  assert.equal((await k.v1("POST", "/v1/notify/test", { to: "nowhere" })).status, 404);
+  // Nothing was queued for the router.
+  assert.deepEqual((await k.v1("GET", "/v1/notify/take", undefined, "router-key")).json.messages, []);
+});

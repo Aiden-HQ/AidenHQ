@@ -18,7 +18,7 @@ import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { current, MANIFEST_KEYS, moduleName } from "./compiler/authority.ts";
 import type { Fetch } from "./compiler/sources.ts";
-import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, pinsOf, remoteModules } from "./compiler/sources.ts";
+import { browseMarketplaces, checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, pinsOf, remoteModules } from "./compiler/sources.ts";
 import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
@@ -627,7 +627,7 @@ export function setupFlows(defs: Obj, compiled: Obj, settings: Obj = {}) {
   }
   // The advanced flow rides on its basic one: the board reads one flow per module.
   for (const a of flows.filter((x: Obj) => x.mode === "advanced")) {
-    const { module: _m, order: _o, wizard: _w, mode: _d, ...rest } = a;
+    const { module: _m, order: _o, mode: _d, ...rest } = a;
     flows.find((x: Obj) => x.module === a.module && x.mode !== "advanced").advanced = rest;
   }
   if (compiled.board?.setup_flows) compiled.board.setup_flows = flows.filter((x: Obj) => x.mode !== "advanced");
@@ -764,7 +764,7 @@ export function hostDirs(productDir: string, env = process.env) {
   return { work_dir: expand(String(y.work_dir ?? "~/aidenhq-work")), state_dir: expand(String(y.state_dir ?? "~/.local/state/aidenhq-runner")) };
 }
 
-export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string } = {}) {
+export function compile(productDir: string, instanceDir: string, { revision, bundleState, oldBundle, fetch = hostFetch(productDir), door, workDir = hostDirs(productDir).work_dir, browse = true }: { revision?: string; bundleState?: Obj; oldBundle?: Obj; fetch?: Fetch; door?: Obj; workDir?: string; browse?: boolean } = {}) {
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
@@ -1295,6 +1295,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }
   const localRoutines = new Map<string, number>();
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) {
+    // `trial: true`: run once when the owner sets up its teammate (the board's setup), never on a schedule or an event (checked
+    // after the overrides, which may set schedules).
+    if (r.trial !== undefined && (r.trial !== true || r.schedules?.length || r.event != null)) fail(`routine ${key}: trial is true, on a routine with no schedules and no event (it runs once when its teammate is set up)`);
     for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone;
     if (r.event != null) eventRoutine(key, r, paperclip); // else Paperclip runs it in UTC
     // Its status when setup creates it (docs/design/quiet-start.md); after that, Paperclip owns pause and resume. A local
@@ -1417,6 +1420,14 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     prompts: promptEntries(name, def, root).map((p) => ({ id: p.id, file: relative(root, p.file) })),
     ...(existsSync(join(root, "README.md")) ? { readme: readFileSync(join(root, "README.md"), "utf8").slice(0, 4096) } : {}),
     defaults: moduleDefaults(def, settings),
+  })),
+  // Third-party marketplaces' modules the instance doesn't install (browse, outside the install graph): listed for Modules and
+  // hiring only, never enabled; their text is untrusted (capped at read, fenced where an agent reads it). `browse: false` skips the
+  // remote reads: a validation compile (the kernel's self_change) must not wait on a marketplace's Git host.
+  ...(browse ? browseMarketplaces(instance, { ...fetch, parse: (t: string) => YAML.parse(t) }, (m) => warnings.push(m), browseTeammate) : []).map((b) => ({
+    name: b.name, description: b.description, enabled: false, chosen: false, requires: b.requires, agents: b.agents, routines: [], connections: [], apps: [],
+    marketplace: b.marketplace, tier: "declared", browse: true, revision: b.revision, source: b.source,
+    teammates: b.teammates.map((t) => ({ key: t.key, name: t.name, job: t.job, sample: t.sample, description: t.description, department: deptName(departments, t.department), face: t.face ?? null, first: t.first ?? null })),
   }))];
   // Secrets of channels the owner may not use: created empty when missing so compose starts (compile.ts).
   const optionalSecrets = enabled.flatMap((name) => all.get(name)!.def.optional_secrets ?? []);
@@ -1966,12 +1977,32 @@ function compileTeammates(agents: Obj, enabled: string[], faces: Record<string, 
  * when its agent is on, else its AGENTS.md frontmatter (product) or module.yaml entry (local). A module that is off never
  * fails the compile: a broken entry is skipped (a bad face file drops the face) with a warning.
  */
+/** A department's display name (the registry's), `general`'s for an id it doesn't have. */
+const deptName = (departments: Obj[], id: string) => String((departments.find((d) => d.id === id) ?? departments.find((d) => d.id === "general"))?.name ?? "General").trim();
+
+/**
+ * A third-party agent's AGENTS.md as browse lists it (sources.ts browseMarketplaces): undefined unless it declares a teammate,
+ * which is checked as any is, with the third-party caps (D3): a name of at most 24 characters on one line, a description cut
+ * to 300, and only a kit face (a file is never read).
+ */
+export function browseTeammate(text: string, where: string) {
+  const { meta } = frontmatter(text);
+  if (meta.teammate === undefined) return undefined;
+  const raw = meta.teammate && typeof meta.teammate === "object" ? { ...meta.teammate } : meta.teammate;
+  if (raw && typeof raw === "object" && raw.face !== undefined && (typeof raw.face === "string" || faceKitProblem(raw.face))) delete raw.face;
+  const t = teammateOf(raw, where);
+  const name = meta.name === undefined ? "" : String(meta.name);
+  if (!/^[^\x00-\x1f\x7f]{1,24}$/.test(name) || name.trim() !== name) fail(`${where}: name is one line of 1 to 24 characters`);
+  const description = String(meta.description ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+  return { name, job: t.job, sample: t.sample, description, ...(t.first ? { first: t.first } : {}), ...(t.face ? { face: t.face } : {}) };
+}
+
 function catalogTeammates(name: string, root: string, def: Obj, agents: Obj, departments: Obj[], faces: Record<string, string>, warnings: string[]) {
   const out: Obj[] = [];
   for (const [key, entry] of Object.entries<Obj>(def.agents ?? {})) {
     const on = agents[key]?.module === name ? agents[key] : undefined;
     if (on) {
-      if (on.teammate) out.push({ key, name: on.name, job: on.teammate.job, sample: on.teammate.sample, description: on.description, department: on.department?.id ?? "general", face: on.teammate.face, first: on.teammate.first ?? null });
+      if (on.teammate) out.push({ key, name: on.name, job: on.teammate.job, sample: on.teammate.sample, description: on.description, department: on.department?.name ?? deptName(departments, "general"), face: on.teammate.face, first: on.teammate.first ?? null });
       continue;
     }
     try {
@@ -1987,7 +2018,7 @@ function catalogTeammates(name: string, root: string, def: Obj, agents: Obj, dep
         else { face = `${key}.${t.face.split(".").pop()}`; faces[face] = realpathSync(join(dir, t.face)); }
       } else if (t.face) face = t.face;
       const dept = String(entry?.department ?? "general");
-      out.push({ key, name: String(meta.name ?? key), job: t.job, sample: t.sample, description: String(meta.description ?? "").trim(), department: departments.some((d) => d.id === dept) ? dept : "general", face, first: t.first ?? null });
+      out.push({ key, name: String(meta.name ?? key), job: t.job, sample: t.sample, description: String(meta.description ?? "").trim(), department: deptName(departments, dept), face, first: t.first ?? null });
     } catch (e) {
       warnings.push(`module ${name}: agent ${key}: its teammate is left out of the catalog (${(e as Error).message})`);
     }

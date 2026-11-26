@@ -6,7 +6,7 @@
 # kernel's /setup is then completed over HTTP: account, TOTP code, then the model step with a pasted key, checked against a
 # stubbed OpenRouter (the kernel's AIDENHQ_GATEWAY_UPSTREAM; it answers 402 once, so Retry is exercised). Then the real board
 # (built from the checkout, started beside the kernel as the compose service would be) takes the owner through its welcome
-# with every wizard flow skipped; Paperclip, which the board opens the welcome chat in, is a stub that records the request.
+# finished at once; Paperclip, where the kernel files onboarding's task for Aiden, is a stub that records the request.
 # It asserts:
 #   - one AIDENHQ_SETUP_URL line, the last; without a tailnet the SSH-tunnel route and a loopback URL;
 #   - root's steps ran from root-owned /opt/aidenhq/kernel/<sha>, never from the user's checkout (its ops/setup.sh and
@@ -16,9 +16,9 @@
 #   - /setup takes the account only, then the TOTP enrolment, then /setup/model the model key (paste first on a plain-http
 #     loopback address, "Add credit" and Retry on a 402, then the board's welcome); the recovery key then shows once on
 #     /recovery-key; a second /setup is refused;
-#   - the board's session comes through the kernel's handoff; its welcome lists the modules' wizard flows (Telegram, Slack),
-#     unfinished; finishing it with each skipped opens one chat with Aiden whose `Skipped:` names those flows' titles, writes
-#     the welcome-sent marker, and a second finish opens none.
+#   - the board's session comes through the kernel's handoff; its welcome is unfinished; finishing it files one task for
+#     Aiden (source welcome, through the kernel's board tasks) and no chat, writes the welcome-sent marker, and a second
+#     finish files none.
 #   sudo bash ops/test/unattended-install.sh   (root, git, curl, node 24, kernel/, scripts/ and services/board npm ci'd; it adds a user and
 #                                               /opt/aidenhq, so it runs only where /.dockerenv exists or CI is set)
 # Not in CI: our runners' job containers set no-new-privileges, so sudo can't reach root there. Run it in a container,
@@ -52,9 +52,10 @@ recorder ops/vm/setup.sh ':'
 # The vault: its cipher dir (setup's "already made" marker) and a recovery key in root's home, as ops/vault/init.sh leaves it.
 recorder ops/vault/init.sh "runuser -u $U -- mkdir -p $H/.local/share/aidenhq/vault.enc; printf '0123456789abcdef%.0s' 1 2 3 4 > /root/aidenhq-vault-recovery.txt"
 # The apply (as the user): the real compile (the kernel's generated secrets, the modules' /setup fields in
-# config/kernel/modules.json), then what Paperclip's setup records: the company.
+# config/kernel/modules.json), then what Paperclip's setup records: the company, and the grants table (Aiden, fleet-admin).
 recorder ops/apply-config.sh 'cd "$(dirname "${BASH_SOURCE[0]}")/.." && node scripts/compile.ts > /dev/null || exit 1
-sed -i "s/^  company_id: \"\"/  company_id: \"00000000-0000-4000-8000-000000000001\"/" config/system.yaml'
+sed -i "s/^  company_id: \"\"/  company_id: \"00000000-0000-4000-8000-000000000001\"/" config/system.yaml
+mkdir -p config/grants && echo "{\"agents\":{\"agent-aiden\":{\"key\":\"chief-of-staff\",\"roles\":[\"fleet-admin\"]}}}" > config/grants/grants.json'
 g -C "$work/k" init -q && g -C "$work/k" add -A && g -C "$work/k" commit -qm kernel
 g clone -q --bare "$work/k" "$work/git/kernel.git"
 KSHA="$(git -C "$work/k" rev-parse HEAD)"
@@ -166,14 +167,14 @@ cwd="$(runuser -u "$U" -- readlink "/proc/${pid:-0}/cwd" 2>/dev/null || true)"  
 ok "the kernel runs from the checkout at the release's kernel sha $KSHA; instance.yaml pins release $RSHA"
 
 # ---------------------------------------------------------------- the board, and a stubbed Paperclip
-# Paperclip answers only what the board's welcome chat reads (who it is, the company, its agents with Aiden, the `chat`
-# label) and records each write; anything else is a 404.
+# Paperclip answers only what onboarding's finish reads (who it is, the company, its agents with Aiden, Aiden himself, for the
+# kernel's board task) and records each write; anything else is a 404.
 cat > "$work/paperclip.mjs" <<'EOF'
 import http from "node:http";
 import { appendFileSync } from "node:fs";
 const [port, log] = process.argv.slice(2);
 const co = "/api/companies/00000000-0000-4000-8000-000000000001";
-const reads = { "/api/cli-auth/me": { userId: "owner" }, [co]: { issuePrefix: "TST" }, [`${co}/agents`]: [{ id: "agent-aiden", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff" } }], [`${co}/labels`]: [{ id: "label-chat", name: "chat", color: "#0ea5e9" }] };
+const reads = { "/api/cli-auth/me": { userId: "owner" }, [co]: { issuePrefix: "TST" }, [`${co}/agents`]: [{ id: "agent-aiden", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff" } }], [`${co}/labels`]: [{ id: "label-chat", name: "chat", color: "#0ea5e9" }], "/api/agents/agent-aiden": { id: "agent-aiden", companyId: "00000000-0000-4000-8000-000000000001", status: "idle" } };
 http.createServer((req, res) => {
   let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => {
     const json = (status, v) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(v));
@@ -248,27 +249,22 @@ want(rkDone.status === 303, "saving it redirects on");
 want(/No recovery key is waiting/.test((await call("GET", "/recovery-key")).text), "it is shown once");
 want((await call("GET", "/auth/password")).status === 200, "the owner is a signed-in admin with an authenticator");
 
-// The board's welcome (#/welcome, Welcome.tsx): its own session through the kernel's handoff, then every wizard flow skipped.
+// The board's welcome (#/welcome, Welcome.tsx): its own session through the kernel's handoff, then finished at once.
 const board = (method, path, json) => call(method, path, json, 3121).then((r) => ({ ...r, json: JSON.parse(r.text || "null") }));
 let hop = await call("GET", "/auth/start", undefined, 3121);
 for (let i = 0; i < 2 && hop.location?.startsWith("http://127.0.0.1:"); i++) { const l = new URL(hop.location); hop = await call("GET", l.pathname + l.search, undefined, Number(l.port)); }
 want(hop.status === 303 && hop.location === "/" && jar.has("aidenhq-board"), "the board's session comes through the kernel's handoff");
-const wizard = JSON.parse(readFileSync(boardPoints, "utf8")).setup_flows.filter((f) => f.wizard).sort((a, b) => a.order - b.order);
 const first = await board("GET", "/api/welcome");
 want(first.status === 200 && first.json.finished === false && first.json.modelReady === true && first.json.recoveryKeyWaiting === false, `the board's welcome is unfinished, the model ready and the recovery key saved (${first.text})`);
-want(["channel-telegram", "slack"].every((m) => first.json.wizard.includes(m)) && first.json.wizard.join() === wizard.map((f) => f.module).join(), `its wizard is the modules' flows, Telegram and Slack among them (${first.json.wizard})`);
-const flows = (await board("GET", "/api/setup-flows")).json.flows.filter((f) => first.json.wizard.includes(f.module));
-want(flows.length === wizard.length && flows.every((f) => !f.done), "none of them is set up");
-const skipped = flows.map((f) => f.module);
-const fin2 = await board("POST", "/api/welcome/finish", { done: [], skipped });
-want(fin2.status === 200 && fin2.json.ok && fin2.json.identifier === "TST-1", `skipping them all finishes the welcome (${fin2.text})`);
+want(!("wizard" in first.json), `it lists no wizard flows (${first.text})`);
+const fin2 = await board("POST", "/api/welcome/finish", {});
+want(fin2.status === 200 && fin2.json.ok === true, `finishing it answers ok (${fin2.text})`);
 want((await board("GET", "/api/welcome")).json.finished === true, "the welcome is finished");
-want((await board("POST", "/api/welcome/finish", { done: [], skipped })).status === 200, "a second finish is a no-op");
+want((await board("POST", "/api/welcome/finish", {})).status === 200, "a second finish is a no-op");
 const writes = readFileSync(paperclipLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-const chats = writes.filter((w) => w.method === "POST" && /\/issues$/.test(w.url));
-want(chats.length === 1 && chats[0].body.assigneeAgentId === "agent-aiden", `one welcome chat, with Aiden (${chats.length})`);
-const line = `Skipped: ${wizard.map((f) => f.title).join(", ")}.`;
-want(chats[0].body.description.includes("Connected: nothing yet.") && chats[0].body.description.includes(line), `it names what was skipped: ${line}`);
+const made = writes.filter((w) => w.method === "POST" && /\/issues$/.test(w.url));
+want(made.length === 1 && made[0].body.assigneeAgentId === "agent-aiden", `one task, for Aiden (${made.length})`);
+want(made[0].body.description.includes("<!-- source:welcome -->") && !(made[0].body.labelIds ?? []).includes("label-chat"), "it is onboarding's board task (source welcome), not a chat");
 EOF
 # The RFC 6238 code, as the kernel's tests compute it (no dependency).
 sed -n '/^export function totp/,/^}/p' "$src/kernel/test/auth-helpers.ts" | sed '1i import { createHmac } from "node:crypto";' > "$work/totp.mjs"

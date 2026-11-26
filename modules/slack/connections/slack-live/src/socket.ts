@@ -56,6 +56,8 @@ export async function startSocket({ appToken, store, chat, pair, bind, tee, forw
       await fetch(b.response_url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ response_type: "ephemeral", text }) }).catch((err: unknown) => log.warn({ err: String(err) }, "slash response failed"));
       return;
     }
+    // A button press (the push test's inert buttons, send.ts): acknowledged, nothing else.
+    if (msg.type === "interactive") return void (await msg.ack().catch(() => undefined));
     try {
       // A pairing DM acks itself once its decision is durable (or leaves the event unacked to be retried).
       if (msg.type === "events_api" && pair && (await pair(msg.body, () => msg.ack()))) return;

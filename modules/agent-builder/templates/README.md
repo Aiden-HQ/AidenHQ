@@ -2,7 +2,9 @@
 
 The Agent Architect starts from the closest template here and adapts it. Each is a local module (`module.yaml` +
 `agents/<key>/AGENTS.md`, which goes to `modules/<name>/` in the instance repo) with its designed grants and one routine
-with a done condition.
+with a done condition. Every template agent is a teammate (a `teammate:` block with a kit face, on its `module.yaml`
+entry: [modules/AGENTS.md](../../AGENTS.md) "Teammates"); an agent the Architect adds only for other agents to hand work to
+gets none and stays hidden staff.
 
 | Template | Does | Grants |
 |---|---|---|

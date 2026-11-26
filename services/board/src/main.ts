@@ -88,7 +88,14 @@ const views = createViewHost({ kernel: cfg.gateway && { url: kernelUrl, token: c
 // Sessions (sessions.ts): the kernel's session rows; the launcher's session key opens only a lease's terminal and phone UI.
 const sessionKey = process.env.COMPUTER_SESSION_KEY_FILE ?? "/run/secrets/computer_session_key";
 const terminals = { kernel: kernelSessions({ url: kernelUrl, token: cfg.gateway.token }), launcher: process.env.AIDENHQ_LAUNCHER_URL && existsSync(sessionKey) ? { url: process.env.AIDENHQ_LAUNCHER_URL.replace(/\/+$/, ""), key: readFileSync(sessionKey, "utf8").trim() } : undefined };
-const common = { terminals, grading, views, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
+// The kernel's push test (onboarding's "Send a test"): its answer, unchanged.
+const notifyTest = async (to: string) => {
+  const r = await fetch(`${kernelUrl}/v1/notify/test`, { method: "POST", headers: { authorization: `Bearer ${cfg.gateway!.token}`, "content-type": "application/json" }, body: JSON.stringify({ to }), signal: AbortSignal.timeout(40_000) });
+  if (r.status === 404) return { sent: false, off: true as const, reason: "not set up yet" };
+  if (!r.ok) throw new Error(`the kernel answered ${r.status} to the push test`);
+  return (await r.json()) as { sent: boolean; off?: true; reason?: string };
+};
+const common = { terminals, grading, views, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), ...(cfg.gateway ? { fileTask: fileAlert, notifyTest } : {}), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));

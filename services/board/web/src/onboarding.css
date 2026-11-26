@@ -1,0 +1,124 @@
+/* Onboarding (Welcome.tsx), the one setup sequence (TeammateSetup.tsx) and Home's day-one band (GettingStarted.tsx):
+   layout only. The parts (cards, buttons, tags, faces, stepper) come from the kit (ui/ui.css) and its tokens. */
+
+/* ------------------------------------------------------------ the page */
+.wl { gap: var(--stack); }
+.wl-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.wl-top-note { display: inline-flex; align-items: center; gap: 12px; font-size: var(--text-sm); color: var(--muted); }
+.wl-loading { min-height: 40vh; }
+.wl-head { display: grid; gap: 6px; max-width: 64rem; }
+.wl-head h1 { margin: 0; font-size: var(--text-3xl); font-weight: 700; letter-spacing: -0.025em; line-height: 1.15; text-wrap: balance; }
+.wl-eyebrow { margin: 0; font-size: var(--text-md); font-weight: 500; color: var(--muted); }
+.wl-sub { margin: 0; max-width: 52rem; font-size: var(--text-row); line-height: 1.55; color: var(--muted); }
+.wl-label { font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.wl-link { flex: none; font-size: var(--text-md); font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.wl-link:hover { text-decoration: underline; }
+.wl-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.wl-hint { font-size: var(--text-sm); color: var(--faint); }
+.wl-bad { font-size: var(--text-sm); color: var(--bad-text); }
+.wl-quote { margin: 0; padding: 10px 12px; border-radius: var(--radius-md); background: var(--surface-2); border: 1px solid var(--border); font-size: var(--text-base); line-height: 1.5; color: var(--text); }
+
+/* The recommended teammate: face, who and what, then the first result and Set up on the right. */
+.ui-card.wl-rec { padding: clamp(16px, 1.6vw, 26px); gap: 16px; border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
+.wl-rec-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px 22px; align-items: start; }
+@media (min-width: 1100px) { .wl-rec-grid { grid-template-columns: auto minmax(0, 1.25fr) minmax(18rem, 1fr); } }
+.wl-rec-main { display: grid; gap: 6px; min-width: 0; }
+@media (max-width: 560px) {
+  .wl-rec-grid { grid-template-columns: minmax(0, 1fr); }
+  .wl-facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .wl-facts dd + dt { margin-top: 6px; }
+  .wl-top-note { width: 100%; justify-content: space-between; }
+}
+.wl-rec-name { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-2xl); font-weight: 700; letter-spacing: -0.02em; }
+.wl-edit { display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--radius-md); background: none; color: var(--faint); cursor: pointer; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease); }
+.wl-edit:hover { background: var(--hover); color: var(--text); }
+.wl-edit:focus-visible { outline: none; box-shadow: var(--ring); }
+.wl-rename { display: grid; gap: 4px; max-width: 18rem; }
+.wl-rename .ui-input { font-size: var(--text-xl); font-weight: 700; }
+.wl-rec-job { margin: 0; font-size: var(--text-lg); font-weight: 600; color: var(--muted); }
+.wl-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 24px; margin: 8px 0 0; font-size: var(--text-md); line-height: 1.5; }
+.wl-facts dt { font-weight: 600; color: var(--text); }
+.wl-facts dd { margin: 0; color: var(--muted); }
+.wl-rec-side { grid-column: 1 / -1; display: grid; gap: 12px; align-content: start; justify-items: start; }
+@media (min-width: 1100px) { .wl-rec-side { grid-column: auto; } }
+.wl-first { display: grid; gap: 6px; width: 100%; padding: 12px 14px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); }
+.wl-first p { margin: 0; font-size: var(--text-body); line-height: 1.5; }
+.wl-go { padding: 9px 16px; font-size: var(--text-body); font-weight: 600; }
+.wl-rec-who { display: flex; align-items: center; gap: 12px; font-size: var(--text-lg); color: var(--muted); }
+.wl-rec-who b { color: var(--text); }
+
+/* What the trial found. */
+.wl-found { display: grid; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+.wl-found-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 12px; color: var(--text); text-decoration: none; font-size: var(--text-md); transition: background-color var(--fast) var(--ease); }
+.wl-found-row + .wl-found-row { border-top: 1px solid var(--border); }
+.wl-found-row:hover { background: var(--hover); }
+.wl-found-row:focus-visible { outline: none; box-shadow: inset var(--ring); }
+.wl-found-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.wl-empty { margin: 0; font-size: var(--text-md); color: var(--muted); }
+
+/* Everyone Aiden can bring in. */
+.wl-roster { display: grid; gap: 12px; }
+.wl-roster-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+.wl-roster-head h2 { margin: 0; font-size: var(--text-xl); font-weight: 700; letter-spacing: -0.015em; }
+.wl-roster-sub { flex: 1; min-width: 12rem; font-size: var(--text-md); color: var(--muted); }
+.wl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.ui-card.wl-mate { align-content: start; gap: 10px; }
+.wl-mate-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.wl-mate-desc { margin: 0; font-size: var(--text-base); line-height: 1.45; color: var(--muted); }
+.wl-mate-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: auto; }
+
+/* Where the team reaches you: the choice and its setup on the left, the test message's preview on the right. */
+.wl-reach { display: grid; gap: var(--stack); align-items: start; }
+@media (min-width: 1100px) { .wl-reach { grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); } }
+.wl-reach-main { display: grid; gap: var(--stack); min-width: 0; }
+.wl-ready { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-size: var(--text-md); font-weight: 600; color: var(--ok-text); }
+.wl-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 12px; }
+.ui-card.wl-flow { padding: clamp(14px, 1.4vw, 22px); }
+.wl-preview { display: grid; gap: 10px; align-content: start; }
+.wl-phone { display: grid; align-items: end; min-height: 15rem; padding: 18px; border-radius: var(--radius-lg); background: color-mix(in srgb, var(--accent) 7%, var(--col)); border: 1px solid var(--border); }
+.wl-msg { display: grid; gap: 8px; padding: 12px; border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-lg); }
+.wl-msg-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--text-md); }
+.wl-msg-head b { color: var(--accent); }
+.wl-msg-head time { font-size: var(--text-xs); color: var(--faint); }
+.wl-msg p { margin: 0; font-size: var(--text-body); line-height: 1.45; }
+.wl-msg-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.wl-msg-buttons span { display: grid; place-items: center; padding: 7px; border-radius: var(--radius-md); background: var(--accent-soft); color: var(--accent); font-size: var(--text-md); font-weight: 600; }
+
+/* ------------------------------------------------------------ TeammateSetup: one line per stage */
+.tms { display: grid; gap: 0; min-width: 0; }
+.tms-line { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 12px; padding: 10px 0; position: relative; }
+.tms-line + .tms-line::before { content: ""; position: absolute; left: 12.5px; top: -10px; height: 20px; width: 1px; background: var(--border); }
+.tms-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--border-strong); background: var(--surface); color: var(--faint); font-size: var(--text-xs); font-weight: 700; font-variant-numeric: tabular-nums; transition: background-color var(--medium) var(--ease-out), border-color var(--medium) var(--ease-out), color var(--medium) var(--ease-out); }
+.tms-line.now .tms-mark { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); animation: tms-pulse 1.6s var(--ease) infinite; }
+.tms-line.done .tms-mark { background: var(--working); border-color: var(--working); color: var(--on-solid); }
+.tms-line.failed .tms-mark { background: var(--urgent); border-color: var(--urgent); color: var(--on-solid); }
+.tms-line.skipped .tms-mark { border-style: dashed; }
+@keyframes tms-pulse { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent-soft) 40%, transparent); } }
+.tms-body { display: grid; gap: 10px; min-width: 0; padding-top: 3px; }
+.tms-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px; margin: 0; font-size: var(--text-body); font-weight: 600; }
+.tms-line.wait .tms-title { color: var(--muted); font-weight: 500; }
+.tms-meta { font-size: var(--text-sm); font-weight: 500; color: var(--faint); }
+.tms-hint { margin: 0; font-size: var(--text-md); line-height: 1.5; color: var(--muted); }
+.tms-link { margin-right: 10px; font-weight: 600; }
+.tms-actions { display: flex; gap: 8px; }
+.tms-error { margin: 0; font-size: var(--text-sm); color: var(--bad-text); }
+.tms-trial { display: grid; gap: 8px; max-width: 36rem; }
+.tms-name { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
+.tms-name .ui-field { flex: 1; min-width: min(100%, 14rem); max-width: 22rem; }
+/* A setup flow inside a stage: its own stages stack in the space there is. */
+.setup-inline { display: grid; gap: var(--stack); max-width: none; container-type: inline-size; }
+.setup-inline .setup-grid { grid-template-columns: minmax(0, 1fr); }
+/* Two columns only when the flow's own container fits both (the hiring pane is narrower than the viewport). */
+@container (min-width: 640px) { .setup-inline .setup-grid { grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); } }
+
+/* ------------------------------------------------------------ Home on day one */
+.ui-card.gs-next { gap: 10px; border-style: dashed; border-color: var(--border-strong); box-shadow: none; }
+.gs-next-who { display: flex; align-items: center; gap: 12px; }
+.gs-next-name { font-size: var(--text-lg); color: var(--muted); }
+.gs-next-name b { color: var(--text); }
+.gs-next-desc { margin: 0; color: var(--muted); }
+.gs-next-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ui-card.gs-more { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; padding: 14px 18px; }
+.gs-more-title { font-size: var(--text-body); }
+.gs-faces { display: inline-flex; gap: 6px; }
+.gs-more-line { flex: 1; min-width: 10rem; font-size: var(--text-md); color: var(--muted); }

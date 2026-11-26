@@ -33,6 +33,7 @@ import { AskAiden, closeAsk, openAsk, toggleAsk } from "./AskAiden";
 import { CardView, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
+import { Onboarding } from "./Welcome";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
 import { ago, dayDate, keepsSecureCookies, parkBucket, todayIn } from "./util";
@@ -61,6 +62,7 @@ const SessionsView = lazy(() => VIEW_CHUNKS.sessions().then((m) => ({ default: m
 const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.DesignView })));
 const TeamView = lazy(() => VIEW_CHUNKS.team().then((m) => ({ default: m.TeamView })));
 const TeammateView = lazy(() => VIEW_CHUNKS.teammate().then((m) => ({ default: m.TeammateView })));
+const HireView = lazy(() => VIEW_CHUNKS.hire().then((m) => ({ default: m.Hire })));
 const DecisionsView = lazy(() => VIEW_CHUNKS.decisions().then((m) => ({ default: m.DecisionsView })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
@@ -72,6 +74,10 @@ export type Route =
   | { kind: "sessions"; ref?: string; fresh?: boolean }
   | { kind: "apps"; name?: string }
   | { kind: "team" }
+  /** Hiring (#/team/hire): `setup` opens that teammate's setup (a ref), `install` a module id's, `chat` resumes a description. */
+  | { kind: "hire"; setup?: string; install?: string; chat?: string }
+  /** Onboarding's teammate and reach screens (Welcome.tsx), on the board while it isn't finished. */
+  | { kind: "welcome" }
   | { kind: "teammate"; key: string; chat?: string; /** Pre-fills the composer (#/team/<key>?text=…). */ text?: string }
   | { kind: "agents" }
   | { kind: "agent"; key: string; tab: AgentTab }
@@ -204,11 +210,17 @@ function parseRoute(): Route {
   const app = /^apps\/([a-z0-9-]+)$/.exec(path);
   if (app) return { kind: "apps", name: app[1]! };
   if (path === "team") return { kind: "team" };
+  if (path === "team/hire") {
+    const p = new URLSearchParams(query);
+    const v = (k: string, re: RegExp) => (re.test(p.get(k) ?? "") ? { [k]: p.get(k)! } : {});
+    return { kind: "hire", ...v("setup", /^[a-z0-9][a-z0-9-]{0,60}(@[a-z0-9][a-z0-9-]{0,60})?:[a-z0-9-]{1,63}$/), ...v("install", /^[a-z0-9][a-z0-9-]{0,60}(@[a-z0-9][a-z0-9-]{0,60})?$/), ...v("chat", /^[A-Za-z0-9-]{1,40}$/) };
+  }
+  if (path === "welcome") return { kind: "welcome" };
   if (path === "team/agents") return { kind: "agents" };
   const agent = new RegExp(`^team/agents/([a-z0-9-]+)(?:/(${AGENT_TABS}))?$`).exec(path);
   if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
   if (path === "team/modules") return { kind: "modules" };
-  const mod = /^team\/modules\/([a-z0-9-]+)(?:\/(overview|contents|settings|changes))?$/.exec(path);
+  const mod = /^team\/modules\/([a-z0-9-]+(?:@[a-z0-9-]+)?)(?:\/(overview|contents|settings|changes))?$/.exec(path);
   if (mod) return { kind: "module", name: mod[1]!, tab: (mod[2] as ModuleTab | undefined) ?? "overview" };
   // #/team/m/<id>[/<sub>] opens a module's page (board.pages, ModuleView.tsx).
   const page = /^team\/m\/([a-z][a-z0-9-]{0,30})(?:\/([\w/-]{1,100}))?$/.exec(path);
@@ -270,7 +282,10 @@ export function viewOf(r: Route): View | null {
     case "design":
       return r.kind;
     case "teammate":
+    case "hire":
       return "team";
+    case "welcome":
+      return "home";
     case "agent":
       return "agents";
     case "module":
@@ -954,9 +969,11 @@ export function App() {
       )}
 
       <ErrorBoundary resetKey={`${view}:${JSON.stringify(route)}`}>
-      {view === "home" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} />}
+      {view === "home" && page.kind === "welcome" && <Onboarding session={session} onSignIn={signInNeeded} />}
+      {view === "home" && page.kind !== "welcome" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} />}
       {view === "team" && page.kind === "teammate" && <Suspense fallback={<PageLoading />}><TeammateView key={page.key} agentKey={page.key} chat={page.chat} text={page.text} crew={mates} faces={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} /></Suspense>}
-      {view === "team" && page.kind !== "teammate" && <Suspense fallback={<PageLoading />}><TeamView go={go} onSignIn={signInNeeded} /></Suspense>}
+      {view === "team" && page.kind === "hire" && <Suspense fallback={<PageLoading />}><HireView key={page.setup ?? page.install ?? ""} setup={page.setup} install={page.install} chat={page.chat} owner={session?.account?.owner === true} onSignIn={signInNeeded} /></Suspense>}
+      {view === "team" && page.kind !== "teammate" && page.kind !== "hire" && <Suspense fallback={<PageLoading />}><TeamView go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "decisions" && <Suspense fallback={<PageLoading />}><DecisionsView onSignIn={signInNeeded} /></Suspense>}
       {view === "settings" && <SettingsView cat={page.kind === "settings" ? page.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} />}
       {view === "modules" && page.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}

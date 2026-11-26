@@ -160,13 +160,21 @@ teammates as "Name · Role" everywhere (`TeammateChip`), never a module name in 
   Settled, or a new one whose placeholder is its sample line) beside a generic side column: what it does, recent work,
   how it is set up (its `controls` modules' declared settings, changed by asking it) and the team behind it. One Advanced
   link goes to its first controlled module's page or settings. Pause pauses only the teammate, never its staff.
+- **Hiring** (`#/team/hire`) lists every catalog teammate, official and every installed marketplace's (a third-party
+  listing without a kit face gets a monogram), filtered by Available, On your team, marketplace and area. Hire, Home's
+  Next up and onboarding all run one setup sequence, `TeammateSetup` (module change with apply tracking, the setup flows
+  it still needs inline, its routines resumed, its trial once, its name). "Describe who you need" is a chat with the
+  agent holding the architect role; its answer form's `Install <id>` and `Extend <key>` options (checked against the
+  page's own rows) take the short path, anything else continues in that chat.
+- **Onboarding** (`#/welcome`, Welcome.tsx): start with one teammate, where the team reaches you (with a real test
+  message), then Home on day one ([guided-setup.md](guided-setup.md) Part 3).
 - **Every chat entry point reaches teammates only** (the composer's @-mentions, Ask Aiden, a teammate's page, the server's
   routing). A chat opened by id (`#/t/<ref>`) opens in the task drawer.
 
 ## Modules
 
 Modules declare (`board.signins`, `board.setup_flows`, `board.pages`, `providers.board` (the warehouse's search), settings) and both the board and the
-owner's MCP drive the declarations: a Connect on Settings, Connections, a setup sheet and wizard step
+owner's MCP drive the declarations: a Connect on Settings, Connections, a setup sheet or an inline flow in onboarding and hiring
 ([guided-setup.md](guided-setup.md)), a page under Team, a setting with its help. How a module is built:
 [modules/AGENTS.md](../../modules/AGENTS.md).
 
@@ -194,11 +202,17 @@ contributes:
   allow-forms` only): an opaque origin with no network, no cookies, no navigation and nothing loaded from outside. Inline
   script and style only; `_meta.ui.csp` domains aren't honoured. The board's own CSP (`frame-src 'self'`) keeps the frame from navigating anywhere outside the board, and the bridge serves only the first document a frame loads; a view that navigates itself, or doesn't send `ui/initialize` within 8 seconds (its module down), is replaced by a Try again.
 - **The bridge** is MCP Apps over postMessage, from that frame only: `ui/initialize` (the host context carries `theme` and
-  `styles.variables`: `--color-background-primary|secondary`, `--color-text-primary|secondary|danger|inverse`,
-  `--color-border-primary`, `--color-ring-primary`, `--font-sans`, `--border-radius-md`, as the board's tokens write them, so
-  the view sets `color-scheme` to `theme`), `ui/notifications/initialized`, `tools/call` and `ui/notifications/size-changed`
+  `styles.variables`: the MCP Apps standard names the board has tokens for (`--color-background-*`, `--color-text-*`,
+  `--color-border-primary|secondary`, `--color-ring-primary`, `--font-sans`, `--font-text-xs|sm|md-size`,
+  `--border-radius-xs|sm|md|lg`, `--shadow-sm|md|lg`; the one table is `TOKENS` in `ModuleView.tsx`), as the board's tokens
+  write them, so the view sets `color-scheme` to `theme`), `ui/notifications/initialized`, `tools/call` and `ui/notifications/size-changed`
   (the frame's height). Nothing else is answered. A web host should use a sandbox proxy on a second origin; the board has one
   origin in every exposure mode, so the single sandboxed frame stands in for it.
+- **The page kit** (`services/shared/page-kit.css|js`, copied into each module that serves a page by
+  `scripts/sync-shared.ts` and inlined by its `mcp.ts`) gives a view the board's look through those variables only, with
+  neutral fallbacks, so another MCP Apps host's theme maps too: `.card` with a `.head` (title, meta, action), `.row`,
+  `button` and `.primary`, and `.tag` with `.ok`, `.needs` and `.failed` (radius, hairline borders, hover lift, press
+  scale, focus ring, reduced motion). A module page uses these classes instead of its own styles.
 - **A tool call** goes board → kernel (`POST /v1/views/<module>/mcp`, the board's key), which lets through only that view's
   resource and its page's tools, and calls the module with a caller assertion of kind `owner` (no agent, no roles, no
   control-plane reach).

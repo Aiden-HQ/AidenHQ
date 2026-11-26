@@ -19,7 +19,11 @@ import "./setup-flow.css";
 
 type Board = { url: string };
 
-export function SetupFlow({ module, change, onDone, onSignIn }: { module: string; change?: boolean; onDone: () => void; onSignIn: () => void }) {
+/**
+ * `inline`: inside a host page (onboarding, hiring) that shows its own title: no overlay and no page header, and a module
+ * with no flow calls onDone. `path`: the path a two-path flow opens on (onboarding's Slack DM needs the bot's).
+ */
+export function SetupFlow({ module, change, inline, path, onDone, onSignIn }: { module: string; change?: boolean; inline?: boolean; path?: "basic" | "advanced"; onDone: () => void; onSignIn: () => void }) {
   const [flow, setFlow] = useState<SetupFlowView | null | undefined>(undefined);
   const [board, setBoard] = useState<Board>({ url: location.origin });
   const [error, setError] = useState("");
@@ -38,10 +42,20 @@ export function SetupFlow({ module, change, onDone, onSignIn }: { module: string
   // Its sign-in finished in the tab Connect opened, or its pairing did in another: re-read either way.
   useEvents(["connections", "setup"], load);
   // No flow: a module whose sign-in is one Connect (an old #/setup link), on Settings > Connections.
+  const done = useRef(onDone);
+  done.current = onDone;
   useEffect(() => {
-    if (flow === null) location.replace("#/settings/connections");
-  }, [flow]);
+    if (flow !== null) return;
+    if (inline) done.current();
+    else location.replace("#/settings/connections");
+  }, [flow, inline]);
 
+  if (inline)
+    return flow ? (
+      <FlowBody flow={flow} change={change} board={board} reload={load} onDone={onDone} onSignIn={onSignIn} inline path={path} />
+    ) : (
+      <p className="setup-hint" role="status">{error ? `Couldn't load setup: ${error}` : "Loading…"}</p>
+    );
   return (
     <div className="setup-overlay">
       {flow === undefined || flow === null ? (
@@ -64,7 +78,7 @@ function valid(pattern: string, value: string): boolean {
   }
 }
 
-function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: SetupFlowView; change?: boolean; board: Board; reload: () => Promise<void>; onDone: () => void; onSignIn: () => void }) {
+function FlowBody({ flow, change, board, reload, onDone, onSignIn, inline, path }: { flow: SetupFlowView; change?: boolean; board: Board; reload: () => Promise<void>; onDone: () => void; onSignIn: () => void; inline?: boolean; path?: "basic" | "advanced" }) {
   const [error, setError] = useState("");
   // A save that restarted the service, and the reloaded flow's own window: the longer of them is the wait.
   const [savedRestart, setSavedRestart] = useState(0);
@@ -109,7 +123,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
     </button>
   );
   // Two options: each card says its own effort; the header says there is a choice.
-  const head = flow.advanced ? (
+  const head = inline ? null : flow.advanced ? (
     <PageHeader title={flow.title} sub="Two ways to set it up. Start with either; the first can take the second's extras later." />
   ) : (
     <PageHeader title={flow.title} sub={flow.why} status={viaOrg ? <Effort effort="about a minute" /> : <Effort effort={way?.effort ?? flow.effort} admin={flow.admin} />} />
@@ -117,13 +131,14 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
 
   const connect = flow.signin ? `/${flow.signin}/connect` : flow.connect_url;
   let n = 1;
+  const Root = inline ? "div" : "main";
   return (
-    <main className="st-page setup-page">
+    <Root className={inline ? "setup-page setup-inline" : "st-page setup-page"}>
       {head}
       {flow.done && change && <Banner>Changing setup: your current choices are shown. A new pick files a settings change for approval; pasting a secret replaces the saved one (its value is never shown).</Banner>}
       {flow.advanced ? (
         <>
-          <SetupPaths flow={flow} board={board} org={org} reload={reload} fail={fail} restartFor={restartFor} onSaved={setSavedRestart} />
+          <SetupPaths flow={flow} board={board} org={org} reload={reload} fail={fail} restartFor={restartFor} onSaved={setSavedRestart} initial={path} />
           {error && (
             <p className="setup-error" role="alert">
               {error}
@@ -225,7 +240,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
           later
         )}
       </footer>
-    </main>
+    </Root>
   );
 }
 

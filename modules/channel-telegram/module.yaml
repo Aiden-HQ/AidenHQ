@@ -8,13 +8,12 @@ privileged: [ speaks-as-owner ]
 requires: [ board ] # its setup flow on the board
 roles:
   requests: [ kernel.flow-read ] # /status and /waiting read each task's one state (GET /v1/tasks/state)
-# Set up on the board (#/setup/channel-telegram, and the first-run wizard): paste the bot token, then tap a one-time link to
+# Set up on the board (#/setup/channel-telegram, and onboarding's reach screen): paste the bot token, then tap a one-time link to
 # pair the chat. Only the board can mint a code (it sends channel_telegram_pair_token); the paired chat is this service's own
 # state (its data dir), so pairing needs no apply.
 contributes:
   board.setup_flows:
     - order: 20
-      wizard: true
       title: Aiden on your phone
       why: "Chat with Aiden and approve its requests from Telegram, wherever you are."
       effort: about 2 minutes, needs the Telegram app

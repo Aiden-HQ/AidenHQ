@@ -8,7 +8,10 @@ agents:
     description: Chases pull requests waiting on a review in the owner's repositories and drafts nudges to the reviewers.
     reports_to: chief-of-staff
     # The owner reads its results, so it is a teammate (docs/configuration.md "teammate"); an agent only other agents use has none.
-    teammate: { job: Chases PR reviews, sample: "3 PRs wait on review; nudges drafted for 2 reviewers." }
+    teammate:
+      job: Chases PR reviews
+      sample: "3 PRs wait on review; nudges drafted for 2 reviewers."
+      face: { hair: short, accessory: headset, body: none, skin: 6, hair_color: 0, palette: 5 }
     skills: [ tasks.delegate-work ]
     department: outreach # where the board lists it (kernel/defaults.json departments)
     model: ~deepseek/deepseek-flash-latest

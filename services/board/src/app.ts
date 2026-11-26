@@ -44,7 +44,7 @@ import { McpAuthFailed, SIGNIN_LOOPBACK, asksValues, pastedCallback, vendorWords
 import { appliedKey, organisationRoutes, type OrganisationPoint } from "./organisations.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
-import { welcomeRoutes } from "./welcome.js";
+import { FINISHED, welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { Swr } from "./swr.js";
 import { CLOSED_WINDOW_MS, OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
@@ -54,9 +54,9 @@ import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
-import { grantsKeyOf, isTeammate, teammateFor, teammateKeys } from "./teammates.js";
+import { createTeammates, type HireCatalogRow, type HireGrants, grantsKeyOf, isTeammate, teammateFor, teammateKeys } from "./teammates.js";
 import { buildHome, nextEight, type HomeDeps } from "./home.js";
-import { NOTICE_MARKER, askedQuestions, boundQuestions, chatAgent, chatAgentMarker, conversation, foldOutcomeLines, lastWord, pickAgent, type Message, type Question } from "./chats.js";
+import { NOTICE_MARKER, askedQuestions, boundQuestions, chatAgent, chatAgentMarker, conversation, foldOutcomeLines, lastWord, pickAgent, replyQuestions, type Message, type Question } from "./chats.js";
 import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
 import type { StateRow } from "./aidenhq-sdk/task-state-types.js";
 import { addDays, nextWorkday, type Weekday } from "./dates.js";
@@ -112,8 +112,12 @@ export interface AppOptions {
   organisations?: OrganisationPoint[];
   /** The modules' setup flows (board.setup_flows, setup-flows.ts), with each pair token read from the vault; fetchImpl stands in for fetch to the module's pairing endpoint. */
   setupFlows?: { flows: (SetupFlowPoint & { token?: string })[]; fetchImpl?: typeof fetch };
-  /** The first-run wizard's finished marker (data/board/welcome-sent): present means the welcome was sent. */
+  /** Onboarding's finished marker (data/board/welcome-sent): present means onboarding is done. */
   welcomeMarker?: string;
+  /** Files a task for the chief of staff through the kernel (POST /v1/board-tasks): onboarding's finish. */
+  fileTask?: (t: { title: string; description: string; source: string }) => Promise<void>;
+  /** The kernel's push test (POST /v1/notify/test): the fixed test card to one channel's transport, its answer back. */
+  notifyTest?: (to: string) => Promise<{ sent: boolean; off?: true; reason?: string }>;
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
   grading?: Grading;
   /** The modules' Fleet pages (board.pages) and their views' calls through the kernel (module-views.ts). Without it, Fleet lists only its own pages. */
@@ -264,7 +268,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       const value = Reflect.get(client, prop, client);
       if (typeof value !== "function") return value;
       const s = perRequest.getStore()?.session;
-      const account = s && s !== OPERATOR ? s.accountId : undefined;
+      const account = s ? s.accountId : undefined;
       // What the board posts or opens is announced to open boards (events.ts): the task's id only.
       if (prop === "addComment" || prop === "createIssue")
         return async (...args: unknown[]) => {
@@ -302,7 +306,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   /** The signed-in admin's name when that admin is not the owner (what the lane labels "by <name>"). */
   async function laneByline(_req: IncomingMessage): Promise<string | undefined> {
     const s = perRequest.getStore()?.session;
-    return s && s !== OPERATOR ? (await bylines()).get(s.accountId) : undefined;
+    return s ? (await bylines()).get(s.accountId) : undefined;
   }
   /** `{ by }` for something an admin other than the owner wrote (a task or comment id), else nothing. */
   const byOf = (names: Map<string, string>, id: string) => {
@@ -788,7 +792,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       scheduled: store.schedules().get(issue.id) ?? null,
       recurring: rec ? recurringView(rec, await pc.routine(rec.routineId).catch(() => undefined)) : null,
       working: busy.map.get(issue.identifier) ?? null,
-      comments: comments.map((c) => ({ ...commentView(c, ctx.me, ctx.agents), ...byOf(names, c.id) })),
+      comments: comments.map((c) => ({ ...commentView(c, ctx.me, ctx.agents), ...byOf(names, c.id), ...(replyQuestions(c.body) ? { questions: replyQuestions(c.body) } : {}) })),
       files: fileViews(files, ctx.me),
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
@@ -973,7 +977,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const title = text.split("\n")[0]!.replace(/^(?:@\S+|\[(?:telegram|slack)[^\]]*\])\s*/, "").slice(0, 80) || "New chat";
     const description = `${note ? `${text}\n\n${note}` : text}\n\n${chatAgentMarker(agent.id)}`;
     const issue = await pc.createIssue({ title, description, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
-    // The owner's own opening message (a request: the setup wizard's welcome chat has none), so Aiden can pass it on like his
+    // The owner's own opening message (a request; a chat the board opens on its own has none), so Aiden can pass it on like his
     // later messages (/internal/relay, comment_id = the chat's own id). The board keeps only a digest of the description
     // as created, never the text: an agent's edit to the description no longer matches, so it is never passed on.
     if (owned && req) store.setMeta(`${CHAT_OPENING}${issue.id}`, JSON.stringify({ sha: sha256(description), length: text.length, createdAt: new Date().toISOString() }));
@@ -2011,7 +2015,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       handle: (_m, _b, url) => {
         const from = url.searchParams.get("from") ?? undefined;
         if (from !== undefined && Number.isNaN(Date.parse(from))) throw new HttpError(400, "from is an ISO time");
-        return served(`home:${from ?? ""}`, async () => buildHome(await homeDeps(), { accountId: viewer() }, from), 2_000);
+        return served(`home:${from ?? ""}`, async () => {
+          const home = await buildHome(await homeDeps(), { accountId: viewer() }, from);
+          // Day one (onboarding's getting-started band): the owner only.
+          const isOwner = Boolean((await opts.accounts?.names().catch(() => []))?.find((a) => a.id === viewer())?.owner);
+          const start = await hiring.homeStart(viewer(), isOwner, store.meta(FINISHED)).catch(() => undefined);
+          return start ? { ...home, start } : home;
+        }, 2_000);
       },
     },
     {
@@ -2223,16 +2233,19 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     // One module's page (web/src/ModulePage.tsx): its row, its agents, their open work, what it may do and who needs it.
     {
       method: "GET",
-      path: /^\/api\/modules\/(?!browse$)([a-z0-9-]+)$/,
+      // By its `id`: `name`, or `name@marketplace` for a third-party module (the client sends the @ encoded).
+      path: /^\/api\/modules\/(?!browse$)([a-z0-9-]+(?:(?:@|%40)[a-z0-9-]+)?)$/,
       handle: async (m) => {
         const text = readFileSync(process.env.BOARD_MODULES_FILE ?? "/config/modules.json", "utf8");
-        const module = moduleStates(text).find((r) => r.name === m[1]);
+        const id = m[1]!.replace("%40", "@");
+        const module = moduleStates(text).find((r) => r.id === id);
         if (!module) throw new HttpError(404, "no such module");
         const ctx = await context();
         const [routines, open, activity] = await Promise.all([pc.routines().catch(() => []), pc.openIssues(), kernelActivity()]);
         const { compiled, catalog } = readSources(settingsFiles());
         const chat = ctx.labels.find((l) => l.name === "chat");
-        const mine = module.agents.flatMap((key) => { const a = agentByKey(ctx.agents, key); return a ? [{ key, a }] : []; });
+        // A browse listing has no live agents, work or routines: a same-named key belongs to something installed.
+        const mine = module.browse ? [] : module.agents.flatMap((key) => { const a = agentByKey(ctx.agents, key); return a ? [{ key, a }] : []; });
         const owned = mine.map(({ a }) => tasksOf(open, a.id, chat?.id));
         const states = await stateRows(owned.flat().map((i) => i.id));
         const tasks = owned.map((list) => splitTasks(list, states, ctx.agents));
@@ -2244,8 +2257,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           // Its routines: on or off as Paperclip runs them (setup creates one with its status; pause and resume are the live
           // controls after that), else as compiled, and whose. The live row is setup's for that key (grants.json routine_keys),
           // never a title match: an owner's recurring task may share a title.
-          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; const id = Object.entries(routineKeys()).find(([, k]) => k === key)?.[0]; const live = id ? routines.find((x) => x.id === id && x.status !== "archived") : undefined; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", ...(live ? { id: live.id } : {}), on: (live?.status ?? r.status) !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
-          authority: moduleAuthority(text, module.name),
+          routines: module.browse ? [] : module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; const id = Object.entries(routineKeys()).find(([, k]) => k === key)?.[0]; const live = id ? routines.find((x) => x.id === id && x.status !== "archived") : undefined; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", ...(live ? { id: live.id } : {}), on: (live?.status ?? r.status) !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
+          authority: moduleAuthority(text, module),
           neededBy: module.neededBy,
           requires: module.requires,
         };
@@ -2651,6 +2664,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       return s && `${redirectOrigin(s, host) ?? httpsBoard?.origin ?? SIGNIN_LOOPBACK}${s.callback}`;
     },
   }) : undefined;
+  const hiring = createTeammates({
+    pc, store, states: taskStates,
+    sources: () => { const s = readSources(settingsFiles()); return { compiled: s.compiled, catalog: s.catalog as HireCatalogRow[], grants: s.grants as HireGrants }; },
+    flowStates: async () => (await setupFlows?.states()) ?? [],
+  });
   const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> }[] = [
     { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => opts.accounts!.call("list", who) },
     // Your own signed-in browsers.
@@ -2667,18 +2685,22 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/role$/, handle: async (m, body, who) => opts.accounts!.call("role", who, { id: m[1]!, role: parse(z.object({ role: RoleSchema }).strict(), body).role }) },
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/(disable|enable)$/, handle: async (m, _b, who) => opts.accounts!.call(m[2]!, who, { id: m[1]! }) },
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/link$/, handle: async (m, _b, who) => opts.accounts!.call("link", who, { id: m[1]! }) },
-    ...(opts.accounts && opts.welcomeMarker
-      ? welcomeRoutes({
-          accounts: opts.accounts,
-          store,
-          flows: opts.setupFlows?.flows ?? [],
-          marker: opts.welcomeMarker,
-          post: (text) => {
-            const chats = routes.find((r) => r.method === "POST" && r.path.test("/api/chats"))!;
-            return perRequest.run({ session: OPERATOR }, () => chats.handle([] as unknown as RegExpMatchArray, { text }, undefined as never, undefined as never)) as Promise<{ identifier: string }>;
-          },
-        })
+    ...(opts.accounts && opts.welcomeMarker && opts.fileTask
+      ? welcomeRoutes({ accounts: opts.accounts, store, marker: opts.welcomeMarker, fileTask: opts.fileTask, teammates: () => hiring.rows(false) })
       : []),
+    // Hiring and a teammate's setup (teammates.ts): the list, its start and trial, each account's set-up-next queue.
+    ...hiring.routes,
+    // The push test (onboarding's reach screen): the kernel sends its fixed card to that one transport and answers as it did.
+    {
+      method: "POST",
+      path: /^\/api\/notify\/test$/,
+      handle: async (_m, body, who) => {
+        if (!who.account.owner) throw new HttpError(403, "only the owner sends a push test");
+        const { transport } = parse(z.object({ transport: z.enum(["channel-telegram", "slack"]) }).strict(), body);
+        if (!opts.notifyTest) throw new HttpError(503, "the board can't reach the kernel's notify");
+        return opts.notifyTest(transport);
+      },
+    },
     // A sign-in's per-install value (board.signins `secrets`), from its Connect dialog: the kernel checks it against the
     // declared pattern, writes it to the vault and recreates the proxy, which then reads it (the dialog waits for that).
     {
@@ -2958,7 +2980,20 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const mcpAuth = opts.accounts && opts.adminUrl ? createMcpAuth(opts.accounts, opts.adminUrl) : undefined;
   /** The same dispatch with the bearer's own session (checked per request), for the tools' `callRoute`. */
   const sessions = new WeakMap<IncomingMessage, { session: BoardSession; credential: SettingsCredential }>();
-  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [], setupStates: async () => (await setupFlows?.states()) ?? [], pages: () => opts.views?.pages() ?? [], viewHtml: (id) => viewCall(() => opts.views!.html(id)) });
+  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [], setupStates: async () => (await setupFlows?.states()) ?? [], pages: () => opts.views?.pages() ?? [], viewHtml: (id) => viewCall(() => opts.views!.html(id)),
+    // An account route (onboarding's: hiring, a teammate's setup, the push test, the finish) as the MCP session's account, so each
+    // keeps its one check (owner only, and the rest) and its one dispatch. The session carries only the account id: who it is
+    // comes from the kernel's account list. Never HTTP to itself.
+    accountRoute: async (method, path, body, req) => {
+      const s = sessions.get(req)!;
+      const url = new URL(path, "http://board");
+      const a = accountRoutes.find((r) => r.method === method && r.path.test(url.pathname));
+      if (!a) throw new HttpError(404, `no such route ${method} ${url.pathname}`);
+      const account = (await opts.accounts!.names()).find((x) => x.id === s.session.accountId);
+      if (!account) throw new HttpError(403, "this account has no board access");
+      const who: AccountSession = { account: { ...account, role: "admin" }, session: { id: "mcp", expiresAt: "" }, ready: true, token: "" };
+      return perRequest.run({ session: s.session, via: "mcp", credential: s.credential, req }, () => a.handle(url.pathname.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase()));
+    } });
 
   /** /mcp and its discovery document: bearer only (never a cookie), before the board's own request checks. */
   async function handleMcp(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -3093,8 +3128,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 }
 
 /** ops/setup.sh's welcome chat (the operator's key): written as the owner, and never an approver. */
-const OPERATOR: BoardSession = { accountId: "operator", role: "admin" };
-
 const statusOf = (err: unknown) => (err instanceof HttpError || err instanceof SessionError || err instanceof AccountError ? err.status : err instanceof BadRequest ? 400 : err instanceof PaperclipError ? (err.status === 404 ? 404 : 502) : 500);
 
 /** A percent-decoded path part; a malformed escape is the caller's 400, not a thrown URIError. */

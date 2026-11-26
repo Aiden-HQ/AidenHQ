@@ -8,6 +8,11 @@ agents:
     name: Triage Bot
     description: Sorts a named feed (a Slack channel or label) into act, delegate or ignore and files tasks for the ones that need action; does not do the work itself.
     reports_to: chief-of-staff
+    # The owner reads its results, so it is a teammate (docs/configuration.md "teammate"); an agent only other agents use has none.
+    teammate:
+      job: Triages your feed
+      sample: "12 new in the feed: 2 need you, 3 handed on, the rest ignored."
+      face: { hair: bun, accessory: pencil, body: badge, skin: 1, hair_color: 6, palette: 8 }
     skills: [ tasks.delegate-work ]
     model: ~deepseek/deepseek-flash-latest
     connections:

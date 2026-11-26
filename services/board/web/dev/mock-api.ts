@@ -1,6 +1,8 @@
 // A fixture-backed stand-in for the board's API, for working on the web UI without a kernel or Paperclip:
 //   node web/dev/mock-api.ts & npm run dev:web     (vite proxies /api to :3120)
-// Neutral sample data only. Writes answer ok and change nothing (an answer to WOR-821 is refused 409, the "already answered" case). GET /__mock?welcome=1|0 shows or hides the first-run wizard;
+// Neutral sample data only. Writes answer ok and change nothing (an answer to WOR-821 is refused 409, the "already answered" case). GET /__mock?welcome=1|0 starts or ends onboarding
+// (a fresh install: only Aiden on the team; hiring and onboarding's writes are kept in memory, a module change goes live in 5 s, a trial finds 4 tasks in 3 s,
+// none with ?empty=1); ?connected=1 marks every setup flow done; ?key=1 shows the recovery key screen first;
 // GET /__mock?empty=1 empties every list (empty states, Home's fresh install); ?nocal=1 drops Home's calendar block; ?slow=<ms> delays every answer (loading states); ?search=keyword|down
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
 // ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
@@ -28,7 +30,7 @@ const MODEL_CATALOG = ([
   ["z-ai/glm-5.3", "Z.ai: GLM 5.3", 25, 202752, 0.4, 1.5, 1, 1], ["z-ai/glm-5.2", "Z.ai: GLM 5.2", 80, 202752, 0.4, 1.5, 1, 1], ["moonshotai/kimi-k3.1-pro", "MoonshotAI: Kimi K3.1 Pro", 30, 262144, 0.6, 2.5, 1, 1], ["moonshotai/kimi-k3", "MoonshotAI: Kimi K3", 120, 262144, 0.6, 2.5, 1, 1],
   ["meta-llama/llama-4.5-70b-instruct", "Meta: Llama 4.5 70B Instruct", 100, 131072, 0.15, 0.4, 1, 0], ["meta-llama/llama-4.5-8b-instruct", "Meta: Llama 4.5 8B Instruct", 100, 131072, 0.03, 0.06, 0, 0], ["qwen/qwen3.6-coder", "Qwen: Qwen3.6 Coder", 50, 262144, 0.2, 0.9, 1, 0], ["mistralai/mistral-large-3", "Mistral: Mistral Large 3", 110, 131072, 2, 6, 1, 0], ["x-ai/grok-5", "xAI: Grok 5", 45, 256000, 3, 15, 1, 1], ["minimax/minimax-m3", "MiniMax: M3", 35, 1000000, 0.3, 1.2, 1, 1],
 ] as [string, string, number, number, number, number, number, number][]).map(([id, name, d, context, i, o, tools, reasoning]) => ({ id, name, provider: id.replace(/^~/, "").split("/")[0], created: Math.floor(now / 1000) - d * 86400, context, in: i, out: o, tools: !!tools, reasoning: !!reasoning }));
-const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none" };
+const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none", connected: false, key: false };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
@@ -142,7 +144,10 @@ let views = [
   { id: "00000000-0000-4000-8000-0000000000a1", name: "Needs review", rev: 1, spec: { layout: "work", groupBy: "none", filters: { label: ["l-review"] } } },
   { id: "00000000-0000-4000-8000-0000000000a2", name: "Engineering", rev: 1, spec: { layout: "work", groupBy: "none", filters: { agent: ["engineer", "chief-of-staff", "platform-engineer"], updated: "7d" } } },
 ];
-// A module's Fleet page (board.pages): the example view (web/dev/example-view.html) and its two tools, as the kernel would relay them.
+// A module's Fleet page (board.pages): the example view (web/dev/example-view.html) with the shared kit inlined, as a module's
+// mcp.ts pageHtml serves its page.html, and its two tools, as the kernel would relay them.
+const kitFile = (f: string) => readFileSync(new URL(`../../../shared/${f}`, import.meta.url), "utf8");
+const exampleView = () => readFileSync(new URL("./example-view.html", import.meta.url), "utf8").replace("/*kit:css*/", () => kitFile("page-kit.css")).replace("/*kit:js*/", () => kitFile("page-kit.js"));
 const PAGES = [{ id: "notes", title: "Notes", icon: "list", order: 10, module: "example" }, { id: "code-review", title: "Reviews", icon: "reviews", order: 5, module: "code-review" }];
 // The Notes page's last Save stays "applying" for 8 seconds, then lands (the Save-while-applying state).
 let savedAt = 0, savedId = "WOR-901";
@@ -282,14 +287,79 @@ const apps = () => mock.empty ? [] : [
   { name: "hiring", healthy: false, state: "crashed", sha: "c09e1aa", deployed_at: now - 7_200_000, deployed_by: "Engineer", repo: "acme-agents/hiring", incident: { opened_at: ago(30), kind: "crash", detail: "Exited with code 1 three times in five minutes" } },
 ];
 
-const moduleRow = (name: string, description: string, state: string, over = {}) => ({ name, description, agents: [], requires: [], marketplace: "aidenhq", tier: "official", state, neededBy: [], connections: [], routines: [], apps: [], settings: {}, revision: "a1b2c3d", pinned: null, source: null, setup: null, ...over });
+const moduleRow = (name: string, description: string, state: string, over = {}) => ({ name, id: name, browse: false, description, agents: [], requires: [], marketplace: "aidenhq", tier: "official", state, neededBy: [], connections: [], routines: [], apps: [], settings: {}, revision: "a1b2c3d", pinned: null, source: null, setup: null, ...over });
+// Hiring and onboarding (src/teammates.ts): every catalog teammate, official first, then a third-party marketplace's
+// browse rows (one with a kit face, one without: a monogram). With ?welcome=1 only Aiden is on the team until a module
+// change for a teammate goes live (5 s after it is filed).
+const hireMock = { filed: new Map<string, { at: number; n: number }>(), dismissed: new Set<string>(), trials: new Map<string, number>(), queue: { next: [] as string[], later: [] as string[] } as { first?: string; next: string[]; later: string[] }, finishedAt: 0, chats: new Map<string, { at: number; text: string }>() };
+const HM = (key: string, module: string, description: string, department: string, o: { requires?: string[]; connections?: string[]; marketplace?: string; first?: number; team?: boolean } = {}) => {
+  const a = roster.find((r) => r.key === key);
+  const mk = o.marketplace ?? "aidenhq";
+  const id = mk === "aidenhq" ? module : `${module}@${mk}`;
+  return { key, name: a?.name ?? "", job: a?.teammate?.job ?? "", sample: a?.teammate?.sample ?? "", description, department, module, id, ref: `${id}:${key}`, marketplace: mk, browse: mk !== "aidenhq", face: a?.teammate?.face ?? null, requires: o.requires ?? [], connections: o.connections ?? [], first: o.first, team: o.team ?? false };
+};
+const HIRE = [
+  HM("chief-of-staff", "core", "Your front door: reads everything, hands work to the team, and writes your morning brief.", "Chief of staff", { team: true }),
+  HM("open-loops", "open-loops", "Spots what people owe you in Slack and email, tracks it, and drafts a polite chaser when it goes quiet.", "Chief of staff", { requires: ["intake"], connections: ["slack", "google"], first: 1, team: true }),
+  HM("meetings", "meetings", "Takes notes for every meeting, files each action item to its owner and follows them up.", "Desk", { connections: ["google"], team: true }),
+  HM("reviewer-manager", "code-review", "Reviews every pull request on the repos you choose and explains each finding.", "Engineering", { requires: ["github"], team: true }),
+  HM("ship", "ship", "Fixes review findings and red checks, and merges once everything is green.", "Engineering", { requires: ["github", "code-review"], team: true }),
+  HM("app-maintainer", "apps-platform", "Describe a tool, get a working app that stays up.", "Engineering", { team: true }),
+  HM("researcher", "research", "Long research, drafts and recurring reports, from your company's own sources.", "Chief of staff", { team: true }),
+  HM("architect", "agent-builder", "Builds a new teammate from a sentence when nothing in your marketplaces fits.", "Chief of staff", { team: true }),
+  HM("security-watch", "security", "Scans what you run for known vulnerabilities, verifies each, and opens the fix.", "Engineering", { requires: ["github"] }),
+  HM("maintainer", "maintainer", "Keeps your repos healthy: triages issues and sees fixes through to merged PRs.", "Engineering", { requires: ["github"] }),
+  { ...HM("twin", "twin", "A one-page brief before any meeting you flag: attendees, open threads, decisions pending.", "Desk", { marketplace: "acme", connections: ["google"] }), name: "Eve", job: "Executive briefings", sample: "Board meeting tomorrow: 2 decisions, 3 likely questions.", face: { kit: { hair: "bun", accessory: "glasses", body: "none", skin: 3, hair_color: 2, palette: 6 } } },
+  { ...HM("penny", "board-pack", "Assembles the board pack from finance sheets and past minutes, with directors' open questions.", "Desk", { marketplace: "acme", connections: ["google"] }), name: "Penny", job: "Board pack", sample: "Board pack v1 ready: 14 pages, 3 open questions." },
+];
+type Hire = (typeof HIRE)[number];
+const filedAt = (h: Hire) => hireMock.filed.get(h.id)?.at ?? 0;
+const hired = (h: Hire) => (mock.welcome || hireMock.finishedAt ? h.key === "chief-of-staff" : h.team) || (filedAt(h) > 0 && Date.now() - filedAt(h) > 5_000);
+const hireRow = (h: Hire) => { const { first: _f, team: _t, ...row } = h; const on = hired(h); return { ...row, onTeam: on, connections: on ? row.connections.filter((m) => !flows().flows.some((f) => f.module === m && f.done)) : row.connections }; };
+const teammates = () => {
+  const rows = HIRE.map(hireRow);
+  const avail = HIRE.filter((h) => !hired(h));
+  const first = [...avail].sort((a, b) => (a.first ?? 1e9) - (b.first ?? 1e9) || a.job.localeCompare(b.job))[0];
+  const arch = HIRE.find((h) => h.key === "architect")!;
+  return { rows, first: first?.ref ?? null, builder: hired(arch) ? { key: arch.key, name: arch.name, face: arch.face } : null };
+};
+const hireChanges = () => [...hireMock.filed].map(([id, f]) => { const age = Date.now() - f.at; return { identifier: `WOR-${f.n}`, title: `Turn on ${id}`, createdAt: new Date(f.at).toISOString(), items: [{ kind: "module", name: id, on: true }], stage: age < 1_500 ? "working" : age < 5_000 ? "applying" : "applied", tier: 1 }; });
+const TRIAL_FOUND = [
+  { identifier: "WOR-871", title: "Jonas Weber · signed contract (5 days quiet)", labels: ["waiting-on"] },
+  { identifier: "WOR-872", title: "Priya Nair · design doc review", labels: ["waiting-on"] },
+  { identifier: "WOR-873", title: "Lena Park asked for the hiring loop feedback", labels: ["needs-response"] },
+  { identifier: "WOR-874", title: "Omar Haddad · Q1 budget numbers, due Friday", labels: ["waiting-on"] },
+];
+const trial = (ref: string) => { const at = hireMock.trials.get(ref); return !at ? { state: "none", found: [] } : Date.now() - at < 3_000 ? { state: "running", found: [] } : { state: "done", found: mock.empty ? [] : TRIAL_FOUND }; };
+const homeStart = () => {
+  const avail = HIRE.filter((h) => !hired(h));
+  const next = hireMock.queue.next.map((r) => avail.find((h) => h.ref === r)).find(Boolean);
+  if (!next && !(hireMock.finishedAt && Date.now() - hireMock.finishedAt < 7 * 86_400_000)) return undefined;
+  return { nextUp: next ? hireRow(next) : null, more: avail.filter((h) => h !== next).slice(0, 8).map((h) => ({ key: h.key, name: h.name, job: h.job, face: h.face })) };
+};
+/** The builder's chat on a description: looking for 3 s, then its form (Extend a teammate, Install a listing, Build new). */
+const hireChat = (ref: string) => {
+  const c = hireMock.chats.get(ref)!;
+  const asked = Date.now() - c.at > 3_000;
+  const arch = HIRE.find((h) => h.key === "architect")!;
+  return {
+    id: `id-${ref}`, identifier: ref, title: c.text.slice(0, 80), open: true, agent: { key: arch.key, name: arch.name },
+    state: asked ? named(ref, st("waiting", "owner_wait", { wait_since: ago(0.1), question: "Which way?" })) : named(ref, STATES.running),
+    messages: [
+      { kind: "owner", id: "h1", text: c.text, at: new Date(c.at).toISOString() },
+      ...(asked ? [{ kind: "reply", id: "h2", agent: arch.name, at: ago(0.1), text: "I checked your team and your marketplaces. Three could do this:\n\n- **Extend Rhea** · she already reads Drive and writes briefs; a board-prep routine covers it. No new connections.\n- **Install Eve** (Executive briefings) · from acme, reviewed when installed. Needs Google.\n- **Build new** · I design one from your description, reusing what you have.", questions: [{ question: "Which way?", options: ["Extend researcher", "Install twin@acme", "Build new"] }] }] : []),
+    ],
+    working: asked ? null : { agent: arch.name, since: ago(0.05), queued: false, said: "Looking in your team and marketplaces", plan: [] },
+    files: [], approvals: [], handedOut: [], parent: null, runs: [], asks: [],
+  };
+};
 const modules = () => [
   moduleRow("core", "The chief of staff and the pieces every install needs.", "core", { agents: ["chief-of-staff"] }),
-  moduleRow("open-loops", "Tracks promises and follow-ups across Slack and email.", "on", { agents: ["open-loops"], connections: ["slack"] }),
   moduleRow("engineering", "Engineers that build and fix code in your repos.", "on", { agents: ["engineer", "ui-designer"], connections: ["github"] }),
   moduleRow("apps-platform", "Runs the apps agents build, each in its own sandbox.", "dependency", { neededBy: ["engineering"] }),
   moduleRow("google", "Gmail and Calendar for every agent you grant.", "on", { connections: ["google_workspace"], setup: "google" }),
-  moduleRow("meetings", "Notes and action items from every meeting.", "off", { agents: ["meetings"] }),
+  // Hiring's modules (below): off until a module change for them goes live; a third-party listing is a browse row.
+  ...HIRE.filter((h) => h.module !== "core").map((h) => ({ ...moduleRow(h.module, h.description, hired(h) ? "on" : "off", { agents: [h.key], requires: h.requires }), id: h.id, marketplace: h.marketplace, tier: h.browse ? "declared" : "official", browse: h.browse && !hired(h) })),
 ];
 
 const settingsData = () => ({
@@ -304,7 +374,8 @@ const settingsData = () => ({
     { key: "review_repos", module: "code-review", value: ["AidenHQ", "aidenhq-distro", "invoices-app"], set: true, known: true, switch: false, doc: "Repos. The repositories reviewed when a pull request opens." },
     { key: "review_when", module: "code-review", value: "When a PR opens, then once after the next push", set: false, known: true, switch: false, doc: "When. When a review runs." },
     { key: "review_skip", module: "code-review", value: ["Docs-only PRs"], set: true, known: true, switch: false, doc: "Skips. Pull requests that get no review." },
-    { key: "quiet_start", module: "core", value: false, set: true, known: true, switch: true, doc: "Nothing runs on a schedule until you turn it on." },
+    { key: "quiet_start", module: "core", value: mock.welcome, set: true, known: true, switch: true, doc: "Nothing runs on a schedule until you turn it on." },
+    { key: "notify_transports", module: "owner-channel", value: null, set: false, known: true, default: ["channel-telegram", "slack"], switch: false, doc: "Where the owner is reached, in order." },
   ],
   agents: [{
     recurring: [],
@@ -368,14 +439,14 @@ const explanation = (id: string) => ({
   outcome: { ok: true, text: "Pushed." },
 });
 
-const welcome = () => ({ finished: !mock.welcome, modelReady: true, recoveryKeyWaiting: mock.welcome, wizard: ["google", "telegram"] });
+const welcome = () => ({ finished: !mock.welcome, modelReady: true, recoveryKeyWaiting: mock.welcome && mock.key });
 /** The Slack flow in the state ?slack= names (modules/slack/module.yaml, as GET /api/setup-flows serves it). */
 const slackFlow = () => {
   const k = mock.slack;
   const signedIn = k !== "none";
   const bot = k === "full" || k === "old";
   return {
-    module: "slack", order: 30, title: "Slack", label: "Read Slack as you", wizard: true,
+    module: "slack", order: 30, title: "Slack", label: "Read Slack as you",
     why: "Agents search and read the Slack you can see, save drafts for you, and (if you allow it) post as you, each post reviewed first.",
     effort: "about 1 minute", admin: "a Slack workspace admin may need to approve the app",
     capabilities: ["search and read the Slack you can see", "drafts, and reviewed posts as you when you allow it"],
@@ -418,11 +489,11 @@ const googleFlow = () => ({
 });
 const flows = () => ({
   board_url: "https://board.example.com", named: true,
-  flows: [
+  flows: ([
     { ...googleFlow(), present: { google_client_id: false, google_client_secret: false }, signedIn: false, paired: false, done: false, dismissed: false },
     slackFlow(),
-    { module: "telegram", order: 2, title: "Talk to Aiden on Telegram", why: "Reach Aiden from your phone and approve with one tap.", effort: "3 minutes", wizard: true, steps: "1. Open @BotFather and create a bot.\n2. Paste its token below.", fields: [{ secret: "telegram_bot_token", label: "Bot token", pattern: "^\\d+:[\\w-]+$" }], present: { telegram_bot_token: false }, signedIn: false, paired: false, done: false, dismissed: false },
-  ],
+    { module: "channel-telegram", order: 2, title: "Telegram", why: "Reach Aiden from your phone and approve with one tap.", effort: "3 minutes", steps: "1. Open @BotFather and create a bot.\n2. Paste its token below.", fields: [{ secret: "telegram_bot_token", label: "Bot token", pattern: "^\\d+:[\\w-]+$" }], present: { telegram_bot_token: false }, signedIn: false, paired: false, done: false, dismissed: false },
+  ] as Record<string, any>[]).map((f): Record<string, any> => mock.connected ? { ...f, done: true, signedIn: true, paired: true, ...(f.advanced ? { advanced: { ...f.advanced, done: true } } : {}) } : { ...f, dismissed: hireMock.dismissed.has(f.module) }),
 });
 
 // The Reviews page: a watched repo, a PR run, two whole-repo batches, and the catalog a repo review offers.
@@ -614,6 +685,26 @@ function route(method: string, url: URL): [number, unknown] {
   if (opened) { const tok = `${"mock".repeat(6)}.${"sig".repeat(15)}`; return [200, { term: `/sessions/${opened[1]}/${tok}/term/` }]; }
   if (method === "POST" && p === "/api/home/seen") return [200, { seen: lastBody.as_of }];
   if (method === "POST" && p === "/api/home/snooze") { if (lastBody.on) homeMock.snoozed.add(lastBody.id); else homeMock.snoozed.delete(lastBody.id); return [200, lastBody.on ? { until: TOMORROW_8 } : {}]; }
+  // Hiring and onboarding.
+  if (p === "/api/teammates") return [200, teammates()];
+  if (p === "/api/teammates/queue") { if (method === "PUT") hireMock.queue = { ...lastBody }; return [200, hireMock.queue]; }
+  const tm = /^\/api\/teammates\/([^/]+)\/(start|trial)$/.exec(p);
+  if (tm) {
+    const ref = decodeURIComponent(tm[1]!);
+    if (!HIRE.some((h) => h.ref === ref)) return [404, { error: "no such teammate" }];
+    if (tm[2] === "trial") return [200, trial(ref)];
+    if (lastBody.trial !== false && !hireMock.trials.has(ref)) hireMock.trials.set(ref, Date.now());
+    return [200, { resumed: ["inbox-scan", "open-loops-sweep"], trials: lastBody.trial === false ? [] : ["inbox-lookback"] }];
+  }
+  if (method === "POST" && p === "/api/notify/test") return [200, { sent: true }];
+  if (method === "POST" && p === "/api/welcome/finish") return (mock.welcome = false, hireMock.finishedAt = Date.now(), [200, { ok: true }]);
+  if (method === "POST" && /^\/api\/setup-flows\/[^/]+\/dismiss$/.test(p)) return (hireMock.dismissed.add(p.split("/")[3]!), [200, { ok: true }]);
+  if (method === "POST" && p === "/api/settings/change") {
+    for (const ch of lastBody.changes ?? []) if (ch.kind === "module" && ch.on && HIRE.some((h) => h.id === ch.name) && !hireMock.filed.has(ch.name)) hireMock.filed.set(ch.name, { at: Date.now(), n: 880 + hireMock.filed.size });
+    return [200, { identifier: "WOR-900" }];
+  }
+  if (method === "POST" && p === "/api/chats" && lastBody.agent === "architect") return (hireMock.chats.set("WOR-860", { at: Date.now(), text: String(lastBody.text ?? "") }), [200, { identifier: "WOR-860" }]);
+  if (p === "/api/chats/WOR-860" && hireMock.chats.has("WOR-860")) return [200, hireChat("WOR-860")];
   if (method === "POST" && p === "/api/chats") { const to = /^@(\w+)/.exec(String(lastBody.text ?? ""))?.[1]?.toLowerCase(); const mate = lastBody.agent === "reviewer-manager" || (to && roster.find((r) => r.teammate && r.name.toLowerCase() === to)); return [200, { identifier: mate ? "WOR-830" : "WOR-820" }]; }
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   if (p.startsWith("/api/models/")) return [200, { default: "openrouter/~deepseek/deepseek-flash-latest", models: ["openrouter/~deepseek/deepseek-flash-latest", "openrouter/~openai/gpt-luna-latest", "openrouter/z-ai/glm-5.3"], efforts: ["low", "medium", "high"] }];
@@ -627,7 +718,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/welcome": return [200, welcome()];
     case "/api/organisations": return [200, mock.slack === "org" ? { organisations: [{ id: "acme", name: "Acme", domains: ["acme.example"], connections: ["slack"] }], suggested: "acme", chosen: "acme", applied: { slack: "acme" } } : mock.org ? { organisations: [{ id: "example", name: "Example Inc", domains: ["example.com"], connections: ["google", "github"] }], suggested: mock.email.endsWith("@example.com") ? "example" : null, chosen: null, applied: {} } : { organisations: [], suggested: null, chosen: null, applied: {} }];
     case "/api/setup-flows": return [200, flows()];
-    case "/api/home": return [200, homeData()];
+    case "/api/home": return [200, { ...homeData(), start: homeStart() }];
     case "/api/chats": if (url.searchParams.get("agent")) { const r = agentChats(url.searchParams.get("agent")!, url.searchParams.get("state") ?? "active", Number(url.searchParams.get("offset")) || 0); return r ? [200, r] : [404, { error: "no such agent" }]; } return [200, { chats: chatRows(), agents: [{ key: "chief-of-staff", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];
     case "/api/needs-you": return [200, mock.empty ? { counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, approvals: 0, items: [] } : { counts: { needs_you: 6, failed: 1, unexplained_idle: 3 }, approvals: 2, items: [
@@ -648,10 +739,10 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/apps": return [200, { apps: apps() }];
     case "/api/app-admins": return [200, { apps: [] }];
     case "/api/modules": return [200, { modules: modules(), advisories: [] }];
-    case "/api/modules/browse": return [200, { modules: [{ name: "hiring", description: "Screens candidates and schedules interviews.", marketplace: "aidenhq", tier: "official", adds: ["agent", "app"], installed: false }] }];
+    case "/api/modules/browse": return [200, { modules: [{ name: "hiring", id: "hiring", browse: false, description: "Screens candidates and schedules interviews.", marketplace: "aidenhq", tier: "official", adds: ["agent", "app"], installed: false }] }];
     case "/api/marketplaces": return [200, { marketplaces: [{ name: "aidenhq", source: "github:aidenhq/modules", sha: "a1b2c3d", modules: 14, newer: false }] }];
     case "/api/settings": return [200, settingsData()];
-    case "/api/settings/changes": return [200, { changes: notesChange() }];
+    case "/api/settings/changes": return [200, { changes: [...hireChanges(), ...notesChange()] }];
     case "/api/settings/connections": return [200, connections()];
     case "/api/accounts": return [200, { accounts: [{ id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true, twoFactorEnabled: true, disabled: false, lockedUntil: null, createdAt: ago(40000) }], me: "u1" }];
     case "/api/accounts/sessions": return [200, { sessions: [{ id: "s1", userAgent: "Safari on macOS", ipAddress: "192.0.2.10", createdAt: ago(2000), updatedAt: ago(1), current: true }] }];
@@ -690,7 +781,7 @@ function route(method: string, url: URL): [number, unknown] {
   }
   if ((x = m(/^\/api\/agents\/([^/]+)\/scorecard$/))) return [200, { done: { count: 14, prior: 9, tasks: [] }, reopen: { graded: 12, reopened: 1 }, approvals: { filed: 6, rejected: 1, priorRejected: 2 }, runsFailed: 1, cost: { usd: 4.18, prior: 5.02, perDone: 0.3, billed: true }, daily: days.map((day, i) => ({ day, done: [1, 3, 2, 0, 4, 2, 2][i], costUsd: [0.4, 0.9, 0.6, 0.1, 1.1, 0.5, 0.58][i] })) }];
   if ((x = m(/^\/api\/modules\/([^/]+)$/))) {
-    const mod = modules().find((r) => r.name === x![1]) ?? modules()[0]!;
+    const mod = modules().find((r) => r.id === decodeURIComponent(x![1]!)) ?? modules()[0]!;
     return [200, { module: mod, agents: mod.agents.map(profile), ongoing: [], routines: [], authority: { connections: mod.connections, writes: [{ kind: "push", tier: 1 }], secrets: [], prompts: [], readme: `# ${mod.name}\n\n${mod.description}` }, neededBy: mod.neededBy, requires: mod.requires }];
   }
   return [404, { error: `mock: no fixture for ${p}` }];
@@ -721,7 +812,9 @@ createServer((req, res) => {
   if (url.pathname === "/__mock") {
     if (url.searchParams.has("slowSessions")) mock.slowSessions = Number(url.searchParams.get("slowSessions"));
     for (const k of ["sessions", "term"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) ?? mock[k];
-    for (const k of ["welcome", "empty", "org"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) === "1";
+    for (const k of ["welcome", "empty", "org", "connected", "key"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) === "1";
+    // Onboarding starts over: nothing filed, queued, tried or skipped.
+    if (url.searchParams.get("welcome") === "1") Object.assign(hireMock, { filed: new Map(), dismissed: new Set(), trials: new Map(), queue: { next: [], later: [] }, finishedAt: 0, chats: new Map() });
     if (url.searchParams.has("email")) mock.email = url.searchParams.get("email") ?? mock.email;
     if (url.searchParams.has("slow")) mock.slow = Number(url.searchParams.get("slow"));
     if (url.searchParams.has("search")) mock.search = url.searchParams.get("search") ?? "ok";
@@ -742,7 +835,7 @@ createServer((req, res) => {
   // A module-shipped teammate face (the board's GET /api/faces/<key>): one neutral fixture.
   if (url.pathname === "/api/faces/acme-bot") return res.writeHead(200, { "content-type": "image/svg+xml", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox" }).end(readFileSync(new URL("./acme-bot.svg", import.meta.url)));
   if (url.pathname.startsWith("/api/faces/")) return res.writeHead(404).end();
-  if (url.pathname === "/api/pages/notes/frame") return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(readFileSync(new URL("./example-view.html", import.meta.url)));
+  if (url.pathname === "/api/pages/notes/frame") return res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP }).end(exampleView());
   // A session's terminal and web view: stand-ins for ttyd and opencode's web UI behind the board's proxy (src/sessions.ts).
   const frame = /^\/sessions\/(id-93\d)\/[\w.-]+\/(term)\//.exec(url.pathname);
   if (frame) {

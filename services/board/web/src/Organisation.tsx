@@ -1,6 +1,6 @@
 // Your organisation (modules/marketplace.json `organisations`): members of an organisation that runs internal apps sign in with
 // its apps, so they never make their own. Choosing one fills those connections' client IDs; each then connects as usual. Shown
-// on Settings > Connections and as the wizard's first step; nothing when the catalog lists none.
+// on Settings > Connections and as onboarding's first screen; nothing when the catalog lists none.
 import { useEffect, useState } from "react";
 import { SignInRequired, api, type Organisations } from "./api";
 import { displayName } from "./connections";
@@ -23,7 +23,7 @@ function initialPick(d: Organisations, module: string | undefined, bare: boolean
 }
 
 /**
- * `onContinue` (the wizard): one primary Continue that applies the picked organisation, or moves on with None, and always shows
+ * `onContinue` (onboarding): one primary Continue that applies the picked organisation, or moves on with None, and always shows
  * the choice. Otherwise (Settings) a chosen organisation collapses to a line with Change. `bare` (inside a setup flow's way, for its
  * `module`): a dropdown of the organisations and its button, applying only that module's client, with no card or None.
  */

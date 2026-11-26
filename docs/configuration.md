@@ -89,6 +89,11 @@ outcomes:
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
   `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.
+- **A trial routine:** `trial: true` on a product module's routine with no `schedules` and no `event` (compile refuses
+  any other combination): it runs once when the owner sets up a teammate of that module or of one that requires it
+  (onboarding and hiring, the board's `POST /api/teammates/<ref>/start`), e.g. Intake's `inbox-lookback`. The same setup
+  resumes the teammate's paused scheduled and event routines and those of its module's hidden agents (and of the modules it
+  requires), never another teammate's.
 - **Missed schedule ticks:** setup sets every routine to catch up (`enqueue_missed_with_cap`), so a tick Paperclip lost (a stalled scheduler, a restart) runs on the next one instead of being dropped. Paperclip enqueues one run per missed tick (at most 25; one for crons that fire 24+ times a day); `always_enqueue` routines skip missed ticks.
 - **A model per routine:** `model: <id>` on a routine runs its tasks on that model instead of the agent's (e.g. a cheap
   model for a frequent sweep, the agent's stronger one for everything else). Compile writes it into the agent's grants
@@ -149,7 +154,8 @@ outcomes:
     with a script, an event handler, `foreignObject`, an entity, `@import` or an outside `href`/`url(` fails compile).
     Compile copies a file to `config/faces/<key>.<ext>` and the board serves it signed in, sandboxed, at
     `/api/faces/<key>`. With no face the board draws one from the agent's key.
-  - `first`: its onboarding rank (1–99, lower first).
+  - `first`: its onboarding rank (1–99, lower first): onboarding recommends the available teammate with the lowest; with
+    none declared, the first by job.
   - The name: `overrides.agents.<key>.name` renames a teammate (only a teammate; the board's rename is that typed
     settings change). Every teammate's name, its default included, is 1–24 ASCII letters, digits, spaces and `-`, at most 4
     words, and differs (case, spaces and punctuation aside) from every other agent's name and key, hidden ones included: chat's
@@ -158,7 +164,11 @@ outcomes:
     goes by its key until renamed. A teammate is never a team's template: a team made on one keeps it as its hidden record,
     with a warning.
   - The catalog (`config/modules.json`) lists every module's teammates, enabled or not (`teammates: [{key, name, job, sample,
-    description, department, face, first}]`); a module that is off and has a broken block is left out with a warning.
+    description, department, face, first}]`, `department` the registry's display name); a module that is off and has a broken
+    block is left out with a warning. Every third-party marketplace's modules the instance doesn't install are listed too, as
+    `browse: true` rows (never enabled), read at the marketplace's pin outside the install graph and cached by it: module.yaml
+    and its agents' frontmatter only, the text capped (a description at 300 characters) and a face only as a kit spec. A broken
+    listing is skipped with a warning. The board installs one by its qualified name, `name@marketplace` (one module per name).
 - **`decisions.md`** (optional; template `config/decisions.example.md`): the owner's product decisions, including what not to
   build, one dated line each. The runner reads it from the instance repo's default branch (`apply.repo`) for every review,
   never from the change, and the AI reviewer rejects a change that brings back what an entry rules out or reverses a

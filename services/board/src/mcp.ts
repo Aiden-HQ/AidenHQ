@@ -28,13 +28,15 @@ export interface McpDeps {
   /** The modules' Fleet pages (module-views.ts), and a page's view HTML through the kernel. */
   pages: () => PagePoint[];
   viewHtml: (id: string) => Promise<string>;
+  /** An account route (app.ts accountRoutes: onboarding's teammates, push test and finish) as the request's account. */
+  accountRoute: (method: string, path: string, body: unknown, req: IncomingMessage) => Promise<any>;
 }
 
 /** The board's own tools are the model's: a module view in the owner's Claude calls only its page's tools (MCP Apps visibility). */
 const MODEL_ONLY = { ui: { visibility: ["model"] } };
 
 /** The tools that change something: the HTTP layer asks the kernel afresh about the bearer before running one. */
-export const WRITE_TOOLS = new Set(["ask", "create_task", "update_task", "decide", "change_settings", "update"]);
+export const WRITE_TOOLS = new Set(["ask", "create_task", "update_task", "decide", "change_settings", "update", "notify_test", "set_up_teammate", "finish_onboarding"]);
 
 const INSTRUCTIONS =
   "AidenHQ, the owner's own instance. Start with `status`: it lists what needs the owner now. Use `ask` for anything that needs " +
@@ -65,6 +67,8 @@ const UPDATES = ["comment", "status", "move", "stop", "hand_over", "schedule", "
  * enum by the values the code that makes it produces, an agent or module by being one the board knows, a link by being the
  * board's own. Every other string, and any value a validator refuses, is someone's words and comes back fenced.
  */
+/** A teammate's handle (teammates.ts): its module's id (`name` or `name@marketplace`, both checked names) and its agent key. */
+const TEAMMATE_REF = "[a-z0-9][a-z0-9-]{0,62}(?:@[a-z0-9][a-z0-9-]{0,62})?:[a-z0-9][a-z0-9-]{0,62}";
 const VALID = new Map<string, Valid>(Object.entries({
   id: withLane(new RegExp(`^(?:${UUID}|${CARD}|${TASK}|${JOB})$`, "i")),
   identifier: withLane(new RegExp(`^${TASK}$`)),
@@ -72,6 +76,7 @@ const VALID = new Map<string, Valid>(Object.entries({
   task: withLane(new RegExp(`^(?:${TASK}|${UUID})$`, "i")),
   record: re(new RegExp(`^${CARD}$`)),
   ref: re(new RegExp(`^(?:(?:wait|task):${UUID}|record:${CARD}|job:${JOB}|${TASK}|${UUID}|${CARD})$`, "i")),
+  teammate_ref: re(new RegExp(`^${TEAMMATE_REF}$`)), first: re(new RegExp(`^${TEAMMATE_REF}$`)),
   digest: re(/^[0-9a-f]{40,64}$/),
   sha: re(/^[0-9a-f]{7,64}$/),
   tier: re(/^[0-2]$/),
@@ -145,7 +150,7 @@ export function createMcp(d: McpDeps) {
     const fenceCtx = async (data: unknown): Promise<FenceCtx> => {
       if (!/"(?:holder|agent|assignee|by|requestedBy|decidedBy|owner|key|module|signin|connection)":/.test(JSON.stringify(data))) return { origin: ctx.origin };
       const [roster, modules] = await Promise.all([call("GET", "/api/agents/roster").catch(() => ({ roster: [] })), call("GET", "/api/modules").catch(() => ({ modules: [] }))]);
-      return { origin: ctx.origin, known: new Set([...(roster.roster as any[]).flatMap((r) => [r.key, r.id]), ...(modules.modules as any[]).map((m) => m.name)].filter(Boolean)) };
+      return { origin: ctx.origin, known: new Set([...(roster.roster as any[]).flatMap((r) => [r.key, r.id]), ...(modules.modules as any[]).flatMap((m) => [m.name, m.id])].filter(Boolean)) };
     };
     const out = (text: string, data: Record<string, unknown>) => ({ content: [{ type: "text" as const, text }], structuredContent: data });
     const tool = (name: (typeof OWNER_TOOLS)[number], description: string, input: z.ZodRawShape, output: z.ZodRawShape, hint: "read" | "write" | "destructive", fn: (a: any) => Promise<ReturnType<typeof out>>) =>
@@ -212,7 +217,7 @@ export function createMcp(d: McpDeps) {
 
     tool(
       "ask",
-      "Message Aiden (default) or an agent by key, in a new chat or an existing one (`chat`). Always returns the chat id. Waits up to `wait_seconds` for the reply; if there is none yet it says so and you read it later with get_task.",
+      "Message Aiden (default) or an agent by key, in a new chat or an existing one (`chat`). Always returns the chat id. Waits up to `wait_seconds` for the reply; if there is none yet it says so and you read it later with get_task. A reply that asks a question lists its options: answer every question in one `ask` on the same `chat`, each chosen option's exact words as `text` (one line per question) (to hire, ask the `builder` that `teammates` names; it answers with Extend / Install / Build new).",
       { text: z.string().trim().min(1).max(8000), agent: z.string().max(200).optional().describe("Agent key or name; Aiden when absent"), chat: z.string().max(80).optional().describe("An existing chat id (WOR-12, or lane:<key>) to continue"), wait_seconds: z.number().int().min(0).max(50).default(20) },
       { chat: z.string(), replied: z.boolean(), reply: z.string().nullable() },
       "write",
@@ -223,10 +228,12 @@ export function createMcp(d: McpDeps) {
         // send request returned; a reply that links to no owner message never counts.
         const read = async (id: string, sent: string): Promise<string[]> => {
           const key = lane(id);
-          const { messages } = (key ? await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`) : await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: { id: string; role?: string; kind?: string; text: string; answers?: string }[] };
+          const { messages } = (key ? await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`) : await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: { id: string; role?: string; kind?: string; text: string; answers?: string; questions?: { question: string; options?: string[]; multi?: boolean }[] }[] };
+          // A form's questions and options ride with its text, so the caller can answer with an option's exact words.
+          const withForm = (m: (typeof messages)[number]) => [m.text, ...(m.questions ?? []).map((q) => `Question: ${q.question}${q.options?.length ? `\n${q.multi ? "Options (pick any)" : "Options (pick one)"}: ${q.options.join(" | ")}` : ""}`)].join("\n\n");
           const owners = messages.filter((m) => (key ? m.role === "owner" : m.kind === "owner")).map((m) => m.id);
           const ours = owners.indexOf(sent);
-          return messages.filter((m) => (key ? m.role === "agent" : m.kind === "reply") && m.answers && ours >= 0 && owners.indexOf(m.answers) >= ours).map((m) => m.text);
+          return messages.filter((m) => (key ? m.role === "agent" : m.kind === "reply") && m.answers && ours >= 0 && owners.indexOf(m.answers) >= ours).map(withForm);
         };
         let id = a.chat as string | undefined;
         let sent: string;
@@ -243,7 +250,7 @@ export function createMcp(d: McpDeps) {
           const replies = await read(id, sent);
           if (replies.length) return out(`Reply in ${id}.`, { chat: id, replied: true, reply: replies.join("\n\n") });
           const left = until - Date.now();
-          if (left <= 0) return out(`${id}: still working. Call get_task with this id to read the reply.`, { chat: id, replied: false, reply: null });
+          if (left <= 0) return out(`${id}: still working. Call get_task with this id to read the reply (a form's options ride on its comment as questions).`, { chat: id, replied: false, reply: null });
           await new Promise((r) => setTimeout(r, Math.min(1000, left)));
         }
       },
@@ -401,7 +408,7 @@ export function createMcp(d: McpDeps) {
     tool(
       "modules",
       "Installed modules and the marketplace, a compact page each (name, short description, on or off, connection state, counts; `cursor`/`limit` page on). With `name`: that module's settings, each with its `doc`, current value, allowed `values`, `pattern` and `when`, its setup flows and sign-in state. `browse` searches the marketplace for modules to add.",
-      { name: z.string().regex(/^[a-z0-9-]{1,60}$/).optional(), browse: z.string().max(100).optional(), ...cursorIn },
+      { name: z.string().regex(/^[a-z0-9-]{1,63}(@[a-z0-9-]{1,63})?$/).optional().describe("A module's id as this tool lists it: name, or name@marketplace for a third-party one"), browse: z.string().max(100).optional(), ...cursorIn },
       { modules: rows, next_cursor: z.string().nullable(), module: row.nullable(), settings: rows, setup: rows, advisories: z.array(z.unknown()).optional() },
       "read",
       async (a) => {
@@ -409,7 +416,7 @@ export function createMcp(d: McpDeps) {
         if (a.browse !== undefined) {
           const all = ((await call("GET", `/api/modules/browse${q({ q: a.browse })}`)).modules ?? []) as any[];
           const p = page(all, a.cursor, a.limit);
-          return out(`${p.items.length} of ${all.length} marketplace modules.`, { modules: p.items.map((m) => ({ module: m.name, description: short(m.description), marketplace: m.marketplace, tier: m.tier, installed: m.installed, setup_flow: Boolean(m.setupFlow) })), next_cursor: p.next_cursor, ...rest });
+          return out(`${p.items.length} of ${all.length} marketplace modules.`, { modules: p.items.map((m) => ({ module: m.id, description: short(m.description), marketplace: m.marketplace, tier: m.tier, installed: m.installed, setup_flow: Boolean(m.setupFlow) })), next_cursor: p.next_cursor, ...rest });
         }
         if (!a.name) {
           const [r, conns] = await Promise.all([call("GET", "/api/modules"), call("GET", "/api/settings/connections").catch(() => ({ connections: [] }))]);
@@ -421,13 +428,15 @@ export function createMcp(d: McpDeps) {
             const bad = rowsOf.find((c) => (c.signIn && c.signIn.state !== "ok") || (c.probe && !c.probe.ok));
             return bad ? (bad.signIn && bad.signIn.state !== "ok" ? bad.signIn.state : "down") : "ok";
           };
-          const modules = p.items.map((m) => ({ module: m.name, description: short(m.description), state: m.state, enabled: m.state !== "off", connection_state: link(m.name), setup_flow: flows.has(m.name), counts: { agents: (m.agents ?? []).length, connections: (m.connections ?? []).length, routines: (m.routines ?? []).length, apps: (m.apps ?? []).length, settings: Object.keys(m.settings ?? {}).length } }));
+          const modules = p.items.map((m) => ({ module: m.id, description: short(m.description), state: m.state, enabled: m.state !== "off", connection_state: m.browse ? null : link(m.name), setup_flow: !m.browse && flows.has(m.name), counts: { agents: (m.agents ?? []).length, connections: (m.connections ?? []).length, routines: (m.routines ?? []).length, apps: (m.apps ?? []).length, settings: Object.keys(m.settings ?? {}).length } }));
           return out(`${modules.length} of ${r.modules.length} modules.`, { modules, next_cursor: p.next_cursor, ...rest, ...(a.cursor ? {} : { advisories: r.advisories ?? [] }) });
         }
-        const [m, s] = await Promise.all([call("GET", `/api/modules/${a.name}`), call("GET", "/api/settings")]);
-        const setup = await Promise.all(d.flows().filter((f) => f.module === a.name).map((f) => flowState(call, ctx.origin, f, false)));
+        const [m, s] = await Promise.all([call("GET", `/api/modules/${encodeURIComponent(a.name)}`), call("GET", "/api/settings")]);
         const { settings: _own, ...mod } = m.module ?? {};
-        return out(`${a.name}.`, { modules: [], next_cursor: null, module: { ...m, module: mod }, settings: (s.settings as any[]).filter((x) => x.module === a.name), setup });
+        // Setup flows and settings are keyed by the bare name; a browse listing has neither yet.
+        const bare = mod.browse ? "" : String(mod.name);
+        const setup = await Promise.all(d.flows().filter((f) => f.module === bare).map((f) => flowState(call, ctx.origin, f, false)));
+        return out(`${a.name}.`, { modules: [], next_cursor: null, module: { ...m, module: mod }, settings: (s.settings as any[]).filter((x) => x.module === bare), setup });
       },
     );
 
@@ -453,6 +462,55 @@ export function createMcp(d: McpDeps) {
         const { said } = await d.update(ctx.token, ctx.resource, a.to);
         return out(said, { said });
       },
+    );
+
+    tool(
+      "notify_test",
+      "Send one fixed test message through one channel only (Telegram or Slack), as onboarding's Send a test does, and return that channel's own answer: `sent`, or why not (`reason`). Use it after the owner picks where the team reaches them.",
+      { transport: z.enum(["telegram", "slack"]) },
+      { sent: z.boolean(), reason: z.string().optional() },
+      "write",
+      async (a) => {
+        const r = (await d.accountRoute("POST", "/api/notify/test", { transport: a.transport === "telegram" ? "channel-telegram" : "slack" }, req)) as { sent: boolean; off?: true; reason?: string };
+        const reason = r.sent ? undefined : r.off ? `${a.transport} isn't set up yet (see connect)` : (r.reason ?? "it wasn't delivered");
+        return out(r.sent ? `Sent through ${a.transport}.` : `Not sent: ${reason}.`, { sent: r.sent, ...(reason ? { reason } : {}) });
+      },
+    );
+
+    tool(
+      "teammates",
+      "Every teammate the owner could have, on the team or not (third-party marketplaces included), as onboarding and the hiring page list them: `teammate_ref` (what set_up_teammate takes), name, job, sample, its `module` id (what change_settings turns on), whether it is on the team, and the setup flows it still needs (see connect). `first` is the one onboarding recommends; `builder` is the agent to `ask` to hire someone new (null when none is on the team).",
+      {},
+      { teammates: rows, first: z.string().nullable(), builder: z.object({ key: z.string(), name: z.string() }).nullable() },
+      "read",
+      async () => {
+        const r = (await d.accountRoute("GET", "/api/teammates", undefined, req)) as { rows: any[]; first: string | null; builder: { key: string; name: string } | null };
+        const list = r.rows.map((t) => ({ teammate_ref: t.ref, name: t.name, job: t.job, sample: t.sample, description: short(t.description), module: t.id, marketplace: t.marketplace, on_team: t.onTeam, connections: t.connections }));
+        return out(`${list.length} teammates.`, { teammates: list, first: r.first, builder: r.builder && { key: r.builder.key, name: r.builder.name } });
+      },
+    );
+
+    tool(
+      "set_up_teammate",
+      "After its module is on (change_settings `{kind: module, name: <id>, on: true}`, applied) and its setup flows are done or skipped: resume the teammate's routines and run its first look at the owner's data once (`trial: false` resumes only, when a connection was skipped). Safe to call again: it never runs the first look twice unless it failed. Returns what it resumed and ran; read the result later with the same call's `trial` state.",
+      { teammate_ref: z.string().regex(new RegExp(`^${TEAMMATE_REF}$`)).describe("From `teammates`"), trial: z.boolean().default(true) },
+      { resumed: z.array(z.string()), trials: z.array(z.string()), trial: z.object({ state: z.string(), found: rows }) },
+      "write",
+      async (a) => {
+        const at = `/api/teammates/${encodeURIComponent(a.teammate_ref)}`;
+        const r = (await d.accountRoute("POST", `${at}/start`, { trial: a.trial }, req)) as { resumed: string[]; trials: string[] };
+        const trial = (await d.accountRoute("GET", `${at}/trial`, undefined, req)) as { state: string; found: unknown[] };
+        return out(`Resumed ${r.resumed.length}, ran ${r.trials.length}; first look ${trial.state}.`, { ...r, trial });
+      },
+    );
+
+    tool(
+      "finish_onboarding",
+      "Finish the owner's onboarding, as the board's last step does: Home stops showing it, and Aiden gets one task to offer his first idea. Call it once the owner has a teammate set up and chose where the team reaches them (change_settings `notify_transports`, then notify_test).",
+      {},
+      { ok: z.boolean() },
+      "write",
+      async () => out("Onboarding finished.", (await d.accountRoute("POST", "/api/welcome/finish", {}, req)) as { ok: boolean }),
     );
 
     tool(

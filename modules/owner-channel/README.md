@@ -22,6 +22,10 @@ Steward) so news reaches them once, not once per task. Settings:
   `notify_blocked` (agent keys whose routine messages are dropped).
 - `notify_digest_hours` (default 9, 13, 18, owner-local): routine crew messages go out as one digest.
 
+The push test (onboarding's "Send a test") bypasses this routing on purpose: the board asks the kernel
+(`POST /v1/notify/test`) to send one fixed decision card, with two buttons that do nothing, to exactly the channel picked,
+and shows that channel's own answer ("not set up yet", "the transport answered 502").
+
 ## New installs
 
 Always installed. With no channel connected, messages show on the board. Attention control starts in `observe`: it logs

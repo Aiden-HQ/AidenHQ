@@ -225,7 +225,7 @@ describe("/internal/relay", () => {
     const t3 = make({ assigneeAgentId: RESEARCHER, parentId: chat2.id, createdByAgentId: COS });
     issues.push(t3);
     expect((await relay({ comment_id: chat2.id, target: t3.identifier })).status).toBe(403);
-    // A chat with no board record (the setup wizard's welcome, made with no request) has no opening message to pass on.
+    // A chat with no board record (one the board opened with no request) has no opening message to pass on.
     const other = make({ assigneeAgentId: COS, labels: [{ id: "l1", name: "chat" } as never] });
     const t2 = make({ assigneeAgentId: RESEARCHER, parentId: other.id, createdByAgentId: COS });
     issues.push(other, t2);

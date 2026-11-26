@@ -441,6 +441,10 @@ export interface PageRow {
 
 export interface ModuleRow {
   name: string;
+  /** How a module change names it: `name`, or `name@marketplace` for a third-party module (the key for a row). */
+  id: string;
+  /** A third-party listing the instance doesn't install: Available, turned on by `id`. */
+  browse: boolean;
   description: string;
   agents: string[];
   requires: string[];
@@ -825,6 +829,8 @@ export interface UpdatesData {
 // Lane E: GET /api/modules/browse, /api/marketplaces and /api/agents/by-key/:key/grants (services/board/src/marketplace.ts).
 export interface BrowseModule {
   name: string;
+  id: string;
+  browse: boolean;
   description: string;
   marketplace: string;
   tier: string;
@@ -889,4 +895,32 @@ export type Home = {
   world: WorldBlock;
   team: TeamNews[];
   idea: IdeaRow | null;
+  /** Day one (the owner only): his next queued teammate and more the team can do (services/board/src/teammates.ts homeStart). */
+  start?: HomeStart;
 };
+
+// ------------------------------------------------------------ hiring and onboarding (services/board/src/teammates.ts)
+/** GET /api/teammates: one row per catalog teammate, browse listings included. A selection is always its `ref`. */
+export interface HireRow {
+  key: string; name: string; job: string; sample: string; description: string; department: string;
+  /** Its module, and how a module change names it: `name`, or `name@marketplace` for a third-party one. */
+  module: string; id: string;
+  /** `<id>:<key>`. */
+  ref: string;
+  marketplace: string; browse: boolean; onTeam: boolean;
+  /** A browse row's face is only ever a checked kit spec, never a file. */
+  face: RosterFace;
+  requires: string[];
+  /** Setup flows (module names) its module and what it requires still need. */
+  connections: string[];
+}
+export interface TeammatesList { rows: HireRow[]; first: string | null; builder: { key: string; name: string; face: RosterFace } | null }
+/** GET /api/teammates/<ref>/trial. */
+export interface TrialView { state: "none" | "running" | "done" | "failed"; found: { identifier: string; title: string; labels: string[] }[] }
+/** POST /api/teammates/<ref>/start {trial?}: routine keys resumed and trial routines run. */
+export interface TeammateStart { resumed: string[]; trials: string[] }
+/** GET|PUT /api/teammates/queue: teammate refs, at most 20 each. */
+export interface TeammateQueue { first?: string; next: string[]; later: string[] }
+export type HomeStart = { nextUp: HireRow | null; more: Pick<HireRow, "key" | "name" | "job" | "face">[] };
+/** POST /api/notify/test {transport}: the transport's own answer. */
+export interface NotifyTestResult { sent: boolean; off?: true; reason?: string }

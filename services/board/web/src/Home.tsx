@@ -9,6 +9,7 @@ import { useLive } from "./events";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { doneAction, formOnly, useNeedsKeys } from "./needs";
 import { QUERIES, homeFrom, useQuery } from "./queries";
+import { MoreTeam, NextUp, WelcomeStepper } from "./GettingStarted";
 import { Bone } from "./Skeleton";
 import type { Approval, FaceRef, Home, NeedRow, SinceItem } from "./types";
 import { Banner, Button, DecisionRow, DetailPane, DigestList, Face, Kbd, Monogram, Page, SectionCard, TeammateChip, Tile, faceProps } from "./ui";
@@ -185,6 +186,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
 
   return (
     <Page className="home" label="Home">
+      {data.start && <WelcomeStepper />}
       <header className="home-head enter">
         <p className="home-date">{date}</p>
         <h1>{hello}{needsLine(n)}</h1>
@@ -253,6 +255,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
             detail
           ) : (
             <>
+              {data.start?.nextUp && <NextUp next={data.start.nextUp} reload={reload} />}
               {since}
               {idea}
             </>
@@ -266,6 +269,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
           {idea}
         </div>
       )}
+      {data.start && <MoreTeam more={data.start.more} />}
       <World world={data.world} />
       <TeamRow team={data.team} />
     </Page>
@@ -452,7 +456,7 @@ function World({ world }: { world: Home["world"] }) {
   );
 }
 
-/** Teammates with something new, then Hire a teammate (Archie's page until hiring ships). */
+/** Teammates with something new, then Hire a teammate (#/team/hire). */
 function TeamRow({ team }: { team: Home["team"] }) {
   return (
     <section className="home-team enter" style={{ "--i": 4 } as CSSProperties} aria-label="Your team">
@@ -467,7 +471,7 @@ function TeamRow({ team }: { team: Home["team"] }) {
             {t.line}
           </Tile>
         ))}
-        <Tile tone="ghost" href="#/team/architect" name="hire" title="Hire a teammate" face={<span className="home-plus" aria-hidden>+</span>}>
+        <Tile tone="ghost" href="#/team/hire" name="hire" title="Hire a teammate" face={<span className="home-plus" aria-hidden>+</span>}>
           Security, repo upkeep, or describe your own.
         </Tile>
       </div>

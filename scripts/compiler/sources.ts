@@ -7,9 +7,9 @@
 // `contract` recipe); a source none can snapshot stays declared. Sync: the compiler is.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, posix, resolve } from "node:path";
+import { join, posix, resolve, sep } from "node:path";
 
 type Dict = Record<string, unknown>;
 /**
@@ -96,6 +96,8 @@ export function marketplacesOf(instance: Dict): { name: string; at: Where }[] {
     const name = String(isMap(m) ? m.name : "");
     const where = `instance.yaml marketplaces[${i}]`;
     if (!NAME.test(name)) throw new Error(`${where}: name must be kebab-case`);
+    // `local` names the instance's own modules (tier local): a marketplace by that name would share their bare ids.
+    if (name === "local") throw new Error(`${where}: local is the instance's own modules; give the marketplace another name`);
     if (seen.has(name)) throw new Error(`${where}: ${name} is listed twice`);
     seen.add(name);
     return { name, at: sourceOf((m as Dict).source, where, undefined, (m as Dict).sha, true) };
@@ -246,26 +248,29 @@ const has = (f: Fetch, repo: string, sha: string) => { try { git(f, repo, ["cat-
 /** The bare cache repository of a URL. */
 export const cacheRepo = (url: string, f: Fetch) => join(f.cacheDir, "git", `${hash(url)}.git`);
 
-/** The bare cache repository of a URL, holding `sha` (fetched by sha, else every branch). */
-export function repoAt(w: Where, f: Fetch): string {
+/** Each network step's time limit: two minutes, or less when a `deadline` (epoch ms) comes sooner. */
+const netTimeout = (deadline?: number) => Math.max(1_000, Math.min(120_000, deadline === undefined ? 120_000 : deadline - Date.now()));
+
+/** The bare cache repository of a URL, holding `sha` (fetched by sha, else every branch). Past `deadline` a fetch is killed. */
+export function repoAt(w: Where, f: Fetch, deadline?: number): string {
   const repo = cacheRepo(w.url, f);
   if (!existsSync(repo)) {
     mkdirSync(repo, { recursive: true });
     execFileSync("git", ["init", "-q", "--bare", repo]);
   }
   if (!has(f, repo, w.sha)) {
-    const net = { owned: w.owned === true, timeout: 120_000 };
-    try { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, w.sha], net); } catch { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, "+refs/heads/*:refs/remotes/source/*"], net); }
+    const net = () => ({ owned: w.owned === true, timeout: netTimeout(deadline) });
+    try { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, w.sha], net()); } catch { git(f, repo, ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--", w.url, "+refs/heads/*:refs/remotes/source/*"], net()); }
   }
   if (!has(f, repo, w.sha) || git(f, repo, ["rev-parse", "--verify", `${w.sha}^{commit}`]).toString().trim() !== w.sha) throw new Error(`${w.url} has no commit ${w.sha}`);
   return repo;
 }
 
-/** The tree at `w` as a local folder, extracted once per sha and path. Symlinks and submodules are refused. */
-export function checkout(w: Where, f: Fetch): string {
+/** The tree at `w` as a local folder, extracted once per sha and path. Symlinks and submodules are refused. `deadline`: as repoAt. */
+export function checkout(w: Where, f: Fetch, deadline?: number): string {
   const dest = join(f.cacheDir, "trees", `${w.sha}-${hash(`${w.url}\0${w.path}`)}`);
   if (existsSync(dest)) return dest;
-  const repo = repoAt(w, f);
+  const repo = repoAt(w, f, deadline);
   const tree = w.path ? `${w.sha}:${w.path}` : w.sha;
   const entries = git(f, repo, ["ls-tree", "-r", "-z", tree]).toString().split("\0").filter(Boolean);
   if (!entries.length) throw new Error(`${w.url}@${w.sha}: ${w.path || "the repository"} is empty or missing`);
@@ -274,7 +279,7 @@ export function checkout(w: Where, f: Fetch): string {
   const tmp = `${dest}.tmp-${process.pid}`;
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
-  execFileSync("tar", ["-x", "-C", tmp], { input: git(f, repo, ["archive", "--format=tar", tree], { timeout: 120_000 }), maxBuffer: 256 << 20, timeout: 120_000 });
+  execFileSync("tar", ["-x", "-C", tmp], { input: git(f, repo, ["archive", "--format=tar", tree], { timeout: netTimeout(deadline) }), maxBuffer: 256 << 20, timeout: netTimeout(deadline) });
   renameSync(tmp, dest);
   return dest;
 }
@@ -365,6 +370,99 @@ export function remoteModules(instance: Dict, f: Fetch & { parse: (s: string) =>
       def.isolation ??= "untrusted";
       out.push({ name, marketplace: mkt, market: at, at: w, root, def, tier: "declared", ...(fork ? { fork } : {}) });
     }
+  }
+  return out;
+}
+
+/** One teammate of a browsable module, as the catalog lists it (`department` is the agent's department id). */
+export type BrowseTeammate = { key: string; name: string; job: string; sample: string; description: string; department: string; first?: number; face?: unknown };
+/** A third-party module the instance doesn't install, listed for browsing and hiring (metadata only, never installed). */
+export type BrowseEntry = { name: string; marketplace: string; description: string; requires: string[]; agents: string[]; teammates: BrowseTeammate[]; revision: string; source: { url: string; path: string } };
+/** How long the whole browse step may take across every marketplace, so dead remotes never hold an apply. */
+const BROWSE_BUDGET_MS = 90_000;
+const AGENT_KEY = /^[a-z0-9][a-z0-9-]{0,62}$/;
+/** Third-party text: one line, control characters dropped, at most `max` characters. */
+const plainText = (v: unknown, max: number) => String(v ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, max);
+/** A fetch that failed (network, timeout, a commit not there yet): retried next apply, so that listing isn't cached. */
+class Transient extends Error {}
+/** checkout(), its failures sorted: a refused tree (symlinks, empty) is the entry's own fault; anything else is the fetch's. */
+const fetched = (w: Where, f: Fetch, deadline: number) => {
+  try { return checkout(w, f, deadline); } catch (e) { const m = (e as Error).message; throw /symlinks and submodules|is empty or missing/.test(m) ? e : new Transient(m); }
+};
+
+/**
+ * Every third-party marketplace's listing (instance.yaml `marketplaces:`, never the official one), read at its pinned sha
+ * outside the install graph: each module's module.yaml and its agents' AGENTS.md frontmatter, nothing run. Cached by the
+ * marketplace's pin (`<cacheDir>/browse/<hash>.json`, the whole listing); the modules the instance installs are left out
+ * after reading, so installing one never refetches. A broken entry is skipped with a warning; a marketplace that can't be
+ * read is skipped whole. Never throws. `teammate(text, where)`: the compiler's reader of an AGENTS.md (the teammate block
+ * checked, third-party caps applied): undefined for an agent that isn't a teammate, a throw drops that teammate.
+ */
+export function browseMarketplaces(instance: Dict, f: Fetch & { parse: (s: string) => unknown }, warn: (msg: string) => void, teammate: (agentsMd: string, where: string) => Omit<BrowseTeammate, "key" | "department"> | undefined): BrowseEntry[] {
+  let mkts: { name: string; at: Where }[];
+  try { mkts = marketplacesOf(instance).filter((m) => m.name !== OFFICIAL); } catch { return []; } // remoteModules reports a bad list
+  const wanted = wantedRemote(instance);
+  const until = Date.now() + BROWSE_BUDGET_MS;
+  const out: BrowseEntry[] = [];
+  for (const { name: mkt, at } of mkts) {
+    const file = join(f.cacheDir, "browse", `${hash(`${at.url}|${at.path}|${at.sha}`)}.json`);
+    let listing: BrowseEntry[] | undefined;
+    if (existsSync(file)) try { listing = JSON.parse(readFileSync(file, "utf8")); } catch { listing = undefined; }
+    if (!listing) {
+      let entries: { name: string; source: unknown }[];
+      try {
+        if (Date.now() > until) throw new Error("browse ran out of time");
+        const dir = checkout(at, f, until);
+        entries = marketplaceEntries(JSON.parse(readFileSync(join(dir, "marketplace.json"), "utf8")), `marketplace ${mkt}`);
+      } catch (e) {
+        warn(`marketplace ${mkt}: its listing can't be read (${(e as Error).message.slice(0, 200)})`);
+        continue;
+      }
+      listing = [];
+      let complete = true;
+      let late = 0;
+      for (const e of entries) {
+        if (Date.now() > until) { late++; complete = false; continue; }
+        try {
+          const w = sourceOf(e.source, `marketplace ${mkt}: ${e.name}`, at);
+          const root = fetched(w, f, until);
+          const def = (f.parse(readFileSync(join(root, "module.yaml"), "utf8")) ?? {}) as Dict;
+          if (def.name !== e.name) throw new Error(`its module.yaml name is ${String(def.name)}`);
+          if (def.apps != null || Object.values(isMap(def.services) && isMap(def.services.run) ? def.services.run : {}).some((x) => isMap(x) && x.build != null)) throw new Error("apps and service builds from a remote source aren't supported");
+          const agents = isMap(def.agents) ? def.agents : {};
+          const teammates: BrowseTeammate[] = [];
+          for (const [key, entry] of Object.entries(agents)) {
+            const where = `marketplace ${mkt}: ${e.name}: agent ${key.slice(0, 64)}`;
+            const md = join(root, "agents", key, "AGENTS.md");
+            if (!AGENT_KEY.test(key) || !existsSync(md) || !realpathSync(md).startsWith(realpathSync(root) + sep)) { if (!AGENT_KEY.test(key) || existsSync(md)) warn(`${where}: not listed (a plain agent key whose AGENTS.md is inside the module)`); continue; }
+            try {
+              const t = teammate(readFileSync(md, "utf8"), where);
+              const dept = isMap(entry) && typeof entry.department === "string" && /^[a-z][a-z0-9-]{0,39}$/.test(entry.department) ? entry.department : "general";
+              if (t) teammates.push({ key, ...t, department: dept });
+            } catch (err) {
+              warn(`${where}: its teammate isn't listed (${(err as Error).message.slice(0, 200)})`);
+            }
+          }
+          listing.push({ name: e.name, marketplace: mkt, description: plainText(def.description, 300), requires: (Array.isArray(def.requires) ? def.requires : []).map(String).filter((r) => NAME.test(r)), agents: Object.keys(agents).filter((k) => AGENT_KEY.test(k)), teammates, revision: at.sha, source: { url: at.url, path: at.path } });
+        } catch (err) {
+          if (err instanceof Transient) complete = false;
+          warn(`marketplace ${mkt}: ${e.name} not listed: ${(err as Error).message.slice(0, 200)}`);
+        }
+      }
+      if (late) warn(`browse ran out of time: ${late} entries not listed`);
+      if (complete) {
+        // The cache only saves a refetch: a failed write keeps the listing in memory.
+        try {
+          mkdirSync(join(f.cacheDir, "browse"), { recursive: true });
+          writeFileSync(file, JSON.stringify(listing));
+        } catch (e) {
+          warn(`marketplace ${mkt}: its listing isn't cached (${(e as Error).message.slice(0, 200)})`);
+        }
+      }
+    }
+    const installed = new Set(wanted.get(mkt) ?? []);
+    // The cache is keyed by the pin: the name is the one instance.yaml gives it now.
+    out.push(...listing.filter((x) => !installed.has(x.name)).map((x) => ({ ...x, marketplace: mkt })));
   }
   return out;
 }

@@ -52,8 +52,8 @@ A new install gets the defaults: `spend_day_usd` 50 (a UTC day) and `spend_month
 
 ## 3. Turning things on and seeing spend
 
-- Aiden's tour (chief-of-staff handbook) offers the useful paused schedules in plain words and, on a yes, resumes the
-  routine with `fleet_control`.
+- Onboarding resumes a set-up teammate's routines (and its hidden staff's); Aiden's ideas (chief-of-staff skill `ideas`)
+  offer the rest, one at a time, and on the owner's own words resume the routine with `fleet_control`.
 - Module pages list each routine with on or off, as Paperclip runs it, with Pause or Resume, and link to its agent's
   Settings tab, where the routine editor changes its schedule and model.
 - The board header shows today's spend against the day limit ("$3.20 / $50 today", linking to Costs), read from the gateway

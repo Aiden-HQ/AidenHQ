@@ -94,6 +94,7 @@ export const VIEW_CHUNKS = {
   design: () => import("./Design"),
   team: () => import("./Team"),
   teammate: () => import("./Teammate"),
+  hire: () => import("./Hire"),
   decisions: () => import("./Decisions"),
 };
 

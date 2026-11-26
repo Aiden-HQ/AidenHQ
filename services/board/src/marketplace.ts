@@ -1,7 +1,8 @@
 // Modules > Browse and Marketplaces, and an agent's grants (docs/design/agent-and-module-pages.md). Read from the compiled
 // module catalog (config/modules.json) and compiled config (paperclip.yaml): compile already reads every configured
-// marketplace at its pinned sha, so the board fetches no code. A third-party marketplace's modules appear once compile
-// has read them (installed ones); that is the limit of this data until compile writes the whole listing.
+// marketplace at its pinned sha, so the board fetches no code. A third-party marketplace's whole listing is there: the
+// modules the instance installs, and the rest as browse rows (scripts/compiler/sources.ts browseMarketplaces).
+import { moduleId } from "./modules.js";
 import type { Compiled } from "./settings.js";
 
 interface Entry {
@@ -16,6 +17,8 @@ interface Entry {
   revision?: string;
   marketplace?: string;
   tier?: string;
+  /** A third-party listing the instance doesn't install (compile's browse). */
+  browse?: boolean;
   source?: { url?: string };
   setup_flow?: { title?: string };
   /** Write kinds it declares (kind → floor, scripts/modules.ts) and the secret names it mounts. */
@@ -58,6 +61,8 @@ export function browseModules(catalog: Entry[], q: string, kind: string) {
       .filter((m) => !needle || `${m.name} ${m.description ?? ""} ${m.marketplace ?? ""}`.toLowerCase().includes(needle))
       .map((m) => ({
         name: m.name,
+        id: moduleId(m),
+        browse: Boolean(m.browse),
         description: m.description ?? "",
         marketplace: m.marketplace ?? "aidenhq",
         tier: m.tier ?? "official",

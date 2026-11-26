@@ -8,7 +8,7 @@ roles:
 agents:
   architect:
     department: agents
-    skills: [ agent-builder.design-doc, engineering.supply-chain, engineering.write-code, primer.primer-docs, tasks.delegate-work ]
+    skills: [ agent-builder.design-doc, agent-builder.hiring, engineering.supply-chain, engineering.write-code, primer.primer-docs, tasks.delegate-work ]
     # Designs and onboards new agents. DeepSeek Flash at high effort (owner, 2026-11-26: high is enough; max reasoned 5-20k
     # tokens a step at ~86 tok/s, so one chat reply took an hour). Nothing in its path sets an output cap
     # (Codex and the gateway send none), and the longer timeout covers slow turns.
