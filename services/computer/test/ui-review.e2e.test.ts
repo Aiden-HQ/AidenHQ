@@ -142,6 +142,10 @@ describe("signed in and guarded", chrome, () => {
     const { pw, totp, st } = secrets();
     const l = await login("form", { url: fx("/login"), user: SIGN_IN.user, passwordFile: pw, totpFile: totp, out: st });
     assert.equal(l.code, 0, l.text); assert.equal(l.text.trim(), "signed in (form) at /login"); assert.ok(!l.text.includes(SIGN_IN.password));
+    // A wrong password lands on the app's error page: refused, nothing saved as a session.
+    const bad = join(tmp(), "pw"), st2 = join(tmp(), "state.json"); writeFileSync(bad, "not-the-password");
+    const w = await login("form", { url: fx("/login"), user: SIGN_IN.user, passwordFile: bad, totpFile: totp, out: st2 });
+    assert.equal(w.code, 1, w.text); assert.ok(!existsSync(st2));
     const r = await runCapture(fx("/app/home"), { session: st, pages: ["/app/home", "/app/orders", "/app/billing", "/app/team"], widths: [390, 768, 1024, 1280, 1512, 1920, 2560] });
     assert.equal(r.coverage.done, r.coverage.total);
     assert.ok(r.captures.every((c) => !c.url.endsWith("/login")));

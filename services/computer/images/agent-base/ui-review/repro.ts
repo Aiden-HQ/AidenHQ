@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import type { BrowserContext, Page as PwPage } from "playwright-core";
 import { heightOf, initScript, launch, ready } from "./browser.ts";
 import { type Mode, modeOf, pageOf } from "./guard.ts";
-import { readSession } from "./login.ts";
+import { readSession, type SessionMeta, signedOut } from "./login.ts";
 import { ask, DEFAULT_MODEL, spend } from "./model.ts";
 import { saveReport } from "./report.ts";
 import type { Blocked, Bug, Click, Report, Step } from "./types.ts";
@@ -57,23 +57,33 @@ async function run(page: PwPage, base: string, s: Step): Promise<void> {
 }
 
 /** The steps in a fresh context; pictures of the page just before and just after the last step. */
-/** `sockets`: the guard's refused WebSockets so far (read mode stubs them: no request a page event would show). */
-async function replay(newContext: () => Promise<BrowserContext>, base: string, c: Click, out: string, tag: string, sockets: () => Blocked[]): Promise<Replay> {
+/**
+ * `sockets`: the guard's refused WebSockets so far (read mode stubs them: no request a page event would show). `session`: the
+ * session's meta, so a replay that landed signed out is no evidence.
+ */
+async function replay(newContext: () => Promise<BrowserContext>, base: string, c: Click, out: string, tag: string, sockets: () => Blocked[], session: SessionMeta | null): Promise<Replay> {
   const ctx = await newContext();
   try {
     const page = await ctx.newPage();
     const steps = c.steps as Step[], last = steps.length - 1;
     const text = () => page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
-    let before = "", textBefore = "", urlBefore = "", writes = 0, refused = 0, socketsBefore = 0;
+    let before = "", textBefore = "", urlBefore = "", writes = 0, refused = 0, socketsBefore = 0, acting = false;
     page.on("request", (r) => { if (before && !["GET", "HEAD", "OPTIONS"].includes(r.method())) writes++; }); // sent by the last step (a guard may then refuse it)
-    // A request of the last step the live-app guard refused: what the page then shows is the guard's doing, not the app's.
-    page.on("requestfailed", (r) => { if (before && /BLOCKED_BY_CLIENT/.test(r.failure()?.errorText ?? "")) refused++; });
+    // A request the live-app guard refused while a step acted (a click, a fill, a key) or during the last step: what the page
+    // then shows is the guard's doing, not the app's. (Writes a page makes as it loads are not the steps' own.)
+    page.on("requestfailed", (r) => { if ((acting || before) && /BLOCKED_BY_CLIENT/.test(r.failure()?.errorText ?? "")) refused++; });
+    let sockets0 = 0;
     for (const [i, s] of steps.entries()) {
       if (i === last) { socketsBefore = sockets().length; before = `repro/${tag}-before.png`; await page.screenshot({ path: join(out, before) }); textBefore = await text(); urlBefore = page.url(); }
+      acting = "click" in s || "fill" in s || "press" in s;
+      if (acting) sockets0 = sockets().length;
       await run(page, base, s);
+      if (acting && i !== last) refused += sockets().slice(sockets0).filter((b) => b.page === pageOf(page.url())).length;
+      acting = false;
     }
     // Evidence is of the app only: a last step that left it (a click or redirect to another origin) is no replay.
     if (new URL(page.url()).origin !== new URL(base).origin) throw new Error(`the last step left the app under review (${new URL(page.url()).origin})`);
+    if (session && (await signedOut(page, session))) throw new Error("the session ended (the replay landed signed out)");
     const after = `repro/${tag}-after.png`;
     await page.screenshot({ path: join(out, after) });
     const changed = { text: (await text()) !== textBefore, url: page.url() !== urlBefore };
@@ -120,9 +130,11 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
   spend.usd = 0; spend.calls = 0;
   const over = () => o.maxUsd !== undefined && spend.usd >= o.maxUsd;
   // The guard signs every fresh context in with the session (guard.ts seed), as it does for capture.
-  const l = await launch({ mode: o.mode, session: o.session ? readSession(o.session).state : null });
+  const signedIn = o.session ? readSession(o.session) : null;
+  const l = await launch({ mode: o.mode, session: signedIn?.state ?? null });
   const bugs: Bug[] = [], friction: unknown[] = [];
   let blocked: Blocked[] = [];
+  const disproved = new Set<string>(); // a replay the judge said doesn't show it: only that takes an earlier verified bug out
   try {
     const frozenAt = new Date().toISOString();
     const fresh = (c: Click) => async () => {
@@ -140,13 +152,13 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
         const runs: Extract<Replay, { ok: true }>[] = [];
         let verified = true;
         for (const k of c.kind === "bug" ? [1, 2] : [1]) {
-          const r = await replay(fresh(c), base, c, o.out, `${batch}/${id}-r${k}`, () => l.blocked().filter((b) => b.method === "WS"));
+          const r = await replay(fresh(c), base, c, o.out, `${batch}/${id}-r${k}`, () => l.blocked().filter((b) => b.method === "WS"), signedIn?.meta ?? null);
           if (!r.ok) { dropped.push(`${c.title}: replay ${k} failed: ${r.why}`); verified = false; break; }
           runs.push(r);
-          if (c.kind === "bug" && r.refused) { dropped.push(`${c.title}: not testable in ${o.mode} mode (the live-app guard refused its last step's request)`); verified = false; break; }
+          if (c.kind === "bug" && r.refused) { dropped.push(`${c.title}: not testable in ${o.mode} mode (the live-app guard refused a request its steps made)`); verified = false; break; }
           if (c.kind === "bug") {
             if (over()) { dropped.push(`${c.title}: the --max-usd budget was reached`); verified = false; break; }
-            try { if (!(await judge(c, r, o.out, o))) { dropped.push(`${c.title}: replay ${k} did not show it`); verified = false; break; } }
+            try { if (!(await judge(c, r, o.out, o))) { dropped.push(`${c.title}: replay ${k} did not show it`); disproved.add(`${c.page}|${c.title}`); verified = false; break; } }
             catch (e) { dropped.push(`${c.title}: judging failed: ${(e as Error).message.split("\n")[0]}`); verified = false; break; }
           }
         }
@@ -167,7 +179,9 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
   } finally { blocked = l.blocked(); await l.close(); }
 
   const r = JSON.parse(readFileSync(join(o.out, "report.json"), "utf8")) as Report;
-  const mine = new Set(todo.map((c) => `${c.page}|${c.title}`)); // every finding retried here: a bug that no longer reproduces leaves the report
+  // An earlier verified bug leaves the report only when this run verified it again (replaced) or a replay disproved it; a run
+  // that couldn't tell (budget, a failed step, the guard, the judge) keeps it.
+  const mine = new Set([...disproved, ...bugs.map((b) => `${b.page}|${b.title}`)]);
   r.bugs = [...r.bugs.filter((b) => !mine.has(`${b.page}|${b.title}`)), ...bugs];
   r.cost_usd = Math.round((r.cost_usd + spend.usd) * 1e4) / 1e4;
   r.notes = [...r.notes, ...dropped.map((d) => `clicking pass, not reported: ${d}`)];

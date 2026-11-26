@@ -11,7 +11,7 @@ import { parseArgs } from "node:util";
 import { crc32 } from "node:zlib";
 import type { BrowserContext, Page as PwPage, Route } from "playwright-core";
 import { heightOf, launch, ready, workerContext } from "./browser.ts";
-import { modeOf } from "./guard.ts";
+import { modeOf, pageOf as pageLabel } from "./guard.ts";
 import { pathOfUrl, readSession, relogin, signedOut } from "./login.ts";
 import { measurePage } from "./measure.ts";
 import { measureMotion } from "./motion.ts";
@@ -19,7 +19,7 @@ import { pageList } from "./pages.ts";
 import { keyOf, openQueue } from "./queue.ts";
 import { CHANGED_PCT, CHANGED_PX, readReport, writeReport } from "./report.ts";
 import { rules } from "./rules.ts";
-import type { Capture, Measures, Page, QueueItem, RuleHit, ShotDiff, State, Theme } from "./types.ts";
+import type { Blocked, Capture, Measures, Page, QueueItem, RuleHit, ShotDiff, State, Theme } from "./types.ts";
 
 export const MAX_STEPS = 6;
 const NOT_MEASURED: Measures = { fonts: [], colours: [], radii: [], shadows: [], spacing: { values: [], offScale: [] }, nearMisses: [], content: { width: 0, viewport: 0 }, ctas: [], contrastFails: 0, signatures: { button: [], card: [], heading: [], input: [] } };
@@ -34,7 +34,7 @@ export type CaptureOptions = {
   motion?: boolean;          // measure motion (one width and theme per page)
   baseline?: string;         // a baseline run's folder: diff each shot against its shot of the same name
   diffPage?: () => Promise<PwPage>;
-  blockedCount?: () => number; // the guard's blocked requests so far: a fetch it refused is no page error of the app's
+  blocked?: () => Blocked[]; // the guard's blocked requests so far: a fetch it refused on this page is no page error of the app's
 };
 
 /** The shot's file name: `<page>-<width>-<mode>.png`, then `-<state>` for a state other than default, `-s<n>` for later steps. */
@@ -93,7 +93,7 @@ export async function pageOf(ctx: BrowserContext): Promise<PwPage> {
 }
 
 export async function capture(ctx: BrowserContext, base: string, item: QueueItem, o: CaptureOptions): Promise<Capture> {
-  const page = await pageOf(ctx), errs = errorsOf.get(page)!, blocked0 = o.blockedCount?.() ?? 0;
+  const page = await pageOf(ctx), errs = errorsOf.get(page)!, blocked0 = o.blocked?.().length ?? 0;
   const width = item.width, height = heightOf(width), url = urlOf(base, item.page, item.theme);
   const where = `${item.page}${item.state === "default" ? "" : ` (${item.state})`}`;
   const notes: RuleHit[] = [];
@@ -142,7 +142,8 @@ export async function capture(ctx: BrowserContext, base: string, item: QueueItem
   if (loading) notes.push({ rule: "loading-visible", blocking: false, text: `${where} ${width}px ${item.theme}: ${loading} loading indicators were showing when it was shot` });
 
   // The app's own unhandled "Failed to fetch" for a request the guard refused on this page is the guard's doing.
-  const errors = (o.blockedCount?.() ?? 0) > blocked0 ? errs.filter((e) => !/Failed to fetch/.test(e)) : errs;
+  const refusedHere = (o.blocked?.() ?? []).slice(blocked0).some((b) => b.page === pageLabel(page.url()));
+  const errors = refusedHere ? errs.filter((e) => !/Failed to fetch/.test(e)) : errs;
   const hits = await rules(page, { where, width, theme: item.theme, widest: !!o.widest && item.state === "default", first: !!o.first, phone: !!o.phone, errors });
   const motion = o.motion && item.state === "default" ? await measureMotion(page, { click: new URL(base).origin }).catch(() => undefined) : undefined;
   const c: Capture = { page: item.page, width, theme: item.theme, state: item.state, url, shots, settled, measures, ...(motion ? { motion } : {}), rules: [...notes, ...hits] };
@@ -305,7 +306,7 @@ export async function captureCommand(argv: string[]): Promise<number> {
         let timer: NodeJS.Timeout | undefined;
         try {
           const once = () => Promise.race([
-            capture(ctx, base, it, { out, frozenAt, ...at, slug: slug.get(it.page) ?? "page", waitText: v["wait-text"], widest: it.width === widest, first: it.theme === themes[0], phone: it.width === narrowest && it.width < 600, motion: it.width === motionWidth && it.theme === themes[0], baseline, diffPage, blockedCount: () => b.blocked().length }),
+            capture(ctx, base, it, { out, frozenAt, ...at, slug: slug.get(it.page) ?? "page", waitText: v["wait-text"], widest: it.width === widest, first: it.theme === themes[0], phone: it.width === narrowest && it.width < 600, motion: it.width === motionWidth && it.theme === themes[0], baseline, diffPage, blocked: b.blocked }),
             new Promise<never>((_, no) => { timer = setTimeout(() => no(new Error(`timed out after ${CAPTURE_TIMEOUT / 1000} s`)), CAPTURE_TIMEOUT); }),
           ]);
           let c = await once();

@@ -67,6 +67,9 @@ async function signIn(page: PwPage, url: string, user: string, password: string,
   await u.fill(user);
   let pw = await visible(page, "input[type=password]");
   if (!pw) { await u.press("Enter"); await ready(page); pw = (await visible(page, "input[type=password]")) ?? fail("no password field on the sign-in page"); }
+  // The documents the sign-in loads from here: an error page (401, 403, …) is a refused sign-in, whatever inputs it shows.
+  let status = 0;
+  page.on("response", (r) => { if (r.request().isNavigationRequest() && r.frame() === page.mainFrame()) status = r.status(); });
   await pw.fill(password);
   await pw.press("Enter");
   await page.waitForLoadState("domcontentloaded").catch(() => {});
@@ -78,7 +81,9 @@ async function signIn(page: PwPage, url: string, user: string, password: string,
     await c.press("Enter");
     await page.waitForLoadState("domcontentloaded").catch(() => {});
     await ready(page);
+    if (await visible(page, CODE)) fail("the one-time code was refused (the code step is still showing)");
   }
+  if (status >= 400) fail(`the sign-in was refused (the app answered ${status})`);
   if (await signedOut(page, { rung: "form", ...login })) fail("the sign-in didn't go through (still on the sign-in page)");
   return login;
 }
@@ -212,7 +217,10 @@ export async function signupLogin(o: { url: string; out: string }) {
     const links = [...mail.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((m) => m[0].replace(/&amp;/g, "&"));
     const link = links.find((l) => new URL(l).origin === origin) ?? links[0];
     const code = /\b(\d{6})\b/.exec(mail)?.[1];
-    if (link) { await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 }); await ready(page); }
+    // The page decides: a code field asks for the mail's code; otherwise the mail's link verifies.
+    const field = code ? await visible(page, CODE) : null;
+    if (field) { await field.fill(code!); await field.press("Enter"); await ready(page); }
+    else if (link) { await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 }); await ready(page); }
     else if (code) { const c = (await visible(page, CODE)) ?? fail("the mail has a code but the page has no code field"); await c.fill(code); await c.press("Enter"); await ready(page); }
     else fail("the sign-up mail has no link or code");
     // An app that verifies, then asks to sign in: the new account signs in like any form login.
