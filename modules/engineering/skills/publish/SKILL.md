@@ -45,8 +45,10 @@ A publish from a scratch branch opens a second PR: when a PR already exists for 
 branch, and a new PR on `ship-pr-<n>` is the duplicate — unless the live read below shows the other one closed.
 Before closing anything, read both PRs' live state (`state`, `merged`, `headRefName`) — the one you mean to close and
 the one you mean to keep — and close a PR only when it is open, the one you keep is open, and the kept PR's head is the
-other's head or ahead of it. A PR already closed, or the only live copy of a fix, is not a duplicate: close nothing and
-work from the PR the state shows.
+other's head or ahead of it. A PR already closed and not merged, or the only live copy of a fix, is not a duplicate:
+close nothing and work from the PR the state shows.
+When the PR that carries the work is closed and `merged`, the work has landed: close the PR you would otherwise keep and
+report the merged one as what landed, not a merge of its own to wait on.
 Then close the duplicate by its own URL. After the close, read both again and report only what they show.
 Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
 When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
