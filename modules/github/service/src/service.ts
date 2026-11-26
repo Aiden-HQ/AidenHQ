@@ -288,10 +288,13 @@ const DEQUEUE = `mutation($id: ID!) { dequeuePullRequest(input: { id: $id }) { m
 const ENQUEUE = `mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { state } } }`;
 /** GitHub's words when `enqueuePullRequest` refuses a PR that belongs to a stack: only the async merge REST API takes those. */
 const STACK_REFUSAL = /part of a stack|asynchronous merge/i;
-/** How long an async merge request is polled for its result (five minutes), and how often: a queue's own merge of a stack can
- * outlast one round, so the wait is bounded and a still-pending answer is reported as pending, never as a merge. A later round
- * finds the same request through the PR's queue entry or the 409 GitHub answers. */
-const ASYNC_POLLS = 60, ASYNC_POLL_MS = 5_000;
+/** How long an async merge request is polled for its result (two minutes), and how often: one write's execution is bounded, so
+ * the wait is short and a still-pending answer is reported as pending (ship's next round asks again, and GitHub answers the
+ * repeat with the same request), never as a merge. */
+const ASYNC_POLLS = 24, ASYNC_POLL_MS = 5_000;
+/** The outcome of an accepted async merge request that is still being processed: nothing is wrong (ship asks again next round),
+ * and nothing is queued yet either, so it is neither a hold nor a done. */
+const PENDING = "ship-enqueue-pending:";
 
 export function createService(o: Options) {
   const log = o.log ?? (() => {});
@@ -1418,8 +1421,9 @@ export function createService(o: Options) {
     };
     let r: { status: number; body: any } | undefined;
     try { r = await gh("PUT", path, { sha: a.head, merge_action: "merge_queue" }); } catch (e) { log("async merge request unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
-    // No answer at all (a timeout, a 5xx): the request may still have been made, so the caller reads the PR back before deciding.
-    if (!r || r.status >= 500) return { ok: false, ambiguous: true, text: `${url}: GitHub didn't answer the async merge request for ${head}: not queued.` };
+    // No answer at all (a timeout, a 5xx): the request may have been made and GitHub answers the repeat with the same one (409),
+    // so the caller reads the PR back and, not queued, asks again next round — never a hold on an answer that never came.
+    if (!r || r.status >= 500) return { ok: false, ambiguous: true, text: `${PENDING} ${url}: GitHub didn't answer the async merge request for ${head}: not merged.` };
     if (r.status >= 300 && r.status !== 409) return { ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.message ?? r.status).slice(0, 300)}` };
     // A repeat enqueue at this head finds the request an earlier attempt made: read that one, never a second request.
     const details = r.body?.details ?? {};
@@ -1428,10 +1432,16 @@ export function createService(o: Options) {
       if ((details?.merge_action && details.merge_action !== "merge_queue") || (details?.expected_head_sha && details.expected_head_sha !== a.head))
         return { ok: false, text: `GitHub already has a merge request for ${url} (${other.slice(0, 80)}), not this enqueue's: not reported as queued.` };
     }
-    const immediate = r.status === 200 ? said(String(r.body?.status ?? ""), details) : undefined;
-    if (immediate) return immediate;
+    // A bare 200 names no head: it is proof only once the PR itself reads as merged (or queued) at this one. GitHub answers it
+    // for a PR already in the queue, which another writer may have queued at another head.
+    if (r.status === 200) {
+      const now = await settle();
+      if (now) return now;
+      return { ok: false, text: `${url}: GitHub answered the async merge request with \`${String(r.body?.status ?? "no status")}\`, and the PR doesn't read as queued or merged at ${head}: not queued.` };
+    }
+    // A 409 whose body names no request (or none that reads here) still says one is pending for this PR: ask again next round.
     const uuid = String(details?.uuid ?? "");
-    if (!uuid) return { ok: false, text: `${url}: GitHub answered the async merge request for ${head} without a request id: not merged.` };
+    if (!uuid) return { ok: false, text: `${PENDING} ${url}: GitHub has an async merge request for ${head} with no request id to read: not merged.` };
     // Bounded: a request that outlives it is reported as still pending (its id in the words), never as merged or queued.
     for (let i = 0; ; i++) {
       if (i) await new Promise((done) => setTimeout(done, o.asyncPollMs ?? ASYNC_POLL_MS));
@@ -1441,9 +1451,10 @@ export function createService(o: Options) {
       const out = said(status, got.body?.details ?? {});
       if (out) return out;
       if (i + 1 < (o.asyncPolls ?? ASYNC_POLLS)) continue;
-      // Still pending when the wait ends: the PR itself may already read as merged (or queued) at this head, which is the same
-      // answer; only when it does not is the request reported as still pending, never as merged.
-      return (await settle()) ?? { ok: false, text: `${url}: GitHub accepted the async merge request ${uuid} for ${head} and it is still pending: not merged.` };
+      // Still pending when the wait ends: the PR itself may read as merged (or queued) at this head, the same answer. When it
+      // doesn't, the request stands and the next round asks again (the repeat finds it); it is never reported as merged or as a
+      // hold on a request GitHub accepted.
+      return (await settle()) ?? { ok: false, text: `${PENDING} ${url}: GitHub accepted the async merge request ${uuid} for ${head} and is still processing it: not merged.` };
     }
   }
 

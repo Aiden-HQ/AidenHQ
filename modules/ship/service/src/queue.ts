@@ -29,10 +29,16 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   // A veto is final for this head; a head that moved meanwhile is the next round's.
   if (r.state === "rejected") return { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})` };
   if (/^ship-head-moved/.test(text)) return { act: "nothing" };
+  // `ship-enqueue-pending`: GitHub accepted the async merge request (or one is already pending) and its result is not terminal
+  // yet — neither a refusal nor a hold. It may also have been queued and removed while the request read as pending (ship sees
+  // only `wait` while a PR is in the queue, so the removal is seen here and nowhere else): a removal's own facts decide, as they
+  // do for any settled enqueue below.
+  const pending = /^ship-enqueue-pending/.test(text);
+  const removed = (f.groupFailing?.length ?? 0) > 0;
   // Not queued (a refusal, an unanswered call that read back as not queued): a new attempt at the same head.
   // Ended by a pause or a stop (the adoption moved on): queued again now that it is worked again. Any other end (a refusal, a veto,
   // a call that read back as not queued) holds, never queued again at this head; the outcome is on the record.
-  if (r.state !== "done") return /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
+  if (r.state !== "done" && !(pending && removed)) return pending || /^ship-generation|ship-tier-pending/.test(text) ? { act: "enqueue", attempt: q.attempt + 1, retried: q.retried } : { act: "hold", why: `the enqueue at \`${pr.head.slice(0, 12)}\` ended ${String(r.state)}${text ? ` (${text.slice(0, 300)})` : ""}; its outcome is on record ${q.record}`, ...(/^GitHub refused to queue/.test(text) ? { refused: text.replace(/^GitHub refused to queue \S+: /, "").slice(0, 300) } : {}) };
   // Queued, and open and out of the queue again: removed.
   const onBase = new Set(f.onBase ?? []);
   const own = (f.groupFailing ?? []).filter((n) => !onBase.has(n));

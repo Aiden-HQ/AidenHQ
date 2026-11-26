@@ -90,4 +90,29 @@ test("removed from the queue: a conflict is repaired and queued again; its own r
   assert.match(x.of("comment").at(-1)!.body, /Ship won't queue this PR again\. A person queues it again, or pushes a fix\./);
 });
 
+// GitHub accepted the async merge request for a stacked PR and it is still being processed: that is not a hold. Ship asks
+// again next round at the same head, and the repeat finds the request GitHub already holds.
+test("an async enqueue GitHub accepted but has not settled asks again next round, never a hold", async () => {
+  const w = world();
+  const ready = { do: "enqueue" as const, why: "ready" };
+  await round(w.deps as any, w.pr(), ready, { queue: true });
+  w.records["rec-1"] = { state: "failed", outcome: { ok: false, text: "ship-enqueue-pending: https://github.com/a/b/pull/7: GitHub accepted the async merge request u-1 for `111111111111` and is still processing it: not merged." } };
+  await round(w.deps as any, w.pr(), ready, { queue: true });
+  assert.equal(w.of("POST /v1/writes").length, 2, "a fresh attempt at the same head");
+  assert.deepEqual(w.of("POST /v1/writes")[1]!.body.args, { repo: "a/b", number: 7, head: H1, base: "main", generation: 1, attempt: 2 });
+  assert.doesNotMatch(w.of("comment").at(-1)?.body ?? "", /Ship blocked/);
+});
+
+// The request was accepted and the PR then queued and removed for a red merge_group check while the request still read pending:
+// that removal is the round's event, not another request at the same head.
+test("a removal seen while an accepted async enqueue still reads pending is handled as the removal, never a blind re-ask", async () => {
+  const w = world();
+  const ready = { do: "enqueue" as const, why: "ready" };
+  await round(w.deps as any, w.pr(), ready, { queue: true });
+  w.records["rec-1"] = { state: "failed", outcome: { ok: false, text: "ship-enqueue-pending: https://github.com/a/b/pull/7: GitHub accepted the async merge request u-1 for `111111111111` and is still processing it: not merged." } };
+  await round(w.deps as any, w.pr(), ready, { queue: true, failing: ["test"], groupFailing: ["test"], onBase: [] });
+  assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.enqueue").length, 1, "no second request at the same head");
+  assert.equal(w.of("POST /v1/tasks").length, 2, "the records task and the Engineer's fix job: its own red check is a CI fix round");
+});
+
 const of = (w: ReturnType<typeof world>, what: string) => w.of(what);
