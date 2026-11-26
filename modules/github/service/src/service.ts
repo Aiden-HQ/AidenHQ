@@ -857,7 +857,7 @@ export function createService(o: Options) {
             // against, so nothing may land on it. A branch that is gone (deleted since) has no head to rewind: it is the ordinary
             // missing-branch publish, created only where it is still absent.
             // A branch this host created at the base point for a publish whose commit didn't answer (createdRef) resumes from there.
-            const resumes = planned === null && head !== undefined && head === (await git(dir, ["rev-parse", "--verify", "--quiet", createdRef(b.branch)]).catch(() => ""));
+            const resumes = planned === null && head !== undefined && head === (await git(dir, ["rev-parse", "--verify", "--quiet", createdRef(b.branch, rec.id)]).catch(() => ""));
             if (!isDef && head !== undefined && !already && !resumes && planned !== undefined && head !== planned) throw refused(planned, head);
             // An older bundle than what the branch holds (#1775: the older bundle winning over a newer push) is refused: one the head
             // contains (a person pushed the box's commits), or one older than the box commit this branch was last published from
@@ -865,10 +865,11 @@ export function createService(o: Options) {
             if (head && !already && (await isAncestor(dir, b.sha, head))) throw refused(b.sha, head);
             const last = await git(dir, ["rev-parse", "--verify", "--quiet", publishedRef(b.branch)]).catch(() => "");
             if (last && last !== b.sha && (await isAncestor(dir, b.sha, last))) throw refused(b.sha, head);
-            const sha = already ? head! : await publishSigned({ s, dir, branch: b.branch, sha: b.sha, head, base: base0, isDef, ...at });
+            const made = already ? { sha: head!, wrote: false } : await publishSigned({ s, dir, branch: b.branch, sha: b.sha, head, base: base0, isDef, record: rec.id, ...at });
+            const sha = made.sha;
             await git(dir, ["update-ref", publishedRef(b.branch), b.sha]);
             noteKept(o.cacheDir, { repo: s.slug, ref: publishedRef(b.branch) });
-            if (!already) {
+            if (made.wrote) {
               notePushed(s.slug, sha);
               objects.push(`${ref(s.slug)}@${sha}`);
             }
@@ -1375,11 +1376,11 @@ export function createService(o: Options) {
   /**
    * The ws-cache refs a publish keeps per branch (under refs/ws/, so tidy.ts prunes them with the jobs' heads): the box commit the
    * branch was last published from (GitHub holds its own commits, never the box's), and the base point this host created the
-   * branch at for a publish whose commit didn't answer, the one leftover a later run of that publish may resume from.
+   * branch at for a record whose commit didn't answer, the one leftover a later run of that same record may resume from.
    */
-  const branchKey = (branch: string) => createHash("sha256").update(branch).digest("hex");
+  const branchKey = (...parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex");
   const publishedRef = (branch: string) => `refs/ws/_published/${branchKey(branch)}`;
-  const createdRef = (branch: string) => `refs/ws/_created/${branchKey(branch)}`;
+  const createdRef = (branch: string, record: string) => `refs/ws/_created/${branchKey(branch, record)}`;
   /**
    * Where a publish stands on its base: the base's tip on GitHub (fetched into the same cache), the commit the box's branch forked
    * from on it (`mb`), and the one the published head did (`headBase`). Empty where they share no commit (a repo with none yet).
@@ -1400,23 +1401,23 @@ export function createService(o: Options) {
    *   open PR first (mergeSigned), so the PR's diff never carries the base's own changes;
    * - the published branch on a newer base than the box's: refused, since one commit to the box's tree would revert those changes;
    * - the default branch: forward only, from its head.
-   * The sha is GitHub's: the caller binds that one, never the box's.
+   * The sha is GitHub's: the caller binds that one, never the box's (`wrote`: false where the branch already held the tree).
    */
-  async function publishSigned(p: { s: ReturnType<typeof slugOf>; dir: string; branch: string; sha: string; head?: string; base: string; isDef: boolean; tip?: string; mb?: string; headBase?: string }): Promise<string> {
+  async function publishSigned(p: { s: ReturnType<typeof slugOf>; dir: string; branch: string; sha: string; head?: string; base: string; isDef: boolean; record: string; tip?: string; mb?: string; headBase?: string }): Promise<{ sha: string; wrote: boolean }> {
     const label = `${p.s.slug} \`${p.branch}\``;
     const at: At = { s: p.s, url: label, into: p.s.slug, ref: p.branch, dir: p.dir, publish: true };
     const message = await git(p.dir, ["log", "-1", "--format=%B", p.sha]);
     const tree = (x: string) => git(p.dir, ["rev-parse", `${x}^{tree}`]);
     const again = (tip: string) => `ship-head-moved: \`${p.base}\` moved on to \`${tip.slice(0, 12)}\` since ${label} was built on it: nothing was pushed; fetch it, build on it and publish again.`;
     const landed = (r: { sha: string } | { text: string } | { baseMoved: string }) => {
-      if ("sha" in r) return r.sha;
+      if ("sha" in r) return { sha: r.sha, wrote: true };
       throw fail(409, "text" in r ? r.text : again(r.baseMoved));
     };
     if (p.isDef) {
       const head = await publishHead(p.dir, p.s.slug, p.branch);
       if (!head) throw fail(409, `${label} has no commit yet: GitHub's signed commits build on one, so it can't be published to.`);
       // Already holding this tree (a retry after a lost answer, a repeat): nothing to write.
-      if ((await tree(head)) === (await tree(p.sha))) return head;
+      if ((await tree(head)) === (await tree(p.sha))) return { sha: head, wrote: false };
       if (!(await isAncestor(p.dir, head, p.sha))) throw fail(409, `ship-head-moved: ${label} is at \`${head.slice(0, 12)}\`, which \`${p.sha.slice(0, 12)}\` doesn't build on: nothing was pushed; fetch it, build on it and publish again.`);
       return landed(await commitSigned(at, head, await tree(head), p.sha, message));
     }
@@ -1430,20 +1431,20 @@ export function createService(o: Options) {
       if (made.status === 422 && /exist/i.test(said)) throw fail(409, `ship-head-moved: ${label} appeared since the write read it absent: nothing was pushed to it; read it again.`);
       if (made.status >= 500 || made.status === 429) throw fail(502, `GitHub didn't answer creating ${label}: ${said.slice(0, 200)}`);
       if (made.status >= 300) throw fail(409, refusedPush(at, `GitHub refused creating the branch: ${said}`));
-      await git(p.dir, ["update-ref", createdRef(p.branch), p.mb]);
-      noteKept(o.cacheDir, { repo: p.s.slug, ref: createdRef(p.branch) });
+      await git(p.dir, ["update-ref", createdRef(p.branch, p.record), p.mb]);
+      noteKept(o.cacheDir, { repo: p.s.slug, ref: createdRef(p.branch, p.record) });
     }
-    if (p.head === undefined || p.head === p.mb && (await git(p.dir, ["rev-parse", "--verify", "--quiet", createdRef(p.branch)]).catch(() => "")) === p.mb) {
+    if (p.head === undefined || p.head === p.mb && (await git(p.dir, ["rev-parse", "--verify", "--quiet", createdRef(p.branch, p.record)]).catch(() => "")) === p.mb) {
       // A commit that didn't answer leaves the new branch for this publish to resume. One GitHub refused (a rule, a stale head, the
       // workflow scope) takes it away again, only while it still stands where this made it, so nothing is left that a person would
       // read as published.
       const drop = async () => {
         const now = await gh("GET", refPath(p.s.slug, p.branch)).catch(() => undefined);
         if (now && now.status < 300 && now.body?.object?.sha === p.mb) await gh("DELETE", `/repos/${p.s.slug}/git/refs/heads/${p.branch.split("/").map(encodeURIComponent).join("/")}`).catch(() => undefined);
-        await git(p.dir, ["update-ref", "-d", createdRef(p.branch)]).catch(() => undefined);
+        await git(p.dir, ["update-ref", "-d", createdRef(p.branch, p.record)]).catch(() => undefined);
       };
       const r = await commitSigned(at, p.mb, await tree(p.mb), p.sha, message).catch(async (e: { need?: unknown }) => { if (e?.need) await drop(); throw e; });
-      if ("sha" in r) await git(p.dir, ["update-ref", "-d", createdRef(p.branch)]).catch(() => undefined);
+      if ("sha" in r) await git(p.dir, ["update-ref", "-d", createdRef(p.branch, p.record)]).catch(() => undefined);
       else await drop();
       return landed(r);
     }
