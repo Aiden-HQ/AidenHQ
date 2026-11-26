@@ -8,7 +8,20 @@ export const MODES = ["read", "test-write", "any"] as const;
 export type Mode = (typeof MODES)[number];
 export const DEPTHS = ["scan", "signed-in", "tester"] as const;
 export type Depth = (typeof DEPTHS)[number];
-export interface App { name: string; url: string; repo?: string; aidenhq_app: boolean; live_mode: Mode }
+export const SCHEDULES = ["on-request", "after-deploy", "always"] as const;
+export type Schedule = (typeof SCHEDULES)[number];
+export const SPENDS = ["scan", "standard", "thorough"] as const;
+export type Spend = (typeof SPENDS)[number];
+export const MODEL_ROLES = ["design", "fixes", "clicking"] as const;
+export type Models = Partial<Record<(typeof MODEL_ROLES)[number], string>>;
+/** A per-app daily cap, in USD per UTC day: default 5, at most 100. */
+export const DAY_CAP = { default: 5, max: 100 };
+/** One entry of settings.ui_testing.apps, defaults filled in (the UiApp of the phase 3 plan). */
+export interface App {
+  name: string; url: string; repo?: string; aidenhq_app: boolean; live_mode: Mode;
+  schedule: Schedule; day_cap_usd: number; spend: Spend; models: Models; recording: boolean;
+}
+export type UiApp = App;
 export type Login = { login_url: string; username: string; password: string; totp_secret?: string };
 
 const NAME = /^[a-z][a-z0-9-]{1,30}$/;
@@ -30,21 +43,28 @@ export function readApps(raw: string | undefined): { apps: App[]; errors: string
   let v: unknown;
   try { v = JSON.parse(raw || "{}"); } catch { return { apps: [], errors: ["ui_testing isn't JSON"] }; }
   const given = v && typeof v === "object" ? (v as { apps?: unknown }).apps : undefined;
-  if (given !== undefined && !Array.isArray(given)) return { apps: [], errors: ["apps is a list of { name, url, repo?, aidenhq_app?, live_mode }"] };
+  if (given !== undefined && !Array.isArray(given)) return { apps: [], errors: ["apps is a list of { name, url, repo?, aidenhq_app?, live_mode, schedule, day_cap_usd, spend, models, recording }"] };
   const list = (given ?? []) as unknown[];
   const apps: App[] = [], errors: string[] = [];
   for (const [i, e] of list.entries()) {
     const a = (e && typeof e === "object" ? e : {}) as Record<string, unknown>;
     const name = String(a.name ?? ""), url = String(a.url ?? "");
     const mode = (a.live_mode ?? "read") as Mode;
+    const schedule = (a.schedule ?? "on-request") as Schedule, spend = (a.spend ?? "standard") as Spend;
+    const cap = a.day_cap_usd ?? DAY_CAP.default, models = (a.models ?? {}) as Record<string, unknown>;
     const why = !NAME.test(name) ? "name is lowercase letters, digits and -, 2-31 long, starting with a letter"
       : apps.some((x) => x.name === name) ? `${name} is listed twice`
       : !/^https?:\/\//.test(url) || !URL.canParse(url) ? "url is an http(s) address"
       : a.repo !== undefined && !REPO.test(String(a.repo)) ? "repo is owner/name"
       : a.aidenhq_app !== undefined && typeof a.aidenhq_app !== "boolean" ? "aidenhq_app is true or false"
-      : !MODES.includes(mode) ? `live_mode is one of ${MODES.join(", ")}` : "";
+      : !MODES.includes(mode) ? `live_mode is one of ${MODES.join(", ")}`
+      : !SCHEDULES.includes(schedule) ? `schedule is one of ${SCHEDULES.join(", ")}`
+      : !SPENDS.includes(spend) ? `spend is one of ${SPENDS.join(", ")}`
+      : typeof cap !== "number" || !Number.isFinite(cap) || cap < 0 || cap > DAY_CAP.max ? `day_cap_usd is a number from 0 to ${DAY_CAP.max}`
+      : !models || typeof models !== "object" || Array.isArray(models) || Object.entries(models).some(([k, v]) => !(MODEL_ROLES as readonly string[]).includes(k) || typeof v !== "string" || !/^~?[\w.-]+\/[\w.:-]+$/.test(v)) ? `models is { ${MODEL_ROLES.map((r) => `${r}?`).join(", ")} }, each an OpenRouter model id`
+      : a.recording !== undefined && typeof a.recording !== "boolean" ? "recording is true or false" : "";
     if (why) { errors.push(`apps[${i}]: ${why}`); continue; }
-    apps.push({ name, url, ...(a.repo !== undefined ? { repo: String(a.repo) } : {}), aidenhq_app: a.aidenhq_app === true, live_mode: mode });
+    apps.push({ name, url, ...(a.repo !== undefined ? { repo: String(a.repo) } : {}), aidenhq_app: a.aidenhq_app === true, live_mode: mode, schedule, day_cap_usd: cap, spend, models: models as Models, recording: a.recording === true });
   }
   return { apps, errors };
 }

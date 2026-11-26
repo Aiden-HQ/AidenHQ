@@ -10,6 +10,19 @@ roles:
 requires:
   # Any code host: UI changes are reviewed on GitHub PRs and on local change requests alike.
   - codehost
+  - board # contributes.board.pages
+contributes:
+  # The UI testing page: a module view served by the design connection, on the owner's own calls (docs/design/board-ui.md
+  # "Modules"): the apps under test, their settings (its write proposes settings.ui_testing, filed on the owner's Save), Run now and
+  # Stop, runs with their images and recordings.
+  board.pages:
+    - id: ui-testing
+      title: UI testing
+      icon: palette
+      order: 6
+      connection: design
+      view: "ui://design/page"
+      tools: [ design_overview, design_runs, design_run, design_image, design_configure, design_pass_start, design_pass_stop ]
 agents:
   ui-designer:
     department: engineering
@@ -68,8 +81,9 @@ connections:
     tools:
       # design_evidence_put and design_run_finish write only into this module's own store (the caller's own run, no outside
       # effect): reads, so the images and the report never enter the kernel's permanent write records or an approval's arguments.
-      read: [ design_runs, design_run, design_image, design_evidence_put, design_run_finish, design_apps ]
-      write: [ design_run_start, design_pass_start ]
+      read: [ design_runs, design_run, design_image, design_evidence_put, design_run_finish, design_apps, design_overview ]
+      # design_configure only proposes (the owner's Save files it); design_pass_stop closes a pass's task.
+      write: [ design_run_start, design_pass_start, design_configure, design_pass_stop ]
 # The job tools a pass's box calls (the kernel's POST /v1/jobtools/module/design/<op> forwards { op, body, caller } here with the
 # service key): login releases the app's supplied login to the pass's own ui-review process; app-session gets an AidenHQ app's
 # read-only test-user session from the kernel for it (service/src/jobtools.ts).
