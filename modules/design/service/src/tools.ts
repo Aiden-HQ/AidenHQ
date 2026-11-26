@@ -1,5 +1,6 @@
 // The design connection's tools. Reads: design_runs, design_run, design_image, design_apps, and design_evidence_put and
-// design_run_finish (they write only into this module's own store). Writes: design_run_start, design_pass_start (files a task).
+// design_run_finish (they write only into this module's own store). Writes: design_run_start, design_pass_start (files a task),
+// design_pass_stop (closes one).
 // A run belongs to the agent that started it, or a pass to the agent its task went to (the caller's signed assertion), and only
 // that agent writes to it.
 import type { Tool } from "./mcp.ts";
@@ -28,10 +29,17 @@ export function designTools(store: Store, p: { passes: Passes; apps: () => App[]
     { name: "design_apps", description: "The apps set up for UI testing (settings.ui_testing): name, url, repo, whether it is an AidenHQ app, its live-app mode (the most a pass may do; AidenHQ apps are read-only) and whether a supplied login is set.",
       inputSchema: obj({}),
       run: async () => { const logins = p.logins(); return { apps: p.apps().map((a) => ({ name: a.name, url: a.url, ...(a.repo ? { repo: a.repo } : {}), aidenhq_app: a.aidenhq_app, live_mode: ceiling(a), login: Boolean(logins[a.name]) })) }; } },
-    { name: "design_pass_start", description: "Start a UI review pass of a configured app: files one task for the UI Reviewer against the app's url (or its repo's default branch, never a PR head) and returns { run, task }. depth: scan (signed out), signed-in or tester (clicking pass). mode may only narrow the app's live_mode.",
-      inputSchema: obj({ app: str, depth: { type: "string", enum: [...DEPTHS] }, mode: { type: "string", enum: [...MODES] }, model: str }, ["app", "depth"]),
+    { name: "design_pass_start", description: "Start a UI review pass of a configured app: files one task for the UI Reviewer against the app's url (or its repo's default branch, never a PR head) and returns { run, task }. depth (default from the app's spend mode): scan (signed out), signed-in or tester (clicking pass). mode may only narrow the app's live_mode. One pass runs per app; none starts once the app's passes billed its day cap (UTC).",
+      inputSchema: obj({ app: str, depth: { type: "string", enum: [...DEPTHS] }, mode: { type: "string", enum: [...MODES] }, model: str }, ["app"]),
       run: async (a) => {
-        const r = await p.passes.startPass(s(a.app), "request", { depth: s(a.depth) as Depth, ...(a.mode !== undefined ? { mode: s(a.mode) as Mode } : {}), ...(a.model !== undefined ? { model: s(a.model) } : {}) });
+        const r = await p.passes.startPass(s(a.app), "request", { ...(a.depth !== undefined ? { depth: s(a.depth) as Depth } : {}), ...(a.mode !== undefined ? { mode: s(a.mode) as Mode } : {}), ...(a.model !== undefined ? { model: s(a.model) } : {}) });
+        if ("refused" in r) throw new Error(`Refused: ${r.refused}${"run" in r ? `: ${r.run}` : r.refused === "unknown app" ? `: ${s(a.app).slice(0, 40)} isn't in settings.ui_testing` : ""}.`);
+        return r;
+      } },
+    { name: "design_pass_stop", description: "Stop an app's running pass: closes its task, which stops its job; the run shows stopping until the job has ended, then stopped, and the app takes a new pass.",
+      inputSchema: obj({ app: str }, ["app"]),
+      run: async (a) => {
+        const r = await p.passes.stopPass(s(a.app));
         if ("refused" in r) throw new Error(`Refused: ${r.refused}.`);
         return r;
       } },

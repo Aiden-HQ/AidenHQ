@@ -3,13 +3,25 @@ description: "The UI/UX Designer (mockups the Engineer builds from, the design s
 roles:
   # kernel.tasks: one task per UI review pass for the holder of ui-login (passes.ts). app-tester (apps-platform's) and
   # kernel.test-session: an AidenHQ app's pass gets a read-only test-user session through the job tool app-session
-  # (kernel/src/test-session.ts; docs/design/access.md).
-  requests: [ repo-checkout, kernel.tasks, app-tester, kernel.test-session ]
+  # (kernel/src/test-session.ts; docs/design/access.md). kernel.work-read: the scheduler reads what an app's passes billed today
+  # (GET /v1/work?spend_tasks=, its day cap) and whether a closed pass's job has ended (GET /v1/work?task=; schedule.ts).
+  requests: [ repo-checkout, kernel.tasks, app-tester, kernel.test-session, kernel.work-read ]
   declares:
     - { id: ui-login, description: "Runs the design module's UI review passes: its pass's job tools release the app's supplied login or a read-only test-user session to the box's ui-review process, never to the model." }
 requires:
   # Any code host: UI changes are reviewed on GitHub PRs and on local change requests alike.
   - codehost
+  - board # the UI testing page (contributes.board.pages)
+# When a pass starts by itself (service/src/schedule.ts): an `after-deploy` app's healthy AidenHQ deploy (apps-platform's
+# app.deployed, by the app's name) or a push to its repo's default branch (the github change feed; optional, so the module
+# compiles on an install without GitHub).
+subscribes:
+  apps:
+    kinds: [ app.deployed ]
+    resources: { setting: ui_testing, path: "apps[].name" }
+  github?:
+    kinds: [ push ]
+    resources: { setting: ui_testing, path: "apps[].repo" }
 agents:
   ui-designer:
     department: engineering
@@ -69,7 +81,7 @@ connections:
       # design_evidence_put and design_run_finish write only into this module's own store (the caller's own run, no outside
       # effect): reads, so the images and the report never enter the kernel's permanent write records or an approval's arguments.
       read: [ design_runs, design_run, design_image, design_evidence_put, design_run_finish, design_apps ]
-      write: [ design_run_start, design_pass_start ]
+      write: [ design_run_start, design_pass_start, design_pass_stop ]
 # The job tools a pass's box calls (the kernel's POST /v1/jobtools/module/design/<op> forwards { op, body, caller } here with the
 # service key): login releases the app's supplied login to the pass's own ui-review process; app-session gets an AidenHQ app's
 # read-only test-user session from the kernel for it (service/src/jobtools.ts).
@@ -86,7 +98,11 @@ validate:
 settings:
   # The apps the UI Reviewer tests: { apps: [{ name (lowercase, 2-31: a-z 0-9 -), url (where a pass opens it), repo? (owner/name:
   # a local build uses its default branch, never a PR head), aidenhq_app? (true: an app on this AidenHQ, named as it is there; it signs
-  # in through the test-user session, so settings.edge.test_user.apps must list it, and is always read-only, whatever live_mode says), live_mode: read | test-write | any }] }. live_mode is the
+  # in through the test-user session, so settings.edge.test_user.apps must list it, and is always read-only, whatever live_mode says), live_mode: read | test-write | any,
+  # schedule: on-request (the default) | after-deploy (its healthy AidenHQ deploy or a push to its repo's default branch) | always
+  # (back to back), day_cap_usd (default 5, at most 100: no pass starts once its passes billed that much in the UTC day; a running
+  # one ends on its own), spend: scan | standard (the default) | thorough (passes.ts SPEND), models: { design?, fixes?, clicking? }
+  # (OpenRouter ids), recording (default false) }] }. One pass runs per app at a time. live_mode is the
   # most a pass may do: read (the default) loads pages only, no write of any kind; test-write lets the test account change its own
   # data (deletes and paths like delete, pay, send, invite or publish are still blocked, a best-effort extra): choose it only for
   # an app whose test account holds test data alone; any allows everything. A pass may only narrow it. Logins: the secret ui_logins.
@@ -121,4 +137,4 @@ services:
 generated_secrets:
   - design_service_key
   - design_token
-data_version: 1 # its data dir's format: 1 adds a pass's depth, mode and source to runs (store.ts)
+data_version: 2 # its data dir's format: 1 adds a pass's depth, mode and source to runs; 2 its trigger, why it failed, its stop, and one running pass per app (store.ts)

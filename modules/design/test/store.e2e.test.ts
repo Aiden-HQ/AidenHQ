@@ -8,8 +8,9 @@ import { createMcp, serveMcp } from "../service/src/mcp.ts";
 import { designTools } from "../service/src/tools.ts";
 import { DAY, openStore, type Store } from "../service/src/store.ts";
 import { createPasses } from "../service/src/passes.ts";
+import { fakeKernel } from "./kernel.fake.ts";
 
-const tools = (store: Store) => designTools(store, { passes: createPasses({ store, apps: () => [], logins: () => ({}), fileTask: async () => ({ id: "t", agent: "a" }) }), apps: () => [], logins: () => ({}) });
+const tools = (store: Store) => designTools(store, { passes: createPasses({ store, apps: () => [], logins: () => ({}), kernel: fakeKernel().passes }), apps: () => [], logins: () => ({}) });
 
 const png64 = Buffer.from("\x89PNG fake image bytes").toString("base64");
 const minimalReport = { version: 2, target: "http://acme.example.com", model: "m", captures: [], improvements: [], bugs: [], cost_usd: 0.42 };
