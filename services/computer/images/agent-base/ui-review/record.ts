@@ -159,6 +159,7 @@ export async function recordPages(cdp: string, dir: string, o: { marks?: string 
       for (const t of tabs.values()) finish(t);
       await Promise.all(closing);
       try { ws.close(); } catch { /* gone */ }
+      if (o.marks) rmSync(`${o.marks}.ack`, { force: true }); // no recorder now: a later `browser flow` waits for none
       done.sort((a, b) => a.file.localeCompare(b.file));
       const list = join(dir, "recordings.json");
       let before: Recording[] = [];

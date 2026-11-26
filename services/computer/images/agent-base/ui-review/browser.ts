@@ -143,11 +143,13 @@ export async function browserCommand(argv: string[]): Promise<number> {
     writeFileSync(mark, title.join(" "));
     // A recording browser acknowledges the mark (record.ts) before the flow's first step; without one there is nothing to wait for.
     const at = statSync(mark).mtimeMs;
-    for (let i = 0; i < 50 && existsSync(`${mark}.ack`); i++) {
-      if (Number(readFileSync(`${mark}.ack`, "utf8")) >= at) return 0;
+    if (!existsSync(`${mark}.ack`)) return 0;
+    for (let i = 0; i < 50; i++) {
+      try { if (Number(readFileSync(`${mark}.ack`, "utf8")) >= at) return 0; } catch { return 0; } // the recorder stopped
       await sleep(100);
     }
-    return 0;
+    console.error("ui-review: the recorder hasn't taken the mark in 5 s; this flow's clip may start late");
+    return 1;
   }
   const { values: v } = parseArgs({ args: rest, options: { url: { type: "string" }, mode: { type: "string" }, session: { type: "string" }, out: { type: "string", default: "ui-review-browser" }, port: { type: "string" }, record: { type: "string" } } });
   const mode = modeOf(v.mode, v.url ?? "http://app.invalid/");
