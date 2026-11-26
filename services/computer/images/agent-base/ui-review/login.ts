@@ -207,7 +207,13 @@ export async function signupLogin(o: { url: string; out: string }) {
     if (submit) await submit.click(); else await e.press("Enter");
     await page.waitForLoadState("domcontentloaded").catch(() => {});
     await ready(page);
-    const mail = await mailTo(email), origin = new URL(o.url).origin;
+    // An app that signs the new account in at once may send no mail: no mail, and off the sign-up page, is that session.
+    const origin = new URL(o.url).origin, mail = await mailTo(email).catch((e) => { if (e instanceof LoginError) return ""; throw e; });
+    const stillThere = async () => pathOf(new URL(page.url())) === signupAt.path && (await page.title()) === signupAt.title;
+    if (!mail) {
+      if (await stillThere()) fail("no sign-up mail arrived");
+      return { loginPath: signupAt.path, loginTitle: signupAt.title, origin };
+    }
     const links = [...mail.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((m) => m[0].replace(/&amp;/g, "&"));
     const link = links.find((l) => new URL(l).origin === origin) ?? links[0];
     const code = /\b(\d{6})\b/.exec(mail)?.[1];
@@ -216,8 +222,7 @@ export async function signupLogin(o: { url: string; out: string }) {
     else fail("the sign-up mail has no link or code");
     // An app that verifies, then asks to sign in: the new account signs in like any form login.
     if (await visible(page, "input[type=password]")) signIn2 = await signIn(page, page.url(), email, password, undefined);
-    const here = new URL(page.url());
-    if (pathOf(here) === signupAt.path && (await page.title()) === signupAt.title) fail("the sign-up didn't go through (still on the sign-up page)");
+    if (await stillThere()) fail("the sign-up didn't go through (still on the sign-up page)");
     return signIn2 ?? { loginPath: signupAt.path, loginTitle: signupAt.title, origin };
   }, "signup");
   // The new account's password, for a re-login through the form rung when the app has a sign-in page.

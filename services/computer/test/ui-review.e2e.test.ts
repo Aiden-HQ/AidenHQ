@@ -525,6 +525,9 @@ describe("repro", chrome, () => {
       assert.equal(fixture.writes() - w0, 0); // the POST on mount and Pay's POST, in both replays, never reached the app
       const saved = JSON.parse(readFileSync(join(out, "report.json"), "utf8")) as Report;
       assert.ok(saved.blocked.some((b) => b.method === "POST" && b.path === "/api/pay"), JSON.stringify(saved.blocked));
+      // Pay "doing nothing" is the guard's doing: never judged, never a bug.
+      assert.deepEqual(saved.bugs, []); assert.equal(fake.calls("repro-judge").length, 0);
+      assert.ok(saved.notes.some((n) => /Pay does nothing: not testable in read mode/.test(n)), saved.notes.join("\n"));
     } finally { await fake.close(); }
   });
 

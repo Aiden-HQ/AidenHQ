@@ -20,7 +20,7 @@ const fence = (s: string) => `<untrusted>\n${s.replace(/<\/?untrusted>/gi, "")}\
 const judgeSchema = { type: "object", additionalProperties: false, required: ["shows", "why"], properties: { shows: { type: "boolean" }, why: { type: "string" } } };
 
 export type ReproOptions = { out: string; model?: string; session?: string; mode: Mode; maxUsd?: number; base?: string; key?: string };
-type Replay = { ok: true; before: string; after: string; changed: { text: boolean; url: boolean }; writes: number } | { ok: false; why: string };
+type Replay = { ok: true; before: string; after: string; changed: { text: boolean; url: boolean }; writes: number; refused: number } | { ok: false; why: string };
 
 const SECRET = /pass|secret|token|otp|totp|pin\b/i;
 /** A step as text for the report; what is typed into a secret-looking field is never written. */
@@ -48,7 +48,8 @@ async function run(page: PwPage, base: string, s: Step): Promise<void> {
     if (page.url() === url.href) await page.reload({ waitUntil: "domcontentloaded", timeout: 15_000 }); // the same address again is a reload
     else await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: 15_000 });
     await ready(page);
-  } else if ("click" in s) { await page.locator(s.click).first().click({ timeout: STEP_MS }); await ready(page, 2000); }
+  } else if (new URL(page.url()).origin !== new URL(base).origin) throw new Error(`${stepText(s)}: the page left the app under review (${new URL(page.url()).origin})`);
+  else if ("click" in s) { await page.locator(s.click).first().click({ timeout: STEP_MS }); await ready(page, 2000); }
   else if ("fill" in s) await page.locator(s.fill[0]).first().fill(s.fill[1], { timeout: STEP_MS });
   else if ("press" in s) { await page.keyboard.press(s.press); await ready(page, 2000); }
   else if (/^\d+$/.test(s.wait)) await new Promise((ok) => setTimeout(ok, Math.min(Number(s.wait), STEP_MS)));
@@ -62,15 +63,17 @@ async function replay(newContext: () => Promise<BrowserContext>, base: string, c
     const page = await ctx.newPage();
     const steps = c.steps as Step[], last = steps.length - 1;
     const text = () => page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
-    let before = "", textBefore = "", urlBefore = "", writes = 0;
+    let before = "", textBefore = "", urlBefore = "", writes = 0, refused = 0;
     page.on("request", (r) => { if (before && !["GET", "HEAD", "OPTIONS"].includes(r.method())) writes++; }); // sent by the last step (a guard may then refuse it)
+    // A request of the last step the live-app guard refused: what the page then shows is the guard's doing, not the app's.
+    page.on("requestfailed", (r) => { if (before && /BLOCKED_BY_CLIENT/.test(r.failure()?.errorText ?? "")) refused++; });
     for (const [i, s] of steps.entries()) {
       if (i === last) { before = `repro/${tag}-before.png`; await page.screenshot({ path: join(out, before) }); textBefore = await text(); urlBefore = page.url(); }
       await run(page, base, s);
     }
     const after = `repro/${tag}-after.png`;
     await page.screenshot({ path: join(out, after) });
-    return { ok: true, before, after, changed: { text: (await text()) !== textBefore, url: page.url() !== urlBefore }, writes };
+    return { ok: true, before, after, changed: { text: (await text()) !== textBefore, url: page.url() !== urlBefore }, writes, refused };
   } catch (e) { return { ok: false, why: (e as Error).message.split("\n")[0] }; }
   finally { await ctx.close().catch(() => {}); }
 }
@@ -133,6 +136,7 @@ export async function repro(base: string, clicksFile: string, o: ReproOptions): 
           const r = await replay(fresh(c), base, c, o.out, `${batch}/${id}-r${k}`);
           if (!r.ok) { dropped.push(`${c.title}: replay ${k} failed: ${r.why}`); verified = false; break; }
           runs.push(r);
+          if (c.kind === "bug" && r.refused) { dropped.push(`${c.title}: not testable in ${o.mode} mode (the live-app guard refused its last step's request)`); verified = false; break; }
           if (c.kind === "bug") {
             if (over()) { dropped.push(`${c.title}: the --max-usd budget was reached`); verified = false; break; }
             try { if (!(await judge(c, r, o.out, o))) { dropped.push(`${c.title}: replay ${k} did not show it`); verified = false; break; } }
