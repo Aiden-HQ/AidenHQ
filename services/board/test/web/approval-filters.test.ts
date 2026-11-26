@@ -1,6 +1,6 @@
 // Which Approvals tab a card is in (web/src/conversation.ts): a card in flight has not ended, so the Done tab never lists it.
 import { describe, expect, it } from "vitest";
-import { headOf, inFilter, inProgress, isNoise, shownInChat } from "../../web/src/conversation";
+import { headOf, inFilter, inProgress, isNoise, seenByOwner, shownInChat } from "../../web/src/conversation";
 import type { Approval } from "../../web/src/types";
 
 const card = (o: Partial<Approval>): Approval =>
@@ -62,6 +62,16 @@ describe("a conversation's cards", () => {
     const applied = card({ state: "used", outcome: "applied", decidedBy: "reviewer:~openai/gpt-luna-latest" });
     expect(shownInChat(applied, true)).toBe(true);
     expect(shownInChat(applied, false)).toBe(false);
+  });
+
+  it("keeps only the cards that were waiting for the owner, never one with the AI reviewer", () => {
+    const mine = card({ id: "k-mine", state: "pending", tier: 2 });
+    const reviewer = card({ id: "k-reviewer", state: "pending", tier: 1 });
+    expect(seenByOwner([mine, reviewer, card({ id: "k-auto", state: "auto" })])).toEqual(["k-mine"]);
+    // A copy caught mid-flight is kept: it was pending for the owner, so its result stays on screen after the decision.
+    expect(shownInChat(card({ id: "k-mine", state: "used", outcome: "applied" }), seenByOwner([mine]).includes("k-mine"))).toBe(true);
+    // The reviewer's card was never the owner's, and its approval doesn't bring it into the chat.
+    expect(shownInChat(card({ id: "k-reviewer", state: "used", outcome: "applied", decidedBy: "reviewer:~openai/gpt-luna-latest" }), seenByOwner([reviewer]).includes("k-reviewer"))).toBe(false);
   });
 
   it("says who decided in words, and asks for approval only while it waits for the owner", () => {

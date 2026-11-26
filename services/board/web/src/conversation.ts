@@ -99,6 +99,13 @@ export const shownInChat = (a: Approval, seenPending = false) => seenPending || 
  */
 export const foldsInChat = (a: Approval, seenPending: boolean) => a.state !== "pending" && a.state !== "running" && !seenPending;
 
+/**
+ * The cards a chat visit has seen waiting for the owner, which stay in it once decided. Only a pending Tier 2 card counts: a
+ * pending Tier 1 one is with the AI reviewer (chats don't show it), and a card that was never the owner's to decide must not
+ * appear in a chat just because the visit caught it mid-flight.
+ */
+export const seenByOwner = (cards: readonly Approval[]) => cards.filter(awaitsOwner).map((a) => a.id);
+
 /** The card's head after "{agent} ": what it asks, or who decided it in words. */
 export function headOf(a: Approval): string {
   if (a.state === "auto") return "ran it at once (Tier 0)";
