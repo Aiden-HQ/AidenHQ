@@ -39,9 +39,10 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
   const q = useQuery(QUERIES.needsYou, onSignIn);
   useLive(["approvals", "chat", "tasks"], q.reload, 30_000);
   const [chosen, setChosen] = useState<Which | null>(null);
-  // The lane whose list stays mounted once it has been opened: closing hides it, it is not torn down (see `list`).
-  const [lane, setLane] = useState<Which | null>(null);
-  const listRef = useRef<HTMLDivElement>(null);
+  // Every lane's list stays mounted once it has been opened, hidden unless it is the chosen one: closing a list, or opening
+  // another lane, must not tear down the answer forms that hold the owner's drafted reply and picks in their own state.
+  const [opened, setOpened] = useState<Which[]>([]);
+  const listRefs = useRef<Partial<Record<Which, HTMLDivElement | null>>>({});
   const headRef = useRef<HTMLElement>(null);
   const d = q.data;
   // A failed read is not a load: no busy frame, just the one line (the base code showed nothing at all).
@@ -74,42 +75,46 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
       </section>
     );
   const n: Record<Which, number> = { needs: d.counts.needs_you, failed: d.counts.failed, idle: d.counts.unexplained_idle };
-  const rows = lane ? d.items.filter(IN[lane]) : [];
+  const rows = chosen ? d.items.filter(IN[chosen]) : [];
   /** After an answer: the next row's first control, else the heading, so the keyboard never lands on a removed row. */
   const moveOn = (identifier: string) => {
-    const els = [...(listRef.current?.querySelectorAll<HTMLElement>(".attn-row, .ui-row") ?? [])];
+    const els = [...(listRefs.current[chosen ?? "needs"]?.querySelectorAll<HTMLElement>(".attn-row, .ui-row") ?? [])];
     const next = els[els.findIndex((e) => e.dataset.task === identifier) + 1];
     const target = next?.matches(".ui-row") ? next : next?.querySelector<HTMLElement>("button, input");
     (target ?? headRef.current)?.focus();
   };
-  // Kept mounted and only hidden when closed: collapsing must not unmount the answer forms, which hold the owner's drafted
-  // reply and picks in their own state. `hidden` also takes the closed list out of the reading order.
-  const list = (
-    <div className="attn-list" ref={listRef} hidden={!chosen}>
-      <ListRows>
-        {rows.map((i) => {
-          const ask = needsOwner(i.state) ? i.ask : undefined;
-          if (!ask) return <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} note={toYou(i) || undefined} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />;
-          return (
-            <div key={i.identifier} className="attn-row" data-task={i.identifier}>
-              <b className="attn-q">{ask.question || i.title}</b>
-              <div className="attn-meta">
-                <span>{i.agent}</span>
-                <a href={`#/t/${i.identifier}`}>{i.identifier}</a>
-                <time title={new Date(ask.waitSince).toLocaleString()}>{ago(ask.waitSince)}</time>
+  // One list per lane, each mounted from its first opening on and hidden unless chosen: counted per lane so a row that moves
+  // between lanes is its own row, and `hidden` takes a closed list out of the page and the reading order. The forms keep their
+  // drafts either way. A lane with no rows shows its empty line instead of a list.
+  const laneList = (w: Which) => {
+    const laneRows = d.items.filter(IN[w]);
+    return (
+      <div key={w} className="attn-list" ref={(el) => { listRefs.current[w] = el; }} hidden={chosen !== w}>
+        <ListRows>
+          {laneRows.map((i) => {
+            const ask = needsOwner(i.state) ? i.ask : undefined;
+            if (!ask) return <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} note={toYou(i) || undefined} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />;
+            return (
+              <div key={i.identifier} className="attn-row" data-task={i.identifier}>
+                <b className="attn-q">{ask.question || i.title}</b>
+                <div className="attn-meta">
+                  <span>{i.agent}</span>
+                  <a href={`#/t/${i.identifier}`}>{i.identifier}</a>
+                  <time title={new Date(ask.waitSince).toLocaleString()}>{ago(ask.waitSince)}</time>
+                </div>
+                <AnswerForm
+                  key={`${ask.waitSince}:${ask.questions.length}`}
+                  questions={ask.questions}
+                  askedAbove
+                  onAnswer={(text) => api.answer(i.identifier, text, ask.waitSince).then(() => (void q.reload(), moveOn(i.identifier)))}
+                />
               </div>
-              <AnswerForm
-                key={`${ask.waitSince}:${ask.questions.length}`}
-                questions={ask.questions}
-                askedAbove
-                onAnswer={(text) => api.answer(i.identifier, text, ask.waitSince).then(() => (void q.reload(), moveOn(i.identifier)))}
-              />
-            </div>
-          );
-        })}
-      </ListRows>
-    </div>
-  );
+            );
+          })}
+        </ListRows>
+      </div>
+    );
+  };
   const words: Record<Which, string> = { needs: `${n.needs} need you`, failed: `${n.failed} failed`, idle: `${n.idle} unexplained` };
   return (
     <section className="attn attn-compact" aria-label="What needs attention">
@@ -123,7 +128,7 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
               className={`attn-count attn-${w}${n[w] ? " on" : ""}`}
               aria-expanded={chosen === w}
               onClick={() => {
-                setLane(w);
+                setOpened((o) => (o.includes(w) ? o : [...o, w]));
                 setChosen(chosen === w ? null : w);
               }}
             >
@@ -133,7 +138,7 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
         </span>
         {chosen && rows.length > 0 && <span className="attn-order">oldest first</span>}
       </div>
-      {lane && rows.length > 0 && list}
+      {opened.map(laneList)}
       {chosen && rows.length === 0 && <p className="attn-none">{EMPTY[chosen]}</p>}
     </section>
   );

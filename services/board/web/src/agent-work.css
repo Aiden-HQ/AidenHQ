@@ -164,7 +164,8 @@
 /* The loading line's placeholders are the count buttons themselves, disabled, with a bone where the number goes: the same box,
    so the strip's height is the same before and after the counts arrive. */
 .attn-count-load { display: inline-flex; align-items: center; gap: 3px; }
-@media (max-width: 479px) { .attn-counts { mask-image: linear-gradient(to right, black calc(100% - 20px), transparent); } }
+/* The fade marks the row as scrollable; the trailing padding lets the last count scroll clear of it, so it can be read whole. */
+@media (max-width: 479px) { .attn-counts { padding-right: 32px; mask-image: linear-gradient(to right, black calc(100% - 24px), transparent); } }
 .attn-count:hover { background: var(--hover); color: var(--text); }
 .attn-count:focus-visible { outline: none; box-shadow: var(--ring); }
 .attn-count[aria-expanded="true"] { background: var(--accent-soft); }

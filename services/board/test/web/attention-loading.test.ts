@@ -105,4 +105,21 @@ describe("the fleet strip's loading frame", () => {
     await act(async () => count.click());
     expect(el.querySelector<HTMLInputElement>(".q-own")!.value).toBe("ship the second one");
   });
+
+  it("keeps a drafted answer when another lane is opened instead of collapsed", async () => {
+    query.data = { ...loaded, items: [asked], counts: { needs_you: 1, failed: 1, unexplained_idle: 0 } };
+    const el = await mount();
+    const needs = el.querySelector<HTMLButtonElement>(".attn-count.attn-needs")!;
+    await act(async () => needs.click());
+    const box = el.querySelector<HTMLInputElement>(".q-own")!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box, "answered later");
+    await act(async () => box.dispatchEvent(new Event("input", { bubbles: true })));
+    // Opening Failed does not unmount Needs you's row: its form keeps the draft while Failed's list is the visible one.
+    await act(async () => el.querySelector<HTMLButtonElement>(".attn-count.attn-failed")!.click());
+    expect(needs.getAttribute("aria-expanded")).toBe("false");
+    const lists = [...el.querySelectorAll<HTMLDivElement>(".attn-list")];
+    expect(lists.filter((l) => !l.hasAttribute("hidden"))).toHaveLength(1);
+    await act(async () => needs.click());
+    expect(el.querySelector<HTMLInputElement>(".q-own")!.value).toBe("answered later");
+  });
 });
