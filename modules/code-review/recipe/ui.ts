@@ -6,8 +6,9 @@
 // OPENROUTER_API_KEY nor OPENROUTER_BASE_URL (kernel/src/checkjobs.ts checkEnv "result"), and it runs no model, as the tools box
 // (tools.ts). The box (the engineer image, which carries the `ui-review` engine of the agent-base image) holds the commit's tree
 // (the workspace) and the spec at $AIDENHQ_SPEC: { repo, head, base (the head itself), run, option, model }. The steps:
-//   1. The app: the dependencies installed with the lockfile's package manager, then the `start` script package.json declares, with
-//      PORT=8080 HOST=127.0.0.1, waited for (180 s). No start script: the check fails (it never guesses a command).
+//   1. The app: the dependencies installed with the lockfile's package manager, its `build` script when it declares one, then the
+//      `start` script package.json declares, with
+//      PORT=8080 HOST=127.0.0.1, waited for (180 s, an answer that isn't a 5xx). No start script: the check fails (it never guesses).
 //   2. `ui-review capture` (its pages: the repo's committed `.aidenhq-ui/pages.json` when there is one, else its own crawl) and
 //      `ui-review routes` over the same pages, both from a folder outside the checkout. Exit 1 means blocking findings (the reports
 //      say which), anything else but 0 a failed check.
@@ -32,8 +33,8 @@ const PORT = 8080, APP_WAIT_MS = 180_000;
 const BUNDLE_MAX = 63 << 20;
 
 /** Starts the app (its own process group) and waits for its port: a start that exits first, or no answer in 180 s, fails the run. */
-async function startApp(pm: string, ws: string, env: Record<string, string>) {
-  const child = spawn(pm, ["start"], { cwd: ws, env: { ...env, PORT: String(PORT), HOST: "127.0.0.1" }, stdio: "ignore", detached: true });
+async function startApp([pm, ...via]: string[], ws: string, env: Record<string, string>) {
+  const child = spawn(pm!, [...via, "start"], { cwd: ws, env: { ...env, PORT: String(PORT), HOST: "127.0.0.1" }, stdio: "ignore", detached: true });
   let exited: number | null | undefined;
   child.on("close", (c) => { exited = c; });
   child.on("error", () => { exited = null; });
@@ -41,10 +42,12 @@ async function startApp(pm: string, ws: string, env: Record<string, string>) {
   const until = Date.now() + APP_WAIT_MS;
   while (Date.now() < until) {
     if (exited !== undefined) throw new Error(`\`${pm} start\` ended (exit ${exited}) before the app answered on port ${PORT}`);
-    try { await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(2000) }); return stop; } catch { await new Promise((ok) => setTimeout(ok, 1000)); }
+    // Up means an answer that isn't a server error (an app whose build is missing answers 500).
+    try { if ((await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(2000) })).status < 500) return stop; } catch { /* not up yet */ }
+    await new Promise((ok) => setTimeout(ok, 1000));
   }
   stop();
-  throw new Error(`the app didn't answer on port ${PORT} within ${APP_WAIT_MS / 1000} s`);
+  throw new Error(`the app didn't answer on port ${PORT} without a server error within ${APP_WAIT_MS / 1000} s`);
 }
 
 /** The shots the review reads of one page's captures (ui-review review.ts `pick`): 390, 1512 and 2560 light and 1512 dark, each its
@@ -101,8 +104,9 @@ export async function capture({ spec, ws, out, env = process.env }: { spec: UiSp
   let scripts: Record<string, unknown> | undefined;
   try { scripts = (JSON.parse(readSmall(join(ws, "package.json"), 1_000_000) ?? "{}") as { scripts?: Record<string, unknown> }).scripts; } catch { /* no start script */ }
   if (typeof scripts?.start !== "string" || !scripts.start.trim()) throw new Error('no start command: add a "start" script to package.json');
-  const pm = existsSync(join(ws, "pnpm-lock.yaml")) ? "pnpm" : existsSync(join(ws, "yarn.lock")) ? "yarn" : "npm";
-  const install = pm === "npm" ? [existsSync(join(ws, "package-lock.json")) ? "ci" : "install"] : ["install", "--frozen-lockfile"];
+  // Yarn through corepack (the image ships Node's corepack, not yarn), which takes the version package.json names.
+  const [pm, ...via] = existsSync(join(ws, "pnpm-lock.yaml")) ? ["pnpm"] : existsSync(join(ws, "yarn.lock")) ? ["corepack", "yarn"] : ["npm"];
+  const install = [...via, ...(pm === "npm" ? [existsSync(join(ws, "package-lock.json")) ? "ci" : "install"] : ["install", "--frozen-lockfile"])];
   const tmp = mkdtempSync(join(env.TMPDIR || "/tmp", "ui-scan-"));
   const ui = join(out, "ui"), url = `http://127.0.0.1:${PORT}`, pagesFile = join(ws, ".aidenhq-ui", "pages.json");
   // The box holds no token; the app and the engine get the tool allowlist's environment all the same, and the image's Chrome.
@@ -111,8 +115,10 @@ export async function capture({ spec, ws, out, env = process.env }: { spec: UiSp
     if (!codes.includes(r.code ?? -1)) throw new Error(`${what}: ${stopped(r)}${r.stderr.trim() ? `; ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 200)}` : ""}`);
   };
 
-  ok(await run(pm, install, { cwd: ws, env: plainEnv, minutes: 15 }), `\`${pm} ${install.join(" ")}\``, [0]);
-  const stop = await startApp(pm, ws, plainEnv);
+  ok(await run(pm!, install, { cwd: ws, env: plainEnv, minutes: 12 }), `\`${pm} ${install.join(" ")}\``, [0]);
+  // A declared build runs first: `start` serves what it builds.
+  if (typeof scripts.build === "string" && scripts.build.trim()) ok(await run(pm!, [...via, "run", "build"], { cwd: ws, env: plainEnv, minutes: 10 }), `\`${pm} run build\``, [0]);
+  const stop = await startApp([pm!, ...via], ws, plainEnv);
   try {
     // From a folder outside the checkout, so only the committed pages.json (or the crawl) decides the pages.
     ok(await run("ui-review", ["capture", url, "--out", ui, "--commit", spec.head, ...(existsSync(pagesFile) ? ["--pages-file", pagesFile] : [])], { cwd: tmp, env: plainEnv, minutes: 25 }), "ui-review capture");

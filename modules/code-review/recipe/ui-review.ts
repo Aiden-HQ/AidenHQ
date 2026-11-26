@@ -26,6 +26,7 @@ export interface UiReport {
   improvements: { rank: number; where: { page: string; width: number; theme: "light" | "dark"; region: string }; weak: string; change: string; why: string; best: string; captures: string[] }[];
   bugs: { page: string; width: number; theme: "light" | "dark"; title: string; evidence: string; captures: string[]; verified: boolean }[];
   cost_usd: number;
+  notes?: string[];
   /** The capture step's pages left out of the bundle to fit a check input (recipe/ui.ts). */
   dropped?: string[];
 }
@@ -90,10 +91,14 @@ function sourceOf(change: string, page: string, root?: string) {
  * checkout, to confirm a source file a change names (its existence only: read as data, never run).
  */
 export function toReview(report: UiReport, o: { model: string; repo?: string; head?: string; listed?: string[]; routes?: UiReport; root?: string }) {
-  const captured = [...new Set(report.captures.map((c) => c.page))];
-  const listed = [...new Set([...(o.listed ?? []), ...captured])];
+  // A page the model's review failed on or the spend cap skipped (the engine's notes say which) is not reviewed: a gap.
+  const notes = Array.isArray(report.notes) ? report.notes.filter((n): n is string => typeof n === "string") : [];
+  const unreviewed = new Set(notes.flatMap((n) => /^design review of (.+?) failed: /.exec(n)?.[1] ?? /^stopped at the --max-usd budget; not reviewed: (.+)$/.exec(n)?.[1]?.split(", ").filter((p) => !p.endsWith(" (motion)")) ?? []));
+  const pages = [...new Set(report.captures.map((c) => c.page))];
+  const captured = pages.filter((p) => !unreviewed.has(p)), skipped = pages.filter((p) => unreviewed.has(p));
+  const listed = [...new Set([...(o.listed ?? []), ...pages])];
   const excluded = listed.filter((p) => !captured.includes(p));
-  const dropped = (report.dropped ?? []).filter((p) => excluded.includes(p)), missed = excluded.filter((p) => !dropped.includes(p));
+  const dropped = (report.dropped ?? []).filter((p) => excluded.includes(p)), missed = excluded.filter((p) => !dropped.includes(p) && !skipped.includes(p));
   const some = (ps: string[]) => `${ps.slice(0, 3).join(", ")}${ps.length > 3 ? ", …" : ""}`;
   const at = (x: { page: string; width: number; theme: "light" | "dark" }, region: string, change = "", best = "") => ({ page: x.page, width: x.width, theme: x.theme, region, change, best });
 
@@ -123,7 +128,8 @@ export function toReview(report: UiReport, o: { model: string; repo?: string; he
 
   const cov = report.coverage;
   const gaps = [
-    ...(captured.length ? [] : ["no page was captured"]),
+    ...(pages.length ? [] : ["no page was captured"]),
+    ...(skipped.length ? [`${skipped.length} captured pages not reviewed by the model (${some(skipped)})`] : []),
     ...(missed.length ? [`${missed.length} of ${listed.length} pages not captured (${some(missed)})`] : []),
     ...(dropped.length ? [`${dropped.length} of ${listed.length} pages captured but left out of the review to fit a check input (${some(dropped)})`] : []),
     ...(cov && (cov.failed || cov.deferred) ? [`${cov.failed} captures failed, ${cov.deferred} deferred`] : []),

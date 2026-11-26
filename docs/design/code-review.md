@@ -215,9 +215,9 @@ A whole-repo option that runs no agent, as two check jobs on one run, because th
 token:
 
 - `code-review-ui` (`recipe/ui.ts`, 60 minutes, spec `{ base, run, option, model }`, `keep`, no `model` line: the kernel gives it no
-  OpenRouter token or address, and it runs no model). It installs the app's dependencies with the lockfile's package manager, runs the
-  `start` script package.json declares with `PORT=8080 HOST=127.0.0.1` (none: the check fails, `no start command: add a "start"
-  script`), then the agent-base image's `ui-review` engine: `capture` (the pages: a committed `.aidenhq-ui/pages.json`, else its crawl)
+  OpenRouter token or address, and it runs no model). It installs the root package.json's dependencies with the lockfile's package manager (yarn
+  through corepack), runs its `build` script when it declares one, then its `start` script with `PORT=8080 HOST=127.0.0.1`, up once
+  `/` answers without a 5xx (no start script: the check fails, `no start command: add a "start" script`), then the agent-base image's `ui-review` engine: `capture` (the pages: a committed `.aidenhq-ui/pages.json`, else its crawl)
   and `routes` over the same pages (exit 1 of either means blocking findings; 2 a failed check). It keeps a bundle (a gzipped tar of
   at most 64 MB: the reports, run.json, queue.json and per page the shots the review reads, pages left out from the end when they
   don't fit, saying so) and its result is coverage only. Its failure is the option's.
@@ -226,7 +226,8 @@ token:
   bundle's names only), runs `ui-review review` over it (no install, no start, no repo config) and maps the report to the tree
   `Review`: improvements (the top 10, ranked by the engine) are nits `ui-<rank>` with a `ui` place (page, width, theme, region,
   change, best), blocking rule hits and the route check's verified bugs are important `ui-rule-<n>` (at most 20), pages are the
-  coverage counts (`eligible` = pages listed, `reviewed` = pages captured); an uncaptured page is a gap, never a clean review. A
+  coverage counts (`eligible` = pages listed, `reviewed` = pages captured and reviewed); a page not captured, or one the model's
+  review failed on or the spend cap skipped, is a gap, never a clean review. A
   failed review fails the run (the batch is incomplete); a retry starts from the capture, which the kernel answers with the
   finished check and its kept bundle.
 

@@ -322,8 +322,10 @@
   }
   const facts = (items) => h("dl", { className: "facts" }, ...items.filter(Boolean).flatMap(([k, v]) => [h("dt", { textContent: k }), h("dd", typeof v === "string" ? { textContent: v } : {}, ...(typeof v === "string" ? [] : [v]))]));
   function finding(f, outcome, review) {
-    const where = `${f.path}:${f.line}${f.end_line && f.end_line !== f.line ? `-${f.end_line}` : ""}`;
-    const blob = review ? `https://github.com/${review.repo}/blob/${review.head}/${f.path.split("/").map(encodeURIComponent).join("/")}#L${f.line}${f.end_line ? `-L${f.end_line}` : ""}` : "";
+    // A ui finding's place is a page, width, theme and region; its path is a source file only when it names one (no line).
+    const u = f.ui;
+    const where = u ? `${u.page} · ${u.width}px · ${u.theme}${u.region ? ` · ${u.region}` : ""}${f.path !== u.page ? ` · ${f.path}` : ""}` : `${f.path}:${f.line}${f.end_line && f.end_line !== f.line ? `-${f.end_line}` : ""}`;
+    const blob = review && (!u || f.path !== u.page) ? `https://github.com/${review.repo}/blob/${review.head}/${f.path.split("/").map(encodeURIComponent).join("/")}${u ? "" : `#L${f.line}${f.end_line ? `-L${f.end_line}` : ""}`}` : "";
     // The brief for the author's coding agent: shown to select and copy (the frame has no clipboard).
     const brief = review ? [`Fix in ${review.repo} (PR #${review.pr}, ${short(review.head)}): ${f.title}`, `Where: ${where}`, `Why: ${f.why}`, `Evidence: ${f.evidence}`, `Wanted: ${f.fix_brief ?? ""}`].join("\n") : "";
     const area = h("textarea", { readOnly: true, value: brief, ariaLabel: "Fix brief", rows: 6, spellcheck: false });
