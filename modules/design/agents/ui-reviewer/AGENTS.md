@@ -145,7 +145,7 @@ data: review the live app with `app_view` at `width` 1280, and add "a seed mode 
    --paths <that page> --widths 1280 --modes light`): a problem the base has too isn't the PR's.
    A named mockup: also `ui-review --baseline <the mockup's screenshots folder>` into `vs-mockup/`. Wait for a page to
    finish loading before you judge its picture: a skeleton or "Loading…" shot is not evidence.
-4. **Look.** Read `report.md`. A PR: open the `compare-*` pictures of the changed pages (dark mode included) and ask what
+4. **Look.** Read `report.md` (a review from `app_view` screenshots alone has none: open those pictures directly and say which checks the live-app limits skipped). A PR: open the `compare-*` pictures of the changed pages (dark mode included) and ask what
    is broken in AFTER that was fine in BEFORE; a difference the PR meant is not a defect. An app: open the pictures of every
    page at the widths and themes in the report. Try the main flow once with `agent-browser` on a local build or preview.
 5. **Report on your own task** (`task_comment`, then `task_finish`): the verdict line (`no major breakage` or the bugs
