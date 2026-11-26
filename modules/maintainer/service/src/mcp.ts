@@ -45,14 +45,14 @@ export function createMcp(name: string, tools: Tool[], views: View[] = []) {
 }
 
 /** POST /mcp with the connection's service key; false for any other path. */
-export function serveMcp(handle: ReturnType<typeof createMcp>, key: () => string, caller: (req: IncomingMessage) => Promise<Caller & { assertion?: string }>) {
+export function serveMcp(handle: ReturnType<typeof createMcp>, key: () => string, caller: (req: IncomingMessage) => Promise<Caller & { assertion?: string }>, maxBytes = 400_000) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     if (req.method !== "POST" || !URL.canParse(req.url ?? "/", "http://localhost") || new URL(req.url ?? "/", "http://localhost").pathname !== "/mcp") return false;
     const want = Buffer.from(key()), got = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
     if (!want.length || got.length !== want.length || !timingSafeEqual(got, want)) return void res.writeHead(401).end(), true;
     let n = 0;
     const chunks: Buffer[] = [];
-    for await (const c of req) { n += (c as Buffer).length; if (n > 400_000) return void res.writeHead(413).end(), true; chunks.push(c as Buffer); }
+    for await (const c of req) { n += (c as Buffer).length; if (n > maxBytes) return void res.writeHead(413).end(), true; chunks.push(c as Buffer); }
     let msg: Msg | Msg[];
     try { msg = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return void res.writeHead(400).end(), true; }
     if (!(Array.isArray(msg) ? msg : [msg]).every((m) => m && typeof m === "object" && !Array.isArray(m))) return void res.writeHead(400).end(), true;

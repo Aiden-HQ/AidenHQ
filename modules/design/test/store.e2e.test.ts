@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMcp } from "../service/src/mcp.ts";
+import { createServer } from "node:http";
+import { createMcp, serveMcp } from "../service/src/mcp.ts";
 import { designTools } from "../service/src/tools.ts";
 import { DAY, openStore } from "../service/src/store.ts";
 
@@ -44,4 +45,23 @@ test("a run's evidence round-trips and expires", async () => {
   store.sweep();
   assert.deepEqual((await call("design_runs", { app: "acme" })).runs.map((r: { id: string }) => r.id), [r3]);
   await assert.rejects(call("design_image", { run, name: "home-1512-light.png" }), /no run/);
+});
+
+test("an 8 MB evidence upload passes the HTTP endpoint and /healthz answers", async () => {
+  const store = openStore(mkdtempSync(join(tmpdir(), "design-")));
+  const mcp = serveMcp(createMcp("design", designTools(store)), () => "k", async () => ({ agent: "reviewer", key: "reviewer", name: "r", roles: [], tool: "t", call: "c", kind: "run" }), 12 * 1024 * 1024);
+  const server = createServer(async (req, res) => { if (!(await mcp(req, res))) res.writeHead(req.url === "/healthz" ? 200 : 404).end(); });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const rpc = async (name: string, args: object) => {
+    const r = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer k", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) });
+    return (await r.json() as { result: { content: { text: string }[]; isError?: boolean } }).result;
+  };
+  try {
+    assert.equal((await fetch(`${base}/healthz`)).status, 200);
+    const { run } = JSON.parse((await rpc("design_run_start", { target: "http://acme.example.com", kind: "review", model: "m" })).content[0]!.text);
+    const big = Buffer.alloc(8 * 1024 * 1024 - 1024, 7).toString("base64");
+    const out = await rpc("design_evidence_put", { run, files: [{ name: "big.png", data: big }] });
+    assert.ok(!out.isError, out.content[0]!.text);
+  } finally { server.close(); }
 });
