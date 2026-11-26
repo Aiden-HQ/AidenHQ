@@ -1543,6 +1543,26 @@ test("a mandatory opening reviewer the owner adds mid-PR reviews the whole PR on
   assert.deepEqual(g.started.slice(1).map((s) => [label(s), s.incremental_from]), [["claude-code/high", sha("2")]], "the next push: the tier's push reviewer, incremental");
 });
 
+test("a mandatory reviewer dropped while it is still running holds nothing; one added that returns a partial review takes back the head's completed evidence", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["running"], "claude-code still runs");
+  const g = world({ db: w.db, repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  g.pr(2, sha("2"));
+  assert.equal(g.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "the dropped reviewer doesn't hold the merge");
+
+  const a = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  await opened(a, 3, sha("3"));
+  a.finish(0, NONE); await a.tick();
+  assert.equal(a.engine.evidence(REPO, 3, sha("3")).kind, "completed");
+  const b = world({ db: a.db, repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH], push_rounds: 0 }] });
+  b.pr(3, sha("3")); await b.tick();
+  b.finish(0, { findings: [], coverage: { reviewed: ["a.ts"], excluded: [], incomplete: "1 of 2 finders didn't finish (timeout)" } }); await b.tick();
+  assert.equal(b.engine.verdict(REPO, 3, sha("3")).verdict, "pass");
+  assert.equal(b.engine.evidence(REPO, 3, sha("3")).kind, "exhausted", "the added reviewer's partial review isn't completed evidence");
+});
+
 test("risk tiers: each head runs its tier's reviewers; a pending head waits; a tier change gets the opening reviewers the PR lacks, coming back gets none again; a skip tier needs no review", async () => {
   const w = world({ repos: [{ repo: REPO, preset: "standard" }] });
   const tierOf = (head) => w.engine.verdict(REPO, 2, head).tier;

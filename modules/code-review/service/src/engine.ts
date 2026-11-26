@@ -580,7 +580,8 @@ export function createEngine(d: EngineDeps) {
    * with the mandatory runs at the head itself (an `aiden review`) and any mandatory run of the PR on its first post (a recheck at
    * an earlier head whose findings aren't posted yet; one still running there is superseded and never posts). */
   const gateRuns = (cfg: Repo, repo: string, n: number, head: string) => {
-    const at = reviewers(repo, n, head);
+    // A reviewer the tier no longer names holds nothing: only its finished runs count (its findings gate on their own, stillOpen()).
+    const at = reviewers(repo, n, head).filter((x) => named(cfg, x) || x.status === "done" || x.status === "failed");
     if (!openOnlyPr(cfg, n)) return at;
     // Only the combos the tier names now: a reviewer the owner dropped, or another tier's, never stands for (or holds) this one.
     const seen = new Set<string>();
@@ -593,6 +594,8 @@ export function createEngine(d: EngineDeps) {
     return out;
   };
   const sameCombo = (c: Combo, r: { engine: string; model: string; effort: string }) => c.engine === r.engine && c.model === r.model && c.effort === r.effort;
+  /** The tier names the run's combo as mandatory at its moment. */
+  const named = (cfg: Repo, x: RunRow) => (x.moment === "push" ? cfg.on_push : cfg.on_open).some((c) => c.mandatory && sameCombo(c, x));
   /** The tier's mandatory opening combos this PR has never had an opening review from (a run of it done, or failed past its retries,
    * at any head): what opening() queues and the verdict waits on. A settings edit or a tier change that adds one asks for that one only. */
   const unopened = (cfg: Repo, repo: string, n: number) => cfg.on_open.filter((c) => c.mandatory && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND kind != 'oneoff' AND mandatory = 1 AND COALESCE(moment, 'open') = 'open' AND engine = ? AND model = ? AND effort = ? AND status IN ('done', 'failed')", repo, n, c.engine, c.model, c.effort));
@@ -1478,8 +1481,12 @@ export function createEngine(d: EngineDeps) {
     if (!repoCfg(r.repo) || !r.mandatory) return;
     // A reviewer the tier no longer names (the owner dropped it) never holds coverage back, unless it ran in this run's own batch.
     const t = current(r.repo, r.number, r.head);
-    const at = reviewers(r.repo, r.number, r.head).filter((x) => x.batch === r.batch || !t || (x.moment === "push" ? t.c.on_push : t.c.on_open).some((c) => c.mandatory && sameCombo(c, x)));
-    if (!at.length || !at.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from)))) return;
+    const at = reviewers(r.repo, r.number, r.head).filter((x) => x.batch === r.batch || !t || named(t.c, x));
+    if (!at.length || !at.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from)))) {
+      // A partial review by a reviewer the head needs (one the owner just added) takes back coverage an earlier review gave it.
+      if (at.some((x) => x.complete === 0)) run("DELETE FROM covered WHERE repo = ? AND number = ? AND head = ?", r.repo, r.number, r.head);
+      return;
+    }
     run("INSERT OR REPLACE INTO covered (repo, number, head, base, at) VALUES (?, ?, ?, ?, ?)", r.repo, r.number, r.head, r.base, iso());
   }
 
