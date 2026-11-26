@@ -4,7 +4,8 @@
 import { readFileSync } from "node:fs";
 import { ask } from "./model.ts";
 
-const system = readFileSync(new URL("./prompts/pairwise.md", import.meta.url), "utf8").trim();
+const file = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8").trim();
+const rules = `${file("./prompts/pairwise.md")}\n\n## Design rules\n\n${file("./rules/taste-never.md")}`;
 const schema = {
   type: "object", additionalProperties: false, required: ["better", "reasons", "regression"],
   properties: { better: { type: "string", enum: ["A", "B"] }, reasons: { type: "array", maxItems: 3, items: { type: "string" } }, regression: { type: "string" } },
@@ -12,8 +13,9 @@ const schema = {
 
 export type FixCheck = { wins: [number, number]; accepted: boolean };
 
-export async function fixCheck(o: { before: string; after: string; width: number; model: string; samples?: 3; base?: string; key?: string }): Promise<FixCheck> {
+export async function fixCheck(o: { before: string; after: string; width: number; model: string; samples?: 3; taste?: string; base?: string; key?: string }): Promise<FixCheck> {
   const k = o.samples ?? 3;
+  const system = o.taste ? `${rules}\n\n## The owner's taste\n\n${o.taste}` : rules;
   const wins: [number, number] = [0, 0];
   const calls = ([0, 1] as const).flatMap((order) => Array.from({ length: k }, async () => {
     // order 0: AFTER is image B (second); order 1: AFTER is image A (first)

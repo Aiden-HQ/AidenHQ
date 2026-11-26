@@ -8,7 +8,7 @@ const COMMANDS: Record<string, string> = {
   routes: "routes <url> --out <dir>                      (route check: clicks, a local build only)",
   refs: "refs <refs.json> --out <dir>",
   review: "review <dir> [--model id] [--taste file] [--refs refs.json] [--top 10] [--brand file] [--max-usd n (a soft limit: stops starting calls once reached)]",
-  "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id]",
+  "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id] [--taste file]",
 };
 
 function help(): string {
@@ -20,6 +20,7 @@ if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
   process.stdout.write(help());
 } else if (cmd === "review" || cmd === "fix-check") {
   const { parseArgs } = await import("node:util");
+  const { readFileSync } = await import("node:fs");
   const { values, positionals } = parseArgs({
     args: rest, allowPositionals: true,
     options: { model: { type: "string" }, taste: { type: "string" }, refs: { type: "string" }, top: { type: "string" }, brand: { type: "string" }, "max-usd": { type: "string" }, width: { type: "string" } },
@@ -33,7 +34,7 @@ if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
     } else {
       if (positionals.length !== 2 || !values.width) throw new Error(`usage: ui-review ${COMMANDS["fix-check"]}`);
       const { fixCheck } = await import("./pairwise.ts");
-      process.stdout.write(JSON.stringify(await fixCheck({ before: positionals[0], after: positionals[1], width: Number(values.width), model: values.model ?? DEFAULT_MODEL })) + "\n");
+      process.stdout.write(JSON.stringify(await fixCheck({ before: positionals[0], after: positionals[1], width: Number(values.width), model: values.model ?? DEFAULT_MODEL, taste: values.taste ? readFileSync(values.taste, "utf8").trim() : undefined })) + "\n");
     }
   } catch (e) {
     process.stderr.write(`ui-review ${cmd}: ${(e as Error).message}\n`);
