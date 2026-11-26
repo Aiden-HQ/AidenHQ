@@ -98,10 +98,12 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // A stall from the gate's decision (a review, a resolved thread, a label) is over once the gate no longer says stall: ship takes
   // back its own assignment and goes on. The explicit holds and a person's own assignment stay with their stops below.
   if (a.hold?.kind === "stalled" && a.hold.onChange && pr.state === "open" && v.do !== "stall") {
-    if (a.assigned?.length) await d.unassign(pr.repo, pr.number, a.assigned).catch((e) => d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
-    const { assigned: _, ...rest } = a;
+    // A refused unassignment keeps the record, so ship's own assignee is never read as a person's stop.
+    let undone = true;
+    if (a.assigned?.length) await d.unassign(pr.repo, pr.number, a.assigned).catch((e) => { undone = false; d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }); });
+    const { assigned: kept, ...rest } = a;
     // The hold's report is replaced by what this pass says, even when it is the line said before the stall.
-    a = { ...rest, hold: null, ...(a.counters ? { counters: { ...a.counters, lastRound: undefined } } : {}) } as typeof a;
+    a = { ...rest, ...(undone ? {} : { assigned: kept }), hold: null, ...(a.counters ? { counters: { ...a.counters, lastRound: undefined } } : {}) } as typeof a;
     d.state.put(a);
     d.log("stall cleared: the gate no longer says stall", { pr: pr.url });
   }
